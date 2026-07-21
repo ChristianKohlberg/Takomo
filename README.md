@@ -53,9 +53,14 @@ Takomo hosts an **MCP server inside the binary** (streamable HTTP at `/mcp`), so
 That installs the `takomo` skill (teaches the agent to use the store as its source of truth) plus the remote MCP server. Set your host + token before launching Claude Code — nothing is baked into the plugin:
 
 ```sh
-export TAKOMO_URL="https://<your-host>/v1"
+export TAKOMO_MCP_URL="https://<your-host>/mcp"   # the MCP endpoint — note /mcp, not /v1
 export TAKOMO_TOKEN="tk_<your read/write token>"
 ```
+
+> **`/mcp`, not `/v1`.** The MCP server lives at `https://<your-host>/mcp`, while the CLI's
+> `TAKOMO_URL` points at the REST base `https://<your-host>/v1`. The plugin's bundled MCP server
+> reads `${TAKOMO_MCP_URL}`, so set that (distinct from `TAKOMO_URL`) — otherwise the server has no
+> host to reach and shows up as *failed to connect*. If you also use the CLI, export both.
 
 **Any other MCP client (Codex, Cursor, …)** — point it at the endpoint with a bearer token, e.g. adding it to Claude Code by hand:
 
