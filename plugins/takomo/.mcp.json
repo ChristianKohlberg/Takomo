@@ -1,7 +1,7 @@
 {
   "takomo": {
     "type": "http",
-    "url": "https://your-takomo-host.onrender.com/mcp",
+    "url": "${TAKOMO_MCP_URL}",
     "headers": {
       "Authorization": "Bearer ${TAKOMO_TOKEN}"
     }
