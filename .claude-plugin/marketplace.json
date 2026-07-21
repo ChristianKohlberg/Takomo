@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "takomo",
+  "description": "Claude Code plugin for takomo — the hosted, shared task tracker every AI agent, orchestrator, and human on a project talks to over HTTP.",
+  "owner": {
+    "name": "ChristianKohlberg"
+  },
+  "plugins": [
+    {
+      "name": "takomo",
+      "description": "Use the central Takomo as the single source of truth for work items: find, claim, and progress tickets through an enforced workflow. Bundles the takomo skill and a remote MCP server for the hosted store.",
+      "source": "./plugins/takomo",
+      "category": "productivity",
+      "author": {
+        "name": "ChristianKohlberg"
+      },
+      "homepage": "https://github.com/ChristianKohlberg/Takomo",
+      "keywords": [
+        "task-tracker",
+        "agents",
+        "mcp",
+        "workflow",
+        "issue-tracker"
+      ]
+    }
+  ]
+}

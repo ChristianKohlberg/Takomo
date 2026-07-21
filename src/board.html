@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>takomo board</title>
+<style>
+  /* ---- theme tokens (light default, dark via prefers-color-scheme) ---- */
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --col-bg: #ebecf0;
+    --text: #172b4d;
+    --muted: #6b778c;
+    --border: #dfe1e6;
+    --accent: #0052cc;
+    --shadow: 0 1px 2px rgba(9,30,66,.15);
+    --crit: #de350b;
+    --high: #ff8b00;
+    --normal: #0065ff;
+    --low: #6b778c;
+    --chip-bg: #dfe1e6;
+    --chip-text: #42526e;
+    --overlay: rgba(9,30,66,.54);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --col-bg: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #4c8dff;
+      --shadow: 0 1px 2px rgba(0,0,0,.5);
+      --crit: #ff6b5a;
+      --high: #ffab4a;
+      --normal: #6ea8ff;
+      --low: #8b949e;
+      --chip-bg: #21262d;
+      --chip-text: #adbac7;
+      --overlay: rgba(1,4,9,.7);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow-x: hidden;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 10px 16px; background: var(--panel);
+    border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 700; letter-spacing: .2px; }
+  header .grow { flex: 1 1 auto; }
+  select, input, button {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  button.primary:hover { filter: brightness(1.08); }
+  .status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .share-banner { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .share-banner:empty { display: none; }
+  .share-exp:empty { display: none; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
+  .dot.live { background: #36b37e; }
+  .dot.err { background: var(--crit); }
+
+  /* ---- board ---- */
+  #board {
+    display: flex; gap: 12px; align-items: flex-start;
+    padding: 14px 16px; overflow-x: auto; min-height: calc(100vh - 120px);
+  }
+  .column {
+    flex: 0 0 288px; max-width: 288px; background: var(--col-bg);
+    border-radius: 10px; padding: 8px; display: flex; flex-direction: column;
+  }
+  .column h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+    margin: 4px 6px 8px; color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+  }
+  .column h2 .count { background: var(--chip-bg); color: var(--chip-text); border-radius: 10px; padding: 1px 8px; font-size: 11px; }
+  .cat { font-size: 9px; padding: 1px 6px; border-radius: 4px; background: var(--chip-bg); color: var(--chip-text); font-weight: 600; letter-spacing: .3px; }
+  .cards { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--low);
+    border-radius: 8px; padding: 9px 10px; box-shadow: var(--shadow); cursor: pointer;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card.p-critical { border-left-color: var(--crit); }
+  .card.p-high { border-left-color: var(--high); }
+  .card.p-normal { border-left-color: var(--normal); }
+  .card.p-low { border-left-color: var(--low); }
+  .card .cid { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .card .ctitle { margin: 3px 0 6px; font-weight: 500; word-break: break-word; }
+  .card .meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); }
+  .chip.prio { text-transform: capitalize; font-weight: 600; }
+  .chip.prio.critical { color: var(--crit); }
+  .chip.prio.high { color: var(--high); }
+  .chip.type { text-transform: capitalize; }
+  .chip.claim { background: transparent; border: 1px dashed var(--muted); }
+  .chip.arch { background: transparent; border: 1px solid var(--muted); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .archtoggle { font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .card.archived { opacity: .55; }
+  .empty-col { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 4px; opacity: .7; }
+
+  /* ---- detail panel ---- */
+  #overlay { position: fixed; inset: 0; background: var(--overlay); display: none; z-index: 20; }
+  #overlay.open { display: block; }
+  #detail {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(480px, 100%);
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
+    transform: translateX(100%); transition: transform .18s ease; overflow-y: auto;
+    box-shadow: -4px 0 16px rgba(9,30,66,.25);
+  }
+  #detail.open { transform: translateX(0); }
+  #detail .dhead { display: flex; align-items: flex-start; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  #detail .dhead h2 { font-size: 16px; margin: 0; flex: 1; word-break: break-word; }
+  #detail .close { background: transparent; border: none; font-size: 20px; line-height: 1; color: var(--muted); padding: 2px 6px; }
+  #detail .dbody { padding: 14px 16px; }
+  #detail section { margin-bottom: 18px; }
+  #detail h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 6px; }
+  #detail .body-text { white-space: pre-wrap; word-break: break-word; background: var(--col-bg); border-radius: 6px; padding: 10px; }
+  #detail .kv { display: flex; flex-wrap: wrap; gap: 6px; }
+  .comment { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; margin-bottom: 8px; }
+  .comment .who { font-size: 11px; color: var(--muted); }
+  .comment .txt { white-space: pre-wrap; word-break: break-word; }
+  .dep-item, .link-item { padding: 2px 0; word-break: break-all; }
+  a { color: var(--accent); }
+
+  /* ---- setup gate ---- */
+  #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
+  #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; width: min(420px, 100%); box-shadow: var(--shadow); }
+  #gate h1 { font-size: 18px; margin: 0 0 4px; }
+  #gate p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  #gate label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  #gate input { width: 100%; }
+  #gate button { width: 100%; margin-top: 18px; }
+  #gate .err { color: var(--crit); font-size: 13px; margin-top: 12px; min-height: 18px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- setup gate: token + project -->
+<div id="gate">
+  <div class="card2">
+    <h1>takomo board</h1>
+    <p>Read-only kanban. Enter a read token to view a project's tickets.</p>
+    <label for="g-token">Read token</label>
+    <input id="g-token" type="password" placeholder="tk_..." autocomplete="off">
+    <label for="g-project">Project</label>
+    <input id="g-project" type="text" placeholder="load token first, then pick" list="g-projlist">
+    <datalist id="g-projlist"></datalist>
+    <button class="primary" id="g-go">Open board</button>
+    <div class="err" id="g-err"></div>
+  </div>
+</div>
+
+<header class="hidden" id="topbar">
+  <h1>takomo</h1>
+  <select id="projsel" title="project"></select>
+  <span class="share-banner" id="share-scope"></span>
+  <span class="grow"></span>
+  <span class="status share-exp" id="share-exp"></span>
+  <label class="archtoggle" title="Include archived tickets"><input type="checkbox" id="showarch"> archived</label>
+  <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
+  <button id="refresh" title="Reload now">Refresh</button>
+  <button id="signout" title="Forget token">Sign out</button>
+</header>
+
+<div id="board"></div>
+
+<div id="overlay"></div>
+<aside id="detail" aria-hidden="true">
+  <div class="dhead">
+    <h2 id="d-title">—</h2>
+    <button class="close" id="d-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="dbody" id="d-body"></div>
+</aside>
+
+<script>
+"use strict";
+(function () {
+  // Same-origin API root. All calls carry the Bearer token via fetch headers,
+  // which is why we poll GET /v1/events instead of using EventSource: the SSE
+  // stream at /v1/events/stream needs the Authorization header too, and the
+  // browser EventSource API cannot set request headers. Polling with fetch is
+  // the correct auth-carrying live-update path here.
+  var API = "/v1";
+  var POLL_MS = 5000;
+
+  var LS_TOKEN = "takomo.board.token";
+  var LS_PROJECT = "takomo.board.project";
+
+  var state = {
+    token: localStorage.getItem(LS_TOKEN) || "",
+    project: localStorage.getItem(LS_PROJECT) || "",
+    workflow: null,
+    tickets: {},        // id -> ticket
+    cursor: 0,          // last event global_seq seen
+    pollTimer: null,
+    polling: false,
+    openTicketId: null,
+    showArchived: false,
+    shareMode: false,
+    share: null        // { token, meta } when viewing a shared link
+  };
+
+  // ---- tiny dom helpers ----
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function esc(s) { return (s == null ? "" : String(s)); }
+
+  // ---- api ----
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + state.token;
+    return fetch(API + path, { headers: headers, method: opts.method || "GET" })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) {
+          var e = new Error("auth"); e.auth = true; e.status = r.status; throw e;
+        }
+        if (!r.ok) {
+          return r.text().then(function (t) {
+            var msg = t;
+            try { msg = JSON.parse(t).error ? JSON.parse(t).error.message : t; } catch (_) {}
+            var e = new Error(msg || ("HTTP " + r.status)); e.status = r.status; throw e;
+          });
+        }
+        return r.json();
+      });
+  }
+
+  // ---- setup gate ----
+  function showGate(msg) {
+    stopPolling();
+    $("gate").classList.remove("hidden");
+    $("topbar").classList.add("hidden");
+    $("board").innerHTML = "";
+    if (msg) $("g-err").textContent = msg;
+    $("g-token").value = state.token || "";
+    $("g-project").value = state.project || "";
+    if (state.token) loadProjectList();
+  }
+  function hideGate() {
+    $("gate").classList.add("hidden");
+    $("topbar").classList.remove("hidden");
+  }
+
+  function loadProjectList() {
+    return api("/projects").then(function (projects) {
+      var dl = $("g-projlist"); dl.innerHTML = "";
+      var sel = $("projsel"); sel.innerHTML = "";
+      projects.forEach(function (p) {
+        var o = el("option"); o.value = p.id; o.textContent = p.id + " — " + p.name; dl.appendChild(o);
+        var o2 = el("option"); o2.value = p.id; o2.textContent = p.id + " (" + p.workflow + ")"; sel.appendChild(o2);
+      });
+      if (state.project) sel.value = state.project;
+      return projects;
+    }).catch(function (e) {
+      if (e.auth) $("g-err").textContent = "Token rejected. Check the read token.";
+      return [];
+    });
+  }
+
+  $("g-go").addEventListener("click", function () {
+    var t = $("g-token").value.trim();
+    var p = $("g-project").value.trim();
+    if (!t) { $("g-err").textContent = "Enter a token."; return; }
+    if (!p) { $("g-err").textContent = "Enter or pick a project."; return; }
+    state.token = t; state.project = p;
+    localStorage.setItem(LS_TOKEN, t);
+    localStorage.setItem(LS_PROJECT, p);
+    $("g-err").textContent = "";
+    hideGate();
+    boot();
+  });
+  $("g-token").addEventListener("change", function () {
+    state.token = $("g-token").value.trim();
+    if (state.token) { localStorage.setItem(LS_TOKEN, state.token); loadProjectList(); }
+  });
+
+  $("signout").addEventListener("click", function () {
+    localStorage.removeItem(LS_TOKEN);
+    state.token = ""; state.workflow = null; state.tickets = {};
+    showGate("");
+  });
+  $("refresh").addEventListener("click", function () {
+    if (state.shareMode) { shareLoad().catch(handleShareErr); return; }
+    fullLoad();
+  });
+  $("showarch").addEventListener("change", function () {
+    state.showArchived = $("showarch").checked;
+    // In share mode archived tickets are not fetched by default, so re-load to
+    // honor the toggle; otherwise render() alone hides/shows the already-loaded set.
+    if (state.shareMode) { shareLoad().catch(handleShareErr); return; }
+    render();
+  });
+  $("projsel").addEventListener("change", function () {
+    state.project = $("projsel").value;
+    localStorage.setItem(LS_PROJECT, state.project);
+    boot();
+  });
+
+  // ---- boot for a project: workflow + tickets, then start polling ----
+  function boot() {
+    setLive("loading", "loading…");
+    // Ensure the header dropdown is populated and reflects the active project
+    // (it may have been chosen via the gate's free-text field or restored from
+    // storage, before any token-change populate ran).
+    var prep = $("projsel").options.length ? Promise.resolve() : loadProjectList();
+    prep
+      .then(function () {
+        var sel = $("projsel");
+        var has = Array.prototype.some.call(sel.options, function (o) { return o.value === state.project; });
+        if (has) sel.value = state.project;
+        return api("/projects/" + encodeURIComponent(state.project) + "/workflow");
+      })
+      .then(function (wf) {
+        state.workflow = wf;
+        return fullLoad();
+      })
+      .then(function () { startPolling(); })
+      .catch(handleErr);
+  }
+
+  function fullLoad() {
+    setLive("loading", "loading…");
+    // page through tickets for the project
+    var all = {};
+    function page(cursor) {
+      // Always fetch archived too; render() decides whether to show them, so
+      // the toggle never needs a refetch.
+      var q = "/tickets?project=" + encodeURIComponent(state.project) + "&limit=200&include_archived=true";
+      if (cursor) q += "&cursor=" + encodeURIComponent(cursor);
+      return api(q).then(function (res) {
+        (res.items || []).forEach(function (t) { all[t.id] = t; });
+        if (res.next_cursor) return page(res.next_cursor);
+      });
+    }
+    return page(null)
+      .then(function () {
+        state.tickets = all;
+        // advance cursor to "now" so polling only reports future changes
+        return api("/events?project=" + encodeURIComponent(state.project) + "&since=0&limit=1000&wait=0");
+      })
+      .then(function (ev) {
+        if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor;
+        render();
+        setLive("live", "live");
+      })
+      .catch(handleErr);
+  }
+
+  // ---- polling for live updates ----
+  function startPolling() {
+    stopPolling();
+    state.pollTimer = setInterval(poll, POLL_MS);
+  }
+  function stopPolling() {
+    if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  }
+  function poll() {
+    if (state.polling) return;
+    state.polling = true;
+    api("/events?project=" + encodeURIComponent(state.project) +
+        "&since=" + state.cursor + "&limit=500&wait=0")
+      .then(function (res) {
+        var events = res.events || [];
+        if (typeof res.cursor === "number") state.cursor = res.cursor;
+        if (events.length === 0) { setLive("live", "live"); return; }
+        // Collect touched ticket ids; refetch each affected ticket.
+        var touched = {};
+        events.forEach(function (e) { if (e.ticket) touched[e.ticket] = true; });
+        var ids = Object.keys(touched);
+        if (ids.length === 0) { setLive("live", "live · " + events.length + " event(s)"); return; }
+        return Promise.all(ids.map(refreshTicket)).then(function () {
+          render();
+          setLive("live", "live · updated " + ids.length);
+        });
+      })
+      .catch(function (e) {
+        if (e.auth) { handleErr(e); return; }
+        setLive("err", "reconnecting…");
+      })
+      .then(function () { state.polling = false; });
+  }
+
+  function refreshTicket(id) {
+    return api("/tickets/" + encodeURIComponent(id))
+      .then(function (t) {
+        if (t && t.project === state.project) state.tickets[id] = t;
+      })
+      .catch(function (e) {
+        // 404 => ticket gone/out of scope; drop it from the board.
+        if (e.status === 404) delete state.tickets[id];
+      });
+  }
+
+  // ---- rendering ----
+  function render() {
+    var board = $("board");
+    board.innerHTML = "";
+    if (!state.workflow) return;
+    var states = state.workflow.states || [];
+    var byState = {};
+    states.forEach(function (s) { byState[s.id] = []; });
+    Object.keys(state.tickets).forEach(function (id) {
+      var t = state.tickets[id];
+      if (t.archived_at && !state.showArchived) return; // archived hidden by default
+      if (!byState[t.state]) byState[t.state] = []; // unknown/legacy state -> its own column
+      byState[t.state].push(t);
+    });
+    // priority order for within-column sort
+    var prank = { critical: 0, high: 1, normal: 2, low: 3 };
+    // columns in workflow order, then any leftover unknown states
+    var colOrder = states.map(function (s) { return s.id; });
+    Object.keys(byState).forEach(function (k) { if (colOrder.indexOf(k) === -1) colOrder.push(k); });
+
+    colOrder.forEach(function (sid) {
+      var wf = byState[sid] ? states.filter(function (s) { return s.id === sid; })[0] : null;
+      var items = (byState[sid] || []).slice().sort(function (a, b) {
+        var pa = prank[a.priority] == null ? 9 : prank[a.priority];
+        var pb = prank[b.priority] == null ? 9 : prank[b.priority];
+        if (pa !== pb) return pa - pb;
+        return (b.updated_at || "").localeCompare(a.updated_at || "");
+      });
+      var col = el("div", "column");
+      var h = el("h2");
+      var left = el("span"); left.textContent = sid;
+      if (wf && wf.category) { var cat = el("span", "cat", wf.category); left.appendChild(document.createTextNode(" ")); left.appendChild(cat); }
+      h.appendChild(left);
+      h.appendChild(el("span", "count", String(items.length)));
+      col.appendChild(h);
+      var cards = el("div", "cards");
+      if (items.length === 0) {
+        cards.appendChild(el("div", "empty-col", "—"));
+      } else {
+        items.forEach(function (t) { cards.appendChild(cardEl(t)); });
+      }
+      col.appendChild(cards);
+      board.appendChild(col);
+    });
+  }
+
+  function cardEl(t) {
+    var c = el("div", "card p-" + (t.priority || "low") + (t.archived_at ? " archived" : ""));
+    c.setAttribute("data-id", t.id);
+    c.appendChild(el("div", "cid", t.id));
+    c.appendChild(el("div", "ctitle", t.title || "(untitled)"));
+    var meta = el("div", "meta");
+    meta.appendChild(el("span", "chip prio " + (t.priority || "low"), t.priority || "—"));
+    if (t.type) meta.appendChild(el("span", "chip type", t.type));
+    if (t.archived_at) meta.appendChild(el("span", "chip arch", "archived"));
+    (t.labels || []).forEach(function (l) { meta.appendChild(el("span", "chip", l)); });
+    var holder = t.claim && t.claim.holder;
+    if (holder) meta.appendChild(el("span", "chip claim", "@ " + holder));
+    c.appendChild(meta);
+    c.addEventListener("click", function () { openDetail(t.id); });
+    return c;
+  }
+
+  // ---- detail panel ----
+  function openDetail(id) {
+    state.openTicketId = id;
+    $("overlay").classList.add("open");
+    $("detail").classList.add("open");
+    $("detail").setAttribute("aria-hidden", "false");
+    $("d-title").textContent = id;
+    $("d-body").innerHTML = "<p class='status'>loading…</p>";
+    var fetchDetail = state.shareMode
+      ? shareApi("/self/tickets/" + encodeURIComponent(id))
+      : api("/tickets/" + encodeURIComponent(id) + "?include=comments,deps");
+    fetchDetail
+      .then(renderDetail)
+      .catch(function (e) {
+        if (e && e.expired) { showExpired(); return; }
+        $("d-body").innerHTML = "";
+        $("d-body").appendChild(el("p", "status", "Failed: " + e.message));
+      });
+  }
+  function closeDetail() {
+    state.openTicketId = null;
+    $("overlay").classList.remove("open");
+    $("detail").classList.remove("open");
+    $("detail").setAttribute("aria-hidden", "true");
+  }
+  $("d-close").addEventListener("click", closeDetail);
+  $("overlay").addEventListener("click", closeDetail);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDetail(); });
+
+  function renderDetail(t) {
+    $("d-title").textContent = t.title || t.id;
+    var b = $("d-body"); b.innerHTML = "";
+
+    // meta row
+    var s1 = el("section");
+    var kv = el("div", "kv");
+    kv.appendChild(el("span", "chip", t.id));
+    kv.appendChild(el("span", "chip prio " + (t.priority || "low"), "priority: " + (t.priority || "—")));
+    kv.appendChild(el("span", "chip", "state: " + t.state));
+    if (t.state_category) kv.appendChild(el("span", "chip", t.state_category));
+    if (t.type) kv.appendChild(el("span", "chip type", t.type));
+    if (t.claim && t.claim.holder) kv.appendChild(el("span", "chip claim", "claim: " + t.claim.holder));
+    s1.appendChild(kv);
+    b.appendChild(s1);
+
+    (t.labels || []).length && (function () {
+      var s = el("section"); s.appendChild(el("h3", null, "Labels"));
+      var kv2 = el("div", "kv");
+      t.labels.forEach(function (l) { kv2.appendChild(el("span", "chip", l)); });
+      s.appendChild(kv2); b.appendChild(s);
+    })();
+
+    // body
+    var sb = el("section");
+    sb.appendChild(el("h3", null, "Description"));
+    sb.appendChild(el("div", "body-text", t.body ? t.body : "(no description)"));
+    b.appendChild(sb);
+
+    // deps
+    var deps = t.deps || {};
+    var blockedBy = deps.blocked_by || [];
+    var blocks = deps.blocks || [];
+    if (blockedBy.length || blocks.length) {
+      var sd = el("section");
+      sd.appendChild(el("h3", null, "Dependencies"));
+      if (blockedBy.length) {
+        sd.appendChild(el("div", "status", "Blocked by:"));
+        blockedBy.forEach(function (d) {
+          sd.appendChild(el("div", "dep-item", "• " + (d.id || d) + (d.title ? " — " + d.title : "") + (d.state ? " [" + d.state + "]" : "")));
+        });
+      }
+      if (blocks.length) {
+        sd.appendChild(el("div", "status", "Blocks:"));
+        blocks.forEach(function (d) {
+          var idv = (typeof d === "string") ? d : (d.id || d.ticket || JSON.stringify(d));
+          sd.appendChild(el("div", "dep-item", "• " + idv));
+        });
+      }
+      b.appendChild(sd);
+    }
+
+    // links
+    var links = t.links;
+    if (links && typeof links === "object" && Object.keys(links).length) {
+      var sl = el("section");
+      sl.appendChild(el("h3", null, "Links"));
+      Object.keys(links).forEach(function (k) {
+        var v = links[k];
+        var row = el("div", "link-item");
+        row.appendChild(el("strong", null, k + ": "));
+        if (typeof v === "string" && /^https?:\/\//.test(v)) {
+          var a = el("a"); a.href = v; a.textContent = v; a.target = "_blank"; a.rel = "noopener"; row.appendChild(a);
+        } else {
+          row.appendChild(document.createTextNode(typeof v === "string" ? v : JSON.stringify(v)));
+        }
+        sl.appendChild(row);
+      });
+      b.appendChild(sl);
+    }
+
+    // comments
+    var comments = t.comments || [];
+    var sc = el("section");
+    sc.appendChild(el("h3", null, "Comments (" + comments.length + ")"));
+    if (comments.length === 0) {
+      sc.appendChild(el("div", "status", "No comments."));
+    } else {
+      comments.forEach(function (c) {
+        var cc = el("div", "comment");
+        cc.appendChild(el("div", "who", esc(c.author) + " · " + esc(c.created_at)));
+        cc.appendChild(el("div", "txt", esc(c.body)));
+        sc.appendChild(cc);
+      });
+    }
+    b.appendChild(sc);
+  }
+
+  // ---- status pill + errors ----
+  function setLive(kind, text) {
+    var dot = $("live-dot");
+    dot.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
+    $("live-text").textContent = text;
+  }
+  function handleErr(e) {
+    if (e && e.auth) { showGate("Token was rejected (" + (e.status || "") + "). Enter a valid read token."); return; }
+    setLive("err", "error");
+    var board = $("board");
+    board.innerHTML = "";
+    var m = el("div", "empty-col", "Could not load: " + (e && e.message ? e.message : "unknown error"));
+    m.style.margin = "40px auto"; m.style.maxWidth = "400px";
+    board.appendChild(m);
+  }
+
+  // ---- share mode ----------------------------------------------------------
+  // A shared link carries its token in the URL FRAGMENT (#s=<token>), which the
+  // browser never sends to the server (kept out of logs/referrers). In share
+  // mode the board skips the token gate and project picker entirely and talks
+  // only to the read-only, scope-bounded /v1/shares/self* endpoints.
+  function parseShareToken() {
+    var h = window.location.hash || "";
+    if (h.charAt(0) === "#") h = h.slice(1);
+    var out = "";
+    h.split("&").forEach(function (part) {
+      var i = part.indexOf("=");
+      if (i > 0 && part.slice(0, i) === "s") out = decodeURIComponent(part.slice(i + 1));
+    });
+    return out;
+  }
+
+  // Like api(), but for the share endpoints: carries the share token and maps an
+  // expired/revoked share (410) to a friendly terminal error.
+  function shareApi(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + state.share.token;
+    return fetch(API + "/shares" + path, { headers: headers, method: opts.method || "GET" })
+      .then(function (r) {
+        if (r.status === 410) { var g = new Error("expired"); g.expired = true; throw g; }
+        if (r.status === 401 || r.status === 403) { var e = new Error("auth"); e.expired = true; throw e; }
+        if (!r.ok) {
+          return r.text().then(function (t) {
+            var msg = t;
+            try { var j = JSON.parse(t); msg = j.message || (j.error && j.error.message) || t; } catch (_) {}
+            var e2 = new Error(msg || ("HTTP " + r.status)); e2.status = r.status; throw e2;
+          });
+        }
+        return r.json();
+      });
+  }
+
+  function fmtExpiry(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  }
+
+  function showExpired() {
+    stopPolling();
+    $("gate").classList.add("hidden");
+    $("topbar").classList.add("hidden");
+    closeDetail();
+    var board = $("board");
+    board.innerHTML = "";
+    var wrap = el("div", "card2");
+    wrap.style.margin = "60px auto"; wrap.style.maxWidth = "440px"; wrap.style.textAlign = "center";
+    wrap.appendChild(el("h1", null, "This shared link has expired"));
+    wrap.appendChild(el("p", null, "The link is no longer valid — it has expired or been revoked. Ask whoever shared it for a fresh link."));
+    board.appendChild(wrap);
+  }
+
+  function bootShare(token) {
+    state.shareMode = true;
+    state.share = { token: token, meta: null };
+    $("gate").classList.add("hidden");
+    // Reveal a trimmed header: no project picker, no sign-out; just a title,
+    // the expiry notice, and a manual refresh.
+    var bar = $("topbar");
+    bar.classList.remove("hidden");
+    $("projsel").classList.add("hidden");
+    $("signout").classList.add("hidden");
+    setLive("loading", "loading…");
+    shareLoad().catch(handleShareErr);
+  }
+
+  function shareLoad() {
+    setLive("loading", "loading…");
+    return shareApi("/self")
+      .then(function (meta) {
+        state.share.meta = meta;
+        state.workflow = meta.workflow;
+        // Header: scope + expiry.
+        var scope = meta.kind === "project" ? ("project " + meta.project) : ("subtree " + meta.ref);
+        $("share-scope").textContent = "Shared view — " + scope;
+        $("share-exp").textContent = "expires " + fmtExpiry(meta.expires_at);
+        return shareApi("/self/tickets" + (state.showArchived ? "?include_archived=true" : ""));
+      })
+      .then(function (res) {
+        var all = {};
+        (res.items || []).forEach(function (t) { all[t.id] = t; });
+        state.tickets = all;
+        render();
+        setLive("live", "read-only");
+      });
+  }
+
+  function handleShareErr(e) {
+    if (e && e.expired) { showExpired(); return; }
+    setLive("err", "error");
+    var board = $("board");
+    board.innerHTML = "";
+    var m = el("div", "empty-col", "Could not load the shared view: " + (e && e.message ? e.message : "unknown error"));
+    m.style.margin = "40px auto"; m.style.maxWidth = "400px";
+    board.appendChild(m);
+  }
+
+  // ---- start ----
+  var shareToken = parseShareToken();
+  if (shareToken) {
+    bootShare(shareToken);
+  } else if (state.token && state.project) {
+    hideGate();
+    boot();
+  } else {
+    showGate("");
+  }
+})();
+</script>
+</body>
+</html>

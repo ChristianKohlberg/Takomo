@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (build · clippy · fmt · test)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test (release)
+        run: cargo test --release
+
+  shell:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck is preinstalled on GitHub-hosted ubuntu runners.
+      - name: ShellCheck
+        run: shellcheck clients/cli/takomo clients/cli/install.sh
+
+  mcp:
+    name: MCP typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/mcp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (tsc typecheck)
+        run: npm run build

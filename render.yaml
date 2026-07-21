@@ -1,0 +1,31 @@
+# Render Blueprint — Takomo
+#
+# Deploy in one click with the "Deploy to Render" button in the README, or
+# apply manually: Render dashboard > New + > Blueprint > connect this repo.
+#
+# The persistent disk gives SQLite durable storage across deploys; /healthz is
+# the readiness probe. The first admin token is minted over `render ssh` against
+# the mounted DB (`takomo --db /var/data/takomo.db token create ...`) —
+# see spec/auth.md.
+#
+# Off-box continuous backup (Litestream) is prepared but off by default; see the
+# "Backups" section of the README to turn it on with your own bucket + keys.
+services:
+  - type: web
+    name: takomo
+    runtime: rust
+    plan: starter
+    region: frankfurt
+    branch: main
+    buildCommand: cargo build --release
+    startCommand: ./target/release/takomo --db /var/data/takomo.db serve --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
+    envVars:
+      # takomo refuses non-loopback binds unless this is set; Render
+      # terminates TLS in front of the service.
+      - key: TAKOMO_ALLOW_PUBLIC_BIND
+        value: "1"
+    disk:
+      name: takomo-data
+      mountPath: /var/data
+      sizeGB: 1

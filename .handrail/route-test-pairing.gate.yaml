@@ -1,0 +1,11 @@
+id: route-test-pairing
+# Instance of cookbook/patterns/pairing-detector. Waivable, not blocking: the
+# heuristic has legitimate misses (pure refactors, error-message tweaks) — fix
+# it by adding a test, or put the reason on the record with `handrail waive`.
+expectation: New or changed HTTP surface ships with an integration test that exercises it.
+desc: Flags touched src/api/* or src/server.rs route wiring with no touched change under tests/.
+kind: detector
+semantics: waivable
+cmd: HR_PRIMARY='src/api' HR_PAIRED='tests' bash .handrail/route-test-pairing.sh
+paths: [src/api, src/server.rs]
+order: 30

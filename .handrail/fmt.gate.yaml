@@ -1,0 +1,9 @@
+# Mechanical verdict: rustfmt is fast, deterministic, and CI enforces it, so a
+# red here is a real "you forgot to format" — demanded at stop.
+expectation: Rust formatting stays clean — run `cargo fmt` before wrapping up.
+desc: Verifies the tree matches rustfmt (cargo fmt --check).
+kind: verdict
+semantics: blocking
+cmd: cargo fmt --check
+paths: [src, tests, rustfmt.toml]
+order: 10

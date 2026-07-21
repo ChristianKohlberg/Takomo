@@ -1,0 +1,12 @@
+# Mechanical verdict mirroring CI's `-D warnings` posture. Marked slow: it
+# compiles the crate, so run it deliberately (`handrail run clippy`), not on the
+# per-edit hot path. Paths include the manifests because a dependency or feature
+# change can introduce lints outside src/.
+expectation: Clippy stays clean — no warnings (CI denies them with -D warnings).
+desc: Runs cargo clippy --all-targets -- -D warnings.
+kind: verdict
+semantics: blocking
+cmd: cargo clippy --all-targets -- -D warnings
+paths: [src, tests, Cargo.toml, Cargo.lock]
+slow: true
+order: 20

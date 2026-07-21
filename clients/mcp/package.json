@@ -1,0 +1,29 @@
+{
+  "name": "takomo-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing the Takomo HTTP API as native tools for AI agents (Claude Code, Codex, etc.)",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "takomo-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "node test/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

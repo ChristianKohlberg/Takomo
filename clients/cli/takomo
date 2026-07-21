@@ -1,0 +1,1766 @@
+#!/usr/bin/env bash
+# takomo — a friendly command-line client for the takomo.
+#
+# A single self-contained wrapper over the REST API so a human or an agent can
+# work the queue without hand-writing curl. It is the beads/beans-equivalent
+# surface for the takomo: create, search, claim, and progress tickets.
+#
+# Transport is curl (its default User-Agent sails past WAFs that block the
+# python-urllib default UA). python3 is used only locally, to build request
+# bodies and format responses — never to make the HTTP request itself.
+#
+# Environment:
+#   TAKOMO_URL      required. The /v1 base, e.g. https://host/v1
+#   TAKOMO_TOKEN    required. A read/write (and, for gated moves, human) token.
+#   TAKOMO_PROJECT  optional. Default project when --project is omitted.
+#   TAKOMO_ACTOR    optional. Your actor name; only needed for `ls --mine`.
+#
+# Repo-local config: after `takomo init`, url/project/token are read from a
+# `.takomo/` directory (walking up from the cwd) so plain `takomo new`/`takomo ready`
+# just work inside that repo. Precedence is explicit flag > environment >
+# `.takomo` config.
+#
+# The fence for a claimed ticket is remembered locally (keyed by store URL +
+# ticket id) so start/done/comment/link "just work" after a claim without you
+# passing --fence. Override or supply it explicitly with --fence N.
+#
+# Dependencies: bash, curl, python3 (stdlib only; PyYAML only if you pass a
+# custom .yaml workflow to `takomo init`).
+set -euo pipefail
+
+PROG=takomo
+die() { echo "$PROG: $*" >&2; exit 2; }
+
+# --- repo-local config (.takomo) -----------------------------------------
+# Walk up from the cwd for a `.takomo/config` (KEY=VALUE) and `.takomo/token`.
+# Only fills TAKOMO_URL/PROJECT/TOKEN that are not already set in the
+# environment, so env (and thus any explicit override) always wins.
+load_takomo_config() {
+  local dir="$PWD" cfg="" tok=""
+  while [ -n "$dir" ]; do
+    if [ -f "$dir/.takomo/config" ]; then cfg="$dir/.takomo/config"; tok="$dir/.takomo/token"; break; fi
+    [ "$dir" = "/" ] && break
+    dir=$(dirname "$dir")
+  done
+  [ -n "$cfg" ] || return 0
+  local url proj
+  url=$(sed -n 's/^url=//p' "$cfg" | tail -1)
+  proj=$(sed -n 's/^project=//p' "$cfg" | tail -1)
+  [ -z "${TAKOMO_URL:-}" ] && [ -n "$url" ] && export TAKOMO_URL="$url"
+  [ -z "${TAKOMO_PROJECT:-}" ] && [ -n "$proj" ] && export TAKOMO_PROJECT="$proj"
+  if [ -z "${TAKOMO_TOKEN:-}" ] && [ -f "$tok" ]; then
+    TAKOMO_TOKEN="$(cat "$tok")"
+    export TAKOMO_TOKEN
+  fi
+}
+
+# --- local fence store -------------------------------------------------------
+fence_dir() {
+  local base="${XDG_STATE_HOME:-$HOME/.local/state}/takomo/fences"
+  if mkdir -p "$base" 2>/dev/null; then echo "$base"; return; fi
+  base="/tmp/takomo-${UID:-$(id -u)}/fences"
+  mkdir -p "$base"
+  echo "$base"
+}
+fence_file() {
+  local id=$1 urlkey
+  urlkey=$(printf '%s' "${TAKOMO_URL:-}" | cksum | cut -d' ' -f1)
+  echo "$(fence_dir)/${urlkey}_${id}"
+}
+fence_save() { printf '%s' "$2" > "$(fence_file "$1")"; }
+fence_load() { local f; f=$(fence_file "$1"); if [ -f "$f" ]; then cat "$f"; fi; }
+fence_clear() { rm -f "$(fence_file "$1")" 2>/dev/null || true; }
+
+# --- HTTP --------------------------------------------------------------------
+REQ_OUT=$(mktemp)
+trap 'rm -f "$REQ_OUT"' EXIT
+
+# api METHOD PATH [JSON_DATA] [EXTRA_HEADER]
+# Writes the raw body to $REQ_OUT and echoes the HTTP status code on stdout.
+# On any >=400 it prints the store's teaching error (code/message/remedy/
+# allowed_transitions) to stderr and exits nonzero, so callers never have to
+# guard against error bodies.
+api() {
+  local method=$1 path=$2 data=${3:-} extra=${4:-} code
+  local -a args=(-sS -o "$REQ_OUT" -w '%{http_code}' -X "$method"
+    "$TAKOMO_URL$path" -H "Authorization: Bearer $TAKOMO_TOKEN")
+  [ -n "$extra" ] && args+=(-H "$extra")
+  if [ -n "$data" ]; then
+    args+=(-H "Content-Type: application/json" --data-binary "$data")
+  fi
+  code=$(curl "${args[@]}") || die "request failed (network/curl error)"
+  if [ "$code" -ge 400 ]; then
+    python3 - "$REQ_OUT" "$code" >&2 <<'PY'
+import json, sys
+tmp, code = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(tmp))
+except Exception:
+    print(f"HTTP {code}: {open(tmp).read()[:800]}"); sys.exit(1)
+print(f"HTTP {code}  [{d.get('code','?')}]")
+if d.get('message'): print(d['message'])
+if d.get('remedy'):  print("remedy: " + d['remedy'])
+if d.get('current_state'): print("current state: " + d['current_state'])
+for t in d.get('allowed_transitions', []):
+    req = (" (requires " + ", ".join(t['requires']) + ")") if t.get('requires') else ""
+    print(f"  allowed -> {t['to']}{req}")
+PY
+    exit 1
+  fi
+  echo "$code"
+}
+
+# Like api(), but never exits on an error status — returns the HTTP code on
+# stdout (or "000" on a curl failure) and leaves the body in $REQ_OUT. Used by
+# the importer's best-effort relation/state passes, where one item failing must
+# not abort the whole run.
+api_try() {
+  local method=$1 path=$2 data=${3:-} extra=${4:-} code
+  local -a args=(-sS -o "$REQ_OUT" -w '%{http_code}' -X "$method"
+    "$TAKOMO_URL$path" -H "Authorization: Bearer $TAKOMO_TOKEN")
+  [ -n "$extra" ] && args+=(-H "$extra")
+  if [ -n "$data" ]; then
+    args+=(-H "Content-Type: application/json" --data-binary "$data")
+  fi
+  code=$(curl "${args[@]}") || { echo "000"; return 0; }
+  echo "$code"
+}
+
+# Print the store's teaching message from the last $REQ_OUT body to stderr,
+# indented, for the importer's soft failures.
+print_api_error() {
+  python3 - "$REQ_OUT" >&2 <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("    " + open(sys.argv[1]).read()[:300]); sys.exit()
+if d.get('message'):
+    print("    " + d['message'][:400])
+PY
+}
+
+require_env() {
+  load_takomo_config
+  [ -n "${TAKOMO_URL:-}" ]   || die "TAKOMO_URL is not set (e.g. https://host or https://host/v1). Run 'takomo init' in a git repo, or export it."
+  [ -n "${TAKOMO_TOKEN:-}" ] || die "TAKOMO_TOKEN is not set. Run 'takomo init', or export a token."
+  # Normalize to the host root: paths below always carry their own /v1, so we
+  # accept TAKOMO_URL with or without a trailing /v1 (and trailing slash).
+  TAKOMO_URL="${TAKOMO_URL%/}"
+  TAKOMO_URL="${TAKOMO_URL%/v1}"
+}
+
+resolve_project() {
+  local p=${1:-}
+  [ -n "$p" ] && { echo "$p"; return; }
+  [ -n "${TAKOMO_PROJECT:-}" ] && { echo "$TAKOMO_PROJECT"; return; }
+  die "no project given; pass --project P or set TAKOMO_PROJECT"
+}
+
+# urlencode a single query value
+urlenc() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$1"; }
+
+# --- commands ----------------------------------------------------------------
+
+cmd_new() {
+  local project="" type="" priority="" parent="" body=""
+  local -a labels=()
+  local title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --type)    type=$2; shift 2 ;;
+      --priority) priority=$2; shift 2 ;;
+      --parent)  parent=$2; shift 2 ;;
+      --body)    body=$2; shift 2 ;;
+      --label)   labels+=("$2"); shift 2 ;;
+      --) shift; break ;;
+      -*) die "new: unknown flag $1" ;;
+      *) title=$1; shift ;;
+    esac
+  done
+  [ -n "$title" ] || die "new: TITLE is required"
+  project=$(resolve_project "$project")
+  local idem; idem="takomo-cli-$(date +%s)-$RANDOM"
+  local data
+  data=$(TS_PROJECT="$project" TS_TYPE="$type" TS_TITLE="$title" TS_BODY="$body" \
+    TS_PRIORITY="$priority" TS_PARENT="$parent" \
+    TS_LABELS="$(printf '%s\n' "${labels[@]+"${labels[@]}"}")" python3 <<'PY'
+import json, os
+d = {"project": os.environ["TS_PROJECT"], "title": os.environ["TS_TITLE"]}
+for env, key in (("TS_TYPE","type"),("TS_PRIORITY","priority"),("TS_PARENT","parent")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+if os.environ.get("TS_BODY", ""): d["body"] = os.environ["TS_BODY"]
+labels = [l for l in os.environ.get("TS_LABELS","").splitlines() if l.strip()]
+if labels: d["labels"] = labels
+print(json.dumps(d))
+PY
+)
+  api POST /v1/tickets "$data" "Idempotency-Key: $idem" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"created {d['id']}  [{d['state']}]  {d['title']}")
+sim = d.get("similar") or []
+if sim:
+    print("\npossible duplicates (search before creating):")
+    for s in sim:
+        print(f"  {s.get('id')}  [{s.get('state','?')}]  {s.get('title','')}")
+PY
+}
+
+cmd_ls() {
+  local project="" state="" q="" mine="" archived=""
+  local -a labels=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --state)   state=$2; shift 2 ;;
+      --label)   labels+=("$2"); shift 2 ;;
+      --mine)    mine=1; shift ;;
+      --archived) archived=1; shift ;;
+      -q|--query) q=$2; shift 2 ;;
+      -*) die "ls: unknown flag $1" ;;
+      *) die "ls: unexpected argument '$1'" ;;
+    esac
+  done
+  local qs="?limit=100"
+  [ -n "$project" ] && qs="$qs&project=$(urlenc "$project")"
+  [ -z "$project" ] && [ -n "${TAKOMO_PROJECT:-}" ] && qs="$qs&project=$(urlenc "$TAKOMO_PROJECT")"
+  [ -n "$state" ] && qs="$qs&state=$(urlenc "$state")"
+  [ -n "$archived" ] && qs="$qs&archived=only"
+  [ -n "$q" ] && qs="$qs&q=$(urlenc "$q")"
+  for l in "${labels[@]+"${labels[@]}"}"; do qs="$qs&label=$(urlenc "$l")"; done
+  if [ -n "$mine" ]; then
+    [ -n "${TAKOMO_ACTOR:-}" ] || die "ls --mine needs TAKOMO_ACTOR set to your actor name"
+    qs="$qs&claimed_by=$(urlenc "$TAKOMO_ACTOR")"
+  fi
+  api GET "/v1/tickets$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print("(no tickets)"); sys.exit()
+def trunc(s, n): return s if len(s) <= n else s[:n-1] + "…"
+print(f"{'ID':<14} {'STATE':<12} {'PRI':<8} {'TYPE':<6} TITLE")
+for t in items:
+    claim = t.get("claim") or {}
+    holder = f"  @{claim['holder']}" if claim else ""
+    print(f"{t['id']:<14} {t.get('state',''):<12} {t.get('priority',''):<8} "
+          f"{t.get('type',''):<6} {trunc(t.get('title',''),56)}{holder}")
+if d.get("next_cursor"):
+    print(f"\n(more results; next_cursor={d['next_cursor']})")
+PY
+}
+
+cmd_ready() {
+  local project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "ready: unknown flag $1" ;;
+      *) die "ready: unexpected argument '$1'" ;;
+    esac
+  done
+  local qs="?limit=50"
+  project=$(resolve_project "$project")
+  qs="$qs&project=$(urlenc "$project")"
+  api GET "/v1/ready$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+items = json.load(open(sys.argv[1]))
+if not items:
+    print("(ready queue empty)"); sys.exit()
+def trunc(s, n): return s if len(s) <= n else s[:n-1] + "…"
+print(f"{'ID':<14} {'PRI':<8} {'TYPE':<6} TITLE")
+for t in items:
+    print(f"{t['id']:<14} {t.get('priority',''):<8} {t.get('type',''):<6} {trunc(t.get('title',''),60)}")
+PY
+}
+
+cmd_roadmap() {
+  local project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "roadmap: unknown flag $1" ;;
+      *) die "roadmap: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/roadmap" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+epics = d.get("epics", [])
+print(f"roadmap for {d.get('project','')}  ({len(epics)} epic(s))")
+if not epics:
+    print("(no epics)"); sys.exit()
+def bar(pct, width=10):
+    filled = int(round(pct / 100.0 * width))
+    filled = max(0, min(width, filled))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+def trunc(s, n): return s if len(s) <= n else s[:n-1] + "..."
+for e in epics:
+    total = e.get("total", 0); done = e.get("done", 0); pct = e.get("percent", 0)
+    print(f"\n{e['id']}  [{e.get('state','')}]  {trunc(e.get('title',''), 52)}")
+    print(f"  {bar(pct)} {done}/{total} done  ({pct}%)")
+    bs = e.get("by_state") or {}
+    if bs:
+        print("  children by state: " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+PY
+}
+
+cmd_show() {
+  local id=${1:-}; [ -n "$id" ] || die "show: ID is required"
+  api GET "/v1/tickets/$(urlenc "$id")?include=comments,deps,children" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"{d['id']}  [{d.get('state','')}]  ({d.get('type','')}, {d.get('priority','')})")
+print(f"  project: {d.get('project','')}   version: {d.get('version','')}")
+if d.get("parent"): print(f"  parent:  {d['parent']}")
+if d.get("labels"): print(f"  labels:  {', '.join(d['labels'])}")
+claim = d.get("claim")
+if claim: print(f"  claim:   @{claim['holder']} until {claim.get('expires_at','')}")
+links = d.get("links") or {}
+if links: print("  links:   " + ", ".join(f"{k}={v}" for k, v in links.items()))
+if d.get("title"): print(f"\n  {d['title']}")
+if d.get("body"): print("\n" + "\n".join("  " + l for l in d["body"].splitlines()))
+deps = d.get("deps") or {}
+bb = deps.get("blocked_by") or []
+if bb:
+    print("\nblocked by:")
+    for b in bb: print(f"  {b['id']}  [{b.get('state','')}]  {b.get('title','')}")
+ch = d.get("children") or []
+if ch:
+    print("\nchildren:")
+    for c in ch: print(f"  {c['id']}  [{c.get('state','')}]  {c.get('title','')}")
+cs = d.get("comments") or []
+if cs:
+    print("\ncomments:")
+    for c in cs:
+        print(f"  [{c.get('created_at','')}] @{c.get('author','')}: {c.get('body','')}")
+PY
+}
+
+# save the fence emitted by a claim/ready-claim response for ticket $1
+save_fence_from_response() {
+  local id=$1 fence
+  fence=$(python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+lease = d.get("lease", d)  # ready/claim nests it; claim returns the lease itself
+f = lease.get("fence")
+print(f if f is not None else "")
+PY
+)
+  [ -n "$fence" ] && fence_save "$id" "$fence"
+  echo "$fence"
+}
+
+cmd_claim() {
+  local id=${1:-}; [ -n "$id" ] || die "claim: ID is required"
+  api POST "/v1/tickets/$(urlenc "$id")/claim" '{}' >/dev/null
+  local fence; fence=$(save_fence_from_response "$id")
+  echo "claimed $id  (fence $fence saved)"
+}
+
+cmd_next() {
+  local project="" wait="0"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --wait)    wait=$2; shift 2 ;;
+      -*) die "next: unknown flag $1" ;;
+      *) die "next: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  local data; data=$(TS_P="$project" TS_W="$wait" python3 -c \
+    'import json,os; print(json.dumps({"project":os.environ["TS_P"],"wait_seconds":int(os.environ["TS_W"])}))')
+  local code; code=$(api POST /v1/ready/claim "$data")
+  if [ "$code" = "204" ]; then echo "(nothing ready to claim)"; return; fi
+  local id; id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$REQ_OUT")
+  local fence; fence=$(save_fence_from_response "$id")
+  python3 - "$REQ_OUT" "$fence" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"claimed {d['id']}  [{d.get('state','')}]  {d.get('title','')}  (fence {sys.argv[2]} saved)")
+PY
+}
+
+# transition ID TO_STATE — auto-echoes the stored fence; clears it on terminal.
+do_transition() {
+  local id=$1 to=$2 reason=${3:-} fence
+  fence=$(fence_load "$id")
+  local data; data=$(TS_TO="$to" TS_REASON="$reason" TS_FENCE="$fence" python3 <<'PY'
+import json, os
+d = {"to": os.environ["TS_TO"]}
+if os.environ.get("TS_REASON",""): d["reason"] = os.environ["TS_REASON"]
+if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/tickets/$(urlenc "$id")/transition" "$data" >/dev/null
+  local newstate; newstate=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$REQ_OUT")
+  case "$newstate" in done|cancelled) fence_clear "$id" ;; esac
+  # If the server auto-released the claim on this move, drop the local fence too.
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("claim") else 1)' "$REQ_OUT" \
+    || fence_clear "$id"
+  echo "$id -> $newstate"
+}
+
+# --- workflow-aware state resolution -----------------------------------------
+# The convenience verbs (start / done / block / cancel) must work across
+# different workflows: `simple` uses in_progress/blocked/done, `factory-default`
+# uses implementing/needs-decision/done. Rather than hard-coding state ids, we
+# read the project's workflow and resolve the target by *category*, among the
+# transitions actually legal from the ticket's current state. This mirrors the
+# MCP server's targetsInCategory()/advanceToCategory() resolution (clients/mcp).
+
+# Fetch a project's workflow into $2 (a file path) so later api calls overwriting
+# $REQ_OUT do not clobber it.
+wf_fetch() {
+  local project=$1 dest=$2
+  api GET "/v1/projects/$(urlenc "$project")/workflow" >/dev/null
+  cp "$REQ_OUT" "$dest"
+}
+
+# Echo one field of a workflow state (e.g. category, claimable). Booleans print
+# lowercased; a missing state or field prints the empty string.
+wf_state_field() {
+  local wf_file=$1 state=$2 field=$3
+  TS_S="$state" TS_F="$field" python3 - "$wf_file" <<'PY'
+import json, os, sys
+wf = json.load(open(sys.argv[1]))
+s = next((x for x in wf.get("states", []) if x.get("id") == os.environ["TS_S"]), {})
+v = s.get(os.environ["TS_F"])
+print("" if v is None else (str(v).lower() if isinstance(v, bool) else str(v)))
+PY
+}
+
+# Resolve the single workflow state in $category reachable from $from. Echoes the
+# target id and exits 0 on success; on an absent or ambiguous category it prints
+# a message listing the legal moves and exits nonzero, so callers can die cleanly
+# rather than guessing.
+wf_resolve_target() {
+  local wf_file=$1 from=$2 category=$3
+  TS_FROM="$from" TS_CAT="$category" python3 - "$wf_file" <<'PY'
+import json, os, sys
+wf = json.load(open(sys.argv[1]))
+frm, cat = os.environ["TS_FROM"], os.environ["TS_CAT"]
+by_id = {s.get("id"): s for s in wf.get("states", [])}
+legal = [t for t in wf.get("transitions", []) if t.get("from") == frm]
+seen = []
+for t in legal:
+    to = t.get("to")
+    if by_id.get(to, {}).get("category") == cat and to not in seen:
+        seen.append(to)
+if len(seen) == 1:
+    print(seen[0]); sys.exit(0)
+def fmt(t):
+    r = t.get("requires")
+    return t["to"] + (" (requires %s)" % ",".join(r) if r else "")
+moves = ", ".join(fmt(t) for t in legal) or "(none)"
+name = wf.get("name", "?")
+if not seen:
+    print("no move to a '%s' state from '%s' in workflow '%s'; legal moves: %s"
+          % (cat, frm, name, moves))
+else:
+    print("ambiguous '%s' targets from '%s' (%s); use 'takomo move ID STATE'; legal moves: %s"
+          % (cat, frm, ", ".join(seen), moves))
+sys.exit(1)
+PY
+}
+
+# Read one field from the ticket body currently in $REQ_OUT.
+ticket_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$REQ_OUT" "$1"
+}
+
+cmd_start() {
+  local id=${1:-}; [ -n "$id" ] || die "start: ID is required"
+  api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
+  local state project; state=$(ticket_field state); project=$(ticket_field project)
+  local wf_file; wf_file=$(mktemp)
+  wf_fetch "$project" "$wf_file"
+  if [ "$(wf_state_field "$wf_file" "$state" category)" = "in_progress" ]; then
+    rm -f "$wf_file"; echo "$id already in progress ($state)"; return
+  fi
+  # Claim first when the current state is claimable and we do not already hold it.
+  if [ -z "$(fence_load "$id")" ] && [ "$(wf_state_field "$wf_file" "$state" claimable)" = "true" ]; then
+    api POST "/v1/tickets/$(urlenc "$id")/claim" '{}' >/dev/null
+    local fence; fence=$(save_fence_from_response "$id")
+    echo "claimed $id  (fence $fence saved)"
+  fi
+  local target
+  if ! target=$(wf_resolve_target "$wf_file" "$state" in_progress); then
+    rm -f "$wf_file"; die "start: $target"
+  fi
+  rm -f "$wf_file"
+  do_transition "$id" "$target"
+}
+
+# done / block / cancel — resolve the terminal/blocked target from the ticket's
+# current state in its project workflow, instead of assuming a fixed state id.
+category_move() {
+  local verb=$1 category=$2 id=${3:-}
+  [ -n "$id" ] || die "$verb: ID is required"
+  api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
+  local state project; state=$(ticket_field state); project=$(ticket_field project)
+  local wf_file; wf_file=$(mktemp)
+  wf_fetch "$project" "$wf_file"
+  local target
+  if ! target=$(wf_resolve_target "$wf_file" "$state" "$category"); then
+    rm -f "$wf_file"; die "$verb: $target"
+  fi
+  rm -f "$wf_file"
+  do_transition "$id" "$target"
+}
+
+cmd_done()   { category_move "done" "done" "${1:-}"; }
+cmd_block()  { category_move "block" "blocked" "${1:-}"; }
+cmd_cancel() { category_move "cancel" "cancelled" "${1:-}"; }
+cmd_move() {
+  local id=${1:-} to=${2:-}
+  { [ -n "$id" ] && [ -n "$to" ]; } || die "move: usage: takomo move ID STATE"
+  do_transition "$id" "$to"
+}
+
+cmd_comment() {
+  local id=${1:-} text=${2:-}
+  { [ -n "$id" ] && [ -n "$text" ]; } || die "comment: usage: takomo comment ID TEXT"
+  local data; data=$(TS_B="$text" python3 -c 'import json,os; print(json.dumps({"body":os.environ["TS_B"]}))')
+  api POST "/v1/tickets/$(urlenc "$id")/comments" "$data" >/dev/null
+  echo "comment added to $id"
+}
+
+cmd_link() {
+  local id=${1:-}; [ -n "$id" ] || die "link: ID is required"; shift
+  local pr="" branch="" env="" run=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr)     pr=$2; shift 2 ;;
+      --branch) branch=$2; shift 2 ;;
+      --env)    env=$2; shift 2 ;;
+      --run)    run=$2; shift 2 ;;
+      *) die "link: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$pr$branch$env$run" ] || die "link: give at least one of --pr --branch --env --run"
+  # links is a whole-object replace; merge onto whatever is already there.
+  api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
+  local fence; fence=$(fence_load "$id")
+  local data; data=$(TS_FILE="$REQ_OUT" TS_PR="$pr" TS_BRANCH="$branch" TS_ENV="$env" \
+    TS_RUN="$run" TS_FENCE="$fence" python3 <<'PY'
+import json, os
+cur = json.load(open(os.environ["TS_FILE"]))
+links = dict(cur.get("links") or {})
+for env, key in (("TS_PR","pr"),("TS_BRANCH","branch"),("TS_ENV","env"),("TS_RUN","run")):
+    v = os.environ.get(env, "")
+    if v: links[key] = v
+d = {"links": links}
+if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
+print(json.dumps(d))
+PY
+)
+  api PATCH "/v1/tickets/$(urlenc "$id")" "$data" >/dev/null
+  echo "links updated on $id"
+}
+
+cmd_dep() {
+  local id=${1:-}; [ -n "$id" ] || die "dep: ID is required"; shift
+  local blocked_by=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --blocked-by) blocked_by=$2; shift 2 ;;
+      *) die "dep: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$blocked_by" ] || die "dep: --blocked-by OTHER is required"
+  local fence; fence=$(fence_load "$id")
+  local data; data=$(TS_BB="$blocked_by" TS_FENCE="$fence" python3 <<'PY'
+import json, os
+d = {"blocked_by": os.environ["TS_BB"]}
+if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/tickets/$(urlenc "$id")/deps" "$data" >/dev/null
+  echo "$id now blocked_by $blocked_by"
+}
+
+cmd_archive() {
+  local id="" state="" project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --state)   state=$2; shift 2 ;;
+      --project) project=$2; shift 2 ;;
+      -*) die "archive: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else die "archive: unexpected argument '$1'"; fi; shift ;;
+    esac
+  done
+  if [ -n "$state" ]; then
+    [ -z "$id" ] || die "archive: give either an ID or --state, not both"
+    case "$state" in done|cancelled) ;; *) die "archive: --state must be 'done' or 'cancelled'" ;; esac
+    project=$(resolve_project "$project")
+    # Page through the (active) tickets in that terminal state and archive each.
+    local cursor="" n=0
+    while :; do
+      local q
+      q="?project=$(urlenc "$project")&state=$(urlenc "$state")&limit=200"
+      [ -n "$cursor" ] && q="$q&cursor=$(urlenc "$cursor")"
+      api GET "/v1/tickets$q" >/dev/null
+      local ids; ids=$(python3 -c 'import json,sys; print("\n".join(t["id"] for t in json.load(open(sys.argv[1])).get("items",[])))' "$REQ_OUT")
+      local tid
+      while IFS= read -r tid; do
+        [ -n "$tid" ] || continue
+        api POST "/v1/tickets/$(urlenc "$tid")/archive" '{}' >/dev/null
+        n=$((n + 1))
+      done <<< "$ids"
+      cursor=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("next_cursor") or "")' "$REQ_OUT")
+      [ -n "$cursor" ] || break
+    done
+    echo "archived $n ticket(s) in state $state"
+    return
+  fi
+  [ -n "$id" ] || die "archive: ID (or --state done|cancelled) is required"
+  api POST "/v1/tickets/$(urlenc "$id")/archive" '{}' >/dev/null
+  echo "archived $id"
+}
+
+cmd_unarchive() {
+  local id=${1:-}; [ -n "$id" ] || die "unarchive: ID is required"
+  api POST "/v1/tickets/$(urlenc "$id")/unarchive" '{}' >/dev/null
+  echo "unarchived $id"
+}
+
+cmd_deps() {
+  local id="" blocks="" tree=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --blocks) blocks=1; shift ;;
+      --tree)   tree=1; shift ;;
+      -*) die "deps: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else die "deps: unexpected argument '$1'"; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "deps: ID is required"
+  local dir="blocked_by"; [ -n "$blocks" ] && dir="blocks"
+  local trans="false"; [ -n "$tree" ] && trans="true"
+  api GET "/v1/tickets/$(urlenc "$id")/deps?direction=$dir&transitive=$trans" >/dev/null
+  TS_TREE="$tree" python3 - "$REQ_OUT" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+root = d["root"]; direction = d["direction"]; tree = bool(os.environ.get("TS_TREE"))
+nodes = {n["id"]: n for n in d.get("nodes", [])}
+edges = d.get("edges", [])
+def label(nid):
+    n = nodes.get(nid)
+    return nid if not n else f"{nid}  [{n.get('state','')}]  {n.get('title','')}"
+if direction == "blocked_by":
+    def neigh(nid): return [e["blocked_by"] for e in edges if e["ticket"] == nid]
+    print(f"{root} is blocked by:")
+else:
+    def neigh(nid): return [e["ticket"] for e in edges if e["blocked_by"] == nid]
+    print(f"{root} blocks:")
+if tree:
+    seen = {root}
+    def walk(nid, depth, path):
+        for m in sorted(neigh(nid)):
+            indent = "  " * (depth + 1)
+            if m in path:
+                print(indent + label(m) + "  (cycle)"); continue
+            if m in seen:
+                print(indent + label(m) + "  (seen above)"); continue
+            print(indent + label(m)); seen.add(m)
+            walk(m, depth + 1, path | {m})
+    walk(root, 0, {root})
+else:
+    ns = sorted(neigh(root))
+    if not ns:
+        print("  (none)")
+    for m in ns:
+        print("  " + label(m))
+PY
+}
+
+cmd_release() {
+  local id=${1:-} reason=${2:-released via takomo}
+  [ -n "$id" ] || die "release: ID is required"
+  local fence; fence=$(fence_load "$id")
+  [ -n "$fence" ] || die "release: no local fence for $id; pass --fence via claim first or release manually"
+  local data; data=$(TS_F="$fence" TS_R="$reason" python3 -c \
+    'import json,os; print(json.dumps({"fence":int(os.environ["TS_F"]),"reason":os.environ["TS_R"]}))')
+  api POST "/v1/tickets/$(urlenc "$id")/release" "$data" >/dev/null
+  fence_clear "$id"
+  echo "released $id"
+}
+
+# --- identity ----------------------------------------------------------------
+
+cmd_whoami() {
+  api GET /v1/whoami >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+proj = d.get("projects")
+proj = "*" if proj == "*" else ", ".join(proj) if isinstance(proj, list) else proj
+print(f"actor:    {d.get('actor','')}")
+print(f"scopes:   {', '.join(d.get('scopes', []))}")
+print(f"projects: {proj}")
+print(f"token id: {d.get('token_id','')}")
+PY
+}
+
+# --- token administration (admin scope) --------------------------------------
+
+cmd_token() {
+  local sub=${1:-}; [ -n "$sub" ] || die "token: usage: takomo token create|ls|revoke ..."
+  shift
+  case "$sub" in
+    create) cmd_token_create "$@" ;;
+    ls|list) cmd_token_ls "$@" ;;
+    revoke) cmd_token_revoke "$@" ;;
+    *) die "token: unknown subcommand '$sub' (create|ls|revoke)" ;;
+  esac
+}
+
+cmd_token_create() {
+  local actor="" scopes="read,write" projects="" expires=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --actor)    actor=$2; shift 2 ;;
+      --scopes)   scopes=$2; shift 2 ;;
+      --projects) projects=$2; shift 2 ;;
+      --expires)  expires=$2; shift 2 ;;
+      -*) die "token create: unknown flag $1" ;;
+      *) die "token create: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -n "$actor" ] || die "token create: --actor NAME is required"
+  local data
+  data=$(TS_ACTOR="$actor" TS_SCOPES="$scopes" TS_PROJECTS="$projects" TS_EXPIRES="$expires" python3 <<'PY'
+import json, os
+d = {"actor": os.environ["TS_ACTOR"]}
+d["scopes"] = [s for s in os.environ["TS_SCOPES"].split(",") if s.strip()]
+proj = os.environ.get("TS_PROJECTS", "").strip()
+if proj and proj != "*":
+    d["projects"] = [p for p in proj.split(",") if p.strip()]
+exp = os.environ.get("TS_EXPIRES", "").strip()
+if exp:
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    if exp[-1] in units and exp[:-1].isdigit():
+        d["expires_seconds"] = int(exp[:-1]) * units[exp[-1]]
+    elif exp.isdigit():
+        d["expires_seconds"] = int(exp)
+    else:
+        raise SystemExit(f"invalid --expires '{exp}': use 90d, 12h, 30m, 3600s, or a plain second count")
+print(json.dumps(d))
+PY
+)
+  api POST /v1/tokens "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+proj = d.get("projects")
+proj = "*" if proj == "*" else ", ".join(proj) if isinstance(proj, list) else proj
+print(f"token id:  {d.get('id','')}")
+print(f"actor:     {d.get('actor','')}")
+print(f"scopes:    {', '.join(d.get('scopes', []))}")
+print(f"projects:  {proj}")
+print(f"expires:   {d.get('expires_at') or 'never'}")
+print(f"rate:      {d.get('rate_limit','?')}/min writes")
+print()
+print(d.get("token", ""))
+print()
+print(d.get("warning", "This plaintext is shown once; only its hash is stored."))
+PY
+}
+
+cmd_token_ls() {
+  api GET /v1/tokens >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+if not rows:
+    print("(no tokens)"); sys.exit()
+def proj(p): return "*" if p == "*" else ",".join(p) if isinstance(p, list) else str(p)
+print(f"{'ID':<14} {'ACTOR':<22} {'SCOPES':<20} {'PROJECTS':<12} {'REVOKED':<8} LAST USED")
+for t in rows:
+    print(f"{t.get('id',''):<14} {t.get('actor',''):<22} {','.join(t.get('scopes',[])):<20} "
+          f"{proj(t.get('projects')):<12} {('yes' if t.get('revoked_at') else 'no'):<8} {t.get('last_used_at') or 'never'}")
+PY
+}
+
+cmd_token_revoke() {
+  local id=${1:-}; [ -n "$id" ] || die "token revoke: ID is required"
+  api DELETE "/v1/tokens/$(urlenc "$id")" >/dev/null
+  echo "revoked $id"
+}
+
+# --- project administration (admin scope) ------------------------------------
+
+cmd_project() {
+  local sub=${1:-}; [ -n "$sub" ] || die "project: usage: takomo project rm ID [--force]"
+  shift
+  case "$sub" in
+    rm|remove|delete) cmd_project_rm "$@" ;;
+    *) die "project: unknown subcommand '$sub' (rm)" ;;
+  esac
+}
+
+# takomo project rm ID [--force] — cascade-delete a project and ALL of its tickets,
+# comments, deps, and events. Refused (409) if any ticket has an active claim
+# unless --force is given. Tokens scoped to the project are left as-is; they
+# simply stop resolving once it is gone (revoke them with `takomo token revoke`).
+cmd_project_rm() {
+  local id="" force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      -*) die "project rm: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else die "project rm: unexpected argument '$1'"; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "project rm: ID is required"
+
+  # Confirm the project exists (the list is authoritative; metrics omits empty
+  # projects). Die early with a clear message if it is unknown to this token.
+  api GET /v1/projects >/dev/null
+  python3 - "$REQ_OUT" "$id" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+pid = sys.argv[2]
+if not any(p.get("id") == pid for p in rows):
+    sys.stderr.write(f"project rm: no project '{pid}' visible to this token\n")
+    sys.exit(2)
+PY
+
+  # Pre-delete summary of what will cascade (metrics has per-project counts;
+  # a project with no tickets simply won't appear there — treat as empty).
+  api GET /v1/metrics >/dev/null
+  python3 - "$REQ_OUT" "$id" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+pid = sys.argv[2]
+p = (d.get("projects") or {}).get(pid) or {}
+print(f"deleting project '{pid}': {p.get('total',0)} ticket(s), {p.get('open_claims',0)} open claim(s)")
+bs = p.get("by_state") or {}
+if bs:
+    print("  by state: " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+print("  cascade removes every ticket, comment, dependency, and event under it.")
+PY
+
+  local path; path="/v1/projects/$(urlenc "$id")"
+  [ -n "$force" ] && path="$path?force=true"
+  api DELETE "$path" >/dev/null
+  echo "deleted project $id"
+}
+
+# --- onboarding: takomo init -----------------------------------------------------
+
+# The `simple` plain-tracker workflow, embedded so `takomo init` works even when the
+# CLI is symlinked away from the repo. Kept in sync with workflows/simple.yaml.
+simple_workflow_json() {
+  cat <<'EOF'
+{"name":"simple","initial":"todo","states":[
+  {"id":"draft","category":"todo","claimable":false,"terminal":false},
+  {"id":"todo","category":"todo","claimable":true,"terminal":false},
+  {"id":"in_progress","category":"in_progress","claimable":false,"terminal":false},
+  {"id":"blocked","category":"blocked","claimable":false,"terminal":false},
+  {"id":"done","category":"done","claimable":false,"terminal":true},
+  {"id":"cancelled","category":"cancelled","claimable":false,"terminal":true}],
+ "transitions":[
+  {"from":"draft","to":"todo"},{"from":"draft","to":"cancelled"},
+  {"from":"todo","to":"in_progress","requires":["claim"]},{"from":"todo","to":"cancelled"},
+  {"from":"in_progress","to":"done","requires":["claim"]},{"from":"in_progress","to":"blocked"},
+  {"from":"in_progress","to":"todo"},{"from":"in_progress","to":"cancelled"},
+  {"from":"blocked","to":"in_progress","requires":["claim"]},{"from":"blocked","to":"todo"},
+  {"from":"blocked","to":"cancelled"}]}
+EOF
+}
+
+# Resolve the workflow spec to a JSON body on stdout.
+# $1 = --workflow value ("" | "simple" | path to .json/.yaml)
+workflow_json() {
+  local wf=${1:-simple}
+  if [ -z "$wf" ] || [ "$wf" = "simple" ]; then
+    # Prefer the shipped simple.yaml (single source) if reachable + PyYAML is
+    # present; otherwise fall back to the embedded JSON.
+    local script_real repo_wf
+    script_real=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    repo_wf="$(dirname "$script_real")/../../workflows/simple.yaml"
+    if [ -f "$repo_wf" ] && python3 -c 'import yaml' 2>/dev/null; then
+      TS_WF="$repo_wf" python3 -c 'import json,os,yaml; print(json.dumps(yaml.safe_load(open(os.environ["TS_WF"]))))'
+    else
+      simple_workflow_json
+    fi
+    return
+  fi
+  [ -f "$wf" ] || die "init: workflow file not found: $wf"
+  case "$wf" in
+    *.json) cat "$wf" ;;
+    *.yaml|*.yml)
+      python3 -c 'import yaml' 2>/dev/null || die "init: reading a .yaml workflow needs PyYAML (pip install pyyaml), or pass a .json file"
+      TS_WF="$wf" python3 -c 'import json,os,yaml; print(json.dumps(yaml.safe_load(open(os.environ["TS_WF"]))))' ;;
+    *) die "init: --workflow must be 'simple', a .json, or a .yaml file" ;;
+  esac
+}
+
+# sanitize a string into a valid project id: ^[a-z][a-z0-9-]{1,15}$
+sanitize_project_id() {
+  TS_RAW="$1" python3 <<'PY'
+import os, re, sys
+raw = os.environ["TS_RAW"].lower()
+s = re.sub(r'[^a-z0-9-]+', '-', raw).strip('-')
+s = re.sub(r'-{2,}', '-', s)
+if s and not s[0].isalpha():
+    s = "p-" + s
+s = s[:16].rstrip('-')
+if len(s) < 2:
+    print("", end=""); sys.exit()
+print(s)
+PY
+}
+
+cmd_init() {
+  local project="" workflow="simple" url="" actor=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --workflow) workflow=$2; shift 2 ;;
+      --url)      url=$2; shift 2 ;;
+      --actor)    actor=$2; shift 2 ;;
+      -*) die "init: unknown flag $1" ;;
+      *) project=$1; shift ;;
+    esac
+  done
+
+  # URL + admin token: explicit flag > env/config. The token in TAKOMO_TOKEN
+  # is the admin token used to provision; the agent token is minted below.
+  [ -n "$url" ] && export TAKOMO_URL="$url"
+  load_takomo_config
+  [ -n "${TAKOMO_URL:-}" ]   || die "init: no store URL; pass --url https://host/v1 or set TAKOMO_URL"
+  [ -n "${TAKOMO_TOKEN:-}" ] || die "init: no admin token; set TAKOMO_TOKEN to an admin-scoped token to provision with"
+  TAKOMO_URL="${TAKOMO_URL%/}"; TAKOMO_URL="${TAKOMO_URL%/v1}"
+
+  # 1. Resolve the git repo root and project id.
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "init: not inside a git repository (run this at a repo root)"
+  if [ -z "$project" ]; then
+    project=$(sanitize_project_id "$(basename "$repo_root")")
+    [ -n "$project" ] || die "init: could not derive a valid project id from '$(basename "$repo_root")'; pass one explicitly: takomo init PROJECT"
+  else
+    local clean; clean=$(sanitize_project_id "$project")
+    [ "$clean" = "$project" ] || die "init: project id '$project' is invalid; must match ^[a-z][a-z0-9-]{1,15}\$ (e.g. '$clean')"
+  fi
+  [ -z "$actor" ] && actor="agent:$project"
+  echo "Onboarding '$repo_root' onto takomo at $TAKOMO_URL"
+  echo "  project: $project"
+
+  # 2. Create the project if missing, then apply the workflow.
+  local wf_body; wf_body=$(workflow_json "$workflow")
+  local created; created=$(TS_P="$project" TS_WF="$wf_body" python3 <<'PY'
+import json, os
+print(json.dumps({"id": os.environ["TS_P"], "name": os.environ["TS_P"], "workflow": json.loads(os.environ["TS_WF"])}))
+PY
+)
+  local code
+  code=$(curl -sS -o "$REQ_OUT" -w '%{http_code}' -X POST "$TAKOMO_URL/v1/projects" \
+    -H "Authorization: Bearer $TAKOMO_TOKEN" -H "Content-Type: application/json" --data-binary "$created") \
+    || die "init: request failed reaching $TAKOMO_URL"
+  if [ "$code" = "201" ]; then
+    echo "  created project + applied '$workflow' workflow"
+  elif [ "$code" = "409" ]; then
+    echo "  project exists; updating workflow to '$workflow'"
+    api PUT "/v1/projects/$(urlenc "$project")/workflow" "$wf_body" >/dev/null
+  else
+    python3 - "$REQ_OUT" "$code" >&2 <<'PY'
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: print(f"HTTP {sys.argv[2]}: {open(sys.argv[1]).read()[:400]}"); sys.exit(1)
+print(f"HTTP {sys.argv[2]}  [{d.get('code','?')}] {d.get('message','')}")
+if d.get('remedy'): print('remedy: ' + d['remedy'])
+PY
+    die "init: could not create project (HTTP $code)"
+  fi
+
+  # 3. Mint a read,write agent token scoped to this project.
+  local tok_body; tok_body=$(TS_ACTOR="$actor" TS_P="$project" python3 <<'PY'
+import json, os
+print(json.dumps({"actor": os.environ["TS_ACTOR"], "scopes": ["read", "write"], "projects": [os.environ["TS_P"]]}))
+PY
+)
+  api POST /v1/tokens "$tok_body" >/dev/null
+  local agent_token; agent_token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$REQ_OUT")
+  [ -n "$agent_token" ] || die "init: token mint returned no plaintext"
+  echo "  minted agent token for $actor (scopes read,write on $project)"
+
+  # 4. Write repo-local config + token; gitignore the token.
+  local cfgdir="$repo_root/.takomo"
+  mkdir -p "$cfgdir"
+  {
+    echo "url=$TAKOMO_URL/v1"
+    echo "project=$project"
+  } > "$cfgdir/config"
+  ( umask 177; printf '%s' "$agent_token" > "$cfgdir/token" )
+  chmod 600 "$cfgdir/token" 2>/dev/null || true
+  local gi="$repo_root/.gitignore"
+  if ! { [ -f "$gi" ] && grep -qxF '.takomo/token' "$gi"; }; then
+    printf '\n# takomo agent token (secret)\n.takomo/token\n' >> "$gi"
+    echo "  gitignored .takomo/token"
+  fi
+  echo "  wrote .takomo/config and .takomo/token"
+
+  # 5. Verify the agent token works against the new project.
+  echo
+  echo "Verifying with the new agent token..."
+  local ready_out
+  ready_out=$(cd "$repo_root" && TAKOMO_URL="$TAKOMO_URL/v1" TAKOMO_TOKEN="$agent_token" \
+    TAKOMO_PROJECT="$project" "$0" ready 2>&1) || die "init: verification (takomo ready) failed: $ready_out"
+  echo "  takomo ready -> ${ready_out:-ok}"
+
+  cat <<EOF
+
+Done, project '$project' is live on the store.
+Next steps (run from anywhere inside this repo — config is auto-loaded):
+  takomo new "First task"        create a ticket
+  takomo ready                   see what's claimable
+  takomo next                    claim the next ready ticket
+  takomo done <id>               finish it
+
+Commit .takomo/config to share the store URL + project with the team.
+The secret token in .takomo/token stays local (gitignored).
+EOF
+}
+
+# --- export / import / watch / metrics ---------------------------------------
+
+cmd_export() {
+  local project="" out=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --out)     out=$2; shift 2 ;;
+      -*) die "export: unknown flag $1" ;;
+      *) die "export: unexpected argument '$1'" ;;
+    esac
+  done
+  # project is optional: default to TAKOMO_PROJECT if set, else export all
+  # projects the token may read.
+  [ -z "$project" ] && project=${TAKOMO_PROJECT:-}
+  local qs=""
+  [ -n "$project" ] && qs="?project=$(urlenc "$project")"
+  api GET "/v1/export$qs" >/dev/null
+  if [ -n "$out" ]; then
+    cp "$REQ_OUT" "$out"
+    local n; n=$(grep -c . "$out" || true)
+    echo "exported ${n:-0} ticket(s) to $out"
+  else
+    cat "$REQ_OUT"
+  fi
+}
+
+cmd_metrics() {
+  api GET /v1/metrics >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+t = d.get("totals", {})
+print(f"generated: {d.get('generated_at','')}")
+print(f"totals: {t.get('projects',0)} project(s)  {t.get('tickets',0)} ticket(s)  "
+      f"{t.get('open_claims',0)} open claim(s)  {t.get('events',0)} event(s)")
+for pid, p in sorted((d.get("projects") or {}).items()):
+    print(f"\n{pid}: {p.get('total',0)} ticket(s), {p.get('open_claims',0)} open claim(s)")
+    bs = p.get("by_state") or {}
+    if bs:
+        print("  by state:    " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+    bc = p.get("by_category") or {}
+    if bc:
+        print("  by category: " + ", ".join(f"{k}={v}" for k, v in sorted(bc.items())))
+PY
+}
+
+# --- shareable read-only web links (write scope) -----------------------------
+
+# takomo share --project P | --epic ID [--ttl 24h]   mint a shareable, expiring,
+#   read-only board link and print the full clickable URL.
+# takomo share ls                                    list share metadata
+# takomo share revoke ID                             revoke a share
+cmd_share() {
+  local sub=${1:-}
+  case "$sub" in
+    ls|list)   shift; cmd_share_ls "$@"; return ;;
+    revoke|rm) shift; cmd_share_revoke "$@"; return ;;
+  esac
+  cmd_share_create "$@"
+}
+
+cmd_share_create() {
+  local project="" epic="" ttl=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --epic)    epic=$2; shift 2 ;;
+      --ttl)     ttl=$2; shift 2 ;;
+      -*) die "share: unknown flag $1" ;;
+      *) die "share: unexpected argument '$1' (usage: takomo share --project P | --epic ID [--ttl 24h])" ;;
+    esac
+  done
+  [ -n "$project" ] && [ -n "$epic" ] && die "share: give either --project or --epic, not both"
+  local kind="" ref=""
+  if [ -n "$epic" ]; then
+    kind="epic"; ref="$epic"
+  else
+    project=$(resolve_project "$project")
+    kind="project"; ref="$project"
+  fi
+  local data
+  data=$(TS_KIND="$kind" TS_REF="$ref" TS_TTL="$ttl" python3 <<'PY'
+import json, os
+d = {"kind": os.environ["TS_KIND"], "ref": os.environ["TS_REF"]}
+ttl = os.environ.get("TS_TTL", "").strip()
+if ttl:
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    if ttl[-1] in units and ttl[:-1].isdigit():
+        d["ttl_seconds"] = int(ttl[:-1]) * units[ttl[-1]]
+    elif ttl.isdigit():
+        d["ttl_seconds"] = int(ttl)
+    else:
+        raise SystemExit(f"invalid --ttl '{ttl}': use 24h, 7d, 90m, 3600s, or a plain second count")
+print(json.dumps(d))
+PY
+)
+  api POST /v1/shares "$data" >/dev/null
+  # The store returns a fragment path (/board#s=<token>); build the full URL from
+  # the configured base (host root, with any trailing /v1 already stripped).
+  TS_BASE="$TAKOMO_URL" python3 - "$REQ_OUT" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+base = os.environ["TS_BASE"].rstrip("/")
+url = base + d.get("path", "")
+print(f"share created for {d.get('kind','')} {d.get('ref','')}")
+print(f"  id:      {d.get('id','')}")
+print(f"  expires: {d.get('expires_at','')}")
+print()
+print(url)
+print()
+print("Anyone with this link can view the scoped board (read-only) until it expires.")
+PY
+}
+
+cmd_share_ls() {
+  api GET /v1/shares >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+if not rows:
+    print("(no shares)"); sys.exit()
+print(f"{'ID':<20} {'KIND':<8} {'REF':<16} {'PROJECT':<12} {'REVOKED':<8} EXPIRES")
+for r in rows:
+    print(f"{r.get('id',''):<20} {r.get('kind',''):<8} {r.get('ref',''):<16} "
+          f"{r.get('project',''):<12} {('yes' if r.get('revoked_at') else 'no'):<8} {r.get('expires_at','')}")
+PY
+}
+
+cmd_share_revoke() {
+  local id=${1:-}; [ -n "$id" ] || die "share revoke: ID is required"
+  api DELETE "/v1/shares/$(urlenc "$id")" >/dev/null
+  echo "revoked $id"
+}
+
+cmd_watch() {
+  local project="" since=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --since)   since=$2; shift 2 ;;
+      -*) die "watch: unknown flag $1" ;;
+      *) die "watch: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -z "$project" ] && project=${TAKOMO_PROJECT:-}
+  local pq=""
+  [ -n "$project" ] && pq="&project=$(urlenc "$project")"
+
+  local cursor
+  if [ -n "$since" ]; then
+    cursor=$since
+  else
+    # Fast-forward to the current tail so we print only new events.
+    cursor=0
+    while :; do
+      api GET "/v1/events?since=$cursor&wait=0&limit=1000$pq" >/dev/null
+      local nc; nc=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("cursor",0))' "$REQ_OUT")
+      local cnt; cnt=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("events",[])))' "$REQ_OUT")
+      cursor=$nc
+      [ "$cnt" -gt 0 ] || break
+    done
+  fi
+  echo "watching events from cursor $cursor${project:+ (project $project)} — Ctrl-C to stop" >&2
+
+  while :; do
+    api GET "/v1/events?since=$cursor&wait=25&limit=500$pq" >/dev/null
+    cursor=$(python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d.get("events", []):
+    payload = e.get("payload") or {}
+    bits = []
+    for k in ("to", "from", "changed", "fence", "reason", "title"):
+        if k in payload and payload[k] not in (None, "", []):
+            bits.append(f"{k}={payload[k]}")
+    extra = ("  " + " ".join(bits)) if bits else ""
+    tk = e.get("ticket") or "-"
+    print(f"[{e.get('at','')}] #{e.get('seq')}  {e.get('kind',''):<14} {tk:<14} @{e.get('actor','')}{extra}",
+          file=sys.stderr)
+print(d.get("cursor", 0))
+PY
+)
+  done
+}
+
+# --- import ------------------------------------------------------------------
+# Look up a new (takomo) id for an origin id in the id-map file.
+import_map_get() { awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$2"; }
+
+# Drive a freshly created ticket ($1) to its target state via a precomputed
+# move list ($2, JSON array of {to, claim}). Best-effort: echoes "ok" or
+# "fail:<why>". Claims when an edge requires it, echoes the saved fence, and
+# releases any lease left held on a non-terminal target.
+import_reach_state() {
+  local nid=$1 moves=$2
+  local n; n=$(TS_M="$moves" python3 -c 'import json,os; print(len(json.loads(os.environ["TS_M"])))')
+  local holding="" i=0
+  while [ "$i" -lt "$n" ]; do
+    local to claim
+    to=$(TS_M="$moves" TS_I="$i" python3 -c 'import json,os; print(json.loads(os.environ["TS_M"])[int(os.environ["TS_I"])]["to"])')
+    claim=$(TS_M="$moves" TS_I="$i" python3 -c 'import json,os; print("1" if json.loads(os.environ["TS_M"])[int(os.environ["TS_I"])]["claim"] else "0")')
+    if [ "$claim" = "1" ] && [ -z "$holding" ]; then
+      local code; code=$(api_try POST "/v1/tickets/$(urlenc "$nid")/claim" '{}')
+      [ "$code" = "200" ] || { echo "fail:claim($code)"; return 0; }
+      holding=$(save_fence_from_response "$nid")
+    fi
+    local fence data code
+    fence=$(fence_load "$nid")
+    data=$(TS_TO="$to" TS_F="$fence" python3 -c 'import json,os; d={"to":os.environ["TS_TO"]};
+f=os.environ.get("TS_F","");
+d["fence"]=int(f) if f else None;
+print(json.dumps({k:v for k,v in d.items() if v is not None}))')
+    code=$(api_try POST "/v1/tickets/$(urlenc "$nid")/transition" "$data")
+    [ "$code" = "200" ] || { echo "fail:->$to($code)"; return 0; }
+    local hasclaim; hasclaim=$(python3 -c 'import json,sys; print(1 if json.load(open(sys.argv[1])).get("claim") else 0)' "$REQ_OUT")
+    if [ "$hasclaim" = "0" ]; then fence_clear "$nid"; holding=""; fi
+    i=$((i + 1))
+  done
+  if [ -n "$holding" ] && [ -n "$(fence_load "$nid")" ]; then
+    local fence; fence=$(fence_load "$nid")
+    api_try POST "/v1/tickets/$(urlenc "$nid")/release" \
+      "$(TS_F="$fence" python3 -c 'import json,os; print(json.dumps({"fence":int(os.environ["TS_F"]),"reason":"import: state applied"}))')" >/dev/null
+    fence_clear "$nid"
+  fi
+  echo "ok"
+}
+
+cmd_import() {
+  local source="" path="" project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from)    source=$2; shift 2 ;;
+      --project) project=$2; shift 2 ;;
+      -*) die "import: unknown flag $1" ;;
+      *) path=$1; shift ;;
+    esac
+  done
+  [ -n "$source" ] || die "import: --from takomo|beads|beans is required"
+  [ -n "$path" ]   || die "import: PATH (a file, or a directory for beans) is required"
+  case "$source" in
+    takomo|beads|beans) ;;
+    *) die "import: --from must be one of: takomo, beads, beans" ;;
+  esac
+  [ -e "$path" ] || die "import: no such file or directory: $path"
+  project=$(resolve_project "$project")
+
+  # The target workflow (state map + reach planning) and this token's scopes
+  # (so planning prefers moves we can actually make) drive the mapping.
+  api GET "/v1/projects/$(urlenc "$project")/workflow" >/dev/null
+  local wf_file; wf_file=$(mktemp); cp "$REQ_OUT" "$wf_file"
+  api GET /v1/whoami >/dev/null
+  local myscopes; myscopes=$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1])).get("scopes",[])))' "$REQ_OUT")
+
+  # Normalize the source + plan each item (create body, relations, state moves).
+  local planner; planner=$(import_planner_path)
+  local planned; planned=$(mktemp)
+  if ! TS_SOURCE="$source" TS_PATH="$path" TS_PROJECT="$project" TS_WF="$wf_file" TS_SCOPES="$myscopes" \
+       python3 "$planner" > "$planned"; then
+    rm -f "$wf_file" "$planned" "$planner"
+    die "import: could not parse/plan the source data (a beans import needs PyYAML: pip install pyyaml)"
+  fi
+  local total; total=$(grep -c . "$planned" || true)
+  [ "${total:-0}" -gt 0 ] || { echo "import: nothing to import (0 items parsed)"; rm -f "$wf_file" "$planned"; return; }
+  echo "Importing ${total} item(s) from $source into project '$project'..."
+
+  # Pass A — create (idempotent on origin id: safe to re-run).
+  local map fresh; map=$(mktemp); fresh=$(mktemp)
+  local created=0 skipped=0 failed=0
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    local origin body idem code
+    origin=$(TS_I="$item" python3 -c 'import json,os; print(json.loads(os.environ["TS_I"])["origin_id"])')
+    body=$(TS_I="$item" python3 -c 'import json,os; print(json.dumps(json.loads(os.environ["TS_I"])["create_body"]))')
+    idem=$(printf '%s' "$origin" | cut -c1-128)
+    code=$(api_try POST /v1/tickets "$body" "Idempotency-Key: $idem")
+    case "$code" in
+      201) created=$((created + 1)) ;;
+      200) skipped=$((skipped + 1)) ;;
+      *) failed=$((failed + 1)); echo "  ! create failed for origin '$origin' (HTTP $code)" >&2; print_api_error; continue ;;
+    esac
+    local nid; nid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$REQ_OUT")
+    printf '%s\t%s\n' "$origin" "$nid" >> "$map"
+    [ "$code" = "201" ] && printf '%s\n' "$origin" >> "$fresh"
+  done < "$planned"
+
+  # Pass B/C/D — relations, comments, state moves for FRESHLY created tickets
+  # only (replays are already wired; re-driving them would double comments).
+  local rel=0 parents=0 coms=0 states_ok=0 states_skipped=0
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    local origin; origin=$(TS_I="$item" python3 -c 'import json,os; print(json.loads(os.environ["TS_I"])["origin_id"])')
+    grep -qxF "$origin" "$fresh" || continue
+    local nid; nid=$(import_map_get "$origin" "$map"); [ -n "$nid" ] || continue
+
+    # parent (map origin -> new id).
+    local porigin; porigin=$(TS_I="$item" python3 -c 'import json,os; p=json.loads(os.environ["TS_I"]).get("parent"); print(p or "")')
+    if [ -n "$porigin" ]; then
+      local pnew; pnew=$(import_map_get "$porigin" "$map")
+      if [ -n "$pnew" ]; then
+        [ "$(api_try PATCH "/v1/tickets/$(urlenc "$nid")" "$(TS_P="$pnew" python3 -c 'import json,os; print(json.dumps({"parent":os.environ["TS_P"]}))')")" = "200" ] && parents=$((parents + 1))
+      fi
+    fi
+    # blocked_by edges.
+    local bbs; bbs=$(TS_I="$item" python3 -c 'import json,os; print("\n".join(json.loads(os.environ["TS_I"]).get("blocked_by") or []))')
+    local bb
+    while IFS= read -r bb; do
+      [ -n "$bb" ] || continue
+      local bnew; bnew=$(import_map_get "$bb" "$map"); [ -n "$bnew" ] || continue
+      if [ "$(api_try POST "/v1/tickets/$(urlenc "$nid")/deps" "$(TS_B="$bnew" python3 -c 'import json,os; print(json.dumps({"blocked_by":os.environ["TS_B"]}))')")" = "201" ]; then
+        rel=$((rel + 1))
+      fi
+    done <<< "$bbs"
+    # comments (fresh only, since comments have no idempotency).
+    local ncom; ncom=$(TS_I="$item" python3 -c 'import json,os; print(len(json.loads(os.environ["TS_I"]).get("comments") or []))')
+    local ci=0
+    while [ "$ci" -lt "$ncom" ]; do
+      local ctext; ctext=$(TS_I="$item" TS_C="$ci" python3 -c 'import json,os; print(json.loads(os.environ["TS_I"])["comments"][int(os.environ["TS_C"])].get("body",""))')
+      if [ -n "$ctext" ]; then
+        api_try POST "/v1/tickets/$(urlenc "$nid")/comments" "$(TS_T="$ctext" python3 -c 'import json,os; print(json.dumps({"body":os.environ["TS_T"]}))')" >/dev/null && coms=$((coms + 1))
+      fi
+      ci=$((ci + 1))
+    done
+    # state moves.
+    local moves; moves=$(TS_I="$item" python3 -c 'import json,os; m=json.loads(os.environ["TS_I"]).get("moves"); print(json.dumps(m) if m else "")')
+    if [ -n "$moves" ] && [ "$moves" != "[]" ] && [ "$moves" != "null" ]; then
+      local r; r=$(import_reach_state "$nid" "$moves")
+      if [ "$r" = "ok" ]; then states_ok=$((states_ok + 1)); else states_skipped=$((states_skipped + 1)); fi
+    fi
+  done < "$planned"
+
+  rm -f "$wf_file" "$planned" "$map" "$fresh" "$planner"
+  echo "Done: $created created, $skipped already-present (replayed), $failed failed."
+  echo "  relations: $parents parent link(s), $rel dep edge(s) wired; comments: $coms added."
+  echo "  state applied to $states_ok ticket(s); $states_skipped left in the initial state (gated/blocked — origin status preserved in metadata.import.origin_status)."
+}
+
+# Write the import planner python to a temp file and echo its path. Kept as a
+# heredoc (not inline) because it is large; the caller removes the file.
+import_planner_path() {
+  local f; f=$(mktemp)
+  cat > "$f" <<'PY'
+import collections, glob, heapq, json, os, sys
+
+source = os.environ["TS_SOURCE"]
+path = os.environ["TS_PATH"]
+project = os.environ["TS_PROJECT"]
+wf = json.load(open(os.environ["TS_WF"]))
+my_scopes = set(s for s in os.environ.get("TS_SCOPES", "").split(",") if s)
+
+states = {s["id"]: s for s in wf.get("states", [])}
+initial = wf.get("initial")
+transitions = wf.get("transitions", [])
+by_cat = {}
+for sid, s in states.items():
+    by_cat.setdefault(s.get("category"), []).append(sid)
+
+VALID_TYPES = {"epic", "task", "bug", "spike"}
+VALID_PRI = {"critical", "high", "normal", "low"}
+TYPE_MAP = {"epic": "epic", "milestone": "epic", "task": "task", "feature": "task",
+            "story": "task", "chore": "task", "bug": "bug", "defect": "bug",
+            "spike": "spike", "research": "spike"}
+PRI_MAP = {"critical": "critical", "urgent": "critical", "high": "high", "p1": "high",
+           "normal": "normal", "medium": "normal", "p2": "normal", "low": "low",
+           "p3": "low", "deferred": "low"}
+
+
+def map_type(t):
+    t = (t or "").strip().lower()
+    return TYPE_MAP.get(t, t if t in VALID_TYPES else "task")
+
+
+def map_priority(p):
+    p = ("" if p is None else str(p)).strip().lower()
+    return PRI_MAP.get(p, p if p in VALID_PRI else "normal")
+
+
+def desired_category(status):
+    s = (status or "").strip().lower().replace("_", "-")
+    beads = {"open": "todo", "in-progress": "in_progress", "closed": "done",
+             "done": "done", "deferred": "blocked", "blocked": "blocked",
+             "cancelled": "cancelled", "canceled": "cancelled"}
+    beans = {"todo": "todo", "draft": "todo", "in-progress": "in_progress",
+             "completed": "done", "done": "done", "scrapped": "cancelled",
+             "blocked": "blocked"}
+    if source == "beads":
+        return beads.get(s, "todo")
+    if source == "beans":
+        return beans.get(s, "todo")
+    return None
+
+
+def pick_target_state(status, category_hint):
+    # takomo round-trip: an exact state id wins.
+    if source == "takomo" and status in states:
+        return status
+    cat = category_hint if source == "takomo" else desired_category(status)
+    if not cat:
+        cat = category_hint or states.get(initial, {}).get("category")
+    cands = by_cat.get(cat, [])
+    if not cands:
+        return initial
+    if initial in cands:
+        return initial
+    if cat in ("done", "cancelled"):
+        term = [c for c in cands if states[c].get("terminal")]
+        if term:
+            return term[0]
+    claimable = [c for c in cands if states[c].get("claimable")]
+    return (claimable or cands)[0]
+
+
+def edge_reqs(tr):
+    reqs = tr.get("requires", []) or []
+    claim = "claim" in reqs
+    scopes = [r.split("scope:", 1)[1] for r in reqs if r.startswith("scope:")]
+    return claim, scopes
+
+
+def plan_moves(target):
+    if target == initial or not target:
+        return []
+    adj = collections.defaultdict(list)
+    for tr in transitions:
+        adj[tr["from"]].append(tr)
+    best = {initial: (0, 0)}
+    prev = {}
+    pq = [(0, 0, initial)]
+    while pq:
+        unmet, length, node = heapq.heappop(pq)
+        if (unmet, length) > best.get(node, (1e9, 1e9)):
+            continue
+        for tr in adj.get(node, []):
+            _, scopes = edge_reqs(tr)
+            u = unmet + sum(1 for sc in scopes if sc not in my_scopes)
+            l = length + 1
+            nb = tr["to"]
+            if (u, l) < best.get(nb, (1e9, 1e9)):
+                best[nb] = (u, l)
+                prev[nb] = (node, tr)
+                heapq.heappush(pq, (u, l, nb))
+    if target not in prev:
+        return None
+    out = []
+    cur = target
+    while cur != initial:
+        node, tr = prev[cur]
+        claim, _ = edge_reqs(tr)
+        out.append({"to": tr["to"], "claim": claim})
+        cur = node
+    out.reverse()
+    return out
+
+
+def clean_labels(raw):
+    out = []
+    for l in raw or []:
+        l = str(l).strip()
+        if l and len(l) <= 100 and l not in out:
+            out.append(l)
+    return out
+
+
+def parse_frontmatter(text):
+    # returns (dict, body). Requires a leading '---' YAML block.
+    import yaml
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("\n---", 1)
+    # handle both '---\n...\n---\n' forms
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end = i
+                break
+        if end is not None:
+            fm = yaml.safe_load("\n".join(lines[1:end])) or {}
+            body = "\n".join(lines[end + 1:]).lstrip("\n")
+            return (fm if isinstance(fm, dict) else {}), body
+    return {}, text
+
+
+items = []
+if source == "takomo":
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        items.append({
+            "origin_id": d.get("id"),
+            "title": d.get("title", ""),
+            "body": d.get("body", ""),
+            "type": d.get("type", "task"),
+            "status": d.get("state", ""),
+            "state_category": d.get("state_category"),
+            "priority": d.get("priority", "normal"),
+            "labels": d.get("labels", []) or [],
+            "parent": d.get("parent"),
+            "blocked_by": d.get("blocked_by", []) or [],
+            "created_at": d.get("created_at"),
+            "updated_at": d.get("updated_at"),
+            "extra_metadata": d.get("metadata", {}) or {},
+            "comments": [{"body": c.get("body", "")} for c in (d.get("comments") or [])],
+        })
+elif source == "beads":
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        bb = d.get("blocked_by")
+        if bb is None:
+            bb = []
+            for dep in (d.get("dependencies") or []):
+                if isinstance(dep, dict):
+                    if dep.get("type") in (None, "blocks", "blocked-by", "blocked_by"):
+                        bb.append(dep.get("id") or dep.get("target") or dep.get("to"))
+                else:
+                    bb.append(dep)
+        items.append({
+            "origin_id": d.get("id") or d.get("issue_id"),
+            "title": d.get("title") or d.get("summary") or "",
+            "body": d.get("description") or d.get("body") or "",
+            "type": d.get("type") or d.get("issue_type") or "task",
+            "status": d.get("status", ""),
+            "priority": d.get("priority", "normal"),
+            "labels": d.get("labels") or d.get("tags") or [],
+            "parent": d.get("parent") or d.get("parent_id") or d.get("epic"),
+            "blocked_by": [x for x in bb if x],
+            "created_at": d.get("created_at") or d.get("created"),
+            "updated_at": d.get("updated_at") or d.get("updated"),
+            "extra_metadata": {},
+            "comments": [{"body": c.get("body") or c.get("text", "")} for c in (d.get("comments") or []) if isinstance(c, dict)],
+        })
+elif source == "beans":
+    root = path
+    if os.path.isdir(os.path.join(path, ".beans")):
+        root = os.path.join(path, ".beans")
+    files = sorted(glob.glob(os.path.join(root, "*.md")) + glob.glob(os.path.join(root, "archive", "*.md")))
+    for fp in files:
+        text = open(fp).read()
+        fm, body = parse_frontmatter(text)
+        base = os.path.basename(fp)
+        oid = fm.get("id") or base.split("--", 1)[0].rsplit(".md", 1)[0]
+        items.append({
+            "origin_id": oid,
+            "title": fm.get("title", "") or "",
+            "body": body or "",
+            "type": fm.get("type", "task"),
+            "status": fm.get("status", ""),
+            "priority": fm.get("priority", "normal"),
+            "labels": fm.get("tags") or [],
+            "parent": fm.get("parent"),
+            "blocked_by": fm.get("blocked_by") or [],
+            "created_at": fm.get("created_at"),
+            "updated_at": fm.get("updated_at"),
+            "extra_metadata": {},
+            "comments": [],
+        })
+
+for it in items:
+    tgt = pick_target_state(it.get("status"), it.get("state_category"))
+    moves = plan_moves(tgt)
+    md = {
+        "import.source": source,
+        "import.origin_id": it.get("origin_id"),
+        "import.origin_status": it.get("status") or "",
+    }
+    for k in ("created_at", "updated_at"):
+        if it.get(k):
+            md[f"import.{k}"] = it[k]
+    if it.get("parent"):
+        md["import.origin_parent"] = it["parent"]
+    if it.get("blocked_by"):
+        md["import.origin_blocked_by"] = it["blocked_by"]
+    for k, v in (it.get("extra_metadata") or {}).items():
+        md.setdefault(k, v)
+    title = (it.get("title") or "").strip() or "(untitled import)"
+    create_body = {
+        "project": project,
+        "title": title[:300],
+        "type": map_type(it.get("type")),
+        "priority": map_priority(it.get("priority")),
+        "metadata": md,
+    }
+    if it.get("body"):
+        create_body["body"] = it["body"]
+    labels = clean_labels(it.get("labels"))
+    if labels:
+        create_body["labels"] = labels
+    print(json.dumps({
+        "origin_id": it.get("origin_id"),
+        "create_body": create_body,
+        "parent": it.get("parent"),
+        "blocked_by": [b for b in (it.get("blocked_by") or []) if b],
+        "target_state": tgt,
+        "moves": moves,
+        "comments": it.get("comments") or [],
+    }))
+PY
+  echo "$f"
+}
+
+cmd_help() {
+  cat <<'EOF'
+takomo — command-line client for the takomo
+
+Environment (or run `takomo init` to write repo-local .takomo/ config):
+  TAKOMO_URL      /v1 base, e.g. https://host/v1        (required)
+  TAKOMO_TOKEN    bearer token                          (required)
+  TAKOMO_PROJECT  default project when --project omitted (optional)
+  TAKOMO_ACTOR    your actor name, for `ls --mine`       (optional)
+
+Onboarding & identity:
+  takomo init [PROJECT] [--workflow simple|FILE] [--url URL] [--actor NAME]
+         create/prepare a project for THIS git repo and write .takomo/ config
+  takomo whoami              show this token's actor, scopes, and projects
+
+Token administration (admin scope):
+  takomo token create --actor NAME [--scopes read,write] [--projects P] [--expires 90d]
+  takomo token ls
+  takomo token revoke ID
+
+Project administration (admin scope):
+  takomo project rm ID [--force]
+         cascade-delete a project and ALL its tickets, comments, deps, and
+         events. Refused if a ticket has an active claim unless --force is given.
+         Tokens scoped to the project are left as-is (revoke with `takomo token revoke`).
+
+Finding & creating work:
+  takomo new [--project P] [--type task|bug|epic|spike] [--priority critical|high|normal|low]
+         [--parent ID] [--label L]... [--body TEXT] TITLE
+  takomo ls  [--project P] [--state S] [--label L]... [--mine] [--archived] [-q TEXT]
+  takomo ready [--project P]
+  takomo roadmap [--project P]   epic progress rollup: a bar + child counts per epic
+  takomo show ID
+
+Claiming & progressing (the fence is remembered locally after a claim):
+  takomo claim ID            claim a specific ready ticket
+  takomo next [--project P] [--wait SECS]   atomically claim the next ready ticket
+  takomo start ID            claim if needed, then move to the workflow's in-progress state
+  takomo done ID             move to the workflow's done state
+  takomo block ID            move to the workflow's blocked state
+  takomo cancel ID           move to the workflow's cancelled state
+  takomo move ID STATE       move to an arbitrary workflow state
+  takomo release ID [REASON] return the ticket to the queue
+
+Annotating:
+  takomo comment ID TEXT
+  takomo link ID [--pr URL] [--branch B] [--env URL] [--run URL]
+  takomo dep ID --blocked-by OTHER
+  takomo deps ID [--blocks] [--tree]   show what blocks ID (or, with --blocks, what
+                                   ID blocks); --tree walks the chain transitively
+
+Shareable read-only web views (write scope):
+  takomo share --project P [--ttl 24h]   mint a read-only, expiring link to a whole
+                                     project's board; prints the full URL
+  takomo share --epic ID [--ttl 24h]     mint a link to a ticket + its full subtree
+  takomo share ls                        list shares (id, kind, ref, expiry)
+  takomo share revoke ID                 revoke a share immediately
+         --ttl accepts 24h, 7d, 90m, 3600s (default 24h, max 30d). The token
+         rides in the URL fragment (#s=...); anyone with the link can view until
+         it expires.
+
+Archiving (hides tickets from default list/ready/board/metrics views):
+  takomo archive ID                    archive one ticket
+  takomo archive --state done|cancelled [--project P]   bulk-archive terminal tickets
+  takomo unarchive ID                  return a ticket to the default views
+  takomo ls --archived                 list archived tickets
+
+Portability & observability:
+  takomo export [--project P] [--out FILE]   JSONL of tickets + comments + deps
+  takomo import --from takomo|beads|beans PATH [--project P]
+         load data in (Idempotency-Key = origin id, so re-import is safe);
+         takomo FILE round-trips `takomo export`; beans PATH is a repo/.beans dir
+  takomo watch  [--project P] [--since N]     tail the event log, printing new events
+  takomo metrics                              ticket/claim/event counts for the store
+
+Any --fence is auto-included from the local claim; transitions print the
+allowed moves and a remedy when the workflow rejects them.
+EOF
+}
+
+main() {
+  local cmd=${1:-help}
+  if [ $# -gt 0 ]; then shift; fi
+  case "$cmd" in
+    help|-h|--help) cmd_help; return ;;
+    init)    cmd_init "$@"; return ;;
+  esac
+  require_env
+  case "$cmd" in
+    whoami)  cmd_whoami "$@" ;;
+    token)   cmd_token "$@" ;;
+    project) cmd_project "$@" ;;
+    new)     cmd_new "$@" ;;
+    ls|list) cmd_ls "$@" ;;
+    ready)   cmd_ready "$@" ;;
+    roadmap) cmd_roadmap "$@" ;;
+    show)    cmd_show "$@" ;;
+    claim)   cmd_claim "$@" ;;
+    next)    cmd_next "$@" ;;
+    start)   cmd_start "$@" ;;
+    done)    cmd_done "$@" ;;
+    block)   cmd_block "$@" ;;
+    cancel)  cmd_cancel "$@" ;;
+    move)    cmd_move "$@" ;;
+    comment) cmd_comment "$@" ;;
+    link)    cmd_link "$@" ;;
+    dep)     cmd_dep "$@" ;;
+    deps)    cmd_deps "$@" ;;
+    archive) cmd_archive "$@" ;;
+    unarchive) cmd_unarchive "$@" ;;
+    release) cmd_release "$@" ;;
+    share)   cmd_share "$@" ;;
+    export)  cmd_export "$@" ;;
+    import)  cmd_import "$@" ;;
+    watch)   cmd_watch "$@" ;;
+    metrics) cmd_metrics "$@" ;;
+    *) die "unknown command '$cmd' (try: takomo help)" ;;
+  esac
+}
+
+main "$@"

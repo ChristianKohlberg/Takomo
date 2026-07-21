@@ -1,0 +1,60 @@
+# simple — the plain-tracker workflow.
+#
+# A no-ceremony state machine for using Takomo as an ordinary task
+# tracker (a drop-in for beads/beans): tickets flow todo -> in_progress -> done,
+# with blocked and cancelled as the escape hatches. There are NO scope:human
+# approval gates — claiming a ticket is the only requirement to move it, so a
+# single person or a fleet of agents can just work the queue.
+#
+# This is the default workflow `takomo init` applies to a new project.
+#
+# Apply it to a project (the endpoint takes JSON; convert this YAML or send the
+# equivalent JSON body):
+#   PUT /v1/projects/<id>/workflow   (admin scope)
+#
+# States:
+#   draft        parked/unrefined; not yet claimable
+#   todo         ready to be picked up  (claimable — enters the ready queue)
+#   in_progress  actively being worked
+#   blocked      stuck on something external
+#   done         finished              (terminal)
+#   cancelled    dropped               (terminal)
+name: simple
+initial: todo
+states:
+  - id: draft
+    category: todo
+    claimable: false
+    terminal: false
+  - id: todo
+    category: todo
+    claimable: true
+    terminal: false
+  - id: in_progress
+    category: in_progress
+    claimable: false
+    terminal: false
+  - id: blocked
+    category: blocked
+    claimable: false
+    terminal: false
+  - id: done
+    category: done
+    claimable: false
+    terminal: true
+  - id: cancelled
+    category: cancelled
+    claimable: false
+    terminal: true
+transitions:
+  - { from: draft,       to: todo }
+  - { from: draft,       to: cancelled }
+  - { from: todo,        to: in_progress, requires: [claim] }
+  - { from: todo,        to: cancelled }
+  - { from: in_progress, to: done,        requires: [claim] }
+  - { from: in_progress, to: blocked }
+  - { from: in_progress, to: todo }
+  - { from: in_progress, to: cancelled }
+  - { from: blocked,     to: in_progress, requires: [claim] }
+  - { from: blocked,     to: todo }
+  - { from: blocked,     to: cancelled }

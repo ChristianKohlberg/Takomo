@@ -1,0 +1,18 @@
+{
+  "name": "takomo",
+  "version": "0.1.0",
+  "description": "Use the central Takomo as the single source of truth for work items instead of TodoWrite. Bundles the takomo skill and a remote MCP server for the hosted store, so agents can find, claim, and progress tickets through an enforced workflow over HTTP.",
+  "author": {
+    "name": "ChristianKohlberg"
+  },
+  "homepage": "https://github.com/ChristianKohlberg/Takomo",
+  "repository": "https://github.com/ChristianKohlberg/Takomo",
+  "license": "Apache-2.0",
+  "keywords": [
+    "task-tracker",
+    "agents",
+    "mcp",
+    "workflow",
+    "issue-tracker"
+  ]
+}

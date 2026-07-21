@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.handrail/adapters/brief.sh\"" }] }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.handrail/adapters/delta.sh\"" }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/.handrail/adapters/check.sh\"" }] }
+    ]
+  }
+}

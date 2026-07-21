@@ -1,0 +1,11 @@
+id: openapi-current
+# Instance of cookbook/patterns/process-norm. Waivable: the OpenAPI spec is the
+# published HTTP contract, so route changes should update it — but internal-only
+# handler edits legitimately don't, so record the reason instead of hard-failing.
+expectation: When the HTTP surface changes, spec/openapi.yaml is updated to match — the spec is the contract.
+desc: Flags touched src/api/* or src/server.rs route wiring shipping without a spec/openapi.yaml change.
+kind: detector
+semantics: waivable
+cmd: HR_SURFACE='src/api' HR_RECORD='spec/openapi.yaml' bash .handrail/openapi-current.sh
+paths: [src/api, src/server.rs]
+order: 40

@@ -1,0 +1,1343 @@
+openapi: 3.1.0
+info:
+  title: Takomo
+  version: "1.0.0-draft1"
+  description: |
+    Central task store for agent fleets. One authority, bearer-token auth,
+    hierarchical tickets, enforced per-project workflows, atomic claim/lease,
+    append-only event log.
+
+    Design rules this contract encodes:
+    - Most writes are commutative (comments, field sets, metadata merge); CAS
+      (`If-Match` on `version`) is only needed for whole-body replacement.
+    - Every rejection teaches: error bodies state what is allowed and how to
+      proceed (`allowed_transitions`, `remedy`).
+    - Claiming is one atomic operation (`POST /ready/claim`), never read-then-claim.
+    - The event log (`global_seq`) is the only push/poll surface; all delivery
+      mechanisms (SSE, hooks, channels) layer on the `since` cursor.
+    - `/v1` is frozen: additive evolution only; experiments live in `metadata`.
+
+servers:
+  - url: /v1
+
+security:
+  - bearer: []
+
+tags:
+  - { name: tickets }
+  - { name: workflow }
+  - { name: claims }
+  - { name: events }
+  - { name: admin }
+  - { name: identity }
+  - { name: shares }
+
+paths:
+  /whoami:
+    get:
+      tags: [identity]
+      summary: Who am I — echo the calling token's actor, scopes, and projects
+      description: |
+        Any valid token may call this; it removes the need for a client-side
+        TAKOMO_ACTOR env var by letting the caller ask the store for its own
+        identity (used by `takomo whoami` and by `ls --mine`-style filters).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WhoAmI" }
+
+  /tokens:
+    get:
+      tags: [identity]
+      summary: List token metadata (admin scope)
+      description: |
+        Returns metadata only — never the plaintext token or its at-rest hash.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Token" } }
+        "403":
+          description: Token lacks the admin scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [identity]
+      summary: Mint a token over HTTP (admin scope)
+      description: |
+        Reuses the same store logic as the `takomo token create` CLI: the
+        plaintext is returned exactly ONCE in the response and only its SHA-256
+        is stored. This is a deliberate posture shift from auth.md's original
+        "minting requires shell access" stance — see auth.md for the rationale.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenCreate" }
+      responses:
+        "201":
+          description: Minted; plaintext shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenCreated" }
+        "403":
+          description: Token lacks the admin scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Invalid body (missing scopes, bad projects, etc.)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /tokens/{id}:
+    delete:
+      tags: [identity]
+      summary: Revoke a token by its public id (admin scope)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: token id, e.g. "tok_a8f2k1x9" }
+      responses:
+        "204": { description: Revoked }
+        "403":
+          description: Token lacks the admin scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects:
+    get:
+      tags: [admin]
+      summary: List projects
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Project" } }
+    post:
+      tags: [admin]
+      summary: Create a project (admin scope)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+
+  /projects/{project}:
+    delete:
+      tags: [admin]
+      summary: Delete a project and everything under it (admin scope)
+      description: |
+        Cascade-deletes the project together with ALL of its tickets, comments,
+        dependency edges, and events, in a single transaction. Dependency edges
+        that point INTO this project from another project's tickets are cleared
+        too. A store-level `project_deleted` audit event (with a null `project`,
+        so per-project event queries stay empty) records the deletion.
+
+        Refused with `409 project.active_claims` when any ticket still holds an
+        active (unexpired) claim — deleting under a live lease would yank work
+        out from under a running worker. Pass `?force=true` to delete anyway,
+        abandoning those leases.
+
+        Tokens scoped to this project are deliberately left as-is: once the
+        project is gone they simply stop resolving against it. Revoke them
+        separately with `DELETE /v1/tokens/{id}` if desired.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: delete even when tickets hold active claims (abandons those leases)
+      responses:
+        "204": { description: Deleted }
+        "403":
+          description: Token lacks the admin scope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: A ticket holds an active claim and force was not set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /projects/{project}/workflow:
+    get:
+      tags: [workflow]
+      summary: Get the project's workflow definition
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The active workflow (see workflow-format.md)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+    put:
+      tags: [workflow]
+      summary: Replace the project's workflow (admin scope; must remain valid for existing tickets)
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Workflow" }
+      responses:
+        "200": { description: Replaced }
+        "422":
+          description: Invalid workflow (unreachable states, tickets stranded)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /projects/{project}/roadmap:
+    get:
+      tags: [workflow]
+      summary: Epic progress rollup (read scope)
+      description: |
+        For each `epic` in the project, returns the epic plus a rollup over its
+        FULL descendant subtree (walked recursively via `parent`): ticket counts
+        by state and by category, the subtree `total`, a `done` count (states in
+        the `done` category), and a whole-number completion `percent`. The epic
+        itself is the container and is not counted in its own rollup. Counts
+        include archived descendants so historical completion is not understated.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { type: string }
+                  generated_at: { type: string, format: date-time }
+                  epics:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        state: { type: string }
+                        state_category: { type: string }
+                        priority: { type: string }
+                        total: { type: integer, description: descendants in the subtree }
+                        done: { type: integer, description: descendants in a done-category state }
+                        percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                        by_state: { type: object, additionalProperties: { type: integer } }
+                        by_category: { type: object, additionalProperties: { type: integer } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets:
+    post:
+      tags: [tickets]
+      summary: Create a ticket
+      description: |
+        `Idempotency-Key` is required for agent clients: retries with the same
+        key return the original ticket (200) instead of creating a twin (201).
+        The response includes `similar` — existing open tickets with matching
+        title keywords — so a client can notice a semantic duplicate.
+      parameters:
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 128 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TicketCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketCreated" }
+        "200":
+          description: Idempotent replay of a prior create
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketCreated" }
+        "422":
+          description: Validation failure (unknown project, bad parent, cycle)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [tickets]
+      summary: List/search tickets
+      parameters:
+        - { name: project, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string }, description: state id or category }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: label, in: query, schema: { type: string }, description: repeatable, AND semantics }
+        - { name: parent, in: query, schema: { type: string }, description: direct children of this id }
+        - { name: q, in: query, schema: { type: string }, description: full-text over title+body }
+        - { name: claimed_by, in: query, schema: { type: string } }
+        - { name: fields, in: query, schema: { type: string }, description: comma list for sparse responses }
+        - { name: include_archived, in: query, schema: { type: boolean, default: false }, description: include archived tickets alongside active ones }
+        - { name: archived, in: query, schema: { type: string, enum: [only, all, active] }, description: "only = archived only; all = both; active = default (non-archived)" }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+                  next_cursor: { type: [string, "null"] }
+
+  /tickets/{id}:
+    get:
+      tags: [tickets]
+      summary: Get a ticket
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: include, in: query, schema: { type: string }, description: "comma list: comments,children,deps,events" }
+      responses:
+        "200":
+          description: OK
+          headers:
+            ETag: { schema: { type: string }, description: current version, e.g. "7" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [tickets]
+      summary: Update fields (commutative; CAS only for body)
+      description: |
+        Field-level sets (`title`, `priority`, `labels`) and `metadata_merge`
+        (RFC 7386 merge-patch semantics, namespaced keys) are commutative and
+        never require `If-Match`. `links` MERGES per key: each key in the patch
+        is set (string value) or deleted (null value) while untouched keys
+        survive, so concurrent writers attaching different link keys never
+        clobber each other. Replacing `body` requires `If-Match: "<version>"`;
+        on mismatch the 409 carries the current version and body hash. State is
+        NOT patchable — use /transition.
+        While a ticket is claimed, non-holders may only patch `metadata_merge`
+        under their own namespace and add comments; other fields 409.
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: If-Match, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TicketPatch" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets/{id}/transition:
+    post:
+      tags: [workflow]
+      summary: Move a ticket to another state (the only way state changes)
+      description: |
+        Validated against the project workflow: transition must exist from the
+        current state, all `requires` must hold (active claim held by caller,
+        token scope, guards like no-open-children). Illegal transitions return
+        409 with `allowed_transitions` and a `remedy` — errors are written for
+        LLM readers.
+
+        Checks run in the order legality → scope → claim/fence, and the headline
+        `code`/`message` names the first real blocker in that order: an illegal
+        target is `transition.illegal`, a missing scope is `transition.scope`
+        (403), and only then are claim ownership and fence echoing checked. So a
+        lease holder attempting a human gate they lack the scope for sees the
+        403, not a fencing error.
+
+        Human approval is authoritative over a lease: a transition whose
+        `requires` includes `scope:human`, performed by a caller holding the
+        `human` scope, succeeds even while another actor holds the claim, and
+        auto-releases that claim as a side effect (emitting a `released` event
+        alongside `transitioned`). This override is scoped to human-required
+        transitions; ordinary `claim`-required transitions keep the holder lock.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, description: target state id }
+                reason: { type: string, maxLength: 2000 }
+                fence: { type: integer, description: required while ticket is claimed }
+      responses:
+        "200":
+          description: Transitioned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "409":
+          description: Illegal transition, missing claim, stale fence, or guard failure
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransitionError" }
+        "403":
+          description: Transition requires a scope this token lacks (e.g. human)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransitionError" }
+
+  /tickets/{id}/comments:
+    post:
+      tags: [tickets]
+      summary: Append a comment (always allowed, commutative)
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, maxLength: 65536 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+
+  /tickets/{id}/deps:
+    get:
+      tags: [tickets]
+      summary: The dependency graph around a ticket (reverse + transitive, cycle-safe)
+      description: |
+        Returns the dependency graph reachable from the ticket. `direction`
+        selects which edges to follow: `blocked_by` (default) walks to the
+        tickets that block this one; `blocks` walks the inverse (the tickets
+        this one blocks); `both` walks both. With `transitive=true` the walk
+        chases the whole chain to its ends; otherwise only the ticket's direct
+        neighbours are returned. The traversal is cycle-safe (a visited set
+        bounds it even when A blocks B blocks A). Edges are canonical
+        `{ticket, blocked_by}` pairs (ticket is blocked by blocked_by)
+        regardless of traversal direction, so `both` never duplicates an edge.
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: direction, in: query, schema: { type: string, enum: [blocked_by, blocks, both], default: blocked_by } }
+        - { name: transitive, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root: { type: string }
+                  direction: { type: string, enum: [blocked_by, blocks, both] }
+                  transitive: { type: boolean }
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        state: { type: string }
+                        state_category: { type: string }
+                        type: { type: string }
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ticket: { type: string, description: the blocked ticket }
+                        blocked_by: { type: string, description: the ticket that blocks it }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [tickets]
+      summary: Add a blocked_by edge (cycle-checked)
+      description: |
+        Dependency edges drive readiness and the no_open_blockers guard, so
+        they follow the claimed-ticket write rules: while the ticket is
+        claimed, only the holder may change deps and must echo the lease
+        `fence` (per the Lease schema's fence-on-every-mutating-call rule).
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [blocked_by]
+              properties:
+                blocked_by: { type: string, description: ticket id that blocks this one }
+                fence: { type: integer, description: required while ticket is claimed }
+      responses:
+        "201": { description: Added }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422":
+          description: Would create a cycle, or unknown id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [tickets]
+      summary: Remove a blocked_by edge
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: blocked_by, in: query, required: true, schema: { type: string } }
+        - { name: fence, in: query, required: false, schema: { type: integer }, description: required while ticket is claimed }
+      responses:
+        "204": { description: Removed }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /tickets/{id}/archive:
+    post:
+      tags: [tickets]
+      summary: Archive a ticket (hide from default views; write scope)
+      description: |
+        Sets `archived_at` so the ticket drops out of the default list, ready
+        queue, board, and metrics. The ready queue and metrics always exclude
+        archived tickets; `GET /v1/tickets` re-includes them with
+        `include_archived=true` or `archived=only`. Any state may be archived —
+        terminal done/cancelled is the typical case. Idempotent.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      responses:
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets/{id}/unarchive:
+    post:
+      tags: [tickets]
+      summary: Unarchive a ticket (return to default views; write scope)
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      responses:
+        "200":
+          description: Unarchived
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets/{id}/claim:
+    post:
+      tags: [claims]
+      summary: Claim this specific ticket (atomic)
+      description: |
+        Succeeds only if the ticket is in a claimable state, unclaimed (or the
+        caller already holds it — idempotent renewal), and unblocked. Returns
+        the lease with the fencing token all subsequent mutating calls must echo.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl_seconds: { type: integer, default: 900, maximum: 3600 }
+      responses:
+        "200":
+          description: Claimed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lease" }
+        "409":
+          description: Already claimed by another holder, blocked, or state not claimable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /tickets/{id}/heartbeat:
+    post:
+      tags: [claims]
+      summary: Renew the lease (harness/orchestrator responsibility, not the model's)
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fence]
+              properties:
+                fence: { type: integer }
+                ttl_seconds: { type: integer, default: 900, maximum: 3600 }
+      responses:
+        "200":
+          description: Renewed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lease" }
+        "409":
+          description: |
+            Fence mismatch. `fence.stale` (presented < current) means the lease
+            expired and was superseded by a later claim — stop writing.
+            `fence.invalid` (presented > current, a value never issued) is a
+            client bug — re-read the fence from your claim response.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /tickets/{id}/release:
+    post:
+      tags: [claims]
+      summary: Voluntarily release the claim
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fence]
+              properties:
+                fence: { type: integer }
+                reason: { type: string }
+      responses:
+        "204": { description: Released }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /ready:
+    get:
+      tags: [claims]
+      summary: Peek the ready queue (no side effects)
+      parameters:
+        - { name: project, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: label, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        "200":
+          description: Ready = claimable state, unclaimed, unblocked (directly or via ancestors), ordered by priority then age
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+
+  /ready/claim:
+    post:
+      tags: [claims]
+      summary: Atomically claim the next ready ticket (the worker primitive)
+      description: |
+        Long-poll: with `wait`, the request blocks until a matching ticket
+        becomes ready or the wait elapses (204). Exactly one caller receives a
+        given ticket. This is the intended worker loop: claim → work →
+        transition → repeat; the blocking call is the sleep.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project: { type: string }
+                type: { type: string }
+                labels: { type: array, items: { type: string } }
+                wait_seconds: { type: integer, default: 0, maximum: 120 }
+                ttl_seconds: { type: integer, default: 900 }
+      responses:
+        "200":
+          description: A ticket was claimed for you
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Ticket"
+                  - type: object
+                    properties:
+                      lease: { $ref: "#/components/schemas/Lease" }
+        "204": { description: No matching ready work within the wait window }
+
+  /events:
+    get:
+      tags: [events]
+      summary: Read the event log from a cursor (the only source of truth for "what changed")
+      parameters:
+        - { name: since, in: query, required: true, schema: { type: integer }, description: last seen global_seq; 0 for from-start }
+        - { name: project, in: query, schema: { type: string } }
+        - { name: ticket, in: query, schema: { type: string } }
+        - { name: kind, in: query, schema: { type: string }, description: comma list of event kinds }
+        - { name: wait, in: query, schema: { type: integer, default: 0, maximum: 120 }, description: long-poll seconds }
+        - { name: limit, in: query, schema: { type: integer, default: 200, maximum: 1000 } }
+      responses:
+        "200":
+          description: Events after `since`, oldest first; empty array on wait timeout
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+                  cursor: { type: integer, description: pass as next `since` }
+
+  /events/stream:
+    get:
+      tags: [events]
+      summary: SSE stream of events (doorbell; cursor remains the source of truth)
+      description: |
+        `text/event-stream`. Each event's `id:` is its global_seq, so
+        `Last-Event-ID` resumes seamlessly. Consumers must treat the stream as
+        lossy and reconcile via GET /events on reconnect.
+      parameters:
+        - { name: since, in: query, schema: { type: integer } }
+        - { name: project, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /export:
+    get:
+      tags: [admin]
+      summary: Export tickets (with comments and deps) as JSONL — read scope
+      description: |
+        Streams one JSON object per line (`application/x-ndjson`): each line is
+        a full ticket (its `blocked_by` array carries the dependency edges) plus
+        a `comments` array. `metadata` and `links` ride along verbatim, so the
+        export is a faithful snapshot. Round-trips through the `takomo import
+        --from takomo` CLI verb. Honors token project scoping; `project`
+        narrows to one project.
+      parameters:
+        - { name: project, in: query, schema: { type: string }, description: narrow to one project (else all readable projects) }
+      responses:
+        "200":
+          description: JSONL stream, one ticket object per line
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+
+  /metrics:
+    get:
+      tags: [admin]
+      summary: Store metrics — read scope, scoped to readable projects
+      description: |
+        Observability over the store: ticket counts by state and by category
+        per project, open (unexpired) claim counts, and the total event count.
+        A token scoped to a subset of projects only sees those projects.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generated_at: { type: string, format: date-time }
+                  totals:
+                    type: object
+                    properties:
+                      projects: { type: integer }
+                      tickets: { type: integer }
+                      open_claims: { type: integer }
+                      events: { type: integer }
+                  projects:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        total: { type: integer }
+                        open_claims: { type: integer }
+                        by_state: { type: object, additionalProperties: { type: integer } }
+                        by_category: { type: object, additionalProperties: { type: integer } }
+
+  /shares:
+    post:
+      tags: [shares]
+      summary: Mint a shareable, read-only, expiring web link — write scope
+      description: |
+        Creates a scoped, read-only, auto-expiring view of the board and mints a
+        distinct **share token** for it. The share token grants ONLY the
+        `/v1/shares/self*` read endpoints; it can neither read arbitrary
+        projects nor write anything. Two scopes:
+
+        - `kind: project` — every ticket in the referenced project.
+        - `kind: epic` — the referenced ticket plus its FULL recursive
+          descendant subtree (walked via `parent`). Any ticket can be a subtree
+          root; `epic` is just the common case. The stored/echoed `kind` for
+          this scope is `subtree`.
+
+        The plaintext `token` is returned ONCE (only its SHA-256 is stored). The
+        returned `path` (`/board#s=<token>`) carries the token in the URL
+        FRAGMENT so it stays out of server logs and Referer headers. Anyone with
+        the link can view the scoped board (read-only) until it expires.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ShareCreate" }
+      responses:
+        "201":
+          description: Created — `token` and `path` are shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShareCreated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Invalid kind or ttl
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [shares]
+      summary: List share metadata — read scope (admin sees all; else own shares)
+      description: |
+        Lists share metadata. An `admin`-scoped token sees every share; any
+        other reader sees only the shares it created. Never returns the token or
+        its hash.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Share" }
+
+  /shares/{id}:
+    delete:
+      tags: [shares]
+      summary: Revoke a share — write scope (creator or admin)
+      description: |
+        Revokes a share immediately; its token then returns `410 Gone` on every
+        `self*` endpoint. Allowed for the share's creator or any admin.
+        Idempotent — revoking an already-revoked share still returns 204.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: share id, e.g. "share_a8f2k1x9q7z3" }
+      responses:
+        "204": { description: Revoked }
+        "403":
+          description: Not the creator and not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /shares/self:
+    get:
+      tags: [shares]
+      summary: The share's own scope + workflow — share token
+      security:
+        - shareBearer: []
+      description: |
+        Authenticated by the SHARE token (not a normal `tk_` token). Returns the
+        share's scope and the project workflow, enough for the board to render
+        the columns. An expired or revoked share returns `410 Gone`.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShareSelf" }
+        "401":
+          description: Missing or unrecognized share token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /shares/self/tickets:
+    get:
+      tags: [shares]
+      summary: The tickets in the share's scope (read-only) — share token
+      security:
+        - shareBearer: []
+      description: |
+        Authenticated by the SHARE token. Returns the tickets in scope (project:
+        all in the project; epic/subtree: the root plus recursive descendants),
+        read-only. Archived tickets are excluded unless `include_archived=true`.
+      parameters:
+        - { name: include_archived, in: query, schema: { type: boolean, default: false }, description: include archived tickets }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+        "410":
+          description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /shares/self/tickets/{id}:
+    get:
+      tags: [shares]
+      summary: One in-scope ticket with comments + deps — share token
+      security:
+        - shareBearer: []
+      description: |
+        Authenticated by the SHARE token. Returns one ticket (with `comments`
+        and `deps`) for the board's detail panel. A ticket outside the share's
+        scope returns `404` — the share cannot reach it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ticket" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410":
+          description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /mcp:
+    servers:
+      - url: /
+    post:
+      tags: [identity]
+      summary: Hosted MCP endpoint (Model Context Protocol, streamable HTTP transport)
+      description: |
+        A Model Context Protocol server hosted in-process, so an agent can attach
+        with `claude mcp add --transport http https://<host>/mcp` instead of
+        running the Node stdio wrapper in `clients/mcp`. This is NOT part of the
+        frozen `/v1` REST surface — it lives at the root path and speaks
+        JSON-RPC 2.0 over the MCP Streamable HTTP transport (spec 2025-06-18).
+
+        Mode: stateless, `application/json` responses. Every POST is a
+        self-contained JSON-RPC message (`initialize`, `tools/list`,
+        `tools/call`, ...); no session id is issued and none is required, which
+        lets the endpoint scale horizontally with no session affinity.
+
+        Auth: the SAME bearer-token middleware as the REST API. Send
+        `Authorization: Bearer tk_...` on every request; missing, invalid, and
+        SHARE (`tks_`) tokens are rejected with 401 before any MCP frame is
+        processed. Each tool re-checks scope and project access exactly like the
+        equivalent REST endpoint, and calls the internal store directly (no HTTP
+        round-trip back to this process).
+
+        Tools (mirroring the Node MCP work loop): `takomo_new`,
+        `takomo_list`, `takomo_ready`, `takomo_show`, `takomo_claim`,
+        `takomo_next`, `takomo_start`, `takomo_transition`,
+        `takomo_done`, `takomo_block`, `takomo_cancel`,
+        `takomo_comment`, `takomo_link`, `takomo_dep`, `takomo_deps`,
+        `takomo_release`, `takomo_archive`, `takomo_projects`,
+        `takomo_workflow`, `takomo_roadmap`, `takomo_whoami`. Claimed
+        tickets track a fencing token that later transitions echo automatically;
+        convenience verbs (start/done/block/cancel) resolve target states from
+        the project workflow by category.
+      requestBody:
+        required: true
+        description: A single JSON-RPC 2.0 request or notification (an MCP message).
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc: { type: string, const: "2.0" }
+                id:
+                  description: Present for requests, omitted for notifications.
+                  oneOf:
+                    - { type: string }
+                    - { type: integer }
+                method:
+                  type: string
+                  examples: [initialize, tools/list, tools/call]
+                params: { type: object }
+      responses:
+        "200":
+          description: |
+            A JSON-RPC 2.0 response. For `tools/call`, `result.content[0].text`
+            carries the tool's JSON payload; tool-level failures set
+            `result.isError` and relay the store's `message` / `remedy` /
+            `allowed_transitions` so the agent can self-correct.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc: { type: string, const: "2.0" }
+                  id:
+                    oneOf:
+                      - { type: string }
+                      - { type: integer }
+                  result: { type: object }
+                  error: { type: object }
+        "202":
+          description: Accepted — returned for a JSON-RPC notification (no id).
+        "401":
+          description: Missing, invalid, or share (`tks_`) token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /healthz:
+    get:
+      tags: [admin]
+      summary: Liveness/readiness (open — no auth; the only unauthenticated endpoint)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  version: { type: string }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: See auth.md — `tk_`-prefixed tokens, scoped, hashed at rest.
+    shareBearer:
+      type: http
+      scheme: bearer
+      description: |
+        A SHARE token (`tks_`-prefixed), minted by `POST /v1/shares` and hashed
+        at rest like a normal token. It is a distinct auth path: it authorizes
+        ONLY the read-only `/v1/shares/self*` endpoints, bounded to its scope,
+        and is rejected on every normal endpoint. Expired/revoked shares return
+        `410 Gone`. See auth.md.
+
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Ticket id, e.g. "rvp-x7k2"
+    project:
+      name: project
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Unknown id
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Version mismatch, claim held by another, or stale fence
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Project:
+      type: object
+      properties:
+        id: { type: string, description: short slug, also the ticket id prefix }
+        name: { type: string }
+        workflow: { type: string, description: workflow name in effect }
+        created_at: { type: string, format: date-time }
+
+    ProjectCreate:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, pattern: "^[a-z][a-z0-9-]{1,15}$" }
+        name: { type: string }
+        workflow: { $ref: "#/components/schemas/Workflow" }
+
+    ShareCreate:
+      type: object
+      required: [kind, ref]
+      properties:
+        kind:
+          type: string
+          enum: [project, epic]
+          description: "project = all tickets in the project; epic = a ticket + its full recursive subtree"
+        ref: { type: string, description: project id (kind=project) or root ticket id (kind=epic) }
+        ttl_seconds:
+          type: integer
+          description: link lifetime in seconds (default 86400 = 24h, max 2592000 = 30d)
+
+    Share:
+      type: object
+      description: Share metadata — never carries the plaintext token or its hash.
+      properties:
+        id: { type: string, description: public handle for list/revoke, e.g. "share_a8f2k1x9q7z3" }
+        kind: { type: string, enum: [project, subtree], description: "stored kind; an 'epic' request is stored as 'subtree'" }
+        ref: { type: string, description: project id or root ticket id }
+        project: { type: string, description: denormalized project the share is scoped to }
+        expires_at: { type: string, format: date-time }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+
+    ShareCreated:
+      allOf:
+        - $ref: "#/components/schemas/Share"
+        - type: object
+          properties:
+            token: { type: string, description: "the SHARE token plaintext — shown ONCE (tks_-prefixed)" }
+            path: { type: string, description: "fragment URL to open, e.g. /board#s=<token>" }
+            warning: { type: string }
+
+    ShareSelf:
+      type: object
+      description: A share's own scope plus the project workflow, for board rendering.
+      properties:
+        kind: { type: string, enum: [project, subtree] }
+        ref: { type: string }
+        project: { type: string }
+        expires_at: { type: string, format: date-time }
+        workflow: { $ref: "#/components/schemas/Workflow" }
+
+    WhoAmI:
+      type: object
+      properties:
+        token_id: { type: string, description: public token handle, e.g. "tok_a8f2k1x9" }
+        actor: { type: string, description: this token's actor identity }
+        scopes: { type: array, items: { type: string } }
+        projects:
+          description: array of project ids, or the string "*" for all projects
+          oneOf:
+            - { type: string, const: "*" }
+            - { type: array, items: { type: string } }
+
+    Token:
+      type: object
+      description: Token metadata — never carries the plaintext or the at-rest hash.
+      properties:
+        id: { type: string, description: public handle for list/revoke, e.g. "tok_a8f2k1x9" }
+        actor: { type: string }
+        scopes: { type: array, items: { type: string } }
+        projects:
+          description: array of project ids, or "*" for all
+          oneOf:
+            - { type: string, const: "*" }
+            - { type: array, items: { type: string } }
+        rate_limit: { type: integer, description: per-minute write budget }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+        last_used_at: { type: [string, "null"], format: date-time }
+
+    TokenCreate:
+      type: object
+      required: [actor, scopes]
+      properties:
+        actor: { type: string, description: "identity, e.g. agent:runner-1, human:alice" }
+        scopes:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: "e.g. read, write, human, autoland, admin (free-form scopes allowed)"
+        projects:
+          description: array of project ids, or "*"/omitted for all projects
+          oneOf:
+            - { type: string, const: "*" }
+            - { type: array, items: { type: string }, minItems: 1 }
+        expires_seconds: { type: integer, description: optional TTL in seconds from now }
+        rate_limit: { type: integer, default: 120, description: per-minute write budget }
+
+    TokenCreated:
+      allOf:
+        - $ref: "#/components/schemas/Token"
+        - type: object
+          properties:
+            token: { type: string, description: the plaintext tk_ token — shown ONCE, never again }
+            warning: { type: string }
+
+    Ticket:
+      type: object
+      properties:
+        id: { type: string }
+        project: { type: string }
+        type: { type: string, enum: [epic, task, bug, spike] }
+        parent: { type: [string, "null"] }
+        title: { type: string, maxLength: 300 }
+        body: { type: string, maxLength: 131072, description: markdown }
+        state: { type: string, description: workflow state id }
+        state_category: { type: string, enum: [todo, in_progress, blocked, review, done, cancelled] }
+        priority: { type: string, enum: [critical, high, normal, low], default: normal }
+        labels: { type: array, items: { type: string } }
+        metadata:
+          type: object
+          description: freeform JSON; keys namespaced "<actor-or-tool>.<key>"; 64 KiB cap
+        links:
+          type: object
+          description: well-known evidence pointers
+          properties:
+            branch: { type: string }
+            pr: { type: string, format: uri }
+            env: { type: string, format: uri }
+            run: { type: string }
+        blocked_by: { type: array, items: { type: string } }
+        claim:
+          type: [object, "null"]
+          properties:
+            holder: { type: string, description: actor name from token }
+            expires_at: { type: string, format: date-time }
+        version: { type: integer, description: monotonic per ticket; ETag value }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: [string, "null"], format: date-time, description: when archived (hidden from default views), or null when active }
+
+    TicketCreate:
+      type: object
+      required: [project, title]
+      properties:
+        project: { type: string }
+        type: { type: string, default: task }
+        parent: { type: string }
+        title: { type: string }
+        body: { type: string }
+        priority: { type: string }
+        labels: { type: array, items: { type: string } }
+        metadata: { type: object }
+        blocked_by: { type: array, items: { type: string } }
+        state: { type: string, description: "optional; must be a legal initial state, defaults to workflow initial" }
+
+    TicketCreated:
+      allOf:
+        - $ref: "#/components/schemas/Ticket"
+        - type: object
+          properties:
+            similar:
+              type: array
+              description: |
+                Open tickets that look like possible duplicates, scored by
+                title-token overlap (Jaccard) with a nudge when the ticket types
+                match, and thresholded so an incidental single shared word does
+                not cry wolf. Sorted by descending score. Check before proceeding.
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  state: { type: string }
+                  type: { type: string }
+                  score: { type: number, description: blended similarity, 0..1 (2 d.p.) }
+                  matched_terms: { type: array, items: { type: string }, description: title tokens that overlapped }
+
+    TicketPatch:
+      type: object
+      description: All fields optional; state is absent by design (use /transition)
+      properties:
+        title: { type: string }
+        body: { type: string, description: requires If-Match }
+        priority: { type: string }
+        labels: { type: array, items: { type: string } }
+        labels_add: { type: array, items: { type: string } }
+        labels_remove: { type: array, items: { type: string } }
+        parent: { type: [string, "null"] }
+        links: { type: object, description: "per-key merge: string value sets a key, null deletes it, untouched keys survive" }
+        metadata_merge: { type: object, description: RFC 7386 merge-patch; null deletes a key }
+        fence: { type: integer, description: required while ticket is claimed and caller is holder }
+
+    Comment:
+      type: object
+      properties:
+        id: { type: string }
+        ticket: { type: string }
+        author: { type: string }
+        body: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Lease:
+      type: object
+      properties:
+        ticket: { type: string }
+        holder: { type: string }
+        fence: { type: integer, description: echo in every mutating call while claimed }
+        expires_at: { type: string, format: date-time }
+
+    Event:
+      type: object
+      properties:
+        seq: { type: integer, description: global, strictly increasing }
+        ticket: { type: string }
+        project: { type: string }
+        actor: { type: string }
+        kind:
+          type: string
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived]
+        payload: { type: object, description: kind-specific; transitions carry from/to/reason }
+        at: { type: string, format: date-time }
+
+    Workflow:
+      type: object
+      description: See workflow-format.md for authoring format and semantics
+      required: [name, initial, states, transitions]
+      properties:
+        name: { type: string }
+        initial: { type: string }
+        states:
+          type: array
+          items:
+            type: object
+            required: [id, category]
+            properties:
+              id: { type: string }
+              category: { type: string, enum: [todo, in_progress, blocked, review, done, cancelled] }
+              claimable: { type: boolean, default: false }
+              terminal: { type: boolean, default: false }
+        transitions:
+          type: array
+          items:
+            type: object
+            required: [from, to]
+            properties:
+              from: { type: string }
+              to: { type: string }
+              requires:
+                type: array
+                items: { type: string }
+                description: "any of: claim | scope:<scope> | guard:<guard-id>"
+        guards:
+          type: object
+          description: named guard configs, e.g. no_open_children on done-category entry
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, description: "stable machine code, e.g. conflict.version, claim.held, fence.stale (superseded lease), fence.invalid (fence never issued — a client bug)" }
+        message: { type: string, description: written for LLM readers — states what is wrong AND what to do }
+        remedy: { type: string, description: the exact next call to make, when one exists }
+        current_version: { type: integer }
+        details: { type: object }
+
+    TransitionError:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+      type: object
+      properties:
+        current_state: { type: string }
+        allowed_transitions:
+          type: array
+          items:
+            type: object
+            properties:
+              to: { type: string }
+              requires: { type: array, items: { type: string } }

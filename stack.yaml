@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/backlot-dev/backlot/main/schema/backlot.schema.json
+#
+# backlot manifest — puts a running, seeded Takomo server in front of an agent
+# or human: `backlot up` builds the binary, provisions a fresh SQLite datastore,
+# starts the HTTP server, and waits until /healthz answers 200.
+#
+#   backlot up      lease a warm env: build, seed the db, serve, print the URL
+#   backlot ctx     everything an agent needs (URL, ports) in one blob
+#   backlot release return the environment to the pool, warm
+name: takomo
+
+services:
+  server:
+    # Compiled once at bind, only when the source fingerprint changes.
+    build: cargo build --release
+    # {{datastores.main.url}} is the SQLite file path; {{ports.http}} is the
+    # engine-allocated port. takomo creates its schema on first serve.
+    run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}
+    port: http
+    ready:
+      http: /healthz
+      timeout: 120
+
+datastores:
+  main:
+    driver: sqlite
+    # A zero-byte file is a valid empty SQLite database; takomo initializes
+    # its tables on startup. {{ns}} is the per-environment datastore file path.
+    create: "touch {{ns}}"
+    presets: [empty]
+    # sqlite templating = file copy, so every bind restores a clean empty store.
+    template: true

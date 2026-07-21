@@ -1,0 +1,33 @@
+# Litestream — continuous, off-box backup of the takomo SQLite database.
+#
+# PREPARED, NOT LIVE. Nothing here activates unless an operator supplies a
+# bucket and credentials (see below). All values are read from the environment,
+# so no secrets live in this file or the repo.
+#
+# One-time manual activation (the only operator step):
+#   1. Create an S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2…).
+#   2. Provide these as environment variables / platform secrets — never commit them:
+#        LITESTREAM_BUCKET             bucket name
+#        LITESTREAM_ACCESS_KEY_ID      access key
+#        LITESTREAM_SECRET_ACCESS_KEY  secret key
+#        LITESTREAM_ENDPOINT           (optional) endpoint URL for non-AWS S3, e.g.
+#                                      https://<accountid>.r2.cloudflarestorage.com
+#        LITESTREAM_REGION             (optional) region, default us-east-1
+#   3. Run the server under Litestream. In the bundled Docker image this happens
+#      automatically once LITESTREAM_BUCKET is set (see deploy/docker-entrypoint.sh).
+#      Elsewhere, wrap the start command:
+#        litestream replicate -config litestream.yml \
+#          -exec "takomo --db /var/data/takomo.db serve --bind 0.0.0.0:$PORT"
+#
+# The default (non-Litestream) start path keeps working unchanged when these
+# variables are unset.
+dbs:
+  - path: /var/data/takomo.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: takomo
+        region: ${LITESTREAM_REGION:-us-east-1}
+        endpoint: ${LITESTREAM_ENDPOINT}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
