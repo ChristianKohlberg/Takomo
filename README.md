@@ -102,7 +102,7 @@ takomo init                    # or: takomo init myproject --workflow simple
 takomo whoami                          # who am I: actor, scopes, projects
 takomo new "Wire up the frobnicator"   # create a ticket (warns about likely duplicates)
 takomo ready                           # what's claimable right now
-takomo roadmap                         # epic progress: a bar + child counts per epic
+takomo roadmap                         # epic progress per epic, plus work under no epic
 ID=$(takomo next | awk '{print $2}')   # atomically claim the next ready ticket
 takomo start "$ID"                     # -> in_progress (the lease fence is remembered for you)
 takomo comment "$ID" "opened PR, waiting on CI"

@@ -69,8 +69,10 @@ pub async fn delete(
 
 /// GET /v1/projects/{project}/roadmap (read scope) — epic progress rollup. For
 /// each epic in the project, returns the epic plus a rollup over its full
-/// descendant subtree: counts by state and category, total, done-count, and
-/// completion percent.
+/// descendant subtree: counts by state and category, total, done-count,
+/// completion percent, and `flags` for an epic whose own state contradicts its
+/// children. Alongside `epics`, `unparented` rolls up the non-epic tickets no
+/// epic owns, so the response accounts for all of the project's work.
 pub async fn roadmap(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

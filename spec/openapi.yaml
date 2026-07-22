@@ -214,6 +214,16 @@ paths:
         the `done` category), and a whole-number completion `percent`. The epic
         itself is the container and is not counted in its own rollup. Counts
         include archived descendants so historical completion is not understated.
+
+        Each epic also carries `flags`: short codes for an epic whose own state
+        contradicts its subtree (empty when consistent).
+
+        Alongside `epics`, `unparented` is a rollup of the same shape (minus the
+        ticket identity fields) over every non-epic ticket in the project whose
+        `parent` chain never reaches an epic — a NULL parent, a chain of
+        non-epic ancestors, or a parent id pointing at a row that no longer
+        exists. Without it, work outside every epic would be invisible while the
+        per-epic percentages read as complete.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       responses:
         "200":
@@ -240,6 +250,31 @@ paths:
                         percent: { type: integer, description: done/total as a whole percent (0 when empty) }
                         by_state: { type: object, additionalProperties: { type: integer } }
                         by_category: { type: object, additionalProperties: { type: integer } }
+                        flags:
+                          type: array
+                          description: |
+                            Epic/child state contradictions, empty when the epic is consistent.
+                            `done_with_open_children`: the epic's own state category is `done`
+                            but `done < total`. `open_with_all_children_done`: the epic is not
+                            done, `total > 0`, and every descendant is done. `empty_epic`:
+                            `total == 0` — a flag, not an error, so a client can render an epic
+                            filed ahead of its work differently from a 0%-complete epic that
+                            does have children.
+                          items:
+                            type: string
+                            enum: [done_with_open_children, open_with_all_children_done, empty_epic]
+                  unparented:
+                    type: object
+                    description: |
+                      Rollup over the project's non-epic tickets that no epic owns. Same shape
+                      as an epic's rollup, without `id`/`title`/`state`/`priority` — it is a
+                      bucket, not a ticket.
+                    properties:
+                      total: { type: integer }
+                      done: { type: integer }
+                      percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                      by_state: { type: object, additionalProperties: { type: integer } }
+                      by_category: { type: object, additionalProperties: { type: integer } }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /tickets:

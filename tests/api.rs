@@ -170,6 +170,30 @@ impl TestApp {
     }
 
     /// Create a ticket with an explicit type and optional parent (admin token).
+    /// The live server's SQLite file. Tests that must seed states the API
+    /// deliberately refuses to create — a dangling `parent`, a `parent` cycle —
+    /// write them here directly with foreign keys off, so the row lands exactly
+    /// as a corrupted or hand-edited database would have it.
+    fn db_path(&self) -> std::path::PathBuf {
+        self._tmp.path().join("test.db")
+    }
+
+    /// Repoint `id`'s parent straight in the database, bypassing validation.
+    fn force_parent(&self, id: &str, parent: &str) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        conn.pragma_update(None, "foreign_keys", "OFF")
+            .expect("foreign_keys off");
+        let n = conn
+            .execute(
+                "UPDATE tickets SET parent = ?2 WHERE id = ?1",
+                rusqlite::params![id, parent],
+            )
+            .expect("force parent");
+        assert_eq!(n, 1, "force_parent should touch exactly one row ({id})");
+    }
+
     async fn create_typed(&self, title: &str, ty: &str, parent: Option<&str>) -> String {
         let mut body = json!({ "project": "tp", "title": title, "type": ty });
         if let Some(p) = parent {
@@ -2256,6 +2280,181 @@ async fn roadmap_rolls_up_epic_subtree() {
     // Unknown project -> 404.
     let (status, body) = app.get(&app.admin, "/v1/projects/nope/roadmap").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+// The `unparented` bucket catches every way a ticket can end up outside all
+// epics: no parent at all, a chain of non-epic ancestors, and a parent id that
+// points at a row that is not there. Counts must stay coherent — with flat
+// epics, every non-epic ticket lands in exactly one bucket.
+#[tokio::test]
+async fn roadmap_unparented_bucket_covers_every_orphan_shape() {
+    let app = TestApp::spawn().await;
+
+    // Two flat epics, so no ticket is counted by two epic subtrees.
+    let epic_a = app.create_typed("Owned work", "epic", None).await;
+    let owned_done = app.create_typed("Owned A", "task", Some(&epic_a)).await;
+    let _owned_open = app.create_typed("Owned B", "task", Some(&epic_a)).await;
+    app.drive_to_done(&owned_done).await;
+    let _epic_b = app.create_typed("Planned work", "epic", None).await;
+
+    // 1. No parent at all.
+    let loose = app.create_typed("Loose task", "task", None).await;
+    app.drive_to_done(&loose).await;
+    // 2. A chain of non-epic ancestors: leaf -> mid -> (nothing).
+    let mid = app.create_typed("Mid task", "task", None).await;
+    let _leaf = app.create_typed("Leaf task", "task", Some(&mid)).await;
+    // 3. A dangling parent: the row it points at does not exist.
+    let dangling = app.create_typed("Dangling task", "task", None).await;
+    app.force_parent(&dangling, "tp-nosuchrow");
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let u = &body["unparented"];
+
+    // loose + mid + leaf + dangling = 4; the two epics themselves never count.
+    assert_eq!(u["total"], 4, "unparented total: {body}");
+    assert_eq!(u["done"], 1, "only the loose task is done: {body}");
+    assert_eq!(u["percent"], 25, "round(1/4*100): {body}");
+    assert_eq!(u["by_state"]["done"], 1, "{body}");
+    assert_eq!(u["by_state"]["brief"], 3, "{body}");
+    assert_eq!(u["by_category"]["done"], 1, "{body}");
+    assert_eq!(u["by_category"]["todo"], 3, "{body}");
+    assert!(
+        u.get("id").is_none() && u.get("title").is_none() && u.get("state").is_none(),
+        "the bucket is not a ticket: {u}"
+    );
+
+    // Coherence: epics are flat here, so every non-epic ticket is counted
+    // exactly once across the epic subtrees plus the unparented bucket.
+    let epic_total: i64 = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["total"].as_i64().unwrap())
+        .sum();
+    let (_, list) = app
+        .get(&app.admin, "/v1/tickets?project=tp&limit=200")
+        .await;
+    let non_epics = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["type"] != "epic")
+        .count() as i64;
+    assert_eq!(
+        epic_total + u["total"].as_i64().unwrap(),
+        non_epics,
+        "epic subtotals + unparented must account for every non-epic ticket: {body}"
+    );
+}
+
+// A `parent` cycle is not reachable through the API, but a corrupted database
+// can hold one. Both recursive walks use UNION, which stops at an already-seen
+// id — the endpoint must answer rather than spin.
+#[tokio::test]
+async fn roadmap_terminates_on_parent_cycles() {
+    let app = TestApp::spawn().await;
+
+    // A cycle through an epic: epic -> p -> epic. The subtree walk revisits the
+    // epic and must stop there.
+    let epic = app.create_typed("Cyclic epic", "epic", None).await;
+    let p = app.create_typed("Under epic", "task", Some(&epic)).await;
+    app.force_parent(&epic, &p);
+
+    // A cycle with no epic anywhere above it: x <-> y, plus a tail hanging off
+    // it whose upward chain runs into the cycle forever.
+    let x = app.create_typed("Free one", "task", None).await;
+    let y = app.create_typed("Free two", "task", Some(&x)).await;
+    app.force_parent(&x, &y);
+    let _tail = app
+        .create_typed("Tail of the cycle", "task", Some(&x))
+        .await;
+
+    let (status, body) = tokio::time::timeout(
+        Duration::from_secs(10),
+        app.get(&app.admin, "/v1/projects/tp/roadmap"),
+    )
+    .await
+    .expect("roadmap must terminate on a parent cycle, not hang");
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The walk reaches p and, around the cycle, the epic itself — each once.
+    let e = &body["epics"].as_array().unwrap()[0];
+    assert_eq!(e["total"], 2, "cyclic subtree counted once each: {body}");
+    // x, y and the tail never reach an epic upward, so all three are unparented
+    // (the epic in the cycle is an epic, and epics never join the bucket).
+    assert_eq!(body["unparented"]["total"], 3, "{body}");
+}
+
+// Each flag is a pure derivation over the epic's own state category and its
+// subtree counts.
+#[tokio::test]
+async fn roadmap_flags_epic_state_contradictions() {
+    let app = TestApp::spawn().await;
+
+    // 1. done epic, open children: the child is cancelled (terminal, so the
+    //    done guard passes) but not done, leaving done(0) < total(1).
+    let e_done_open = app.create_typed("Shipped early", "epic", None).await;
+    let stray = app
+        .create_typed("Cancelled child", "task", Some(&e_done_open))
+        .await;
+    let (s, b) = app.transition(&app.human, &stray, "cancelled").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    app.drive_to_done(&e_done_open).await;
+
+    // 2. open epic, all children done.
+    let e_open_all_done = app.create_typed("Work finished", "epic", None).await;
+    let child = app
+        .create_typed("Only child", "task", Some(&e_open_all_done))
+        .await;
+    app.drive_to_done(&child).await;
+
+    // 3. an epic with no descendants at all.
+    let e_empty = app.create_typed("Filed ahead", "epic", None).await;
+
+    // 4. empty *and* done: `empty_epic` fires, `done_with_open_children` must
+    //    not — done < total is false when total is 0.
+    let e_empty_done = app.create_typed("Empty and done", "epic", None).await;
+    app.drive_to_done(&e_empty_done).await;
+
+    // 5. a consistent epic: in progress with a mix of open children.
+    let e_ok = app.create_typed("Business as usual", "epic", None).await;
+    let ok_done = app.create_typed("Done bit", "task", Some(&e_ok)).await;
+    let _ok_open = app.create_typed("Open bit", "task", Some(&e_ok)).await;
+    app.drive_to_done(&ok_done).await;
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let flags = |id: &str| -> Vec<String> {
+        body["epics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap_or_else(|| panic!("epic {id} missing: {body}"))["flags"]
+            .as_array()
+            .unwrap_or_else(|| panic!("epic {id} has no flags array: {body}"))
+            .iter()
+            .map(|f| f.as_str().unwrap().to_string())
+            .collect()
+    };
+
+    assert_eq!(flags(&e_done_open), ["done_with_open_children"], "{body}");
+    assert_eq!(
+        flags(&e_open_all_done),
+        ["open_with_all_children_done"],
+        "{body}"
+    );
+    assert_eq!(flags(&e_empty), ["empty_epic"], "{body}");
+    assert_eq!(
+        flags(&e_empty_done),
+        ["empty_epic"],
+        "an empty done epic is empty only — done < total cannot hold at total 0: {body}"
+    );
+    assert!(
+        flags(&e_ok).is_empty(),
+        "a consistent epic carries no flags: {body}"
+    );
 }
 
 #[tokio::test]
