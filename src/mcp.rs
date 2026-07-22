@@ -455,7 +455,12 @@ impl TakomoMcp {
         respond(self.do_workflow(&require_auth(&ctx)?, &a.project))
     }
 
-    #[tool(description = "Show a project's roadmap: epics with their child tickets and progress.")]
+    #[tool(
+        description = "Show a project's roadmap: epics with their child tickets and progress, \
+        each with `flags` for epics whose own state contradicts their children \
+        (done_with_open_children, open_with_all_children_done, empty_epic), plus an \
+        `unparented` rollup over the non-epic tickets no epic owns."
+    )]
     async fn takomo_roadmap(
         &self,
         Parameters(a): Parameters<ProjectArgs>,

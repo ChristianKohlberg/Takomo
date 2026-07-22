@@ -295,21 +295,30 @@ cmd_roadmap() {
 import json, sys
 d = json.load(open(sys.argv[1]))
 epics = d.get("epics", [])
+unparented = d.get("unparented") or {}
 print(f"roadmap for {d.get('project','')}  ({len(epics)} epic(s))")
-if not epics:
-    print("(no epics)"); sys.exit()
 def bar(pct, width=10):
     filled = int(round(pct / 100.0 * width))
     filled = max(0, min(width, filled))
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 def trunc(s, n): return s if len(s) <= n else s[:n-1] + "..."
-for e in epics:
-    total = e.get("total", 0); done = e.get("done", 0); pct = e.get("percent", 0)
-    print(f"\n{e['id']}  [{e.get('state','')}]  {trunc(e.get('title',''), 52)}")
-    print(f"  {bar(pct)} {done}/{total} done  ({pct}%)")
-    bs = e.get("by_state") or {}
+def rollup(r, label="children by state", indent="  "):
+    total = r.get("total", 0); done = r.get("done", 0); pct = r.get("percent", 0)
+    print(f"{indent}{bar(pct)} {done}/{total} done  ({pct}%)")
+    bs = r.get("by_state") or {}
     if bs:
-        print("  children by state: " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+        print(f"{indent}{label}: " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+if not epics:
+    print("(no epics)")
+for e in epics:
+    flags = e.get("flags") or []
+    suffix = "  !" + ",".join(flags) if flags else ""
+    print(f"\n{e['id']}  [{e.get('state','')}]  {trunc(e.get('title',''), 52)}{suffix}")
+    rollup(e)
+# Work that belongs to no epic is real work: show it even when it is empty, so
+# an empty bucket reads as "all accounted for" rather than as a missing row.
+print(f"\n(no epic)  {unparented.get('total', 0)} ticket(s) outside every epic")
+rollup(unparented, "tickets by state")
 PY
 }
 
@@ -1674,7 +1683,8 @@ Finding & creating work:
          [--parent ID] [--label L]... [--body TEXT] TITLE
   takomo ls  [--project P] [--state S] [--label L]... [--mine] [--archived] [-q TEXT]
   takomo ready [--project P]
-  takomo roadmap [--project P]   epic progress rollup: a bar + child counts per epic
+  takomo roadmap [--project P]   epic progress rollup: a bar + child counts per epic,
+                                 contradiction flags, and a "(no epic)" bucket
   takomo show ID
 
 Claiming & progressing (the fence is remembered locally after a claim):
