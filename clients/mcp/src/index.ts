@@ -516,6 +516,36 @@ server.registerTool(
 );
 
 server.registerTool(
+  "takomo_promote",
+  {
+    title: "Promote a ticket",
+    description:
+      'Record that this ticket\'s work reached a named target/stage. `target` is free-form ' +
+      '("staging", "production", "published", "delivered", …), so it is not limited to software. ' +
+      "Optional url/ref/note. Append-only history; the latest shows on the board.",
+    inputSchema: {
+      id: z.string().describe("Ticket id to promote."),
+      target: z.string().describe('Stage the work reached, e.g. "staging", "production", "published".'),
+      url: z.string().optional().describe("Optional link (deploy, published page, PR, …)."),
+      ref: z.string().optional().describe("Optional reference (version, commit, build id, …)."),
+      note: z.string().optional().describe("Optional note."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { target: a.target };
+    if (a.url) body.url = a.url;
+    if (a.ref) body.ref = a.ref;
+    if (a.note) body.note = a.note;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/tickets/${encodeURIComponent(a.id)}/promote`,
+      body,
+    });
+    return ok({ ok: true, promotion: res });
+  })
+);
+
+server.registerTool(
   "takomo_projects",
   {
     title: "List projects",

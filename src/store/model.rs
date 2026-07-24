@@ -327,6 +327,37 @@ impl AnswerGrantRow {
     }
 }
 
+/// A promotion record: a ticket's work reached a named target/stage. Free-form
+/// `target` (e.g. "staging", "production", "published") keeps it domain-agnostic.
+#[derive(Debug, Clone)]
+pub struct Promotion {
+    pub id: String,
+    pub ticket: String,
+    pub project: String,
+    pub target: String,
+    pub url: Option<String>,
+    pub ref_: Option<String>,
+    pub note: Option<String>,
+    pub actor: String,
+    pub created_at: i64,
+}
+
+impl Promotion {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "ticket": self.ticket,
+            "project": self.project,
+            "target": self.target,
+            "url": self.url,
+            "ref": self.ref_,
+            "note": self.note,
+            "actor": self.actor,
+            "created_at": iso(self.created_at),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TokenRow {
     pub id: String,

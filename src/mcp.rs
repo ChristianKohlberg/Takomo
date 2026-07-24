@@ -296,6 +296,22 @@ pub struct WithdrawArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PromoteArgs {
+    /// Ticket id to promote.
+    pub id: String,
+    /// The stage/target the work reached — free-form, e.g. "staging",
+    /// "production", "published", "delivered".
+    pub target: String,
+    /// Optional link (deploy, published page, PR, …).
+    pub url: Option<String>,
+    /// Optional reference (version, commit, build id, …).
+    #[serde(rename = "ref")]
+    pub ref_: Option<String>,
+    /// Optional note.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReplyArgs {
     /// Question id a human bounced back to you (awaiting == "agent").
     pub id: String,
@@ -521,6 +537,20 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_archive(&require_auth(&ctx)?, &a.id))
+    }
+
+    #[tool(
+        description = "Record that this ticket's work reached a named target/stage — \
+        `target` is free-form (\"staging\", \"production\", \"published\", \"delivered\", …), so it \
+        is not limited to software. Optional url/ref/note. Append-only history; the latest shows on \
+        the board."
+    )]
+    async fn takomo_promote(
+        &self,
+        Parameters(a): Parameters<PromoteArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_promote(&require_auth(&ctx)?, a))
     }
 
     #[tool(description = "List all projects visible to your token and their workflow names.")]
@@ -775,6 +805,10 @@ impl TakomoMcp {
                 })
                 .collect();
             out["open_questions"] = json!(enriched);
+        }
+        let promos = self.state.store.promotions_for(id)?;
+        if !promos.is_empty() {
+            out["promotions"] = json!(promos.iter().map(|p| p.to_json()).collect::<Vec<_>>());
         }
         let hint = self.language_hint(&ticket.project);
         if !hint.is_null() {
@@ -1254,6 +1288,21 @@ impl TakomoMcp {
         self.state.store.release(id, fence, &auth.actor, None)?;
         self.state.wake();
         Ok(json!({ "ok": true, "released": id }))
+    }
+
+    fn do_promote(&self, auth: &AuthCtx, a: PromoteArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ticket = load_visible(&self.state, auth, &a.id)?;
+        let promo = self.state.store.promote_ticket(
+            &ticket.id,
+            &auth.actor,
+            &a.target,
+            a.url.as_deref(),
+            a.ref_.as_deref(),
+            a.note.as_deref(),
+        )?;
+        self.state.wake();
+        Ok(json!({ "ok": true, "promotion": promo.to_json() }))
     }
 
     fn do_archive(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {

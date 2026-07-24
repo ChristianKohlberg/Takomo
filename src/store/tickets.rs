@@ -6,14 +6,32 @@ use super::helpers::{
     get_workflow, load_blocked_by, row_to_ticket, touch_ticket, TICKET_COLS,
 };
 use super::model::{
-    Comment, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES, TICKET_TYPES,
+    Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
+    TICKET_TYPES,
 };
 use super::Store;
 use crate::error::{ApiError, ApiResult};
-use crate::ids::{comment_id, now_ms, sha256_hex, ticket_suffix};
+use crate::ids::{comment_id, now_ms, promotion_id, sha256_hex, ticket_suffix};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+
+const MAX_PROMOTION_TARGET: usize = 100;
+const MAX_PROMOTION_FIELD: usize = 2048;
+
+fn row_to_promotion(r: &rusqlite::Row) -> rusqlite::Result<Promotion> {
+    Ok(Promotion {
+        id: r.get(0)?,
+        ticket: r.get(1)?,
+        project: r.get(2)?,
+        target: r.get(3)?,
+        url: r.get(4)?,
+        ref_: r.get(5)?,
+        note: r.get(6)?,
+        actor: r.get(7)?,
+        created_at: r.get(8)?,
+    })
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct TicketCreate {
@@ -1016,6 +1034,117 @@ impl Store {
                 )?;
             }
             get_ticket_required(tx, id)
+        })
+    }
+
+    /// Record that a ticket's work reached a named target/stage (e.g. "staging",
+    /// "production", "published"). Append-only — the full history is kept; the
+    /// latest per ticket drives the board badge. `target` is free-form so this
+    /// is not tied to software deployment.
+    pub fn promote_ticket(
+        &self,
+        ticket_id: &str,
+        actor: &str,
+        target: &str,
+        url: Option<&str>,
+        ref_: Option<&str>,
+        note: Option<&str>,
+    ) -> ApiResult<Promotion> {
+        let target = target.trim();
+        if target.is_empty() || target.len() > MAX_PROMOTION_TARGET {
+            return Err(ApiError::validation(
+                "validation.target",
+                format!(
+                    "A promotion needs a non-empty target of at most {MAX_PROMOTION_TARGET} chars — the stage the work reached, e.g. \"staging\", \"production\", \"published\"."
+                ),
+            ));
+        }
+        for (field, val) in [("url", url), ("ref", ref_), ("note", note)] {
+            if let Some(v) = val {
+                if v.len() > MAX_PROMOTION_FIELD {
+                    return Err(ApiError::validation(
+                        "validation.promotion",
+                        format!("Promotion '{field}' must be at most {MAX_PROMOTION_FIELD} chars."),
+                    ));
+                }
+            }
+        }
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let t = get_ticket_required(tx, ticket_id)?;
+            let promo = Promotion {
+                id: promotion_id(),
+                ticket: t.id.clone(),
+                project: t.project.clone(),
+                target: target.to_string(),
+                url: url.map(str::to_string),
+                ref_: ref_.map(str::to_string),
+                note: note.map(str::to_string),
+                actor: actor.to_string(),
+                created_at: now,
+            };
+            tx.execute(
+                "INSERT INTO promotions (id, ticket, project, target, url, ref, note, actor, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    promo.id, promo.ticket, promo.project, promo.target,
+                    promo.url, promo.ref_, promo.note, promo.actor, now
+                ],
+            )?;
+            // Bump the ticket's updated_at so the board's event poll refetches it.
+            touch_ticket(tx, &t.id, now)?;
+            emit_event(
+                tx,
+                Some(&t.id),
+                Some(&t.project),
+                actor,
+                "ticket_promoted",
+                json!({ "promotion": promo.id, "target": promo.target, "url": promo.url, "ref": promo.ref_ }),
+                now,
+            )?;
+            Ok(promo)
+        })
+    }
+
+    /// Full promotion history for one ticket, newest first.
+    pub fn promotions_for(&self, ticket_id: &str) -> ApiResult<Vec<Promotion>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, ticket, project, target, url, ref, note, actor, created_at FROM promotions WHERE ticket = ?1 ORDER BY created_at DESC, rowid DESC",
+            )?;
+            let rows = stmt
+                .query_map(params![ticket_id], row_to_promotion)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// The latest promotion per ticket across a project — the board's badge
+    /// source. `allowed` scopes to the token's projects (None = unrestricted).
+    pub fn latest_promotions_for_project(
+        &self,
+        project: &str,
+        allowed: Option<&[String]>,
+    ) -> ApiResult<Vec<Promotion>> {
+        if let Some(list) = allowed {
+            if !list.iter().any(|p| p == project) {
+                return Ok(Vec::new());
+            }
+        }
+        self.with_conn(|conn| {
+            // Exactly one row per ticket: the max rowid wins (rowid is monotonic
+            // by insertion, so it is the latest even within the same millisecond).
+            let mut stmt = conn.prepare(
+                "SELECT p.id, p.ticket, p.project, p.target, p.url, p.ref, p.note, p.actor, p.created_at \
+                 FROM promotions p \
+                 JOIN (SELECT ticket, MAX(rowid) AS r FROM promotions WHERE project = ?1 GROUP BY ticket) x \
+                 ON p.rowid = x.r \
+                 WHERE p.project = ?1 ORDER BY p.created_at DESC, p.rowid DESC",
+            )?;
+            let rows = stmt
+                .query_map(params![project], row_to_promotion)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
         })
     }
 

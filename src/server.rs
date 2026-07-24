@@ -90,6 +90,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::api::tickets::archive),
         )
         .route(
+            "/v1/tickets/{id}/promote",
+            post(crate::api::tickets::promote),
+        )
+        .route(
+            "/v1/tickets/{id}/promotions",
+            get(crate::api::tickets::list_promotions),
+        )
+        .route("/v1/promotions", get(crate::api::tickets::promotions_index))
+        .route(
             "/v1/tickets/{id}/unarchive",
             post(crate::api::tickets::unarchive),
         )

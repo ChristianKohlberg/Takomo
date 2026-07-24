@@ -334,4 +334,23 @@ CREATE TABLE IF NOT EXISTS answer_grants (
   revoked_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_answer_grants_question ON answer_grants(question);
+
+-- Promotions: an append-only record that a ticket's work reached some named
+-- target/stage — "staging", "production", "published", "delivered", whatever
+-- the team uses. Deliberately free-form (`target` is any string) so takomo is
+-- not tied to software deployment. History is kept; the latest per ticket drives
+-- the board badge.
+CREATE TABLE IF NOT EXISTS promotions (
+  id          TEXT PRIMARY KEY,
+  ticket      TEXT NOT NULL REFERENCES tickets(id),
+  project     TEXT NOT NULL,
+  target      TEXT NOT NULL,
+  url         TEXT,
+  ref         TEXT,
+  note        TEXT,
+  actor       TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_promotions_ticket ON promotions(ticket);
+CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project);
 "#;

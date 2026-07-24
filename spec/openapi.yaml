@@ -372,7 +372,7 @@ paths:
       summary: Get a ticket
       parameters:
         - { $ref: "#/components/parameters/id" }
-        - { name: include, in: query, schema: { type: string }, description: "comma list: comments,children,deps,events" }
+        - { name: include, in: query, schema: { type: string }, description: "comma list: comments,children,deps,events,promotions" }
       responses:
         "200":
           description: OK
@@ -603,6 +603,68 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Ticket" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets/{id}/promote:
+    post:
+      tags: [tickets]
+      summary: Record that the ticket's work reached a target/stage (write scope)
+      description: |
+        Append a promotion: the ticket's work reached a named `target` —
+        free-form ("staging", "production", "published", "delivered", …), so
+        this is not tied to software deployment. History is kept; the latest per
+        ticket drives the board badge. Independent of workflow state.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target]
+              properties:
+                target: { type: string, description: 'Stage reached, e.g. "staging", "production"' }
+                url: { type: string, description: 'Optional link (deploy, published page, …)' }
+                ref: { type: string, description: 'Optional reference (version, commit, build id)' }
+                note: { type: string }
+      responses:
+        "201":
+          description: The recorded promotion.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Promotion" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tickets/{id}/promotions:
+    get:
+      tags: [tickets]
+      summary: Promotion history for a ticket (newest first; read scope)
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      responses:
+        "200":
+          description: Promotions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Promotion" } }
+
+  /promotions:
+    get:
+      tags: [tickets]
+      summary: Latest promotion per ticket across a project (read scope)
+      description: One row per ticket (the most recent) — the board's badge source.
+      parameters:
+        - { name: project, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Latest promotions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Promotion" } }
 
   /tickets/{id}/claim:
     post:
@@ -1745,6 +1807,20 @@ components:
         body: { type: string }
         created_at: { type: string, format: date-time }
 
+    Promotion:
+      type: object
+      description: A record that a ticket's work reached a named target/stage. Free-form and domain-agnostic.
+      properties:
+        id: { type: string, description: 'e.g. "pr-9f3ka2xz"' }
+        ticket: { type: string }
+        project: { type: string }
+        target: { type: string, description: 'Free-form stage, e.g. "staging", "production", "published"' }
+        url: { type: string, nullable: true }
+        ref: { type: string, nullable: true, description: version/commit/build id }
+        note: { type: string, nullable: true }
+        actor: { type: string }
+        created_at: { type: string, format: date-time }
+
     Lease:
       type: object
       properties:
@@ -1808,7 +1884,7 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied]
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, ticket_promoted]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 

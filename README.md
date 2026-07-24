@@ -119,7 +119,8 @@ Every rejection teaches: an illegal move returns the allowed transitions and a r
 - **Hierarchy + dependencies.** `epic → task/bug/subtask` trees, `blocked_by` edges (reverse + transitive views), labels, roadmaps, and free-form namespaced JSON metadata.
 - **Append-only event log.** A durable `?since=<seq>` cursor plus an SSE stream — the audit trail and the wake feed in one.
 - **Read-only web board** at `/board`, with scoped, expiring share links.
-- **Ask-a-human board.** When an agent needs a human decision (confirmation, a choice, a clarification, approval) it calls `takomo ask` / `takomo_ask`: a *blocking* question parks the ticket and releases the lease (the ticket resumes once all its open questions are answered), while an *advisory* question records a routed decision without changing state — for epic-level or strategic calls. Questions land on a dedicated email-style **`/inbox`** (folder rail, list, reading/answer pane) routed by expertise tag — or the board's quick **Ask a human** drawer, or the API. For an outside expert with no takomo token, mint a **per-question answer link** — a scoped, expiring, single-use URL that lets them answer just that one question. Optional email/Slack push (off unless configured). See [docs/ask-a-human.md](docs/ask-a-human.md).
+- **Ask-a-human board.** When an agent needs a human decision (confirmation, a choice, a clarification, approval) it calls `takomo ask` / `takomo_ask`: a *blocking* question parks the ticket and releases the lease (the ticket resumes once all its open questions are answered), while an *advisory* question records a routed decision without changing state — for epic-level or strategic calls. Questions land on a dedicated email-style **`/inbox`** (folder rail, list, reading/answer pane) routed by expertise tag — or the board's quick **Ask a human** drawer, or the API. For an outside expert with no takomo token, mint a **per-question answer link** — a scoped, expiring, single-use URL that lets them answer just that one question. A human can also **bounce a question back for more research** before answering — a clear follow-up thread with the asking agent (`takomo_reply`), with the ticket parked until they finally answer. Optional email/Slack push (off unless configured). See [docs/ask-a-human.md](docs/ask-a-human.md).
+- **Promotions.** Record that a ticket's work reached a stage — `takomo promote TKM-1 production` / `takomo_promote`. Free-form `target` (staging, production, published, delivered, …), so it fits any workflow, not just software; append-only history, latest badged on the board. See [docs/promotions.md](docs/promotions.md).
 - **Archiving + anti-lock-in.** Archive terminal tickets out of view; JSONL export/import with idempotent re-import, plus importers for beads and beans.
 - **Single binary.** Rust + SQLite (WAL); one process, zero external services.
 
@@ -131,7 +132,8 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 
 ## Docs
 
-- [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, expertise routing, and email/Slack notifications.
+- [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, the follow-up thread, expertise routing, and email/Slack notifications.
+- [docs/promotions.md](docs/promotions.md) — recording that a ticket's work reached a stage (staging/production/published/…), domain-agnostic.
 - [docs/hosting.md](docs/hosting.md) — self-hosting depth: local build, TLS, and off-box backups (Litestream).
 - [docs/development.md](docs/development.md) — building, testing, linting, and the `backlot`/`handrail` dev loop.
 - [spec/openapi.yaml](spec/openapi.yaml) — the full v1 HTTP API (tickets, workflows, claims/leases, tokens, event log, `/mcp`).

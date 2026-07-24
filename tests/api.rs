@@ -3452,6 +3452,68 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
 }
 
 #[tokio::test]
+async fn ticket_promote_records_history_and_project_index() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Ship the billing rollup").await;
+
+    // Promote to staging, then production (free-form targets).
+    let (s, p1) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/promote"),
+            json!({ "target": "staging", "url": "https://ci/deploy/1", "ref": "v1.2.0" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "promote failed: {p1}");
+    assert_eq!(p1["target"], "staging");
+    assert_eq!(p1["ref"], "v1.2.0");
+
+    let (s, _p2) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/promote"),
+            json!({ "target": "production", "note": "canary then full" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // History is newest-first.
+    let (s, hist) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}/promotions"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let items = hist["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["target"], "production", "newest first");
+    assert_eq!(items[1]["target"], "staging");
+
+    // The project index returns the latest per ticket (production).
+    let (s, idx) = app.get(&app.worker, "/v1/promotions?project=tp").await;
+    assert_eq!(s, StatusCode::OK);
+    let idx_items = idx["items"].as_array().unwrap();
+    assert_eq!(idx_items.len(), 1, "one row per ticket");
+    assert_eq!(idx_items[0]["ticket"], id);
+    assert_eq!(idx_items[0]["target"], "production");
+
+    // include=promotions attaches the history to ticket detail.
+    let (_, detail) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=promotions"))
+        .await;
+    assert_eq!(detail["promotions"].as_array().unwrap().len(), 2);
+
+    // An empty target is rejected.
+    let (s, bad) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/promote"),
+            json!({ "target": "  " }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.target");
+}
+
+#[tokio::test]
 async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Which migration strategy?").await;
