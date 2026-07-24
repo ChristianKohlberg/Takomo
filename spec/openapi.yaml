@@ -278,6 +278,35 @@ paths:
                       by_category: { type: object, additionalProperties: { type: integer } }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /projects/{project}/language:
+    put:
+      tags: [workflow]
+      summary: Set the project's ask-a-human question language (admin scope)
+      description: |
+        The human-facing language agents should phrase ask-a-human questions
+        (and options) in for this project. Surfaced back to agents as a
+        `language_hint` on the MCP work-loop tools and `question_language` on
+        `takomo_workflow`, and shown as a nudge on the inbox. Soft — never
+        enforced. Send `{"language": null}` to clear it.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [language]
+              properties:
+                language: { type: string, nullable: true, description: 'e.g. "German"; null clears it' }
+      responses:
+        "200":
+          description: The updated project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /tickets:
     post:
       tags: [tickets]
@@ -1423,6 +1452,7 @@ components:
         id: { type: string, description: short slug, also the ticket id prefix }
         name: { type: string }
         workflow: { type: string, description: workflow name in effect }
+        question_language: { type: string, nullable: true, description: 'Human-facing language agents should phrase ask-a-human questions in (e.g. "German"); null = no preference' }
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -1432,6 +1462,7 @@ components:
         id: { type: string, pattern: "^[a-z][a-z0-9-]{1,15}$" }
         name: { type: string }
         workflow: { $ref: "#/components/schemas/Workflow" }
+        question_language: { type: string, description: 'Optional: the human-facing question language for the project' }
 
     ShareCreate:
       type: object

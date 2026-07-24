@@ -99,6 +99,7 @@ impl Store {
                 id: id.to_string(),
                 name: name.to_string(),
                 workflow: wf,
+                question_language: None,
                 created_at: now,
             })
         })
@@ -106,19 +107,21 @@ impl Store {
 
     pub fn list_projects(&self) -> ApiResult<Vec<Project>> {
         self.with_conn(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, name, workflow_json, created_at FROM projects ORDER BY id")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, name, workflow_json, question_language, created_at FROM projects ORDER BY id",
+            )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
                 ))
             })?;
             let mut out = Vec::new();
             for row in rows {
-                let (id, name, wf_raw, created_at) = row?;
+                let (id, name, wf_raw, question_language, created_at) = row?;
                 let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
                     ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
                 })?;
@@ -126,6 +129,7 @@ impl Store {
                     id,
                     name,
                     workflow,
+                    question_language,
                     created_at,
                 });
             }
@@ -137,21 +141,22 @@ impl Store {
         self.with_conn(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT id, name, workflow_json, created_at FROM projects WHERE id = ?1",
+                    "SELECT id, name, workflow_json, question_language, created_at FROM projects WHERE id = ?1",
                     params![id],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
                             r.get::<_, String>(1)?,
                             r.get::<_, String>(2)?,
-                            r.get::<_, i64>(3)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, i64>(4)?,
                         ))
                     },
                 )
                 .optional()?;
             match row {
                 None => Ok(None),
-                Some((id, name, wf_raw, created_at)) => {
+                Some((id, name, wf_raw, question_language, created_at)) => {
                     let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
                         ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
                     })?;
@@ -159,11 +164,48 @@ impl Store {
                         id,
                         name,
                         workflow,
+                        question_language,
                         created_at,
                     }))
                 }
             }
         })
+    }
+
+    /// Set (or clear, with None) a project's human-facing question language.
+    pub fn set_question_language(
+        &self,
+        id: &str,
+        language: Option<&str>,
+        actor: &str,
+    ) -> ApiResult<Project> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let exists: Option<String> = tx
+                .query_row("SELECT id FROM projects WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if exists.is_none() {
+                return Err(ApiError::not_found("project", id));
+            }
+            tx.execute(
+                "UPDATE projects SET question_language = ?2 WHERE id = ?1",
+                params![id, language],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "project_updated",
+                serde_json::json!({ "question_language": language }),
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_project(id)?
+            .ok_or_else(|| ApiError::not_found("project", id))
     }
 
     /// Cascade-delete a project and everything under it (tickets, comments,

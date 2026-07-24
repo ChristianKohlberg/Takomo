@@ -163,6 +163,33 @@ Then `takomo questions --mine` (or the board's **mine** toggle) shows only the
 questions routed to that person's tags. No people/identity table is needed — it
 rides the existing token scopes.
 
+## Per-project question language
+
+A project can declare the human-facing language its questions should be written
+in — e.g. **German** for a revamp project whose reviewers are German-speaking,
+even though the agents and the underlying tickets work in English. Set it once
+(admin):
+
+```sh
+takomo project language <project> German      # or: takomo project create … --language German
+# over HTTP:  PUT /v1/projects/<project>/language  {"language":"German"}   (admin)
+# clear it:   takomo project language <project> --clear
+```
+
+The point is to reach the **agent at the source**, so the question text lands in
+the right language rather than being flagged after the fact. The setting is
+surfaced wherever an agent works:
+
+- a **`language_hint`** on `takomo_next` / `takomo_claim` / `takomo_start` /
+  `takomo_show` — so the agent sees it *before* it asks;
+- **`question_language`** on `takomo_workflow`;
+- a reminder in the `takomo_ask` result and its tool description;
+- and a line in the MCP server instructions.
+
+It's a **soft nudge**, never enforced (language can't be reliably detected
+server-side). The inbox also shows it as a reminder to the answering human. It's
+a project setting, so every viewer and agent sees the same thing.
+
 ## Timeouts
 
 Give a question a deadline and a fallback so it does not rot:

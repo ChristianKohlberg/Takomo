@@ -3682,6 +3682,74 @@ async fn question_expiry_applies_recommendation() {
 }
 
 #[tokio::test]
+async fn project_question_language_surfaces_to_agents() {
+    let app = TestApp::spawn().await;
+
+    // Admin sets the project's human-facing question language.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/language", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "language": "German" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["question_language"], "German");
+
+    // It shows up in the project list…
+    let (_, list) = app.get(&app.worker, "/v1/projects").await;
+    let tp = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "tp")
+        .unwrap();
+    assert_eq!(tp["question_language"], "German");
+
+    // …and the ask response nudges the agent toward that language.
+    let id = app.create_ticket("Sprachtest").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, asked) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Weitermachen?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{asked}");
+    assert!(
+        asked["note"].as_str().unwrap().contains("German"),
+        "ask note should nudge the language: {asked}"
+    );
+
+    // Clearing it removes the nudge.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/language", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "language": null }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cleared: Value = resp.json().await.unwrap();
+    assert!(cleared["question_language"].is_null());
+
+    // Non-admins can't set it.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/language", app.base))
+        .bearer_auth(&app.worker)
+        .json(&json!({ "language": "French" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn question_barrier_resumes_only_when_all_answered() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Two decisions").await;

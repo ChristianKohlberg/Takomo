@@ -45,6 +45,12 @@ dedicated `/inbox` triage page); the rest below is the baseline it builds on.
   inbox with an unread badge, and support deadlines with an `on_timeout`
   fallback swept alongside leases. Optional outbound notifications (Slack /
   generic webhook / SMTP email) via `TAKOMO_NOTIFY`, off unless configured.
+  A per-project **question language** (`takomo project language` /
+  `PUT /v1/projects/{id}/language`) nudges agents to phrase ask-a-human
+  questions in a set language (e.g. German for a revamp project) — surfaced as a
+  `language_hint` on the MCP work-loop tools, `question_language` on
+  `takomo_workflow`, in the `takomo_ask` result, and as an inbox reminder. Soft,
+  never enforced.
   Per-question **answer links** (`POST /v1/questions/{id}/answer-link` /
   `takomo answer-link` / `takomo_answer_link`) mint a scoped, expiring,
   single-use `tka_` token so an outside expert can answer one question via

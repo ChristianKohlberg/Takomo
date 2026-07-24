@@ -101,7 +101,6 @@
   .sendhint { font-size: 12px; color: var(--muted); }
   .lang-nudge { font-size: 12px; color: var(--high); background: color-mix(in srgb, var(--high) 12%, transparent); border: 1px solid color-mix(in srgb, var(--high) 40%, transparent); border-radius: 6px; padding: 6px 9px; margin-bottom: 10px; }
   .pending-box { border: 1px dashed var(--accent); border-radius: 8px; padding: 14px; margin-top: 8px; color: var(--muted); }
-  .langsel { font-size: 12px; }
 
   /* ---- inspect (subtle) ---- */
   .inspect-link { display: inline-block; font-size: 12px; color: var(--muted); background: none; border: none; padding: 2px 0; cursor: pointer; text-decoration: underline; }
@@ -160,18 +159,6 @@
   <select id="projsel" title="project"></select>
   <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine"> mine</label>
   <span class="grow"></span>
-  <label class="mine-toggle" title="Nudge answerers to reply in this language for the selected project">answer in
-    <select id="langsel" class="langsel" title="Expected answer language for this project">
-      <option value="">any</option>
-      <option value="German">German</option>
-      <option value="English">English</option>
-      <option value="French">French</option>
-      <option value="Spanish">Spanish</option>
-      <option value="Italian">Italian</option>
-      <option value="Portuguese">Portuguese</option>
-      <option value="Dutch">Dutch</option>
-    </select>
-  </label>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
   <button class="ghost" id="refresh">Refresh</button>
   <button class="ghost" id="signout">Sign out</button>
@@ -213,6 +200,7 @@
     polling: false,
     answering: false,   // user is mid-answer (guards live re-render)
     pending: {},        // qid -> true while an answer is in its undo hold
+    projLang: {},       // project id -> its server-set question_language
   };
 
   function $(id) { return document.getElementById(id); }
@@ -251,13 +239,11 @@
     if (t.parentNode) t.parentNode.removeChild(t);
   }
 
-  // ---- per-project answer-language nudge (client-side, per browser) ----
-  function langKey() { return "takomo.inbox.lang." + (state.project || "_all"); }
-  function getLang() { return localStorage.getItem(langKey()) || ""; }
-  function setLang(v) {
-    if (v) localStorage.setItem(langKey(), v); else localStorage.removeItem(langKey());
-  }
-  function syncLangSel() { var s = $("langsel"); if (s) s.value = getLang(); }
+  // ---- per-project answer language ----
+  // Read from the project's server-side `question_language` (set by an admin via
+  // `takomo project language`), so every viewer sees the same nudge. The inbox
+  // only surfaces it; it never sets it. Empty when "All projects" is selected.
+  function getLang() { return (state.project && state.projLang[state.project]) || ""; }
 
   function api(path, opts) {
     opts = opts || {};
@@ -312,12 +298,8 @@
     showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
-  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; state.answering = false; syncLangSel(); fetchAll(); });
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; state.answering = false; fetchAll(); });
   $("mine").addEventListener("change", function () { state.mineOnly = $("mine").checked; fetchAll(); });
-  $("langsel").addEventListener("change", function () {
-    setLang($("langsel").value);
-    renderReading(); // refresh the nudge for the open question
-  });
 
   // ---- boot ----
   function boot() {
@@ -332,11 +314,12 @@
     return api("/projects").then(function (projects) {
       var sel = $("projsel"); sel.innerHTML = "";
       var all = el("option"); all.value = ""; all.textContent = "All projects"; sel.appendChild(all);
+      state.projLang = {};
       (projects || []).forEach(function (p) {
-        var o = el("option"); o.value = p.id; o.textContent = p.id; sel.appendChild(o);
+        var o = el("option"); o.value = p.id; o.textContent = p.id + (p.question_language ? " · " + p.question_language : ""); sel.appendChild(o);
+        if (p.question_language) state.projLang[p.id] = p.question_language;
       });
       sel.value = state.project;
-      syncLangSel();
     }).catch(function () { /* projects list is best-effort */ });
   }
 
