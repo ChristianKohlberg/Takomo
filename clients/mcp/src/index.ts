@@ -587,7 +587,11 @@ server.registerTool(
       title: z.string().describe("The question, phrased for a human domain expert."),
       body: z.string().optional().describe("Context: why you are asking and what you have tried."),
       options: z.array(z.string()).optional().describe("For kind=choose: the options (>= 2)."),
-      recommended: z.string().optional().describe("Your recommended answer (a hint; applied on timeout if on_timeout=recommended)."),
+      option_notes: z.array(z.string()).optional().describe("For kind=choose: a one-line trade-off per option, parallel to `options` (same length) — lets the inbox show what each choice means."),
+      recommended: z.string().optional().describe("Your recommended answer (for choose, the exact option string; applied on timeout if on_timeout=recommended)."),
+      recommended_note: z.string().optional().describe("A short rationale for your recommendation (the 'why')."),
+      confidence: z.number().int().min(1).max(4).optional().describe("How strong your recommendation is: 1 tentative … 4 very strong."),
+      summary: z.string().optional().describe("A one-line summary for the inbox list preview (optional; else derived from the body)."),
       expertise: z.array(z.string()).optional().describe("Routing tags, e.g. [\"domain:billing\"]."),
       urgency: z.enum(["critical", "high", "normal", "low"]).optional().describe("Urgency (default normal)."),
       expires_in_seconds: z.number().int().positive().optional().describe("Auto-expire after this many seconds."),
@@ -599,7 +603,11 @@ server.registerTool(
     if (a.mode) body.mode = a.mode;
     if (a.body !== undefined) body.body = a.body;
     if (a.options) body.options = a.options;
+    if (a.option_notes) body.option_notes = a.option_notes;
     if (a.recommended !== undefined) body.recommended = a.recommended;
+    if (a.recommended_note !== undefined) body.recommended_note = a.recommended_note;
+    if (a.confidence !== undefined) body.confidence = a.confidence;
+    if (a.summary !== undefined) body.summary = a.summary;
     if (a.expertise) body.expertise = a.expertise;
     if (a.urgency) body.urgency = a.urgency;
     if (a.expires_in_seconds) body.expires_in_seconds = a.expires_in_seconds;

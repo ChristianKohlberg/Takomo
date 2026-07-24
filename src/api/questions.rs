@@ -22,19 +22,83 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-const ASK_FIELDS: [&str; 11] = [
+const ASK_FIELDS: [&str; 15] = [
     "ticket",
     "mode",
     "kind",
     "title",
     "body",
     "options",
+    "option_notes",
     "recommended",
+    "recommended_note",
+    "confidence",
+    "summary",
     "expertise",
     "urgency",
     "expires_in_seconds",
     "on_timeout",
 ];
+
+/// Parse `options` accepting either plain strings or `{value, desc}` objects,
+/// returning the value list and a parallel description list. A separate
+/// top-level `option_notes` array (if present) overrides/fills the descriptions.
+fn parse_options(obj: &serde_json::Map<String, Value>) -> ApiResult<(Vec<String>, Vec<String>)> {
+    let raw = match obj.get("options") {
+        None | Some(Value::Null) => return Ok((Vec::new(), Vec::new())),
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.options",
+                "Field 'options' must be an array of strings or of {value, desc} objects.",
+            ))
+        }
+    };
+    let mut values = Vec::with_capacity(raw.len());
+    let mut notes = Vec::with_capacity(raw.len());
+    let mut any_note = false;
+    for item in raw {
+        match item {
+            Value::String(s) => {
+                values.push(s.clone());
+                notes.push(String::new());
+            }
+            Value::Object(m) => {
+                let v = m
+                    .get("value")
+                    .or_else(|| m.get("label"))
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| {
+                        ApiError::bad_request(
+                            "validation.options",
+                            "each option object needs a string 'value' (the choice text).",
+                        )
+                    })?;
+                values.push(v.to_string());
+                let d = m
+                    .get("desc")
+                    .or_else(|| m.get("description"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !d.is_empty() {
+                    any_note = true;
+                }
+                notes.push(d.to_string());
+            }
+            _ => {
+                return Err(ApiError::bad_request(
+                    "validation.options",
+                    "each option must be a string or a {value, desc} object.",
+                ))
+            }
+        }
+    }
+    // An explicit parallel option_notes array overrides object descs.
+    if let Some(list) = get_string_array(obj, "option_notes")? {
+        return Ok((values, list));
+    }
+    Ok((values, if any_note { notes } else { Vec::new() }))
+}
 
 /// Expertise tags a token covers, derived from its free-form `expert:<tag>`
 /// scopes. `expert:domain:billing` -> `domain:billing`.
@@ -137,18 +201,23 @@ pub async fn create(
         None => None,
     };
 
+    let (options, option_notes) = parse_options(obj)?;
     let req = AskRequest {
         ticket,
         mode: get_str(obj, "mode")?,
         kind: require_str(obj, "kind")?,
         title: require_str(obj, "title")?,
         body: get_str(obj, "body")?.unwrap_or_default(),
-        options: get_string_array(obj, "options")?.unwrap_or_default(),
+        options,
+        option_notes,
         recommended: obj
             .get("recommended")
             .filter(|v| !v.is_null())
             .cloned()
             .unwrap_or(Value::Null),
+        recommended_note: get_str(obj, "recommended_note")?,
+        confidence: get_i64(obj, "confidence")?,
+        summary: get_str(obj, "summary")?,
         expertise: get_string_array(obj, "expertise")?.unwrap_or_default(),
         urgency: get_str(obj, "urgency")?,
         expires_at,
@@ -178,12 +247,14 @@ pub async fn create(
             ticket.state, question.id, ticket.id
         )
     };
+    let hints = crate::store::question_quality_hints(&question);
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "question": question.to_json(),
             "ticket": ticket.to_json(now_ms()),
             "note": note + &lang_note,
+            "hints": hints,
         })),
     ))
 }
