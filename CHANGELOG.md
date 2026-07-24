@@ -9,6 +9,20 @@ additively only.
 
 ### Added
 
+- **Inbox & board redesign (Aquarelle prototype) + DE/EN localization.** `/inbox`
+  is rebuilt to the latest design: a **DE/EN language toggle** (whole UI
+  localizable, remembered per device, defaults to the browser language), an
+  urgency-**grouped** question list with rank-glyph headers and preview lines, a
+  reading pane with an **ⓘ ticket-context popover** and a slide-over ticket
+  drawer, a **"Ticket update" timeline** for the follow-up thread, kind-adaptive
+  answer cards (choose/clarify/confirm/approve) with the recommendation
+  highlighted, a follow-up **compose** control with a thread-count badge, a
+  **withdraw confirmation** dialog, and a single-click **Answer** guarded by a
+  centered 30-second **undo snackbar** (replacing the press-twice arming). The
+  board gains the same DE/EN toggle, a 4-bar priority gauge on cards, and
+  localized chrome. Behavior (token gate, live polling, share/answer-link modes,
+  the ask-a-human drawer, the follow-up loop) is preserved.
+
 - **Ticket promotions.** Record that a ticket's work reached a named
   target/stage — `POST /v1/tickets/{id}/promote {target, url?, ref?, note?}` /
   `takomo promote` / `takomo_promote`. `target` is free-form ("staging",
