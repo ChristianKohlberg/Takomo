@@ -6,40 +6,45 @@
 <title>takomo board</title>
 <style>
   /* ---- theme tokens (light default, dark via prefers-color-scheme) ---- */
+  /* Aquarelle palette — shared with /inbox. --accent = deep blue (primary /
+     critical emphasis); --high/--normal/--low = urgency scale; --crit = warm
+     error/reject/bug. */
   :root {
-    --bg: #f4f5f7;
+    --bg: #eef1f4;
     --panel: #ffffff;
-    --col-bg: #ebecf0;
-    --text: #172b4d;
-    --muted: #6b778c;
-    --border: #dfe1e6;
-    --accent: #0052cc;
-    --shadow: 0 1px 2px rgba(9,30,66,.15);
-    --crit: #de350b;
-    --high: #ff8b00;
-    --normal: #0065ff;
-    --low: #6b778c;
-    --chip-bg: #dfe1e6;
-    --chip-text: #42526e;
-    --overlay: rgba(9,30,66,.54);
+    --col-bg: #f7fafc;
+    --text: #14202a;
+    --muted: #6e7c88;
+    --border: #e6ecf0;
+    --accent: #1f4e78;
+    --accent2: #2f6ba0;
+    --shadow: 0 18px 50px -26px rgba(20,40,55,.28);
+    --crit: #b4543f;
+    --high: #2f6ba0;
+    --normal: #5b8bb5;
+    --low: #7d8a95;
+    --chip-bg: #eaf2f9;
+    --chip-text: #2f6ba0;
+    --overlay: rgba(20,40,55,.5);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d1117;
-      --panel: #161b22;
-      --col-bg: #161b22;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --border: #30363d;
+      --bg: #0e141b;
+      --panel: #141d27;
+      --col-bg: #101821;
+      --text: #e6eef5;
+      --muted: #8ba0b0;
+      --border: #26313d;
       --accent: #4c8dff;
-      --shadow: 0 1px 2px rgba(0,0,0,.5);
-      --crit: #ff6b5a;
-      --high: #ffab4a;
-      --normal: #6ea8ff;
-      --low: #8b949e;
-      --chip-bg: #21262d;
-      --chip-text: #adbac7;
-      --overlay: rgba(1,4,9,.7);
+      --accent2: #6ea8ff;
+      --shadow: 0 18px 50px -26px rgba(0,0,0,.6);
+      --crit: #e0836f;
+      --high: #6ea8ff;
+      --normal: #7fa8d4;
+      --low: #8494a1;
+      --chip-bg: #1a2836;
+      --chip-text: #8fb6dc;
+      --overlay: rgba(1,4,9,.72);
     }
   }
   * { box-sizing: border-box; }
@@ -93,7 +98,7 @@
     border-radius: 8px; padding: 9px 10px; box-shadow: var(--shadow); cursor: pointer;
   }
   .card:hover { border-color: var(--accent); }
-  .card.p-critical { border-left-color: var(--crit); }
+  .card.p-critical { border-left-color: var(--accent); }
   .card.p-high { border-left-color: var(--high); }
   .card.p-normal { border-left-color: var(--normal); }
   .card.p-low { border-left-color: var(--low); }
@@ -102,7 +107,7 @@
   .card .meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
   .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); overflow-wrap: anywhere; }
   .chip.prio { text-transform: capitalize; font-weight: 600; }
-  .chip.prio.critical { color: var(--crit); }
+  .chip.prio.critical { color: var(--accent); }
   .chip.prio.high { color: var(--high); }
   .chip.type { text-transform: capitalize; }
   .chip.claim { background: transparent; border: 1px dashed var(--muted); }
