@@ -99,7 +99,9 @@ clear follow-up thread on the question.
 - The request is mirrored onto the ticket, so the agent sees it on its normal
   work-loop (`takomo_show` surfaces the open question with its `thread`). The
   agent replies with `takomo_reply <qid> "<what you found>"` (or
-  `POST /v1/questions/{id}/reply`), which flips `awaiting` back to `human`.
+  `POST /v1/questions/{id}/reply`), which flips `awaiting` back to `human`. A
+  reply is only accepted when the question is actually awaiting the agent (a
+  human bounced it back first); an unsolicited reply is refused.
 - The inbox shows the thread inline and marks whose turn it is; the human then
   answers (or asks again). Any number of round-trips is fine.
 

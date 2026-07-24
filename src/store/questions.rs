@@ -904,6 +904,19 @@ impl Store {
                     ),
                 ));
             }
+            // Turn guard: an agent may only reply when a human has actually
+            // bounced the question back (awaiting == "agent"). A human can add a
+            // follow-up at any time while it is open. This keeps the thread's
+            // whose-turn contract honest and stops unsolicited agent replies.
+            if role == "agent" && q.awaiting != "agent" {
+                return Err(ApiError::conflict(
+                    "question.not_awaiting_reply",
+                    format!(
+                        "Question '{id}' isn't awaiting an agent reply (awaiting = '{}'); reply only after a human asks for more. It's the human's turn to answer.",
+                        q.awaiting
+                    ),
+                ));
+            }
             let msg_id = crate::ids::question_message_id();
             tx.execute(
                 "INSERT INTO question_messages (id, question, author, role, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

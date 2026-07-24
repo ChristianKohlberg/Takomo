@@ -3385,6 +3385,21 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
     );
     assert_eq!(body["ticket"]["state"], "needs-decision");
 
+    // An agent can't reply out of turn: nothing has been bounced back yet.
+    let (s, oot) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/reply"),
+            json!({ "message": "unsolicited" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "out-of-turn reply should be refused: {oot}"
+    );
+    assert_eq!(oot["code"], "question.not_awaiting_reply");
+
     // Human bounces it back for more research instead of answering.
     let (s, fu) = app
         .post(
