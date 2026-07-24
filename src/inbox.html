@@ -91,6 +91,36 @@
   .readonly { font-size: 12px; color: var(--high); margin-bottom: 10px; }
   a { color: var(--accent); }
 
+  /* ---- answer: selection + send ---- */
+  .optbtn { background: var(--panel); }
+  .optbtn.sel { background: var(--accent); color: #fff; border-color: transparent; }
+  .optbtn.sel.reject { background: var(--crit); }
+  .answerbox textarea.clarify { width: 100%; min-height: 64px; resize: vertical; }
+  .sendrow { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  button.send.armed { background: var(--high); border-color: transparent; color: #fff; }
+  .sendhint { font-size: 12px; color: var(--muted); }
+  .lang-nudge { font-size: 12px; color: var(--high); background: color-mix(in srgb, var(--high) 12%, transparent); border: 1px solid color-mix(in srgb, var(--high) 40%, transparent); border-radius: 6px; padding: 6px 9px; margin-bottom: 10px; }
+  .pending-box { border: 1px dashed var(--accent); border-radius: 8px; padding: 14px; margin-top: 8px; color: var(--muted); }
+  .langsel { font-size: 12px; }
+
+  /* ---- inspect (subtle) ---- */
+  .inspect-link { display: inline-block; font-size: 12px; color: var(--muted); background: none; border: none; padding: 2px 0; cursor: pointer; text-decoration: underline; }
+  .inspect-link:hover { color: var(--accent); }
+  .inspect-panel { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0 4px; background: var(--col-bg); }
+  .inspect-panel .note-lang { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .inspect-panel .ip-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+  .inspect-panel .ip-comment { border-left: 2px solid var(--border); padding-left: 8px; margin-top: 6px; font-size: 12px; }
+
+  /* ---- toasts ---- */
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 90vw); }
+  .toast { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .toast.success { border-left-color: #36b37e; }
+  .toast.error { border-left-color: var(--crit); }
+  .toast.undo { border-left-color: var(--high); }
+  .toast .tmsg { flex: 1 1 auto; overflow-wrap: anywhere; }
+  .toast .tbtn { flex: 0 0 auto; font-size: 12px; padding: 4px 10px; }
+  .toast .tclose { flex: 0 0 auto; background: none; border: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 0 2px; cursor: pointer; }
+
   /* ---- gate ---- */
   #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
   #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; width: min(420px, 100%); box-shadow: var(--shadow); }
@@ -130,6 +160,18 @@
   <select id="projsel" title="project"></select>
   <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine"> mine</label>
   <span class="grow"></span>
+  <label class="mine-toggle" title="Nudge answerers to reply in this language for the selected project">answer in
+    <select id="langsel" class="langsel" title="Expected answer language for this project">
+      <option value="">any</option>
+      <option value="German">German</option>
+      <option value="English">English</option>
+      <option value="French">French</option>
+      <option value="Spanish">Spanish</option>
+      <option value="Italian">Italian</option>
+      <option value="Portuguese">Portuguese</option>
+      <option value="Dutch">Dutch</option>
+    </select>
+  </label>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
   <button class="ghost" id="refresh">Refresh</button>
   <button class="ghost" id="signout">Sign out</button>
@@ -140,6 +182,8 @@
   <section class="listpane" id="list"></section>
   <section class="readpane" id="read"><div class="rempty">Select a question to read and answer.</div></section>
 </main>
+
+<div id="toasts"></div>
 
 <script>
 "use strict";
@@ -154,6 +198,8 @@
     { id: "expired", label: "Expired" },
   ];
 
+  var UNDO_SECONDS = 30;
+
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
     project: "",        // "" = all accessible projects
@@ -165,6 +211,8 @@
     cursor: 0,
     pollTimer: null,
     polling: false,
+    answering: false,   // user is mid-answer (guards live re-render)
+    pending: {},        // qid -> true while an answer is in its undo hold
   };
 
   function $(id) { return document.getElementById(id); }
@@ -174,6 +222,42 @@
     if (text != null) e.textContent = text;
     return e;
   }
+
+  // ---- toasts ----
+  function toast(msg, kind, opts) {
+    opts = opts || {};
+    var t = el("div", "toast" + (kind ? " " + kind : ""));
+    var m = el("div", "tmsg", msg); t.appendChild(m);
+    if (opts.action) {
+      var b = el("button", "tbtn", opts.action.label);
+      b.addEventListener("click", function () { opts.action.fn(t); });
+      t.appendChild(b);
+      opts._msgEl = m; // let callers update the text (countdown)
+    }
+    var x = el("button", "tclose", "×");
+    x.addEventListener("click", function () { removeToast(t); });
+    t.appendChild(x);
+    $("toasts").appendChild(t);
+    if (!opts.sticky) {
+      t._timer = setTimeout(function () { removeToast(t); }, opts.ms || 4500);
+    }
+    t._msgEl = m;
+    return t;
+  }
+  function removeToast(t) {
+    if (!t) return;
+    if (t._timer) clearTimeout(t._timer);
+    if (t._interval) clearInterval(t._interval);
+    if (t.parentNode) t.parentNode.removeChild(t);
+  }
+
+  // ---- per-project answer-language nudge (client-side, per browser) ----
+  function langKey() { return "takomo.inbox.lang." + (state.project || "_all"); }
+  function getLang() { return localStorage.getItem(langKey()) || ""; }
+  function setLang(v) {
+    if (v) localStorage.setItem(langKey(), v); else localStorage.removeItem(langKey());
+  }
+  function syncLangSel() { var s = $("langsel"); if (s) s.value = getLang(); }
 
   function api(path, opts) {
     opts = opts || {};
@@ -228,8 +312,12 @@
     showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
-  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; fetchAll(); });
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; state.answering = false; syncLangSel(); fetchAll(); });
   $("mine").addEventListener("change", function () { state.mineOnly = $("mine").checked; fetchAll(); });
+  $("langsel").addEventListener("change", function () {
+    setLang($("langsel").value);
+    renderReading(); // refresh the nudge for the open question
+  });
 
   // ---- boot ----
   function boot() {
@@ -248,6 +336,7 @@
         var o = el("option"); o.value = p.id; o.textContent = p.id; sel.appendChild(o);
       });
       sel.value = state.project;
+      syncLangSel();
     }).catch(function () { /* projects list is best-effort */ });
   }
 
@@ -296,8 +385,12 @@
       if (typeof res.cursor === "number") state.cursor = res.cursor;
       var events = res.events || [];
       if (events.length === 0) { setLive("live", "live"); return; }
-      // Don't rebuild while the user is mid-answer.
-      if (document.activeElement && $("read").contains(document.activeElement)) { setLive("live", "live · new"); return; }
+      // Don't rebuild while the user is mid-answer: a selection in progress,
+      // focus inside the reading pane, or an answer in its undo hold.
+      var busy = state.answering
+        || Object.keys(state.pending).length > 0
+        || (document.activeElement && $("read").contains(document.activeElement));
+      if (busy) { setLive("live", "live · new"); return; }
       return api(questionsQuery()).then(function (r) {
         state.questions = r.items || [];
         render();
@@ -371,6 +464,7 @@
 
   function renderReading() {
     var pane = $("read"); pane.innerHTML = "";
+    state.answering = false; // a fresh render clears any in-progress selection
     var q = selected();
     if (!q) { pane.appendChild(el("div", "rempty", "Select a question to read and answer.")); return; }
 
@@ -389,6 +483,9 @@
       pane.appendChild(el("div", "status", "Agent suggests: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
     }
 
+    // Which internal ticket this belongs to — inspectable, deliberately subtle.
+    pane.appendChild(inspectTicket(q));
+
     if (q.status !== "open") {
       var box = el("div", "answered");
       var verb = q.status.charAt(0).toUpperCase() + q.status.slice(1);
@@ -402,7 +499,16 @@
       return;
     }
 
-    // Open question: answer + actions.
+    // Answer currently in its undo hold — locked until it emits or is undone.
+    if (state.pending[q.id]) {
+      var pb = el("div", "pending-box");
+      pb.appendChild(el("div", null, "Answer queued — sending shortly."));
+      pb.appendChild(el("div", "status", "Use Undo in the notification (bottom-right) to cancel within " + UNDO_SECONDS + "s."));
+      pane.appendChild(pb);
+      return;
+    }
+
+    // Open question: select an answer, then Send (press twice, then a 30s hold).
     if (state.me && !state.me.canAnswer) {
       pane.appendChild(el("div", "readonly", "This token can't answer (no 'human' scope). Read-only."));
     } else {
@@ -413,60 +519,129 @@
     }
   }
 
+  // Subtle "inspect the internal agent ticket" affordance. Not prominent; the
+  // ticket's own content may be in a different language than the question.
+  function inspectTicket(q) {
+    var wrap = el("div");
+    var link = el("button", "inspect-link", "inspect internal ticket " + q.ticket + " ▸");
+    var panel = null;
+    link.addEventListener("click", function () {
+      if (panel) { wrap.removeChild(panel); panel = null; link.textContent = "inspect internal ticket " + q.ticket + " ▸"; return; }
+      link.textContent = "hide internal ticket " + q.ticket + " ▾";
+      panel = el("div", "inspect-panel");
+      panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
+      panel.appendChild(el("div", "status", "loading…"));
+      wrap.appendChild(panel);
+      api("/tickets/" + encodeURIComponent(q.ticket) + "?include=comments").then(function (t) {
+        panel.innerHTML = "";
+        panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
+        panel.appendChild(el("div", null, t.title || q.ticket));
+        panel.appendChild(el("div", "status", (t.type ? t.type + " · " : "") + "state: " + (t.state || "?") + (t.priority ? " · " + t.priority : "")));
+        if (t.body) panel.appendChild(el("div", "ip-body", t.body));
+        var cs = t.comments || [];
+        if (cs.length) {
+          panel.appendChild(el("div", "status", "Comments (" + cs.length + "):"));
+          cs.slice(-5).forEach(function (c) {
+            var cc = el("div", "ip-comment");
+            cc.appendChild(el("div", "note-lang", (c.author || "") + " · " + (c.created_at || "")));
+            cc.appendChild(el("div", null, c.body || ""));
+            panel.appendChild(cc);
+          });
+        }
+      }).catch(function (e) {
+        panel.innerHTML = "";
+        panel.appendChild(el("div", "status", "Could not load ticket: " + (e && e.message ? e.message : "error")));
+      });
+    });
+    wrap.appendChild(link);
+    return wrap;
+  }
+
+  // Two-phase answering: SELECT a value (highlights, does not submit), then a
+  // Send button that must be pressed twice — so nothing is answered by accident.
   function renderAnswerBox(q) {
     var box = el("div", "answerbox");
     box.appendChild(el("h3", null, "Your answer"));
-    var err = el("div", "err");
-    var note = el("input", "note"); note.type = "text"; note.placeholder = "optional note…";
+    var lang = getLang();
+    if (lang) {
+      box.appendChild(el("div", "lang-nudge",
+        "This project expects answers in " + lang + "." + (q.kind === "clarify" ? " Please write your reply in " + lang + "." : "")));
+    }
+
+    var sel = null;          // selected value for confirm/approve/choose
+    var textInput = null;    // clarify free-text
+    function markBusy() { state.answering = true; }
+    function curVal() { return q.kind === "clarify" ? ((textInput && textInput.value) || "").trim() : sel; }
+
     var row = el("div", "row");
-    var send = function (value) { submitAnswer(q.id, value, note.value.trim(), err); };
     if (q.kind === "confirm" || q.kind === "approve") {
-      var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
-      var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
-      yes.addEventListener("click", function () { send("yes"); });
-      no.addEventListener("click", function () { send("no"); });
+      var yes = el("button", "optbtn", q.kind === "approve" ? "Approve" : "Yes");
+      var no = el("button", "optbtn reject", q.kind === "approve" ? "Reject" : "No");
+      yes.addEventListener("click", function () { sel = "yes"; yes.classList.add("sel"); no.classList.remove("sel"); markBusy(); refreshSend(); });
+      no.addEventListener("click", function () { sel = "no"; no.classList.add("sel"); yes.classList.remove("sel"); markBusy(); refreshSend(); });
       row.appendChild(yes); row.appendChild(no);
     } else if (q.kind === "choose") {
       (q.options || []).forEach(function (opt) {
-        var b = el("button", null, opt);
-        b.addEventListener("click", function () { send(opt); });
+        var b = el("button", "optbtn", opt);
+        b.addEventListener("click", function () {
+          sel = opt; markBusy();
+          Array.prototype.forEach.call(row.children, function (c) { c.classList.remove("sel"); });
+          b.classList.add("sel"); refreshSend();
+        });
         row.appendChild(b);
       });
     } else {
-      var input = el("input"); input.type = "text"; input.placeholder = "your answer…";
-      var go = el("button", "primary", "Send");
-      var submit = function () { var v = input.value.trim(); if (v) send(v); };
-      go.addEventListener("click", submit);
-      input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
-      row.appendChild(input); row.appendChild(go);
+      textInput = el("textarea", "clarify");
+      textInput.placeholder = "Type your answer" + (lang ? " (in " + lang + ")" : "") + "…";
+      textInput.addEventListener("input", function () { markBusy(); refreshSend(); });
+      row.appendChild(textInput);
     }
     box.appendChild(row);
+
+    var note = el("input", "note"); note.type = "text"; note.placeholder = "optional note…";
+    note.addEventListener("input", markBusy);
     box.appendChild(note);
-    box.appendChild(err);
+
+    var sendRow = el("div", "sendrow");
+    var send = el("button", "primary send", "Send"); send.disabled = true;
+    var hint = el("span", "sendhint", "");
+    var armed = false, disarmT = null;
+    function disarm() { armed = false; send.classList.remove("armed"); send.textContent = "Send"; hint.textContent = ""; if (disarmT) { clearTimeout(disarmT); disarmT = null; } }
+    function refreshSend() { var v = curVal(); send.disabled = !v; if (!v) disarm(); }
+    send.addEventListener("click", function () {
+      var v = curVal();
+      if (!v) { toast(q.kind === "clarify" ? "Type an answer first." : "Select an answer first.", "error"); return; }
+      if (!armed) {
+        armed = true; send.classList.add("armed"); send.textContent = "Press again to send"; hint.textContent = "press again to confirm";
+        disarmT = setTimeout(disarm, 4000);
+        return;
+      }
+      disarm();
+      queueAnswer(q.id, v, (note.value || "").trim());
+    });
+    sendRow.appendChild(send); sendRow.appendChild(hint);
+    box.appendChild(sendRow);
     return box;
   }
 
   function renderActions(q) {
     var wrap = el("div", "actions");
-    var err = el("div", "err");
     if (state.me && state.me.canAnswer) {
       var linkBtn = el("button", "ghost", "Create answer link…");
-      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap, err); });
+      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap); });
       wrap.appendChild(linkBtn);
     }
     var wd = el("button", "ghost", "Withdraw");
     wd.addEventListener("click", function () {
-      err.textContent = "";
       api("/questions/" + encodeURIComponent(q.id) + "/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "withdrawn from inbox" }) })
-        .then(fetchAll).catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error"); });
+        .then(function () { toast("Question withdrawn.", "success"); fetchAll(); })
+        .catch(function (e) { toast("Couldn't withdraw: " + (e && e.message ? e.message : "error"), "error"); });
     });
     wrap.appendChild(wd);
-    var holder = el("div"); holder.appendChild(wrap); holder.appendChild(err);
-    return holder;
+    return wrap;
   }
 
-  function mintLink(id, wrap, err) {
-    err.textContent = "";
+  function mintLink(id, wrap) {
     api("/questions/" + encodeURIComponent(id) + "/answer-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
       .then(function (res) {
         var box = el("div", "linkbox");
@@ -476,16 +651,45 @@
         box.appendChild(el("div", "status", "Single-use link (shown once) — send it to the expert:"));
         box.appendChild(inp);
         wrap.parentNode.appendChild(box);
+        toast("Answer link created.", "success");
       })
-      .catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs human, and expert:<tag> for approve)" : ""); });
+      .catch(function (e) { toast("Couldn't create link: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs human, and expert:<tag> for approve)" : ""), "error", { ms: 8000 }); });
   }
 
-  function submitAnswer(id, value, noteText, err) {
-    err.textContent = "";
-    var payload = noteText ? { value: value, note: noteText } : value;
-    api("/questions/" + encodeURIComponent(id) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
-      .then(fetchAll)
-      .catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs a token with the 'human' scope)" : ""); });
+  // Queue an answer with a 30s undo window before it is actually emitted.
+  function queueAnswer(qid, value, note) {
+    if (state.pending[qid]) return;
+    state.pending[qid] = true;
+    state.answering = false;
+    render(); // reading pane shows the locked "queued" state
+
+    var remaining = UNDO_SECONDS;
+    var t = toast("Answer will be sent in " + remaining + "s.", "undo", {
+      sticky: true,
+      action: { label: "Undo", fn: function (tt) {
+        delete state.pending[qid];
+        removeToast(tt);
+        toast("Not sent — cancelled.");
+        render();
+      } }
+    });
+    t._interval = setInterval(function () {
+      remaining--;
+      if (remaining > 0) { t._msgEl.textContent = "Answer will be sent in " + remaining + "s."; return; }
+      removeToast(t);
+      delete state.pending[qid];
+      emitAnswer(qid, value, note);
+    }, 1000);
+  }
+
+  function emitAnswer(qid, value, note) {
+    var payload = note ? { value: value, note: note } : value;
+    api("/questions/" + encodeURIComponent(qid) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
+      .then(function () { toast("Thanks for your submission.", "success"); fetchAll(); })
+      .catch(function (e) {
+        toast("Couldn't send: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs the 'human' scope)" : ""), "error", { ms: 8000 });
+        render(); // restore the answer box so they can retry
+      });
   }
 
   // ---- status + errors ----
