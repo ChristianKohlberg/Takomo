@@ -29,6 +29,24 @@ every AI agent, orchestrator, and human on a project talks to over HTTP.
   SHA-256 hashed at rest; token minting over both the server CLI and an
   admin-scoped HTTP surface.
 - Read-only web board at `/board`, plus scoped, expiring share links.
+- Ask-a-human board: agents raise a typed question (`confirm`/`choose`/
+  `clarify`/`approve`) with `POST /v1/questions` / `takomo ask` / `takomo_ask`.
+  A **blocking** question parks the ticket and releases the lease
+  (block-and-resume); the ticket resumes only when all its open blocking
+  questions are answered (a barrier). An **advisory** question records a routed
+  decision with no state change — for epic-level or strategic calls. A
+  `human`-scoped answer records the reply and, for a blocking question, performs
+  the ticket's human-gated resume transition; `approve` questions additionally
+  require the answerer to hold the matching `expert:<tag>` scope. Questions route
+  by expertise tag (free-form `expert:<tag>` scopes), surface on a `/board`
+  inbox with an unread badge, and support deadlines with an `on_timeout`
+  fallback swept alongside leases. Optional outbound notifications (Slack /
+  generic webhook / SMTP email) via `TAKOMO_NOTIFY`, off unless configured.
+  Per-question **answer links** (`POST /v1/questions/{id}/answer-link` /
+  `takomo answer-link` / `takomo_answer_link`) mint a scoped, expiring,
+  single-use `tka_` token so an outside expert can answer one question via
+  `/board#a=<token>` (a distinct `/v1/answer/self` auth path) without holding a
+  standing token. See docs/ask-a-human.md.
 - Archive support (additive, non-destructive startup migration).
 - JSONL export/import with idempotent re-import; importers for takomo, beads,
   and beans.

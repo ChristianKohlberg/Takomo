@@ -267,6 +267,7 @@ pub fn factory_default() -> Workflow {
             { "from": "implementing",   "to": "needs-decision" },
             { "from": "implementing",   "to": "review",         "requires": ["claim"] },
             { "from": "implementing",   "to": "ready" },
+            { "from": "needs-decision", "to": "ready",          "requires": ["scope:human"] },
             { "from": "needs-decision", "to": "implementing",   "requires": ["scope:human"] },
             { "from": "review",         "to": "implementing" },
             { "from": "review",         "to": "done",           "requires": ["scope:human", "guard:no_open_children"] },

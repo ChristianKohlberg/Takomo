@@ -1,6 +1,6 @@
 //! Server assembly: shared state, router, bind guard, lease sweeper.
 
-use crate::auth::{auth_middleware, share_auth_middleware};
+use crate::auth::{answer_auth_middleware, auth_middleware, share_auth_middleware};
 use crate::store::Store;
 use axum::routing::{get, patch, post, put};
 use axum::Router;
@@ -106,6 +106,27 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/ready", get(crate::api::claims::ready_peek))
         .route("/v1/ready/claim", post(crate::api::claims::ready_claim))
+        .route(
+            "/v1/questions",
+            get(crate::api::questions::list).post(crate::api::questions::create),
+        )
+        .route("/v1/questions/{id}", get(crate::api::questions::get_one))
+        .route(
+            "/v1/questions/{id}/answer",
+            post(crate::api::questions::answer),
+        )
+        .route(
+            "/v1/questions/{id}/withdraw",
+            post(crate::api::questions::withdraw),
+        )
+        .route(
+            "/v1/questions/{id}/answer-link",
+            post(crate::api::questions::create_link),
+        )
+        .route(
+            "/v1/answer-links/{id}",
+            axum::routing::delete(crate::api::questions::revoke_link),
+        )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))
@@ -141,6 +162,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             share_auth_middleware,
         ));
 
+    // Answer-grant-scoped endpoints run on their OWN auth path: a `tka_` answer
+    // link resolves only against the answer_grants table and reaches only these
+    // two routes — it can read and answer exactly one question, nothing else.
+    let answer_authed = Router::new()
+        .route(
+            "/v1/answer/self",
+            get(crate::api::questions::self_get).post(crate::api::questions::self_answer),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            answer_auth_middleware,
+        ));
+
     // Hosted MCP endpoint: rmcp's streamable-HTTP transport at /mcp, behind the
     // same bearer auth as the REST API. Lives in the same binary and calls the
     // internal store directly (see crate::mcp).
@@ -151,6 +185,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/board", get(crate::api::board))
         .merge(authed)
         .merge(share_authed)
+        .merge(answer_authed)
         .merge(mcp)
         .with_state(state)
 }
@@ -163,10 +198,19 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
+            let mut woke = false;
             match state.store.sweep_expired() {
-                Ok(n) if n > 0 => state.wake(),
+                Ok(n) if n > 0 => woke = true,
                 Ok(_) => {}
                 Err(e) => eprintln!("lease sweep failed: {}", e.body.message),
+            }
+            match state.store.sweep_expired_questions() {
+                Ok(n) if n > 0 => woke = true,
+                Ok(_) => {}
+                Err(e) => eprintln!("question sweep failed: {}", e.body.message),
+            }
+            if woke {
+                state.wake();
             }
         }
     });

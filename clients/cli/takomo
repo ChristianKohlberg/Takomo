@@ -709,6 +709,168 @@ cmd_release() {
   echo "released $id"
 }
 
+# --- ask-a-human board -------------------------------------------------------
+
+cmd_ask() {
+  local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--expertise TAG]... [--urgency U] [--recommend R] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
+  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode=""
+  local -a options=() expertise=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind)       kind=$2; shift 2 ;;
+      --advisory)   mode="advisory"; shift ;;
+      --title)      title=$2; shift 2 ;;
+      --body)       body=$2; shift 2 ;;
+      --option)     options+=("$2"); shift 2 ;;
+      --expertise)  expertise+=("$2"); shift 2 ;;
+      --urgency)    urgency=$2; shift 2 ;;
+      --recommend)  recommend=$2; shift 2 ;;
+      --expires-in) expires=$2; shift 2 ;;
+      --on-timeout) ontimeout=$2; shift 2 ;;
+      *) die "ask: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$title" ] || die "ask: --title is required"
+  local fence; fence=$(fence_load "$id")
+  local data; data=$(TS_ID="$id" TS_KIND="$kind" TS_TITLE="$title" TS_BODY="$body" \
+    TS_URG="$urgency" TS_REC="$recommend" TS_EXP="$expires" TS_OT="$ontimeout" TS_FENCE="$fence" TS_MODE="$mode" \
+    TS_OPTS="$(printf '%s\n' "${options[@]:-}")" TS_EXPERT="$(printf '%s\n' "${expertise[@]:-}")" \
+    python3 <<'PY'
+import json, os
+d = {"ticket": os.environ["TS_ID"], "kind": os.environ["TS_KIND"], "title": os.environ["TS_TITLE"]}
+if os.environ.get("TS_MODE"): d["mode"] = os.environ["TS_MODE"]
+if os.environ.get("TS_BODY"): d["body"] = os.environ["TS_BODY"]
+if os.environ.get("TS_URG"): d["urgency"] = os.environ["TS_URG"]
+if os.environ.get("TS_REC"): d["recommended"] = os.environ["TS_REC"]
+if os.environ.get("TS_EXP"): d["expires_in_seconds"] = int(os.environ["TS_EXP"])
+if os.environ.get("TS_OT"): d["on_timeout"] = os.environ["TS_OT"]
+if os.environ.get("TS_FENCE"): d["fence"] = int(os.environ["TS_FENCE"])
+opts = [l for l in os.environ.get("TS_OPTS","").splitlines() if l]
+if opts: d["options"] = opts
+expert = [l for l in os.environ.get("TS_EXPERT","").splitlines() if l]
+if expert: d["expertise"] = expert
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/questions" "$data" >/dev/null
+  # A blocking ask releases the lease server-side; advisory does not.
+  [ "$mode" = "advisory" ] || fence_clear "$id"
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+q = d.get("question", {})
+if q.get("mode") == "advisory":
+    print(f"asked {q.get('id','?')} (advisory) on {q.get('ticket','?')} — recorded, no state change")
+else:
+    print(f"asked {q.get('id','?')} on {q.get('ticket','?')} — ticket parked in '{d.get('ticket',{}).get('state','?')}', lease released")
+if d.get("note"): print(d["note"])
+PY
+}
+
+cmd_answer() {
+  local id=${1:-} ans=${2:-}
+  { [ -n "$id" ] && [ -n "$ans" ]; } || die "answer: usage: takomo answer QID ANSWER [--note N] [--resume-to STATE]"
+  shift 2
+  local note="" resume=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --note)      note=$2; shift 2 ;;
+      --resume-to) resume=$2; shift 2 ;;
+      *) die "answer: unknown flag $1" ;;
+    esac
+  done
+  local data; data=$(TS_ANS="$ans" TS_NOTE="$note" TS_RESUME="$resume" python3 <<'PY'
+import json, os
+ans = os.environ["TS_ANS"]
+note = os.environ.get("TS_NOTE","")
+answer = {"value": ans, "note": note} if note else ans
+d = {"answer": answer}
+if os.environ.get("TS_RESUME"): d["resume_to"] = os.environ["TS_RESUME"]
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/questions/$(urlenc "$id")/answer" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+t = d.get("ticket", {})
+print(f"answered {d.get('question',{}).get('id','?')} — ticket {t.get('id','?')} resumed to '{t.get('state','?')}'")
+PY
+}
+
+cmd_questions() {
+  local project="" ticket="" status="" mine=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --ticket)  ticket=$2; shift 2 ;;
+      --status)  status=$2; shift 2 ;;
+      --mine)    mine=1; shift ;;
+      *) die "questions: unknown flag $1" ;;
+    esac
+  done
+  local q="/v1/questions?"
+  [ -n "$project" ] && q="${q}project=$(urlenc "$project")&"
+  [ -n "$ticket" ]  && q="${q}ticket=$(urlenc "$ticket")&"
+  [ -n "$status" ]  && q="${q}status=$(urlenc "$status")&"
+  [ -n "$mine" ]    && q="${q}mine=true&"
+  api GET "${q%&}" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if d.get("note"): print(d["note"])
+if not items:
+    print("no questions"); sys.exit(0)
+print(f"{'ID':<12} {'URGENCY':<9} {'KIND':<8} {'TICKET':<12} EXPERTISE / TITLE")
+for q in items:
+    exp = ",".join(q.get("expertise") or []) or "-"
+    print(f"{q.get('id',''):<12} {q.get('urgency',''):<9} {q.get('kind',''):<8} {q.get('ticket',''):<12} [{exp}] {q.get('title','')}")
+PY
+}
+
+cmd_withdraw() {
+  local id=${1:-} reason=${2:-withdrawn via takomo}
+  [ -n "$id" ] || die "withdraw: usage: takomo withdraw QID [REASON]"
+  local data; data=$(TS_R="$reason" python3 -c 'import json,os; print(json.dumps({"reason":os.environ["TS_R"]}))')
+  api POST "/v1/questions/$(urlenc "$id")/withdraw" "$data" >/dev/null
+  echo "withdrew $id"
+}
+
+cmd_answer_link() {
+  # `answer-link revoke ID` | `answer-link QID [--ttl SECS] [--actor NAME]`
+  if [ "${1:-}" = "revoke" ]; then
+    local gid=${2:-}; [ -n "$gid" ] || die "answer-link revoke: GRANT-ID is required (see the id from mint)"
+    api DELETE "/v1/answer-links/$(urlenc "$gid")" >/dev/null
+    echo "revoked answer link $gid"; return
+  fi
+  local qid=${1:-}; [ -n "$qid" ] || die "answer-link: usage: takomo answer-link QID [--ttl SECS] [--actor NAME]  |  takomo answer-link revoke GRANT-ID"; shift
+  local ttl="" actor=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ttl)   ttl=$2; shift 2 ;;
+      --actor) actor=$2; shift 2 ;;
+      *) die "answer-link: unknown flag $1" ;;
+    esac
+  done
+  local data; data=$(TS_TTL="$ttl" TS_ACTOR="$actor" python3 <<'PY'
+import json, os
+d = {}
+if os.environ.get("TS_TTL"): d["ttl_seconds"] = int(os.environ["TS_TTL"])
+if os.environ.get("TS_ACTOR"): d["actor"] = os.environ["TS_ACTOR"]
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/questions/$(urlenc "$qid")/answer-link" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"answer link {d.get('id','?')} for question {d.get('question','?')} (expires {d.get('expires_at','?')})")
+print("send this link to the expert (shown once):")
+print("  " + (d.get("url") or (d.get("path","") + "   (prepend your board's origin)")))
+PY
+}
+
 # --- identity ----------------------------------------------------------------
 
 cmd_whoami() {
@@ -1697,6 +1859,23 @@ Claiming & progressing (the fence is remembered locally after a claim):
   takomo move ID STATE       move to an arbitrary workflow state
   takomo release ID [REASON] return the ticket to the queue
 
+Ask a human (block on a human decision, then resume):
+  takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory]
+         [--body B] [--option O]... [--expertise TAG]... [--urgency U]
+         [--recommend R] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]
+         park the ticket in a blocked state, release your lease, and post a
+         question for a human; resume after every open question is answered.
+         --advisory records a routed decision WITHOUT parking (e.g. an epic
+         or strategic question).
+  takomo questions [--project P] [--ticket T] [--status S] [--mine]
+         the inbox: open questions (--mine routes by your expert:<tag> scopes)
+  takomo answer QID ANSWER [--note N] [--resume-to STATE]   (needs human scope)
+  takomo withdraw QID [REASON]
+  takomo answer-link QID [--ttl SECS] [--actor NAME]
+         mint a scoped, expiring, single-use link so an OUTSIDE expert can
+         answer just this one question without holding a token
+  takomo answer-link revoke GRANT-ID
+
 Annotating:
   takomo comment ID TEXT
   takomo link ID [--pr URL] [--branch B] [--env URL] [--run URL]
@@ -1764,6 +1943,11 @@ main() {
     archive) cmd_archive "$@" ;;
     unarchive) cmd_unarchive "$@" ;;
     release) cmd_release "$@" ;;
+    ask)         cmd_ask "$@" ;;
+    answer)      cmd_answer "$@" ;;
+    answer-link) cmd_answer_link "$@" ;;
+    questions)   cmd_questions "$@" ;;
+    withdraw)    cmd_withdraw "$@" ;;
     share)   cmd_share "$@" ;;
     export)  cmd_export "$@" ;;
     import)  cmd_import "$@" ;;

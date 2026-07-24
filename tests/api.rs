@@ -232,6 +232,26 @@ impl TestApp {
         let (s, b) = self.transition(&self.human, id, "done").await;
         assert_eq!(s, StatusCode::OK, "->done failed: {b}");
     }
+
+    /// Drive a leaf ticket to `implementing` and return the worker's fence, so
+    /// question tests can park an in-progress ticket.
+    async fn to_implementing(&self, id: &str) -> i64 {
+        self.to_ready(id).await;
+        let (s, lease) = self
+            .post(&self.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+            .await;
+        assert_eq!(s, StatusCode::OK, "claim failed: {lease}");
+        let fence = lease["fence"].as_i64().unwrap();
+        let (s, b) = self
+            .post(
+                &self.worker,
+                &format!("/v1/tickets/{id}/transition"),
+                json!({ "to": "implementing", "fence": fence }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
+        fence
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3182,4 +3202,711 @@ async fn share_creation_validates_ref_and_authority() {
         StatusCode::FORBIDDEN,
         "cannot share a project outside token scope"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ask-a-human board
+
+#[tokio::test]
+async fn question_ask_parks_ticket_and_answer_resumes_it() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Delete the legacy billing table?").await;
+    let fence = app.to_implementing(&id).await;
+
+    // Agent asks a confirm question, echoing its lease fence.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "confirm",
+                "title": "OK to drop table billing_v1?",
+                "body": "It has no reads in 90d but I want a human to confirm.",
+                "expertise": ["domain:billing"],
+                "urgency": "high",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
+    let qid = body["question"]["id"]
+        .as_str()
+        .expect("question id")
+        .to_string();
+    // Ticket is parked in the blocked state and the lease was released.
+    assert_eq!(body["ticket"]["state"], "needs-decision");
+    assert!(
+        body["ticket"]["claim"].is_null(),
+        "lease should be released"
+    );
+
+    // The inbox shows it as open, routable by expertise.
+    let (s, list) = app
+        .get(&app.human, "/v1/questions?project=tp&status=open")
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(list["items"][0]["id"], qid);
+
+    // A token without the human scope cannot answer.
+    let (s, denied) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "worker answered without human scope: {denied}"
+    );
+    assert_eq!(denied["code"], "auth.scope");
+
+    // The human answers yes; the ticket resumes into the claimable ready state.
+    let (s, answered) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": { "value": "yes", "note": "confirmed with data team" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "answer failed: {answered}");
+    assert_eq!(answered["question"]["status"], "answered");
+    assert_eq!(answered["question"]["answer"]["value"], true);
+    assert_eq!(answered["question"]["resolved_to"], "ready");
+    assert_eq!(answered["ticket"]["state"], "ready");
+
+    // The exchange is recorded as a comment the resuming agent can read.
+    let (s, detail) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let comments = detail["comments"].as_array().unwrap();
+    assert!(
+        comments.iter().any(|c| c["author"] == "human:reviewer"
+            && c["body"].as_str().unwrap().contains("Human answered")),
+        "answer should leave a comment: {detail}"
+    );
+
+    // Answering again is rejected — the question is closed.
+    let (s, again) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "no" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{again}");
+    assert_eq!(again["code"], "question.not_open");
+}
+
+#[tokio::test]
+async fn question_choose_validates_options_and_mine_filters_by_expertise() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Which migration strategy?").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Pick a migration strategy",
+                "options": ["big-bang", "dual-write", "backfill"],
+                "expertise": ["domain:data"],
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    // An answer outside the offered options is rejected with a teaching error.
+    let (s, bad) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "rewrite-everything" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.answer");
+
+    // Mint an expert token and confirm ?mine=true routes by expert:<tag> scope.
+    let (s, tok) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:data", "scopes": ["read", "write", "human", "expert:domain:data"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tok}");
+    let expert = tok["token"].as_str().unwrap().to_string();
+
+    let (s, mine) = app.get(&expert, "/v1/questions?project=tp&mine=true").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(mine["items"].as_array().unwrap().len(), 1, "{mine}");
+    assert_eq!(mine["items"][0]["id"], qid);
+
+    // A billing expert sees nothing under ?mine=true (different tag).
+    let (s, tok2) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:bill", "scopes": ["read", "human", "expert:domain:billing"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tok2}");
+    let billing = tok2["token"].as_str().unwrap().to_string();
+    let (s, none) = app
+        .get(&billing, "/v1/questions?project=tp&mine=true")
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(none["items"].as_array().unwrap().len(), 0, "{none}");
+
+    // The expert answers and resumes the ticket.
+    let (s, answered) = app
+        .post(
+            &expert,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "dual-write" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["question"]["answer"]["value"], "dual-write");
+    assert_eq!(answered["ticket"]["state"], "ready");
+}
+
+#[tokio::test]
+async fn question_withdraw_closes_it_without_answering() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Never mind, found it").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "clarify", "title": "What does archived mean here?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    let (s, w) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/withdraw"),
+            json!({ "reason": "figured it out from the docs" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{w}");
+    assert_eq!(w["status"], "withdrawn");
+
+    // It leaves the open inbox.
+    let (_, list) = app
+        .get(&app.human, "/v1/questions?project=tp&status=open")
+        .await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 0, "{list}");
+
+    // A withdrawn question can no longer be answered.
+    let (s, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "some text" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn answer_link_lets_an_outsider_answer_once() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Outside review").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let qid = b["question"]["id"].as_str().unwrap().to_string();
+
+    // A write-only worker cannot mint a link (delegating needs the human scope).
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // A human mints the link.
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("tka_"), "grant token: {token}");
+    assert!(link["path"].as_str().unwrap().contains("#a="));
+
+    // The outsider (holding ONLY the grant token) sees the one question...
+    let (s, self_view) = app.get(&token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::OK, "{self_view}");
+    assert_eq!(self_view["question"]["id"], qid);
+
+    // ...and can answer it, which resumes the ticket.
+    let (s, answered) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["ticket"]["state"], "ready");
+    assert_eq!(answered["question"]["answered_by"], "human:contractor");
+
+    // The link is single-use: reuse is gone.
+    let (s, _) = app.get(&token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::GONE);
+    let (s, _) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "no" }))
+        .await;
+    assert_eq!(s, StatusCode::GONE);
+
+    // A normal (non-grant) token cannot reach the answer endpoints at all.
+    let (s, denied) = app.get(&app.worker, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{denied}");
+}
+
+#[tokio::test]
+async fn answer_link_delegates_approve_only_with_expertise() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Legal sign-off").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "approve", "title": "OK legally?", "expertise": ["domain:legal"], "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let qid = b["question"]["id"].as_str().unwrap().to_string();
+
+    // A plain human (no expert:domain:legal) cannot mint a link for an approve
+    // question — you can't delegate authority you don't hold.
+    let (s, denied) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "question.approve_expertise");
+
+    // A legal expert mints it; the outsider's link then satisfies the approve
+    // gate for this one question.
+    let (s, tok) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:counsel", "scopes": ["read", "write", "human", "expert:domain:legal"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tok}");
+    let counsel = tok["token"].as_str().unwrap().to_string();
+    let (s, link) = app
+        .post(
+            &counsel,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    let (s, answered) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["ticket"]["state"], "ready");
+}
+
+#[tokio::test]
+async fn answer_link_revoke_kills_it() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Revoke test").await;
+    let fence = app.to_implementing(&id).await;
+    let (_, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "clarify", "title": "Detail?", "fence": fence }),
+        )
+        .await;
+    let qid = b["question"]["id"].as_str().unwrap().to_string();
+    let (_, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    let token = link["token"].as_str().unwrap().to_string();
+    let gid = link["id"].as_str().unwrap().to_string();
+
+    // Revoke it, then the token is gone.
+    let resp = app
+        .client
+        .delete(format!("{}/v1/answer-links/{gid}", app.base))
+        .bearer_auth(&app.human)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (s, _) = app.get(&token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn question_recommended_timeout_requires_a_real_window() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("No instant self-approve").await;
+    let fence = app.to_implementing(&id).await;
+
+    // on_timeout=recommended with a 1s window is refused: it would let a
+    // write-only agent satisfy the human gate almost instantly.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "confirm", "title": "Proceed?",
+                "recommended": "yes", "expires_in_seconds": 1, "on_timeout": "recommended",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "validation.on_timeout");
+}
+
+#[tokio::test]
+async fn question_expiry_applies_recommendation() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Auto-resolve on timeout").await;
+    let fence = app.to_implementing(&id).await;
+
+    // A valid (>= minimum) recommended-timeout window.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "confirm",
+                "title": "Proceed if nobody objects?",
+                "recommended": "yes",
+                "expires_in_seconds": 3600,
+                "on_timeout": "recommended",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    // Backdate the deadline directly in the DB (as an aged question would be),
+    // so the sweeper picks it up without waiting an hour.
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let past = takomo::ids::now_ms() - 1000;
+        let n = conn
+            .execute(
+                "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![qid, past],
+            )
+            .expect("backdate");
+        assert_eq!(n, 1);
+    }
+
+    // The sweeper runs every 250ms in tests.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, q) = app.get(&app.admin, &format!("/v1/questions/{qid}")).await;
+        if q["status"] == "answered" {
+            assert_eq!(q["answered_by"], "system");
+            assert_eq!(q["answer"]["value"], true);
+            let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+            assert_eq!(t["state"], "ready", "ticket should resume on timeout");
+            break;
+        }
+        assert!(Instant::now() < deadline, "question was not swept: {q}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+#[tokio::test]
+async fn question_barrier_resumes_only_when_all_answered() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Two decisions").await;
+    let fence = app.to_implementing(&id).await;
+
+    // Two distinct questions on the same parked ticket.
+    let (s, b1) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "OK to drop the table?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b1}");
+    let q1 = b1["question"]["id"].as_str().unwrap().to_string();
+    // Second ask: ticket is already parked + unclaimed, so no fence needed.
+    let (s, b2) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "choose", "title": "Which migration?", "options": ["a", "b"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b2}");
+    let q2 = b2["question"]["id"].as_str().unwrap().to_string();
+    assert_ne!(q1, q2);
+
+    // Answering the first does NOT resume — the barrier is not cleared.
+    let (s, a1) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{q1}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{a1}");
+    assert!(
+        a1["question"]["resolved_to"].is_null(),
+        "first answer must not resume: {a1}"
+    );
+    assert_eq!(a1["ticket"]["state"], "needs-decision");
+
+    // Answering the last one resumes the ticket.
+    let (s, a2) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{q2}/answer"),
+            json!({ "answer": "a" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{a2}");
+    assert_eq!(a2["question"]["resolved_to"], "ready");
+    assert_eq!(a2["ticket"]["state"], "ready");
+}
+
+#[tokio::test]
+async fn question_advisory_on_epic_does_not_park() {
+    let app = TestApp::spawn().await;
+    // An epic sits in `brief` — which has no self-service park edge, so a
+    // blocking question would fail. Advisory works and changes no state.
+    let epic = app
+        .create_typed("Ship the billing revamp", "epic", None)
+        .await;
+
+    let (s, blocked) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": epic, "kind": "confirm", "title": "Do this epic at all?" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "blocking on a brief epic can't park: {blocked}"
+    );
+    assert_eq!(blocked["code"], "question.no_park");
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": epic, "mode": "advisory", "kind": "choose",
+                    "title": "Which direction for the epic?", "options": ["rewrite", "incremental"],
+                    "expertise": ["domain:product"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    assert_eq!(body["question"]["mode"], "advisory");
+    // The epic did not move and holds no claim.
+    assert_eq!(body["ticket"]["state"], "brief");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    // Answering records the decision but changes no ticket state.
+    let (s, ans) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "incremental" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ans}");
+    assert_eq!(ans["question"]["status"], "answered");
+    assert!(ans["question"]["resolved_to"].is_null());
+    assert_eq!(
+        ans["ticket"]["state"], "brief",
+        "advisory must not move the ticket"
+    );
+}
+
+#[tokio::test]
+async fn question_advisory_does_not_gate_the_barrier() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Blocking + advisory").await;
+    let fence = app.to_implementing(&id).await;
+
+    // A blocking question parks the ticket.
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "OK to proceed?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let blocking = b["question"]["id"].as_str().unwrap().to_string();
+    // An advisory question on the same (now parked, unclaimed) ticket.
+    let (s, a) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "mode": "advisory", "kind": "clarify", "title": "FYI: any concerns?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{a}");
+    let advisory = a["question"]["id"].as_str().unwrap().to_string();
+
+    // Answering the advisory one does NOT resume — and, being advisory, never would.
+    let (s, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{advisory}/answer"),
+            json!({ "answer": "none" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        t["state"], "needs-decision",
+        "advisory answer must not resume"
+    );
+
+    // Answering the blocking one resumes, even though... the advisory was the
+    // only other open question and advisory never counts toward the barrier.
+    let (s, done) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{blocking}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    assert_eq!(done["ticket"]["state"], "ready");
+}
+
+#[tokio::test]
+async fn question_ask_is_idempotent_on_retry() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Retry safe").await;
+    let fence = app.to_implementing(&id).await;
+    let ask = json!({ "ticket": id, "kind": "confirm", "title": "Same question?", "fence": fence });
+    let (s, first) = app.post(&app.worker, "/v1/questions", ask.clone()).await;
+    assert_eq!(s, StatusCode::CREATED, "{first}");
+    // A retry with identical (asker, kind, title) returns the same question,
+    // not a duplicate.
+    let (s, again) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Same question?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{again}");
+    assert_eq!(first["question"]["id"], again["question"]["id"]);
+    let (_, list) = app
+        .get(&app.human, "/v1/questions?project=tp&status=open")
+        .await;
+    assert_eq!(
+        list["items"].as_array().unwrap().len(),
+        1,
+        "no duplicate: {list}"
+    );
+}
+
+#[tokio::test]
+async fn question_approve_requires_a_matching_domain_expert() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Approve gate").await;
+    let fence = app.to_implementing(&id).await;
+
+    // approve must name an expertise domain.
+    let (s, bad) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "approve", "title": "Sign off?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.expertise");
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "approve", "title": "Sign off?", "expertise": ["domain:legal"], "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    // A plain human (no matching expert scope) is refused — approve has teeth.
+    let (s, denied) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "question.approve_expertise");
+
+    // The domain expert can.
+    let (s, tok) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:lawyer", "scopes": ["read", "write", "human", "expert:domain:legal"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tok}");
+    let expert = tok["token"].as_str().unwrap().to_string();
+    let (s, ok) = app
+        .post(
+            &expert,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+    assert_eq!(ok["ticket"]["state"], "ready");
 }

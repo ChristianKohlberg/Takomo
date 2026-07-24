@@ -97,6 +97,74 @@ impl Comment {
     }
 }
 
+/// A question on the "ask a human" board: an agent's request for a human
+/// decision, tied to a ticket. See `store/questions.rs` for the lifecycle.
+#[derive(Debug, Clone)]
+pub struct Question {
+    pub id: String,
+    pub project: String,
+    pub ticket: String,
+    pub asked_by: String,
+    /// blocking (parks + resumes the ticket) | advisory (routed + recorded, no
+    /// state change — e.g. an epic-level or strategic decision).
+    pub mode: String,
+    /// confirm | choose | clarify | approve.
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    /// choose-kind options (JSON array of strings); empty otherwise.
+    pub options: Vec<String>,
+    /// The agent's suggested answer (JSON), or Null.
+    pub recommended: Value,
+    /// Routing tags, e.g. ["domain:billing"].
+    pub expertise: Vec<String>,
+    pub urgency: String,
+    /// open | answered | withdrawn | expired.
+    pub status: String,
+    /// The recorded human answer (JSON), or Null while open.
+    pub answer: Value,
+    pub answered_by: Option<String>,
+    pub answered_at: Option<i64>,
+    /// State the ticket was moved to when the answer resolved it, if any.
+    pub resolved_to: Option<String>,
+    pub expires_at: Option<i64>,
+    /// What the expiry sweep does when `expires_at` passes with no answer:
+    /// recommended | cancel | escalate. None = leave open (just flag).
+    pub on_timeout: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+}
+
+impl Question {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "ticket": self.ticket,
+            "asked_by": self.asked_by,
+            "mode": self.mode,
+            "kind": self.kind,
+            "title": self.title,
+            "body": self.body,
+            "options": self.options,
+            "recommended": self.recommended,
+            "expertise": self.expertise,
+            "urgency": self.urgency,
+            "status": self.status,
+            "answer": self.answer,
+            "answered_by": self.answered_by,
+            "answered_at": self.answered_at.map(iso),
+            "resolved_to": self.resolved_to,
+            "expires_at": self.expires_at.map(iso),
+            "on_timeout": self.on_timeout,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "version": self.version,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Event {
     pub seq: i64,
@@ -187,6 +255,39 @@ impl ShareRow {
             "expires_at": iso(self.expires_at),
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
+            "revoked_at": self.revoked_at.map(iso),
+        })
+    }
+}
+
+/// A per-question answer grant: a write-once, expiring credential that lets an
+/// outside party answer exactly one question. See `store/answer_grants.rs`.
+#[derive(Debug, Clone)]
+pub struct AnswerGrantRow {
+    pub id: String,
+    pub question: String,
+    pub project: String,
+    /// Actor recorded as the answerer when this grant is used.
+    pub actor: String,
+    pub expires_at: i64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+impl AnswerGrantRow {
+    /// Public metadata — never carries the plaintext token or its hash.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "question": self.question,
+            "project": self.project,
+            "actor": self.actor,
+            "expires_at": iso(self.expires_at),
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "used_at": self.used_at.map(iso),
             "revoked_at": self.revoked_at.map(iso),
         })
     }

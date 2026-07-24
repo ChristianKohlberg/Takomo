@@ -119,6 +119,7 @@ Every rejection teaches: an illegal move returns the allowed transitions and a r
 - **Hierarchy + dependencies.** `epic → task/bug/subtask` trees, `blocked_by` edges (reverse + transitive views), labels, roadmaps, and free-form namespaced JSON metadata.
 - **Append-only event log.** A durable `?since=<seq>` cursor plus an SSE stream — the audit trail and the wake feed in one.
 - **Read-only web board** at `/board`, with scoped, expiring share links.
+- **Ask-a-human board.** When an agent needs a human decision (confirmation, a choice, a clarification, approval) it calls `takomo ask` / `takomo_ask`: a *blocking* question parks the ticket and releases the lease (the ticket resumes once all its open questions are answered), while an *advisory* question records a routed decision without changing state — for epic-level or strategic calls. Questions land on an inbox routed by expertise tag; a human answers on the board or over the API. For an outside expert with no takomo token, mint a **per-question answer link** — a scoped, expiring, single-use URL that lets them answer just that one question. Optional email/Slack push (off unless configured). See [docs/ask-a-human.md](docs/ask-a-human.md).
 - **Archiving + anti-lock-in.** Archive terminal tickets out of view; JSONL export/import with idempotent re-import, plus importers for beads and beans.
 - **Single binary.** Rust + SQLite (WAL); one process, zero external services.
 
@@ -130,6 +131,7 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 
 ## Docs
 
+- [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, expertise routing, and email/Slack notifications.
 - [docs/hosting.md](docs/hosting.md) — self-hosting depth: local build, TLS, and off-box backups (Litestream).
 - [docs/development.md](docs/development.md) — building, testing, linting, and the `backlot`/`handrail` dev loop.
 - [spec/openapi.yaml](spec/openapi.yaml) — the full v1 HTTP API (tickets, workflows, claims/leases, tokens, event log, `/mcp`).

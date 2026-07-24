@@ -358,3 +358,79 @@ async fn hosted_mcp_rejects_unauthorized_requests() {
         "share token works on its own endpoint"
     );
 }
+
+#[tokio::test]
+async fn hosted_mcp_ask_and_answer_round_trip() {
+    let app = spawn().await;
+    app.ok_call(&app.human, "initialize", init_params()).await;
+
+    // Create and drive a ticket to implementing (worker holds the lease).
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "mcp ask", "type": "task" }),
+        )
+        .await;
+    let id = created["ticket"]["id"].as_str().unwrap().to_string();
+    // brief -> spec -> ready needs the human scope.
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "spec" }),
+    )
+    .await;
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "ready" }),
+    )
+    .await;
+    app.tool_ok(&app.worker, "takomo_claim", json!({ "id": id }))
+        .await;
+    app.tool_ok(&app.worker, "takomo_start", json!({ "id": id }))
+        .await;
+
+    // The agent asks a human; the ticket parks and the lease releases.
+    let asked = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({
+                "id": id,
+                "kind": "confirm",
+                "title": "Ship it?",
+                "expertise": ["domain:release"],
+            }),
+        )
+        .await;
+    let qid = asked["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(asked["ticket"]["state"].as_str().unwrap(), "needs-decision");
+
+    // takomo_show surfaces the open question so a resuming agent sees it.
+    let shown = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": id }))
+        .await;
+    assert_eq!(shown["open_questions"][0]["id"].as_str().unwrap(), qid);
+
+    // A worker without the human scope is refused.
+    let (denied, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_answer",
+            json!({ "id": qid, "answer": "yes" }),
+        )
+        .await;
+    assert!(is_err, "worker must not answer: {denied}");
+
+    // The human answers; the ticket resumes into a claimable state.
+    let answered = app
+        .tool_ok(
+            &app.human,
+            "takomo_answer",
+            json!({ "id": qid, "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(answered["question"]["status"].as_str().unwrap(), "answered");
+    assert_eq!(answered["ticket"]["state"].as_str().unwrap(), "ready");
+}

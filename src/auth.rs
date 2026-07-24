@@ -242,3 +242,79 @@ pub async fn share_auth_middleware(
 fn share_gone(why: &str) -> ApiError {
     ApiError::new(StatusCode::GONE, "share.expired", why)
 }
+
+/// The resolved context for an answer-grant request. An answer grant (`tka_`)
+/// authorizes ONLY the `/v1/answer/self*` endpoints — reading and answering the
+/// one referenced question — and nothing else.
+#[derive(Debug, Clone)]
+pub struct AnswerCtx {
+    pub grant_id: String,
+    /// The single question this grant can answer.
+    pub question: String,
+    pub project: String,
+    /// Actor recorded as the answerer.
+    pub actor: String,
+    pub expires_at: i64,
+}
+
+/// Distinct auth path for answer-grant (`tka_`) tokens. It resolves the bearer
+/// token against the `answer_grants` table only (a normal `tk_`/`tks_` token is
+/// not there and is rejected), guards ONLY the `/v1/answer/self*` routes, and
+/// returns 410 Gone for a grant that is expired, revoked, or already spent.
+pub async fn answer_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
+    if token.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "answer.missing",
+            "Missing answer-link token. Open the answer link, which carries its token in the URL fragment (#a=...).",
+        ));
+    }
+
+    let grant = state
+        .store
+        .lookup_answer_grant_by_hash(&token_hash(token))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "answer.invalid",
+                "This answer-link token is not recognized. The link may be mistyped or already deleted.",
+            )
+        })?;
+
+    let now = now_ms();
+    if grant.revoked_at.is_some() {
+        return Err(answer_gone("this answer link has been revoked"));
+    }
+    if grant.used_at.is_some() {
+        return Err(answer_gone(
+            "this answer link has already been used (it is single-use)",
+        ));
+    }
+    if grant.expires_at <= now {
+        return Err(answer_gone("this answer link has expired"));
+    }
+
+    let ctx = AnswerCtx {
+        grant_id: grant.id,
+        question: grant.question,
+        project: grant.project,
+        actor: grant.actor,
+        expires_at: grant.expires_at,
+    };
+    request.extensions_mut().insert(ctx);
+    Ok(next.run(request).await)
+}
+
+fn answer_gone(why: &str) -> ApiError {
+    ApiError::new(StatusCode::GONE, "answer.expired", why)
+}
