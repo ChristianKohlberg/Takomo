@@ -52,6 +52,19 @@ Prefer commutative writes — they never conflict:
 
 Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<version>"`, retry on `conflict.version`). If you do that often, you should be commenting instead.
 
+## Ask a human when you're blocked on a decision
+
+When progressing needs a human judgment you can't make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — don't guess and don't silently stall. Ask:
+
+```bash
+takomo ask <id> --title "OK to drop billing_v1?" --kind confirm --expertise domain:billing --recommend yes
+takomo ask <id> --title "Which migration strategy?" --kind choose --option big-bang --option dual-write
+```
+
+A **blocking** ask (the default) parks the ticket and releases your lease (block-and-resume): **end your run** — this is not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer, and the ticket resumes once *every* open question on it is answered. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if it has a deadline; `takomo withdraw <qid>` if you resolve it yourself. Blocking resume needs a workflow with a human gate (the built-in `factory-default` has one; the `simple` tracker does not).
+
+For a decision that **shouldn't freeze the ticket** — an epic-level or strategic call ("which direction for this epic?") — add `--advisory`: it records a routed decision with no state change, works on any ticket/state, and never blocks. Check the queue with `takomo questions` (add `--mine` to see only your `expert:<tag>` domains); answer with `takomo answer <qid> <answer>` (needs the `human` scope).
+
 ## Creating tickets
 
 Always search first (`takomo ls -q <keywords>`). `takomo new` auto-sends an Idempotency-Key and surfaces a `similar` list in the response — **read it**; if your ticket already exists, use the existing one. Structure work with `epic` parents grouping `task`/`bug` children (`--parent <epic-id>`); real dependencies are `blocked_by` edges (`takomo dep <id> --blocked-by <other>`), not prose.

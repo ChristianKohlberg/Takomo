@@ -1,7 +1,7 @@
 {
   "name": "takomo",
-  "version": "0.1.0",
-  "description": "Use the central Takomo as the single source of truth for work items instead of TodoWrite. Bundles the takomo skill and a remote MCP server for the hosted store, so agents can find, claim, and progress tickets through an enforced workflow over HTTP.",
+  "version": "0.2.0",
+  "description": "Use the central Takomo as the single source of truth for work items instead of TodoWrite. Bundles the takomo skill and a remote MCP server for the hosted store, so agents can find, claim, and progress tickets through an enforced workflow over HTTP — including asking a human when a decision is needed.",
   "author": {
     "name": "ChristianKohlberg"
   },
