@@ -22,7 +22,9 @@ pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
 pub use projects::DeletedCounts;
-pub use questions::{AskRequest, QuestionFilter, TimeoutAction, QUESTION_KINDS};
+pub use questions::{
+    question_quality_hints, AskRequest, QuestionFilter, TimeoutAction, QUESTION_KINDS,
+};
 pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
@@ -134,6 +136,24 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // Richer question fields the inbox UI renders (all optional/additive):
+    // recommendation confidence (1-4), a recommendation rationale, a one-line
+    // list summary, and per-option descriptions (parallel to `options`).
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "confidence") {
+        conn.execute("ALTER TABLE questions ADD COLUMN confidence INTEGER", [])?;
+    }
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "recommended_note") {
+        conn.execute("ALTER TABLE questions ADD COLUMN recommended_note TEXT", [])?;
+    }
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "summary") {
+        conn.execute("ALTER TABLE questions ADD COLUMN summary TEXT", [])?;
+    }
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "option_notes") {
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN option_notes TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
     // projects.question_language: the human-facing language agents should phrase
     // ask-a-human questions in for this project (nullable = no preference).
     // Additive; older project tables predate it.
@@ -231,6 +251,10 @@ CREATE TABLE IF NOT EXISTS questions (
   expires_at   INTEGER,
   on_timeout   TEXT,
   awaiting     TEXT NOT NULL DEFAULT 'human',
+  confidence   INTEGER,
+  recommended_note TEXT,
+  summary      TEXT,
+  option_notes TEXT NOT NULL DEFAULT '[]',
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL,
   version      INTEGER NOT NULL DEFAULT 1

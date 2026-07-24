@@ -736,9 +736,9 @@ cmd_release() {
 # --- ask-a-human board -------------------------------------------------------
 
 cmd_ask() {
-  local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--expertise TAG]... [--urgency U] [--recommend R] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
-  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode=""
-  local -a options=() expertise=()
+  local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--option-desc D]... [--expertise TAG]... [--urgency U] [--recommend R] [--rec-note WHY] [--confidence 1-4] [--summary S] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
+  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode="" recnote="" summary="" confidence=""
+  local -a options=() expertise=() optdescs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --kind)       kind=$2; shift 2 ;;
@@ -746,9 +746,13 @@ cmd_ask() {
       --title)      title=$2; shift 2 ;;
       --body)       body=$2; shift 2 ;;
       --option)     options+=("$2"); shift 2 ;;
+      --option-desc) optdescs+=("$2"); shift 2 ;;
       --expertise)  expertise+=("$2"); shift 2 ;;
       --urgency)    urgency=$2; shift 2 ;;
       --recommend)  recommend=$2; shift 2 ;;
+      --rec-note)   recnote=$2; shift 2 ;;
+      --confidence) confidence=$2; shift 2 ;;
+      --summary)    summary=$2; shift 2 ;;
       --expires-in) expires=$2; shift 2 ;;
       --on-timeout) ontimeout=$2; shift 2 ;;
       *) die "ask: unknown flag $1" ;;
@@ -758,7 +762,9 @@ cmd_ask() {
   local fence; fence=$(fence_load "$id")
   local data; data=$(TS_ID="$id" TS_KIND="$kind" TS_TITLE="$title" TS_BODY="$body" \
     TS_URG="$urgency" TS_REC="$recommend" TS_EXP="$expires" TS_OT="$ontimeout" TS_FENCE="$fence" TS_MODE="$mode" \
+    TS_RECNOTE="$recnote" TS_SUMMARY="$summary" TS_CONF="$confidence" \
     TS_OPTS="$(printf '%s\n' "${options[@]:-}")" TS_EXPERT="$(printf '%s\n' "${expertise[@]:-}")" \
+    TS_OPTDESCS="$(printf '%s\n' "${optdescs[@]:-}")" \
     python3 <<'PY'
 import json, os
 d = {"ticket": os.environ["TS_ID"], "kind": os.environ["TS_KIND"], "title": os.environ["TS_TITLE"]}
@@ -766,11 +772,20 @@ if os.environ.get("TS_MODE"): d["mode"] = os.environ["TS_MODE"]
 if os.environ.get("TS_BODY"): d["body"] = os.environ["TS_BODY"]
 if os.environ.get("TS_URG"): d["urgency"] = os.environ["TS_URG"]
 if os.environ.get("TS_REC"): d["recommended"] = os.environ["TS_REC"]
+if os.environ.get("TS_RECNOTE"): d["recommended_note"] = os.environ["TS_RECNOTE"]
+if os.environ.get("TS_SUMMARY"): d["summary"] = os.environ["TS_SUMMARY"]
+if os.environ.get("TS_CONF"): d["confidence"] = int(os.environ["TS_CONF"])
 if os.environ.get("TS_EXP"): d["expires_in_seconds"] = int(os.environ["TS_EXP"])
 if os.environ.get("TS_OT"): d["on_timeout"] = os.environ["TS_OT"]
 if os.environ.get("TS_FENCE"): d["fence"] = int(os.environ["TS_FENCE"])
 opts = [l for l in os.environ.get("TS_OPTS","").splitlines() if l]
-if opts: d["options"] = opts
+descs = [l for l in os.environ.get("TS_OPTDESCS","").splitlines() if l]
+if opts:
+    # pair options with descriptions when provided 1:1, else send plain strings
+    if descs and len(descs) == len(opts):
+        d["options"] = [{"value": o, "desc": dd} for o, dd in zip(opts, descs)]
+    else:
+        d["options"] = opts
 expert = [l for l in os.environ.get("TS_EXPERT","").splitlines() if l]
 if expert: d["expertise"] = expert
 print(json.dumps(d))
@@ -788,6 +803,8 @@ if q.get("mode") == "advisory":
 else:
     print(f"asked {q.get('id','?')} on {q.get('ticket','?')} — ticket parked in '{d.get('ticket',{}).get('state','?')}', lease released")
 if d.get("note"): print(d["note"])
+for h in (d.get("hints") or []):
+    print("hint: " + h)
 PY
 }
 

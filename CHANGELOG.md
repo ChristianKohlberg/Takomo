@@ -9,6 +9,17 @@ additively only.
 
 ### Added
 
+- **Richer question fields (make the inbox fully data-driven).** Questions gain
+  optional, additive fields the redesigned inbox renders: per-option
+  descriptions (send `options` as `[{value, desc}]`, or a parallel
+  `option_notes`), `recommended_note` (the rationale), `confidence` (1–4, drives
+  the recommendation gauge), and `summary` (list preview). Exposed on
+  `POST /v1/questions`, `takomo_ask`, and `takomo ask`
+  (`--option-desc`/`--rec-note`/`--confidence`/`--summary`). The ask response now
+  returns a non-blocking **`hints`** array telling the agent what optional field
+  would improve the card — it never fails the ask. Agent guidance (MCP tool
+  description, plugin skill) updated to write decision-ready questions.
+
 - **Inbox & board redesign (Aquarelle prototype) + DE/EN localization.** `/inbox`
   is rebuilt to the latest design: a **DE/EN language toggle** (whole UI
   localizable, remembered per device, defaults to the browser language), an

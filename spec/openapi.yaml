@@ -1176,9 +1176,23 @@ paths:
                 body: { type: string }
                 options:
                   type: array
+                  description: 'For kind=choose (>= 2). Each item is a string, or an object {value, desc} to give the option a one-line trade-off description shown in the inbox.'
+                  items:
+                    oneOf:
+                      - { type: string }
+                      - type: object
+                        required: [value]
+                        properties:
+                          value: { type: string }
+                          desc: { type: string }
+                option_notes:
+                  type: array
                   items: { type: string }
-                  description: For kind=choose (>= 2 options)
-                recommended: { description: The agent's suggested answer (any JSON) }
+                  description: 'Alternative to {value,desc}: per-option descriptions parallel to `options` (same length).'
+                recommended: { description: The agent's suggested answer (any JSON); for choose the exact option string }
+                recommended_note: { type: string, description: A short rationale for the recommendation ("why") }
+                confidence: { type: integer, minimum: 1, maximum: 4, description: How strong the recommendation is (1 tentative … 4 very strong) }
+                summary: { type: string, description: One-line summary for the inbox list preview }
                 expertise:
                   type: array
                   items: { type: string }
@@ -1198,6 +1212,10 @@ paths:
                   question: { $ref: "#/components/schemas/Question" }
                   ticket: { $ref: "#/components/schemas/Ticket" }
                   note: { type: string }
+                  hints:
+                    type: array
+                    items: { type: string }
+                    description: Non-blocking suggestions for optional fields that would make the inbox render richer.
         "400":
           description: Malformed body (unknown field, missing/mistyped ticket/kind/title).
           content:
@@ -1856,7 +1874,11 @@ components:
         title: { type: string }
         body: { type: string }
         options: { type: array, items: { type: string } }
+        option_notes: { type: array, items: { type: string }, description: 'Per-option descriptions, parallel to options (empty when none)' }
         recommended: { description: The agent's suggested answer (any JSON), or null }
+        recommended_note: { type: string, nullable: true, description: Short rationale for the recommendation }
+        confidence: { type: integer, nullable: true, minimum: 1, maximum: 4, description: Recommendation strength (1 tentative … 4 very strong) }
+        summary: { type: string, nullable: true, description: One-line list-preview summary }
         expertise: { type: array, items: { type: string }, description: 'Routing tags, e.g. ["domain:billing"]' }
         urgency: { type: string, enum: [critical, high, normal, low] }
         status: { type: string, enum: [open, answered, withdrawn, expired] }

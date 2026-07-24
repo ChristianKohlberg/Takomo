@@ -46,12 +46,16 @@ const URGENCIES: [&str; 4] = ["critical", "high", "normal", "low"];
 const MIN_RECOMMENDED_TIMEOUT_SECS: i64 = 300;
 const MAX_OPTIONS: usize = 20;
 const MAX_OPTION_LEN: usize = 200;
+const MAX_OPTION_DESC: usize = 500;
+const MAX_REC_NOTE: usize = 1000;
+const MAX_SUMMARY: usize = 300;
 const MAX_EXPERTISE: usize = 10;
 const MAX_EXPERTISE_LEN: usize = 100;
 
 const QUESTION_COLS: &str = "id, project, ticket, asked_by, mode, kind, title, body, options, \
     recommended, expertise, urgency, status, answer, answered_by, answered_at, resolved_to, \
-    expires_at, on_timeout, awaiting, created_at, updated_at, version";
+    expires_at, on_timeout, awaiting, confidence, recommended_note, summary, option_notes, \
+    created_at, updated_at, version";
 
 /// Max length of a single follow-up message body.
 const MAX_MESSAGE_LEN: usize = 8_192;
@@ -101,7 +105,15 @@ pub struct AskRequest {
     pub title: String,
     pub body: String,
     pub options: Vec<String>,
+    /// Per-option descriptions, parallel to `options` (empty vec = none).
+    pub option_notes: Vec<String>,
     pub recommended: Value,
+    /// Short rationale for the recommendation, or None.
+    pub recommended_note: Option<String>,
+    /// Recommendation strength 1-4, or None.
+    pub confidence: Option<i64>,
+    /// One-line list summary, or None.
+    pub summary: Option<String>,
     pub expertise: Vec<String>,
     pub urgency: Option<String>,
     /// Milliseconds since epoch when the question times out, or None.
@@ -126,6 +138,7 @@ pub struct QuestionFilter {
 
 fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
     let options_raw: String = r.get("options")?;
+    let option_notes_raw: String = r.get("option_notes")?;
     let expertise_raw: String = r.get("expertise")?;
     let recommended_raw: Option<String> = r.get("recommended")?;
     let answer_raw: Option<String> = r.get("answer")?;
@@ -139,9 +152,13 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
         title: r.get("title")?,
         body: r.get("body")?,
         options: serde_json::from_str(&options_raw).unwrap_or_default(),
+        option_notes: serde_json::from_str(&option_notes_raw).unwrap_or_default(),
         recommended: recommended_raw
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Value::Null),
+        recommended_note: r.get("recommended_note")?,
+        confidence: r.get("confidence")?,
+        summary: r.get("summary")?,
         expertise: serde_json::from_str(&expertise_raw).unwrap_or_default(),
         urgency: r.get("urgency")?,
         status: r.get("status")?,
@@ -266,6 +283,44 @@ fn answer_summary(kind: &str, answer: &Value) -> String {
         Some(n) => format!("{head} — {n}"),
         None => head,
     }
+}
+
+/// Non-blocking quality hints for a just-raised question: what optional fields
+/// would make the inbox render richer. Never fails an ask — purely advisory,
+/// surfaced in the ask response so an agent can improve its next question.
+pub fn question_quality_hints(q: &Question) -> Vec<String> {
+    let mut h = Vec::new();
+    let has_rec = !q.recommended.is_null();
+    if q.kind == "choose" && !q.option_notes.iter().any(|d| !d.trim().is_empty()) {
+        h.push("Add a one-line trade-off description per option so the inbox shows what each choice means — send options as [{\"value\":\"…\",\"desc\":\"…\"}].".to_string());
+    }
+    if has_rec && q.confidence.is_none() {
+        h.push(
+            "Add confidence (1-4) so the inbox can show how strong your recommendation is."
+                .to_string(),
+        );
+    }
+    if has_rec
+        && q.recommended_note
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+    {
+        h.push("Add recommended_note with a short 'why' for your recommendation.".to_string());
+    }
+    if !has_rec && matches!(q.kind.as_str(), "choose" | "approve" | "confirm") {
+        h.push(
+            "Consider setting `recommended` to point the human at your suggested answer."
+                .to_string(),
+        );
+    }
+    if q.summary.as_deref().unwrap_or("").trim().is_empty() && q.body.len() > 160 {
+        h.push(
+            "Add a one-line `summary` for the inbox list preview (the body is long).".to_string(),
+        );
+    }
+    h
 }
 
 /// First transition target from `from` whose category is `category` and whose
@@ -502,6 +557,47 @@ impl Store {
                 ));
             }
         }
+        // Per-option descriptions must line up 1:1 with the options.
+        if !req.option_notes.is_empty() && req.option_notes.len() != req.options.len() {
+            return Err(ApiError::validation(
+                "validation.option_notes",
+                format!(
+                    "option descriptions must match the options 1:1 ({} options, {} descriptions). Send options as [{{\"value\":\"…\",\"desc\":\"…\"}}] to pair them.",
+                    req.options.len(),
+                    req.option_notes.len()
+                ),
+            ));
+        }
+        for d in &req.option_notes {
+            if d.len() > MAX_OPTION_DESC {
+                return Err(ApiError::validation(
+                    "validation.option_notes",
+                    format!(
+                        "each option description must be at most {MAX_OPTION_DESC} characters."
+                    ),
+                ));
+            }
+        }
+        if let Some(c) = req.confidence {
+            if !(1..=4).contains(&c) {
+                return Err(ApiError::validation(
+                    "validation.confidence",
+                    "confidence must be an integer 1-4 (1 tentative, 2 moderate, 3 strong, 4 very strong).",
+                ));
+            }
+        }
+        if req.recommended_note.as_ref().map(|s| s.len()).unwrap_or(0) > MAX_REC_NOTE {
+            return Err(ApiError::validation(
+                "validation.recommended_note",
+                format!("recommended_note must be at most {MAX_REC_NOTE} characters."),
+            ));
+        }
+        if req.summary.as_ref().map(|s| s.len()).unwrap_or(0) > MAX_SUMMARY {
+            return Err(ApiError::validation(
+                "validation.summary",
+                format!("summary must be at most {MAX_SUMMARY} characters."),
+            ));
+        }
         if req.expertise.len() > MAX_EXPERTISE {
             return Err(ApiError::validation(
                 "validation.expertise",
@@ -651,8 +747,8 @@ impl Store {
 
             let id = question_id();
             tx.execute(
-                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, urgency, status, expires_at, on_timeout, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13, ?14, ?15, ?15)",
+                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, urgency, status, expires_at, on_timeout, confidence, recommended_note, summary, option_notes, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19)",
                 params![
                     id,
                     t.project,
@@ -668,6 +764,10 @@ impl Store {
                     urgency,
                     req.expires_at,
                     req.on_timeout.map(|a| a.as_str()),
+                    req.confidence,
+                    req.recommended_note.as_deref().filter(|s| !s.trim().is_empty()),
+                    req.summary.as_deref().filter(|s| !s.trim().is_empty()),
+                    serde_json::to_string(&req.option_notes).unwrap(),
                     now,
                 ],
             )?;

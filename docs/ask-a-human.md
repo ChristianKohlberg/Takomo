@@ -38,8 +38,27 @@ takomo ask rvp-x7k2 \
   --body "No reads in 90d; want a human to confirm before I migrate." \
   --expertise domain:billing \
   --urgency high \
-  --recommend yes
+  --recommend yes --rec-note "no reads in 90d" --confidence 4
 ```
+
+### Make the question decision-ready
+
+Beyond the required `title`/`kind`, a few optional fields let the inbox render a
+richer, faster-to-answer card (all additive; omit any of them):
+
+- **Per-option descriptions** — for `choose`, give each option a one-line
+  trade-off. CLI: `--option X --option-desc "…"` (parallel, 1:1). Over
+  MCP/HTTP: `options: [{ "value": "X", "desc": "…" }]` (or a parallel
+  `option_notes` array).
+- **`--recommend` + `--rec-note`** — your suggested answer and a short *why*.
+- **`--confidence` 1–4** — how strong the recommendation is (1 tentative … 4
+  very strong); drives the recommendation gauge.
+- **`--summary`** — a one-line preview for the inbox list.
+
+The `ask` response includes a non-blocking **`hints`** array naming anything that
+would make the card richer (e.g. "add a description per option", "add
+confidence") — it never fails the ask, it just teaches the next one. The MCP
+`takomo_ask` tool and its response carry the same fields and hints.
 
 Kinds:
 

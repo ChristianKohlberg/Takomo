@@ -114,8 +114,17 @@ pub struct Question {
     pub body: String,
     /// choose-kind options (JSON array of strings); empty otherwise.
     pub options: Vec<String>,
+    /// Per-option one-line descriptions, parallel to `options` (empty string
+    /// where none). Empty vec when the asker gave plain-string options.
+    pub option_notes: Vec<String>,
     /// The agent's suggested answer (JSON), or Null.
     pub recommended: Value,
+    /// A short rationale for the recommendation ("why"), or None.
+    pub recommended_note: Option<String>,
+    /// How strong the recommendation is, 1-4 (tentative → very strong), or None.
+    pub confidence: Option<i64>,
+    /// A one-line summary for the inbox list preview, or None (derive from body).
+    pub summary: Option<String>,
     /// Routing tags, e.g. ["domain:billing"].
     pub expertise: Vec<String>,
     pub urgency: String,
@@ -152,7 +161,11 @@ impl Question {
             "title": self.title,
             "body": self.body,
             "options": self.options,
+            "option_notes": self.option_notes,
             "recommended": self.recommended,
+            "recommended_note": self.recommended_note,
+            "confidence": self.confidence,
+            "summary": self.summary,
             "expertise": self.expertise,
             "urgency": self.urgency,
             "status": self.status,

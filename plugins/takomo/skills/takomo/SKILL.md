@@ -57,9 +57,14 @@ Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<versio
 When progressing needs a human judgment you can't make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — don't guess and don't silently stall. Ask:
 
 ```bash
-takomo ask <id> --title "OK to drop billing_v1?" --kind confirm --expertise domain:billing --recommend yes
-takomo ask <id> --title "Which migration strategy?" --kind choose --option big-bang --option dual-write
+takomo ask <id> --title "OK to drop billing_v1?" --kind confirm --expertise domain:billing --recommend yes --rec-note "no reads in 90d" --confidence 4
+takomo ask <id> --title "Which migration strategy?" --kind choose \
+  --option big-bang   --option-desc "Fastest, but hits every tenant at once." \
+  --option dual-write  --option-desc "Safe, auto-rollback, ~1 week to full." \
+  --recommend dual-write --rec-note "keeps a fragile endpoint from thundering" --confidence 3
 ```
+
+**Write a decision-ready question** so the human can answer without digging: give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and a `--confidence` 1–4, and add a `--summary` for the inbox list preview. The ask response returns `hints` naming anything still missing — read them and improve the next one. (Over MCP/HTTP, options may be `[{"value","desc"}]` and the same fields exist: `option_notes`, `recommended_note`, `confidence`, `summary`.)
 
 A **blocking** ask (the default) parks the ticket and releases your lease (block-and-resume): **end your run** — this is not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer, and the ticket resumes once *every* open question on it is answered. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if it has a deadline; `takomo withdraw <qid>` if you resolve it yourself. Blocking resume needs a workflow with a human gate (the built-in `factory-default` has one; the `simple` tracker does not).
 

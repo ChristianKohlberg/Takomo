@@ -245,9 +245,18 @@ pub struct AskArgs {
     pub body: Option<String>,
     /// For kind=choose: the options to pick from (>= 2).
     pub options: Option<Vec<String>>,
+    /// For kind=choose: a one-line trade-off description per option, parallel to
+    /// `options` (same length). Lets the inbox show what each choice means.
+    pub option_notes: Option<Vec<String>>,
     /// Your recommended answer (a hint for the human; also applied on timeout if
-    /// on_timeout=recommended).
+    /// on_timeout=recommended). For choose, the exact option string.
     pub recommended: Option<String>,
+    /// A short rationale for your recommendation ("why"), shown by the recommendation.
+    pub recommended_note: Option<String>,
+    /// How strong your recommendation is, 1-4 (1 tentative … 4 very strong).
+    pub confidence: Option<i64>,
+    /// A one-line summary for the inbox list preview (optional; else derived).
+    pub summary: Option<String>,
     /// Routing tags for the human queue, e.g. ["domain:billing"].
     pub expertise: Option<Vec<String>>,
     /// Urgency: critical, high, normal (default), or low.
@@ -591,9 +600,14 @@ impl TakomoMcp {
         description = "Ask a human for a decision when you are blocked (confirmation, a choice, \
         a clarification, or approval). Parks the ticket in a blocked state and releases your \
         lease: end your run and resume the ticket after a human answers. Route to a domain \
-        expert with `expertise` tags like [\"domain:billing\"]. Phrase the question (and any \
-        options) in the project's expected human-facing language when one is set — see the \
-        `language_hint` on takomo_show/next/start or takomo_workflow's `question_language`."
+        expert with `expertise` tags like [\"domain:billing\"]. Write a decision-ready question: \
+        for kind=choose give each option a one-line trade-off via `option_notes` (parallel to \
+        `options`); set `recommended` to your suggested answer with a short `recommended_note` \
+        (why) and `confidence` 1-4; add a one-line `summary` for the list preview. The ask \
+        response returns `hints` naming anything that would make the inbox render richer. Phrase \
+        the question (and options) in the project's expected human-facing language when one is \
+        set — see the `language_hint` on takomo_show/next/start or takomo_workflow's \
+        `question_language`."
     )]
     async fn takomo_ask(
         &self,
@@ -833,7 +847,11 @@ impl TakomoMcp {
             title: a.title,
             body: a.body.unwrap_or_default(),
             options: a.options.unwrap_or_default(),
+            option_notes: a.option_notes.unwrap_or_default(),
             recommended: a.recommended.map(Value::String).unwrap_or(Value::Null),
+            recommended_note: a.recommended_note,
+            confidence: a.confidence,
+            summary: a.summary,
             expertise: a.expertise.unwrap_or_default(),
             urgency: a.urgency,
             expires_at,
@@ -863,11 +881,13 @@ impl TakomoMcp {
                 ));
             }
         }
+        let hints = crate::store::question_quality_hints(&question);
         Ok(json!({
             "ok": true,
             "question": question.to_json(),
             "ticket": updated.to_json(now_ms()),
             "note": note,
+            "hints": hints,
         }))
     }
 

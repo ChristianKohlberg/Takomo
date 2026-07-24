@@ -3529,6 +3529,95 @@ async fn ticket_promote_records_history_and_project_index() {
 }
 
 #[tokio::test]
+async fn question_rich_fields_round_trip_and_quality_hints() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Prod schema migration").await;
+    let fence = app.to_implementing(&id).await;
+
+    // A well-formed choose: options with per-option descriptions, a recommended
+    // option, a rationale, confidence, and a summary.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "How should the migration run?",
+                "body": "Long enough body to matter for the summary hint. ".repeat(6),
+                "options": [
+                    { "value": "Run it now", "desc": "Additive & reversible; unblocks today." },
+                    { "value": "Wait for the window", "desc": "Safer timing, but parks the work ~2 days." }
+                ],
+                "recommended": "Run it now",
+                "recommended_note": "additive and reversible",
+                "confidence": 3,
+                "summary": "Additive migration — run now or wait for the window.",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "rich ask failed: {body}");
+    let q = &body["question"];
+    assert_eq!(q["options"], json!(["Run it now", "Wait for the window"]));
+    assert_eq!(
+        q["option_notes"],
+        json!([
+            "Additive & reversible; unblocks today.",
+            "Safer timing, but parks the work ~2 days."
+        ])
+    );
+    assert_eq!(q["confidence"], 3);
+    assert_eq!(q["recommended_note"], "additive and reversible");
+    assert_eq!(
+        q["summary"],
+        "Additive migration — run now or wait for the window."
+    );
+    // Fully specified → no quality hints.
+    assert_eq!(
+        body["hints"].as_array().map(|a| a.len()),
+        Some(0),
+        "a complete question should produce no hints: {body}"
+    );
+
+    // A bare confirm (no recommendation, long body, no summary) → gets hints.
+    let id2 = app.create_ticket("Bump toolchain").await;
+    let fence2 = app.to_implementing(&id2).await;
+    let (s, body2) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id2,
+                "kind": "confirm",
+                "title": "OK to bump the toolchain?",
+                "body": "A fairly long body that should trigger the summary hint. ".repeat(5),
+                "fence": fence2,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body2}");
+    let hints = body2["hints"].as_array().unwrap();
+    assert!(
+        !hints.is_empty(),
+        "a bare question should suggest improvements: {body2}"
+    );
+
+    // confidence out of range is refused with a teaching error.
+    let id3 = app.create_ticket("Another").await;
+    let fence3 = app.to_implementing(&id3).await;
+    let (s, bad) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id3, "kind": "confirm", "title": "x", "confidence": 5, "fence": fence3 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.confidence");
+}
+
+#[tokio::test]
 async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Which migration strategy?").await;
