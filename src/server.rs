@@ -188,6 +188,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(crate::api::healthz))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
+        .route("/favicon.svg", get(crate::api::favicon))
+        .route("/favicon.ico", get(crate::api::favicon))
         .merge(authed)
         .merge(share_authed)
         .merge(answer_authed)

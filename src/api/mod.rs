@@ -38,6 +38,20 @@ pub async fn inbox() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("../inbox.html"))
 }
 
+/// The takomo mark ("tako" = octopus) as an SVG favicon, served at both
+/// `/favicon.svg` and `/favicon.ico`. Both surfaces link `/favicon.svg`
+/// explicitly; the `.ico` route catches the bare request legacy browsers make
+/// on their own so it never 404s. Static, unauthenticated, leaks nothing.
+pub async fn favicon() -> impl axum::response::IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("../favicon.svg"),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Body/query parsing helpers
 
