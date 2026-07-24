@@ -1327,7 +1327,30 @@ paths:
               schema: { $ref: "#/components/schemas/Question" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /board:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Read-only kanban board (static SPA; carries the viewer's token in-browser)
+      security: []
+      responses:
+        "200": { description: HTML page }
+
+  /inbox:
+    servers: [{ url: / }]
+    get:
+      tags: [questions]
+      summary: Ask-a-human inbox (static email-style SPA; folder rail + list + answer pane)
+      description: |
+        Self-contained page served at `/inbox`. Unauthenticated HTML; every data
+        fetch carries the viewer's bearer token, and answering requires the
+        `human` scope. Talks to `/v1/questions*` and `/v1/events`.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /healthz:
+    servers: [{ url: / }]
     get:
       tags: [admin]
       summary: Liveness/readiness (open — no auth; the only unauthenticated endpoint)

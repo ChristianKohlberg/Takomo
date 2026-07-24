@@ -183,6 +183,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(crate::api::healthz))
         .route("/board", get(crate::api::board))
+        .route("/inbox", get(crate::api::inbox))
         .merge(authed)
         .merge(share_authed)
         .merge(answer_authed)
