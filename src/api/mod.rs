@@ -30,6 +30,14 @@ pub async fn board() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("../board.html"))
 }
 
+/// Ask-a-human inbox: a self-contained email-style page (folder rail, question
+/// list, reading/answer pane) served at `/inbox`. Like `/board` it is
+/// unauthenticated static HTML; every data fetch carries the viewer's bearer
+/// token, so serving it leaks nothing the API does not already guard.
+pub async fn inbox() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../inbox.html"))
+}
+
 // ---------------------------------------------------------------------------
 // Body/query parsing helpers
 

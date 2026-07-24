@@ -288,6 +288,30 @@ async fn healthz_open_everything_else_authed() {
 }
 
 #[tokio::test]
+async fn inbox_and_board_pages_served_unauthenticated() {
+    let app = TestApp::spawn().await;
+    for (path, marker) in [("/inbox", "takomo · inbox"), ("/board", "takomo")] {
+        let resp = app
+            .client
+            .get(format!("{}{}", app.base, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains(marker),
+            "{path} body should contain '{marker}'"
+        );
+        // The inbox is wired to the questions API (path built from a base var).
+        assert!(
+            body.contains("/questions") || path == "/board",
+            "inbox talks to the questions API"
+        );
+    }
+}
+
+#[tokio::test]
 async fn workflow_enforcement_illegal_transition_teaches() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Illegal transition test").await;

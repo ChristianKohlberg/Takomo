@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>takomo · inbox</title>
+<style>
+  /* ---- theme tokens (shared with the board; light default, dark via prefers) ---- */
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --col-bg: #ebecf0; --text: #172b4d;
+    --muted: #6b778c; --border: #dfe1e6; --accent: #0052cc; --shadow: 0 1px 2px rgba(9,30,66,.15);
+    --crit: #de350b; --high: #ff8b00; --normal: #0065ff; --low: #6b778c;
+    --chip-bg: #dfe1e6; --chip-text: #42526e; --sel: #e6f0ff; --hover: #f0f3f9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --col-bg: #161b22; --text: #e6edf3;
+      --muted: #8b949e; --border: #30363d; --accent: #4c8dff; --shadow: 0 1px 2px rgba(0,0,0,.5);
+      --crit: #ff6b5a; --high: #ffab4a; --normal: #6ea8ff; --low: #8b949e;
+      --chip-bg: #21262d; --chip-text: #adbac7; --sel: #14263f; --hover: #1c2330;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); overflow: hidden;
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 700; letter-spacing: .2px; }
+  header a.boardlink { font-size: 12px; color: var(--muted); text-decoration: none; }
+  header a.boardlink:hover { color: var(--accent); }
+  .grow { flex: 1 1 auto; }
+  select, input, button, textarea {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; }
+  .status { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
+  .dot.live { background: #36b37e; } .dot.err { background: var(--crit); }
+  .mine-toggle { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+
+  /* ---- 3-pane layout ---- */
+  main { flex: 1 1 auto; display: grid; grid-template-columns: 190px 360px 1fr; min-height: 0; }
+  .rail { border-right: 1px solid var(--border); background: var(--col-bg); overflow-y: auto; padding: 10px 8px; }
+  .rail h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 12px 8px 6px; }
+  .folder { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--text); }
+  .folder:hover { background: var(--hover); }
+  .folder.active { background: var(--sel); font-weight: 600; }
+  .folder .n { background: var(--chip-bg); color: var(--chip-text); border-radius: 10px; padding: 0 7px; font-size: 11px; }
+  .listpane { border-right: 1px solid var(--border); overflow-y: auto; background: var(--panel); }
+  .qrow { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 3px solid transparent; }
+  .qrow:hover { background: var(--hover); }
+  .qrow.active { background: var(--sel); border-left-color: var(--accent); }
+  .qrow.u-critical { border-left-color: var(--crit); }
+  .qrow.u-high { border-left-color: var(--high); }
+  .qrow .r1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .qrow .who { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qrow .age { font-size: 11px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
+  .qrow .subj { font-weight: 600; margin: 3px 0; overflow-wrap: anywhere; }
+  .qrow .r3 { display: flex; flex-wrap: wrap; gap: 4px; }
+  .listpane .empty { color: var(--muted); text-align: center; padding: 40px 12px; }
+  .readpane { overflow-y: auto; padding: 18px 22px; }
+  .readpane .rempty { color: var(--muted); text-align: center; margin-top: 80px; }
+  .readpane h2 { font-size: 18px; margin: 0 0 8px; overflow-wrap: anywhere; }
+  .readpane .metarow { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .readpane .body { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--col-bg); border-radius: 6px; padding: 12px; margin-bottom: 14px; }
+  .readpane h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 16px 0 6px; }
+  .chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); overflow-wrap: anywhere; }
+  .chip.prio.critical, .chip.u-critical { color: var(--crit); }
+  .chip.prio.high { color: var(--high); }
+  .chip.mode { border: 1px dashed var(--muted); background: transparent; }
+  .answerbox { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-top: 8px; }
+  .answerbox .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .answerbox button { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+  .answerbox input[type=text] { flex: 1 1 200px; min-width: 0; }
+  .answerbox .note { width: 100%; margin-top: 8px; }
+  .answered { background: var(--col-bg); border-radius: 8px; padding: 12px; }
+  .actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .linkbox { margin-top: 10px; }
+  .linkbox input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .err { color: var(--crit); font-size: 12px; min-height: 14px; margin-top: 8px; }
+  .readonly { font-size: 12px; color: var(--high); margin-bottom: 10px; }
+  a { color: var(--accent); }
+
+  /* ---- gate ---- */
+  #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
+  #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; width: min(420px, 100%); box-shadow: var(--shadow); }
+  #gate h1 { font-size: 18px; margin: 0 0 4px; }
+  #gate p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  #gate label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  #gate input { width: 100%; }
+  #gate button { width: 100%; margin-top: 18px; }
+  #gate .gerr { color: var(--crit); font-size: 13px; margin-top: 12px; min-height: 18px; }
+  .hidden { display: none !important; }
+
+  @media (max-width: 780px) {
+    main { grid-template-columns: 1fr; }
+    .rail { display: none; }
+    .listpane { display: block; }
+    body.reading .listpane { display: none; }
+    body:not(.reading) .readpane { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="card2">
+    <h1>takomo · inbox</h1>
+    <p>Questions waiting for a human. Enter a token (needs the <code>human</code> scope to answer).</p>
+    <label for="g-token">Token</label>
+    <input id="g-token" type="password" placeholder="tk_..." autocomplete="off">
+    <button class="primary" id="g-go">Open inbox</button>
+    <div class="gerr" id="g-err"></div>
+  </div>
+</div>
+
+<header class="hidden" id="topbar">
+  <h1>takomo · inbox</h1>
+  <a class="boardlink" href="/board">← board</a>
+  <select id="projsel" title="project"></select>
+  <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine"> mine</label>
+  <span class="grow"></span>
+  <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
+  <button class="ghost" id="refresh">Refresh</button>
+  <button class="ghost" id="signout">Sign out</button>
+</header>
+
+<main class="hidden" id="app">
+  <nav class="rail" id="rail"></nav>
+  <section class="listpane" id="list"></section>
+  <section class="readpane" id="read"><div class="rempty">Select a question to read and answer.</div></section>
+</main>
+
+<script>
+"use strict";
+(function () {
+  var API = "/v1";
+  var POLL_MS = 5000;
+  var LS_TOKEN = "takomo.inbox.token";
+  var FOLDERS = [
+    { id: "open", label: "Open" },
+    { id: "answered", label: "Answered" },
+    { id: "withdrawn", label: "Withdrawn" },
+    { id: "expired", label: "Expired" },
+  ];
+
+  var state = {
+    token: localStorage.getItem(LS_TOKEN) || "",
+    project: "",        // "" = all accessible projects
+    mineOnly: false,
+    folder: "open",
+    me: null,           // { scopes, expertise, canAnswer }
+    questions: [],      // all statuses, current project/mine filter
+    selectedId: null,
+    cursor: 0,
+    pollTimer: null,
+    polling: false,
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + state.token;
+    var init = { headers: headers, method: opts.method || "GET" };
+    if (opts.body != null) init.body = opts.body;
+    return fetch(API + path, init).then(function (r) {
+      if (r.status === 401 || r.status === 403) { var e = new Error("auth"); e.auth = true; e.status = r.status; throw e; }
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = t;
+          try { var j = JSON.parse(t); msg = j.message || (j.error && j.error.message) || t; } catch (_) {}
+          var e2 = new Error(msg || ("HTTP " + r.status)); e2.status = r.status; throw e2;
+        });
+      }
+      return r.json();
+    });
+  }
+
+  function fmtAge(iso) {
+    var d = new Date(iso); if (isNaN(d.getTime())) return "";
+    var s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+    if (s < 60) return Math.floor(s) + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
+
+  // ---- gate ----
+  function showGate(msg) {
+    stopPolling();
+    $("gate").classList.remove("hidden");
+    $("topbar").classList.add("hidden");
+    $("app").classList.add("hidden");
+    if (msg) $("g-err").textContent = msg;
+    $("g-token").value = state.token || "";
+  }
+  function hideGate() {
+    $("gate").classList.add("hidden");
+    $("topbar").classList.remove("hidden");
+    $("app").classList.remove("hidden");
+  }
+  $("g-go").addEventListener("click", function () {
+    var t = $("g-token").value.trim();
+    if (!t) { $("g-err").textContent = "Enter a token."; return; }
+    state.token = t; localStorage.setItem(LS_TOKEN, t);
+    $("g-err").textContent = ""; hideGate(); boot();
+  });
+  $("signout").addEventListener("click", function () {
+    localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null;
+    showGate("");
+  });
+  $("refresh").addEventListener("click", fetchAll);
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; fetchAll(); });
+  $("mine").addEventListener("change", function () { state.mineOnly = $("mine").checked; fetchAll(); });
+
+  // ---- boot ----
+  function boot() {
+    setLive("loading", "loading…");
+    Promise.all([loadProjects(), loadMe()])
+      .then(fetchAll)
+      .then(startPolling)
+      .catch(handleErr);
+  }
+
+  function loadProjects() {
+    return api("/projects").then(function (projects) {
+      var sel = $("projsel"); sel.innerHTML = "";
+      var all = el("option"); all.value = ""; all.textContent = "All projects"; sel.appendChild(all);
+      (projects || []).forEach(function (p) {
+        var o = el("option"); o.value = p.id; o.textContent = p.id; sel.appendChild(o);
+      });
+      sel.value = state.project;
+    }).catch(function () { /* projects list is best-effort */ });
+  }
+
+  function loadMe() {
+    return api("/whoami").then(function (w) {
+      var scopes = (w && w.scopes) || [];
+      var expertise = scopes.filter(function (s) { return s.indexOf("expert:") === 0; })
+        .map(function (s) { return s.slice("expert:".length); });
+      state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1 };
+      $("mine-wrap").classList.toggle("hidden", expertise.length === 0);
+    }).catch(function () { state.me = { scopes: [], expertise: [], canAnswer: false }; });
+  }
+
+  function questionsQuery() {
+    var q = "/questions?status=open,answered,withdrawn,expired";
+    if (state.project) q += "&project=" + encodeURIComponent(state.project);
+    if (state.mineOnly && state.me && state.me.expertise.length) q += "&mine=true";
+    return q;
+  }
+
+  function fetchAll() {
+    setLive("loading", "loading…");
+    return api(questionsQuery()).then(function (res) {
+      state.questions = res.items || [];
+      // Keep the current selection if it's still present.
+      if (state.selectedId && !state.questions.some(function (q) { return q.id === state.selectedId; })) {
+        state.selectedId = null;
+      }
+      render();
+      // advance the event cursor to now so polling only reports future changes
+      return api("/events?since=0&limit=1&wait=0" + (state.project ? "&project=" + encodeURIComponent(state.project) : ""));
+    }).then(function (ev) {
+      if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor;
+      setLive("live", "live");
+    }).catch(handleErr);
+  }
+
+  // ---- polling ----
+  function startPolling() { stopPolling(); state.pollTimer = setInterval(poll, POLL_MS); }
+  function stopPolling() { if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; } }
+  function poll() {
+    if (state.polling) return; state.polling = true;
+    var q = "/events?since=" + state.cursor + "&limit=200&wait=0&kind=question_asked,question_answered,question_withdrawn,question_expired,question_escalated";
+    if (state.project) q += "&project=" + encodeURIComponent(state.project);
+    api(q).then(function (res) {
+      if (typeof res.cursor === "number") state.cursor = res.cursor;
+      var events = res.events || [];
+      if (events.length === 0) { setLive("live", "live"); return; }
+      // Don't rebuild while the user is mid-answer.
+      if (document.activeElement && $("read").contains(document.activeElement)) { setLive("live", "live · new"); return; }
+      return api(questionsQuery()).then(function (r) {
+        state.questions = r.items || [];
+        render();
+        setLive("live", "live · updated");
+      });
+    }).catch(function (e) {
+      if (e.auth) { handleErr(e); return; }
+      setLive("err", "reconnecting…");
+    }).then(function () { state.polling = false; });
+  }
+
+  // ---- rendering ----
+  function counts() {
+    var c = { open: 0, answered: 0, withdrawn: 0, expired: 0 };
+    state.questions.forEach(function (q) { if (c[q.status] != null) c[q.status]++; });
+    return c;
+  }
+
+  function render() { renderRail(); renderList(); renderReading(); }
+
+  function renderRail() {
+    var rail = $("rail"); rail.innerHTML = "";
+    rail.appendChild(el("h3", null, "Folders"));
+    var c = counts();
+    FOLDERS.forEach(function (f) {
+      var row = el("div", "folder" + (state.folder === f.id ? " active" : ""));
+      row.appendChild(el("span", null, f.label));
+      var n = c[f.id] || 0;
+      if (n) row.appendChild(el("span", "n", String(n)));
+      row.addEventListener("click", function () { state.folder = f.id; render(); });
+      rail.appendChild(row);
+    });
+  }
+
+  function inFolder() {
+    return state.questions.filter(function (q) { return q.status === state.folder; })
+      .sort(function (a, b) {
+        var pr = { critical: 0, high: 1, normal: 2, low: 3 };
+        var pa = pr[a.urgency] == null ? 9 : pr[a.urgency];
+        var pb = pr[b.urgency] == null ? 9 : pr[b.urgency];
+        if (pa !== pb) return pa - pb;
+        return (a.created_at || "").localeCompare(b.created_at || "");
+      });
+  }
+
+  function renderList() {
+    var list = $("list"); list.innerHTML = "";
+    var items = inFolder();
+    if (items.length === 0) { list.appendChild(el("div", "empty", "No " + state.folder + " questions.")); return; }
+    items.forEach(function (q) {
+      var row = el("div", "qrow u-" + (q.urgency || "normal") + (q.id === state.selectedId ? " active" : ""));
+      var r1 = el("div", "r1");
+      r1.appendChild(el("span", "who", q.asked_by || "—"));
+      r1.appendChild(el("span", "age", fmtAge(q.created_at)));
+      row.appendChild(r1);
+      row.appendChild(el("div", "subj", q.title || "(untitled)"));
+      var r3 = el("div", "r3");
+      r3.appendChild(el("span", "chip", q.ticket));
+      r3.appendChild(el("span", "chip", q.kind));
+      if (q.mode && q.mode !== "blocking") r3.appendChild(el("span", "chip mode", q.mode));
+      (q.expertise || []).forEach(function (t) { r3.appendChild(el("span", "chip", t)); });
+      row.appendChild(r3);
+      row.addEventListener("click", function () { state.selectedId = q.id; document.body.classList.add("reading"); render(); });
+      list.appendChild(row);
+    });
+  }
+
+  function selected() {
+    return state.questions.filter(function (q) { return q.id === state.selectedId; })[0] || null;
+  }
+
+  function renderReading() {
+    var pane = $("read"); pane.innerHTML = "";
+    var q = selected();
+    if (!q) { pane.appendChild(el("div", "rempty", "Select a question to read and answer.")); return; }
+
+    pane.appendChild(el("h2", null, q.title || "(untitled)"));
+    var meta = el("div", "metarow");
+    meta.appendChild(el("span", "chip", q.ticket));
+    meta.appendChild(el("span", "chip prio " + (q.urgency || "normal") + " u-" + (q.urgency || "normal"), q.urgency || "normal"));
+    meta.appendChild(el("span", "chip", q.kind));
+    if (q.mode && q.mode !== "blocking") meta.appendChild(el("span", "chip mode", q.mode));
+    meta.appendChild(el("span", "chip", "from " + (q.asked_by || "—")));
+    (q.expertise || []).forEach(function (t) { meta.appendChild(el("span", "chip", t)); });
+    pane.appendChild(meta);
+
+    if (q.body) pane.appendChild(el("div", "body", q.body));
+    if (q.recommended != null && q.recommended !== "") {
+      pane.appendChild(el("div", "status", "Agent suggests: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
+    }
+
+    if (q.status !== "open") {
+      var box = el("div", "answered");
+      var verb = q.status.charAt(0).toUpperCase() + q.status.slice(1);
+      var av = q.answer && q.answer.value != null ? (typeof q.answer.value === "string" ? q.answer.value : JSON.stringify(q.answer.value)) : "—";
+      box.appendChild(el("div", null, verb + (q.answered_by ? " by " + q.answered_by : "")));
+      if (q.status === "answered") {
+        box.appendChild(el("div", "status", "Answer: " + av + (q.answer && q.answer.note ? " — " + q.answer.note : "")));
+        if (q.resolved_to) box.appendChild(el("div", "status", "Ticket resumed to '" + q.resolved_to + "'."));
+      }
+      pane.appendChild(box);
+      return;
+    }
+
+    // Open question: answer + actions.
+    if (state.me && !state.me.canAnswer) {
+      pane.appendChild(el("div", "readonly", "This token can't answer (no 'human' scope). Read-only."));
+    } else {
+      pane.appendChild(renderAnswerBox(q));
+    }
+    if (state.me && (state.me.scopes.indexOf("write") !== -1 || state.me.canAnswer)) {
+      pane.appendChild(renderActions(q));
+    }
+  }
+
+  function renderAnswerBox(q) {
+    var box = el("div", "answerbox");
+    box.appendChild(el("h3", null, "Your answer"));
+    var err = el("div", "err");
+    var note = el("input", "note"); note.type = "text"; note.placeholder = "optional note…";
+    var row = el("div", "row");
+    var send = function (value) { submitAnswer(q.id, value, note.value.trim(), err); };
+    if (q.kind === "confirm" || q.kind === "approve") {
+      var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
+      var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
+      yes.addEventListener("click", function () { send("yes"); });
+      no.addEventListener("click", function () { send("no"); });
+      row.appendChild(yes); row.appendChild(no);
+    } else if (q.kind === "choose") {
+      (q.options || []).forEach(function (opt) {
+        var b = el("button", null, opt);
+        b.addEventListener("click", function () { send(opt); });
+        row.appendChild(b);
+      });
+    } else {
+      var input = el("input"); input.type = "text"; input.placeholder = "your answer…";
+      var go = el("button", "primary", "Send");
+      var submit = function () { var v = input.value.trim(); if (v) send(v); };
+      go.addEventListener("click", submit);
+      input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+      row.appendChild(input); row.appendChild(go);
+    }
+    box.appendChild(row);
+    box.appendChild(note);
+    box.appendChild(err);
+    return box;
+  }
+
+  function renderActions(q) {
+    var wrap = el("div", "actions");
+    var err = el("div", "err");
+    if (state.me && state.me.canAnswer) {
+      var linkBtn = el("button", "ghost", "Create answer link…");
+      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap, err); });
+      wrap.appendChild(linkBtn);
+    }
+    var wd = el("button", "ghost", "Withdraw");
+    wd.addEventListener("click", function () {
+      err.textContent = "";
+      api("/questions/" + encodeURIComponent(q.id) + "/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "withdrawn from inbox" }) })
+        .then(fetchAll).catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error"); });
+    });
+    wrap.appendChild(wd);
+    var holder = el("div"); holder.appendChild(wrap); holder.appendChild(err);
+    return holder;
+  }
+
+  function mintLink(id, wrap, err) {
+    err.textContent = "";
+    api("/questions/" + encodeURIComponent(id) + "/answer-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+      .then(function (res) {
+        var box = el("div", "linkbox");
+        var url = res.url || (window.location.origin + (res.path || ""));
+        var inp = el("input"); inp.type = "text"; inp.readOnly = true; inp.value = url;
+        inp.addEventListener("focus", function () { inp.select(); });
+        box.appendChild(el("div", "status", "Single-use link (shown once) — send it to the expert:"));
+        box.appendChild(inp);
+        wrap.parentNode.appendChild(box);
+      })
+      .catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs human, and expert:<tag> for approve)" : ""); });
+  }
+
+  function submitAnswer(id, value, noteText, err) {
+    err.textContent = "";
+    var payload = noteText ? { value: value, note: noteText } : value;
+    api("/questions/" + encodeURIComponent(id) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
+      .then(fetchAll)
+      .catch(function (e) { err.textContent = "Failed: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs a token with the 'human' scope)" : ""); });
+  }
+
+  // ---- status + errors ----
+  function setLive(kind, text) {
+    $("live-dot").className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
+    $("live-text").textContent = text;
+  }
+  function handleErr(e) {
+    if (e && e.auth) { showGate("Token rejected (" + (e.status || "") + "). Enter a valid token."); return; }
+    setLive("err", "error");
+    $("list").innerHTML = "";
+    $("list").appendChild(el("div", "empty", "Could not load: " + (e && e.message ? e.message : "unknown error")));
+  }
+
+  // ---- start ----
+  if (state.token) { hideGate(); boot(); } else { showGate(""); }
+})();
+</script>
+</body>
+</html>
