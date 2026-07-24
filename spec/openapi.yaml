@@ -28,6 +28,7 @@ tags:
   - { name: workflow }
   - { name: claims }
   - { name: events }
+  - { name: questions }
   - { name: admin }
   - { name: identity }
   - { name: shares }
@@ -977,7 +978,9 @@ paths:
         `takomo_done`, `takomo_block`, `takomo_cancel`,
         `takomo_comment`, `takomo_link`, `takomo_dep`, `takomo_deps`,
         `takomo_release`, `takomo_archive`, `takomo_projects`,
-        `takomo_workflow`, `takomo_roadmap`, `takomo_whoami`. Claimed
+        `takomo_workflow`, `takomo_roadmap`, `takomo_ask`,
+        `takomo_answer`, `takomo_questions`, `takomo_withdraw`,
+        `takomo_answer_link`, `takomo_whoami`. Claimed
         tickets track a fencing token that later transitions echo automatically;
         convenience verbs (start/done/block/cancel) resolve target states from
         the project workflow by category.
@@ -1027,6 +1030,303 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /questions:
+    get:
+      tags: [questions]
+      summary: List questions on the ask-a-human board (the inbox read-model)
+      description: |
+        Open questions by default, ordered by urgency then age. Filter by
+        `project`, `ticket`, or `status` (comma-separated). `mine=true` scopes
+        the list to the caller's own expertise, derived from its `expert:<tag>`
+        scopes; `expertise` (repeatable) filters by explicit tags.
+      parameters:
+        - { name: project, in: query, schema: { type: string } }
+        - { name: ticket, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string }, description: "Comma-separated: open (default), answered, withdrawn, expired" }
+        - { name: mine, in: query, schema: { type: boolean }, description: Only questions routed to your expert:<tag> scopes }
+        - { name: expertise, in: query, schema: { type: string }, description: Repeatable tag filter (match any) }
+      responses:
+        "200":
+          description: The matching questions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Question" }
+    post:
+      tags: [questions]
+      summary: Ask a human — raise a question and park the ticket (block-and-resume)
+      description: |
+        Requires the `write` scope. Parks the ticket in a blocked state and
+        releases the caller's lease, then records the question. End the run and
+        resume the ticket once a human answers. Echo the lease `fence` while you
+        hold it. A ticket may hold several open questions; it resumes only when
+        all are answered (a barrier). A re-sent ask with the same asker + kind +
+        title is an idempotent retry (returns the existing question).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket, kind, title]
+              properties:
+                ticket: { type: string }
+                mode:
+                  type: string
+                  enum: [blocking, advisory]
+                  default: blocking
+                  description: blocking parks+resumes the ticket (needs a parkable state); advisory records a routed decision with no state change (e.g. an epic-level question)
+                kind: { type: string, enum: [confirm, choose, clarify, approve] }
+                title: { type: string }
+                body: { type: string }
+                options:
+                  type: array
+                  items: { type: string }
+                  description: For kind=choose (>= 2 options)
+                recommended: { description: The agent's suggested answer (any JSON) }
+                expertise:
+                  type: array
+                  items: { type: string }
+                  description: Routing tags, e.g. ["domain:billing"]
+                urgency: { type: string, enum: [critical, high, normal, low] }
+                expires_in_seconds: { type: integer, description: Auto-expire deadline }
+                on_timeout: { type: string, enum: [recommended, escalate, cancel] }
+                fence: { type: integer }
+      responses:
+        "201":
+          description: The created question plus the parked ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+                  ticket: { $ref: "#/components/schemas/Ticket" }
+                  note: { type: string }
+        "400":
+          description: Malformed body (unknown field, missing/mistyped ticket/kind/title).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: |
+            Invalid value: bad kind/urgency/on_timeout, choose with < 2 options,
+            an `approve` question with no expertise tag, or `on_timeout=recommended`
+            with a window under the required minimum.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The ticket has no self-service edge into a blocked state, so it can't be parked (question.no_park).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /questions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Question id, e.g. "q-9f3ka2xz"
+    get:
+      tags: [questions]
+      summary: Fetch one question
+      responses:
+        "200":
+          description: The question.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /questions/{id}/answer:
+    post:
+      tags: [questions]
+      summary: Answer a question (the human authorization gate) and resume the ticket
+      description: |
+        Requires the `human` scope. Records the reply and performs the ticket's
+        human-gated transition to resume it. `answer` may be a scalar (`true`,
+        an option string, or clarification text) or `{ "value": ..., "note": ... }`
+        (a top-level `note` sibling is rejected). An `approve` question
+        additionally requires the answerer to hold a matching `expert:<tag>`
+        scope. An explicit `resume_to` is strict (a bad target errors); with no
+        `resume_to`, the answer is recorded even if the ticket cannot be
+        auto-resumed (`resolved_to` is then null).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { description: Scalar or { value, note } }
+                resume_to: { type: string, description: Override the resume state }
+      responses:
+        "200":
+          description: The answered question and resumed ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+                  ticket: { $ref: "#/components/schemas/Ticket" }
+        "400":
+          description: Missing `answer`, or an unknown top-level field.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Token lacks the `human` scope (or the `expert:<tag>` an approve needs).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Answer invalid for the kind (non-bool confirm/approve, unknown choose option, empty clarify).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /questions/{id}/answer-link:
+    post:
+      tags: [questions]
+      summary: Mint a per-question answer link for an outside expert
+      description: |
+        Requires the `human` scope (and, for an `approve` question, the matching
+        `expert:<tag>` — you can only delegate authority you hold). Returns a
+        scoped, expiring, single-use `tka_` token (shown once) plus the
+        `#a=<token>` board path. The holder can read and answer ONLY this
+        question, via `/v1/answer/self`, and nothing else.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ttl_seconds: { type: integer, description: 'Link lifetime (default 3 days, max 30 days)' }
+                actor: { type: string, description: 'Who the answer is attributed to (default human:link:<qid>)' }
+      responses:
+        "201":
+          description: The grant metadata plus the one-time token and board path.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/AnswerGrant" }
+                  - type: object
+                    properties:
+                      token: { type: string, description: 'tka_… — shown once' }
+                      path: { type: string, description: '/board#a=<token>' }
+                      url: { type: string, description: 'Full URL when TAKOMO_PUBLIC_URL is set' }
+        "403":
+          description: Token lacks `human` (or the `expert:<tag>` an approve link needs).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: The question is not open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /answer-links/{id}:
+    delete:
+      tags: [questions]
+      summary: Revoke an answer link (creator or admin, `human` scope)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string }, description: 'answer-grant id, e.g. "ag_…"' }
+      responses:
+        "204": { description: Revoked (idempotent) }
+        "403": { description: Not the creator and not an admin }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /answer/self:
+    get:
+      tags: [questions]
+      summary: The one question an answer link can answer (answer-grant auth)
+      description: |
+        Authenticated by a `tka_` answer-link token (in the `#a=` fragment), NOT
+        a normal token. Returns the question plus minimal ticket context.
+      security:
+        - answerBearer: []
+      responses:
+        "200":
+          description: The question and its ticket context.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+                  ticket: { type: object, nullable: true }
+                  expires_at: { type: string, format: date-time }
+        "410": { description: The link is expired, used, or revoked. }
+    post:
+      tags: [questions]
+      summary: Answer the one question the link grants (answer-grant auth, single-use)
+      description: |
+        Authenticated by the `tka_` answer-link token. The grant IS the human
+        authorization: it answers as its recorded actor with exactly the scope
+        needed for this question. Marks the link used (single-use) on success.
+      security:
+        - answerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { description: Scalar or { value, note } }
+                resume_to: { type: string }
+      responses:
+        "200":
+          description: The answered question and (for a blocking question) the resumed ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+                  ticket: { $ref: "#/components/schemas/Ticket" }
+        "410": { description: The link is expired, used, or revoked. }
+
+  /questions/{id}/withdraw:
+    post:
+      tags: [questions]
+      summary: Withdraw an open question (the agent no longer needs the answer)
+      description: Requires the `write` scope. The ticket stays parked.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: The withdrawn question.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /healthz:
     get:
       tags: [admin]
@@ -1058,6 +1358,15 @@ components:
         ONLY the read-only `/v1/shares/self*` endpoints, bounded to its scope,
         and is rejected on every normal endpoint. Expired/revoked shares return
         `410 Gone`. See auth.md.
+    answerBearer:
+      type: http
+      scheme: bearer
+      description: |
+        An ANSWER-LINK token (`tka_`-prefixed), minted by
+        `POST /v1/questions/{id}/answer-link`. A distinct auth path: it
+        authorizes ONLY `/v1/answer/self` for the one referenced question,
+        is single-use (spent after one answer), auto-expires, and is rejected on
+        every other endpoint. Expired/used/revoked links return `410 Gone`.
 
   parameters:
     id:
@@ -1307,6 +1616,47 @@ components:
         fence: { type: integer, description: echo in every mutating call while claimed }
         expires_at: { type: string, format: date-time }
 
+    AnswerGrant:
+      type: object
+      description: Metadata for a per-question answer link (the plaintext token is never returned here).
+      properties:
+        id: { type: string, description: 'e.g. "ag_…"' }
+        question: { type: string }
+        project: { type: string }
+        actor: { type: string, description: 'Who a use of this link is attributed to' }
+        expires_at: { type: string, format: date-time }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        used_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+
+    Question:
+      type: object
+      description: An agent's request for a human decision, tied to a ticket. See the ask-a-human board.
+      properties:
+        id: { type: string, description: 'e.g. "q-9f3ka2xz"' }
+        project: { type: string }
+        ticket: { type: string }
+        asked_by: { type: string }
+        mode: { type: string, enum: [blocking, advisory], description: 'blocking parks+resumes the ticket; advisory records a routed decision with no state change' }
+        kind: { type: string, enum: [confirm, choose, clarify, approve] }
+        title: { type: string }
+        body: { type: string }
+        options: { type: array, items: { type: string } }
+        recommended: { description: The agent's suggested answer (any JSON), or null }
+        expertise: { type: array, items: { type: string }, description: 'Routing tags, e.g. ["domain:billing"]' }
+        urgency: { type: string, enum: [critical, high, normal, low] }
+        status: { type: string, enum: [open, answered, withdrawn, expired] }
+        answer: { description: 'The recorded human answer ({ value, note? }), or null while open' }
+        answered_by: { type: string, nullable: true }
+        answered_at: { type: string, format: date-time, nullable: true }
+        resolved_to: { type: string, nullable: true, description: State the ticket was resumed into }
+        expires_at: { type: string, format: date-time, nullable: true }
+        on_timeout: { type: string, nullable: true, enum: [recommended, escalate, cancel] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
     Event:
       type: object
       properties:
@@ -1316,7 +1666,7 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived]
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 

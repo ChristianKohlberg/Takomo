@@ -100,7 +100,7 @@
   .card .cid { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .card .ctitle { margin: 3px 0 6px; font-weight: 500; word-break: break-word; }
   .card .meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-  .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); overflow-wrap: anywhere; }
   .chip.prio { text-transform: capitalize; font-weight: 600; }
   .chip.prio.critical { color: var(--crit); }
   .chip.prio.high { color: var(--high); }
@@ -134,6 +134,42 @@
   .comment .txt { white-space: pre-wrap; word-break: break-word; }
   .dep-item, .link-item { padding: 2px 0; word-break: break-all; }
   a { color: var(--accent); }
+
+  /* ---- ask-a-human inbox ---- */
+  .iconbtn { position: relative; }
+  .badge {
+    display: inline-block; min-width: 17px; padding: 0 5px; border-radius: 9px;
+    background: var(--crit); color: #fff; font-size: 11px; font-weight: 700;
+    text-align: center; margin-left: 5px; line-height: 17px;
+  }
+  .badge.zero { display: none; }
+  #inbox {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(520px, 100%);
+    background: var(--panel); border-left: 1px solid var(--border); z-index: 21;
+    transform: translateX(100%); transition: transform .18s ease; overflow-y: auto;
+    box-shadow: -4px 0 16px rgba(9,30,66,.25);
+  }
+  #inbox.open { transform: translateX(0); }
+  #inbox .dhead { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); }
+  #inbox .dhead h2 { font-size: 16px; margin: 0; flex: 1; }
+  #inbox .close { background: transparent; border: none; font-size: 20px; line-height: 1; color: var(--muted); padding: 2px 6px; }
+  #inbox .ibody { padding: 14px 16px; }
+  .mine-toggle { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .q-item { border: 1px solid var(--border); border-left: 3px solid var(--low); border-radius: 8px; padding: 11px 12px; margin-bottom: 12px; }
+  .q-item.u-critical { border-left-color: var(--crit); }
+  .q-item.u-high { border-left-color: var(--high); }
+  .q-item.u-normal { border-left-color: var(--normal); }
+  .q-item .q-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+  .q-item .q-title { font-weight: 600; margin: 4px 0; word-break: break-word; }
+  .q-item .q-body { color: var(--muted); white-space: pre-wrap; word-break: break-word; margin: 4px 0 8px; font-size: 13px; }
+  .q-item .q-rec { font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .q-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .q-actions button { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+  .q-actions input[type=text] { flex: 1 1 160px; min-width: 0; }
+  .q-note { width: 100%; margin-top: 6px; }
+  .q-empty { color: var(--muted); text-align: center; padding: 30px 6px; }
+  .q-readonly { font-size: 12px; color: var(--high); margin-bottom: 10px; }
+  .q-err { color: var(--crit); font-size: 12px; margin-top: 6px; min-height: 14px; }
 
   /* ---- setup gate ---- */
   #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
@@ -171,6 +207,7 @@
   <span class="grow"></span>
   <span class="status share-exp" id="share-exp"></span>
   <label class="archtoggle" title="Include archived tickets"><input type="checkbox" id="showarch"> archived</label>
+  <button class="iconbtn" id="inbox-btn" title="Ask-a-human inbox">Ask&nbsp;a&nbsp;human<span class="badge zero" id="inbox-count">0</span></button>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
   <button id="refresh" title="Reload now">Refresh</button>
   <button id="signout" title="Forget token">Sign out</button>
@@ -179,6 +216,14 @@
 <div id="board"></div>
 
 <div id="overlay"></div>
+<aside id="inbox" aria-hidden="true">
+  <div class="dhead">
+    <h2>Ask a human</h2>
+    <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine-toggle"> mine</label>
+    <button class="close" id="inbox-close" aria-label="Close">&times;</button>
+  </div>
+  <div class="ibody" id="inbox-body"></div>
+</aside>
 <aside id="detail" aria-hidden="true">
   <div class="dhead">
     <h2 id="d-title">—</h2>
@@ -212,7 +257,10 @@
     openTicketId: null,
     showArchived: false,
     shareMode: false,
-    share: null        // { token, meta } when viewing a shared link
+    share: null,       // { token, meta } when viewing a shared link
+    me: null,          // { scopes, expertise, canAnswer } from /whoami
+    inboxOpen: false,
+    mineOnly: false
   };
 
   // ---- tiny dom helpers ----
@@ -230,7 +278,9 @@
     opts = opts || {};
     var headers = opts.headers || {};
     headers["Authorization"] = "Bearer " + state.token;
-    return fetch(API + path, { headers: headers, method: opts.method || "GET" })
+    var init = { headers: headers, method: opts.method || "GET" };
+    if (opts.body != null) init.body = opts.body;
+    return fetch(API + path, init)
       .then(function (r) {
         if (r.status === 401 || r.status === 403) {
           var e = new Error("auth"); e.auth = true; e.status = r.status; throw e;
@@ -333,10 +383,28 @@
       })
       .then(function (wf) {
         state.workflow = wf;
-        return fullLoad();
+        return loadMe();
       })
-      .then(function () { startPolling(); })
+      .then(function () { return fullLoad(); })
+      .then(function () { refreshInboxCount(); startPolling(); })
       .catch(handleErr);
+  }
+
+  // Learn the token's own scopes so the inbox can (a) show the "mine" filter
+  // when the token carries expert:<tag> scopes and (b) offer answer controls
+  // only when it holds the `human` scope. Non-fatal: a token without /whoami or
+  // read-only just gets a view-only inbox.
+  function loadMe() {
+    return api("/whoami").then(function (w) {
+      var scopes = (w && w.scopes) || [];
+      var expertise = scopes
+        .filter(function (s) { return s.indexOf("expert:") === 0; })
+        .map(function (s) { return s.slice("expert:".length); });
+      state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1 };
+      $("mine-wrap").classList.toggle("hidden", expertise.length === 0);
+    }).catch(function () {
+      state.me = { scopes: [], expertise: [], canAnswer: false };
+    });
   }
 
   function fullLoad() {
@@ -391,6 +459,10 @@
         if (ids.length === 0) { setLive("live", "live · " + events.length + " event(s)"); return; }
         return Promise.all(ids.map(refreshTicket)).then(function () {
           render();
+          refreshInboxCount();
+          // Don't rebuild the inbox from under a human who is mid-answer: a
+          // full re-render (innerHTML = "") would wipe typed text and focus.
+          if (state.inboxOpen && !$("inbox").contains(document.activeElement)) renderInbox();
           setLive("live", "live · updated " + ids.length);
         });
       })
@@ -501,8 +573,131 @@
     $("detail").setAttribute("aria-hidden", "true");
   }
   $("d-close").addEventListener("click", closeDetail);
-  $("overlay").addEventListener("click", closeDetail);
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDetail(); });
+  $("overlay").addEventListener("click", function () { closeDetail(); closeInbox(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { closeDetail(); closeInbox(); } });
+
+  // ---- ask-a-human inbox ----
+  function questionsQuery() {
+    var q = "/questions?project=" + encodeURIComponent(state.project) + "&status=open";
+    if (state.mineOnly && state.me && state.me.expertise.length) q += "&mine=true";
+    return q;
+  }
+
+  function refreshInboxCount() {
+    if (state.shareMode) return;
+    api(questionsQuery()).then(function (res) {
+      var n = (res.items || []).length;
+      var b = $("inbox-count");
+      b.textContent = String(n);
+      b.classList.toggle("zero", n === 0);
+    }).catch(function () { /* count is best-effort */ });
+  }
+
+  function openInbox() {
+    state.inboxOpen = true;
+    $("overlay").classList.add("open");
+    $("inbox").classList.add("open");
+    $("inbox").setAttribute("aria-hidden", "false");
+    renderInbox();
+  }
+  function closeInbox() {
+    if (!state.inboxOpen) return;
+    state.inboxOpen = false;
+    if (!state.openTicketId) $("overlay").classList.remove("open");
+    $("inbox").classList.remove("open");
+    $("inbox").setAttribute("aria-hidden", "true");
+  }
+
+  function renderInbox() {
+    var body = $("inbox-body");
+    api(questionsQuery()).then(function (res) {
+      var items = res.items || [];
+      body.innerHTML = "";
+      if (state.me && !state.me.canAnswer) {
+        body.appendChild(el("div", "q-readonly", "This token cannot answer (no 'human' scope). Showing the queue read-only."));
+      }
+      if (items.length === 0) {
+        body.appendChild(el("div", "q-empty", "No open questions. 🎉"));
+        return;
+      }
+      items.forEach(function (q) { body.appendChild(qItemEl(q)); });
+    }).catch(function (e) {
+      body.innerHTML = "";
+      body.appendChild(el("div", "q-empty", "Could not load questions: " + (e && e.message ? e.message : "error")));
+    });
+  }
+
+  function qItemEl(q) {
+    var item = el("div", "q-item u-" + (q.urgency || "normal"));
+    var top = el("div", "q-top");
+    top.appendChild(el("span", "chip", q.ticket));
+    if (q.mode && q.mode !== "blocking") top.appendChild(el("span", "chip", q.mode));
+    top.appendChild(el("span", "chip type", q.kind));
+    top.appendChild(el("span", "chip prio " + (q.urgency || "normal"), q.urgency || "normal"));
+    (q.expertise || []).forEach(function (t) { top.appendChild(el("span", "chip", t)); });
+    item.appendChild(top);
+    item.appendChild(el("div", "q-title", q.title || "(untitled question)"));
+    if (q.body) item.appendChild(el("div", "q-body", q.body));
+    if (q.recommended != null && q.recommended !== "") {
+      item.appendChild(el("div", "q-rec", "agent suggests: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
+    }
+
+    var err = el("div", "q-err");
+    var note = el("input", "q-note"); note.type = "text"; note.placeholder = "optional note…";
+
+    if (state.me && state.me.canAnswer) {
+      var actions = el("div", "q-actions");
+      var send = function (value) { submitAnswer(q.id, value, note.value.trim(), err); };
+      if (q.kind === "confirm" || q.kind === "approve") {
+        var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
+        var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
+        yes.addEventListener("click", function () { send("yes"); });
+        no.addEventListener("click", function () { send("no"); });
+        actions.appendChild(yes); actions.appendChild(no);
+      } else if (q.kind === "choose") {
+        (q.options || []).forEach(function (opt) {
+          var btn = el("button", null, opt);
+          btn.addEventListener("click", function () { send(opt); });
+          actions.appendChild(btn);
+        });
+      } else { // clarify
+        var input = el("input"); input.type = "text"; input.placeholder = "your answer…";
+        var go = el("button", "primary", "Send");
+        var submit = function () { var v = input.value.trim(); if (v) send(v); };
+        go.addEventListener("click", submit);
+        input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+        actions.appendChild(input); actions.appendChild(go);
+      }
+      item.appendChild(actions);
+      item.appendChild(note);
+    }
+    item.appendChild(err);
+    return item;
+  }
+
+  function submitAnswer(id, value, noteText, errEl) {
+    errEl.textContent = "";
+    var payload = noteText ? { value: value, note: noteText } : value;
+    api("/questions/" + encodeURIComponent(id) + "/answer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer: payload })
+    }).then(function () {
+      renderInbox();
+      refreshInboxCount();
+      fullLoad(); // the ticket resumed — refresh the board
+    }).catch(function (e) {
+      errEl.textContent = "Failed: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs a token with the 'human' scope)" : "");
+    });
+  }
+
+  $("inbox-btn").addEventListener("click", openInbox);
+  $("inbox-close").addEventListener("click", closeInbox);
+  $("mine-toggle").addEventListener("change", function () {
+    state.mineOnly = $("mine-toggle").checked;
+    refreshInboxCount();
+    if (state.inboxOpen) renderInbox();
+  });
 
   function renderDetail(t) {
     $("d-title").textContent = t.title || t.id;
@@ -675,6 +870,7 @@
     bar.classList.remove("hidden");
     $("projsel").classList.add("hidden");
     $("signout").classList.add("hidden");
+    $("inbox-btn").classList.add("hidden"); // questions are not part of a read-only share
     setLive("loading", "loading…");
     shareLoad().catch(handleShareErr);
   }
@@ -710,9 +906,121 @@
     board.appendChild(m);
   }
 
+  // ---- answer-link mode ---------------------------------------------------
+  // An answer link carries a per-question grant token in the URL FRAGMENT
+  // (#a=<token>) — never sent to the server automatically. It talks only to the
+  // write-once /v1/answer/self endpoints and lets an outside expert answer ONE
+  // question without any standing token.
+  function parseHashKey(key) {
+    var h = window.location.hash || "";
+    if (h.charAt(0) === "#") h = h.slice(1);
+    var out = "";
+    h.split("&").forEach(function (part) {
+      var i = part.indexOf("=");
+      if (i > 0 && part.slice(0, i) === key) out = decodeURIComponent(part.slice(i + 1));
+    });
+    return out;
+  }
+
+  function answerApi(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + state.answerToken;
+    var init = { headers: headers, method: opts.method || "GET" };
+    if (opts.body != null) init.body = opts.body;
+    return fetch(API + "/answer" + path, init).then(function (r) {
+      if (r.status === 410) { var g = new Error("expired"); g.expired = true; throw g; }
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = t;
+          try { var j = JSON.parse(t); msg = j.message || (j.error && j.error.message) || t; } catch (_) {}
+          var e = new Error(msg || ("HTTP " + r.status)); e.status = r.status; throw e;
+        });
+      }
+      return r.json();
+    });
+  }
+
+  function bootAnswer(token) {
+    state.answerToken = token;
+    $("gate").classList.add("hidden");
+    $("topbar").classList.add("hidden");
+    answerApi("/self").then(renderAnswerPage).catch(function (e) {
+      if (e && e.expired) { answerCard("This link is no longer valid", "It has expired, been used, or been revoked. Ask whoever sent it for a fresh link."); return; }
+      answerCard("Could not load the question", (e && e.message) ? e.message : "unknown error");
+    });
+  }
+
+  function answerCard(title, msg) {
+    var board = $("board"); board.innerHTML = "";
+    var wrap = el("div", "card2");
+    wrap.style.margin = "48px auto"; wrap.style.maxWidth = "520px";
+    wrap.appendChild(el("h1", null, title));
+    if (msg) wrap.appendChild(el("p", null, msg));
+    board.appendChild(wrap);
+    return wrap;
+  }
+
+  function renderAnswerPage(data) {
+    var q = data.question || {};
+    var t = data.ticket;
+    if (q.status && q.status !== "open") {
+      answerCard("Already answered", "This question is '" + q.status + "'. Nothing more to do — thanks.");
+      return;
+    }
+    var wrap = answerCard("A human decision is needed", null);
+    wrap.querySelector("h1").textContent = q.title || "A human decision is needed";
+    var meta = el("div", "q-top");
+    if (t && t.id) meta.appendChild(el("span", "chip", t.id + (t.title ? " · " + t.title : "")));
+    meta.appendChild(el("span", "chip type", q.kind));
+    (q.expertise || []).forEach(function (tag) { meta.appendChild(el("span", "chip", tag)); });
+    wrap.insertBefore(meta, wrap.firstChild.nextSibling);
+    if (q.body) wrap.appendChild(el("div", "q-body", q.body));
+
+    var err = el("div", "q-err");
+    var note = el("input", "q-note"); note.type = "text"; note.placeholder = "optional note…";
+    var actions = el("div", "q-actions");
+    var send = function (value) {
+      err.textContent = "";
+      var payload = note.value.trim() ? { value: value, note: note.value.trim() } : value;
+      answerApi("/self", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
+        .then(function () { answerCard("Thank you", "Your answer was recorded."); })
+        .catch(function (e) {
+          if (e && e.expired) { answerCard("This link is no longer valid", "It may have just been used or expired."); return; }
+          err.textContent = "Failed: " + ((e && e.message) ? e.message : "error");
+        });
+    };
+    if (q.kind === "confirm" || q.kind === "approve") {
+      var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
+      var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
+      yes.addEventListener("click", function () { send("yes"); });
+      no.addEventListener("click", function () { send("no"); });
+      actions.appendChild(yes); actions.appendChild(no);
+    } else if (q.kind === "choose") {
+      (q.options || []).forEach(function (opt) {
+        var btn = el("button", null, opt);
+        btn.addEventListener("click", function () { send(opt); });
+        actions.appendChild(btn);
+      });
+    } else {
+      var input = el("input"); input.type = "text"; input.placeholder = "your answer…"; input.style.flex = "1 1 200px";
+      var go = el("button", "primary", "Send");
+      var submit = function () { var v = input.value.trim(); if (v) send(v); };
+      go.addEventListener("click", submit);
+      input.addEventListener("keydown", function (e) { if (e.key === "Enter") submit(); });
+      actions.appendChild(input); actions.appendChild(go);
+    }
+    wrap.appendChild(actions);
+    wrap.appendChild(note);
+    wrap.appendChild(err);
+  }
+
   // ---- start ----
-  var shareToken = parseShareToken();
-  if (shareToken) {
+  var answerToken = parseHashKey("a");
+  var shareToken = parseHashKey("s");
+  if (answerToken) {
+    bootAnswer(answerToken);
+  } else if (shareToken) {
     bootShare(shareToken);
   } else if (state.token && state.project) {
     hideGate();

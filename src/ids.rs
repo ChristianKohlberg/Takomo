@@ -22,6 +22,11 @@ pub fn comment_id() -> String {
     format!("c-{}", random_chars(BASE36, 8))
 }
 
+/// Question id, e.g. "q-9f3ka2xz".
+pub fn question_id() -> String {
+    format!("q-{}", random_chars(BASE36, 8))
+}
+
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".
 pub fn token_id() -> String {
     format!("tok_{}", random_chars(BASE36, 8))
@@ -35,6 +40,18 @@ pub fn token_plaintext() -> String {
 /// Share id (public handle for list/revoke), e.g. "share_a8f2k1x9q7z3".
 pub fn share_id() -> String {
     format!("share_{}", random_chars(BASE36, 12))
+}
+
+/// Answer-grant id (public handle for revoke), e.g. "ag_a8f2k1x9q7z3".
+pub fn answer_grant_id() -> String {
+    format!("ag_{}", random_chars(BASE36, 12))
+}
+
+/// Answer-grant bearer token: `tka_` + 32 base62 chars (~190 bits). The distinct
+/// `tka_` prefix keeps it visually separable from a normal `tk_` token and a
+/// read-only share `tks_` token; the auth path is decided by the endpoint.
+pub fn answer_grant_token_plaintext() -> String {
+    format!("tka_{}", random_chars(BASE62, 32))
 }
 
 /// Share bearer token plaintext: `tks_` + 32 base62 chars (~190 bits). The

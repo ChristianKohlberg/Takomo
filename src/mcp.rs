@@ -226,6 +226,85 @@ pub struct ProjectArgs {
     pub project: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AskArgs {
+    /// Ticket id the question is about. For a blocking question it is parked in
+    /// a blocked state and your lease is released (block-and-resume): end your
+    /// run and pick it back up once a human has answered.
+    pub id: String,
+    /// "blocking" (default): parks + resumes this ticket. "advisory": a routed,
+    /// recorded decision that does NOT change ticket state — use it for
+    /// epic-level or strategic questions that shouldn't freeze the work.
+    pub mode: Option<String>,
+    /// Question kind: confirm (yes/no), choose (pick an option), clarify (free
+    /// text), or approve (approve/reject an action).
+    pub kind: String,
+    /// The question, phrased for a human domain expert.
+    pub title: String,
+    /// Optional context: why you are asking and what you have tried.
+    pub body: Option<String>,
+    /// For kind=choose: the options to pick from (>= 2).
+    pub options: Option<Vec<String>>,
+    /// Your recommended answer (a hint for the human; also applied on timeout if
+    /// on_timeout=recommended).
+    pub recommended: Option<String>,
+    /// Routing tags for the human queue, e.g. ["domain:billing"].
+    pub expertise: Option<Vec<String>>,
+    /// Urgency: critical, high, normal (default), or low.
+    pub urgency: Option<String>,
+    /// Auto-expire the question after this many seconds (see on_timeout).
+    pub expires_in_seconds: Option<i64>,
+    /// On timeout: recommended (apply your recommendation), escalate (open the
+    /// pool), or cancel (cancel the ticket). Omit to just flag it expired.
+    pub on_timeout: Option<String>,
+    /// Override the fencing token (normally resolved automatically).
+    pub fence: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AnswerArgs {
+    /// Question id (from takomo_questions or the question_asked event).
+    pub id: String,
+    /// The answer: "yes"/"no" for confirm/approve, the chosen option for choose,
+    /// or the explanation text for clarify.
+    pub answer: String,
+    /// Optional note recorded alongside the answer.
+    pub note: Option<String>,
+    /// Override the workflow state the ticket resumes into (defaults to the
+    /// workflow's human-gated resume state).
+    pub resume_to: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct QuestionsArgs {
+    /// Filter by project id.
+    pub project: Option<String>,
+    /// Filter by ticket id.
+    pub ticket: Option<String>,
+    /// Statuses to include (comma-separated); default open.
+    pub status: Option<String>,
+    /// Only questions routed to your token's expert:<tag> scopes.
+    pub mine: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WithdrawArgs {
+    /// Question id to withdraw.
+    pub id: String,
+    /// Optional reason recorded on the withdrawal.
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AnswerLinkArgs {
+    /// Question id to mint an answer link for.
+    pub id: String,
+    /// Link lifetime in seconds (default 3 days, max 30 days).
+    pub ttl_seconds: Option<i64>,
+    /// Who a use of the link is attributed to (default human:link:<qid>).
+    pub actor: Option<String>,
+}
+
 // ---- tools ------------------------------------------------------------------
 
 #[tool_router]
@@ -470,6 +549,69 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Ask a human for a decision when you are blocked (confirmation, a choice, \
+        a clarification, or approval). Parks the ticket in a blocked state and releases your \
+        lease: end your run and resume the ticket after a human answers. Route to a domain \
+        expert with `expertise` tags like [\"domain:billing\"]."
+    )]
+    async fn takomo_ask(
+        &self,
+        Parameters(a): Parameters<AskArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_ask(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Answer an open question (requires the human scope). Records the reply and \
+        performs the ticket's human-gated transition to resume it."
+    )]
+    async fn takomo_answer(
+        &self,
+        Parameters(a): Parameters<AnswerArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_answer(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "List open questions on the ask-a-human board (the inbox). Filter by \
+        project/ticket/status, or `mine` to see only questions routed to your expert:<tag> scopes."
+    )]
+    async fn takomo_questions(
+        &self,
+        Parameters(a): Parameters<QuestionsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_questions(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Withdraw an open question you no longer need answered (e.g. you resolved \
+        the blocker yourself). The ticket stays parked; resume it with takomo_transition."
+    )]
+    async fn takomo_withdraw(
+        &self,
+        Parameters(a): Parameters<WithdrawArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_withdraw(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Mint a per-question answer link for an outside expert who shouldn't hold a \
+        token. Requires the human scope (and, for an approve question, the matching expert:<tag>). \
+        Returns a single-use, expiring tka_ token + a /board#a=<token> path — share it with the person."
+    )]
+    async fn takomo_answer_link(
+        &self,
+        Parameters(a): Parameters<AnswerLinkArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_answer_link(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
         description = "Identify the caller behind the current token: actor, scopes, and \
         project access."
     )]
@@ -583,7 +725,209 @@ impl TakomoMcp {
     fn do_show(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
         auth.require_scope("read")?;
         let ticket = load_visible(&self.state, auth, id)?;
-        Ok(json!({ "ok": true, "ticket": ticket.to_json(now_ms()) }))
+        let mut out = json!({ "ok": true, "ticket": ticket.to_json(now_ms()) });
+        // Surface every open human question so a resuming agent sees the full
+        // barrier (the ticket resumes only once all are answered) and, once
+        // answered, reads the decisions on the ticket's comments.
+        let open = self.state.store.open_questions_for_ticket(id)?;
+        if !open.is_empty() {
+            out["open_questions"] = json!(open.iter().map(|q| q.to_json()).collect::<Vec<_>>());
+        }
+        Ok(out)
+    }
+
+    fn do_ask(&self, auth: &AuthCtx, a: AskArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ticket = load_visible(&self.state, auth, &a.id)?;
+        let expires_at = match a.expires_in_seconds {
+            Some(s) if s > 0 => Some(now_ms() + s * 1000),
+            _ => None,
+        };
+        let on_timeout = match a.on_timeout.as_deref() {
+            Some(raw) => Some(crate::store::TimeoutAction::parse(raw)?),
+            None => None,
+        };
+        let req = crate::store::AskRequest {
+            ticket: a.id.clone(),
+            mode: a.mode,
+            kind: a.kind,
+            title: a.title,
+            body: a.body.unwrap_or_default(),
+            options: a.options.unwrap_or_default(),
+            recommended: a.recommended.map(Value::String).unwrap_or(Value::Null),
+            expertise: a.expertise.unwrap_or_default(),
+            urgency: a.urgency,
+            expires_at,
+            on_timeout,
+            fence: resolve_fence(&ticket, &auth.actor, a.fence),
+        };
+        let (question, updated) = self.state.store.ask_question(&req, &auth.actor)?;
+        self.state.wake();
+        crate::notify::question_asked(&self.state, &question);
+        let note = if question.mode == "advisory" {
+            format!(
+                "Advisory question recorded on '{}' — it does not change the ticket's state or your lease. It's routed to the inbox for a human; keep working or end your run as you see fit.",
+                updated.id
+            )
+        } else {
+            format!(
+                "Parked '{}' in '{}' and released your lease. End your run; resume once every open question on it is answered (the answers land on this ticket).",
+                updated.id, updated.state
+            )
+        };
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+            "ticket": updated.to_json(now_ms()),
+            "note": note,
+        }))
+    }
+
+    fn do_answer(&self, auth: &AuthCtx, a: AnswerArgs) -> ApiResult<Value> {
+        auth.require_scope("human")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        let answer = match a.note {
+            Some(n) => json!({ "value": a.answer, "note": n }),
+            None => json!({ "value": a.answer }),
+        };
+        let (question, ticket) = self.state.store.answer_question(
+            &a.id,
+            &auth.actor,
+            &auth.scopes,
+            &answer,
+            a.resume_to.as_deref(),
+        )?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+            "ticket": ticket.to_json(now_ms()),
+        }))
+    }
+
+    fn do_questions(&self, auth: &AuthCtx, a: QuestionsArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        if let Some(p) = &a.project {
+            auth.require_project(p)?;
+        }
+        let expertise = if a.mine.unwrap_or(false) {
+            let tags: Vec<String> = auth
+                .scopes
+                .iter()
+                .filter_map(|s| s.strip_prefix("expert:").map(str::to_string))
+                .collect();
+            if tags.is_empty() {
+                return Ok(
+                    json!({ "ok": true, "items": [], "note": "Your token carries no expert:<tag> scopes, so no questions route to you. Drop `mine` to see the whole queue." }),
+                );
+            }
+            tags
+        } else {
+            Vec::new()
+        };
+        let filter = crate::store::QuestionFilter {
+            project: a.project,
+            ticket: a.ticket,
+            statuses: a
+                .status
+                .map(|raw| {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            expertise,
+            allowed_projects: auth.allowed_projects_vec(),
+        };
+        let items = self.state.store.list_questions(&filter)?;
+        Ok(json!({ "ok": true, "items": items.iter().map(|q| q.to_json()).collect::<Vec<_>>() }))
+    }
+
+    fn do_withdraw(&self, auth: &AuthCtx, a: WithdrawArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        let question =
+            self.state
+                .store
+                .withdraw_question(&a.id, &auth.actor, a.reason.as_deref())?;
+        self.state.wake();
+        Ok(json!({ "ok": true, "question": question.to_json() }))
+    }
+
+    fn do_answer_link(&self, auth: &AuthCtx, a: AnswerLinkArgs) -> ApiResult<Value> {
+        auth.require_scope("human")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        if q.status != "open" {
+            return Err(ApiError::conflict(
+                "question.not_open",
+                format!("Question '{}' is '{}', not open.", a.id, q.status),
+            ));
+        }
+        if q.kind == "approve" {
+            let has_expert = q
+                .expertise
+                .iter()
+                .any(|t| auth.scopes.contains(&format!("expert:{t}")));
+            if !has_expert {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "question.approve_expertise",
+                    "Minting an answer link for an 'approve' question needs the matching expert:<tag> scope — you can only delegate authority you hold.",
+                ));
+            }
+        }
+        let ttl = match a.ttl_seconds {
+            None => crate::store::DEFAULT_ANSWER_TTL_SECONDS,
+            Some(s) if s <= 0 || s > crate::store::MAX_ANSWER_TTL_SECONDS => {
+                return Err(ApiError::validation(
+                    "answer_link.ttl",
+                    format!(
+                        "ttl_seconds must be between 1 and {} (30 days).",
+                        crate::store::MAX_ANSWER_TTL_SECONDS
+                    ),
+                ))
+            }
+            Some(s) => s,
+        };
+        let actor = a.actor.unwrap_or_else(|| format!("human:link:{}", a.id));
+        let expires_at = now_ms() + ttl * 1000;
+        let (row, plaintext) = self.state.store.create_answer_grant(
+            &a.id,
+            &q.project,
+            &actor,
+            expires_at,
+            &auth.actor,
+        )?;
+        let mut out = row.to_json();
+        out["token"] = json!(plaintext);
+        out["path"] = json!(format!("/board#a={plaintext}"));
+        if let Ok(base) = std::env::var("TAKOMO_PUBLIC_URL") {
+            if !base.trim().is_empty() {
+                out["url"] = json!(format!(
+                    "{}/board#a={plaintext}",
+                    base.trim_end_matches('/')
+                ));
+            }
+        }
+        out["note"] = json!("Single-use, expiring link. Share it only with the intended person; the token is shown once.");
+        Ok(json!({ "ok": true, "answer_link": out }))
     }
 
     fn do_claim(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
@@ -873,9 +1217,12 @@ impl ServerHandler for TakomoMcp {
                 "takomo: the central tracker for AI agent fleets. Typical work loop: \
                  `takomo_next` to claim the next ready ticket, `takomo_start` to move it \
                  in-progress, `takomo_comment`/`takomo_link` to record progress, then \
-                 `takomo_done` (or `takomo_block`/`takomo_cancel`). Illegal transitions \
-                 return the workflow's allowed_transitions so you can self-correct; call \
-                 `takomo_workflow` to see a project's full state machine."
+                 `takomo_done` (or `takomo_block`/`takomo_cancel`). When you need a human \
+                 decision (confirmation, a choice, a clarification, approval), call \
+                 `takomo_ask` — it parks the ticket and releases your lease; end your run and \
+                 resume once the answer appears on the ticket (`takomo_show`). Illegal \
+                 transitions return the workflow's allowed_transitions so you can self-correct; \
+                 call `takomo_workflow` to see a project's full state machine."
                     .to_string(),
             )
     }

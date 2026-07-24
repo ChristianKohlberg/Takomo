@@ -3,22 +3,26 @@
 //! kept narrow and connection-agnostic so a Postgres implementation could be
 //! added behind the same methods later.
 
+mod answer_grants;
 mod claims;
 mod events;
 mod helpers;
 mod metrics;
 mod model;
 mod projects;
+mod questions;
 mod roadmap;
 mod shares;
 mod tickets;
 mod tokens;
 mod transition;
 
+pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
 pub use projects::DeletedCounts;
+pub use questions::{AskRequest, QuestionFilter, TimeoutAction, QUESTION_KINDS};
 pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
@@ -104,6 +108,23 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_tickets_archived ON tickets(archived_at) WHERE archived_at IS NOT NULL",
         [],
     )?;
+    // questions.mode distinguishes blocking (parks/resumes the ticket) from
+    // advisory (routed + recorded, no state change). Older question tables
+    // predate it; add it defaulting to 'blocking' (the original behavior). Only
+    // ALTERs when PRAGMA shows it absent; a fresh DB already carries it.
+    let question_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(questions)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "mode") {
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN mode TEXT NOT NULL DEFAULT 'blocking'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -157,6 +178,42 @@ CREATE TABLE IF NOT EXISTS deps (
   PRIMARY KEY (ticket, blocked_by)
 );
 CREATE INDEX IF NOT EXISTS idx_deps_blocked_by ON deps(blocked_by);
+
+-- "Ask a human" board. A question is an agent's request for a human decision
+-- (confirm / choose / clarify / approve) tied to a ticket it parked in a
+-- blocked state. `expertise` is a JSON array of routing tags (e.g.
+-- ["domain:billing"]); `options` a JSON array for choose-kind; `answer` the
+-- recorded human response (JSON) once resolved. Lifecycle in `status`:
+-- open -> answered | withdrawn | expired. The append-only event log carries the
+-- same transitions (question_asked / question_answered / ...); this table is the
+-- queryable read-model the inbox and expiry sweep run against.
+CREATE TABLE IF NOT EXISTS questions (
+  id           TEXT PRIMARY KEY,
+  project      TEXT NOT NULL REFERENCES projects(id),
+  ticket       TEXT NOT NULL REFERENCES tickets(id),
+  asked_by     TEXT NOT NULL,
+  mode         TEXT NOT NULL DEFAULT 'blocking',
+  kind         TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL DEFAULT '',
+  options      TEXT NOT NULL DEFAULT '[]',
+  recommended  TEXT,
+  expertise    TEXT NOT NULL DEFAULT '[]',
+  urgency      TEXT NOT NULL DEFAULT 'normal',
+  status       TEXT NOT NULL DEFAULT 'open',
+  answer       TEXT,
+  answered_by  TEXT,
+  answered_at  INTEGER,
+  resolved_to  TEXT,
+  expires_at   INTEGER,
+  on_timeout   TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  version      INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
+CREATE INDEX IF NOT EXISTS idx_questions_project ON questions(project);
+CREATE INDEX IF NOT EXISTS idx_questions_ticket ON questions(ticket);
 
 CREATE TABLE IF NOT EXISTS comments (
   id         TEXT PRIMARY KEY,
@@ -219,4 +276,25 @@ CREATE TABLE IF NOT EXISTS shares (
 );
 CREATE INDEX IF NOT EXISTS idx_shares_project ON shares(project);
 CREATE INDEX IF NOT EXISTS idx_shares_created_by ON shares(created_by);
+
+-- Per-question answer grants. A grant mints a bearer token (`tka_`, hashed at
+-- rest like every token) that authorizes exactly ONE write — answering the one
+-- referenced question — and nothing else. It is the "answer link" handed to an
+-- outside domain expert who should not hold a standing token: scoped to a single
+-- question, auto-expiring, and write-once (spent once the question leaves the
+-- open state). Validated on a distinct auth path (auth::answer_auth) that reaches
+-- only /v1/answer/self*.
+CREATE TABLE IF NOT EXISTS answer_grants (
+  id          TEXT PRIMARY KEY,
+  token_hash  TEXT NOT NULL UNIQUE,
+  question    TEXT NOT NULL REFERENCES questions(id),
+  project     TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  used_at     INTEGER,
+  revoked_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_answer_grants_question ON answer_grants(question);
 "#;

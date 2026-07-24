@@ -239,7 +239,16 @@ server.registerTool(
   tool(async (a) => {
     const t = await getTicket(a.id);
     const lease = getLease(a.id);
-    return ok({ ok: true, ticket: t, held_lease: lease ?? null });
+    // Surface every open human question so a resuming agent sees the full
+    // barrier (the ticket resumes only once all are answered).
+    let openQuestions: any[] = [];
+    try {
+      const q = await client.request<any>({ path: "/questions", query: { ticket: a.id, status: "open" } });
+      openQuestions = q?.items ?? [];
+    } catch {
+      // Older stores without the questions endpoint: ignore.
+    }
+    return ok({ ok: true, ticket: t, held_lease: lease ?? null, open_questions: openQuestions });
   })
 );
 
@@ -529,6 +538,147 @@ server.registerTool(
   tool(async (a) => {
     const wf = await getWorkflow(client, a.project);
     return ok({ ok: true, workflow: wf });
+  })
+);
+
+server.registerTool(
+  "takomo_ask",
+  {
+    title: "Ask a human",
+    description:
+      "Ask a human for a decision (confirm / choose / clarify / approve). A blocking question (default) " +
+      "parks the ticket and releases your lease (block-and-resume): end your run and resume once every open " +
+      "question on the ticket is answered. An advisory question records a routed decision WITHOUT changing " +
+      "ticket state — use it for epic-level or strategic questions. Route to a domain expert with `expertise` tags.",
+    inputSchema: {
+      id: z.string().describe("Ticket id the question is about."),
+      mode: z.enum(["blocking", "advisory"]).optional().describe("blocking (default: parks+resumes the ticket) or advisory (no state change; e.g. an epic-level decision)."),
+      kind: z.enum(["confirm", "choose", "clarify", "approve"]).describe("Question kind."),
+      title: z.string().describe("The question, phrased for a human domain expert."),
+      body: z.string().optional().describe("Context: why you are asking and what you have tried."),
+      options: z.array(z.string()).optional().describe("For kind=choose: the options (>= 2)."),
+      recommended: z.string().optional().describe("Your recommended answer (a hint; applied on timeout if on_timeout=recommended)."),
+      expertise: z.array(z.string()).optional().describe("Routing tags, e.g. [\"domain:billing\"]."),
+      urgency: z.enum(["critical", "high", "normal", "low"]).optional().describe("Urgency (default normal)."),
+      expires_in_seconds: z.number().int().positive().optional().describe("Auto-expire after this many seconds."),
+      on_timeout: z.enum(["recommended", "escalate", "cancel"]).optional().describe("What the expiry sweep does on timeout."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { ticket: a.id, kind: a.kind, title: a.title };
+    if (a.mode) body.mode = a.mode;
+    if (a.body !== undefined) body.body = a.body;
+    if (a.options) body.options = a.options;
+    if (a.recommended !== undefined) body.recommended = a.recommended;
+    if (a.expertise) body.expertise = a.expertise;
+    if (a.urgency) body.urgency = a.urgency;
+    if (a.expires_in_seconds) body.expires_in_seconds = a.expires_in_seconds;
+    if (a.on_timeout) body.on_timeout = a.on_timeout;
+    const fence = resolveFence(a.id);
+    if (fence !== undefined) body.fence = fence;
+    const res = await client.request<any>({ method: "POST", path: "/questions", body });
+    forgetLease(a.id); // lease was released server-side by the ask
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_answer",
+  {
+    title: "Answer a question",
+    description:
+      "Answer an open question (requires the human scope on your token). Records the reply and performs the " +
+      "ticket's human-gated transition to resume it.",
+    inputSchema: {
+      id: z.string().describe("Question id (from takomo_questions or the question_asked event)."),
+      answer: z.string().describe("\"yes\"/\"no\" for confirm/approve, the chosen option for choose, or the text for clarify."),
+      note: z.string().optional().describe("Optional note recorded with the answer."),
+      resume_to: z.string().optional().describe("Override the workflow state the ticket resumes into."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { answer: a.note ? { value: a.answer, note: a.note } : a.answer };
+    if (a.resume_to) body.resume_to = a.resume_to;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/answer`,
+      body,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_questions",
+  {
+    title: "List questions (inbox)",
+    description:
+      "List questions on the ask-a-human board. Filter by project/ticket/status, or `mine` to see only " +
+      "questions routed to your expert:<tag> scopes.",
+    inputSchema: {
+      project: z.string().optional().describe("Filter by project id."),
+      ticket: z.string().optional().describe("Filter by ticket id."),
+      status: z.string().optional().describe("Statuses (comma-separated); default open."),
+      mine: z.boolean().optional().describe("Only questions routed to your expert:<tag> scopes."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: "/questions",
+      query: { project: a.project, ticket: a.ticket, status: a.status, mine: a.mine ? "true" : undefined },
+    });
+    return ok({ ok: true, items: res?.items ?? [], ...(res?.note ? { note: res.note } : {}) });
+  })
+);
+
+server.registerTool(
+  "takomo_withdraw",
+  {
+    title: "Withdraw a question",
+    description:
+      "Withdraw an open question you no longer need answered (e.g. you resolved the blocker yourself). " +
+      "The ticket stays parked; resume it with takomo_transition.",
+    inputSchema: {
+      id: z.string().describe("Question id to withdraw."),
+      reason: z.string().optional().describe("Optional reason recorded on the withdrawal."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = {};
+    if (a.reason) body.reason = a.reason;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/withdraw`,
+      body,
+    });
+    return ok({ ok: true, question: res });
+  })
+);
+
+server.registerTool(
+  "takomo_answer_link",
+  {
+    title: "Mint an answer link",
+    description:
+      "Mint a per-question answer link for an OUTSIDE expert who shouldn't hold a token. Requires the " +
+      "human scope (and, for an approve question, the matching expert:<tag>). Returns a single-use, " +
+      "expiring tka_ token and a /board#a=<token> path — share it with the person.",
+    inputSchema: {
+      id: z.string().describe("Question id to mint an answer link for."),
+      ttl_seconds: z.number().int().positive().optional().describe("Link lifetime (default 3 days, max 30 days)."),
+      actor: z.string().optional().describe("Who a use of the link is attributed to (default human:link:<qid>)."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = {};
+    if (a.ttl_seconds) body.ttl_seconds = a.ttl_seconds;
+    if (a.actor) body.actor = a.actor;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/answer-link`,
+      body,
+    });
+    return ok({ ok: true, answer_link: res });
   })
 );
 

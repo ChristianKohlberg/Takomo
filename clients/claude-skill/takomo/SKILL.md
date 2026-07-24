@@ -52,6 +52,10 @@ Prefer commutative writes — they never conflict:
 
 Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<version>"`, retry on `conflict.version`). If you do that often, you should be commenting instead.
 
+## Ask a human when you are blocked on a decision
+
+When progressing needs a human judgment you cannot make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — do not guess and do not silently stall. Ask: `takomo ask <id> --title "..." --kind confirm|choose|clarify|approve [--option ...] [--expertise domain:billing] [--recommend "..."]`. This parks the ticket in a blocked state, releases your lease, and posts the question to the ask-a-human board. **Then end your run** — this is block-and-resume, not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer (also on the board / `takomo questions`); the answer resumes the ticket into a claimable state. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if the work has a deadline. Withdraw with `takomo withdraw <qid>` if you no longer need the answer.
+
 ## Creating tickets
 
 Always search first (`takomo ls -q <keywords>`). `takomo new` auto-sends an Idempotency-Key and surfaces a `similar` list in the response — **read it**; if your ticket already exists, use the existing one. Structure work with `epic` parents grouping `task`/`bug` children (`--parent <epic-id>`); real dependencies are `blocked_by` edges (`takomo dep <id> --blocked-by <other>`), not prose.

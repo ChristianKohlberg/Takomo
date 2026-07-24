@@ -6,6 +6,7 @@ pub mod events;
 pub mod export;
 pub mod metrics;
 pub mod projects;
+pub mod questions;
 pub mod shares;
 pub mod tickets;
 pub mod tokens;

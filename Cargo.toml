@@ -24,6 +24,12 @@ futures-core = "0.3"
 # so agents can `claude mcp add --transport http .../mcp` instead of running the
 # Node stdio wrapper. Tool input schemas use rmcp's re-exported `schemars`.
 rmcp = { version = "2.2", features = ["server", "macros", "transport-streamable-http-server"] }
+# Outbound notifications for the "ask a human" board. Both are OFF unless the
+# operator configures TAKOMO_NOTIFY (see src/notify.rs), keeping the default
+# deploy secret-free. reqwest drives the Slack/generic-webhook transports;
+# lettre drives the SMTP email transport. rustls everywhere — no system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }

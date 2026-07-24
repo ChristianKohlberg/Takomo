@@ -41,6 +41,7 @@ transitions:
   - { from: implementing,   to: needs-decision }
   - { from: implementing,   to: review,         requires: [claim] }
   - { from: implementing,   to: ready }          # released/failed → back to queue
+  - { from: needs-decision, to: ready,          requires: [scope:human] }   # ask-a-human resume → re-enter the queue
   - { from: needs-decision, to: implementing,   requires: [scope:human] }
   - { from: review,         to: implementing }   # review feedback → back to work
   - { from: review,         to: done,           requires: [scope:human, guard:no_open_children] }
@@ -70,6 +71,8 @@ guards:
 - Transitions into a `done`/`cancelled` category state auto-release any claim. Transition out of a claimable state does not release the claim (implementing keeps the lease).
 
 **Blocking.** A ticket is *blocked* if any `blocked_by` edge points to a non-terminal ticket, or any ancestor is blocked. Blocked tickets never appear in the ready queue regardless of state. `blocked` as a *category* is for states that represent waiting-on-a-human (`needs-decision`); graph blocking is computed, not stored.
+
+**Ask-a-human board.** The `blocked`-category state plus the `scope:human` resume gates are what the ask-a-human board (`POST /v1/questions`, see openapi.yaml) is built on. `takomo ask` parks the ticket into a `blocked` state via a self-service (no-scope) edge and releases the asking agent's lease; a human answering the question performs the human-gated resume transition (in the factory default, `needs-decision → ready`, chosen because `ready` is claimable so a fresh worker re-enters the queue). Any workflow with a `blocked`-category state reachable by a no-scope edge and left by a `scope:human` edge supports the board; the resume target is picked as the human-gated, claimable `todo` state when one exists.
 
 **Risk classes and yolo.** Approval-style `requires` (`scope:human`) encode the mandatory gates. A project that wants routine work to self-land defines a second transition for the same edge with narrower conditions — e.g. `review → done requires: [scope:autoland, guard:no_open_children]` alongside the human one — and mints the `autoland` scope only to the orchestrator allowed to use it for low-risk labels. Policy about *when* the orchestrator uses that power lives in the orchestrator, not the store; the store only enforces who *can*.
 
