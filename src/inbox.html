@@ -8,21 +8,28 @@
   /* ---- theme tokens (shared with the board; light default, dark via prefers) ---- */
   /* Aquarelle palette: calm blues on soft paper. --accent = deep blue (primary
      actions / critical emphasis); --high/--normal/--low = the urgency scale;
-     --crit reserved for errors/reject (warm). */
+     --crit reserved for errors/reject (warm). Each attribute is encoded once, in
+     one channel: urgency is a single colored word, identifiers are monospace,
+     the selected/blocking thing is a tinted field (no stripe). */
   :root {
     --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
-    --muted: #6e7c88; --border: #e6ecf0; --accent: #1f4e78; --accent2: #2f6ba0;
+    --muted: #6e7c88; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
+    --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
     --shadow: 0 18px 50px -26px rgba(20,40,55,.28);
-    --crit: #b4543f; --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95;
-    --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --hover: #f2f6fa;
+    --crit: #b4543f; --crit-border: #e3cdc6; --ok: #3f7a5f;
+    --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95;
+    --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --sel-border: #cfe0ee; --hover: #f2f6fa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0e141b; --panel: #141d27; --col-bg: #101821; --text: #e6eef5;
-      --muted: #8ba0b0; --border: #26313d; --accent: #4c8dff; --accent2: #6ea8ff;
+      --muted: #8ba0b0; --ink2: #c3d2de; --border: #26313d; --border-soft: #1e2833;
+      --accent: #4c8dff; --accent2: #6ea8ff; --accent-ink: #7fb2ff;
       --shadow: 0 18px 50px -26px rgba(0,0,0,.6);
-      --crit: #e0836f; --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1;
-      --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --hover: #17212c;
+      --crit: #e0836f; --crit-border: #5c3a33; --ok: #5fbf8f;
+      --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1;
+      --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --sel-border: #2b4a63; --hover: #17212c;
     }
   }
   * { box-sizing: border-box; }
@@ -30,112 +37,169 @@
   body {
     background: var(--bg); color: var(--text); overflow: hidden;
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
     display: flex; flex-direction: column; height: 100vh;
   }
+
+  /* ---- shared header ---- */
   header {
-    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
-    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); flex: 0 0 auto;
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    padding: 0 20px; height: 58px; background: var(--panel);
+    border-bottom: 1px solid var(--border-soft); flex: 0 0 auto;
   }
-  header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 700; letter-spacing: .2px; }
-  header a.boardlink { font-size: 12px; color: var(--muted); text-decoration: none; }
-  header a.boardlink:hover { color: var(--accent); }
+  .brand { display: flex; align-items: center; gap: 9px; color: var(--accent2); }
+  .brand svg { display: block; }
+  .brand span { font-size: 16px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
+  .nav { display: flex; gap: 4px; }
+  .nav a, .nav span.navpill {
+    font-size: 13px; font-weight: 650; color: var(--muted); text-decoration: none;
+    padding: 6px 12px; border-radius: 8px;
+  }
+  .nav a:hover { color: var(--accent); background: var(--hover); }
+  .nav .active { color: var(--accent); background: var(--chip-bg); font-weight: 680; }
   .grow { flex: 1 1 auto; }
   select, input, button, textarea {
     font: inherit; color: var(--text); background: var(--panel);
-    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
   }
+  header select { max-width: 220px; }
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-  button.primary:hover { filter: brightness(1.08); }
-  button.ghost { background: transparent; }
-  .status { font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 5px; vertical-align: middle; }
-  .dot.live { background: #36b37e; } .dot.err { background: var(--crit); }
-  .mine-toggle { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  button.primary:hover { background: var(--accent-ink); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { color: var(--accent); background: var(--hover); }
+  .status { font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.live { background: var(--ok); } .dot.err { background: var(--crit); }
+  .mine-toggle { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 
   /* ---- 3-pane layout ---- */
-  main { flex: 1 1 auto; display: grid; grid-template-columns: 190px 360px 1fr; min-height: 0; }
-  .rail { border-right: 1px solid var(--border); background: var(--col-bg); overflow-y: auto; padding: 10px 8px; }
-  .rail h3 { font-size: 10px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 12px 8px 6px; }
-  .folder { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--text); }
+  main { flex: 1 1 auto; display: grid; grid-template-columns: 236px 404px 1fr; min-height: 0; }
+  .rail { border-right: 1px solid var(--border-soft); background: var(--col-bg); overflow-y: auto; padding: 18px 12px; display: flex; flex-direction: column; gap: 1px; }
+  .rail h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 0 0 8px; padding: 0 12px; }
+  .rail h3.mt { margin-top: 18px; }
+  .folder { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-radius: 8px; cursor: pointer; color: var(--ink2); font-size: 14px; }
   .folder:hover { background: var(--hover); }
-  .folder.active { background: var(--sel); font-weight: 600; }
-  .folder .n { background: var(--chip-bg); color: var(--chip-text); border-radius: 10px; padding: 0 7px; font-size: 11px; }
-  .listpane { border-right: 1px solid var(--border); overflow-y: auto; background: var(--panel); }
-  .qrow { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 3px solid transparent; }
+  .folder.active { background: var(--chip-bg); color: var(--accent); font-weight: 680; }
+  .folder .n { color: var(--muted); font-size: 13px; }
+  .folder.active .n { color: var(--accent); }
+  .rail .spacer { flex: 1 1 auto; }
+  .rail .expertise { padding: 12px; border-radius: 10px; background: var(--hover); }
+  .rail .expertise h3 { margin-bottom: 8px; letter-spacing: .06em; }
+  .rail .expertise .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .rail .expertise .tag { font-family: var(--mono); font-size: 12px; color: var(--accent2); }
+
+  /* ---- list pane ---- */
+  .listpane { border-right: 1px solid var(--border-soft); overflow-y: auto; background: var(--panel); }
+  .listhead { padding: 16px 22px 12px; display: flex; align-items: baseline; justify-content: space-between; position: sticky; top: 0; background: var(--panel); z-index: 1; border-bottom: 1px solid var(--border-soft); }
+  .listhead .t { font-size: 15px; font-weight: 700; }
+  .listhead .s { font-size: 12px; color: var(--muted); }
+  .qrow { padding: 14px 22px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
   .qrow:hover { background: var(--hover); }
-  .qrow.active { background: var(--sel); border-left-color: var(--accent); }
-  .qrow.u-critical { border-left-color: var(--accent); }
-  .qrow.u-high { border-left-color: var(--high); }
-  .qrow .r1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-  .qrow .who { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .qrow .age { font-size: 11px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
-  .qrow .subj { font-weight: 600; margin: 3px 0; overflow-wrap: anywhere; }
-  .qrow .r3 { display: flex; flex-wrap: wrap; gap: 4px; }
-  .listpane .empty { color: var(--muted); text-align: center; padding: 40px 12px; }
-  .readpane { overflow-y: auto; padding: 18px 22px; }
-  .readpane .rempty { color: var(--muted); text-align: center; margin-top: 80px; }
-  .readpane h2 { font-size: 18px; margin: 0 0 8px; overflow-wrap: anywhere; }
-  .readpane .metarow { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-  .readpane .body { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--col-bg); border-radius: 6px; padding: 12px; margin-bottom: 14px; }
-  .readpane h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 16px 0 6px; }
-  .chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); overflow-wrap: anywhere; }
-  .chip.prio.critical, .chip.u-critical { color: var(--accent); }
-  .chip.prio.high { color: var(--high); }
-  .chip.mode { border: 1px dashed var(--muted); background: transparent; }
-  .answerbox { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-top: 8px; }
-  .answerbox .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .answerbox button { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
-  .answerbox input[type=text] { flex: 1 1 200px; min-width: 0; }
-  .answerbox .note { width: 100%; margin-top: 8px; }
-  .answered { background: var(--col-bg); border-radius: 8px; padding: 12px; }
-  .actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
-  .linkbox { margin-top: 10px; }
-  .linkbox input { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-  .err { color: var(--crit); font-size: 12px; min-height: 14px; margin-top: 8px; }
-  .readonly { font-size: 12px; color: var(--high); margin-bottom: 10px; }
-  a { color: var(--accent); }
+  .qrow.active { background: var(--sel); }
+  .qrow .r1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+  .qrow .age { font-size: 12px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
+  .qrow .subj { font-size: 14.5px; font-weight: 680; color: var(--text); line-height: 1.4; margin-bottom: 6px; overflow-wrap: anywhere; }
+  .qrow.read .subj { font-size: 14px; font-weight: 550; color: var(--ink2); }
+  .qrow .meta { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .listpane .empty { color: var(--muted); text-align: center; padding: 48px 12px; }
 
-  /* ---- answer: selection + send ---- */
-  .optbtn { background: var(--panel); }
-  .optbtn.sel { background: var(--accent); color: #fff; border-color: transparent; }
-  .optbtn.sel.reject { background: var(--crit); }
-  .answerbox textarea.clarify { width: 100%; min-height: 64px; resize: vertical; }
-  .sendrow { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-  button.send.armed { background: var(--high); border-color: transparent; color: #fff; }
+  /* urgency as a single colored word (one channel, no chip) */
+  .uw { font-size: 12.5px; letter-spacing: .02em; }
+  .uw-critical { color: var(--accent); font-weight: 700; }
+  .uw-high { color: var(--high); font-weight: 700; }
+  .uw-normal { color: var(--normal); font-weight: 600; }
+  .uw-low { color: var(--low); font-weight: 600; }
+
+  /* ---- reading pane ---- */
+  .readpane { overflow-y: auto; padding: 26px 34px; background: var(--panel); }
+  .readpane .rempty { color: var(--muted); text-align: center; margin-top: 90px; }
+  .statusline { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 18px; }
+  .statusline.blocking { color: var(--accent2); }
+  .statusline.blocking .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+  .statusline.advisory { color: var(--muted); border: 1px dashed var(--sel-border); border-radius: 10px; padding: 9px 13px; background: var(--col-bg); font-weight: 650; }
+  .kindrow { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .kindbadge { font-size: 12px; font-weight: 750; color: #fff; background: var(--accent); padding: 3px 11px; border-radius: 6px; letter-spacing: .04em; text-transform: uppercase; }
+  .kindlabel { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .kindnote { font-size: 12.5px; color: var(--ink2); }
+  .readpane h2 { font-size: 25px; line-height: 1.25; color: var(--text); letter-spacing: -.02em; font-weight: 700; margin: 0 0 12px; overflow-wrap: anywhere; }
+  .askmeta { font-size: 13px; color: var(--muted); padding-bottom: 18px; border-bottom: 1px solid var(--border-soft); margin-bottom: 20px; }
+  .mono { font-family: var(--mono); }
+  .askmeta .mono { color: var(--text); }
+  .readpane .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.65; color: var(--ink2); max-width: 640px; margin: 0 0 20px; }
+  .rec-card { background: var(--col-bg); border-radius: 10px; padding: 14px 16px; max-width: 640px; margin-bottom: 20px; }
+  .rec-card .rh { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 5px; }
+  .rec-card .rv { font-size: 14.5px; color: var(--text); overflow-wrap: anywhere; }
+
+  /* ---- answer control ---- */
+  .answerbox { border-top: 1px solid var(--border-soft); margin-top: 8px; padding-top: 20px; max-width: 640px; }
+  .answerbox h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  .answerbox .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+  .answerbox .row.choose { flex-direction: column; }
+  .optbtn { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 14px; font-weight: 620; color: var(--ink2); text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+  .optbtn:hover { border-color: var(--sel-border); }
+  .row:not(.choose) .optbtn { flex: 1 1 auto; }
+  .optbtn.sel { background: var(--accent); color: #fff; border-color: transparent; font-weight: 680; }
+  .optbtn.sel.reject { background: transparent; color: var(--crit); border: 1px solid var(--crit-border); }
+  .answerbox textarea.clarify { width: 100%; min-height: 88px; resize: vertical; border-radius: 10px; padding: 12px 14px; }
+  .answerbox input.note { width: 100%; margin-top: 12px; height: 42px; border-radius: 9px; }
+  .sendrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+  button.send { height: 48px; padding: 0 22px; font-size: 15px; font-weight: 680; border-radius: 10px; box-shadow: 0 10px 22px -12px rgba(31,78,120,.7); }
+  button.send:disabled { opacity: .5; box-shadow: none; cursor: default; }
+  button.send.armed { background: var(--accent-ink); }
   .sendhint { font-size: 12px; color: var(--muted); }
-  .lang-nudge { font-size: 12px; color: var(--high); background: color-mix(in srgb, var(--high) 12%, transparent); border: 1px solid color-mix(in srgb, var(--high) 40%, transparent); border-radius: 6px; padding: 6px 9px; margin-bottom: 10px; }
-  .pending-box { border: 1px dashed var(--accent); border-radius: 8px; padding: 14px; margin-top: 8px; color: var(--muted); }
+  .lang-nudge { font-size: 12.5px; color: var(--high); background: color-mix(in srgb, var(--high) 10%, transparent); border: 1px solid color-mix(in srgb, var(--high) 34%, transparent); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
+  .pending-box { border: 1px dashed var(--accent); border-radius: 10px; padding: 16px; margin-top: 8px; color: var(--muted); max-width: 640px; }
 
-  /* ---- inspect (subtle) ---- */
-  .inspect-link { display: inline-block; font-size: 12px; color: var(--muted); background: none; border: none; padding: 2px 0; cursor: pointer; text-decoration: underline; }
+  /* answered / lifecycle summary */
+  .answered { background: var(--col-bg); border-radius: 10px; padding: 14px 16px; max-width: 640px; }
+  .answered.ok { background: color-mix(in srgb, var(--ok) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); }
+  .answered .lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 5px; }
+  .answered .val { font-size: 14px; color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
+  .answered .sub { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+
+  .actions { margin-top: 18px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; max-width: 640px; }
+  .actions .grow { flex: 1 1 auto; }
+  .actions button { background: transparent; border: none; padding: 0; color: var(--muted); font-size: 12.5px; }
+  .actions button:hover { color: var(--accent); }
+  .actions .kbd { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .linkbox { margin-top: 12px; max-width: 640px; }
+  .linkbox input { width: 100%; font-family: var(--mono); font-size: 12px; }
+  .readonly { font-size: 12.5px; color: var(--high); margin-bottom: 12px; }
+  a { color: var(--accent2); }
+
+  /* inspect (subtle) */
+  .inspect-link { display: inline-block; font-size: 12px; color: var(--muted); background: none; border: none; padding: 2px 0; margin: 4px 0 0; cursor: pointer; text-decoration: underline; }
   .inspect-link:hover { color: var(--accent); }
-  .inspect-panel { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0 4px; background: var(--col-bg); }
+  .inspect-panel { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0 4px; background: var(--col-bg); max-width: 640px; }
   .inspect-panel .note-lang { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
   .inspect-panel .ip-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
   .inspect-panel .ip-comment { border-left: 2px solid var(--border); padding-left: 8px; margin-top: 6px; font-size: 12px; }
+  .substatus { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
 
   /* ---- toasts ---- */
   #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 90vw); }
-  .toast { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: var(--shadow); padding: 10px 12px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
-  .toast.success { border-left-color: #36b37e; }
+  .toast { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; box-shadow: var(--shadow); padding: 11px 13px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .toast.success { border-left-color: var(--ok); }
   .toast.error { border-left-color: var(--crit); }
   .toast.undo { border-left-color: var(--high); }
   .toast .tmsg { flex: 1 1 auto; overflow-wrap: anywhere; }
-  .toast .tbtn { flex: 0 0 auto; font-size: 12px; padding: 4px 10px; }
+  .toast .tbtn { flex: 0 0 auto; font-size: 12px; padding: 5px 12px; border-radius: 7px; }
   .toast .tclose { flex: 0 0 auto; background: none; border: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 0 2px; cursor: pointer; }
 
   /* ---- gate ---- */
   #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
-  #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; width: min(420px, 100%); box-shadow: var(--shadow); }
-  #gate h1 { font-size: 18px; margin: 0 0 4px; }
-  #gate p { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
-  #gate label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
-  #gate input { width: 100%; }
-  #gate button { width: 100%; margin-top: 18px; }
+  #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 26px; width: min(420px, 100%); box-shadow: var(--shadow); text-align: center; }
+  #gate .brand { justify-content: center; margin-bottom: 6px; }
+  #gate h1 { font-size: 20px; margin: 6px 0 6px; font-weight: 750; }
+  #gate p { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.6; }
+  #gate label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; text-align: left; }
+  #gate input { width: 100%; font-family: var(--mono); height: 46px; }
+  #gate button { width: 100%; margin-top: 14px; height: 46px; }
   #gate .gerr { color: var(--crit); font-size: 13px; margin-top: 12px; min-height: 18px; }
   .hidden { display: none !important; }
 
+  @media (max-width: 900px) { main { grid-template-columns: 200px 340px 1fr; } }
   @media (max-width: 780px) {
     main { grid-template-columns: 1fr; }
     .rail { display: none; }
@@ -149,22 +213,24 @@
 
 <div id="gate">
   <div class="card2">
+    <div class="brand" id="gate-brand"></div>
     <h1>takomo · inbox</h1>
-    <p>Questions waiting for a human. Enter a token (needs the <code>human</code> scope to answer).</p>
+    <p>Questions waiting for a human. Paste a token (needs the <code>human</code> scope to answer). It stays on this device and rides every request.</p>
     <label for="g-token">Token</label>
-    <input id="g-token" type="password" placeholder="tk_..." autocomplete="off">
+    <input id="g-token" type="password" placeholder="tk_live_••••••••" autocomplete="off">
     <button class="primary" id="g-go">Open inbox</button>
     <div class="gerr" id="g-err"></div>
   </div>
 </div>
 
 <header class="hidden" id="topbar">
-  <h1>takomo · inbox</h1>
-  <a class="boardlink" href="/board">← board</a>
+  <div class="brand" id="brand"></div>
+  <nav class="nav"><a href="/board">Board</a><span class="navpill active">Inbox</span></nav>
   <select id="projsel" title="project"></select>
   <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine"> mine</label>
   <span class="grow"></span>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
+  <span class="status mono hidden" id="whoami"></span>
   <button class="ghost" id="refresh">Refresh</button>
   <button class="ghost" id="signout">Sign out</button>
 </header>
@@ -192,12 +258,15 @@
 
   var UNDO_SECONDS = 30;
 
+  // takomo mark (waveform) — inline so the surface stays dependency-free.
+  var LOGO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11a6 6 0 0 1 12 0"/><circle cx="9.7" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.3" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><path d="M7 11.2c0 2.8-1.4 3.8-1.4 5.8"/><path d="M10 11.6c0 2.9-.5 4.3 0 6.2"/><path d="M14 11.6c0 2.9.5 4.3 0 6.2"/><path d="M17 11.2c0 2.8 1.4 3.8 1.4 5.8"/></svg>';
+
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
     project: "",        // "" = all accessible projects
     mineOnly: false,
     folder: "open",
-    me: null,           // { scopes, expertise, canAnswer }
+    me: null,           // { scopes, expertise, canAnswer, actor }
     questions: [],      // all statuses, current project/mine filter
     selectedId: null,
     cursor: 0,
@@ -215,6 +284,7 @@
     if (text != null) e.textContent = text;
     return e;
   }
+  function cap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
   // ---- toasts ----
   function toast(msg, kind, opts) {
@@ -333,9 +403,12 @@
       var scopes = (w && w.scopes) || [];
       var expertise = scopes.filter(function (s) { return s.indexOf("expert:") === 0; })
         .map(function (s) { return s.slice("expert:".length); });
-      state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1 };
+      state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1, actor: (w && w.actor) || "" };
       $("mine-wrap").classList.toggle("hidden", expertise.length === 0);
-    }).catch(function () { state.me = { scopes: [], expertise: [], canAnswer: false }; });
+      var who = $("whoami");
+      if (state.me.actor) { who.textContent = state.me.actor; who.classList.remove("hidden"); }
+      else who.classList.add("hidden");
+    }).catch(function () { state.me = { scopes: [], expertise: [], canAnswer: false, actor: "" }; });
   }
 
   function questionsQuery() {
@@ -406,11 +479,20 @@
     FOLDERS.forEach(function (f) {
       var row = el("div", "folder" + (state.folder === f.id ? " active" : ""));
       row.appendChild(el("span", null, f.label));
-      var n = c[f.id] || 0;
-      if (n) row.appendChild(el("span", "n", String(n)));
+      row.appendChild(el("span", "n", String(c[f.id] || 0)));
       row.addEventListener("click", function () { state.folder = f.id; render(); });
       rail.appendChild(row);
     });
+    rail.appendChild(el("div", "spacer"));
+    // "Your expertise" card — the tags the viewer's token is routed for.
+    if (state.me && state.me.expertise && state.me.expertise.length) {
+      var card = el("div", "expertise");
+      card.appendChild(el("h3", null, "Your expertise"));
+      var tags = el("div", "tags");
+      state.me.expertise.forEach(function (t) { tags.appendChild(el("span", "tag", t)); });
+      card.appendChild(tags);
+      rail.appendChild(card);
+    }
   }
 
   function inFolder() {
@@ -426,21 +508,26 @@
 
   function renderList() {
     var list = $("list"); list.innerHTML = "";
+    var head = el("div", "listhead");
+    head.appendChild(el("span", "t", cap(state.folder)));
+    head.appendChild(el("span", "s", "urgency · age"));
+    list.appendChild(head);
     var items = inFolder();
     if (items.length === 0) { list.appendChild(el("div", "empty", "No " + state.folder + " questions.")); return; }
+    var read = state.folder !== "open";
     items.forEach(function (q) {
-      var row = el("div", "qrow u-" + (q.urgency || "normal") + (q.id === state.selectedId ? " active" : ""));
+      var urg = q.urgency || "normal";
+      var row = el("div", "qrow" + (read ? " read" : "") + (q.id === state.selectedId ? " active" : ""));
       var r1 = el("div", "r1");
-      r1.appendChild(el("span", "who", q.asked_by || "—"));
+      r1.appendChild(el("span", "uw uw-" + urg, cap(urg)));
       r1.appendChild(el("span", "age", fmtAge(q.created_at)));
       row.appendChild(r1);
       row.appendChild(el("div", "subj", q.title || "(untitled)"));
-      var r3 = el("div", "r3");
-      r3.appendChild(el("span", "chip", q.ticket));
-      r3.appendChild(el("span", "chip", q.kind));
-      if (q.mode && q.mode !== "blocking") r3.appendChild(el("span", "chip mode", q.mode));
-      (q.expertise || []).forEach(function (t) { r3.appendChild(el("span", "chip", t)); });
-      row.appendChild(r3);
+      // one monospace identity line: agent · kind [· mode] · ticket
+      var parts = [q.asked_by || "—", q.kind];
+      if (q.mode && q.mode !== "blocking") parts.push(q.mode);
+      parts.push(q.ticket);
+      row.appendChild(el("div", "meta", parts.join(" · ")));
       row.addEventListener("click", function () { state.selectedId = q.id; document.body.classList.add("reading"); render(); });
       list.appendChild(row);
     });
@@ -456,32 +543,69 @@
     var q = selected();
     if (!q) { pane.appendChild(el("div", "rempty", "Select a question to read and answer.")); return; }
 
+    // status line — what happens when you answer (blocking resumes; advisory routes)
+    var blocking = !(q.mode && q.mode !== "blocking");
+    if (blocking) {
+      var sl = el("div", "statusline blocking");
+      sl.appendChild(el("span", "sdot"));
+      var txt = el("span");
+      txt.appendChild(document.createTextNode(q.status === "open" ? "Blocking — your answer resumes " : "Blocking — resolved "));
+      txt.appendChild(el("span", "mono", q.ticket));
+      if (q.status === "answered" && q.resolved_to) { txt.appendChild(document.createTextNode(" into ")); txt.appendChild(el("span", "mono", q.resolved_to)); }
+      sl.appendChild(txt);
+      pane.appendChild(sl);
+    } else {
+      pane.appendChild(el("div", "statusline advisory", "Advisory — routes a decision, no ticket changes state"));
+    }
+
+    // kind + expert-gate note
+    var kindrow = el("div", "kindrow");
+    if (q.kind === "approve") {
+      kindrow.appendChild(el("span", "kindbadge", "Approve"));
+      var note = el("span", "kindnote");
+      note.appendChild(document.createTextNode("expert-gated"));
+      if ((q.expertise || []).length) {
+        note.appendChild(document.createTextNode(" · "));
+        note.appendChild(el("span", "mono", q.expertise.join(" ")));
+      }
+      kindrow.appendChild(note);
+    } else {
+      kindrow.appendChild(el("span", "kindlabel", q.kind || "question"));
+      if ((q.expertise || []).length) {
+        var n2 = el("span", "kindnote");
+        n2.appendChild(el("span", "mono", q.expertise.join(" ")));
+        kindrow.appendChild(n2);
+      }
+    }
+    pane.appendChild(kindrow);
+
     pane.appendChild(el("h2", null, q.title || "(untitled)"));
-    var meta = el("div", "metarow");
-    meta.appendChild(el("span", "chip", q.ticket));
-    meta.appendChild(el("span", "chip prio " + (q.urgency || "normal") + " u-" + (q.urgency || "normal"), q.urgency || "normal"));
-    meta.appendChild(el("span", "chip", q.kind));
-    if (q.mode && q.mode !== "blocking") meta.appendChild(el("span", "chip mode", q.mode));
-    meta.appendChild(el("span", "chip", "from " + (q.asked_by || "—")));
-    (q.expertise || []).forEach(function (t) { meta.appendChild(el("span", "chip", t)); });
-    pane.appendChild(meta);
+
+    var am = el("div", "askmeta");
+    am.appendChild(document.createTextNode("asked by "));
+    am.appendChild(el("span", "mono", q.asked_by || "—"));
+    am.appendChild(document.createTextNode(" · " + fmtAge(q.created_at) + " ago"));
+    pane.appendChild(am);
 
     if (q.body) pane.appendChild(el("div", "body", q.body));
     if (q.recommended != null && q.recommended !== "") {
-      pane.appendChild(el("div", "status", "Agent suggests: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
+      var rec = el("div", "rec-card");
+      rec.appendChild(el("div", "rh", (q.asked_by || "agent") + " recommends"));
+      rec.appendChild(el("div", "rv", typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended)));
+      pane.appendChild(rec);
     }
 
     // Which internal ticket this belongs to — inspectable, deliberately subtle.
     pane.appendChild(inspectTicket(q));
 
     if (q.status !== "open") {
-      var box = el("div", "answered");
-      var verb = q.status.charAt(0).toUpperCase() + q.status.slice(1);
+      var box = el("div", "answered" + (q.status === "answered" ? " ok" : ""));
       var av = q.answer && q.answer.value != null ? (typeof q.answer.value === "string" ? q.answer.value : JSON.stringify(q.answer.value)) : "—";
-      box.appendChild(el("div", null, verb + (q.answered_by ? " by " + q.answered_by : "")));
+      box.appendChild(el("div", "lbl", cap(q.status) + (q.answered_by ? " · by " + q.answered_by : "")));
       if (q.status === "answered") {
-        box.appendChild(el("div", "status", "Answer: " + av + (q.answer && q.answer.note ? " — " + q.answer.note : "")));
-        if (q.resolved_to) box.appendChild(el("div", "status", "Ticket resumed to '" + q.resolved_to + "'."));
+        box.appendChild(el("div", "val", av));
+        if (q.answer && q.answer.note) box.appendChild(el("div", "sub", "“" + q.answer.note + "”"));
+        if (q.resolved_to) box.appendChild(el("div", "sub", "Ticket resumed to " + q.resolved_to + "."));
       }
       pane.appendChild(box);
       return;
@@ -491,7 +615,7 @@
     if (state.pending[q.id]) {
       var pb = el("div", "pending-box");
       pb.appendChild(el("div", null, "Answer queued — sending shortly."));
-      pb.appendChild(el("div", "status", "Use Undo in the notification (bottom-right) to cancel within " + UNDO_SECONDS + "s."));
+      pb.appendChild(el("div", "substatus", "Use Undo in the notification (bottom-right) to cancel within " + UNDO_SECONDS + "s."));
       pane.appendChild(pb);
       return;
     }
@@ -518,17 +642,17 @@
       link.textContent = "hide internal ticket " + q.ticket + " ▾";
       panel = el("div", "inspect-panel");
       panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
-      panel.appendChild(el("div", "status", "loading…"));
+      panel.appendChild(el("div", "substatus", "loading…"));
       wrap.appendChild(panel);
       api("/tickets/" + encodeURIComponent(q.ticket) + "?include=comments").then(function (t) {
         panel.innerHTML = "";
         panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
         panel.appendChild(el("div", null, t.title || q.ticket));
-        panel.appendChild(el("div", "status", (t.type ? t.type + " · " : "") + "state: " + (t.state || "?") + (t.priority ? " · " + t.priority : "")));
+        panel.appendChild(el("div", "substatus", (t.type ? t.type + " · " : "") + "state: " + (t.state || "?") + (t.priority ? " · " + t.priority : "")));
         if (t.body) panel.appendChild(el("div", "ip-body", t.body));
         var cs = t.comments || [];
         if (cs.length) {
-          panel.appendChild(el("div", "status", "Comments (" + cs.length + "):"));
+          panel.appendChild(el("div", "substatus", "Comments (" + cs.length + "):"));
           cs.slice(-5).forEach(function (c) {
             var cc = el("div", "ip-comment");
             cc.appendChild(el("div", "note-lang", (c.author || "") + " · " + (c.created_at || "")));
@@ -538,7 +662,7 @@
         }
       }).catch(function (e) {
         panel.innerHTML = "";
-        panel.appendChild(el("div", "status", "Could not load ticket: " + (e && e.message ? e.message : "error")));
+        panel.appendChild(el("div", "substatus", "Could not load ticket: " + (e && e.message ? e.message : "error")));
       });
     });
     wrap.appendChild(link);
@@ -561,14 +685,15 @@
     function markBusy() { state.answering = true; }
     function curVal() { return q.kind === "clarify" ? ((textInput && textInput.value) || "").trim() : sel; }
 
-    var row = el("div", "row");
+    var isChoose = q.kind === "choose";
+    var row = el("div", "row" + (isChoose ? " choose" : ""));
     if (q.kind === "confirm" || q.kind === "approve") {
       var yes = el("button", "optbtn", q.kind === "approve" ? "Approve" : "Yes");
       var no = el("button", "optbtn reject", q.kind === "approve" ? "Reject" : "No");
       yes.addEventListener("click", function () { sel = "yes"; yes.classList.add("sel"); no.classList.remove("sel"); markBusy(); refreshSend(); });
       no.addEventListener("click", function () { sel = "no"; no.classList.add("sel"); yes.classList.remove("sel"); markBusy(); refreshSend(); });
       row.appendChild(yes); row.appendChild(no);
-    } else if (q.kind === "choose") {
+    } else if (isChoose) {
       (q.options || []).forEach(function (opt) {
         var b = el("button", "optbtn", opt);
         b.addEventListener("click", function () {
@@ -586,15 +711,18 @@
     }
     box.appendChild(row);
 
-    var note = el("input", "note"); note.type = "text"; note.placeholder = "optional note…";
+    var note = el("input", "note"); note.type = "text"; note.placeholder = "Add a note with your decision (optional)…";
     note.addEventListener("input", markBusy);
     box.appendChild(note);
 
     var sendRow = el("div", "sendrow");
-    var send = el("button", "primary send", "Send"); send.disabled = true;
+    var sendLabel = q.kind === "approve" ? "Approve & resume " + q.ticket
+      : q.kind === "confirm" ? "Confirm & resume " + q.ticket
+      : "Send answer & resume " + q.ticket;
+    var send = el("button", "primary send", sendLabel); send.disabled = true;
     var hint = el("span", "sendhint", "");
     var armed = false, disarmT = null;
-    function disarm() { armed = false; send.classList.remove("armed"); send.textContent = "Send"; hint.textContent = ""; if (disarmT) { clearTimeout(disarmT); disarmT = null; } }
+    function disarm() { armed = false; send.classList.remove("armed"); send.textContent = sendLabel; hint.textContent = ""; if (disarmT) { clearTimeout(disarmT); disarmT = null; } }
     function refreshSend() { var v = curVal(); send.disabled = !v; if (!v) disarm(); }
     send.addEventListener("click", function () {
       var v = curVal();
@@ -614,18 +742,20 @@
 
   function renderActions(q) {
     var wrap = el("div", "actions");
-    if (state.me && state.me.canAnswer) {
-      var linkBtn = el("button", "ghost", "Create answer link…");
-      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap); });
-      wrap.appendChild(linkBtn);
-    }
-    var wd = el("button", "ghost", "Withdraw");
+    var wd = el("button", null, "Withdraw");
     wd.addEventListener("click", function () {
       api("/questions/" + encodeURIComponent(q.id) + "/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "withdrawn from inbox" }) })
         .then(function () { toast("Question withdrawn.", "success"); fetchAll(); })
         .catch(function (e) { toast("Couldn't withdraw: " + (e && e.message ? e.message : "error"), "error"); });
     });
     wrap.appendChild(wd);
+    if (state.me && state.me.canAnswer) {
+      var linkBtn = el("button", null, "Create answer link");
+      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap); });
+      wrap.appendChild(linkBtn);
+    }
+    wrap.appendChild(el("span", "grow"));
+    wrap.appendChild(el("span", "kbd", "↵ send · j/k next"));
     return wrap;
   }
 
@@ -636,7 +766,7 @@
         var url = res.url || (window.location.origin + (res.path || ""));
         var inp = el("input"); inp.type = "text"; inp.readOnly = true; inp.value = url;
         inp.addEventListener("focus", function () { inp.select(); });
-        box.appendChild(el("div", "status", "Single-use link (shown once) — send it to the expert:"));
+        box.appendChild(el("div", "substatus", "Single-use link (shown once) — send it to the expert:"));
         box.appendChild(inp);
         wrap.parentNode.appendChild(box);
         toast("Answer link created.", "success");
@@ -693,6 +823,8 @@
   }
 
   // ---- start ----
+  $("brand").innerHTML = LOGO + '<span>takomo</span>';
+  $("gate-brand").innerHTML = LOGO;
   if (state.token) { hideGate(); boot(); } else { showGate(""); }
 })();
 </script>
