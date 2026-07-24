@@ -194,11 +194,16 @@ pub async fn get_one(
                     let events = state.store.events_for_ticket(&id, 200)?;
                     out["events"] = Value::Array(events.iter().map(|e| e.to_json()).collect());
                 }
+                "promotions" => {
+                    let promos = state.store.promotions_for(&id)?;
+                    out["promotions"] =
+                        Value::Array(promos.iter().map(|p| p.to_json()).collect());
+                }
                 other => {
                     return Err(ApiError::bad_request(
                         "validation.include",
                         format!(
-                            "Unknown include '{other}'. Valid values: comments, children, deps, events (comma-separated)."
+                            "Unknown include '{other}'. Valid values: comments, children, deps, events, promotions (comma-separated)."
                         ),
                     ))
                 }
@@ -318,6 +323,76 @@ pub async fn deps_graph(
 
     let out = state.store.dep_graph(&id, direction, transitive)?;
     Ok(Json(out))
+}
+
+const PROMOTE_FIELDS: [&str; 4] = ["target", "url", "ref", "note"];
+
+/// POST /v1/tickets/{id}/promote (write scope). Records that the ticket's work
+/// reached a named target/stage — free-form ("staging", "production",
+/// "published", …), so it fits any workflow, not just software. Append-only.
+pub async fn promote(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    load_visible(&state, &ctx, &id)?;
+    let obj = body_object(&body)?;
+    reject_unknown_fields(obj, &PROMOTE_FIELDS, "Promotion")?;
+    let target = require_str(obj, "target")?;
+    let url = get_str(obj, "url")?;
+    let ref_ = get_str(obj, "ref")?;
+    let note = get_str(obj, "note")?;
+    let promo = state.store.promote_ticket(
+        &id,
+        &ctx.actor,
+        &target,
+        url.as_deref(),
+        ref_.as_deref(),
+        note.as_deref(),
+    )?;
+    state.wake();
+    Ok((StatusCode::CREATED, Json(promo.to_json())))
+}
+
+/// GET /v1/tickets/{id}/promotions (read scope) — the ticket's promotion history,
+/// newest first.
+pub async fn list_promotions(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    load_visible(&state, &ctx, &id)?;
+    let promos = state.store.promotions_for(&id)?;
+    Ok(Json(json!({
+        "items": promos.iter().map(|p| p.to_json()).collect::<Vec<_>>(),
+    })))
+}
+
+/// GET /v1/promotions?project=<id> (read scope) — the latest promotion per
+/// ticket across a project, so the board can badge cards in one call.
+pub async fn promotions_index(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let pairs = query_pairs(raw.as_deref());
+    let project = first(&pairs, "project").ok_or_else(|| {
+        ApiError::bad_request(
+            "validation.project_required",
+            "Query parameter 'project' is required: GET /v1/promotions?project=<id>.",
+        )
+    })?;
+    ctx.require_project(project)?;
+    let promos = state
+        .store
+        .latest_promotions_for_project(project, ctx.allowed_projects_vec().as_deref())?;
+    Ok(Json(json!({
+        "items": promos.iter().map(|p| p.to_json()).collect::<Vec<_>>(),
+    })))
 }
 
 /// POST /v1/tickets/{id}/archive (write scope). Hides the ticket from default

@@ -117,7 +117,18 @@
   .card .cbot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .card .holder { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card .arch-tag { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card .promo { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 12px; color: var(--ok); }
+  .card .promo .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+  .card .promo .ptarget { font-family: var(--mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card .promo .page { color: var(--muted); flex: 0 0 auto; }
   .empty-col { color: var(--muted); font-size: 12px; text-align: center; padding: 14px 4px; opacity: .6; }
+  .promo-list { display: flex; flex-direction: column; gap: 8px; }
+  .promo-row { display: flex; flex-direction: column; gap: 3px; border-left: 2px solid var(--ok); padding: 2px 0 4px 10px; }
+  .promo-row .pr-head { display: flex; align-items: baseline; gap: 8px; }
+  .promo-row .pr-target { font-family: var(--mono); font-weight: 700; color: var(--ok); }
+  .promo-row .pr-when { font-size: 12px; color: var(--muted); }
+  .promo-row .pr-meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .promo-row .pr-meta a { font-family: var(--mono); }
 
   /* priority/urgency as a single colored word */
   .uw { font-size: 12px; }
@@ -284,8 +295,18 @@
     me: null,          // { scopes, expertise, canAnswer } from /whoami
     inboxOpen: false,
     mineOnly: false,
-    openQByTicket: {}  // ticket id -> { count, blocking, advisory } for open questions
+    openQByTicket: {}, // ticket id -> { count, blocking, advisory } for open questions
+    promoByTicket: {}  // ticket id -> latest promotion { target, created_at, url }
   };
+
+  function fmtAge(iso) {
+    var d = new Date(iso); if (isNaN(d.getTime())) return "";
+    var s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+    if (s < 60) return Math.floor(s) + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
 
   // ---- tiny dom helpers ----
   function $(id) { return document.getElementById(id); }
@@ -411,8 +432,20 @@
         return loadMe();
       })
       .then(function () { return fullLoad(); })
-      .then(function () { refreshInboxCount(); startPolling(); })
+      .then(function () { refreshInboxCount(); refreshPromotions(); startPolling(); })
       .catch(handleErr);
+  }
+
+  // Latest promotion per ticket for the whole project, in one call — mirrors the
+  // question-indicator pattern so cards can badge without an N+1 fetch.
+  function refreshPromotions() {
+    if (state.shareMode) return;
+    api("/promotions?project=" + encodeURIComponent(state.project)).then(function (res) {
+      var map = {};
+      (res.items || []).forEach(function (p) { map[p.ticket] = p; });
+      state.promoByTicket = map;
+      render();
+    }).catch(function () { /* best-effort */ });
   }
 
   // Learn the token's own scopes so the inbox can (a) show the "mine" filter
@@ -485,6 +518,7 @@
         return Promise.all(ids.map(refreshTicket)).then(function () {
           render();
           refreshInboxCount();
+          refreshPromotions();
           // Don't rebuild the inbox from under a human who is mid-answer: a
           // full re-render (innerHTML = "") would wipe typed text and focus.
           if (state.inboxOpen && !$("inbox").contains(document.activeElement)) renderInbox();
@@ -585,6 +619,15 @@
       bot.appendChild(el("span", "uw uw-" + prio, cap(prio)));
       c.appendChild(bot);
     }
+    // Latest promotion badge (e.g. "● production · 2h").
+    var pr = state.promoByTicket[t.id];
+    if (pr) {
+      var pb = el("div", "promo");
+      pb.appendChild(el("span", "pdot"));
+      pb.appendChild(el("span", "ptarget", pr.target));
+      pb.appendChild(el("span", "page", "· " + fmtAge(pr.created_at)));
+      c.appendChild(pb);
+    }
     c.addEventListener("click", function () { openDetail(t.id); });
     return c;
   }
@@ -599,7 +642,7 @@
     $("d-body").innerHTML = "<p class='status'>loading…</p>";
     var fetchDetail = state.shareMode
       ? shareApi("/self/tickets/" + encodeURIComponent(id))
-      : api("/tickets/" + encodeURIComponent(id) + "?include=comments,deps");
+      : api("/tickets/" + encodeURIComponent(id) + "?include=comments,deps,promotions");
     fetchDetail
       .then(renderDetail)
       .catch(function (e) {
@@ -843,6 +886,35 @@
         sl.appendChild(row);
       });
       b.appendChild(sl);
+    }
+
+    // promotions (history, newest first)
+    var promos = t.promotions || [];
+    if (promos.length) {
+      var sp = el("section");
+      sp.appendChild(el("h3", null, "Promotions"));
+      var plist = el("div", "promo-list");
+      promos.forEach(function (p) {
+        var row = el("div", "promo-row");
+        var head = el("div", "pr-head");
+        head.appendChild(el("span", "pr-target", p.target));
+        head.appendChild(el("span", "pr-when", fmtAge(p.created_at) + " ago · " + esc(p.actor)));
+        row.appendChild(head);
+        if (p.url || p.ref || p.note) {
+          var meta = el("div", "pr-meta");
+          if (p.url && /^https?:\/\//.test(p.url)) {
+            var a = el("a"); a.href = p.url; a.textContent = p.url; a.target = "_blank"; a.rel = "noopener"; meta.appendChild(a);
+          } else if (p.url) {
+            meta.appendChild(document.createTextNode(p.url));
+          }
+          if (p.ref) { if (meta.childNodes.length) meta.appendChild(document.createTextNode(" · ")); meta.appendChild(document.createTextNode("ref " + p.ref)); }
+          if (p.note) { if (meta.childNodes.length) meta.appendChild(document.createTextNode(" · ")); meta.appendChild(document.createTextNode(p.note)); }
+          row.appendChild(meta);
+        }
+        plist.appendChild(row);
+      });
+      sp.appendChild(plist);
+      b.appendChild(sp);
     }
 
     // comments

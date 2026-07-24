@@ -647,6 +647,30 @@ cmd_unarchive() {
   echo "unarchived $id"
 }
 
+cmd_promote() {
+  local id=${1:-}; [ -n "$id" ] || die "promote: usage: takomo promote ID TARGET [--url U] [--ref R] [--note N]"; shift
+  local target="" url="" ref="" note=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --url)  url=$2; shift 2 ;;
+      --ref)  ref=$2; shift 2 ;;
+      --note) note=$2; shift 2 ;;
+      -*) die "promote: unknown flag $1" ;;
+      *) if [ -z "$target" ]; then target=$1; else die "promote: unexpected argument '$1'"; fi; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "promote: TARGET is required (e.g. staging, production, published)"
+  local data; data=$(TS_T="$target" TS_URL="$url" TS_REF="$ref" TS_NOTE="$note" python3 -c '
+import json, os
+d = {"target": os.environ["TS_T"]}
+for env, key in (("TS_URL","url"),("TS_REF","ref"),("TS_NOTE","note")):
+    v = os.environ.get(env, "")
+    if v: d[key] = v
+print(json.dumps(d))')
+  api POST "/v1/tickets/$(urlenc "$id")/promote" "$data" >/dev/null
+  echo "promoted $id → $target"
+}
+
 cmd_deps() {
   local id="" blocks="" tree=""
   while [ $# -gt 0 ]; do
@@ -1898,6 +1922,9 @@ Archiving (hides tickets from default list/ready/board/metrics views):
   takomo archive --state done|cancelled [--project P]   bulk-archive terminal tickets
   takomo unarchive ID                  return a ticket to the default views
   takomo ls --archived                 list archived tickets
+  takomo promote ID TARGET [--url U] [--ref R] [--note N]
+         record that the work reached a stage (e.g. staging, production,
+         published) — free-form target; history kept, latest shown on the board
 
 Portability & observability:
   takomo export [--project P] [--out FILE]   JSONL of tickets + comments + deps
@@ -1942,6 +1969,7 @@ main() {
     deps)    cmd_deps "$@" ;;
     archive) cmd_archive "$@" ;;
     unarchive) cmd_unarchive "$@" ;;
+    promote) cmd_promote "$@" ;;
     release) cmd_release "$@" ;;
     ask)         cmd_ask "$@" ;;
     answer)      cmd_answer "$@" ;;

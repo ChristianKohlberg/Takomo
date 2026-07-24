@@ -32,6 +32,11 @@ pub fn question_message_id() -> String {
     format!("qm-{}", random_chars(BASE36, 8))
 }
 
+/// Promotion id, e.g. "pr-9f3ka2xz".
+pub fn promotion_id() -> String {
+    format!("pr-{}", random_chars(BASE36, 8))
+}
+
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".
 pub fn token_id() -> String {
     format!("tok_{}", random_chars(BASE36, 8))

@@ -9,6 +9,15 @@ additively only.
 
 ### Added
 
+- **Ticket promotions.** Record that a ticket's work reached a named
+  target/stage — `POST /v1/tickets/{id}/promote {target, url?, ref?, note?}` /
+  `takomo promote` / `takomo_promote`. `target` is free-form ("staging",
+  "production", "published", "delivered", …) so takomo isn't tied to software
+  deployment. Append-only history (`GET /v1/tickets/{id}/promotions`,
+  `?include=promotions`); the latest per ticket (`GET /v1/promotions?project=`)
+  badges the board card, and the detail drawer shows the full history. Emits a
+  `ticket_promoted` event; `takomo_show` surfaces promotions to agents.
+
 - **Ask-a-human follow-up thread.** A human can now bounce a question back to the
   asking agent for more research *before* answering, tracked as a clear
   thread. `POST /v1/questions/{id}/followup` (human) records the request and sets
