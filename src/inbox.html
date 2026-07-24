@@ -6,31 +6,28 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>takomo · inbox</title>
 <style>
-  /* ---- theme tokens (shared with the board; light default, dark via prefers) ---- */
-  /* Aquarelle palette: calm blues on soft paper. --accent = deep blue (primary
-     actions / critical emphasis); --high/--normal/--low = the urgency scale;
-     --crit reserved for errors/reject (warm). Each attribute is encoded once, in
-     one channel: urgency is a single colored word, identifiers are monospace,
-     the selected/blocking thing is a tinted field (no stripe). */
+  /* ---- Aquarelle tokens (shared with the board; light default + dark) ---- */
   :root {
     --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
-    --muted: #6e7c88; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
+    --muted: #6e7c88; --muted2: #93a2ac; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
     --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
     --shadow: 0 18px 50px -26px rgba(20,40,55,.28);
-    --crit: #b4543f; --crit-border: #e3cdc6; --ok: #3f7a5f;
-    --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95;
+    --crit: #b4543f; --crit-border: #e3cdc6; --ok: #3f7a5f; --warn: #c99a3a;
+    --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95; --gaugeoff: #cfd9e2;
     --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --sel-border: #cfe0ee; --hover: #f2f6fa;
+    --dark: #14202a; --dark-ink: #eaf0f4; --dark-sub: #9db8d4;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0e141b; --panel: #141d27; --col-bg: #101821; --text: #e6eef5;
-      --muted: #8ba0b0; --ink2: #c3d2de; --border: #26313d; --border-soft: #1e2833;
+      --muted: #8ba0b0; --muted2: #6f8291; --ink2: #c3d2de; --border: #26313d; --border-soft: #1e2833;
       --accent: #4c8dff; --accent2: #6ea8ff; --accent-ink: #7fb2ff;
       --shadow: 0 18px 50px -26px rgba(0,0,0,.6);
-      --crit: #e0836f; --crit-border: #5c3a33; --ok: #5fbf8f;
-      --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1;
+      --crit: #e0836f; --crit-border: #5c3a33; --ok: #5fbf8f; --warn: #d8b25e;
+      --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1; --gaugeoff: #33414f;
       --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --sel-border: #2b4a63; --hover: #17212c;
+      --dark: #05090e; --dark-ink: #e6eef5; --dark-sub: #7fa8d4;
     }
   }
   * { box-sizing: border-box; }
@@ -41,185 +38,214 @@
     -webkit-font-smoothing: antialiased;
     display: flex; flex-direction: column; height: 100vh;
   }
+  .tk-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+  .tk-scroll::-webkit-scrollbar-thumb { background: #d3dde5; border-radius: 6px; }
+  .tk-scroll::-webkit-scrollbar-track { background: transparent; }
+  @keyframes tkSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes tkPulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes tkFade { from { opacity: 0; } to { opacity: 1; } }
 
-  /* ---- shared header ---- */
+  /* ---- header ---- */
   header {
-    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
-    padding: 0 20px; height: 58px; background: var(--panel);
-    border-bottom: 1px solid var(--border-soft); flex: 0 0 auto;
+    display: flex; align-items: center; gap: 14px; flex: 0 0 auto;
+    height: 58px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border-soft);
   }
   .brand { display: flex; align-items: center; gap: 9px; color: var(--accent2); }
-  .brand svg { display: block; }
   .brand span { font-size: 16px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
-  .nav { display: flex; gap: 4px; }
-  .nav a, .nav span.navpill {
-    font-size: 13px; font-weight: 650; color: var(--muted); text-decoration: none;
-    padding: 6px 12px; border-radius: 8px;
-  }
+  .nav { display: flex; gap: 4px; margin-left: 4px; }
+  .nav a, .nav .navpill { font-size: 13px; font-weight: 650; color: var(--muted); text-decoration: none; padding: 6px 13px; border-radius: 8px; cursor: pointer; }
   .nav a:hover { color: var(--accent); background: var(--hover); }
   .nav .active { color: var(--accent); background: var(--chip-bg); font-weight: 680; }
+  header select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; max-width: 200px; }
   .grow { flex: 1 1 auto; }
-  select, input, button, textarea {
-    font: inherit; color: var(--text); background: var(--panel);
-    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
-  }
-  header select { max-width: 220px; }
-  button { cursor: pointer; }
-  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-  button.primary:hover { background: var(--accent-ink); }
-  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
-  button.ghost:hover { color: var(--accent); background: var(--hover); }
+  .hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .langtoggle span { font-size: 12px; font-weight: 680; padding: 5px 10px; cursor: pointer; color: var(--muted); }
+  .langtoggle span.on { background: var(--accent); color: #fff; }
+  .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
+  .iconbtn:hover { border-color: var(--sel-border); color: var(--accent); }
   .status { font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
   .dot.live { background: var(--ok); } .dot.err { background: var(--crit); }
-  .mine-toggle { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 
   /* ---- 3-pane layout ---- */
-  main { flex: 1 1 auto; display: grid; grid-template-columns: 236px 404px 1fr; min-height: 0; }
+  main { flex: 1 1 auto; display: grid; grid-template-columns: 214px 400px 1fr; min-height: 0; }
   .rail { border-right: 1px solid var(--border-soft); background: var(--col-bg); overflow-y: auto; padding: 18px 12px; display: flex; flex-direction: column; gap: 1px; }
-  .rail h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 0 0 8px; padding: 0 12px; }
-  .rail h3.mt { margin-top: 18px; }
-  .folder { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-radius: 8px; cursor: pointer; color: var(--ink2); font-size: 14px; }
+  .rail h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); margin: 0 0 8px; padding: 0 12px; }
+  .folder { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-radius: 8px; font-size: 14px; color: var(--ink2); cursor: pointer; }
   .folder:hover { background: var(--hover); }
   .folder.active { background: var(--chip-bg); color: var(--accent); font-weight: 680; }
-  .folder .n { color: var(--muted); font-size: 13px; }
+  .folder .n { font-size: 13px; color: var(--muted); }
   .folder.active .n { color: var(--accent); }
+  .rail .divider { height: 1px; background: var(--border); margin: 14px 12px; }
+  .rail .scope { padding: 12px; border-radius: 10px; background: var(--hover); }
+  .rail .scope .tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .rail .scope .tag { font-family: var(--mono); font-size: 11px; color: var(--accent2); }
   .rail .spacer { flex: 1 1 auto; }
-  .rail .expertise { padding: 12px; border-radius: 10px; background: var(--hover); }
-  .rail .expertise h3 { margin-bottom: 8px; letter-spacing: .06em; }
-  .rail .expertise .tags { display: flex; flex-wrap: wrap; gap: 6px; }
-  .rail .expertise .tag { font-family: var(--mono); font-size: 12px; color: var(--accent2); }
 
-  /* ---- list pane ---- */
-  .listpane { border-right: 1px solid var(--border-soft); overflow-y: auto; background: var(--panel); }
-  .listhead { padding: 16px 22px 12px; display: flex; align-items: baseline; justify-content: space-between; position: sticky; top: 0; background: var(--panel); z-index: 1; border-bottom: 1px solid var(--border-soft); }
+  /* ---- list ---- */
+  .listpane { border-right: 1px solid var(--border-soft); background: var(--panel); overflow-y: auto; }
+  .listhead { padding: 16px 22px 12px; display: flex; align-items: baseline; justify-content: space-between; position: sticky; top: 0; background: var(--panel); z-index: 2; border-bottom: 1px solid var(--border-soft); }
   .listhead .t { font-size: 15px; font-weight: 700; }
   .listhead .s { font-size: 12px; color: var(--muted); }
-  .qrow { padding: 14px 22px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+  .grouphd { display: flex; align-items: center; gap: 9px; padding: 11px 22px 9px; background: var(--col-bg); }
+  .grouphd .lbl { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+  .grouphd .cnt { font-size: 12px; color: var(--muted2); }
+  .bars { display: flex; gap: 2px; }
+  .bars .bar { width: 5px; height: 11px; border-radius: 2px; background: var(--gaugeoff); }
+  .qrow { padding: 13px 22px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
   .qrow:hover { background: var(--hover); }
   .qrow.active { background: var(--sel); }
-  .qrow .r1 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
-  .qrow .age { font-size: 12px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
-  .qrow .subj { font-size: 14.5px; font-weight: 680; color: var(--text); line-height: 1.4; margin-bottom: 6px; overflow-wrap: anywhere; }
-  .qrow.read .subj { font-size: 14px; font-weight: 550; color: var(--ink2); }
-  .qrow .meta { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .listpane .empty { color: var(--muted); text-align: center; padding: 48px 12px; }
-
-  /* urgency as a single colored word (one channel, no chip) */
-  .uw { font-size: 12.5px; letter-spacing: .02em; }
-  .uw-critical { color: var(--accent); font-weight: 700; }
-  .uw-high { color: var(--high); font-weight: 700; }
-  .uw-normal { color: var(--normal); font-weight: 600; }
-  .uw-low { color: var(--low); font-weight: 600; }
+  .qrow .qt { font-size: 15px; line-height: 1.35; margin-bottom: 4px; color: var(--text); font-weight: 680; overflow-wrap: anywhere; }
+  .qrow.read .qt { font-weight: 600; color: var(--ink2); }
+  .qrow .qc { font-size: 13px; line-height: 1.45; color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }
+  .qrow.answered .qc { color: var(--ok); }
+  .qrow .qm { display: flex; align-items: center; justify-content: space-between; }
+  .qrow .qm .who { font-family: var(--mono); font-size: 11.5px; color: var(--muted2); }
+  .qrow .qm .age { font-size: 12px; color: var(--low); }
+  .listempty { padding: 60px 30px; text-align: center; color: var(--muted); }
+  .listempty .t { font-size: 17px; font-weight: 700; color: var(--text); margin: 10px 0 6px; }
+  .listempty p { font-size: 13px; line-height: 1.6; margin: 0; }
 
   /* ---- reading pane ---- */
-  .readpane { overflow-y: auto; padding: 26px 34px; background: var(--panel); }
-  .readpane .rempty { color: var(--muted); text-align: center; margin-top: 90px; }
-  .statusline { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 18px; }
-  .statusline.blocking { color: var(--accent2); }
-  .statusline.blocking .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
-  .statusline.advisory { color: var(--muted); border: 1px dashed var(--sel-border); border-radius: 10px; padding: 9px 13px; background: var(--col-bg); font-weight: 650; }
-  .kindrow { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-  .kindbadge { font-size: 12px; font-weight: 750; color: #fff; background: var(--accent); padding: 3px 11px; border-radius: 6px; letter-spacing: .04em; text-transform: uppercase; }
-  .kindlabel { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
-  .kindnote { font-size: 12.5px; color: var(--ink2); }
-  .readpane h2 { font-size: 25px; line-height: 1.25; color: var(--text); letter-spacing: -.02em; font-weight: 700; margin: 0 0 12px; overflow-wrap: anywhere; }
-  .askmeta { font-size: 13px; color: var(--muted); padding-bottom: 18px; border-bottom: 1px solid var(--border-soft); margin-bottom: 20px; }
-  .mono { font-family: var(--mono); }
-  .askmeta .mono { color: var(--text); }
-  .readpane .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.65; color: var(--ink2); max-width: 640px; margin: 0 0 20px; }
-  .rec-card { background: var(--col-bg); border-radius: 10px; padding: 14px 16px; max-width: 640px; margin-bottom: 20px; }
-  .rec-card .rh { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 5px; }
-  .rec-card .rv { font-size: 14.5px; color: var(--text); overflow-wrap: anywhere; }
+  .readpane { position: relative; background: var(--panel); display: flex; flex-direction: column; min-width: 0; }
+  .readempty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 40px; }
+  .readempty .t { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .readempty p { font-size: 13.5px; line-height: 1.6; color: var(--muted); margin: 0; max-width: 340px; }
+  .readscroll { flex: 1; min-height: 0; overflow-y: auto; }
+  .rhead { padding: 24px 34px 18px; border-bottom: 1px solid var(--border-soft); position: relative; }
+  .rhead .toprow { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .rhead .toprow .age { font-size: 12px; color: var(--low); }
+  .ticketbtn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--panel); cursor: pointer; }
+  .ticketbtn:hover { border-color: var(--sel-border); color: var(--accent2); }
+  .ticketbtn .mono { font-family: var(--mono); }
+  .rhead h2 { margin: 0; font-size: 25px; line-height: 1.25; letter-spacing: -.02em; font-weight: 700; overflow-wrap: anywhere; }
+  .popover { position: absolute; top: 62px; right: 34px; width: 250px; background: var(--dark); color: var(--dark-ink); border-radius: 12px; padding: 15px 16px; box-shadow: 0 20px 44px -16px rgba(0,0,0,.55); z-index: 15; }
+  .popover .h { font-size: 11px; color: var(--dark-sub); margin-bottom: 10px; }
+  .popover .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; margin-bottom: 8px; }
+  .popover .kv .k { color: var(--dark-sub); } .popover .kv .mono { font-family: var(--mono); }
+  .popover .open { font-size: 12px; color: #6ea3d8; font-weight: 600; margin-top: 6px; cursor: pointer; }
+  .rbody { padding: 20px 34px; }
+  .md { font-size: 14.5px; color: var(--ink2); max-width: 600px; }
+  .md p { margin: 0 0 12px; line-height: 1.65; } .md ul { margin: 0 0 12px; padding-left: 20px; } .md li { margin: 4px 0; line-height: 1.6; }
+  .md b { color: var(--text); } .md code { font-family: var(--mono); font-size: 12px; background: var(--hover); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
 
-  /* ---- answer control ---- */
-  .answerbox { border-top: 1px solid var(--border-soft); margin-top: 8px; padding-top: 20px; max-width: 640px; }
-  .answerbox h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
-  .answerbox .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
-  .answerbox .row.choose { flex-direction: column; }
-  .optbtn { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 14px; font-weight: 620; color: var(--ink2); text-align: left; max-width: 100%; overflow-wrap: anywhere; }
-  .optbtn:hover { border-color: var(--sel-border); }
-  .row:not(.choose) .optbtn { flex: 1 1 auto; }
-  .optbtn.sel { background: var(--accent); color: #fff; border-color: transparent; font-weight: 680; }
-  .optbtn.sel.reject { background: transparent; color: var(--crit); border: 1px solid var(--crit-border); }
-  .answerbox textarea.clarify { width: 100%; min-height: 88px; resize: vertical; border-radius: 10px; padding: 12px 14px; }
-  .answerbox input.note { width: 100%; margin-top: 12px; height: 42px; border-radius: 9px; }
-  .sendrow { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
-  button.send { height: 48px; padding: 0 22px; font-size: 15px; font-weight: 680; border-radius: 10px; box-shadow: 0 10px 22px -12px rgba(31,78,120,.7); }
-  button.send:disabled { opacity: .5; box-shadow: none; cursor: default; }
-  button.send.armed { background: var(--accent-ink); }
-  .sendhint { font-size: 12px; color: var(--muted); }
+  .timeline { margin-top: 22px; max-width: 600px; }
+  .timeline h3 { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted2); margin: 0 0 13px; }
+  .tevents { display: flex; flex-direction: column; gap: 13px; }
+  .tev { display: flex; gap: 12px; }
+  .tev .tdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; margin-top: 5px; }
+  .tev .tt { font-size: 13.5px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+  .tev .tm { font-size: 11.5px; color: var(--muted2); margin-top: 2px; } .tev .tm .mono { font-family: var(--mono); }
+  .tev.pend .tdot { background: var(--warn); animation: tkPulse 1.4s ease-in-out infinite; }
+  .tev.pend .tt { color: var(--muted); }
+
+  .decision { border: 1px solid #cfe6d8; background: color-mix(in srgb, var(--ok) 8%, var(--panel)); border-radius: 12px; padding: 18px 20px; max-width: 600px; margin-top: 22px; }
+  .decision .h { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ok); margin-bottom: 9px; }
+  .decision .h .chk { width: 18px; height: 18px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+  .decision .v { font-size: 19px; font-weight: 700; color: var(--text); letter-spacing: -.01em; line-height: 1.3; overflow-wrap: anywhere; }
+  .decision .sub { margin-top: 12px; font-size: 12px; color: var(--muted); }
+
+  /* answer area */
+  .answer { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-soft); max-width: 600px; }
+  .gatenote { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .opts { display: flex; flex-direction: column; gap: 9px; }
+  .opt { display: flex; align-items: flex-start; gap: 13px; padding: 14px 16px; border-radius: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--panel); }
+  .opt:hover { border-color: var(--sel-border); }
+  .opt.sel { border: 1.5px solid var(--accent); background: var(--sel); }
+  .opt .mark { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; border-radius: 50%; border: 1.5px solid #c2ccd4; }
+  .opt.sel .mark { border: 5px solid var(--accent); }
+  .opt .ol { font-size: 14.5px; font-weight: 680; color: var(--text); overflow-wrap: anywhere; }
+  .opt .od { font-size: 13px; color: var(--muted); margin-top: 3px; line-height: 1.5; overflow-wrap: anywhere; }
+  .opt .rec { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+  .opt .rec .bars .bar { width: 15px; height: 5px; }
+  .opt .rec .rl { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent2); }
+  .clarify { width: 100%; height: 84px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel); outline: none; }
+  .suggest { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .suggest button { font-family: var(--mono); font-size: 12px; color: var(--accent2); background: var(--chip-bg); border: none; padding: 3px 9px; border-radius: 6px; cursor: pointer; }
   .lang-nudge { font-size: 12.5px; color: var(--high); background: color-mix(in srgb, var(--high) 10%, transparent); border: 1px solid color-mix(in srgb, var(--high) 34%, transparent); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
-  .pending-box { border: 1px dashed var(--accent); border-radius: 10px; padding: 16px; margin-top: 8px; color: var(--muted); max-width: 640px; }
 
-  /* follow-up thread + awaiting */
-  .awaiting-note { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 650; color: var(--high); background: color-mix(in srgb, var(--high) 9%, transparent); border: 1px dashed color-mix(in srgb, var(--high) 40%, transparent); border-radius: 8px; padding: 9px 12px; margin-bottom: 14px; max-width: 640px; }
-  .thread { max-width: 640px; margin: 4px 0 18px; display: flex; flex-direction: column; gap: 8px; }
-  .thread h3 { margin: 0 0 2px; }
-  .msg { border-radius: 10px; padding: 10px 13px; font-size: 13.5px; line-height: 1.5; overflow-wrap: anywhere; }
-  .msg.human { background: var(--chip-bg); }
-  .msg.agent { background: var(--col-bg); }
-  .msg .m-who { font-size: 11.5px; color: var(--muted); margin-bottom: 3px; }
-  .msg .m-who .mono { color: var(--text); }
-  .followup-box { max-width: 640px; margin-top: 8px; }
-  .followup-box textarea { width: 100%; min-height: 60px; resize: vertical; border-radius: 10px; padding: 10px 13px; }
-  .followup-box .frow { display: flex; gap: 10px; margin-top: 8px; }
+  /* footer */
+  .rfoot { flex: 0 0 auto; border-top: 1px solid var(--border-soft); padding: 14px 34px 16px; background: var(--col-bg); }
+  .compose { display: flex; align-items: center; gap: 8px; border: 1px solid var(--sel-border); border-radius: 11px; padding: 6px 6px 6px 13px; background: var(--panel); margin-bottom: 12px; animation: tkSlide .18s ease; }
+  .compose .to { font-size: 12px; color: var(--muted2); white-space: nowrap; } .compose .to .mono { font-family: var(--mono); color: var(--muted); }
+  .compose input { flex: 1 1 auto; min-width: 0; border: none; outline: none; font: inherit; font-size: 13.5px; background: transparent; height: 32px; color: var(--text); }
+  .compose .send { flex: 0 0 auto; width: 34px; height: 34px; border: none; border-radius: 8px; background: #b7c4cd; color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .compose .send.on { background: var(--accent); }
+  .footrow { display: flex; align-items: center; gap: 12px; }
+  .btn-primary { flex: 1 1 auto; height: 52px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font: inherit; font-size: 15px; font-weight: 680; cursor: pointer; box-shadow: 0 10px 22px -12px rgba(31,78,120,.7); }
+  .btn-primary:hover { background: var(--accent-ink); }
+  .btn-msg { position: relative; flex: 0 0 auto; width: 52px; height: 52px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .btn-msg.on { border-color: var(--accent); background: var(--sel); color: var(--accent); }
+  .btn-msg .badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .foot-closed { display: flex; align-items: center; gap: 12px; }
+  .foot-closed .t { font-size: 13px; color: var(--muted); }
 
-  /* answered / lifecycle summary */
-  .answered { background: var(--col-bg); border-radius: 10px; padding: 14px 16px; max-width: 640px; }
-  .answered.ok { background: color-mix(in srgb, var(--ok) 10%, transparent); border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent); }
-  .answered .lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 5px; }
-  .answered .val { font-size: 14px; color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
-  .answered .sub { font-size: 12.5px; color: var(--ink2); margin-top: 6px; }
+  /* ticket drawer */
+  .drawer-scrim { position: absolute; inset: 0; background: rgba(20,32,42,.28); z-index: 20; }
+  .drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 430px; max-width: 100%; background: var(--panel); border-left: 1px solid var(--border); box-shadow: -24px 0 60px -30px rgba(20,40,55,.5); z-index: 21; display: flex; flex-direction: column; }
+  .drawer .dh { padding: 20px 24px 0; flex: 0 0 auto; }
+  .drawer .dh .top { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .drawer .dh .top .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .drawer .dh .top .state { font-size: 12px; font-weight: 680; color: var(--accent); background: var(--chip-bg); padding: 3px 10px; border-radius: 6px; }
+  .drawer .dh .top .x { margin-left: auto; font-size: 20px; color: var(--low); cursor: pointer; }
+  .drawer .dh h3 { margin: 0 0 8px; font-size: 19px; line-height: 1.3; letter-spacing: -.01em; font-weight: 700; overflow-wrap: anywhere; }
+  .drawer .dh .claim { font-size: 12.5px; color: var(--muted); padding-bottom: 16px; border-bottom: 1px solid var(--border-soft); } .drawer .dh .claim .mono { font-family: var(--mono); color: var(--text); }
+  .drawer .db { flex: 1; overflow-y: auto; padding: 16px 24px; }
+  .drawer .callout { background: var(--chip-bg); border-radius: 11px; padding: 13px 15px; margin-bottom: 20px; }
+  .drawer .callout .t { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 5px; }
+  .drawer .callout .s { font-size: 12.5px; color: var(--ink2); line-height: 1.5; }
+  .drawer h4 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  .drawer .desc { margin: 0 0 20px; font-size: 13.5px; line-height: 1.65; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .drawer .dep { font-size: 13px; color: var(--ink2); margin-bottom: 7px; } .drawer .dep .rel { color: var(--muted); } .drawer .dep .mono { font-family: var(--mono); color: var(--accent2); font-size: 12px; }
+  .drawer .lnk { color: var(--accent2); font-family: var(--mono); font-size: 12.5px; margin-bottom: 7px; overflow-wrap: anywhere; }
+  .drawer .df { flex: 0 0 auto; border-top: 1px solid var(--border-soft); padding: 14px 24px; background: var(--col-bg); }
+  .drawer .df button { width: 100%; height: 44px; border: none; border-radius: 9px; background: var(--accent); color: #fff; font: inherit; font-size: 14px; font-weight: 680; cursor: pointer; }
 
-  .actions { margin-top: 18px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; max-width: 640px; }
-  .actions .grow { flex: 1 1 auto; }
-  .actions button { background: transparent; border: none; padding: 0; color: var(--muted); font-size: 12.5px; }
-  .actions button:hover { color: var(--accent); }
-  .actions .kbd { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-  .linkbox { margin-top: 12px; max-width: 640px; }
-  .linkbox input { width: 100%; font-family: var(--mono); font-size: 12px; }
-  .readonly { font-size: 12.5px; color: var(--high); margin-bottom: 12px; }
-  a { color: var(--accent2); }
+  /* withdraw modal */
+  .modal-scrim { position: fixed; inset: 0; background: rgba(20,32,42,.4); z-index: 70; display: flex; align-items: center; justify-content: center; animation: tkFade .15s ease; }
+  .modal { width: 400px; max-width: 92vw; background: var(--panel); border-radius: 14px; padding: 24px; box-shadow: 0 30px 70px -24px rgba(0,0,0,.5); }
+  .modal .t { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+  .modal p { margin: 0 0 20px; font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+  .modal .row { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal button { height: 44px; padding: 0 18px; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 660; cursor: pointer; }
+  .modal .cancel { border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+  .modal .danger { border: none; background: var(--crit); color: #fff; }
 
-  /* inspect (subtle) */
-  .inspect-link { display: inline-block; font-size: 12px; color: var(--muted); background: none; border: none; padding: 2px 0; margin: 4px 0 0; cursor: pointer; text-decoration: underline; }
-  .inspect-link:hover { color: var(--accent); }
-  .inspect-panel { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0 4px; background: var(--col-bg); max-width: 640px; }
-  .inspect-panel .note-lang { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-  .inspect-panel .ip-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
-  .inspect-panel .ip-comment { border-left: 2px solid var(--border); padding-left: 8px; margin-top: 6px; font-size: 12px; }
-  .substatus { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+  /* undo snackbar */
+  .snackbar { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; background: var(--dark); color: var(--dark-ink); padding: 12px 14px 12px 18px; border-radius: 12px; box-shadow: 0 18px 44px -16px rgba(0,0,0,.55); z-index: 80; max-width: 92vw; }
+  .snackbar .chk { width: 20px; height: 20px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto; }
+  .snackbar .d1 { font-size: 13.5px; font-weight: 680; overflow-wrap: anywhere; }
+  .snackbar .d2 { font-size: 12px; color: var(--dark-sub); }
+  .snackbar .undo { margin-left: 6px; background: transparent; border: 1px solid #35506a; color: #cfe0ee; font: inherit; font-size: 13px; font-weight: 680; padding: 8px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
 
-  /* ---- toasts ---- */
-  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 90vw); }
+  /* toasts (errors + answer link) */
+  #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 90; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, 90vw); }
   .toast { background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; box-shadow: var(--shadow); padding: 11px 13px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
-  .toast.success { border-left-color: var(--ok); }
-  .toast.error { border-left-color: var(--crit); }
-  .toast.undo { border-left-color: var(--high); }
+  .toast.success { border-left-color: var(--ok); } .toast.error { border-left-color: var(--crit); }
   .toast .tmsg { flex: 1 1 auto; overflow-wrap: anywhere; }
-  .toast .tbtn { flex: 0 0 auto; font-size: 12px; padding: 5px 12px; border-radius: 7px; }
-  .toast .tclose { flex: 0 0 auto; background: none; border: none; color: var(--muted); font-size: 16px; line-height: 1; padding: 0 2px; cursor: pointer; }
+  .toast .tclose { flex: 0 0 auto; background: none; border: none; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+  .toast input { width: 100%; font-family: var(--mono); font-size: 12px; }
 
-  /* ---- gate ---- */
-  #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
+  /* gate */
+  #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
   #gate .card2 { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 26px; width: min(420px, 100%); box-shadow: var(--shadow); text-align: center; }
   #gate .brand { justify-content: center; margin-bottom: 6px; }
-  #gate h1 { font-size: 20px; margin: 6px 0 6px; font-weight: 750; }
+  #gate h1 { font-size: 20px; margin: 6px 0; font-weight: 750; }
   #gate p { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.6; }
   #gate label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; text-align: left; }
-  #gate input { width: 100%; font-family: var(--mono); height: 46px; }
-  #gate button { width: 100%; margin-top: 14px; height: 46px; }
+  #gate input { width: 100%; font-family: var(--mono); height: 46px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; background: var(--panel); color: var(--text); }
+  #gate button { width: 100%; margin-top: 14px; height: 46px; border: none; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-size: 15px; font-weight: 680; cursor: pointer; }
   #gate .gerr { color: var(--crit); font-size: 13px; margin-top: 12px; min-height: 18px; }
   .hidden { display: none !important; }
 
-  @media (max-width: 900px) { main { grid-template-columns: 200px 340px 1fr; } }
-  @media (max-width: 780px) {
+  @media (max-width: 900px) { main { grid-template-columns: 190px 320px 1fr; } }
+  @media (max-width: 760px) {
     main { grid-template-columns: 1fr; }
     .rail { display: none; }
-    .listpane { display: block; }
     body.reading .listpane { display: none; }
     body:not(.reading) .readpane { display: none; }
+    .popover, .drawer { width: 100%; }
   }
 </style>
 </head>
@@ -228,33 +254,36 @@
 <div id="gate">
   <div class="card2">
     <div class="brand" id="gate-brand"></div>
-    <h1>takomo · inbox</h1>
-    <p>Questions waiting for a human. Paste a token (needs the <code>human</code> scope to answer). It stays on this device and rides every request.</p>
-    <label for="g-token">Token</label>
+    <h1 id="gate-title">takomo · inbox</h1>
+    <p id="gate-sub"></p>
+    <label id="gate-label" for="g-token"></label>
     <input id="g-token" type="password" placeholder="tk_live_••••••••" autocomplete="off">
-    <button class="primary" id="g-go">Open inbox</button>
+    <button id="g-go"></button>
     <div class="gerr" id="g-err"></div>
   </div>
 </div>
 
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
-  <nav class="nav"><a href="/board">Board</a><span class="navpill active">Inbox</span></nav>
+  <nav class="nav"><a href="/board" id="nav-board">Board</a><span class="navpill active" id="nav-inbox">Inbox</span></nav>
   <select id="projsel" title="project"></select>
-  <label class="mine-toggle hidden" id="mine-wrap" title="Only questions routed to your expertise"><input type="checkbox" id="mine"> mine</label>
+  <label class="hint" id="mine-wrap" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="mine"> <span id="mine-label">mine</span></label>
   <span class="grow"></span>
+  <span class="hint" id="kbd-hint"></span>
+  <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
-  <span class="status mono hidden" id="whoami"></span>
-  <button class="ghost" id="refresh">Refresh</button>
-  <button class="ghost" id="signout">Sign out</button>
+  <button class="iconbtn" id="refresh" title="Refresh">↻</button>
+  <button class="iconbtn" id="signout" title="Sign out">⎋</button>
 </header>
 
 <main class="hidden" id="app">
   <nav class="rail" id="rail"></nav>
   <section class="listpane" id="list"></section>
-  <section class="readpane" id="read"><div class="rempty">Select a question to read and answer.</div></section>
+  <section class="readpane" id="read"></section>
 </main>
 
+<div id="snackbar-root"></div>
+<div id="modal-root"></div>
 <div id="toasts"></div>
 
 <script>
@@ -263,94 +292,80 @@
   var API = "/v1";
   var POLL_MS = 5000;
   var LS_TOKEN = "takomo.inbox.token";
-  var FOLDERS = [
-    { id: "open", label: "Open" },
-    { id: "answered", label: "Answered" },
-    { id: "withdrawn", label: "Withdrawn" },
-    { id: "expired", label: "Expired" },
-  ];
-
+  var LS_LANG = "takomo.lang";
   var UNDO_SECONDS = 30;
+  var FOLDERS = ["open", "answered", "withdrawn", "expired"];
 
-  // takomo mark (waveform) — inline so the surface stays dependency-free.
   var LOGO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11a6 6 0 0 1 12 0"/><circle cx="9.7" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.3" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><path d="M7 11.2c0 2.8-1.4 3.8-1.4 5.8"/><path d="M10 11.6c0 2.9-.5 4.3 0 6.2"/><path d="M14 11.6c0 2.9.5 4.3 0 6.2"/><path d="M17 11.2c0 2.8 1.4 3.8 1.4 5.8"/></svg>';
+
+  // ---- i18n ----
+  var STR = {
+    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", submitted:"Danke für deine Antwort.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier." },
+    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", submitted:"Thanks for your submission.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here." }
+  };
+
+  var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
 
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
-    project: "",        // "" = all accessible projects
-    mineOnly: false,
-    folder: "open",
-    me: null,           // { scopes, expertise, canAnswer, actor }
-    questions: [],      // all statuses, current project/mine filter
-    selectedId: null,
-    cursor: 0,
-    pollTimer: null,
-    polling: false,
-    answering: false,   // user is mid-answer (guards live re-render)
-    pending: {},        // qid -> true while an answer is in its undo hold
-    projLang: {},       // project id -> its server-set question_language
+    lang: initialLang === "de" ? "de" : "en",
+    project: "", mineOnly: false, folder: "open",
+    me: null, questions: [], selectedId: null,
+    cursor: 0, pollTimer: null, polling: false,
+    answering: false, pending: {}, projLang: {},
+    ticketOpen: false, drawerOpen: false, withdrawOpen: false,
+    ticketDetail: {}, // ticket id -> detail (for popover/drawer)
+    threads: {},      // qid -> messages
+    draft: {}, composeOpen: false,
+    sel: {},          // qid -> selected answer value ("__other__" allowed for future)
+    clarify: {},      // qid -> textarea value
+    snack: null,      // { qid, decision, detail, remaining }
   };
+  function t() { return STR[state.lang]; }
 
   function $(id) { return document.getElementById(id); }
-  function el(tag, cls, text) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text != null) e.textContent = text;
-    return e;
-  }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function cap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-  // ---- toasts ----
-  function toast(msg, kind, opts) {
-    opts = opts || {};
-    var t = el("div", "toast" + (kind ? " " + kind : ""));
-    var m = el("div", "tmsg", msg); t.appendChild(m);
-    if (opts.action) {
-      var b = el("button", "tbtn", opts.action.label);
-      b.addEventListener("click", function () { opts.action.fn(t); });
-      t.appendChild(b);
-      opts._msgEl = m; // let callers update the text (countdown)
+  // ---- tiny markdown (bold, code, bullet lists, paragraphs) — output built as DOM, XSS-safe ----
+  function inlineMd(parent, s) {
+    s = String(s == null ? "" : s);
+    // split on ** and ` alternately using a simple tokenizer
+    var re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    var last = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) parent.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var tok = m[0];
+      if (tok.indexOf("**") === 0) { parent.appendChild(el("b", null, tok.slice(2, -2))); }
+      else { parent.appendChild(el("code", null, tok.slice(1, -1))); }
+      last = re.lastIndex;
     }
-    var x = el("button", "tclose", "×");
-    x.addEventListener("click", function () { removeToast(t); });
-    t.appendChild(x);
-    $("toasts").appendChild(t);
-    if (!opts.sticky) {
-      t._timer = setTimeout(function () { removeToast(t); }, opts.ms || 4500);
-    }
-    t._msgEl = m;
-    return t;
+    if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
   }
-  function removeToast(t) {
-    if (!t) return;
-    if (t._timer) clearTimeout(t._timer);
-    if (t._interval) clearInterval(t._interval);
-    if (t.parentNode) t.parentNode.removeChild(t);
-  }
-
-  // ---- per-project answer language ----
-  // Read from the project's server-side `question_language` (set by an admin via
-  // `takomo project language`), so every viewer sees the same nudge. The inbox
-  // only surfaces it; it never sets it. Empty when "All projects" is selected.
-  function getLang() { return (state.project && state.projLang[state.project]) || ""; }
-
-  function api(path, opts) {
-    opts = opts || {};
-    var headers = opts.headers || {};
-    headers["Authorization"] = "Bearer " + state.token;
-    var init = { headers: headers, method: opts.method || "GET" };
-    if (opts.body != null) init.body = opts.body;
-    return fetch(API + path, init).then(function (r) {
-      if (r.status === 401 || r.status === 403) { var e = new Error("auth"); e.auth = true; e.status = r.status; throw e; }
-      if (!r.ok) {
-        return r.text().then(function (t) {
-          var msg = t;
-          try { var j = JSON.parse(t); msg = j.message || (j.error && j.error.message) || t; } catch (_) {}
-          var e2 = new Error(msg || ("HTTP " + r.status)); e2.status = r.status; throw e2;
-        });
+  function mdNode(s) {
+    var wrap = el("div", "md");
+    String(s == null ? "" : s).split("\n\n").forEach(function (block) {
+      var lines = block.split("\n");
+      var i = 0;
+      while (i < lines.length) {
+        if (lines[i].trim().indexOf("- ") === 0) {
+          var ul = el("ul");
+          while (i < lines.length && lines[i].trim().indexOf("- ") === 0) {
+            var li = el("li"); inlineMd(li, lines[i].trim().slice(2)); ul.appendChild(li); i++;
+          }
+          wrap.appendChild(ul);
+        } else {
+          var p = el("p"); inlineMd(p, lines[i]); wrap.appendChild(p); i++;
+        }
       }
-      return r.json();
     });
+    return wrap;
+  }
+  function plain(s) { return String(s || "").split("**").join("").split("`").join("").replace(/\s+/g, " ").trim(); }
+  function snippetOf(q) {
+    var b = plain(q.body || "");
+    if (!b) return "";
+    return b.length > 120 ? b.slice(0, 118) + "…" : b;
   }
 
   function fmtAge(iso) {
@@ -361,69 +376,91 @@
     if (s < 86400) return Math.floor(s / 3600) + "h";
     return Math.floor(s / 86400) + "d";
   }
+  function uColor(u) { return u === "critical" ? "var(--accent)" : u === "high" ? "var(--high)" : u === "normal" ? "var(--normal)" : "var(--low)"; }
+  function critLevel(u) { return u === "critical" ? 4 : u === "high" ? 3 : u === "normal" ? 2 : 1; }
+
+  // ---- api ----
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    headers["Authorization"] = "Bearer " + state.token;
+    var init = { headers: headers, method: opts.method || "GET" };
+    if (opts.body != null) init.body = opts.body;
+    return fetch(API + path, init).then(function (r) {
+      if (r.status === 401 || r.status === 403) { var e = new Error("auth"); e.auth = true; e.status = r.status; throw e; }
+      if (!r.ok) {
+        return r.text().then(function (tx) {
+          var msg = tx; try { var j = JSON.parse(tx); msg = j.message || (j.error && j.error.message) || tx; } catch (_) {}
+          var e2 = new Error(msg || ("HTTP " + r.status)); e2.status = r.status; throw e2;
+        });
+      }
+      return r.json();
+    });
+  }
+
+  // ---- toasts (errors + answer link) ----
+  function toast(msg, kind, node) {
+    var el0 = el("div", "toast" + (kind ? " " + kind : ""));
+    var m = el("div", "tmsg"); if (typeof msg === "string") m.textContent = msg; else m.appendChild(msg); el0.appendChild(m);
+    if (node) m.appendChild(node);
+    var x = el("button", "tclose", "×"); x.addEventListener("click", function () { if (el0.parentNode) el0.parentNode.removeChild(el0); }); el0.appendChild(x);
+    $("toasts").appendChild(el0);
+    setTimeout(function () { if (el0.parentNode) el0.parentNode.removeChild(el0); }, kind === "success" && node ? 12000 : 5000);
+  }
 
   // ---- gate ----
   function showGate(msg) {
     stopPolling();
-    $("gate").classList.remove("hidden");
-    $("topbar").classList.add("hidden");
-    $("app").classList.add("hidden");
+    $("gate").classList.remove("hidden"); $("topbar").classList.add("hidden"); $("app").classList.add("hidden");
     if (msg) $("g-err").textContent = msg;
     $("g-token").value = state.token || "";
   }
-  function hideGate() {
-    $("gate").classList.add("hidden");
-    $("topbar").classList.remove("hidden");
-    $("app").classList.remove("hidden");
+  function hideGate() { $("gate").classList.add("hidden"); $("topbar").classList.remove("hidden"); $("app").classList.remove("hidden"); }
+  function applyGateStrings() {
+    $("gate-sub").textContent = t().gateTokenSub; $("gate-label").textContent = t().gateLabel; $("g-go").textContent = t().gateOpen;
   }
+
   $("g-go").addEventListener("click", function () {
-    var t = $("g-token").value.trim();
-    if (!t) { $("g-err").textContent = "Enter a token."; return; }
-    state.token = t; localStorage.setItem(LS_TOKEN, t);
-    $("g-err").textContent = ""; hideGate(); boot();
+    var tk = $("g-token").value.trim();
+    if (!tk) { $("g-err").textContent = "Enter a token."; return; }
+    state.token = tk; localStorage.setItem(LS_TOKEN, tk); $("g-err").textContent = ""; hideGate(); boot();
   });
   $("signout").addEventListener("click", function () {
-    localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null;
-    showGate("");
+    localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null; showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
   $("projsel").addEventListener("change", function () { state.project = $("projsel").value; state.answering = false; fetchAll(); });
   $("mine").addEventListener("change", function () { state.mineOnly = $("mine").checked; fetchAll(); });
+  $("lang-de").addEventListener("click", function () { setLang("de"); });
+  $("lang-en").addEventListener("click", function () { setLang("en"); });
+  function setLang(l) { state.lang = l; localStorage.setItem(LS_LANG, l); applyChrome(); render(); applyGateStrings(); }
 
   // ---- boot ----
   function boot() {
-    setLive("loading", "loading…");
-    Promise.all([loadProjects(), loadMe()])
-      .then(fetchAll)
-      .then(startPolling)
-      .catch(handleErr);
+    setLive("loading", "…");
+    Promise.all([loadProjects(), loadMe()]).then(fetchAll).then(startPolling).catch(handleErr);
   }
-
   function loadProjects() {
     return api("/projects").then(function (projects) {
       var sel = $("projsel"); sel.innerHTML = "";
-      var all = el("option"); all.value = ""; all.textContent = "All projects"; sel.appendChild(all);
+      var all = el("option"); all.value = ""; all.textContent = t().allProjects; sel.appendChild(all);
       state.projLang = {};
       (projects || []).forEach(function (p) {
         var o = el("option"); o.value = p.id; o.textContent = p.id + (p.question_language ? " · " + p.question_language : ""); sel.appendChild(o);
         if (p.question_language) state.projLang[p.id] = p.question_language;
       });
       sel.value = state.project;
-    }).catch(function () { /* projects list is best-effort */ });
+    }).catch(function () {});
   }
-
   function loadMe() {
     return api("/whoami").then(function (w) {
       var scopes = (w && w.scopes) || [];
-      var expertise = scopes.filter(function (s) { return s.indexOf("expert:") === 0; })
-        .map(function (s) { return s.slice("expert:".length); });
+      var expertise = scopes.filter(function (s) { return s.indexOf("expert:") === 0; }).map(function (s) { return s.slice("expert:".length); });
       state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1, actor: (w && w.actor) || "" };
-      $("mine-wrap").classList.toggle("hidden", expertise.length === 0);
-      var who = $("whoami");
-      if (state.me.actor) { who.textContent = state.me.actor; who.classList.remove("hidden"); }
-      else who.classList.add("hidden");
+      $("mine-wrap").style.display = expertise.length ? "inline-flex" : "none";
     }).catch(function () { state.me = { scopes: [], expertise: [], canAnswer: false, actor: "" }; });
   }
+  function getLang() { return (state.project && state.projLang[state.project]) || ""; }
 
   function questionsQuery() {
     var q = "/questions?status=open,answered,withdrawn,expired";
@@ -431,22 +468,15 @@
     if (state.mineOnly && state.me && state.me.expertise.length) q += "&mine=true";
     return q;
   }
-
   function fetchAll() {
-    setLive("loading", "loading…");
+    setLive("loading", "…");
     return api(questionsQuery()).then(function (res) {
       state.questions = res.items || [];
-      // Keep the current selection if it's still present.
-      if (state.selectedId && !state.questions.some(function (q) { return q.id === state.selectedId; })) {
-        state.selectedId = null;
-      }
+      if (state.selectedId && !state.questions.some(function (q) { return q.id === state.selectedId; })) state.selectedId = null;
+      if (!state.selectedId) { var first = inFolder()[0]; state.selectedId = first ? first.id : null; }
       render();
-      // advance the event cursor to now so polling only reports future changes
       return api("/events?since=0&limit=1&wait=0" + (state.project ? "&project=" + encodeURIComponent(state.project) : ""));
-    }).then(function (ev) {
-      if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor;
-      setLive("live", "live");
-    }).catch(handleErr);
+    }).then(function (ev) { if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor; setLive("live", "live"); }).catch(handleErr);
   }
 
   // ---- polling ----
@@ -458,453 +488,530 @@
     if (state.project) q += "&project=" + encodeURIComponent(state.project);
     api(q).then(function (res) {
       if (typeof res.cursor === "number") state.cursor = res.cursor;
-      var events = res.events || [];
-      if (events.length === 0) { setLive("live", "live"); return; }
-      // Don't rebuild while the user is mid-answer: a selection in progress,
-      // focus inside the reading pane, or an answer in its undo hold.
-      var busy = state.answering
-        || Object.keys(state.pending).length > 0
-        || (document.activeElement && $("read").contains(document.activeElement));
-      if (busy) { setLive("live", "live · new"); return; }
-      return api(questionsQuery()).then(function (r) {
-        state.questions = r.items || [];
-        render();
-        setLive("live", "live · updated");
-      });
-    }).catch(function (e) {
-      if (e.auth) { handleErr(e); return; }
-      setLive("err", "reconnecting…");
-    }).then(function () { state.polling = false; });
+      if ((res.events || []).length === 0) { setLive("live", "live"); return; }
+      var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
+        (document.activeElement && $("read").contains(document.activeElement));
+      if (busy) { setLive("live", "live ·"); return; }
+      return api(questionsQuery()).then(function (r) { state.questions = r.items || []; if (state.selectedId && !state.questions.some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
+    }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
   }
 
-  // ---- rendering ----
+  // ---- data helpers ----
   function counts() {
     var c = { open: 0, answered: 0, withdrawn: 0, expired: 0 };
     state.questions.forEach(function (q) { if (c[q.status] != null) c[q.status]++; });
     return c;
   }
+  function inFolder() {
+    return state.questions.filter(function (q) { return q.status === state.folder; }).sort(function (a, b) {
+      var pr = { critical: 0, high: 1, normal: 2, low: 3 };
+      var pa = pr[a.urgency] == null ? 9 : pr[a.urgency], pb = pr[b.urgency] == null ? 9 : pr[b.urgency];
+      if (pa !== pb) return pa - pb; return (a.created_at || "").localeCompare(b.created_at || "");
+    });
+  }
+  function selected() { return state.questions.filter(function (q) { return q.id === state.selectedId; })[0] || null; }
+  function answerType(q) { return q.kind === "clarify" ? "text" : q.kind === "choose" ? "single" : "binary"; }
+  // Recommended option (best-effort from the stored `recommended` value).
+  function recValue(q) {
+    var r = q.recommended;
+    if (r == null || r === "") return null;
+    var rv = typeof r === "string" ? r : (typeof r === "object" && r.value != null ? r.value : JSON.stringify(r));
+    return rv;
+  }
+  function recIsAffirmative(q) {
+    var rv = recValue(q); if (rv == null) return false;
+    var s = String(rv).trim().toLowerCase();
+    return s === "yes" || s === "true" || s === "approve" || s === "approved" || s === "ok" || rv === true;
+  }
+  function curSel(q) {
+    var ty = answerType(q);
+    if (ty === "text") return state.clarify[q.id] != null ? state.clarify[q.id] : (recValue(q) || "");
+    if (state.sel[q.id] != null) return state.sel[q.id];
+    // default to recommendation if any
+    if (ty === "single") { var rv = recValue(q); return rv && (q.options || []).indexOf(rv) !== -1 ? rv : null; }
+    if (ty === "binary") return recValue(q) != null ? (recIsAffirmative(q) ? "yes" : "no") : null;
+    return null;
+  }
 
-  function render() { renderRail(); renderList(); renderReading(); }
+  // ---- render ----
+  function render() { renderRail(); renderList(); renderReading(); renderSnackbar(); renderModal(); }
 
   function renderRail() {
     var rail = $("rail"); rail.innerHTML = "";
-    rail.appendChild(el("h3", null, "Folders"));
+    rail.appendChild(el("h3", null, t().folders));
     var c = counts();
     FOLDERS.forEach(function (f) {
-      var row = el("div", "folder" + (state.folder === f.id ? " active" : ""));
-      row.appendChild(el("span", null, f.label));
-      row.appendChild(el("span", "n", String(c[f.id] || 0)));
-      row.addEventListener("click", function () { state.folder = f.id; render(); });
+      var row = el("div", "folder" + (state.folder === f ? " active" : ""));
+      row.appendChild(el("span", null, t()[f]));
+      row.appendChild(el("span", "n", String(c[f] || 0)));
+      row.addEventListener("click", function () { state.folder = f; state.drawerOpen = false; var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null; render(); });
       rail.appendChild(row);
     });
     rail.appendChild(el("div", "spacer"));
-    // "Your expertise" card — the tags the viewer's token is routed for.
     if (state.me && state.me.expertise && state.me.expertise.length) {
-      var card = el("div", "expertise");
-      card.appendChild(el("h3", null, "Your expertise"));
+      var box = el("div", "scope");
+      box.appendChild(el("h3", null, t().scope));
       var tags = el("div", "tags");
-      state.me.expertise.forEach(function (t) { tags.appendChild(el("span", "tag", t)); });
-      card.appendChild(tags);
-      rail.appendChild(card);
+      state.me.expertise.forEach(function (x) { tags.appendChild(el("span", "tag", x)); });
+      box.appendChild(tags); rail.appendChild(box);
     }
   }
 
-  function inFolder() {
-    return state.questions.filter(function (q) { return q.status === state.folder; })
-      .sort(function (a, b) {
-        var pr = { critical: 0, high: 1, normal: 2, low: 3 };
-        var pa = pr[a.urgency] == null ? 9 : pr[a.urgency];
-        var pb = pr[b.urgency] == null ? 9 : pr[b.urgency];
-        if (pa !== pb) return pa - pb;
-        return (a.created_at || "").localeCompare(b.created_at || "");
-      });
+  function barsNode(color, level, big) {
+    var w = el("span", "bars");
+    for (var i = 1; i <= 4; i++) {
+      var b = el("span", "bar");
+      b.style.background = i <= level ? color : "var(--gaugeoff)";
+      if (big) { b.style.width = "15px"; b.style.height = "5px"; }
+      w.appendChild(b);
+    }
+    return w;
   }
 
   function renderList() {
     var list = $("list"); list.innerHTML = "";
     var head = el("div", "listhead");
-    head.appendChild(el("span", "t", cap(state.folder)));
-    head.appendChild(el("span", "s", "urgency · age"));
+    head.appendChild(el("span", "t", state.folder === "open" ? t().open : t()[state.folder]));
+    head.appendChild(el("span", "s", state.folder === "open" ? t().listHintOpen : t().listHintAns));
     list.appendChild(head);
+
     var items = inFolder();
-    if (items.length === 0) { list.appendChild(el("div", "empty", "No " + state.folder + " questions.")); return; }
-    var read = state.folder !== "open";
-    items.forEach(function (q) {
-      var urg = q.urgency || "normal";
-      var row = el("div", "qrow" + (read ? " read" : "") + (q.id === state.selectedId ? " active" : ""));
-      var r1 = el("div", "r1");
-      r1.appendChild(el("span", "uw uw-" + urg, cap(urg)));
-      r1.appendChild(el("span", "age", fmtAge(q.created_at)));
-      row.appendChild(r1);
-      row.appendChild(el("div", "subj", q.title || "(untitled)"));
-      // one monospace identity line: agent · kind [· mode] · ticket
-      var parts = [q.asked_by || "—", q.kind];
-      if (q.mode && q.mode !== "blocking") parts.push(q.mode);
-      parts.push(q.ticket);
-      row.appendChild(el("div", "meta", parts.join(" · ")));
-      row.addEventListener("click", function () { state.selectedId = q.id; document.body.classList.add("reading"); render(); });
-      list.appendChild(row);
-    });
+    if (items.length === 0) {
+      var e = el("div", "listempty");
+      var svg = document.createElement("span"); svg.innerHTML = LOGO; svg.style.color = "var(--low)"; e.appendChild(svg);
+      e.appendChild(el("div", "t", t().allClear));
+      e.appendChild(el("p", null, t().allClearSub));
+      list.appendChild(e); return;
+    }
+
+    if (state.folder === "open") {
+      [4, 3, 2, 1].forEach(function (lv) {
+        var grp = items.filter(function (q) { return critLevel(q.urgency) === lv; });
+        if (!grp.length) return;
+        var color = uColor(grp[0].urgency);
+        var name = lv === 4 ? t().crit : lv === 3 ? t().high : lv === 2 ? t().normal : t().low;
+        var hd = el("div", "grouphd");
+        hd.appendChild(barsNode(color, lv, false));
+        var lbl = el("span", "lbl", name); lbl.style.color = color; hd.appendChild(lbl);
+        hd.appendChild(el("span", "cnt", String(grp.length)));
+        list.appendChild(hd);
+        grp.forEach(function (q) { list.appendChild(rowEl(q, false)); });
+      });
+    } else {
+      items.forEach(function (q) { list.appendChild(rowEl(q, true)); });
+    }
   }
 
-  function selected() {
-    return state.questions.filter(function (q) { return q.id === state.selectedId; })[0] || null;
+  function rowEl(q, answeredFolder) {
+    var answered = q.status === "answered";
+    var row = el("div", "qrow" + (answered ? " answered" : "") + (q.id === state.selectedId ? " active" : "") + (answered ? "" : ""));
+    if (q.id !== state.selectedId && (answered || q.status !== "open")) row.classList.add("read");
+    row.appendChild(el("div", "qt", q.title || "(untitled)"));
+    var ctx = answered ? (t().decision + ": " + answerText(q)) : snippetOf(q);
+    if (ctx) row.appendChild(el("div", "qc", ctx));
+    var meta = el("div", "qm");
+    meta.appendChild(el("span", "who", (q.asked_by || "—") + " · " + q.kind + (q.mode === "advisory" ? " · advisory" : "")));
+    meta.appendChild(el("span", "age", fmtAge(q.created_at)));
+    row.appendChild(meta);
+    row.addEventListener("click", function () { selectQ(q.id); });
+    return row;
+  }
+  function selectQ(id) { state.selectedId = id; state.drawerOpen = false; state.ticketOpen = false; state.composeOpen = false; document.body.classList.add("reading"); render(); }
+
+  function answerText(q) {
+    var a = q.answer;
+    if (a == null) return "—";
+    var v = (typeof a === "object" && a.value != null) ? a.value : a;
+    if (v === true) return q.kind === "approve" ? "Approved" : "Confirmed";
+    if (v === false) return q.kind === "approve" ? "Rejected" : "Declined";
+    return typeof v === "string" ? v : JSON.stringify(v);
   }
 
   function renderReading() {
     var pane = $("read"); pane.innerHTML = "";
-    state.answering = false; // a fresh render clears any in-progress selection
     var q = selected();
-    if (!q) { pane.appendChild(el("div", "rempty", "Select a question to read and answer.")); return; }
-
-    // status line — what happens when you answer (blocking resumes; advisory routes)
-    var blocking = !(q.mode && q.mode !== "blocking");
-    if (blocking) {
-      var sl = el("div", "statusline blocking");
-      sl.appendChild(el("span", "sdot"));
-      var txt = el("span");
-      txt.appendChild(document.createTextNode(q.status === "open" ? "Blocking — your answer resumes " : "Blocking — resolved "));
-      txt.appendChild(el("span", "mono", q.ticket));
-      if (q.status === "answered" && q.resolved_to) { txt.appendChild(document.createTextNode(" into ")); txt.appendChild(el("span", "mono", q.resolved_to)); }
-      sl.appendChild(txt);
-      pane.appendChild(sl);
-    } else {
-      pane.appendChild(el("div", "statusline advisory", "Advisory — routes a decision, no ticket changes state"));
+    if (!q) {
+      var e = el("div", "readempty");
+      var inner = el("div"); inner.appendChild(el("div", "t", t().nothingSel)); inner.appendChild(el("p", null, t().nothingSelSub));
+      e.appendChild(inner); pane.appendChild(e); return;
     }
-
-    // kind + expert-gate note
-    var kindrow = el("div", "kindrow");
-    if (q.kind === "approve") {
-      kindrow.appendChild(el("span", "kindbadge", "Approve"));
-      var note = el("span", "kindnote");
-      note.appendChild(document.createTextNode("expert-gated"));
-      if ((q.expertise || []).length) {
-        note.appendChild(document.createTextNode(" · "));
-        note.appendChild(el("span", "mono", q.expertise.join(" ")));
-      }
-      kindrow.appendChild(note);
-    } else {
-      kindrow.appendChild(el("span", "kindlabel", q.kind || "question"));
-      if ((q.expertise || []).length) {
-        var n2 = el("span", "kindnote");
-        n2.appendChild(el("span", "mono", q.expertise.join(" ")));
-        kindrow.appendChild(n2);
-      }
-    }
-    pane.appendChild(kindrow);
-
-    pane.appendChild(el("h2", null, q.title || "(untitled)"));
-
-    var am = el("div", "askmeta");
-    am.appendChild(document.createTextNode("asked by "));
-    am.appendChild(el("span", "mono", q.asked_by || "—"));
-    am.appendChild(document.createTextNode(" · " + fmtAge(q.created_at) + " ago"));
-    pane.appendChild(am);
-
-    if (q.body) pane.appendChild(el("div", "body", q.body));
-    if (q.recommended != null && q.recommended !== "") {
-      var rec = el("div", "rec-card");
-      rec.appendChild(el("div", "rh", (q.asked_by || "agent") + " recommends"));
-      rec.appendChild(el("div", "rv", typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended)));
-      pane.appendChild(rec);
-    }
-
-    // Follow-up thread (fetched lazily; usually empty). Populated in place.
-    var thread = el("div", "thread");
-    pane.appendChild(thread);
-    loadThread(q.id, thread);
-
-    // Which internal ticket this belongs to — inspectable, deliberately subtle.
-    pane.appendChild(inspectTicket(q));
-
-    // Whose turn: a human bounced this back for more research.
-    if (q.status === "open" && q.awaiting === "agent") {
-      pane.appendChild(el("div", "awaiting-note",
-        "Waiting on " + (q.asked_by || "the agent") + " — you asked for more before answering. You can still answer below."));
-    }
-
-    if (q.status !== "open") {
-      var box = el("div", "answered" + (q.status === "answered" ? " ok" : ""));
-      var av = q.answer && q.answer.value != null ? (typeof q.answer.value === "string" ? q.answer.value : JSON.stringify(q.answer.value)) : "—";
-      box.appendChild(el("div", "lbl", cap(q.status) + (q.answered_by ? " · by " + q.answered_by : "")));
-      if (q.status === "answered") {
-        box.appendChild(el("div", "val", av));
-        if (q.answer && q.answer.note) box.appendChild(el("div", "sub", "“" + q.answer.note + "”"));
-        if (q.resolved_to) box.appendChild(el("div", "sub", "Ticket resumed to " + q.resolved_to + "."));
-      }
-      pane.appendChild(box);
-      return;
-    }
-
-    // Answer currently in its undo hold — locked until it emits or is undone.
-    if (state.pending[q.id]) {
-      var pb = el("div", "pending-box");
-      pb.appendChild(el("div", null, "Answer queued — sending shortly."));
-      pb.appendChild(el("div", "substatus", "Use Undo in the notification (bottom-right) to cancel within " + UNDO_SECONDS + "s."));
-      pane.appendChild(pb);
-      return;
-    }
-
-    // Open question: select an answer, then Send (press twice, then a 30s hold).
-    if (state.me && !state.me.canAnswer) {
-      pane.appendChild(el("div", "readonly", "This token can't answer (no 'human' scope). Read-only."));
-    } else {
-      pane.appendChild(renderAnswerBox(q));
-    }
-    if (state.me && (state.me.scopes.indexOf("write") !== -1 || state.me.canAnswer)) {
-      pane.appendChild(renderActions(q));
-    }
-  }
-
-  // Fetch a question's follow-up thread and render it into `container`. Empty
-  // threads render nothing. Fired on selection; safe if the selection changed
-  // meanwhile (it just fills a detached node).
-  function loadThread(id, container) {
-    api("/questions/" + encodeURIComponent(id)).then(function (q) {
-      var msgs = (q && q.thread) || [];
-      container.innerHTML = "";
-      if (!msgs.length) return;
-      container.appendChild(el("h3", null, "Follow-up thread"));
-      msgs.forEach(function (m) {
-        var msg = el("div", "msg " + (m.role === "human" ? "human" : "agent"));
-        var who = el("div", "m-who");
-        who.appendChild(el("span", "mono", m.author || (m.role === "human" ? "human" : "agent")));
-        who.appendChild(document.createTextNode(" · " + fmtAge(m.created_at) + " ago"));
-        msg.appendChild(who);
-        msg.appendChild(el("div", null, m.body || ""));
-        container.appendChild(msg);
-      });
-    }).catch(function () { /* thread is best-effort enrichment */ });
-  }
-
-  // Subtle "inspect the internal agent ticket" affordance. Not prominent; the
-  // ticket's own content may be in a different language than the question.
-  function inspectTicket(q) {
-    var wrap = el("div");
-    var link = el("button", "inspect-link", "inspect internal ticket " + q.ticket + " ▸");
-    var panel = null;
-    link.addEventListener("click", function () {
-      if (panel) { wrap.removeChild(panel); panel = null; link.textContent = "inspect internal ticket " + q.ticket + " ▸"; return; }
-      link.textContent = "hide internal ticket " + q.ticket + " ▾";
-      panel = el("div", "inspect-panel");
-      panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
-      panel.appendChild(el("div", "substatus", "loading…"));
-      wrap.appendChild(panel);
-      api("/tickets/" + encodeURIComponent(q.ticket) + "?include=comments").then(function (t) {
-        panel.innerHTML = "";
-        panel.appendChild(el("div", "note-lang", "Internal agent context — may be in another language."));
-        panel.appendChild(el("div", null, t.title || q.ticket));
-        panel.appendChild(el("div", "substatus", (t.type ? t.type + " · " : "") + "state: " + (t.state || "?") + (t.priority ? " · " + t.priority : "")));
-        if (t.body) panel.appendChild(el("div", "ip-body", t.body));
-        var cs = t.comments || [];
-        if (cs.length) {
-          panel.appendChild(el("div", "substatus", "Comments (" + cs.length + "):"));
-          cs.slice(-5).forEach(function (c) {
-            var cc = el("div", "ip-comment");
-            cc.appendChild(el("div", "note-lang", (c.author || "") + " · " + (c.created_at || "")));
-            cc.appendChild(el("div", null, c.body || ""));
-            panel.appendChild(cc);
-          });
-        }
-      }).catch(function (e) {
-        panel.innerHTML = "";
-        panel.appendChild(el("div", "substatus", "Could not load ticket: " + (e && e.message ? e.message : "error")));
-      });
-    });
-    wrap.appendChild(link);
-    return wrap;
-  }
-
-  // Two-phase answering: SELECT a value (highlights, does not submit), then a
-  // Send button that must be pressed twice — so nothing is answered by accident.
-  function renderAnswerBox(q) {
-    var box = el("div", "answerbox");
-    box.appendChild(el("h3", null, "Your answer"));
-    var lang = getLang();
-    if (lang) {
-      box.appendChild(el("div", "lang-nudge",
-        "This project expects answers in " + lang + "." + (q.kind === "clarify" ? " Please write your reply in " + lang + "." : "")));
-    }
-
-    var sel = null;          // selected value for confirm/approve/choose
-    var textInput = null;    // clarify free-text
-    function markBusy() { state.answering = true; }
-    function curVal() { return q.kind === "clarify" ? ((textInput && textInput.value) || "").trim() : sel; }
-
-    var isChoose = q.kind === "choose";
-    var row = el("div", "row" + (isChoose ? " choose" : ""));
-    if (q.kind === "confirm" || q.kind === "approve") {
-      var yes = el("button", "optbtn", q.kind === "approve" ? "Approve" : "Yes");
-      var no = el("button", "optbtn reject", q.kind === "approve" ? "Reject" : "No");
-      yes.addEventListener("click", function () { sel = "yes"; yes.classList.add("sel"); no.classList.remove("sel"); markBusy(); refreshSend(); });
-      no.addEventListener("click", function () { sel = "no"; no.classList.add("sel"); yes.classList.remove("sel"); markBusy(); refreshSend(); });
-      row.appendChild(yes); row.appendChild(no);
-    } else if (isChoose) {
-      (q.options || []).forEach(function (opt) {
-        var b = el("button", "optbtn", opt);
-        b.addEventListener("click", function () {
-          sel = opt; markBusy();
-          Array.prototype.forEach.call(row.children, function (c) { c.classList.remove("sel"); });
-          b.classList.add("sel"); refreshSend();
-        });
-        row.appendChild(b);
-      });
-    } else {
-      textInput = el("textarea", "clarify");
-      textInput.placeholder = "Type your answer" + (lang ? " (in " + lang + ")" : "") + "…";
-      textInput.addEventListener("input", function () { markBusy(); refreshSend(); });
-      row.appendChild(textInput);
-    }
-    box.appendChild(row);
-
-    var note = el("input", "note"); note.type = "text"; note.placeholder = "Add a note with your decision (optional)…";
-    note.addEventListener("input", markBusy);
-    box.appendChild(note);
-
-    var sendRow = el("div", "sendrow");
-    var sendLabel = q.kind === "approve" ? "Approve & resume " + q.ticket
-      : q.kind === "confirm" ? "Confirm & resume " + q.ticket
-      : "Send answer & resume " + q.ticket;
-    var send = el("button", "primary send", sendLabel); send.disabled = true;
-    var hint = el("span", "sendhint", "");
-    var armed = false, disarmT = null;
-    function disarm() { armed = false; send.classList.remove("armed"); send.textContent = sendLabel; hint.textContent = ""; if (disarmT) { clearTimeout(disarmT); disarmT = null; } }
-    function refreshSend() { var v = curVal(); send.disabled = !v; if (!v) disarm(); }
-    send.addEventListener("click", function () {
-      var v = curVal();
-      if (!v) { toast(q.kind === "clarify" ? "Type an answer first." : "Select an answer first.", "error"); return; }
-      if (!armed) {
-        armed = true; send.classList.add("armed"); send.textContent = "Press again to send"; hint.textContent = "press again to confirm";
-        disarmT = setTimeout(disarm, 4000);
-        return;
-      }
-      disarm();
-      queueAnswer(q.id, v, (note.value || "").trim());
-    });
-    sendRow.appendChild(send); sendRow.appendChild(hint);
-    box.appendChild(sendRow);
-    return box;
-  }
-
-  function renderActions(q) {
-    var wrap = el("div", "actions");
-    // Ask for more research before answering (human scope): bounces the
-    // question back to the asking agent with a clear follow-up.
-    if (state.me && state.me.canAnswer) {
-      var moreBtn = el("button", null, "Ask for more info");
-      moreBtn.addEventListener("click", function () { askForMore(q, wrap); });
-      wrap.appendChild(moreBtn);
-    }
-    var wd = el("button", null, "Withdraw");
-    wd.addEventListener("click", function () {
-      api("/questions/" + encodeURIComponent(q.id) + "/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "withdrawn from inbox" }) })
-        .then(function () { toast("Question withdrawn.", "success"); fetchAll(); })
-        .catch(function (e) { toast("Couldn't withdraw: " + (e && e.message ? e.message : "error"), "error"); });
-    });
-    wrap.appendChild(wd);
-    if (state.me && state.me.canAnswer) {
-      var linkBtn = el("button", null, "Create answer link");
-      linkBtn.addEventListener("click", function () { mintLink(q.id, wrap); });
-      wrap.appendChild(linkBtn);
-    }
-    wrap.appendChild(el("span", "grow"));
-    wrap.appendChild(el("span", "kbd", "↵ send · j/k next"));
-    return wrap;
-  }
-
-  // Reveal a box to send the asking agent a request for more research. Sending
-  // keeps the question open and flips it to await the agent's reply.
-  function askForMore(q, actionsWrap) {
-    if (actionsWrap.parentNode.querySelector(".followup-box")) return; // already open
-    var box = el("div", "followup-box");
-    var ta = el("textarea");
-    ta.placeholder = "What should " + (q.asked_by || "the agent") + " look into before you decide?";
-    ta.addEventListener("input", function () { state.answering = true; });
-    box.appendChild(ta);
-    var frow = el("div", "frow");
-    var send = el("button", "primary", "Send to agent");
-    var cancel = el("button", null, "Cancel");
-    send.addEventListener("click", function () {
-      var msg = (ta.value || "").trim();
-      if (!msg) { toast("Write what you need first.", "error"); return; }
-      send.disabled = true;
-      api("/questions/" + encodeURIComponent(q.id) + "/followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg }) })
-        .then(function () { toast("Sent to " + (q.asked_by || "the agent") + " — you'll see the reply here.", "success"); state.answering = false; fetchAll(); })
-        .catch(function (e) { send.disabled = false; toast("Couldn't send: " + (e && e.message ? e.message : "error"), "error"); });
-    });
-    cancel.addEventListener("click", function () { state.answering = false; box.parentNode.removeChild(box); });
-    frow.appendChild(send); frow.appendChild(cancel);
-    box.appendChild(frow);
-    actionsWrap.parentNode.appendChild(box);
-    ta.focus();
-  }
-
-  function mintLink(id, wrap) {
-    api("/questions/" + encodeURIComponent(id) + "/answer-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
-      .then(function (res) {
-        var box = el("div", "linkbox");
-        var url = res.url || (window.location.origin + (res.path || ""));
-        var inp = el("input"); inp.type = "text"; inp.readOnly = true; inp.value = url;
-        inp.addEventListener("focus", function () { inp.select(); });
-        box.appendChild(el("div", "substatus", "Single-use link (shown once) — send it to the expert:"));
-        box.appendChild(inp);
-        wrap.parentNode.appendChild(box);
-        toast("Answer link created.", "success");
-      })
-      .catch(function (e) { toast("Couldn't create link: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs human, and expert:<tag> for approve)" : ""), "error", { ms: 8000 }); });
-  }
-
-  // Queue an answer with a 30s undo window before it is actually emitted.
-  function queueAnswer(qid, value, note) {
-    if (state.pending[qid]) return;
-    state.pending[qid] = true;
     state.answering = false;
-    render(); // reading pane shows the locked "queued" state
+    var answered = q.status !== "open";
 
-    var remaining = UNDO_SECONDS;
-    var t = toast("Answer will be sent in " + remaining + "s.", "undo", {
-      sticky: true,
-      action: { label: "Undo", fn: function (tt) {
-        delete state.pending[qid];
-        removeToast(tt);
-        toast("Not sent — cancelled.");
-        render();
-      } }
+    var scroll = el("div", "readscroll tk-scroll");
+
+    // head
+    var head = el("div", "rhead");
+    var top = el("div", "toprow");
+    top.appendChild(el("span", "grow"));
+    top.appendChild(el("span", "age", fmtAge(q.created_at)));
+    var tb = el("button", "ticketbtn"); tb.appendChild(document.createTextNode("ⓘ ")); tb.appendChild(el("span", "mono", q.ticket));
+    tb.addEventListener("click", function () { state.ticketOpen = !state.ticketOpen; if (state.ticketOpen) ensureTicket(q.ticket); render(); });
+    top.appendChild(tb);
+    if (!answered && state.me && state.me.canAnswer) {
+      var shareBtn = el("button", "ticketbtn"); shareBtn.title = t().share; shareBtn.textContent = "↗";
+      shareBtn.addEventListener("click", function () { mintLink(q.id); });
+      top.appendChild(shareBtn);
+      var wBtn = el("button", "ticketbtn"); wBtn.title = t().withdraw; wBtn.textContent = "🗑";
+      wBtn.addEventListener("click", function () { state.withdrawOpen = true; render(); });
+      top.appendChild(wBtn);
+    }
+    head.appendChild(top);
+    head.appendChild(el("h2", null, q.title || "(untitled)"));
+    if (q.mode === "advisory") { var adv = el("div", "gatenote", t().advisory); adv.style.marginTop = "10px"; head.appendChild(adv); }
+    if (state.ticketOpen) head.appendChild(ticketPopover(q));
+    scroll.appendChild(head);
+
+    // body + timeline + answer
+    var body = el("div", "rbody");
+    if (q.body) body.appendChild(mdNode(q.body));
+    body.appendChild(timelineNode(q));
+
+    if (answered) {
+      var dec = el("div", "decision");
+      var h = el("div", "h"); h.appendChild(el("span", "chk", "✓")); h.appendChild(document.createTextNode(q.status === "answered" ? t().decision : cap(q.status))); dec.appendChild(h);
+      dec.appendChild(el("div", "v", answerText(q)));
+      var sub = t().answeredBy + " · " + fmtAge(q.created_at);
+      if (q.resolved_to) sub += " · → " + q.resolved_to;
+      dec.appendChild(el("div", "sub", sub));
+      body.appendChild(dec);
+    } else if (state.me && !state.me.canAnswer) {
+      var ro = el("div", "gatenote", t().readonly); ro.style.marginTop = "20px"; body.appendChild(ro);
+    } else {
+      body.appendChild(answerArea(q));
+    }
+    scroll.appendChild(body);
+    pane.appendChild(scroll);
+
+    // footer
+    if (!answered && state.me && state.me.canAnswer) pane.appendChild(footer(q));
+    else if (answered) {
+      var fc = el("div", "rfoot"); var fcr = el("div", "foot-closed"); fcr.appendChild(el("span", "t", t().closed)); fc.appendChild(fcr); pane.appendChild(fc);
+    }
+
+    if (state.drawerOpen) { pane.appendChild(drawerScrim()); pane.appendChild(ticketDrawer(q)); }
+  }
+
+  function ticketPopover(q) {
+    var d = state.ticketDetail[q.ticket] || {};
+    var pop = el("div", "popover");
+    pop.appendChild(el("div", "h", t().ticketCtx));
+    var kv1 = el("div", "kv"); kv1.appendChild(el("span", "k", t().status)); kv1.appendChild(el("span", null, d.state || "…")); pop.appendChild(kv1);
+    var holder = d.claim && d.claim.holder;
+    var kv2 = el("div", "kv"); kv2.appendChild(el("span", "k", t().claimed)); kv2.appendChild(el("span", "mono", holder || q.asked_by || "—")); pop.appendChild(kv2);
+    if (d.title) { var kv3 = el("div", "kv"); kv3.appendChild(el("span", "k", "Title")); var tt = el("span", null, d.title); tt.style.textAlign = "right"; kv3.appendChild(tt); pop.appendChild(kv3); }
+    var open = el("div", "open", t().openTicket);
+    open.addEventListener("click", function () { state.ticketOpen = false; state.drawerOpen = true; ensureTicket(q.ticket); render(); });
+    pop.appendChild(open);
+    return pop;
+  }
+
+  function timelineNode(q) {
+    var wrap = el("div", "timeline");
+    wrap.appendChild(el("h3", null, t().ticketUpdate));
+    var evs = el("div", "tevents");
+    var blocking = q.mode !== "advisory";
+    // origin: agent context + blocked/advisory marker
+    var snip = snippetOf(q);
+    if (snip) evs.appendChild(tevent("#9db8d4", q.asked_by, fmtAge(q.created_at), snip));
+    if (q.status === "open") evs.appendChild(tevent(blocking ? "#c99a3a" : "#9db8d4", q.asked_by, fmtAge(q.created_at), blocking ? t().blockedEvt : t().advisory));
+    // thread
+    var th = state.threads[q.id] || [];
+    th.forEach(function (m) {
+      var human = m.role === "human";
+      evs.appendChild(tevent(human ? "var(--accent2)" : "var(--ok)", human ? (state.me && state.me.actor ? state.me.actor : "you") : (m.author || q.asked_by), fmtAge(m.created_at), (human ? "" : "") + (m.body || "")));
     });
-    t._interval = setInterval(function () {
-      remaining--;
-      if (remaining > 0) { t._msgEl.textContent = "Answer will be sent in " + remaining + "s."; return; }
-      removeToast(t);
-      delete state.pending[qid];
-      emitAnswer(qid, value, note);
+    if (q.status === "open" && q.awaiting === "agent") {
+      var p = el("div", "tev pend");
+      p.appendChild(el("span", "tdot"));
+      var d = el("div"); d.appendChild(el("div", "tt", t().waitingAgent + (q.asked_by || "agent") + t().noReply)); p.appendChild(d);
+      evs.appendChild(p);
+    }
+    wrap.appendChild(evs);
+    // lazily fetch thread if not present
+    if (!state.threads[q.id]) loadThread(q.id);
+    return wrap;
+  }
+  function tevent(color, who, time, text) {
+    var ev = el("div", "tev");
+    var dot = el("span", "tdot"); dot.style.background = color; ev.appendChild(dot);
+    var d = el("div");
+    d.appendChild(el("div", "tt", text));
+    var m = el("div", "tm"); m.appendChild(el("span", "mono", who || "—")); m.appendChild(document.createTextNode(" · " + time)); d.appendChild(m);
+    ev.appendChild(d); return ev;
+  }
+
+  function answerArea(q) {
+    var wrap = el("div", "answer");
+    var lang = getLang();
+    if (lang) wrap.appendChild(el("div", "lang-nudge", (state.lang === "de" ? "Dieses Projekt erwartet Antworten auf " : "This project expects answers in ") + lang + "."));
+    if (q.kind === "approve") {
+      var gate = el("div", "gatenote");
+      gate.appendChild(lockIcon());
+      gate.appendChild(document.createTextNode(t().gate + ((q.expertise || []).join(" ") || "")));
+      wrap.appendChild(gate);
+    }
+    var ty = answerType(q);
+    if (ty === "text") {
+      var ta = el("textarea", "clarify"); ta.placeholder = t().typeAnswer + (lang ? " (" + lang + ")" : "");
+      ta.value = curSel(q) || "";
+      ta.addEventListener("input", function () { state.answering = true; state.clarify[q.id] = ta.value; });
+      wrap.appendChild(ta);
+      var rv = recValue(q);
+      if (rv) { var sg = el("div", "suggest"); sg.appendChild(document.createTextNode(t().suggested + " ")); var b = el("button", null, rv); b.addEventListener("click", function () { ta.value = rv; state.clarify[q.id] = rv; state.answering = true; }); sg.appendChild(b); wrap.appendChild(sg); }
+    } else {
+      var opts = el("div", "opts");
+      buildOptions(q).forEach(function (o) { opts.appendChild(optionRow(q, o)); });
+      wrap.appendChild(opts);
+    }
+    return wrap;
+  }
+  function buildOptions(q) {
+    var ty = answerType(q);
+    if (ty === "binary") {
+      var affLabel = q.kind === "approve" ? t().approve : t().confirm;
+      var negLabel = q.kind === "approve" ? t().holdApprove : t().holdConfirm;
+      var rv = recValue(q), recAff = rv != null && recIsAffirmative(q);
+      return [
+        { value: "yes", label: affLabel, desc: "", rec: rv != null && recAff },
+        { value: "no", label: negLabel, desc: t().nothingChanges, rec: rv != null && !recAff }
+      ];
+    }
+    // single choose
+    var rvS = recValue(q);
+    return (q.options || []).map(function (o) { return { value: o, label: o, desc: "", rec: rvS != null && o === rvS }; });
+  }
+  function optionRow(q, o) {
+    var selVal = curSel(q);
+    var isSel = selVal === o.value;
+    var row = el("div", "opt" + (isSel ? " sel" : ""));
+    row.appendChild(el("span", "mark"));
+    var mid = el("div"); mid.style.flex = "1"; mid.style.minWidth = "0";
+    if (o.rec) {
+      var rec = el("div", "rec");
+      rec.appendChild(barsNode("var(--accent)", 3, true));
+      rec.appendChild(el("span", "rl", t().recommended));
+      mid.appendChild(rec);
+    }
+    mid.appendChild(el("div", "ol", o.label));
+    if (o.desc) mid.appendChild(el("div", "od", o.desc));
+    row.appendChild(mid);
+    row.addEventListener("click", function () { state.sel[q.id] = o.value; state.answering = true; render(); });
+    return row;
+  }
+  function lockIcon() {
+    var s = document.createElement("span");
+    s.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+    return s;
+  }
+
+  function footer(q) {
+    var foot = el("div", "rfoot");
+    if (state.composeOpen) {
+      var comp = el("div", "compose");
+      var to = el("div", "to"); to.appendChild(document.createTextNode(t().to + " ")); to.appendChild(el("span", "mono", q.asked_by || "agent")); comp.appendChild(to);
+      var inp = el("input"); inp.placeholder = t().askFollow; inp.value = state.draft[q.id] || "";
+      inp.addEventListener("input", function () { state.draft[q.id] = inp.value; state.answering = true; sendBtn.className = "send" + (inp.value.trim() ? " on" : ""); });
+      inp.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); sendFollowup(q); } });
+      comp.appendChild(inp);
+      var sendBtn = el("button", "send" + ((state.draft[q.id] || "").trim() ? " on" : "")); sendBtn.title = "Send"; sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+      sendBtn.addEventListener("click", function () { sendFollowup(q); });
+      comp.appendChild(sendBtn);
+      foot.appendChild(comp);
+      setTimeout(function () { inp.focus(); }, 0);
+    }
+    var row = el("div", "footrow");
+    var primary = el("button", "btn-primary", q.mode === "advisory" ? t().answerAdvis : t().answer);
+    primary.addEventListener("click", function () { submitAnswer(q); });
+    row.appendChild(primary);
+    var msg = el("button", "btn-msg" + (state.composeOpen ? " on" : "")); msg.title = t().askFollow;
+    msg.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+    var th = state.threads[q.id] || []; var fcount = th.filter(function (m) { return m.role === "human"; }).length;
+    if (fcount > 0) { var badge = el("span", "badge", String(fcount)); msg.appendChild(badge); }
+    msg.addEventListener("click", function () { state.composeOpen = !state.composeOpen; render(); });
+    row.appendChild(msg);
+    foot.appendChild(row);
+    return foot;
+  }
+
+  // ---- ticket detail (popover + drawer) ----
+  function ensureTicket(id) {
+    if (state.ticketDetail[id]) return;
+    api("/tickets/" + encodeURIComponent(id) + "?include=deps").then(function (tk) {
+      state.ticketDetail[id] = tk; render();
+    }).catch(function () {});
+  }
+  function drawerScrim() { var s = el("div", "drawer-scrim"); s.addEventListener("click", function () { state.drawerOpen = false; render(); }); return s; }
+  function ticketDrawer(q) {
+    var d = state.ticketDetail[q.ticket] || {};
+    var dr = el("div", "drawer");
+    var dh = el("div", "dh");
+    var top = el("div", "top");
+    top.appendChild(el("span", "mono", q.ticket));
+    top.appendChild(el("span", "state", d.state || "…"));
+    var x = el("span", "x", "✕"); x.addEventListener("click", function () { state.drawerOpen = false; render(); }); top.appendChild(x);
+    dh.appendChild(top);
+    dh.appendChild(el("h3", null, d.title || q.ticket));
+    var claim = el("div", "claim"); claim.appendChild(document.createTextNode(t().claimed + " ")); claim.appendChild(el("span", "mono", (d.claim && d.claim.holder) || q.asked_by || "—")); dh.appendChild(claim);
+    dr.appendChild(dh);
+
+    var db = el("div", "db tk-scroll");
+    var callout = el("div", "callout"); callout.appendChild(el("div", "t", t().blockedQ)); callout.appendChild(el("div", "s", t().blockedSub)); db.appendChild(callout);
+    db.appendChild(el("h4", null, t().description));
+    db.appendChild(el("div", "desc", plain(d.body || q.body || "")));
+    var deps = d.deps || {};
+    var bb = deps.blocked_by || [], bl = deps.blocks || [];
+    if (bb.length || bl.length) {
+      db.appendChild(el("h4", null, t().dependencies));
+      bb.forEach(function (x2) { var r = el("div", "dep"); r.appendChild(el("span", "rel", "blocked by ")); r.appendChild(el("span", "mono", x2.id || x2)); if (x2.title) r.appendChild(document.createTextNode(" " + x2.title)); db.appendChild(r); });
+      bl.forEach(function (x2) { var idv = typeof x2 === "string" ? x2 : (x2.id || x2.ticket || ""); var r = el("div", "dep"); r.appendChild(el("span", "rel", "blocks ")); r.appendChild(el("span", "mono", idv)); db.appendChild(r); });
+    }
+    var links = d.links;
+    if (links && typeof links === "object" && Object.keys(links).length) {
+      db.appendChild(el("h4", null, t().links));
+      Object.keys(links).forEach(function (k) { var v = links[k]; var line = el("div", "lnk"); if (typeof v === "string" && /^https?:\/\//.test(v)) { var a = el("a"); a.href = v; a.textContent = k + ": " + v; a.target = "_blank"; a.rel = "noopener"; line.appendChild(a); } else { line.textContent = k + ": " + (typeof v === "string" ? v : JSON.stringify(v)); } db.appendChild(line); });
+    }
+    dr.appendChild(db);
+    var df = el("div", "df"); var back = el("button", null, t().backToQ); back.addEventListener("click", function () { state.drawerOpen = false; render(); }); df.appendChild(back); dr.appendChild(df);
+    return dr;
+  }
+
+  // ---- follow-up thread ----
+  function loadThread(id) {
+    api("/questions/" + encodeURIComponent(id)).then(function (qd) {
+      state.threads[id] = (qd && qd.thread) || [];
+      if (state.selectedId === id) render();
+    }).catch(function () { state.threads[id] = state.threads[id] || []; });
+  }
+  function sendFollowup(q) {
+    var msg = (state.draft[q.id] || "").trim();
+    if (!msg) return;
+    api("/questions/" + encodeURIComponent(q.id) + "/followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg }) })
+      .then(function () { state.draft[q.id] = ""; state.answering = false; toast(t().followupSent, "success"); loadThread(q.id); fetchAll(); })
+      .catch(function (e) { toast((e && e.message) || "error", "error"); });
+  }
+
+  // ---- answer (1 click → 30s undo snackbar) ----
+  function submitAnswer(q) {
+    var ty = answerType(q);
+    var val = curSel(q);
+    if (ty === "text") { val = (val || "").trim(); if (!val) { toast(t().typeFirst, "error"); return; } }
+    else if (val == null) { toast(t().sendFirst, "error"); return; }
+    queueAnswer(q, val);
+  }
+  function queueAnswer(q, value) {
+    if (state.pending[q.id]) return;
+    state.pending[q.id] = true; state.answering = false; state.composeOpen = false;
+    var blocking = q.mode !== "advisory";
+    var decision = t().decision + ": " + displayVal(q, value);
+    var detail = blocking ? (q.ticket + t().resumedInto) : t().recorded;
+    state.snack = { qid: q.id, value: value, decision: decision, detail: detail, remaining: UNDO_SECONDS, blocking: blocking };
+    // optimistically move it out of the open list
+    render();
+    startSnackTimer(q, value);
+  }
+  function displayVal(q, value) {
+    if (answerType(q) === "binary") return value === "yes" ? (q.kind === "approve" ? t().approve : t().confirm) : (q.kind === "approve" ? t().holdApprove : t().holdConfirm);
+    return String(value);
+  }
+  var snackTimer = null;
+  function startSnackTimer(q, value) {
+    clearInterval(snackTimer);
+    snackTimer = setInterval(function () {
+      if (!state.snack) { clearInterval(snackTimer); return; }
+      state.snack.remaining -= 1;
+      if (state.snack.remaining <= 0) { clearInterval(snackTimer); var s = state.snack; state.snack = null; delete state.pending[q.id]; emitAnswer(q, value); }
+      renderSnackbar();
     }, 1000);
   }
-
-  function emitAnswer(qid, value, note) {
-    var payload = note ? { value: value, note: note } : value;
-    api("/questions/" + encodeURIComponent(qid) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
-      .then(function () { toast("Thanks for your submission.", "success"); fetchAll(); })
-      .catch(function (e) {
-        toast("Couldn't send: " + (e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs the 'human' scope)" : ""), "error", { ms: 8000 });
-        render(); // restore the answer box so they can retry
-      });
+  function undoSnack() {
+    clearInterval(snackTimer);
+    if (state.snack) delete state.pending[state.snack.qid];
+    state.snack = null;
+    toast(t().cancelled);
+    render();
   }
+  function emitAnswer(q, value) {
+    var payload = answerType(q) === "binary" ? value : value; // string values; API coerces yes/no
+    api("/questions/" + encodeURIComponent(q.id) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
+      .then(function () { toast(t().submitted, "success"); fetchAll(); })
+      .catch(function (e) { toast((e && e.message ? e.message : "error") + (e && e.status === 403 ? " (human scope)" : ""), "error"); fetchAll(); });
+  }
+
+  function renderSnackbar() {
+    var root = $("snackbar-root"); root.innerHTML = "";
+    if (!state.snack) return;
+    var sb = el("div", "snackbar");
+    sb.appendChild(el("span", "chk", "✓"));
+    var d = el("div"); d.appendChild(el("div", "d1", state.snack.decision)); d.appendChild(el("div", "d2", state.snack.detail)); sb.appendChild(d);
+    var u = el("button", "undo", t().undo + " · " + state.snack.remaining + "s"); u.addEventListener("click", undoSnack); sb.appendChild(u);
+    root.appendChild(sb);
+  }
+
+  function renderModal() {
+    var root = $("modal-root"); root.innerHTML = "";
+    if (!state.withdrawOpen) return;
+    var scrim = el("div", "modal-scrim"); scrim.addEventListener("click", function () { state.withdrawOpen = false; render(); });
+    var modal = el("div", "modal"); modal.addEventListener("click", function (e) { e.stopPropagation(); });
+    modal.appendChild(el("div", "t", t().withdrawTitle));
+    modal.appendChild(el("p", null, t().withdrawBody));
+    var row = el("div", "row");
+    var cancel = el("button", "cancel", t().cancel); cancel.addEventListener("click", function () { state.withdrawOpen = false; render(); });
+    var danger = el("button", "danger", t().withdraw); danger.addEventListener("click", confirmWithdraw);
+    row.appendChild(cancel); row.appendChild(danger); modal.appendChild(row);
+    scrim.appendChild(modal); root.appendChild(scrim);
+  }
+  function confirmWithdraw() {
+    var q = selected(); if (!q) return;
+    state.withdrawOpen = false; render();
+    api("/questions/" + encodeURIComponent(q.id) + "/withdraw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "withdrawn from inbox" }) })
+      .then(function () { toast(t().withdrawn2, "success"); fetchAll(); })
+      .catch(function (e) { toast((e && e.message) || "error", "error"); });
+  }
+
+  function mintLink(id) {
+    api("/questions/" + encodeURIComponent(id) + "/answer-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+      .then(function (res) {
+        var url = res.url || (window.location.origin + (res.path || ""));
+        var inp = el("input"); inp.type = "text"; inp.readOnly = true; inp.value = url; inp.addEventListener("focus", function () { inp.select(); });
+        toast(t().answerLinkCreated, "success", inp);
+      })
+      .catch(function (e) { toast((e && e.message ? e.message : "error") + (e && e.status === 403 ? " (needs human + expert:<tag>)" : ""), "error"); });
+  }
+
+  // ---- keyboard ----
+  document.addEventListener("keydown", function (e) {
+    if ($("gate") && !$("gate").classList.contains("hidden")) return;
+    if (e.key === "Escape") { if (state.withdrawOpen) { state.withdrawOpen = false; render(); return; } if (state.drawerOpen) { state.drawerOpen = false; render(); return; } if (state.ticketOpen) { state.ticketOpen = false; render(); return; } }
+    var tag = (e.target && e.target.tagName) || ""; if (tag === "INPUT" || tag === "TEXTAREA") return;
+    var list = inFolder(); if (!list.length) return;
+    var idx = list.findIndex(function (q) { return q.id === state.selectedId; });
+    if (e.key === "j") { idx = Math.min(list.length - 1, idx < 0 ? 0 : idx + 1); selectQ(list[idx].id); e.preventDefault(); }
+    else if (e.key === "k") { idx = Math.max(0, idx < 0 ? 0 : idx - 1); selectQ(list[idx].id); e.preventDefault(); }
+    else if (e.key === "Enter") { var q = list[idx < 0 ? 0 : idx]; if (q && q.status === "open" && state.me && state.me.canAnswer) { submitAnswer(q); e.preventDefault(); } }
+  });
 
   // ---- status + errors ----
-  function setLive(kind, text) {
-    $("live-dot").className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
-    $("live-text").textContent = text;
-  }
+  function setLive(kind, text) { $("live-dot").className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : ""); $("live-text").textContent = text; }
   function handleErr(e) {
-    if (e && e.auth) { showGate("Token rejected (" + (e.status || "") + "). Enter a valid token."); return; }
+    if (e && e.auth) { showGate((state.lang === "de" ? "Token abgelehnt (" : "Token rejected (") + (e.status || "") + ")."); return; }
     setLive("err", "error");
-    $("list").innerHTML = "";
-    $("list").appendChild(el("div", "empty", "Could not load: " + (e && e.message ? e.message : "unknown error")));
+    $("list").innerHTML = ""; $("list").appendChild(el("div", "listempty", (state.lang === "de" ? "Ladefehler: " : "Could not load: ") + (e && e.message ? e.message : "error")));
+  }
+
+  // ---- chrome (i18n-applied static bits) ----
+  function applyChrome() {
+    $("brand").innerHTML = LOGO + '<span>takomo</span>';
+    $("gate-brand").innerHTML = LOGO;
+    $("nav-inbox").textContent = t().inbox; $("nav-board").textContent = t().board;
+    $("mine-label").textContent = t().mine;
+    $("kbd-hint").textContent = t().kbd;
+    $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
+    document.documentElement.lang = state.lang;
   }
 
   // ---- start ----
-  $("brand").innerHTML = LOGO + '<span>takomo</span>';
-  $("gate-brand").innerHTML = LOGO;
+  applyChrome(); applyGateStrings();
   if (state.token) { hideGate(); boot(); } else { showGate(""); }
 })();
 </script>

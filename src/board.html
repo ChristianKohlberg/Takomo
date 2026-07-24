@@ -18,7 +18,7 @@
     --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
     --shadow: 0 18px 50px -26px rgba(20,40,55,.28);
     --crit: #b4543f; --ok: #3f7a5f;
-    --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95;
+    --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95; --gaugeoff: #cfd9e2;
     --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --sel-border: #cfe0ee; --hover: #f2f6fa;
     --overlay: rgba(20,40,55,.5);
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -30,7 +30,7 @@
       --accent: #4c8dff; --accent2: #6ea8ff; --accent-ink: #7fb2ff;
       --shadow: 0 18px 50px -26px rgba(0,0,0,.6);
       --crit: #e0836f; --ok: #5fbf8f;
-      --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1;
+      --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1; --gaugeoff: #33414f;
       --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --sel-border: #2b4a63; --hover: #17212c;
       --overlay: rgba(1,4,9,.72);
     }
@@ -86,6 +86,12 @@
     text-align: center; margin-left: 6px; line-height: 17px;
   }
   .badge.zero { display: none; }
+
+  .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .langtoggle span { font-size: 12px; font-weight: 680; padding: 5px 10px; cursor: pointer; color: var(--muted); }
+  .langtoggle span.on { background: var(--accent); color: #fff; }
+  .bars { display: inline-flex; gap: 2px; vertical-align: middle; }
+  .bars .bar { width: 11px; height: 4px; border-radius: 2px; background: var(--gaugeoff); }
 
   /* ---- board ---- */
   #board {
@@ -217,11 +223,11 @@
 <div id="gate">
   <div class="card2">
     <div class="brand" id="gate-brand"></div>
-    <h1>takomo board</h1>
-    <p>Read-only kanban. Paste a read token to view a project's tickets.</p>
-    <label for="g-token">Read token</label>
+    <h1>takomo · board</h1>
+    <p id="gate-sub">Read-only kanban. Paste a read token to view a project's tickets.</p>
+    <label for="g-token" id="gate-tokenlabel">Read token</label>
     <input id="g-token" type="password" placeholder="tk_live_••••••••" autocomplete="off">
-    <label for="g-project">Project</label>
+    <label for="g-project" id="gate-projectlabel">Project</label>
     <input id="g-project" type="text" placeholder="load token first, then pick" list="g-projlist">
     <datalist id="g-projlist"></datalist>
     <button class="primary" id="g-go">Open board</button>
@@ -231,16 +237,17 @@
 
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
-  <nav class="nav" id="nav"><span class="navpill active">Board</span><a href="/inbox">Inbox</a></nav>
+  <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a></nav>
   <select id="projsel" title="project"></select>
   <span class="share-banner" id="share-scope"></span>
   <span class="grow"></span>
   <span class="status share-exp" id="share-exp"></span>
-  <label class="archtoggle" title="Include archived tickets"><input type="checkbox" id="showarch"> archived</label>
-  <button class="iconbtn ghost" id="inbox-btn" title="Ask-a-human inbox">Ask&nbsp;a&nbsp;human<span class="badge zero" id="inbox-count">0</span></button>
+  <label class="archtoggle"><input type="checkbox" id="showarch"> <span id="arch-label">archived</span></label>
+  <button class="iconbtn ghost" id="inbox-btn"><span id="askhuman-label">Ask a human</span><span class="badge zero" id="inbox-count">0</span></button>
+  <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
   <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
-  <button class="ghost" id="refresh" title="Reload now">Refresh</button>
-  <button class="ghost" id="signout" title="Forget token">Sign out</button>
+  <button class="ghost" id="refresh"><span id="refresh-label">Refresh</span></button>
+  <button class="ghost" id="signout"><span id="signout-label">Sign out</span></button>
 </header>
 
 <div id="board"></div>
@@ -276,6 +283,15 @@
 
   var LS_TOKEN = "takomo.board.token";
   var LS_PROJECT = "takomo.board.project";
+  var LS_LANG = "takomo.lang";
+
+  // ---- i18n (shared vocabulary with /inbox) ----
+  var STR = {
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)" },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)" }
+  };
+  var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
+  function L() { return STR[state.lang]; }
 
   // takomo mark (waveform) — inline so the surface stays dependency-free.
   var LOGO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11a6 6 0 0 1 12 0"/><circle cx="9.7" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.3" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><path d="M7 11.2c0 2.8-1.4 3.8-1.4 5.8"/><path d="M10 11.6c0 2.9-.5 4.3 0 6.2"/><path d="M14 11.6c0 2.9.5 4.3 0 6.2"/><path d="M17 11.2c0 2.8 1.4 3.8 1.4 5.8"/></svg>';
@@ -283,6 +299,7 @@
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
     project: localStorage.getItem(LS_PROJECT) || "",
+    lang: initialLang === "de" ? "de" : "en",
     workflow: null,
     tickets: {},        // id -> ticket
     cursor: 0,          // last event global_seq seen
@@ -603,7 +620,7 @@
     var top = el("div", "ctop");
     top.appendChild(el("span", "cid", t.id + (t.type ? " · " + t.type : "")));
     if (qi && qi.count) {
-      var flagTxt = qi.blocking ? "blocking" : (qi.advisory ? "advisory" : (qi.count + (qi.count > 1 ? " questions" : " question")));
+      var flagTxt = qi.blocking ? L().blocking : (qi.advisory ? L().advisory : (qi.count > 1 ? L().questionsN.replace("{n}", qi.count) : L().question1));
       top.appendChild(el("span", "qflag" + (qi.blocking ? " blocking" : ""), flagTxt));
     } else if (t.archived_at) {
       top.appendChild(el("span", "arch-tag", "archived"));
@@ -615,8 +632,8 @@
     if (!isDone) {
       var bot = el("div", "cbot");
       var holder = t.claim && t.claim.holder;
-      bot.appendChild(el("span", "holder", holder ? holder : "unclaimed"));
-      bot.appendChild(el("span", "uw uw-" + prio, cap(prio)));
+      bot.appendChild(el("span", "holder", holder ? holder : L().unclaimed));
+      bot.appendChild(gaugeEl(prio));
       c.appendChild(bot);
     }
     // Latest promotion badge (e.g. "● production · 2h").
@@ -709,16 +726,16 @@
       var items = res.items || [];
       body.innerHTML = "";
       if (state.me && !state.me.canAnswer) {
-        body.appendChild(el("div", "q-readonly", "This token cannot answer (no 'human' scope). Showing the queue read-only."));
+        body.appendChild(el("div", "q-readonly", L().cantAnswer));
       }
       if (items.length === 0) {
-        body.appendChild(el("div", "q-empty", "All clear — no open questions."));
+        body.appendChild(el("div", "q-empty", L().allClear));
         return;
       }
       items.forEach(function (q) { body.appendChild(qItemEl(q)); });
     }).catch(function (e) {
       body.innerHTML = "";
-      body.appendChild(el("div", "q-empty", "Could not load questions: " + (e && e.message ? e.message : "error")));
+      body.appendChild(el("div", "q-empty", L().couldNotLoadQ + (e && e.message ? e.message : "error")));
     });
   }
 
@@ -734,7 +751,7 @@
     // one monospace identity line: agent · kind · ticket
     item.appendChild(el("div", "q-meta", [q.asked_by || "—", q.kind, q.ticket].join(" · ")));
     if (q.awaiting === "agent") {
-      var aw = el("div", "q-rec", "⤺ awaiting " + (q.asked_by || "agent") + " — a human asked for more info. Full thread in the inbox.");
+      var aw = el("div", "q-rec", "⤺ " + L().awaiting + (q.asked_by || "agent") + L().awaitingSub);
       item.appendChild(aw);
     }
     if (q.body) item.appendChild(el("div", "q-body", q.body));
@@ -808,9 +825,9 @@
     if (qi && qi.count) {
       var sco = el("section");
       var callout = el("div", "callout");
-      callout.appendChild(el("div", "ct", "Blocked — " + qi.count + " open question" + (qi.count > 1 ? "s" : "")));
-      callout.appendChild(el("div", "cs", qi.blocking ? "Answering resumes this ticket." : "A decision is routed for this ticket."));
-      var a = el("a", "answer-btn", "Answer in Inbox →"); a.href = "/inbox";
+      callout.appendChild(el("div", "ct", L().blockedN.replace("{n}", qi.count)));
+      callout.appendChild(el("div", "cs", qi.blocking ? L().answeringResumes : L().decisionRouted));
+      var a = el("a", "answer-btn", L().answerInInbox); a.href = "/inbox";
       callout.appendChild(a);
       sco.appendChild(callout);
       b.appendChild(sco);
@@ -828,7 +845,7 @@
     b.appendChild(s1);
 
     (t.labels || []).length && (function () {
-      var s = el("section"); s.appendChild(el("h3", null, "Labels"));
+      var s = el("section"); s.appendChild(el("h3", null, L().labels));
       var kv2 = el("div", "kv");
       t.labels.forEach(function (l) { kv2.appendChild(el("span", null, l)); });
       s.appendChild(kv2); b.appendChild(s);
@@ -836,7 +853,7 @@
 
     // body
     var sb = el("section");
-    sb.appendChild(el("h3", null, "Description"));
+    sb.appendChild(el("h3", null, L().description));
     sb.appendChild(el("div", "body-text", t.body ? t.body : "(no description)"));
     b.appendChild(sb);
 
@@ -846,7 +863,7 @@
     var blocks = deps.blocks || [];
     if (blockedBy.length || blocks.length) {
       var sd = el("section");
-      sd.appendChild(el("h3", null, "Dependencies"));
+      sd.appendChild(el("h3", null, L().dependencies));
       if (blockedBy.length) {
         blockedBy.forEach(function (d) {
           var row = el("div", "dep-item");
@@ -873,7 +890,7 @@
     var links = t.links;
     if (links && typeof links === "object" && Object.keys(links).length) {
       var sl = el("section");
-      sl.appendChild(el("h3", null, "Links"));
+      sl.appendChild(el("h3", null, L().links));
       Object.keys(links).forEach(function (k) {
         var v = links[k];
         var row = el("div", "link-item");
@@ -892,7 +909,7 @@
     var promos = t.promotions || [];
     if (promos.length) {
       var sp = el("section");
-      sp.appendChild(el("h3", null, "Promotions"));
+      sp.appendChild(el("h3", null, L().promotions));
       var plist = el("div", "promo-list");
       promos.forEach(function (p) {
         var row = el("div", "promo-row");
@@ -920,9 +937,9 @@
     // comments
     var comments = t.comments || [];
     var sc = el("section");
-    sc.appendChild(el("h3", null, "Comments (" + comments.length + ")"));
+    sc.appendChild(el("h3", null, L().comments + " (" + comments.length + ")"));
     if (comments.length === 0) {
-      sc.appendChild(el("div", "status", "No comments."));
+      sc.appendChild(el("div", "status", L().noComments));
     } else {
       comments.forEach(function (c) {
         var cc = el("div", "comment");
@@ -1207,9 +1224,39 @@
     wrap.appendChild(lock);
   }
 
+  // ---- i18n chrome + language toggle ----
+  function applyChrome() {
+    $("brand").innerHTML = LOGO + '<span>takomo</span>';
+    $("gate-brand").innerHTML = LOGO;
+    $("nav-board").textContent = L().board; $("nav-inbox").textContent = L().inbox;
+    $("gate-sub").textContent = L().gateSub; $("gate-tokenlabel").textContent = L().gateTokenLabel;
+    $("gate-projectlabel").textContent = L().gateProjectLabel; $("g-go").textContent = L().gateOpen;
+    $("arch-label").textContent = L().archived; $("askhuman-label").textContent = L().askHuman;
+    $("refresh-label").textContent = L().refresh; $("signout-label").textContent = L().signout;
+    var fi = document.querySelector("#inbox .full"); if (fi) fi.textContent = L().fullInbox;
+    $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
+    document.documentElement.lang = state.lang;
+  }
+  function setLang(l) {
+    state.lang = l; localStorage.setItem(LS_LANG, l); applyChrome();
+    if (state.workflow) render();
+    if (state.inboxOpen) renderInbox();
+    if (state.openTicketId) openDetail(state.openTicketId);
+  }
+  $("lang-de").addEventListener("click", function () { setLang("de"); });
+  $("lang-en").addEventListener("click", function () { setLang("en"); });
+
+  // 4-bar priority gauge (matches the design's rank glyph).
+  function gaugeEl(prio) {
+    var lvl = { critical: 4, high: 3, normal: 2, low: 1 }[prio] || 1;
+    var color = prio === "critical" ? "var(--accent)" : prio === "high" ? "var(--high)" : prio === "normal" ? "var(--normal)" : "var(--low)";
+    var w = el("span", "bars");
+    for (var i = 1; i <= 4; i++) { var b = el("span", "bar"); b.style.background = i <= lvl ? color : "var(--gaugeoff)"; w.appendChild(b); }
+    return w;
+  }
+
   // ---- start ----
-  $("brand").innerHTML = LOGO + '<span>takomo</span>';
-  $("gate-brand").innerHTML = LOGO;
+  applyChrome();
   var answerToken = parseHashKey("a");
   var shareToken = parseHashKey("s");
   if (answerToken) {
