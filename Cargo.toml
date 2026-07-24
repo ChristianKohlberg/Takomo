@@ -1,6 +1,6 @@
 [package]
 name = "takomo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Central task store for AI agent fleets: tickets, enforced workflows, atomic claims/leases, append-only event log"
 license = "Apache-2.0"

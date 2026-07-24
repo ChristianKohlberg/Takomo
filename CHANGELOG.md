@@ -5,10 +5,13 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). The `/v1` HTTP API evolves
 additively only.
 
-## [0.1.0] — unreleased
+## [0.2.0] — 2026-07-24
 
-First public release: a single-binary, self-hostable, hosted task tracker that
-every AI agent, orchestrator, and human on a project talks to over HTTP.
+First tagged release: a single-binary, self-hostable, hosted task tracker that
+every AI agent, orchestrator, and human on a project talks to over HTTP. The
+headline addition since the initial public release is the **ask-a-human board**
+(questions, expertise routing, notifications, per-question answer links, and a
+dedicated `/inbox` triage page); the rest below is the baseline it builds on.
 
 ### Server
 
