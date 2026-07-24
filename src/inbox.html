@@ -6,18 +6,23 @@
 <title>takomo · inbox</title>
 <style>
   /* ---- theme tokens (shared with the board; light default, dark via prefers) ---- */
+  /* Aquarelle palette: calm blues on soft paper. --accent = deep blue (primary
+     actions / critical emphasis); --high/--normal/--low = the urgency scale;
+     --crit reserved for errors/reject (warm). */
   :root {
-    --bg: #f4f5f7; --panel: #ffffff; --col-bg: #ebecf0; --text: #172b4d;
-    --muted: #6b778c; --border: #dfe1e6; --accent: #0052cc; --shadow: 0 1px 2px rgba(9,30,66,.15);
-    --crit: #de350b; --high: #ff8b00; --normal: #0065ff; --low: #6b778c;
-    --chip-bg: #dfe1e6; --chip-text: #42526e; --sel: #e6f0ff; --hover: #f0f3f9;
+    --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
+    --muted: #6e7c88; --border: #e6ecf0; --accent: #1f4e78; --accent2: #2f6ba0;
+    --shadow: 0 18px 50px -26px rgba(20,40,55,.28);
+    --crit: #b4543f; --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95;
+    --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --hover: #f2f6fa;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d1117; --panel: #161b22; --col-bg: #161b22; --text: #e6edf3;
-      --muted: #8b949e; --border: #30363d; --accent: #4c8dff; --shadow: 0 1px 2px rgba(0,0,0,.5);
-      --crit: #ff6b5a; --high: #ffab4a; --normal: #6ea8ff; --low: #8b949e;
-      --chip-bg: #21262d; --chip-text: #adbac7; --sel: #14263f; --hover: #1c2330;
+      --bg: #0e141b; --panel: #141d27; --col-bg: #101821; --text: #e6eef5;
+      --muted: #8ba0b0; --border: #26313d; --accent: #4c8dff; --accent2: #6ea8ff;
+      --shadow: 0 18px 50px -26px rgba(0,0,0,.6);
+      --crit: #e0836f; --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1;
+      --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --hover: #17212c;
     }
   }
   * { box-sizing: border-box; }
@@ -60,7 +65,7 @@
   .qrow { padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 3px solid transparent; }
   .qrow:hover { background: var(--hover); }
   .qrow.active { background: var(--sel); border-left-color: var(--accent); }
-  .qrow.u-critical { border-left-color: var(--crit); }
+  .qrow.u-critical { border-left-color: var(--accent); }
   .qrow.u-high { border-left-color: var(--high); }
   .qrow .r1 { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
   .qrow .who { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -75,7 +80,7 @@
   .readpane .body { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--col-bg); border-radius: 6px; padding: 12px; margin-bottom: 14px; }
   .readpane h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 16px 0 6px; }
   .chip { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: var(--chip-bg); color: var(--chip-text); overflow-wrap: anywhere; }
-  .chip.prio.critical, .chip.u-critical { color: var(--crit); }
+  .chip.prio.critical, .chip.u-critical { color: var(--accent); }
   .chip.prio.high { color: var(--high); }
   .chip.mode { border: 1px dashed var(--muted); background: transparent; }
   .answerbox { border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-top: 8px; }
