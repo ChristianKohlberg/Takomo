@@ -1055,7 +1055,7 @@ impl Store {
             return Err(ApiError::validation(
                 "validation.target",
                 format!(
-                    "A promotion needs a non-empty target of at most {MAX_PROMOTION_TARGET} chars — the stage the work reached, e.g. \"staging\", \"production\", \"published\"."
+                    "A promotion needs a non-empty target of at most {MAX_PROMOTION_TARGET} bytes — the stage the work reached, e.g. \"staging\", \"production\", \"published\"."
                 ),
             ));
         }
@@ -1064,7 +1064,7 @@ impl Store {
                 if v.len() > MAX_PROMOTION_FIELD {
                     return Err(ApiError::validation(
                         "validation.promotion",
-                        format!("Promotion '{field}' must be at most {MAX_PROMOTION_FIELD} chars."),
+                        format!("Promotion '{field}' must be at most {MAX_PROMOTION_FIELD} bytes."),
                     ));
                 }
             }

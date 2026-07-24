@@ -788,22 +788,20 @@ impl TakomoMcp {
             // Attach each question's follow-up thread so an agent sees when a
             // human bounced one back for more research (awaiting == "agent") and
             // can reply with takomo_reply.
-            let enriched: Vec<Value> = open
-                .iter()
-                .map(|q| {
-                    let mut qj = q.to_json();
-                    let thread = self.state.store.question_thread(&q.id).unwrap_or_default();
-                    if !thread.is_empty() {
-                        if let Value::Object(m) = &mut qj {
-                            m.insert(
-                                "thread".to_string(),
-                                json!(thread.iter().map(|t| t.to_json()).collect::<Vec<_>>()),
-                            );
-                        }
+            let mut enriched: Vec<Value> = Vec::with_capacity(open.len());
+            for q in &open {
+                let mut qj = q.to_json();
+                let thread = self.state.store.question_thread(&q.id)?;
+                if !thread.is_empty() {
+                    if let Value::Object(m) = &mut qj {
+                        m.insert(
+                            "thread".to_string(),
+                            json!(thread.iter().map(|t| t.to_json()).collect::<Vec<_>>()),
+                        );
                     }
-                    qj
-                })
-                .collect();
+                }
+                enriched.push(qj);
+            }
             out["open_questions"] = json!(enriched);
         }
         let promos = self.state.store.promotions_for(id)?;
