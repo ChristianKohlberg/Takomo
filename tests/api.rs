@@ -3355,6 +3355,103 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
 }
 
 #[tokio::test]
+async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
+    let app = TestApp::spawn().await;
+    let id = app
+        .create_ticket("Prod schema migration for billing_rollup")
+        .await;
+    let fence = app.to_implementing(&id).await;
+
+    // Agent asks a blocking approve question; the ticket parks.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "confirm",
+                "title": "Run the additive migration on prod now?",
+                "expertise": ["domain:billing"],
+                "urgency": "high",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        body["question"]["awaiting"], "human",
+        "fresh question awaits a human"
+    );
+    assert_eq!(body["ticket"]["state"], "needs-decision");
+
+    // Human bounces it back for more research instead of answering.
+    let (s, fu) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/followup"),
+            json!({ "message": "What's the row count and lock time on prod?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "followup failed: {fu}");
+    assert_eq!(
+        fu["status"], "open",
+        "question stays open during a follow-up"
+    );
+    assert_eq!(fu["awaiting"], "agent", "now the agent owes a reply");
+
+    // The ticket stays parked — the human still owns the eventual answer.
+    let (_, tk) = app.get(&app.worker, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        tk["state"], "needs-decision",
+        "ticket stays parked mid-thread"
+    );
+
+    // Thread now carries the human's request.
+    let (_, detail) = app.get(&app.worker, &format!("/v1/questions/{qid}")).await;
+    let thread = detail["thread"].as_array().unwrap();
+    assert_eq!(thread.len(), 1);
+    assert_eq!(thread[0]["role"], "human");
+
+    // The asking agent replies with the research; the thread returns to the human.
+    let (s, rep) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/reply"),
+            json!({ "message": "40k rows, ~2s lock, fully reversible." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "reply failed: {rep}");
+    assert_eq!(rep["awaiting"], "human", "back to the human to decide");
+
+    let (_, detail2) = app.get(&app.human, &format!("/v1/questions/{qid}")).await;
+    assert_eq!(detail2["thread"].as_array().unwrap().len(), 2);
+
+    // Now the human answers; the ticket resumes.
+    let (s, answered) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "answer failed: {answered}");
+    assert_eq!(answered["question"]["status"], "answered");
+    assert_eq!(answered["ticket"]["state"], "ready");
+
+    // A follow-up on a closed question is refused.
+    let (s, closed) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/followup"),
+            json!({ "message": "too late?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{closed}");
+    assert_eq!(closed["code"], "question.not_open");
+}
+
+#[tokio::test]
 async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Which migration strategy?").await;

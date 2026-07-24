@@ -27,6 +27,11 @@ pub fn question_id() -> String {
     format!("q-{}", random_chars(BASE36, 8))
 }
 
+/// Question-thread message id, e.g. "qm-9f3ka2xz".
+pub fn question_message_id() -> String {
+    format!("qm-{}", random_chars(BASE36, 8))
+}
+
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".
 pub fn token_id() -> String {
     format!("tok_{}", random_chars(BASE36, 8))

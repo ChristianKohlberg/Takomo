@@ -131,6 +131,10 @@ pub struct Question {
     /// What the expiry sweep does when `expires_at` passes with no answer:
     /// recommended | cancel | escalate. None = leave open (just flag).
     pub on_timeout: Option<String>,
+    /// Whose turn it is on the follow-up thread while open: `human` (ready to be
+    /// answered) or `agent` (a human asked for more research; the asker owes a
+    /// reply). Meaningful only while `status == "open"`.
+    pub awaiting: String,
     pub created_at: i64,
     pub updated_at: i64,
     pub version: i64,
@@ -158,9 +162,35 @@ impl Question {
             "resolved_to": self.resolved_to,
             "expires_at": self.expires_at.map(iso),
             "on_timeout": self.on_timeout,
+            "awaiting": self.awaiting,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
             "version": self.version,
+        })
+    }
+}
+
+/// One message on a question's follow-up thread (see `store/questions.rs`).
+#[derive(Debug, Clone)]
+pub struct QuestionMessage {
+    pub id: String,
+    pub question: String,
+    pub author: String,
+    /// `human` (asked for more before answering) or `agent` (the asker's reply).
+    pub role: String,
+    pub body: String,
+    pub created_at: i64,
+}
+
+impl QuestionMessage {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "question": self.question,
+            "author": self.author,
+            "role": self.role,
+            "body": self.body,
+            "created_at": iso(self.created_at),
         })
     }
 }

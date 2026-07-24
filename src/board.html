@@ -690,6 +690,10 @@
     item.appendChild(el("div", "q-title", q.title || "(untitled question)"));
     // one monospace identity line: agent · kind · ticket
     item.appendChild(el("div", "q-meta", [q.asked_by || "—", q.kind, q.ticket].join(" · ")));
+    if (q.awaiting === "agent") {
+      var aw = el("div", "q-rec", "⤺ awaiting " + (q.asked_by || "agent") + " — a human asked for more info. Full thread in the inbox.");
+      item.appendChild(aw);
+    }
     if (q.body) item.appendChild(el("div", "q-body", q.body));
     if (q.recommended != null && q.recommended !== "") {
       item.appendChild(el("div", "q-rec", (q.asked_by || "agent") + " recommends: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));

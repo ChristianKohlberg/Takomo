@@ -296,6 +296,15 @@ pub struct WithdrawArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReplyArgs {
+    /// Question id a human bounced back to you (awaiting == "agent").
+    pub id: String,
+    /// The research/context the human asked for. Flips the thread back to the
+    /// human so they can answer.
+    pub message: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AnswerLinkArgs {
     /// Question id to mint an answer link for.
     pub id: String,
@@ -601,6 +610,19 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Reply to a question a human bounced back for more research (its `awaiting` is \
+        \"agent\", visible on takomo_show / takomo_questions). Post the context they asked for; this \
+        flips the thread back to the human so they can answer. The ticket stays parked meanwhile."
+    )]
+    async fn takomo_reply(
+        &self,
+        Parameters(a): Parameters<ReplyArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_reply(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
         description = "Mint a per-question answer link for an outside expert who shouldn't hold a \
         token. Requires the human scope (and, for an approve question, the matching expert:<tag>). \
         Returns a single-use, expiring tka_ token + a /board#a=<token> path — share it with the person."
@@ -733,7 +755,26 @@ impl TakomoMcp {
         // answered, reads the decisions on the ticket's comments.
         let open = self.state.store.open_questions_for_ticket(id)?;
         if !open.is_empty() {
-            out["open_questions"] = json!(open.iter().map(|q| q.to_json()).collect::<Vec<_>>());
+            // Attach each question's follow-up thread so an agent sees when a
+            // human bounced one back for more research (awaiting == "agent") and
+            // can reply with takomo_reply.
+            let enriched: Vec<Value> = open
+                .iter()
+                .map(|q| {
+                    let mut qj = q.to_json();
+                    let thread = self.state.store.question_thread(&q.id).unwrap_or_default();
+                    if !thread.is_empty() {
+                        if let Value::Object(m) = &mut qj {
+                            m.insert(
+                                "thread".to_string(),
+                                json!(thread.iter().map(|t| t.to_json()).collect::<Vec<_>>()),
+                            );
+                        }
+                    }
+                    qj
+                })
+                .collect();
+            out["open_questions"] = json!(enriched);
         }
         let hint = self.language_hint(&ticket.project);
         if !hint.is_null() {
@@ -879,6 +920,26 @@ impl TakomoMcp {
                 .withdraw_question(&a.id, &auth.actor, a.reason.as_deref())?;
         self.state.wake();
         Ok(json!({ "ok": true, "question": question.to_json() }))
+    }
+
+    fn do_reply(&self, auth: &AuthCtx, a: ReplyArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        let question = self
+            .state
+            .store
+            .reply_followup(&a.id, &auth.actor, &a.message)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+            "note": "Replied — the thread is back with the human to answer. The ticket stays parked; re-check later.",
+        }))
     }
 
     fn do_answer_link(&self, auth: &AuthCtx, a: AnswerLinkArgs) -> ApiResult<Value> {

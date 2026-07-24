@@ -199,7 +199,16 @@ pub async fn get_one(
         .get_question(&id)?
         .ok_or_else(|| ApiError::not_found("question", &id))?;
     ctx.require_project(&q.project)?;
-    Ok(Json(q.to_json()))
+    // Question detail always carries its follow-up thread (usually empty).
+    let thread = state.store.question_thread(&id)?;
+    let mut out = q.to_json();
+    if let Value::Object(map) = &mut out {
+        map.insert(
+            "thread".to_string(),
+            Value::Array(thread.iter().map(|m| m.to_json()).collect()),
+        );
+    }
+    Ok(Json(out))
 }
 
 pub async fn answer(
@@ -263,6 +272,53 @@ pub async fn withdraw(
         .and_then(|o| o.get("reason"))
         .and_then(|v| v.as_str());
     let question = state.store.withdraw_question(&id, &ctx.actor, reason)?;
+    state.wake();
+    Ok(Json(question.to_json()))
+}
+
+/// POST /v1/questions/{id}/followup (human scope) — bounce the question back to
+/// the asking agent for more research before deciding. Records a message on the
+/// thread and flips it to await the agent; the question stays open and a
+/// blocking ticket stays parked.
+pub async fn followup(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("human")?;
+    let q = state
+        .store
+        .get_question(&id)?
+        .ok_or_else(|| ApiError::not_found("question", &id))?;
+    ctx.require_project(&q.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["message"])?;
+    let message = require_str(obj, "message")?;
+    let question = state.store.request_followup(&id, &ctx.actor, &message)?;
+    state.wake();
+    Ok(Json(question.to_json()))
+}
+
+/// POST /v1/questions/{id}/reply (write scope) — the asking agent replies to a
+/// follow-up with the context the human asked for. Flips the thread back to
+/// await the human so the inbox shows it is ready to answer again.
+pub async fn reply(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let q = state
+        .store
+        .get_question(&id)?
+        .ok_or_else(|| ApiError::not_found("question", &id))?;
+    ctx.require_project(&q.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["message"])?;
+    let message = require_str(obj, "message")?;
+    let question = state.store.reply_followup(&id, &ctx.actor, &message)?;
     state.wake();
     Ok(Json(question.to_json()))
 }
