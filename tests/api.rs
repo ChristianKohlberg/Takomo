@@ -308,6 +308,34 @@ async fn inbox_and_board_pages_served_unauthenticated() {
             body.contains("/questions") || path == "/board",
             "inbox talks to the questions API"
         );
+        // Both surfaces link the octopus favicon.
+        assert!(body.contains("rel=\"icon\""), "{path} links a favicon");
+    }
+}
+
+#[tokio::test]
+async fn favicon_served_unauthenticated_as_svg() {
+    let app = TestApp::spawn().await;
+    for path in ["/favicon.svg", "/favicon.ico"] {
+        let resp = app
+            .client
+            .get(format!("{}{}", app.base, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.contains("image/svg+xml"),
+            "{path} should be served as SVG, got '{ct}'"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("<svg"), "{path} body should be an SVG");
     }
 }
 

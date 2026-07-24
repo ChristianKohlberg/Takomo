@@ -1395,6 +1395,34 @@ paths:
                   status: { type: string, const: ok }
                   version: { type: string }
 
+  /favicon.svg:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Site icon — the takomo octopus mark as an SVG (static, no auth)
+      description: |
+        The mark ("tako" = octopus) served as `image/svg+xml`. `/board` and
+        `/inbox` link it explicitly; `/favicon.ico` serves the same bytes to
+        catch the bare request legacy browsers make on their own.
+      security: []
+      responses:
+        "200":
+          description: SVG image
+          content:
+            image/svg+xml: {}
+
+  /favicon.ico:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Site icon (alias of /favicon.svg; same SVG bytes)
+      security: []
+      responses:
+        "200":
+          description: SVG image
+          content:
+            image/svg+xml: {}
+
 components:
   securitySchemes:
     bearer:
