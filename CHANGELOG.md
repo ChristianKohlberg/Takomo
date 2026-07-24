@@ -5,6 +5,22 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). The `/v1` HTTP API evolves
 additively only.
 
+## [Unreleased]
+
+### Added
+
+- **Ask-a-human follow-up thread.** A human can now bounce a question back to the
+  asking agent for more research *before* answering, tracked as a clear
+  thread. `POST /v1/questions/{id}/followup` (human) records the request and sets
+  `awaiting: agent`; the agent replies with `POST /v1/questions/{id}/reply` /
+  `takomo_reply` (write), flipping `awaiting` back to `human`. The question stays
+  open and a blocking ticket stays parked throughout. `GET /v1/questions/{id}`
+  now returns the `thread` and `awaiting`; `takomo_show` surfaces the thread on
+  open questions so an agent's work-loop picks up the request. Surfaced in the
+  `/inbox` reading pane (Ask-for-more action + thread) and the board drawer.
+- `/board` and `/inbox` re-skinned to the "Aquarelle" design (structure +
+  palette), and the takomo octopus mark now ships as the site favicon.
+
 ## [0.2.0] — 2026-07-24
 
 First tagged release: a single-binary, self-hostable, hosted task tracker that

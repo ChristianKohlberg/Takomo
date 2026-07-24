@@ -86,6 +86,27 @@ default, `needs-decision → ready`). `POST /v1/questions/{id}/answer` / the
 
 An agent that no longer needs its answer withdraws it: `takomo withdraw <qid>`.
 
+## Ask for more research before answering (follow-up thread)
+
+A human doesn't have to answer immediately — they can **bounce the question back
+to the asking agent for more research first**, and the exchange is tracked as a
+clear follow-up thread on the question.
+
+- In `/inbox`, the reading pane has an **Ask for more info** action. Sending a
+  message records it on the thread and flips the question's `awaiting` from
+  `human` to `agent`. The question **stays open** and, for a blocking question,
+  the ticket **stays parked** — the human still owns the eventual answer.
+- The request is mirrored onto the ticket, so the agent sees it on its normal
+  work-loop (`takomo_show` surfaces the open question with its `thread`). The
+  agent replies with `takomo_reply <qid> "<what you found>"` (or
+  `POST /v1/questions/{id}/reply`), which flips `awaiting` back to `human`.
+- The inbox shows the thread inline and marks whose turn it is; the human then
+  answers (or asks again). Any number of round-trips is fine.
+
+API: `POST /v1/questions/{id}/followup {message}` (human scope) and
+`POST /v1/questions/{id}/reply {message}` (write scope). `GET /v1/questions/{id}`
+returns the question with its `thread` and current `awaiting`.
+
 ## Answer links — for outside experts (no standing token)
 
 A teammate answers by pasting a `human`-scoped token into the board. For an

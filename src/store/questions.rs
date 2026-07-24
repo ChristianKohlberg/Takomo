@@ -18,7 +18,7 @@ use super::helpers::{
     check_fence_for_write, clear_expired_claim, emit_event, get_ticket_required, get_workflow,
     touch_ticket,
 };
-use super::model::{Question, Ticket, MAX_BODY, MAX_TITLE};
+use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, question_id};
@@ -51,7 +51,10 @@ const MAX_EXPERTISE_LEN: usize = 100;
 
 const QUESTION_COLS: &str = "id, project, ticket, asked_by, mode, kind, title, body, options, \
     recommended, expertise, urgency, status, answer, answered_by, answered_at, resolved_to, \
-    expires_at, on_timeout, created_at, updated_at, version";
+    expires_at, on_timeout, awaiting, created_at, updated_at, version";
+
+/// Max length of a single follow-up message body.
+const MAX_MESSAGE_LEN: usize = 8_192;
 
 /// What the expiry sweep does when a question's `expires_at` passes unanswered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +153,7 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
         resolved_to: r.get("resolved_to")?,
         expires_at: r.get("expires_at")?,
         on_timeout: r.get("on_timeout")?,
+        awaiting: r.get("awaiting")?,
         created_at: r.get("created_at")?,
         updated_at: r.get("updated_at")?,
         version: r.get("version")?,
@@ -843,6 +847,119 @@ impl Store {
                 now,
             )?;
             get_question_row(tx, id)
+        })
+    }
+
+    /// A human bounces an open question back to the asking agent for more
+    /// research before deciding. Records a `human` message on the thread, flips
+    /// `awaiting` to `agent`, and mirrors the ask onto the ticket so the agent
+    /// sees it on `takomo_show`. No ticket state change — a blocking question's
+    /// ticket stays parked; the human still owns the eventual answer.
+    pub fn request_followup(&self, id: &str, actor: &str, message: &str) -> ApiResult<Question> {
+        self.append_thread_turn(id, actor, "human", message, "question_followup_requested")
+    }
+
+    /// The asking agent replies to a follow-up with the research/context the
+    /// human asked for. Records an `agent` message and flips `awaiting` back to
+    /// `human` so the inbox shows it is ready to answer again.
+    pub fn reply_followup(&self, id: &str, actor: &str, message: &str) -> ApiResult<Question> {
+        self.append_thread_turn(id, actor, "agent", message, "question_replied")
+    }
+
+    /// Shared implementation of both follow-up turns: validate, append a thread
+    /// message, flip `awaiting`, mirror an audit comment onto the ticket, and
+    /// emit the event. `role` is "human" (→ awaiting agent) or "agent"
+    /// (→ awaiting human).
+    fn append_thread_turn(
+        &self,
+        id: &str,
+        actor: &str,
+        role: &str,
+        message: &str,
+        event: &str,
+    ) -> ApiResult<Question> {
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::validation(
+                "validation.message",
+                "A follow-up message can't be empty — say what you need (or what you found).",
+            ));
+        }
+        if trimmed.len() > MAX_MESSAGE_LEN {
+            return Err(ApiError::validation(
+                "validation.message",
+                format!("A follow-up message must be at most {MAX_MESSAGE_LEN} bytes."),
+            ));
+        }
+        let awaiting = if role == "human" { "agent" } else { "human" };
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let q = get_question_row(tx, id)?;
+            if q.status != "open" {
+                return Err(ApiError::conflict(
+                    "question.not_open",
+                    format!(
+                        "Question '{id}' is '{}', not open — there is no live thread to add to.",
+                        q.status
+                    ),
+                ));
+            }
+            let msg_id = crate::ids::question_message_id();
+            tx.execute(
+                "INSERT INTO question_messages (id, question, author, role, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![msg_id, id, actor, role, trimmed, now],
+            )?;
+            tx.execute(
+                "UPDATE questions SET awaiting = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1",
+                params![id, awaiting, now],
+            )?;
+            // Mirror onto the ticket thread for audit + so the agent's normal
+            // work-loop (takomo_show) surfaces the exchange.
+            let comment = crate::ids::comment_id();
+            let comment_body = if role == "human" {
+                format!(
+                    "Human asked {} for more before answering \"{}\": {trimmed}",
+                    q.asked_by, q.title
+                )
+            } else {
+                format!("{actor} replied on \"{}\": {trimmed}", q.title)
+            };
+            tx.execute(
+                "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![comment, q.ticket, actor, comment_body, now],
+            )?;
+            emit_event(
+                tx,
+                Some(&q.ticket),
+                Some(&q.project),
+                actor,
+                event,
+                json!({ "question": id, "message": msg_id, "awaiting": awaiting, "comment": comment }),
+                now,
+            )?;
+            get_question_row(tx, id)
+        })
+    }
+
+    /// The full follow-up thread on a question, oldest first.
+    pub fn question_thread(&self, id: &str) -> ApiResult<Vec<QuestionMessage>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, question, author, role, body, created_at FROM question_messages WHERE question = ?1 ORDER BY created_at ASC, id ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![id], |r| {
+                    Ok(QuestionMessage {
+                        id: r.get(0)?,
+                        question: r.get(1)?,
+                        author: r.get(2)?,
+                        role: r.get(3)?,
+                        body: r.get(4)?,
+                        created_at: r.get(5)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
         })
     }
 

@@ -125,6 +125,15 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // questions.awaiting tracks whose turn it is on a question's follow-up thread
+    // ('human' by default; 'agent' after a human bounces it back for research).
+    // Older tables predate it; add it defaulting to 'human'.
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "awaiting") {
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN awaiting TEXT NOT NULL DEFAULT 'human'",
+            [],
+        )?;
+    }
     // projects.question_language: the human-facing language agents should phrase
     // ask-a-human questions in for this project (nullable = no preference).
     // Additive; older project tables predate it.
@@ -221,6 +230,7 @@ CREATE TABLE IF NOT EXISTS questions (
   resolved_to  TEXT,
   expires_at   INTEGER,
   on_timeout   TEXT,
+  awaiting     TEXT NOT NULL DEFAULT 'human',
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL,
   version      INTEGER NOT NULL DEFAULT 1
@@ -228,6 +238,19 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 CREATE INDEX IF NOT EXISTS idx_questions_project ON questions(project);
 CREATE INDEX IF NOT EXISTS idx_questions_ticket ON questions(ticket);
+
+-- The follow-up thread on a question: a human can bounce a question back to the
+-- asking agent for more research (role='human'), and the agent replies
+-- (role='agent'), before the human answers. Append-only.
+CREATE TABLE IF NOT EXISTS question_messages (
+  id          TEXT PRIMARY KEY,
+  question    TEXT NOT NULL REFERENCES questions(id),
+  author      TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_question_messages_question ON question_messages(question);
 
 CREATE TABLE IF NOT EXISTS comments (
   id         TEXT PRIMARY KEY,

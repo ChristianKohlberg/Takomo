@@ -124,6 +124,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::api::questions::withdraw),
         )
         .route(
+            "/v1/questions/{id}/followup",
+            post(crate::api::questions::followup),
+        )
+        .route(
+            "/v1/questions/{id}/reply",
+            post(crate::api::questions::reply),
+        )
+        .route(
             "/v1/questions/{id}/answer-link",
             post(crate::api::questions::create_link),
         )

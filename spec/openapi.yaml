@@ -1356,6 +1356,61 @@ paths:
               schema: { $ref: "#/components/schemas/Question" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /questions/{id}/followup:
+    post:
+      tags: [questions]
+      summary: Ask the agent for more research before answering
+      description: |
+        Requires the `human` scope. Bounces an open question back to the asking
+        agent with a message, records it on the follow-up thread, and flips
+        `awaiting` to `agent`. The question stays open and a blocking question's
+        ticket stays parked — you still own the eventual answer.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, description: What the agent should look into }
+      responses:
+        "200":
+          description: The question, now awaiting the agent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /questions/{id}/reply:
+    post:
+      tags: [questions]
+      summary: Agent replies to a follow-up with the requested research
+      description: |
+        Requires the `write` scope. The asking agent posts the context the human
+        asked for; records it on the thread and flips `awaiting` back to `human`
+        so the inbox shows the question ready to answer again.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, description: The research/context the human asked for }
+      responses:
+        "200":
+          description: The question, now awaiting the human.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /board:
     servers: [{ url: / }]
     get:
@@ -1735,6 +1790,11 @@ components:
         resolved_to: { type: string, nullable: true, description: State the ticket was resumed into }
         expires_at: { type: string, format: date-time, nullable: true }
         on_timeout: { type: string, nullable: true, enum: [recommended, escalate, cancel] }
+        awaiting: { type: string, enum: [human, agent], description: 'Whose turn on the follow-up thread while open: human (ready to answer) or agent (a human asked for more research)' }
+        thread:
+          type: array
+          description: 'Follow-up messages, oldest first (present on GET /questions/{id}). Each { id, question, author, role: human|agent, body, created_at }.'
+          items: { type: object }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         version: { type: integer }
@@ -1748,7 +1808,7 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated]
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 

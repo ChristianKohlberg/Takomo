@@ -656,6 +656,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  "takomo_reply",
+  {
+    title: "Reply to a follow-up",
+    description:
+      "Reply to a question a human bounced back for more research (its `awaiting` is \"agent\", visible " +
+      "on takomo_show / takomo_questions). Post the context they asked for; this flips the thread back " +
+      "to the human so they can answer. The ticket stays parked meanwhile.",
+    inputSchema: {
+      id: z.string().describe('Question id a human bounced back to you (awaiting == "agent").'),
+      message: z.string().describe("The research/context the human asked for."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/reply`,
+      body: { message: a.message },
+    });
+    return ok({ ok: true, question: res });
+  })
+);
+
+server.registerTool(
   "takomo_answer_link",
   {
     title: "Mint an answer link",
