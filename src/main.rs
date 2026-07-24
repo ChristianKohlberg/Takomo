@@ -82,6 +82,20 @@ enum ProjectCommand {
         /// Path to a workflow definition (YAML or JSON); omit for factory-default.
         #[arg(long)]
         workflow: Option<String>,
+        /// Human-facing language agents should phrase ask-a-human questions in
+        /// (e.g. "German"). Omit for no preference.
+        #[arg(long)]
+        language: Option<String>,
+    },
+    /// Set (or clear) a project's ask-a-human question language.
+    Language {
+        /// Project id.
+        id: String,
+        /// The language, e.g. "German". Omit with --clear to remove it.
+        language: Option<String>,
+        /// Clear the language instead of setting it.
+        #[arg(long)]
+        clear: bool,
     },
     /// List projects.
     List,
@@ -210,7 +224,12 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
 fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
     let store = open_store(db)?;
     match command {
-        ProjectCommand::Create { id, name, workflow } => {
+        ProjectCommand::Create {
+            id,
+            name,
+            workflow,
+            language,
+        } => {
             let wf: Option<Workflow> = match workflow {
                 None => None,
                 Some(path) => {
@@ -226,13 +245,42 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
                     Some(wf)
                 }
             };
-            let project = store
+            let mut project = store
                 .create_project(&id, &name, wf, "cli:admin")
                 .map_err(|e| e.into_message())?;
+            if let Some(lang) = language {
+                project = store
+                    .set_question_language(&id, Some(&lang), "cli:admin")
+                    .map_err(|e| e.into_message())?;
+            }
             println!(
-                "created project '{}' ({}) with workflow '{}'",
-                project.id, project.name, project.workflow.name
+                "created project '{}' ({}) with workflow '{}'{}",
+                project.id,
+                project.name,
+                project.workflow.name,
+                project
+                    .question_language
+                    .map(|l| format!("; question language: {l}"))
+                    .unwrap_or_default()
             );
+            Ok(())
+        }
+        ProjectCommand::Language {
+            id,
+            language,
+            clear,
+        } => {
+            let lang: Option<&str> = if clear { None } else { language.as_deref() };
+            if lang.is_none() && !clear {
+                return Err("provide a language, or --clear to remove it".to_string());
+            }
+            let project = store
+                .set_question_language(&id, lang, "cli:admin")
+                .map_err(|e| e.into_message())?;
+            match project.question_language {
+                Some(l) => println!("project '{}' question language set to: {l}", project.id),
+                None => println!("project '{}' question language cleared", project.id),
+            }
             Ok(())
         }
         ProjectCommand::List => {

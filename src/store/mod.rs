@@ -125,15 +125,29 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // projects.question_language: the human-facing language agents should phrase
+    // ask-a-human questions in for this project (nullable = no preference).
+    // Additive; older project tables predate it.
+    let project_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(projects)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "question_language") {
+        conn.execute("ALTER TABLE projects ADD COLUMN question_language TEXT", [])?;
+    }
     Ok(())
 }
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  workflow_json TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
+  id                TEXT PRIMARY KEY,
+  name              TEXT NOT NULL,
+  workflow_json     TEXT NOT NULL,
+  question_language TEXT,
+  created_at        INTEGER NOT NULL
 );
 
 -- Denormalized view of each project's workflow states so queue/blocking

@@ -214,6 +214,9 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub workflow: crate::workflow::Workflow,
+    /// Human-facing language agents should phrase ask-a-human questions in for
+    /// this project (e.g. "German"). None = no preference.
+    pub question_language: Option<String>,
     pub created_at: i64,
 }
 
@@ -223,6 +226,7 @@ impl Project {
             "id": self.id,
             "name": self.name,
             "workflow": self.workflow.name,
+            "question_language": self.question_language,
             "created_at": iso(self.created_at),
         })
     }

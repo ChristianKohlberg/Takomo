@@ -66,6 +66,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::projects::roadmap),
         )
         .route(
+            "/v1/projects/{project}/language",
+            put(crate::api::projects::put_language),
+        )
+        .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
         )

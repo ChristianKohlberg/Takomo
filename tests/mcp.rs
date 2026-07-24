@@ -434,3 +434,69 @@ async fn hosted_mcp_ask_and_answer_round_trip() {
     assert_eq!(answered["question"]["status"].as_str().unwrap(), "answered");
     assert_eq!(answered["ticket"]["state"].as_str().unwrap(), "ready");
 }
+
+#[tokio::test]
+async fn hosted_mcp_surfaces_project_language() {
+    let app = spawn().await;
+    app.ok_call(&app.human, "initialize", init_params()).await;
+
+    // Admin sets the project's expected human-facing question language.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/language", app.base))
+        .bearer_auth(&app.human)
+        .json(&json!({ "language": "German" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // takomo_workflow carries it.
+    let wf = app
+        .tool_ok(&app.human, "takomo_workflow", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(wf["question_language"], "German");
+
+    // Drive a ticket to implementing; the work-loop responses carry a hint.
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "sprach", "type": "task" }),
+        )
+        .await;
+    let id = created["ticket"]["id"].as_str().unwrap().to_string();
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "spec" }),
+    )
+    .await;
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "ready" }),
+    )
+    .await;
+    let started = app
+        .tool_ok(&app.worker, "takomo_start", json!({ "id": id }))
+        .await;
+    assert_eq!(started["language_hint"]["question_language"], "German");
+    let shown = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": id }))
+        .await;
+    assert_eq!(shown["language_hint"]["question_language"], "German");
+
+    // …and the ask response nudges toward it.
+    let asked = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({ "id": id, "kind": "confirm", "title": "Weiter?" }),
+        )
+        .await;
+    assert!(
+        asked["note"].as_str().unwrap().contains("German"),
+        "ask note: {asked}"
+    );
+}

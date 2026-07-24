@@ -552,7 +552,9 @@ impl TakomoMcp {
         description = "Ask a human for a decision when you are blocked (confirmation, a choice, \
         a clarification, or approval). Parks the ticket in a blocked state and releases your \
         lease: end your run and resume the ticket after a human answers. Route to a domain \
-        expert with `expertise` tags like [\"domain:billing\"]."
+        expert with `expertise` tags like [\"domain:billing\"]. Phrase the question (and any \
+        options) in the project's expected human-facing language when one is set — see the \
+        `language_hint` on takomo_show/next/start or takomo_workflow's `question_language`."
     )]
     async fn takomo_ask(
         &self,
@@ -733,6 +735,10 @@ impl TakomoMcp {
         if !open.is_empty() {
             out["open_questions"] = json!(open.iter().map(|q| q.to_json()).collect::<Vec<_>>());
         }
+        let hint = self.language_hint(&ticket.project);
+        if !hint.is_null() {
+            out["language_hint"] = hint;
+        }
         Ok(out)
     }
 
@@ -764,7 +770,7 @@ impl TakomoMcp {
         let (question, updated) = self.state.store.ask_question(&req, &auth.actor)?;
         self.state.wake();
         crate::notify::question_asked(&self.state, &question);
-        let note = if question.mode == "advisory" {
+        let mut note = if question.mode == "advisory" {
             format!(
                 "Advisory question recorded on '{}' — it does not change the ticket's state or your lease. It's routed to the inbox for a human; keep working or end your run as you see fit.",
                 updated.id
@@ -775,6 +781,15 @@ impl TakomoMcp {
                 updated.id, updated.state
             )
         };
+        // Soft language nudge: if the project expects a specific human-facing
+        // language, remind the agent (re-ask correctly if this one wasn't).
+        if let Ok(Some(p)) = self.state.store.get_project(&question.project) {
+            if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
+                note.push_str(&format!(
+                    " This project expects the question (and any options) written in {lang} — re-ask in {lang} if this one wasn't.",
+                ));
+            }
+        }
         Ok(json!({
             "ok": true,
             "question": question.to_json(),
@@ -932,10 +947,15 @@ impl TakomoMcp {
 
     fn do_claim(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        load_visible(&self.state, auth, id)?;
+        let ticket = load_visible(&self.state, auth, id)?;
         let (_ticket, lease) = self.state.store.claim_ticket(id, &auth.actor, None)?;
         self.state.wake();
-        Ok(json!({ "ok": true, "lease": lease.to_json() }))
+        let mut out = json!({ "ok": true, "lease": lease.to_json() });
+        let hint = self.language_hint(&ticket.project);
+        if !hint.is_null() {
+            out["language_hint"] = hint;
+        }
+        Ok(out)
     }
 
     async fn do_next(&self, auth: &AuthCtx, a: NextArgs) -> ApiResult<Value> {
@@ -956,9 +976,15 @@ impl TakomoMcp {
                 self.state.store.ready_claim(&filter, &auth.actor, None)?
             {
                 self.state.wake();
+                let project = ticket.project.clone();
                 let mut out = ticket.to_json(now_ms());
                 out["lease"] = lease.to_json();
-                return Ok(json!({ "ok": true, "claimed": true, "ticket": out }));
+                let mut res = json!({ "ok": true, "claimed": true, "ticket": out });
+                let hint = self.language_hint(&project);
+                if !hint.is_null() {
+                    res["language_hint"] = hint;
+                }
+                return Ok(res);
             }
             if now_ms() >= deadline {
                 return Ok(
@@ -1017,7 +1043,13 @@ impl TakomoMcp {
                 .store
                 .transition(&a.id, &target, None, fence, &auth.actor, &auth.scopes)?;
         self.state.wake();
-        Ok(json!({ "ok": true, "transitioned_to": target, "ticket": updated.to_json(now_ms()) }))
+        let mut out =
+            json!({ "ok": true, "transitioned_to": target, "ticket": updated.to_json(now_ms()) });
+        let hint = self.language_hint(&updated.project);
+        if !hint.is_null() {
+            out["language_hint"] = hint;
+        }
+        Ok(out)
     }
 
     fn do_transition(
@@ -1186,7 +1218,12 @@ impl TakomoMcp {
         auth.require_scope("read")?;
         auth.require_project(project)?;
         let wf = self.workflow_for(project)?;
-        Ok(json!({ "ok": true, "workflow": wf }))
+        let lang = self
+            .state
+            .store
+            .get_project(project)?
+            .and_then(|p| p.question_language);
+        Ok(json!({ "ok": true, "workflow": wf, "question_language": lang }))
     }
 
     fn do_roadmap(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
@@ -1194,6 +1231,22 @@ impl TakomoMcp {
         auth.require_project(project)?;
         let roadmap = self.state.store.roadmap(project)?;
         Ok(json!({ "ok": true, "roadmap": roadmap }))
+    }
+
+    /// A hint about the project's expected human-facing question language, for
+    /// attaching to work-loop responses so an agent phrases `takomo_ask`
+    /// questions correctly. Null when the project sets no language.
+    fn language_hint(&self, project: &str) -> Value {
+        match self.state.store.get_project(project) {
+            Ok(Some(p)) => match p.question_language {
+                Some(lang) if !lang.trim().is_empty() => json!({
+                    "question_language": lang,
+                    "note": format!("This project expects human-facing questions (takomo_ask) and their options written in {lang}. Internal ticket text may be in another language."),
+                }),
+                _ => Value::Null,
+            },
+            _ => Value::Null,
+        }
     }
 
     /// Load a project's workflow, or a teaching not-found error.
@@ -1220,7 +1273,10 @@ impl ServerHandler for TakomoMcp {
                  `takomo_done` (or `takomo_block`/`takomo_cancel`). When you need a human \
                  decision (confirmation, a choice, a clarification, approval), call \
                  `takomo_ask` — it parks the ticket and releases your lease; end your run and \
-                 resume once the answer appears on the ticket (`takomo_show`). Illegal \
+                 resume once the answer appears on the ticket (`takomo_show`). When a project \
+                 sets a human-facing language (surfaced as `language_hint` on \
+                 takomo_next/claim/start/show and `question_language` on takomo_workflow), \
+                 phrase ask-a-human questions in it. Illegal \
                  transitions return the workflow's allowed_transitions so you can self-correct; \
                  call `takomo_workflow` to see a project's full state machine."
                     .to_string(),

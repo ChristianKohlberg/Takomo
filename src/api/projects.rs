@@ -40,11 +40,53 @@ pub async fn create(
         None | Some(Value::Null) => None,
         Some(raw) => Some(parse_workflow(raw)?),
     };
-    let project = state
+    let mut project = state
         .store
         .create_project(&id, &name, workflow, &ctx.actor)?;
+    // Optional per-project human-facing question language, set at creation.
+    if let Some(lang) = super::get_str(obj, "question_language")? {
+        project = state
+            .store
+            .set_question_language(&id, Some(&lang), &ctx.actor)?;
+    }
     state.wake();
     Ok((StatusCode::CREATED, Json(project.to_json())))
+}
+
+/// PUT /v1/projects/{project}/language (admin) — set the human-facing language
+/// agents should phrase ask-a-human questions in for this project. Body:
+/// `{"language": "German"}`, or `{"language": null}` to clear it.
+pub async fn put_language(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    Json(body): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    // `language` present-and-null clears it; a string sets it; absent is an error.
+    let language = match obj.get("language") {
+        None => {
+            return Err(ApiError::bad_request(
+                "validation.field_required",
+                "Field 'language' is required (a string like \"German\", or null to clear).",
+            ))
+        }
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.field_type",
+                "Field 'language' must be a string or null.",
+            ))
+        }
+    };
+    let project = state
+        .store
+        .set_question_language(&project, language.as_deref(), &ctx.actor)?;
+    state.wake();
+    Ok(Json(project.to_json()))
 }
 
 /// DELETE /v1/projects/{project} (admin) — cascade-delete the project and every
