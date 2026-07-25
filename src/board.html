@@ -245,7 +245,6 @@
   <label class="archtoggle"><input type="checkbox" id="showarch"> <span id="arch-label">archived</span></label>
   <button class="iconbtn ghost" id="inbox-btn"><span id="askhuman-label">Ask a human</span><span class="badge zero" id="inbox-count">0</span></button>
   <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
-  <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
   <button class="ghost" id="refresh"><span id="refresh-label">Refresh</span></button>
   <button class="ghost" id="signout"><span id="signout-label">Sign out</span></button>
 </header>
@@ -953,9 +952,12 @@
 
   // ---- status pill + errors ----
   function setLive(kind, text) {
+    // The live indicator was removed from the navbar; keep this tolerant so the
+    // many call sites (incl. share mode) don't need touching.
     var dot = $("live-dot");
-    dot.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
-    $("live-text").textContent = text;
+    if (dot) dot.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
+    var txt = $("live-text");
+    if (txt) txt.textContent = text;
   }
   function handleErr(e) {
     if (e && e.auth) { showGate("Token was rejected (" + (e.status || "") + "). Enter a valid read token."); return; }

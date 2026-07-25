@@ -44,11 +44,13 @@
   @keyframes tkSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes tkPulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
   @keyframes tkFade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes tkAdvance { from { opacity: .35; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+  .readscroll.advance { animation: tkAdvance .22s ease; }
 
   /* ---- header ---- */
   header {
-    display: flex; align-items: center; gap: 14px; flex: 0 0 auto;
-    height: 58px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border-soft);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 0 0 auto;
+    min-height: 58px; padding: 9px 20px; background: var(--panel); border-bottom: 1px solid var(--border-soft);
   }
   .brand { display: flex; align-items: center; gap: 9px; color: var(--accent2); }
   .brand span { font-size: 16px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
@@ -56,7 +58,15 @@
   .nav a, .nav .navpill { font-size: 13px; font-weight: 650; color: var(--muted); text-decoration: none; padding: 6px 13px; border-radius: 8px; cursor: pointer; }
   .nav a:hover { color: var(--accent); background: var(--hover); }
   .nav .active { color: var(--accent); background: var(--chip-bg); font-weight: 680; }
-  header select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; max-width: 200px; }
+  .projpick { position: relative; display: inline-flex; align-items: center; }
+  .projpick select {
+    appearance: none; -webkit-appearance: none;
+    font: inherit; font-weight: 650; font-size: 13px; color: var(--ink2);
+    background: var(--col-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 30px 7px 12px; max-width: 220px; cursor: pointer; text-overflow: ellipsis;
+  }
+  .projpick select:hover { border-color: var(--sel-border); color: var(--accent); }
+  .projpick::after { content: "▾"; position: absolute; right: 11px; color: var(--muted); font-size: 11px; pointer-events: none; }
   .grow { flex: 1 1 auto; }
   .hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -247,6 +257,12 @@
     body:not(.reading) .readpane { display: none; }
     .popover, .drawer { width: 100%; }
   }
+  @media (max-width: 620px) {
+    header { gap: 8px; padding: 8px 12px; }
+    .hint { display: none; }
+    .nav a, .nav .navpill { padding: 6px 10px; }
+    .projpick select { max-width: 150px; }
+  }
 </style>
 </head>
 <body>
@@ -266,12 +282,10 @@
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
   <nav class="nav"><a href="/board" id="nav-board">Board</a><span class="navpill active" id="nav-inbox">Inbox</span></nav>
-  <select id="projsel" title="project"></select>
-  <label class="hint" id="mine-wrap" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="mine"> <span id="mine-label">mine</span></label>
+  <div class="projpick"><select id="projsel" title="project"></select></div>
   <span class="grow"></span>
   <span class="hint" id="kbd-hint"></span>
   <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
-  <span class="status"><span class="dot" id="live-dot"></span><span id="live-text">idle</span></span>
   <button class="iconbtn" id="refresh" title="Refresh">↻</button>
   <button class="iconbtn" id="signout" title="Sign out">⎋</button>
 </header>
@@ -293,6 +307,7 @@
   var POLL_MS = 5000;
   var LS_TOKEN = "takomo.inbox.token";
   var LS_LANG = "takomo.lang";
+  var LS_PROJECT = "takomo.inbox.project";
   var UNDO_SECONDS = 30;
   var FOLDERS = ["open", "answered", "withdrawn", "expired"];
 
@@ -309,7 +324,8 @@
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
     lang: initialLang === "de" ? "de" : "en",
-    project: "", mineOnly: false, folder: "open",
+    project: localStorage.getItem(LS_PROJECT) || "", mineOnly: false, folder: "open",
+    advanced: false,
     me: null, questions: [], selectedId: null,
     cursor: 0, pollTimer: null, polling: false,
     answering: false, pending: {}, projLang: {},
@@ -435,8 +451,7 @@
     localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null; showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
-  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; state.answering = false; fetchAll(); });
-  $("mine").addEventListener("change", function () { state.mineOnly = $("mine").checked; fetchAll(); });
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; localStorage.setItem(LS_PROJECT, state.project); state.answering = false; fetchAll(); });
   $("lang-de").addEventListener("click", function () { setLang("de"); });
   $("lang-en").addEventListener("click", function () { setLang("en"); });
   function setLang(l) { state.lang = l; localStorage.setItem(LS_LANG, l); applyChrome(); render(); applyGateStrings(); }
@@ -455,7 +470,10 @@
         var o = el("option"); o.value = p.id; o.textContent = p.id + (p.question_language ? " · " + p.question_language : ""); sel.appendChild(o);
         if (p.question_language) state.projLang[p.id] = p.question_language;
       });
+      // Restore the last-selected project; if it no longer exists, fall back to All.
       sel.value = state.project;
+      state.project = sel.value;
+      localStorage.setItem(LS_PROJECT, state.project);
     }).catch(function () {});
   }
   function loadMe() {
@@ -463,7 +481,6 @@
       var scopes = (w && w.scopes) || [];
       var expertise = scopes.filter(function (s) { return s.indexOf("expert:") === 0; }).map(function (s) { return s.slice("expert:".length); });
       state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1, actor: (w && w.actor) || "" };
-      $("mine-wrap").style.display = expertise.length ? "inline-flex" : "none";
     }).catch(function () { state.me = { scopes: [], expertise: [], canAnswer: false, actor: "" }; });
   }
   function getLang() { return (state.project && state.projLang[state.project]) || ""; }
@@ -644,7 +661,8 @@
     state.answering = false;
     var answered = q.status !== "open";
 
-    var scroll = el("div", "readscroll tk-scroll");
+    var scroll = el("div", "readscroll tk-scroll" + (state.advanced ? " advance" : ""));
+    state.advanced = false;
 
     // head
     var head = el("div", "rhead");
@@ -912,34 +930,61 @@
     else if (val == null) { toast(t().sendFirst, "error"); return; }
     queueAnswer(q, val);
   }
+  function qById(id) { for (var i = 0; i < state.questions.length; i++) { if (state.questions[i].id === id) return state.questions[i]; } return null; }
+
+  // Trailing undo: an answer takes effect optimistically at once — the item is
+  // marked done and drops out of Open, and we jump to the next open question with
+  // a micro-animation — while a 30s undo runs in the background. Only Undo brings
+  // the item back to its former status. Committing a new answer flushes the
+  // previous one immediately (you can undo just the most recent).
   function queueAnswer(q, value) {
     if (state.pending[q.id]) return;
+    flushPending();
     state.pending[q.id] = true; state.answering = false; state.composeOpen = false;
     var blocking = q.mode !== "advisory";
-    var decision = t().decision + ": " + displayVal(q, value);
-    var detail = blocking ? (q.ticket + t().resumedInto) : t().recorded;
-    state.snack = { qid: q.id, value: value, decision: decision, detail: detail, remaining: UNDO_SECONDS, blocking: blocking };
-    // optimistically move it out of the open list
+    // Optimistically complete it locally so it leaves the Open folder.
+    var qi = qById(q.id);
+    var prev = qi ? { status: qi.status, answer: qi.answer, awaiting: qi.awaiting, resolved_to: qi.resolved_to, answered_by: qi.answered_by } : null;
+    if (qi) { qi.status = "answered"; qi.answer = { value: value }; qi.answered_by = state.me && state.me.actor; }
+    // Auto-advance to the next open question (inFolder now excludes the answered one).
+    if (state.folder === "open") { var nx = inFolder()[0]; state.selectedId = nx ? nx.id : null; }
+    state.snack = { q: q, qid: q.id, value: value, prev: prev, decision: t().decision + ": " + displayVal(q, value), detail: blocking ? (q.ticket + t().resumedInto) : t().recorded, remaining: UNDO_SECONDS, blocking: blocking };
+    state.advanced = true; // micro-animation on the newly-shown item
     render();
-    startSnackTimer(q, value);
+    startSnackTimer();
   }
   function displayVal(q, value) {
     if (answerType(q) === "binary") return value === "yes" ? (q.kind === "approve" ? t().approve : t().confirm) : (q.kind === "approve" ? t().holdApprove : t().holdConfirm);
     return String(value);
   }
   var snackTimer = null;
-  function startSnackTimer(q, value) {
+  function startSnackTimer() {
     clearInterval(snackTimer);
     snackTimer = setInterval(function () {
       if (!state.snack) { clearInterval(snackTimer); return; }
       state.snack.remaining -= 1;
-      if (state.snack.remaining <= 0) { clearInterval(snackTimer); var s = state.snack; state.snack = null; delete state.pending[q.id]; emitAnswer(q, value); }
+      if (state.snack.remaining <= 0) { commitSnack(); return; }
       renderSnackbar();
     }, 1000);
   }
+  // Emit the pending answer for real (timer elapsed, or superseded by a new one).
+  function commitSnack() {
+    clearInterval(snackTimer);
+    var s = state.snack; if (!s) return;
+    state.snack = null; delete state.pending[s.qid];
+    renderSnackbar();
+    emitAnswer(s.q, s.value);
+  }
+  function flushPending() { if (state.snack) commitSnack(); }
   function undoSnack() {
     clearInterval(snackTimer);
-    if (state.snack) delete state.pending[state.snack.qid];
+    var s = state.snack;
+    if (s) {
+      delete state.pending[s.qid];
+      var qi = qById(s.qid);
+      if (qi && s.prev) { qi.status = s.prev.status; qi.answer = s.prev.answer; qi.awaiting = s.prev.awaiting; qi.resolved_to = s.prev.resolved_to; qi.answered_by = s.prev.answered_by; }
+      state.folder = "open"; state.selectedId = s.qid; state.advanced = true;
+    }
     state.snack = null;
     toast(t().cancelled);
     render();
@@ -1005,7 +1050,9 @@
   });
 
   // ---- status + errors ----
-  function setLive(kind, text) { $("live-dot").className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : ""); $("live-text").textContent = text; }
+  // The live indicator was removed from the navbar; setLive is now a no-op kept
+  // so the many call sites don't need touching (and any hidden element is safe).
+  function setLive(kind, text) { var d = $("live-dot"); if (d) d.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : ""); var x = $("live-text"); if (x) x.textContent = text; }
   function handleErr(e) {
     if (e && e.auth) { showGate((state.lang === "de" ? "Token abgelehnt (" : "Token rejected (") + (e.status || "") + ")."); return; }
     setLive("err", "error");
@@ -1017,7 +1064,6 @@
     $("brand").innerHTML = LOGO + '<span>takomo</span>';
     $("gate-brand").innerHTML = LOGO;
     $("nav-inbox").textContent = t().inbox; $("nav-board").textContent = t().board;
-    $("mine-label").textContent = t().mine;
     $("kbd-hint").textContent = t().kbd;
     $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
     document.documentElement.lang = state.lang;

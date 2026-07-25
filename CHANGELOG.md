@@ -7,6 +7,16 @@ additively only.
 
 ## [Unreleased]
 
+### Changed
+
+- **Inbox answering is now trailing.** Answering completes the item optimistically
+  and jumps straight to the next open question (with a small micro-animation); the
+  30-second undo runs in the background. Only **Undo** brings the item back to its
+  former status and re-selects it. Committing a new answer flushes the previous
+  one. The navbar drops the `live` indicator and (on the inbox) the unused `mine`
+  toggle; the project selector is restyled and now **remembers the last-selected
+  project**. The inbox navbar wraps instead of overflowing on narrow screens.
+
 ### Added
 
 - **Richer question fields (make the inbox fully data-driven).** Questions gain
