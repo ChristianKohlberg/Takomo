@@ -893,6 +893,18 @@ print(f"reopened {q.get('id','?')} — ticket {tk.get('id','?')} parked again in
 PY
 }
 
+cmd_reply() {
+  local id=${1:-} msg=${2:-}
+  { [ -n "$id" ] && [ -n "$msg" ]; } || die "reply: usage: takomo reply QID MESSAGE  (answer a human's follow-up request; needs the write scope)"
+  local data; data=$(TS_M="$msg" python3 -c 'import json,os; print(json.dumps({"message":os.environ["TS_M"]}))')
+  api POST "/v1/questions/$(urlenc "$id")/reply" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); q = d.get("question", {})
+print(f"replied to {q.get('id','?')} — now awaiting {q.get('awaiting','human')}")
+PY
+}
+
 cmd_answer_link() {
   # `answer-link revoke ID` | `answer-link QID [--ttl SECS] [--actor NAME]`
   if [ "${1:-}" = "revoke" ]; then
@@ -1917,15 +1929,26 @@ Claiming & progressing (the fence is remembered locally after a claim):
 
 Ask a human (block on a human decision, then resume):
   takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory]
-         [--body B] [--option O]... [--expertise TAG]... [--urgency U]
-         [--recommend R] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]
+         [--body B] [--option O]... [--option-desc D]... [--multi] [--rec-multi O]...
+         [--expertise TAG]... [--urgency U] [--recommend R] [--rec-note R]
+         [--confidence 1..4] [--summary S]
+         [--expires-in SECS] [--on-timeout recommended|escalate|cancel]
          park the ticket in a blocked state, release your lease, and post a
          question for a human; resume after every open question is answered.
          --advisory records a routed decision WITHOUT parking (e.g. an epic
-         or strategic question).
+         or strategic question). Write decision-ready questions: --option-desc
+         explains each choice, --rec-note the rationale, --confidence (1-4) the
+         strength, --summary a one-line preview; --multi lets the human pick
+         several options (--rec-multi pre-selects). The response returns `hints`
+         naming any field that would sharpen the inbox card (never fails).
   takomo questions [--project P] [--ticket T] [--status S] [--mine]
          the inbox: open questions (--mine routes by your expert:<tag> scopes)
   takomo answer QID ANSWER [--note N] [--resume-to STATE]   (needs human scope)
+  takomo reply QID MESSAGE   (write scope) answer a human's follow-up request
+         with the research they asked for; the question stays parked, awaiting
+         flips back to the human
+  takomo reopen QID          (human scope) take back an answered question while
+         its answer isn't yet in use (re-parks the ticket)
   takomo withdraw QID [REASON]
   takomo answer-link QID [--ttl SECS] [--actor NAME]
          mint a scoped, expiring, single-use link so an OUTSIDE expert can
@@ -2009,6 +2032,7 @@ main() {
     questions)   cmd_questions "$@" ;;
     withdraw)    cmd_withdraw "$@" ;;
     reopen)      cmd_reopen "$@" ;;
+    reply)       cmd_reply "$@" ;;
     share)   cmd_share "$@" ;;
     export)  cmd_export "$@" ;;
     import)  cmd_import "$@" ;;
