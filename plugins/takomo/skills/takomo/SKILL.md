@@ -64,11 +64,17 @@ takomo ask <id> --title "Which migration strategy?" --kind choose \
   --recommend dual-write --rec-note "keeps a fragile endpoint from thundering" --confidence 3
 ```
 
-**Write a decision-ready question** so the human can answer without digging: give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and a `--confidence` 1–4, and add a `--summary` for the inbox list preview. The ask response returns `hints` naming anything still missing — read them and improve the next one. (Over MCP/HTTP, options may be `[{"value","desc"}]` and the same fields exist: `option_notes`, `recommended_note`, `confidence`, `summary`.)
+**Write a decision-ready question** so the human can answer without digging: give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and a `--confidence` 1–4, and add a `--summary` for the inbox list preview. When several options can be picked together, add `--multi` (pre-select the sensible set with `--rec-multi <opt>`, repeatable) — the answer comes back as an array. The ask response returns `hints` naming anything still missing — read them and improve the next one. (Over MCP/HTTP, options may be `[{"value","desc"}]` and the same fields exist: `option_notes`, `recommended_note`, `confidence`, `summary`, `multi`, `recommended_multi`.)
 
 A **blocking** ask (the default) parks the ticket and releases your lease (block-and-resume): **end your run** — this is not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer, and the ticket resumes once *every* open question on it is answered. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if it has a deadline; `takomo withdraw <qid>` if you resolve it yourself. Blocking resume needs a workflow with a human gate (the built-in `factory-default` has one; the `simple` tracker does not).
 
 For a decision that **shouldn't freeze the ticket** — an epic-level or strategic call ("which direction for this epic?") — add `--advisory`: it records a routed decision with no state change, works on any ticket/state, and never blocks. Check the queue with `takomo questions` (add `--mine` to see only your `expert:<tag>` domains); answer with `takomo answer <qid> <answer>` (needs the `human` scope).
+
+**The human may ask for more research before deciding.** When that happens the question stays open and the ticket stays parked, but `takomo show <id>` shows a follow-up thread with `awaiting: agent`. Do the research and reply with `takomo reply <qid> "what you found"` (write scope) — this flips `awaiting` back to the human and leaves the question open for them to answer. Treat an `awaiting: agent` question as actionable work, not a wait.
+
+## Record where work landed
+
+When a ticket's work reaches a real stage — deployed to staging/production, published, delivered, shipped — record it with `takomo promote <id> <target> [--url <link>] [--ref <commit/version>] [--note "..."]`. `target` is free-form (not just software: "staging", "production", "published", "delivered"…), the history is append-only, and the latest promotion badges the board card so humans see at a glance what has gone live.
 
 ## Creating tickets
 
