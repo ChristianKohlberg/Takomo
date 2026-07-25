@@ -50,6 +50,8 @@ const MAX_OPTION_LEN: usize = 200;
 const MAX_OPTION_DESC: usize = 500;
 const MAX_REC_NOTE: usize = 1000;
 const MAX_SUMMARY: usize = 300;
+/// Cap on a human's free-text "write your own" answer to a single-select choose.
+const MAX_CUSTOM_ANSWER: usize = 2000;
 const MAX_EXPERTISE: usize = 10;
 const MAX_EXPERTISE_LEN: usize = 100;
 
@@ -215,6 +217,14 @@ fn validate_answer(
         other => other.clone(),
     };
     let note = answer.as_object().and_then(|m| m.get("note")).cloned();
+    // A human answering a single-select `choose` via the inbox's "write your own"
+    // option sends `custom: true` with free text instead of one of the offered
+    // options — the always-available escape hatch. Ignored for other kinds.
+    let custom = answer
+        .as_object()
+        .and_then(|m| m.get("custom"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     // A multi-select choose takes an array of options (a non-empty subset).
     if kind == "choose" && multi {
@@ -277,6 +287,29 @@ fn validate_answer(
                     "A 'choose' question needs the selected option as a string.",
                 )
             })?;
+            if custom {
+                // The human's own instruction — recorded verbatim, marked custom
+                // so the agent can tell it apart from a picked option.
+                let s = s.trim();
+                if s.is_empty() {
+                    return Err(ApiError::validation(
+                        "validation.answer",
+                        "The custom answer is empty; write your own instruction or pick an option.",
+                    ));
+                }
+                if s.chars().count() > MAX_CUSTOM_ANSWER {
+                    return Err(ApiError::validation(
+                        "validation.answer",
+                        format!(
+                            "The custom answer is too long (max {MAX_CUSTOM_ANSWER} characters)."
+                        ),
+                    ));
+                }
+                return match note {
+                    Some(n) if !n.is_null() => Ok(json!({ "value": s, "custom": true, "note": n })),
+                    _ => Ok(json!({ "value": s, "custom": true })),
+                };
+            }
             if !options.iter().any(|o| o == s) {
                 return Err(ApiError::validation(
                     "validation.answer",

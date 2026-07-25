@@ -4808,3 +4808,44 @@ async fn cross_project_dep_detail_is_hidden_from_a_scoped_token() {
     );
     assert!(dep.get("title").is_none(), "title must not leak: {dep}");
 }
+
+#[tokio::test]
+async fn human_can_answer_a_single_choose_with_a_custom_free_text_answer() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("custom answer").await;
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "choose", "mode": "advisory", "title": "Which path?",
+                    "options": ["big-bang", "canary"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let qid = b["question"]["id"].as_str().unwrap().to_string();
+    // A free-text answer that isn't one of the options is rejected WITHOUT the flag.
+    let (s, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "phased rollout instead" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a non-option must be rejected normally"
+    );
+    // With custom:true the human's own instruction is accepted and recorded verbatim.
+    let (s, ans) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": { "value": "phased rollout instead", "custom": true } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ans}");
+    let (_, q) = app.get(&app.admin, &format!("/v1/questions/{qid}")).await;
+    assert_eq!(q["answer"]["value"], "phased rollout instead");
+    assert_eq!(q["answer"]["custom"], true);
+}
