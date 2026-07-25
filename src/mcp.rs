@@ -630,6 +630,20 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Reopen an answered question — take back a decision (a conditional undo \
+        beyond the inbox's 30s window). Requires the human scope. Refused with a teaching 409 if \
+        the ticket already relies on the answer (claimed, moved on, or archived); re-park the \
+        ticket and re-ask instead in that case."
+    )]
+    async fn takomo_reopen(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_reopen(&require_auth(&ctx)?, &a.id))
+    }
+
+    #[tool(
         description = "List open questions on the ask-a-human board (the inbox). Filter by \
         project/ticket/status, or `mine` to see only questions routed to your expert:<tag> scopes."
     )]
@@ -910,6 +924,26 @@ impl TakomoMcp {
             &answer,
             a.resume_to.as_deref(),
         )?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+            "ticket": ticket.to_json(now_ms()),
+        }))
+    }
+
+    fn do_reopen(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
+        auth.require_scope("human")?;
+        let q = self
+            .state
+            .store
+            .get_question(id)?
+            .ok_or_else(|| ApiError::not_found("question", id))?;
+        auth.require_project(&q.project)?;
+        let (question, ticket) = self
+            .state
+            .store
+            .reopen_question(id, &auth.actor, &auth.scopes)?;
         self.state.wake();
         Ok(json!({
             "ok": true,

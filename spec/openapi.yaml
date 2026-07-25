@@ -1436,6 +1436,34 @@ paths:
               schema: { $ref: "#/components/schemas/Question" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /questions/{id}/reopen:
+    post:
+      tags: [questions]
+      summary: Reopen an answered question — a conditional undo beyond the 30s window
+      description: |
+        Requires the `human` scope (and, for an `approve` question, the matching
+        domain expert). Takes back the decision: the question returns to `open`
+        and, for a blocking question that resumed a ticket, the ticket is
+        re-parked in a blocked state. Refused with a teaching `409` when the
+        ticket already relies on the answer — it has been claimed
+        (`question.reopen_claimed`), moved past the state it resumed into
+        (`question.reopen_moved`), or archived (`question.reopen_archived`). In
+        that case re-ask instead of reopening. Advisory questions (no state
+        change) just reopen.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The reopened question and the (re-parked) ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+                  ticket: { $ref: "#/components/schemas/Ticket" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /questions/{id}/followup:
     post:
       tags: [questions]
@@ -1906,7 +1934,7 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, ticket_promoted]
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, question_reopened, ticket_promoted]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 

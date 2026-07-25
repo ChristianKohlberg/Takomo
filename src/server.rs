@@ -133,6 +133,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::api::questions::withdraw),
         )
         .route(
+            "/v1/questions/{id}/reopen",
+            post(crate::api::questions::reopen),
+        )
+        .route(
             "/v1/questions/{id}/followup",
             post(crate::api::questions::followup),
         )

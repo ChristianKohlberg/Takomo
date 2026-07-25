@@ -322,6 +322,28 @@ pub async fn answer(
     })))
 }
 
+/// POST /v1/questions/{id}/reopen (human scope) — take back an answered question
+/// (a conditional undo beyond the 30s client window). Refused with a teaching
+/// 409 if the ticket already relies on the answer (claimed / moved on / archived).
+pub async fn reopen(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("human")?;
+    let q = state
+        .store
+        .get_question(&id)?
+        .ok_or_else(|| ApiError::not_found("question", &id))?;
+    ctx.require_project(&q.project)?;
+    let (question, ticket) = state.store.reopen_question(&id, &ctx.actor, &ctx.scopes)?;
+    state.wake();
+    Ok(Json(json!({
+        "question": question.to_json(),
+        "ticket": ticket.to_json(now_ms()),
+    })))
+}
+
 pub async fn withdraw(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

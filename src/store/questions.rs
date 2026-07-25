@@ -916,6 +916,129 @@ impl Store {
         })
     }
 
+    /// Reopen an answered question — a longer-lived, conditional undo beyond the
+    /// 30s client window. Safe only while the ticket the answer resumed hasn't
+    /// been picked up: for a blocking question that actually resumed a ticket
+    /// (`resolved_to` set), the ticket must still be in that state, unclaimed,
+    /// and not archived — otherwise work already relies on the answer and it
+    /// can't be reversed. On success the ticket is re-parked and the question
+    /// returns to open. Advisory questions (no state change) just reopen.
+    pub fn reopen_question(
+        &self,
+        id: &str,
+        actor: &str,
+        scopes: &HashSet<String>,
+    ) -> ApiResult<(Question, Ticket)> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let q = get_question_row(tx, id)?;
+            if q.status != "answered" {
+                return Err(ApiError::conflict(
+                    "question.not_answered",
+                    format!(
+                        "Only an answered question can be reopened; '{id}' is '{}'.",
+                        q.status
+                    ),
+                ));
+            }
+            // Reopening an approval decision needs the same domain expert that
+            // could have answered it.
+            if q.kind == "approve"
+                && !q
+                    .expertise
+                    .iter()
+                    .any(|t| scopes.contains(&format!("expert:{t}")))
+            {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "question.approve_expertise",
+                    format!(
+                        "Reopening this approval needs a domain expert holding one of {} (an expert:<tag> scope).",
+                        q.expertise.iter().map(|t| format!("expert:{t}")).collect::<Vec<_>>().join(", ")
+                    ),
+                ));
+            }
+
+            let mut t = get_ticket_required(tx, &q.ticket)?;
+            let wf = get_workflow(tx, &t.project)?;
+            if clear_expired_claim(tx, &t, now)? {
+                t.claim_holder = None;
+                t.claim_expires_at = None;
+            }
+
+            let mut reblocked_to: Option<String> = None;
+            if q.mode != "advisory" {
+                if let Some(target) = q.resolved_to.clone() {
+                    // The answer resumed the ticket. Only reverse it while the
+                    // ticket is still free and unmoved — else work relies on it.
+                    if t.archived_at.is_some() {
+                        return Err(ApiError::conflict(
+                            "question.reopen_archived",
+                            format!("Ticket '{}' is archived — the answer is settled; re-ask instead of reopening.", t.id),
+                        ));
+                    }
+                    if let Some((holder, _)) = t.active_claim(now) {
+                        return Err(ApiError::conflict(
+                            "question.reopen_claimed",
+                            format!("Ticket '{}' is claimed by '{holder}' — a worker is relying on the answer, so it can't be reversed. Reopen only while the ticket is still free.", t.id),
+                        ));
+                    }
+                    if t.state != target {
+                        return Err(ApiError::conflict(
+                            "question.reopen_moved",
+                            format!("Ticket '{}' has moved to '{}' since the answer resumed it into '{target}', so the answer is already in use and can't be reversed. Re-ask if you need a new decision.", t.id, t.state),
+                        )
+                        .current_state(t.state.clone()));
+                    }
+                    // Reopen is an administrative reversal of the resume, so we
+                    // set the ticket back into a blocked state directly (the
+                    // resumed state, e.g. `ready`, usually has no self-service
+                    // edge back into `blocked`). Use the workflow's blocked state.
+                    let park = wf
+                        .states
+                        .iter()
+                        .find(|s| s.category == "blocked")
+                        .map(|s| s.id.clone())
+                        .ok_or_else(|| {
+                            ApiError::conflict(
+                                "question.reopen_no_park",
+                                format!("The '{}' workflow has no blocked state to re-park '{}' into; move it manually and re-ask instead.", wf.name, t.id),
+                            )
+                        })?;
+                    apply_resume(tx, &t, &park, actor, &format!("reopened question ({id})"), now)?;
+                    reblocked_to = Some(park);
+                }
+                // resolved_to == None: the ticket was left parked; nothing to reverse.
+            }
+
+            tx.execute(
+                "UPDATE questions SET status = 'open', answer = NULL, answered_by = NULL, answered_at = NULL, resolved_to = NULL, awaiting = 'human', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )?;
+            let comment = crate::ids::comment_id();
+            let comment_body = format!(
+                "{actor} reopened \"{}\" — parked again pending a new answer.",
+                q.title
+            );
+            tx.execute(
+                "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![comment, t.id, actor, comment_body, now],
+            )?;
+            emit_event(
+                tx,
+                Some(&t.id),
+                Some(&t.project),
+                actor,
+                "question_reopened",
+                json!({ "question": id, "reblocked_to": reblocked_to, "comment": comment }),
+                now,
+            )?;
+            let question = get_question_row(tx, id)?;
+            let fresh = get_ticket_required(tx, &t.id)?;
+            Ok((question, fresh))
+        })
+    }
+
     /// Withdraw an open question (the agent no longer needs the answer). The
     /// ticket stays parked; the agent resumes it via a normal transition.
     pub fn withdraw_question(
