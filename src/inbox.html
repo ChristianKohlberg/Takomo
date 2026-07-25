@@ -711,10 +711,17 @@
     return typeof v === "string" ? v : JSON.stringify(v);
   }
 
+  var lastReadQid = null; // preserve scroll position across in-place re-renders
   function renderReading() {
-    var pane = $("read"); pane.innerHTML = "";
+    var pane = $("read");
+    // Capture the current scroll offset before we rebuild, so toggling an answer
+    // option (which triggers a full re-render) doesn't yank the pane to the top.
+    var prevScroll = pane.querySelector(".readscroll");
+    var savedTop = prevScroll ? prevScroll.scrollTop : 0;
+    pane.innerHTML = "";
     var q = selected();
     if (!q) {
+      lastReadQid = null;
       var e = el("div", "readempty");
       var inner = el("div"); inner.appendChild(el("div", "t", t().nothingSel)); inner.appendChild(el("p", null, t().nothingSelSub));
       e.appendChild(inner); pane.appendChild(e); return;
@@ -722,6 +729,7 @@
     state.answering = false;
     var answered = q.status !== "open";
 
+    var advancing = state.advanced; // a deliberate jump to a new item wants the top
     var scroll = el("div", "readscroll tk-scroll" + (state.advanced ? " advance" : ""));
     state.advanced = false;
 
@@ -767,6 +775,10 @@
     }
     scroll.appendChild(body);
     pane.appendChild(scroll);
+    // Restore the prior scroll offset when re-rendering the SAME question in
+    // place (option toggles, polling); a switch to a new item stays at the top.
+    if (q.id === lastReadQid && !advancing && savedTop) scroll.scrollTop = savedTop;
+    lastReadQid = q.id;
 
     // footer
     if (!answered && state.me && state.me.canAnswer) pane.appendChild(footer(q));
@@ -907,9 +919,20 @@
       } else {
         state.sel[q.id] = o.value;
       }
-      state.answering = true; render();
+      // Update only the answer block in place — a full render() would rebuild the
+      // scroll container and jump the reading pane to the top on every choice.
+      state.answering = true; refreshAnswer(q);
     });
     return row;
+  }
+  // Swap just the `.answer` subtree (option rows / textarea) for the current
+  // selection, leaving the surrounding .readscroll — and its scroll offset —
+  // untouched. Falls back to a full render if the block isn't mounted.
+  function refreshAnswer(q) {
+    var read = $("read");
+    var old = read ? read.querySelector(".answer") : null;
+    if (!old || !old.parentNode) { render(); return; }
+    old.parentNode.replaceChild(answerArea(q), old);
   }
   function lockIcon() {
     var s = document.createElement("span");
