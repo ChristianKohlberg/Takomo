@@ -117,6 +117,10 @@ pub struct Question {
     /// Per-option one-line descriptions, parallel to `options` (empty string
     /// where none). Empty vec when the asker gave plain-string options.
     pub option_notes: Vec<String>,
+    /// choose-only: true when several options may be selected at once.
+    pub multi: bool,
+    /// For a multi choose: the suggested set of options.
+    pub recommended_multi: Vec<String>,
     /// The agent's suggested answer (JSON), or Null.
     pub recommended: Value,
     /// A short rationale for the recommendation ("why"), or None.
@@ -162,6 +166,8 @@ impl Question {
             "body": self.body,
             "options": self.options,
             "option_notes": self.option_notes,
+            "multi": self.multi,
+            "recommended_multi": self.recommended_multi,
             "recommended": self.recommended,
             "recommended_note": self.recommended_note,
             "confidence": self.confidence,

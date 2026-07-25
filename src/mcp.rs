@@ -248,8 +248,12 @@ pub struct AskArgs {
     /// For kind=choose: a one-line trade-off description per option, parallel to
     /// `options` (same length). Lets the inbox show what each choice means.
     pub option_notes: Option<Vec<String>>,
+    /// For kind=choose: allow selecting several options at once (multi-select).
+    pub multi: Option<bool>,
+    /// For a multi choose: the recommended set of options.
+    pub recommended_multi: Option<Vec<String>>,
     /// Your recommended answer (a hint for the human; also applied on timeout if
-    /// on_timeout=recommended). For choose, the exact option string.
+    /// on_timeout=recommended). For a single choose, the exact option string.
     pub recommended: Option<String>,
     /// A short rationale for your recommendation ("why"), shown by the recommendation.
     pub recommended_note: Option<String>,
@@ -862,6 +866,8 @@ impl TakomoMcp {
             body: a.body.unwrap_or_default(),
             options: a.options.unwrap_or_default(),
             option_notes: a.option_notes.unwrap_or_default(),
+            multi: a.multi.unwrap_or(false),
+            recommended_multi: a.recommended_multi.unwrap_or_default(),
             recommended: a.recommended.map(Value::String).unwrap_or(Value::Null),
             recommended_note: a.recommended_note,
             confidence: a.confidence,

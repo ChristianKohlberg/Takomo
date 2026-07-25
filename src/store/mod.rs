@@ -154,6 +154,20 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // Multi-select choose: `multi` marks a choose question that takes several
+    // options; `recommended_multi` is the suggested set.
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "multi") {
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN multi INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !question_cols.is_empty() && !question_cols.iter().any(|c| c == "recommended_multi") {
+        conn.execute(
+            "ALTER TABLE questions ADD COLUMN recommended_multi TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
     // projects.question_language: the human-facing language agents should phrase
     // ask-a-human questions in for this project (nullable = no preference).
     // Additive; older project tables predate it.
@@ -255,6 +269,8 @@ CREATE TABLE IF NOT EXISTS questions (
   recommended_note TEXT,
   summary      TEXT,
   option_notes TEXT NOT NULL DEFAULT '[]',
+  multi        INTEGER NOT NULL DEFAULT 0,
+  recommended_multi TEXT NOT NULL DEFAULT '[]',
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL,
   version      INTEGER NOT NULL DEFAULT 1

@@ -3467,6 +3467,79 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
 }
 
 #[tokio::test]
+async fn question_multi_select_choose_round_trip_and_answer() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Enable regions").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "multi": true,
+                "title": "Which regions should launch?",
+                "options": ["US", "EU", "UK", "APAC"],
+                "recommended_multi": ["US", "EU"],
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "multi ask failed: {body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(body["question"]["multi"], true);
+    assert_eq!(body["question"]["recommended_multi"], json!(["US", "EU"]));
+
+    // Answer with a subset array.
+    let (s, ans) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": ["US", "APAC"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "multi answer failed: {ans}");
+    assert_eq!(ans["question"]["status"], "answered");
+    assert_eq!(ans["question"]["answer"]["value"], json!(["US", "APAC"]));
+    assert_eq!(ans["ticket"]["state"], "ready");
+
+    // A non-array answer to a multi question is refused.
+    let id2 = app.create_ticket("Regions 2").await;
+    let fence2 = app.to_implementing(&id2).await;
+    let (_, b2) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id2, "kind": "choose", "multi": true, "title": "?", "options": ["A", "B"], "fence": fence2 }),
+        )
+        .await;
+    let qid2 = b2["question"]["id"].as_str().unwrap().to_string();
+    let (s, bad) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid2}/answer"),
+            json!({ "answer": "A" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+
+    // multi on a non-choose kind is refused at ask time.
+    let id3 = app.create_ticket("Regions 3").await;
+    let fence3 = app.to_implementing(&id3).await;
+    let (s, bad3) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id3, "kind": "confirm", "multi": true, "title": "x", "fence": fence3 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad3}");
+    assert_eq!(bad3["code"], "validation.multi");
+}
+
+#[tokio::test]
 async fn question_reopen_takes_back_answer_until_the_ticket_is_in_use() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Prod schema migration").await;

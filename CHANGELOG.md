@@ -9,6 +9,12 @@ additively only.
 
 ### Added
 
+- **Multi-select `choose` questions.** A `choose` question can set `multi: true`
+  (with an optional `recommended_multi` set) so a human can pick several options;
+  the answer is the chosen array. Exposed on `POST /v1/questions`, `takomo_ask`,
+  and `takomo ask --multi --rec-multi …`. The `/inbox` renders checkbox-style
+  options for it.
+
 - **Reopen an answered question** — a conditional undo beyond the inbox's 30s
   window. `POST /v1/questions/{id}/reopen` / `takomo reopen` / `takomo_reopen`
   (human scope; matching expert for `approve`) returns the question to `open` and
