@@ -1189,7 +1189,9 @@ paths:
                   type: array
                   items: { type: string }
                   description: 'Alternative to {value,desc}: per-option descriptions parallel to `options` (same length).'
-                recommended: { description: The agent's suggested answer (any JSON); for choose the exact option string }
+                multi: { type: boolean, description: For kind=choose, allow selecting several options (multi-select) }
+                recommended_multi: { type: array, items: { type: string }, description: For a multi choose, the recommended set of options }
+                recommended: { description: The agent's suggested answer (any JSON); for a single choose the exact option string }
                 recommended_note: { type: string, description: A short rationale for the recommendation ("why") }
                 confidence: { type: integer, minimum: 1, maximum: 4, description: How strong the recommendation is (1 tentative … 4 very strong) }
                 summary: { type: string, description: One-line summary for the inbox list preview }
@@ -1903,6 +1905,8 @@ components:
         body: { type: string }
         options: { type: array, items: { type: string } }
         option_notes: { type: array, items: { type: string }, description: 'Per-option descriptions, parallel to options (empty when none)' }
+        multi: { type: boolean, description: 'A choose question that takes several options' }
+        recommended_multi: { type: array, items: { type: string }, description: 'For a multi choose, the recommended set' }
         recommended: { description: The agent's suggested answer (any JSON), or null }
         recommended_note: { type: string, nullable: true, description: Short rationale for the recommendation }
         confidence: { type: integer, nullable: true, minimum: 1, maximum: 4, description: Recommendation strength (1 tentative … 4 very strong) }

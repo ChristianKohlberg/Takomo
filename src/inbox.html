@@ -165,6 +165,8 @@
   .opt.sel { border: 1.5px solid var(--accent); background: var(--sel); }
   .opt .mark { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; border-radius: 50%; border: 1.5px solid #c2ccd4; }
   .opt.sel .mark { border: 5px solid var(--accent); }
+  .opt.multi .mark { border-radius: 5px; }
+  .opt.multi.sel .mark { border: 1.5px solid var(--accent); background: var(--accent); }
   .opt .ol { font-size: 14.5px; font-weight: 680; color: var(--text); overflow-wrap: anywhere; }
   .opt .od { font-size: 13px; color: var(--muted); margin-top: 3px; line-height: 1.5; overflow-wrap: anywhere; }
   .opt .rec { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
@@ -335,7 +337,8 @@
     ticketDetail: {}, // ticket id -> detail (for popover/drawer)
     threads: {},      // qid -> messages
     draft: {}, composeOpen: false,
-    sel: {},          // qid -> selected answer value ("__other__" allowed for future)
+    sel: {},          // qid -> selected answer value (single choose / binary)
+    multi: {},        // qid -> array of selected options (multi choose)
     clarify: {},      // qid -> textarea value
     snack: null,      // { qid, decision, detail, remaining }
   };
@@ -535,7 +538,9 @@
     });
   }
   function selected() { return state.questions.filter(function (q) { return q.id === state.selectedId; })[0] || null; }
-  function answerType(q) { return q.kind === "clarify" ? "text" : q.kind === "choose" ? "single" : "binary"; }
+  function answerType(q) { return q.kind === "clarify" ? "text" : q.kind === "choose" ? (q.multi ? "multi" : "single") : "binary"; }
+  // Current multi selection (array), defaulting to the recommended set.
+  function curMulti(q) { return state.multi[q.id] != null ? state.multi[q.id] : ((q.recommended_multi || []).slice()); }
   // Recommended option (best-effort from the stored `recommended` value).
   function recValue(q) {
     var r = q.recommended;
@@ -647,6 +652,7 @@
     var a = q.answer;
     if (a == null) return "—";
     var v = (typeof a === "object" && a.value != null) ? a.value : a;
+    if (Array.isArray(v)) return v.join(", ");
     if (v === true) return q.kind === "approve" ? "Approved" : "Confirmed";
     if (v === false) return q.kind === "approve" ? "Rejected" : "Declined";
     return typeof v === "string" ? v : JSON.stringify(v);
@@ -812,32 +818,44 @@
         { value: "no", label: negLabel, desc: (rv != null && !recAff && recNote) ? recNote : t().nothingChanges, rec: rv != null && !recAff }
       ];
     }
-    // single choose — pair each option with its description (option_notes[i])
+    // choose (single or multi) — pair each option with its description.
+    var multi = answerType(q) === "multi";
     var rvS = recValue(q);
+    var recSet = q.recommended_multi || [];
     var notes = q.option_notes || [];
     return (q.options || []).map(function (o, i) {
-      var isRec = rvS != null && o === rvS;
+      var isRec = multi ? (recSet.indexOf(o) !== -1) : (rvS != null && o === rvS);
       var desc = notes[i] || "";
-      if (isRec && recNote) desc = desc ? (desc + " — " + recNote) : recNote;
-      return { value: o, label: o, desc: desc, rec: isRec };
+      if (isRec && !multi && recNote) desc = desc ? (desc + " — " + recNote) : recNote;
+      return { value: o, label: o, desc: desc, rec: isRec, multi: multi };
     });
   }
   function optionRow(q, o) {
-    var selVal = curSel(q);
-    var isSel = selVal === o.value;
-    var row = el("div", "opt" + (isSel ? " sel" : ""));
+    var isMulti = o.multi;
+    var isSel = isMulti ? (curMulti(q).indexOf(o.value) !== -1) : (curSel(q) === o.value);
+    var row = el("div", "opt" + (isSel ? " sel" : "") + (isMulti ? " multi" : ""));
     row.appendChild(el("span", "mark"));
     var mid = el("div"); mid.style.flex = "1"; mid.style.minWidth = "0";
     if (o.rec) {
       var rec = el("div", "rec");
       rec.appendChild(barsNode("var(--accent)", confLevel(q), true));
-      rec.appendChild(el("span", "rl", confLabel(q)));
+      rec.appendChild(el("span", "rl", isMulti ? t().recommended : confLabel(q)));
       mid.appendChild(rec);
     }
     mid.appendChild(el("div", "ol", o.label));
     if (o.desc) { var od = el("div", "od"); inlineMd(od, o.desc); mid.appendChild(od); }
     row.appendChild(mid);
-    row.addEventListener("click", function () { state.sel[q.id] = o.value; state.answering = true; render(); });
+    row.addEventListener("click", function () {
+      if (isMulti) {
+        var cur = curMulti(q).slice();
+        var idx = cur.indexOf(o.value);
+        if (idx === -1) cur.push(o.value); else cur.splice(idx, 1);
+        state.multi[q.id] = cur;
+      } else {
+        state.sel[q.id] = o.value;
+      }
+      state.answering = true; render();
+    });
     return row;
   }
   function lockIcon() {
@@ -935,6 +953,12 @@
   // ---- answer (1 click → 30s undo snackbar) ----
   function submitAnswer(q) {
     var ty = answerType(q);
+    if (ty === "multi") {
+      var arr = curMulti(q);
+      if (!arr || !arr.length) { toast(t().sendFirst, "error"); return; }
+      queueAnswer(q, arr.slice());
+      return;
+    }
     var val = curSel(q);
     if (ty === "text") { val = (val || "").trim(); if (!val) { toast(t().typeFirst, "error"); return; } }
     else if (val == null) { toast(t().sendFirst, "error"); return; }
@@ -964,6 +988,7 @@
     startSnackTimer();
   }
   function displayVal(q, value) {
+    if (Array.isArray(value)) return value.join(", ");
     if (answerType(q) === "binary") return value === "yes" ? (q.kind === "approve" ? t().approve : t().confirm) : (q.kind === "approve" ? t().holdApprove : t().holdConfirm);
     return String(value);
   }

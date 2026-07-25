@@ -55,7 +55,7 @@ const MAX_EXPERTISE_LEN: usize = 100;
 const QUESTION_COLS: &str = "id, project, ticket, asked_by, mode, kind, title, body, options, \
     recommended, expertise, urgency, status, answer, answered_by, answered_at, resolved_to, \
     expires_at, on_timeout, awaiting, confidence, recommended_note, summary, option_notes, \
-    created_at, updated_at, version";
+    multi, recommended_multi, created_at, updated_at, version";
 
 /// Max length of a single follow-up message body.
 const MAX_MESSAGE_LEN: usize = 8_192;
@@ -107,6 +107,10 @@ pub struct AskRequest {
     pub options: Vec<String>,
     /// Per-option descriptions, parallel to `options` (empty vec = none).
     pub option_notes: Vec<String>,
+    /// choose-only: allow selecting several options.
+    pub multi: bool,
+    /// For a multi choose: the suggested set of options.
+    pub recommended_multi: Vec<String>,
     pub recommended: Value,
     /// Short rationale for the recommendation, or None.
     pub recommended_note: Option<String>,
@@ -139,6 +143,7 @@ pub struct QuestionFilter {
 fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
     let options_raw: String = r.get("options")?;
     let option_notes_raw: String = r.get("option_notes")?;
+    let recommended_multi_raw: String = r.get("recommended_multi")?;
     let expertise_raw: String = r.get("expertise")?;
     let recommended_raw: Option<String> = r.get("recommended")?;
     let answer_raw: Option<String> = r.get("answer")?;
@@ -153,6 +158,8 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
         body: r.get("body")?,
         options: serde_json::from_str(&options_raw).unwrap_or_default(),
         option_notes: serde_json::from_str(&option_notes_raw).unwrap_or_default(),
+        multi: r.get::<_, i64>("multi")? != 0,
+        recommended_multi: serde_json::from_str(&recommended_multi_raw).unwrap_or_default(),
         recommended: recommended_raw
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Value::Null),
@@ -186,13 +193,60 @@ fn get_question_row(conn: &Connection, id: &str) -> ApiResult<Question> {
 
 /// Validate + normalize a proposed answer against the question kind. Returns the
 /// canonical JSON stored as the answer.
-fn validate_answer(kind: &str, options: &[String], answer: &Value) -> ApiResult<Value> {
+fn validate_answer(
+    kind: &str,
+    options: &[String],
+    answer: &Value,
+    multi: bool,
+) -> ApiResult<Value> {
     // Accept either a bare scalar or a {"value": ...} wrapper for ergonomics.
     let value = match answer {
         Value::Object(m) if m.contains_key("value") => m.get("value").cloned().unwrap(),
         other => other.clone(),
     };
     let note = answer.as_object().and_then(|m| m.get("note")).cloned();
+
+    // A multi-select choose takes an array of options (a non-empty subset).
+    if kind == "choose" && multi {
+        let arr = value.as_array().ok_or_else(|| {
+            ApiError::validation(
+                "validation.answer",
+                "A multi-select 'choose' question needs an array of the chosen options.",
+            )
+        })?;
+        let mut chosen: Vec<String> = Vec::with_capacity(arr.len());
+        for item in arr {
+            let s = item.as_str().ok_or_else(|| {
+                ApiError::validation(
+                    "validation.answer",
+                    "each selected option must be a string.",
+                )
+            })?;
+            if !options.iter().any(|o| o == s) {
+                return Err(ApiError::validation(
+                    "validation.answer",
+                    format!(
+                        "'{s}' is not one of the offered options: {}.",
+                        options.join(", ")
+                    ),
+                ));
+            }
+            if !chosen.iter().any(|c| c == s) {
+                chosen.push(s.to_string());
+            }
+        }
+        if chosen.is_empty() {
+            return Err(ApiError::validation(
+                "validation.answer",
+                "Select at least one option.",
+            ));
+        }
+        let normalized = json!(chosen);
+        return match note {
+            Some(n) if !n.is_null() => Ok(json!({ "value": normalized, "note": n })),
+            _ => Ok(json!({ "value": normalized })),
+        };
+    }
 
     let normalized = match kind {
         "confirm" | "approve" => {
@@ -277,6 +331,15 @@ fn answer_summary(kind: &str, answer: &Value) -> String {
             }
         }
         (_, Value::String(s)) => s.clone(),
+        (_, Value::Array(a)) => a
+            .iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| x.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
         (_, other) => other.to_string(),
     };
     match note {
@@ -290,7 +353,7 @@ fn answer_summary(kind: &str, answer: &Value) -> String {
 /// surfaced in the ask response so an agent can improve its next question.
 pub fn question_quality_hints(q: &Question) -> Vec<String> {
     let mut h = Vec::new();
-    let has_rec = !q.recommended.is_null();
+    let has_rec = !q.recommended.is_null() || !q.recommended_multi.is_empty();
     if q.kind == "choose" && !q.option_notes.iter().any(|d| !d.trim().is_empty()) {
         h.push("Add a one-line trade-off description per option so the inbox shows what each choice means — send options as [{\"value\":\"…\",\"desc\":\"…\"}].".to_string());
     }
@@ -543,6 +606,20 @@ impl Store {
                 "A 'choose' question needs at least 2 options.",
             ));
         }
+        if req.multi && req.kind != "choose" {
+            return Err(ApiError::validation(
+                "validation.multi",
+                "multi=true is only valid for a 'choose' question.",
+            ));
+        }
+        for r in &req.recommended_multi {
+            if !req.options.iter().any(|o| o == r) {
+                return Err(ApiError::validation(
+                    "validation.recommended_multi",
+                    format!("recommended_multi contains '{r}', which is not one of the options."),
+                ));
+            }
+        }
         if req.options.len() > MAX_OPTIONS {
             return Err(ApiError::validation(
                 "validation.options",
@@ -747,8 +824,8 @@ impl Store {
 
             let id = question_id();
             tx.execute(
-                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, urgency, status, expires_at, on_timeout, confidence, recommended_note, summary, option_notes, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?19)",
+                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, urgency, status, expires_at, on_timeout, confidence, recommended_note, summary, option_notes, multi, recommended_multi, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?21)",
                 params![
                     id,
                     t.project,
@@ -768,6 +845,8 @@ impl Store {
                     req.recommended_note.as_deref().filter(|s| !s.trim().is_empty()),
                     req.summary.as_deref().filter(|s| !s.trim().is_empty()),
                     serde_json::to_string(&req.option_notes).unwrap(),
+                    if req.multi { 1_i64 } else { 0_i64 },
+                    serde_json::to_string(&req.recommended_multi).unwrap(),
                     now,
                 ],
             )?;
@@ -837,7 +916,7 @@ impl Store {
                     ));
                 }
             }
-            let normalized = validate_answer(&q.kind, &q.options, answer)?;
+            let normalized = validate_answer(&q.kind, &q.options, answer, q.multi)?;
 
             let mut t = get_ticket_required(tx, &q.ticket)?;
             let wf = get_workflow(tx, &t.project)?;
@@ -1374,7 +1453,13 @@ impl Store {
 /// (as actor `system`). Best-effort resume: if the ticket is no longer parked or
 /// has no clean human-gated resume edge, the answer is still recorded.
 fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiResult<()> {
-    let normalized = match validate_answer(&q.kind, &q.options, &q.recommended) {
+    // For a multi choose the recommendation is the `recommended_multi` set.
+    let rec_value = if q.multi {
+        json!(q.recommended_multi)
+    } else {
+        q.recommended.clone()
+    };
+    let normalized = match validate_answer(&q.kind, &q.options, &rec_value, q.multi) {
         Ok(v) => v,
         Err(_) => {
             // Recommendation is not a valid answer; fall back to flagging.

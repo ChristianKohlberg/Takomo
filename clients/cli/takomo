@@ -736,9 +736,9 @@ cmd_release() {
 # --- ask-a-human board -------------------------------------------------------
 
 cmd_ask() {
-  local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--option-desc D]... [--expertise TAG]... [--urgency U] [--recommend R] [--rec-note WHY] [--confidence 1-4] [--summary S] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
-  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode="" recnote="" summary="" confidence=""
-  local -a options=() expertise=() optdescs=()
+  local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--option-desc D]... [--expertise TAG]... [--urgency U] [--multi] [--rec-multi OPT]... [--recommend R] [--rec-note WHY] [--confidence 1-4] [--summary S] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
+  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode="" recnote="" summary="" confidence="" multi=""
+  local -a options=() expertise=() optdescs=() recmulti=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --kind)       kind=$2; shift 2 ;;
@@ -747,6 +747,8 @@ cmd_ask() {
       --body)       body=$2; shift 2 ;;
       --option)     options+=("$2"); shift 2 ;;
       --option-desc) optdescs+=("$2"); shift 2 ;;
+      --multi)      multi=1; shift ;;
+      --rec-multi)  recmulti+=("$2"); shift 2 ;;
       --expertise)  expertise+=("$2"); shift 2 ;;
       --urgency)    urgency=$2; shift 2 ;;
       --recommend)  recommend=$2; shift 2 ;;
@@ -762,13 +764,16 @@ cmd_ask() {
   local fence; fence=$(fence_load "$id")
   local data; data=$(TS_ID="$id" TS_KIND="$kind" TS_TITLE="$title" TS_BODY="$body" \
     TS_URG="$urgency" TS_REC="$recommend" TS_EXP="$expires" TS_OT="$ontimeout" TS_FENCE="$fence" TS_MODE="$mode" \
-    TS_RECNOTE="$recnote" TS_SUMMARY="$summary" TS_CONF="$confidence" \
+    TS_RECNOTE="$recnote" TS_SUMMARY="$summary" TS_CONF="$confidence" TS_MULTI="$multi" \
     TS_OPTS="$(printf '%s\n' "${options[@]:-}")" TS_EXPERT="$(printf '%s\n' "${expertise[@]:-}")" \
-    TS_OPTDESCS="$(printf '%s\n' "${optdescs[@]:-}")" \
+    TS_OPTDESCS="$(printf '%s\n' "${optdescs[@]:-}")" TS_RECMULTI="$(printf '%s\n' "${recmulti[@]:-}")" \
     python3 <<'PY'
 import json, os
 d = {"ticket": os.environ["TS_ID"], "kind": os.environ["TS_KIND"], "title": os.environ["TS_TITLE"]}
 if os.environ.get("TS_MODE"): d["mode"] = os.environ["TS_MODE"]
+if os.environ.get("TS_MULTI"): d["multi"] = True
+recmulti = [l for l in os.environ.get("TS_RECMULTI","").splitlines() if l]
+if recmulti: d["recommended_multi"] = recmulti
 if os.environ.get("TS_BODY"): d["body"] = os.environ["TS_BODY"]
 if os.environ.get("TS_URG"): d["urgency"] = os.environ["TS_URG"]
 if os.environ.get("TS_REC"): d["recommended"] = os.environ["TS_REC"]

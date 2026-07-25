@@ -588,7 +588,9 @@ server.registerTool(
       body: z.string().optional().describe("Context: why you are asking and what you have tried."),
       options: z.array(z.string()).optional().describe("For kind=choose: the options (>= 2)."),
       option_notes: z.array(z.string()).optional().describe("For kind=choose: a one-line trade-off per option, parallel to `options` (same length) — lets the inbox show what each choice means."),
-      recommended: z.string().optional().describe("Your recommended answer (for choose, the exact option string; applied on timeout if on_timeout=recommended)."),
+      multi: z.boolean().optional().describe("For kind=choose: allow selecting several options at once (multi-select)."),
+      recommended_multi: z.array(z.string()).optional().describe("For a multi choose: the recommended set of options."),
+      recommended: z.string().optional().describe("Your recommended answer (for a single choose, the exact option string; applied on timeout if on_timeout=recommended)."),
       recommended_note: z.string().optional().describe("A short rationale for your recommendation (the 'why')."),
       confidence: z.number().int().min(1).max(4).optional().describe("How strong your recommendation is: 1 tentative … 4 very strong."),
       summary: z.string().optional().describe("A one-line summary for the inbox list preview (optional; else derived from the body)."),
@@ -604,6 +606,8 @@ server.registerTool(
     if (a.body !== undefined) body.body = a.body;
     if (a.options) body.options = a.options;
     if (a.option_notes) body.option_notes = a.option_notes;
+    if (a.multi) body.multi = a.multi;
+    if (a.recommended_multi) body.recommended_multi = a.recommended_multi;
     if (a.recommended !== undefined) body.recommended = a.recommended;
     if (a.recommended_note !== undefined) body.recommended_note = a.recommended_note;
     if (a.confidence !== undefined) body.confidence = a.confidence;

@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-const ASK_FIELDS: [&str; 15] = [
+const ASK_FIELDS: [&str; 17] = [
     "ticket",
     "mode",
     "kind",
@@ -30,7 +30,9 @@ const ASK_FIELDS: [&str; 15] = [
     "body",
     "options",
     "option_notes",
+    "multi",
     "recommended",
+    "recommended_multi",
     "recommended_note",
     "confidence",
     "summary",
@@ -210,6 +212,8 @@ pub async fn create(
         body: get_str(obj, "body")?.unwrap_or_default(),
         options,
         option_notes,
+        multi: matches!(obj.get("multi"), Some(Value::Bool(true))),
+        recommended_multi: get_string_array(obj, "recommended_multi")?.unwrap_or_default(),
         recommended: obj
             .get("recommended")
             .filter(|v| !v.is_null())

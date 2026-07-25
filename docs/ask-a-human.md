@@ -54,6 +54,10 @@ richer, faster-to-answer card (all additive; omit any of them):
 - **`--confidence` 1–4** — how strong the recommendation is (1 tentative … 4
   very strong); drives the recommendation gauge.
 - **`--summary`** — a one-line preview for the inbox list.
+- **Multi-select** — a `choose` where several options apply: `--multi` (with
+  optional repeatable `--rec-multi <opt>` for the suggested set; over MCP/HTTP
+  `multi: true` + `recommended_multi`). The human ticks several; the answer is the
+  chosen array.
 
 The `ask` response includes a non-blocking **`hints`** array naming anything that
 would make the card richer (e.g. "add a description per option", "add
