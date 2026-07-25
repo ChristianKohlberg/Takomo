@@ -647,6 +647,27 @@ server.registerTool(
 );
 
 server.registerTool(
+  "takomo_reopen",
+  {
+    title: "Reopen a question",
+    description:
+      "Reopen an answered question — take back a decision (a conditional undo beyond the inbox's 30s window). " +
+      "Requires the human scope. Refused with a teaching 409 if the ticket already relies on the answer " +
+      "(claimed, moved on, or archived); re-park and re-ask instead in that case.",
+    inputSchema: {
+      id: z.string().describe("Question id to reopen (an answered question)."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/reopen`,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
   "takomo_questions",
   {
     title: "List questions (inbox)",

@@ -878,6 +878,16 @@ cmd_withdraw() {
   echo "withdrew $id"
 }
 
+cmd_reopen() {
+  local id=${1:-}; [ -n "$id" ] || die "reopen: usage: takomo reopen QID  (take back an answered question; needs the human scope)"
+  api POST "/v1/questions/$(urlenc "$id")/reopen" '{}' >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); q = d.get("question", {}); tk = d.get("ticket", {})
+print(f"reopened {q.get('id','?')} — ticket {tk.get('id','?')} parked again in '{tk.get('state','?')}'")
+PY
+}
+
 cmd_answer_link() {
   # `answer-link revoke ID` | `answer-link QID [--ttl SECS] [--actor NAME]`
   if [ "${1:-}" = "revoke" ]; then
@@ -1993,6 +2003,7 @@ main() {
     answer-link) cmd_answer_link "$@" ;;
     questions)   cmd_questions "$@" ;;
     withdraw)    cmd_withdraw "$@" ;;
+    reopen)      cmd_reopen "$@" ;;
     share)   cmd_share "$@" ;;
     export)  cmd_export "$@" ;;
     import)  cmd_import "$@" ;;

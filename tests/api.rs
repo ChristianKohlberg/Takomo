@@ -3467,6 +3467,82 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
 }
 
 #[tokio::test]
+async fn question_reopen_takes_back_answer_until_the_ticket_is_in_use() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Prod schema migration").await;
+    let fence = app.to_implementing(&id).await;
+
+    // Ask + answer: the ticket resumes into 'ready'.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Run it?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+    let (s, ans) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ans}");
+    assert_eq!(ans["question"]["status"], "answered");
+    assert_eq!(ans["ticket"]["state"], "ready");
+
+    // Reopen while the ticket is still free: the question returns to open and the
+    // ticket is re-parked in a blocked state.
+    let (s, re) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/reopen"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "reopen failed: {re}");
+    assert_eq!(re["question"]["status"], "open");
+    assert_eq!(re["question"]["answer"], serde_json::Value::Null);
+    assert_eq!(re["ticket"]["state"], "needs-decision", "ticket re-parked");
+
+    // A read-only/write token without human scope can't reopen.
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/reopen"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "reopen needs the human scope");
+
+    // Answer again, then claim the resumed ticket → reopen is now refused because
+    // a worker relies on the answer.
+    let (_, ans2) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(ans2["ticket"]["state"], "ready");
+    let (s, _claim) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "claim should succeed");
+    let (s, blocked) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/reopen"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{blocked}");
+    assert_eq!(blocked["code"], "question.reopen_claimed");
+}
+
+#[tokio::test]
 async fn ticket_promote_records_history_and_project_index() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Ship the billing rollup").await;

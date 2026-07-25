@@ -7,6 +7,16 @@ additively only.
 
 ## [Unreleased]
 
+### Added
+
+- **Reopen an answered question** — a conditional undo beyond the inbox's 30s
+  window. `POST /v1/questions/{id}/reopen` / `takomo reopen` / `takomo_reopen`
+  (human scope; matching expert for `approve`) returns the question to `open` and
+  re-parks the ticket, but only while the answer isn't yet in use — refused with a
+  teaching `409` once the ticket is claimed, has moved past the state it resumed
+  into, or is archived (re-ask instead). The `/inbox` shows a **Reopen** button on
+  answered questions. Emits `question_reopened`.
+
 ### Changed
 
 - **Inbox answering is now trailing.** Answering completes the item optimistically

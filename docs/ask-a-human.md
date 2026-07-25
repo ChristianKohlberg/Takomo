@@ -105,6 +105,22 @@ default, `needs-decision → ready`). `POST /v1/questions/{id}/answer` / the
 
 An agent that no longer needs its answer withdraws it: `takomo withdraw <qid>`.
 
+## Taking an answer back (reopen)
+
+Answered by mistake? The inbox commits an answer only after a 30-second undo
+window, but you can still **reopen** an answered question after that — a
+conditional undo — *as long as the ticket hasn't started relying on the answer*.
+`takomo reopen <qid>` (or the **Reopen** button on an answered question in
+`/inbox`, or `POST /v1/questions/{id}/reopen`, needs the `human` scope) returns
+the question to `open` and re-parks the ticket in a blocked state.
+
+It is refused with a teaching `409` once the answer is in use: the resumed ticket
+has been **claimed** (`question.reopen_claimed`), **moved on** past the state it
+resumed into (`question.reopen_moved`), or **archived**
+(`question.reopen_archived`). In that case, re-ask instead. Advisory questions
+(which never changed ticket state) always reopen. Reopening an `approve` decision
+needs the matching domain expert, just like answering it.
+
 ## Ask for more research before answering (follow-up thread)
 
 A human doesn't have to answer immediately — they can **bounce the question back
