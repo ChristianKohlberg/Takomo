@@ -4442,3 +4442,207 @@ async fn question_approve_requires_a_matching_domain_expert() {
     assert_eq!(s, StatusCode::OK, "{ok}");
     assert_eq!(ok["ticket"]["state"], "ready");
 }
+
+// ---------------------------------------------------------------------------
+// Security-review hardening (unknown-field rejection, question pagination,
+// security headers, malformed-JSON teaching errors).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn token_create_rejects_unknown_field() {
+    // A typo'd `expires_seconds` must be a loud 400 — not silently ignored,
+    // which would mint a non-expiring token.
+    let app = TestApp::spawn().await;
+    let (status, body) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "agent:x", "scopes": ["read"], "expires_second": 3600 }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "typo'd field must 400: {body}"
+    );
+    assert_eq!(body["code"], "validation.unknown_field");
+}
+
+#[tokio::test]
+async fn transition_rejects_unknown_field_so_fence_typo_cannot_slip_through() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("fence typo").await;
+    let (status, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "todo", "fenc": 7 }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "typo'd fence must 400: {body}"
+    );
+    assert_eq!(body["code"], "validation.unknown_field");
+}
+
+#[tokio::test]
+async fn questions_list_is_paginated_with_limit_and_cursor() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("q host").await;
+    for i in 0..3 {
+        let (st, b) = app
+            .post(
+                &app.admin,
+                "/v1/questions",
+                json!({ "ticket": id, "kind": "clarify", "mode": "advisory", "title": format!("q{i}") }),
+            )
+            .await;
+        assert_eq!(st, StatusCode::CREATED, "ask q{i}: {b}");
+    }
+    // First page of one, with a cursor for more.
+    let (st, page1) = app
+        .get(&app.admin, "/v1/questions?status=open&limit=1")
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        page1["items"].as_array().unwrap().len(),
+        1,
+        "page size honored"
+    );
+    let cursor = page1["next_cursor"].as_i64().expect("next_cursor present");
+    // Following the cursor returns the rest.
+    let (_, page2) = app
+        .get(
+            &app.admin,
+            &format!("/v1/questions?status=open&limit=1&cursor={cursor}"),
+        )
+        .await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+    assert_ne!(
+        page1["items"][0]["id"], page2["items"][0]["id"],
+        "distinct pages"
+    );
+}
+
+#[tokio::test]
+async fn html_apps_send_security_headers() {
+    let app = TestApp::spawn().await;
+    for path in ["/board", "/inbox"] {
+        let resp = app
+            .client
+            .get(format!("{}{}", app.base, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let h = resp.headers();
+        assert!(
+            h.get("content-security-policy")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.contains("default-src 'self'"))
+                .unwrap_or(false),
+            "{path} must send a CSP"
+        );
+        assert_eq!(
+            h.get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY"),
+            "{path}"
+        );
+        assert_eq!(
+            h.get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_json_body_returns_a_teaching_error() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("bad body").await;
+    let resp = app
+        .client
+        .post(format!("{}/v1/tickets/{id}/comments", app.base))
+        .bearer_auth(&app.admin)
+        .header("content-type", "application/json")
+        .body("{ this is not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+    assert_eq!(
+        body["code"], "validation.json",
+        "structured teaching error, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn timeout_recommendation_holds_ticket_while_another_blocking_question_is_open() {
+    // The HIGH barrier fix: a recommended-timeout must NOT resume a parked ticket
+    // while another open blocking question remains on it.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("two blockers").await;
+    let fence = app.to_implementing(&id).await;
+
+    // Q1: recommended-on-timeout.
+    let (s1, b1) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "confirm", "title": "Q1 auto?",
+                "recommended": "yes", "expires_in_seconds": 3600,
+                "on_timeout": "recommended", "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s1, StatusCode::CREATED, "{b1}");
+    let q1 = b1["question"]["id"].as_str().unwrap().to_string();
+
+    // Q2: a second blocking question on the same (now parked) ticket.
+    let (s2, b2) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "clarify", "title": "Q2 needs a human" }),
+        )
+        .await;
+    assert_eq!(
+        s2,
+        StatusCode::CREATED,
+        "second blocking ask should be allowed: {b2}"
+    );
+
+    // Backdate Q1's deadline so the sweeper fires it.
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        conn.execute(
+            "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
+            rusqlite::params![q1, takomo::ids::now_ms() - 1000],
+        )
+        .unwrap();
+    }
+
+    // Wait for Q1 to be swept to answered.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, q) = app.get(&app.admin, &format!("/v1/questions/{q1}")).await;
+        if q["status"] == "answered" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Q1 not swept: {q}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    // The ticket must still be parked (blocked) because Q2 is open — NOT resumed.
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        t["state_category"], "blocked",
+        "ticket must stay parked while Q2 is open, got {t}"
+    );
+}

@@ -5,7 +5,8 @@
 //! ticket; `GET /questions` is the inbox read-model. See `store/questions.rs`.
 
 use super::{
-    all, body_object, first, get_i64, get_str, get_string_array, query_pairs, require_str,
+    all, body_object, first, get_i64, get_str, get_string_array, parse_i64_param, query_pairs,
+    require_str, ApiJson,
 };
 use crate::auth::{AnswerCtx, AuthCtx};
 use crate::error::{ApiError, ApiResult};
@@ -139,6 +140,12 @@ pub async fn list(
         all(&pairs, "expertise")
     };
 
+    // Bound the page: `limit` clamped to the server cap, `cursor` = row offset.
+    let limit = parse_i64_param(&pairs, "limit")?
+        .unwrap_or(crate::store::MAX_QUESTIONS_PAGE)
+        .clamp(1, crate::store::MAX_QUESTIONS_PAGE);
+    let offset = parse_i64_param(&pairs, "cursor")?.unwrap_or(0).max(0);
+
     let filter = QuestionFilter {
         project: first(&pairs, "project").map(str::to_string),
         ticket: first(&pairs, "ticket").map(str::to_string),
@@ -153,17 +160,22 @@ pub async fn list(
             .unwrap_or_default(),
         expertise,
         allowed_projects: ctx.allowed_projects_vec(),
+        limit: Some(limit),
+        offset: Some(offset),
     };
     let questions = state.store.list_questions(&filter)?;
+    // A full page implies there may be more — hand back the next offset cursor.
+    let next_cursor = (questions.len() as i64 == limit).then_some(offset + limit);
     Ok(Json(json!({
         "items": questions.iter().map(|q| q.to_json()).collect::<Vec<_>>(),
+        "next_cursor": next_cursor,
     })))
 }
 
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
@@ -290,7 +302,7 @@ pub async fn answer(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     // Answering is the human authorization gate — it performs the ticket's
     // human-gated resume transition.
@@ -352,7 +364,7 @@ pub async fn withdraw(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     let q = state
@@ -381,7 +393,7 @@ pub async fn followup(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("human")?;
     let q = state
@@ -404,7 +416,7 @@ pub async fn reply(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     let q = state
@@ -576,7 +588,7 @@ pub async fn self_get(
 pub async fn self_answer(
     State(state): State<Arc<AppState>>,
     Extension(grant): Extension<AnswerCtx>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     let q = state
         .store

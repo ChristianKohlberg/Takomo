@@ -1,7 +1,7 @@
 //! POST /v1/tickets/{id}/transition — the only way state changes.
 
 use super::tickets::load_visible;
-use super::{body_object, get_i64, get_str, require_str};
+use super::{body_object, get_i64, get_str, reject_unknown, require_str, ApiJson};
 use crate::auth::AuthCtx;
 use crate::error::ApiResult;
 use crate::ids::now_ms;
@@ -15,11 +15,12 @@ pub async fn transition(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
     let obj = body_object(&body)?;
+    reject_unknown(obj, &["to", "reason", "fence"])?;
     let to = require_str(obj, "to")?;
     let reason = get_str(obj, "reason")?;
     let fence = get_i64(obj, "fence")?;

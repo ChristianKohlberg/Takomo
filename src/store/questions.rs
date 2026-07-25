@@ -138,7 +138,16 @@ pub struct QuestionFilter {
     pub expertise: Vec<String>,
     /// Token project scoping. None = unrestricted.
     pub allowed_projects: Option<Vec<String>>,
+    /// Max rows to return; `None` applies the server cap. Always clamped to
+    /// `MAX_QUESTIONS_PAGE` so the response can never be unbounded.
+    pub limit: Option<i64>,
+    /// Offset cursor (rows to skip); `None` = 0.
+    pub offset: Option<i64>,
 }
+
+/// Hard cap on a single `list_questions` page — bounds memory/latency even when
+/// a caller omits `limit`.
+pub const MAX_QUESTIONS_PAGE: i64 = 500;
 
 fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
     let options_raw: String = r.get("options")?;
@@ -1353,6 +1362,14 @@ impl Store {
             sql.push_str(
                 " ORDER BY CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at ASC, id ASC",
             );
+            let limit = filter
+                .limit
+                .unwrap_or(MAX_QUESTIONS_PAGE)
+                .clamp(1, MAX_QUESTIONS_PAGE);
+            let offset = filter.offset.unwrap_or(0).max(0);
+            sql.push_str(" LIMIT ? OFFSET ?");
+            p.push(SqlValue::Integer(limit));
+            p.push(SqlValue::Integer(offset));
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(p), row_to_question)?
@@ -1421,7 +1438,13 @@ impl Store {
                         now,
                     )?;
                 }
-                Some(TimeoutAction::Recommended) if !q.recommended.is_null() => {
+                Some(TimeoutAction::Recommended)
+                    if !q.recommended.is_null()
+                        || (q.multi && !q.recommended_multi.is_empty()) =>
+                {
+                    // A multi-select choose carries its recommendation in
+                    // `recommended_multi` (with `recommended` left null), so it
+                    // must satisfy this guard too.
                     expire_with_recommendation(tx, &q, now)?;
                 }
                 Some(TimeoutAction::Cancel) => {
@@ -1477,7 +1500,17 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
             t.claim_holder = None;
         }
         let wf = get_workflow(conn, &t.project)?;
-        if wf.state(&t.state).map(|s| s.category.as_str()) == Some("blocked") {
+        // Barrier (same rule as a human answer): only resume when no OTHER open
+        // blocking question remains on the ticket. Otherwise record this answer
+        // but leave the ticket parked for the remaining decision(s).
+        let others_blocking_open: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM questions WHERE ticket = ?1 AND status = 'open' AND mode = 'blocking' AND id != ?2",
+            params![q.ticket, q.id],
+            |r| r.get(0),
+        )?;
+        if others_blocking_open == 0
+            && wf.state(&t.state).map(|s| s.category.as_str()) == Some("blocked")
+        {
             // System applies the recommendation; "human" scope is implied.
             let sys_scopes: HashSet<String> = ["human".to_string()].into_iter().collect();
             if let Ok(target) = resume_target(&wf, &t.state, None, &sys_scopes) {
@@ -1543,6 +1576,29 @@ fn expire_and_cancel(conn: &Connection, q: &Question, now: i64) -> ApiResult<()>
                 &format!("timeout: cancelled ({})", q.id),
                 now,
             )?;
+            // The ticket is terminal now — close any OTHER open questions on it
+            // so none dangle pointing at a cancelled ticket.
+            let siblings: Vec<String> = conn
+                .prepare(
+                    "SELECT id FROM questions WHERE ticket = ?1 AND status = 'open' AND id != ?2",
+                )?
+                .query_map(params![q.ticket, q.id], |r| r.get::<_, String>(0))?
+                .collect::<Result<_, _>>()?;
+            for sid in siblings {
+                conn.execute(
+                    "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                    params![sid, now],
+                )?;
+                emit_event(
+                    conn,
+                    Some(&q.ticket),
+                    Some(&q.project),
+                    "system",
+                    "question_expired",
+                    json!({ "question": sid, "reason": "ticket-cancelled" }),
+                    now,
+                )?;
+            }
         }
     }
     Ok(())

@@ -1,6 +1,6 @@
 //! /v1/projects and per-project workflow endpoints.
 
-use super::{body_object, first, query_pairs, require_str};
+use super::{body_object, first, query_pairs, reject_unknown, require_str, ApiJson};
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
@@ -29,10 +29,11 @@ pub async fn list(
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("admin")?;
     let obj = body_object(&body)?;
+    reject_unknown(obj, &["id", "name", "workflow", "question_language"])?;
     let id = require_str(obj, "id")?;
     let name = require_str(obj, "name")?;
     ctx.require_project(&id)?;
@@ -60,11 +61,12 @@ pub async fn put_language(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("admin")?;
     ctx.require_project(&project)?;
     let obj = body_object(&body)?;
+    reject_unknown(obj, &["language"])?;
     // `language` present-and-null clears it; a string sets it; absent is an error.
     let language = match obj.get("language") {
         None => {
@@ -144,7 +146,7 @@ pub async fn put_workflow(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Workflow>> {
     ctx.require_scope("admin")?;
     ctx.require_project(&project)?;

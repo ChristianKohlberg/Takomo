@@ -3,7 +3,7 @@
 use super::tickets::load_visible;
 use super::{
     body_object, clamp_wait, first, get_i64, get_str, get_string_array, long_poll, parse_i64_param,
-    query_pairs,
+    query_pairs, reject_unknown, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
@@ -27,7 +27,11 @@ pub async fn claim(
     load_visible(&state, &ctx, &id)?;
     let ttl = match &body {
         None => None,
-        Some(Json(v)) => get_i64(body_object(v)?, "ttl_seconds")?,
+        Some(Json(v)) => {
+            let obj = body_object(v)?;
+            reject_unknown(obj, &["ttl_seconds"])?;
+            get_i64(obj, "ttl_seconds")?
+        }
     };
     let (_ticket, lease) = state.store.claim_ticket(&id, &ctx.actor, ttl)?;
     state.wake();
@@ -38,11 +42,12 @@ pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
     let obj = body_object(&body)?;
+    reject_unknown(obj, &["fence", "ttl_seconds"])?;
     let fence = get_i64(obj, "fence")?.ok_or_else(|| {
         ApiError::bad_request(
             "validation.field_required",
@@ -59,11 +64,12 @@ pub async fn release(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<StatusCode> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
     let obj = body_object(&body)?;
+    reject_unknown(obj, &["fence", "reason"])?;
     let fence = get_i64(obj, "fence")?.ok_or_else(|| {
         ApiError::bad_request(
             "validation.field_required",
@@ -125,6 +131,10 @@ pub async fn ready_claim(
         ),
         Some(Json(v)) => {
             let obj = body_object(v)?;
+            reject_unknown(
+                obj,
+                &["project", "type", "labels", "wait_seconds", "ttl_seconds"],
+            )?;
             let project = get_str(obj, "project")?;
             if let Some(p) = &project {
                 ctx.require_project(p)?;

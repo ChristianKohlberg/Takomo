@@ -993,6 +993,8 @@ impl TakomoMcp {
                 .unwrap_or_default(),
             expertise,
             allowed_projects: auth.allowed_projects_vec(),
+            limit: None,
+            offset: None,
         };
         let items = self.state.store.list_questions(&filter)?;
         Ok(json!({ "ok": true, "items": items.iter().map(|q| q.to_json()).collect::<Vec<_>>() }))

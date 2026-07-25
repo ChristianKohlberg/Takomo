@@ -1130,15 +1130,22 @@ paths:
         `project`, `ticket`, or `status` (comma-separated). `mine=true` scopes
         the list to the caller's own expertise, derived from its `expert:<tag>`
         scopes; `expertise` (repeatable) filters by explicit tags.
+
+        The result is paginated: `limit` (clamped 1..500, default 500) bounds a
+        page and `cursor` (an opaque row offset) fetches the next one. When more
+        rows remain the response carries a non-null `next_cursor` to pass back as
+        `cursor`.
       parameters:
         - { name: project, in: query, schema: { type: string } }
         - { name: ticket, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string }, description: "Comma-separated: open (default), answered, withdrawn, expired" }
         - { name: mine, in: query, schema: { type: boolean }, description: Only questions routed to your expert:<tag> scopes }
         - { name: expertise, in: query, schema: { type: string }, description: Repeatable tag filter (match any) }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 500 }, description: Max questions per page }
+        - { name: cursor, in: query, schema: { type: integer, minimum: 0 }, description: Row offset from a previous next_cursor }
       responses:
         "200":
-          description: The matching questions.
+          description: The matching questions (one bounded page).
           content:
             application/json:
               schema:
@@ -1147,6 +1154,10 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Question" }
+                  next_cursor:
+                    type: integer
+                    nullable: true
+                    description: Pass as `cursor` to fetch the next page; null when the last page was returned.
     post:
       tags: [questions]
       summary: Ask a human — raise a question and park the ticket (block-and-resume)
