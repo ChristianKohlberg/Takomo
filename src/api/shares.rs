@@ -6,7 +6,7 @@
 //! (`auth::share_auth_middleware`): a share token can reach ONLY those, is
 //! read-only, and is bounded to its scope. See spec/auth.md.
 
-use super::{body_object, first, get_i64, query_pairs, require_str};
+use super::{body_object, first, get_i64, query_pairs, require_str, ApiJson};
 use crate::auth::{AuthCtx, ShareCtx};
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
@@ -28,7 +28,7 @@ const CREATE_FIELDS: [&str; 3] = ["kind", "ref", "ttl_seconds"];
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
@@ -240,11 +240,21 @@ pub async fn self_ticket_detail(
 
     let mut blocked_by_detail = Vec::new();
     for dep_id in &ticket.blocked_by {
-        if let Some(d) = state.store.get_ticket(dep_id)? {
-            blocked_by_detail.push(json!({
+        // Only reveal a dependency's title/state when it is itself inside the
+        // share's scope; otherwise expose just the bare id so an outside viewer
+        // can't learn about tickets in other projects/subtrees via edges.
+        let in_scope = state.store.ticket_in_share_scope(
+            &share.kind,
+            &share.ref_id,
+            &share.project,
+            dep_id,
+        )?;
+        match (in_scope, state.store.get_ticket(dep_id)?) {
+            (true, Some(d)) => blocked_by_detail.push(json!({
                 "id": d.id, "title": d.title, "state": d.state,
                 "state_category": d.state_category,
-            }));
+            })),
+            _ => blocked_by_detail.push(json!({ "id": dep_id, "out_of_scope": true })),
         }
     }
     out["deps"] = json!({

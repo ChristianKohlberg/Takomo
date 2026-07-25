@@ -18,24 +18,75 @@ use axum::Json;
 use serde_json::Value;
 use std::time::Duration;
 
+/// A request-body JSON extractor that maps axum's built-in rejections (invalid
+/// JSON, wrong/absent `Content-Type`, empty body) to the same structured
+/// teaching error the rest of the API returns, instead of a bare 400/415.
+pub struct ApiJson<T>(pub T);
+
+impl<T, S> axum::extract::FromRequest<S> for ApiJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(ApiJson(value)),
+            Err(rej) => Err(ApiError::bad_request(
+                "validation.json",
+                format!(
+                    "Request body must be valid JSON sent with 'Content-Type: application/json'. {}",
+                    rej.body_text()
+                ),
+            )),
+        }
+    }
+}
+
 pub async fn healthz() -> Json<Value> {
     Json(serde_json::json!({ "status": "ok", "version": crate::server::VERSION }))
+}
+
+/// Serve a self-contained HTML app with defense-in-depth headers. These pages
+/// hold the viewer's bearer token in `localStorage`, so a strict CSP (no
+/// external origins; inline JS/CSS are bundled, hence `'unsafe-inline'`) keeps
+/// any future injection from exfiltrating it, and `frame-ancestors`/
+/// `X-Frame-Options` block clickjacking of the board.
+fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
+    use axum::http::header;
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+                 connect-src 'self'; base-uri 'none'; form-action 'none'; \
+                 frame-ancestors 'none'",
+            ),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        body,
+    )
 }
 
 /// Read-only kanban board: a self-contained single-page app that talks to the
 /// same-origin `/v1` API with a token the viewer supplies in the browser. The
 /// page itself is unauthenticated (all data fetches carry the Bearer token);
 /// serving static HTML leaks nothing the API does not already guard.
-pub async fn board() -> axum::response::Html<&'static str> {
-    axum::response::Html(include_str!("../board.html"))
+pub async fn board() -> impl axum::response::IntoResponse {
+    secure_html(include_str!("../board.html"))
 }
 
 /// Ask-a-human inbox: a self-contained email-style page (folder rail, question
 /// list, reading/answer pane) served at `/inbox`. Like `/board` it is
 /// unauthenticated static HTML; every data fetch carries the viewer's bearer
 /// token, so serving it leaks nothing the API does not already guard.
-pub async fn inbox() -> axum::response::Html<&'static str> {
-    axum::response::Html(include_str!("../inbox.html"))
+pub async fn inbox() -> impl axum::response::IntoResponse {
+    secure_html(include_str!("../inbox.html"))
 }
 
 /// The takomo mark ("tako" = octopus) as an SVG favicon, served at both
@@ -122,6 +173,28 @@ pub fn get_string_array(
             format!("Field '{key}' must be an array of strings."),
         )),
     }
+}
+
+/// Reject any body key not in `known`, so a typo'd field (e.g. `expires_second`
+/// or `fenc`) is a loud 400 rather than a silently-ignored — and dangerous —
+/// no-op. Every mutating handler that parses a JSON object body should call it.
+pub fn reject_unknown(obj: &serde_json::Map<String, Value>, known: &[&str]) -> ApiResult<()> {
+    let unknown: Vec<&str> = obj
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !known.contains(k))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(ApiError::bad_request(
+        "validation.unknown_field",
+        format!(
+            "Unknown field(s): {}. Accepted: {}.",
+            unknown.join(", "),
+            known.join(", ")
+        ),
+    ))
 }
 
 /// Parse a raw query string into (key, value) pairs (percent-decoded), keeping

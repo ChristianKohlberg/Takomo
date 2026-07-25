@@ -39,7 +39,7 @@
     display: flex; flex-direction: column; height: 100vh;
   }
   .tk-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
-  .tk-scroll::-webkit-scrollbar-thumb { background: #d3dde5; border-radius: 6px; }
+  .tk-scroll::-webkit-scrollbar-thumb { background: var(--gaugeoff); border-radius: 6px; }
   .tk-scroll::-webkit-scrollbar-track { background: transparent; }
   @keyframes tkSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
   @keyframes tkPulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
@@ -150,7 +150,7 @@
   .tev.pend .tdot { background: var(--warn); animation: tkPulse 1.4s ease-in-out infinite; }
   .tev.pend .tt { color: var(--muted); }
 
-  .decision { border: 1px solid #cfe6d8; background: color-mix(in srgb, var(--ok) 8%, var(--panel)); border-radius: 12px; padding: 18px 20px; max-width: 600px; margin-top: 22px; }
+  .decision { border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--panel)); background: color-mix(in srgb, var(--ok) 8%, var(--panel)); border-radius: 12px; padding: 18px 20px; max-width: 600px; margin-top: 22px; }
   .decision .h { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ok); margin-bottom: 9px; }
   .decision .h .chk { width: 18px; height: 18px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
   .decision .v { font-size: 19px; font-weight: 700; color: var(--text); letter-spacing: -.01em; line-height: 1.3; overflow-wrap: anywhere; }
@@ -163,7 +163,7 @@
   .opt { display: flex; align-items: flex-start; gap: 13px; padding: 14px 16px; border-radius: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--panel); }
   .opt:hover { border-color: var(--sel-border); }
   .opt.sel { border: 1.5px solid var(--accent); background: var(--sel); }
-  .opt .mark { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; border-radius: 50%; border: 1.5px solid #c2ccd4; }
+  .opt .mark { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--gaugeoff); }
   .opt.sel .mark { border: 5px solid var(--accent); }
   .opt.multi .mark { border-radius: 5px; }
   .opt.multi.sel .mark { border: 1.5px solid var(--accent); background: var(--accent); }
@@ -182,7 +182,7 @@
   .compose { display: flex; align-items: center; gap: 8px; border: 1px solid var(--sel-border); border-radius: 11px; padding: 6px 6px 6px 13px; background: var(--panel); margin-bottom: 12px; animation: tkSlide .18s ease; }
   .compose .to { font-size: 12px; color: var(--muted2); white-space: nowrap; } .compose .to .mono { font-family: var(--mono); color: var(--muted); }
   .compose input { flex: 1 1 auto; min-width: 0; border: none; outline: none; font: inherit; font-size: 13.5px; background: transparent; height: 32px; color: var(--text); }
-  .compose .send { flex: 0 0 auto; width: 34px; height: 34px; border: none; border-radius: 8px; background: #b7c4cd; color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .compose .send { flex: 0 0 auto; width: 34px; height: 34px; border: none; border-radius: 8px; background: var(--gaugeoff); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
   .compose .send.on { background: var(--accent); }
   .footrow { display: flex; align-items: center; gap: 12px; }
   .btn-primary { flex: 1 1 auto; height: 52px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font: inherit; font-size: 15px; font-weight: 680; cursor: pointer; box-shadow: 0 10px 22px -12px rgba(31,78,120,.7); }
@@ -237,7 +237,7 @@
   .modal .once { color: var(--accent2); font-weight: 660; }
 
   /* undo snackbar */
-  .snackbar { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; background: var(--dark); color: var(--dark-ink); padding: 12px 14px 12px 18px; border-radius: 12px; box-shadow: 0 18px 44px -16px rgba(0,0,0,.55); z-index: 80; max-width: 92vw; }
+  .snackbar { position: fixed; left: 50%; top: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; background: var(--dark); color: var(--dark-ink); padding: 12px 14px 12px 18px; border-radius: 12px; box-shadow: 0 18px 44px -16px rgba(0,0,0,.55); z-index: 80; max-width: 92vw; }
   .snackbar .chk { width: 20px; height: 20px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; flex: 0 0 auto; }
   .snackbar .d1 { font-size: 13.5px; font-weight: 680; overflow-wrap: anywhere; }
   .snackbar .d2 { font-size: 12px; color: var(--dark-sub); }
@@ -264,11 +264,14 @@
   .hidden { display: none !important; }
 
   @media (max-width: 900px) { main { grid-template-columns: 190px 320px 1fr; } }
+  .backbtn { display: none; align-items: center; gap: 4px; white-space: nowrap; font: inherit; font-size: 12px; font-weight: 650; color: var(--accent2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--panel); cursor: pointer; }
+  .backbtn:hover { border-color: var(--sel-border); color: var(--accent); }
   @media (max-width: 760px) {
     main { grid-template-columns: 1fr; }
     .rail { display: none; }
     body.reading .listpane { display: none; }
     body:not(.reading) .readpane { display: none; }
+    body.reading .backbtn { display: inline-flex; }
     .popover, .drawer { width: 100%; }
   }
   @media (max-width: 620px) {
@@ -329,8 +332,8 @@
 
   // ---- i18n ----
   var STR = {
-    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", submitted:"Danke für deine Antwort.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren." },
-    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", submitted:"Thanks for your submission.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here.", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually." }
+    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", backToList:"Zurück zur Liste", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", submitted:"Danke für deine Antwort.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren." },
+    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", backToList:"Back to list", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", submitted:"Thanks for your submission.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here.", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually." }
   };
 
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -357,6 +360,15 @@
 
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  // Make a clickable non-button element keyboard-operable and expose it to
+  // assistive tech (role + tabindex + Enter/Space). `role` defaults to button.
+  function activate(node, handler, role) {
+    node.setAttribute("role", role || "button");
+    node.setAttribute("tabindex", "0");
+    node.addEventListener("click", handler);
+    node.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); handler(e); } });
+    return node;
+  }
   function cap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
   // ---- tiny markdown (bold, code, bullet lists, paragraphs) — output built as DOM, XSS-safe ----
@@ -549,9 +561,25 @@
     if (state.mineOnly && state.me && state.me.expertise.length) q += "&mine=true";
     return q;
   }
+  // Load every page of the (now-bounded) questions list, following next_cursor,
+  // so a large project still returns its whole queue. A safety bound stops a
+  // pathological loop.
+  function loadQuestions() {
+    var acc = [];
+    function page(cursor) {
+      var q = questionsQuery() + (cursor != null ? "&cursor=" + encodeURIComponent(cursor) : "");
+      return api(q).then(function (res) {
+        acc = acc.concat(res.items || []);
+        if (res.next_cursor != null && acc.length < 5000) return page(res.next_cursor);
+        return acc;
+      });
+    }
+    return page(null);
+  }
   function fetchAll() {
     setLive("loading", "…");
-    return api(questionsQuery()).then(function (res) {
+    return loadQuestions().then(function (items) {
+      var res = { items: items };
       state.questions = res.items || [];
       if (state.selectedId && !state.questions.some(function (q) { return q.id === state.selectedId; })) state.selectedId = null;
       if (!state.selectedId) { var first = inFolder()[0]; state.selectedId = first ? first.id : null; }
@@ -573,7 +601,7 @@
       var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
         (document.activeElement && $("read").contains(document.activeElement));
       if (busy) { setLive("live", "live ·"); return; }
-      return api(questionsQuery()).then(function (r) { state.questions = r.items || []; if (state.selectedId && !state.questions.some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
+      return loadQuestions().then(function (items) { state.questions = items || []; if (state.selectedId && !state.questions.some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
     }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
   }
 
@@ -627,7 +655,7 @@
       var row = el("div", "folder" + (state.folder === f ? " active" : ""));
       row.appendChild(el("span", null, t()[f]));
       row.appendChild(el("span", "n", String(c[f] || 0)));
-      row.addEventListener("click", function () { state.folder = f; state.drawerOpen = false; var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null; render(); });
+      activate(row, function () { state.folder = f; state.drawerOpen = false; var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null; render(); });
       rail.appendChild(row);
     });
     rail.appendChild(el("div", "spacer"));
@@ -696,10 +724,13 @@
     meta.appendChild(el("span", "who", (q.asked_by || "—") + " · " + q.kind + (q.mode === "advisory" ? " · advisory" : "")));
     meta.appendChild(el("span", "age", fmtAge(q.created_at)));
     row.appendChild(meta);
-    row.addEventListener("click", function () { selectQ(q.id); });
+    activate(row, function () { selectQ(q.id); });
     return row;
   }
   function selectQ(id) { state.selectedId = id; state.drawerOpen = false; state.ticketOpen = false; state.composeOpen = false; document.body.classList.add("reading"); syncHash(true); render(); }
+  // Return to the list on mobile (removing `reading` reveals the list pane); a
+  // no-op on desktop where both panes are always shown.
+  function backToList() { state.drawerOpen = false; state.ticketOpen = false; document.body.classList.remove("reading"); render(); }
 
   function answerText(q) {
     var a = q.answer;
@@ -736,6 +767,11 @@
     // head
     var head = el("div", "rhead");
     var top = el("div", "toprow");
+    // Mobile-only: return to the question list (the list pane is hidden while
+    // reading at ≤760px, so without this there is no way back).
+    var back = el("button", "backbtn"); back.appendChild(document.createTextNode("← ")); back.appendChild(document.createTextNode(t().backToList));
+    back.addEventListener("click", backToList);
+    top.appendChild(back);
     top.appendChild(el("span", "grow"));
     top.appendChild(el("span", "age", fmtAge(q.created_at)));
     var tb = el("button", "ticketbtn"); tb.appendChild(document.createTextNode("ⓘ ")); tb.appendChild(el("span", "mono", q.ticket));
@@ -764,7 +800,7 @@
       var dec = el("div", "decision");
       var h = el("div", "h"); h.appendChild(el("span", "chk", "✓")); h.appendChild(document.createTextNode(q.status === "answered" ? t().decision : cap(q.status))); dec.appendChild(h);
       dec.appendChild(el("div", "v", answerText(q)));
-      var sub = t().answeredBy + " · " + fmtAge(q.created_at);
+      var sub = t().answeredBy + " · " + fmtAge(q.answered_at || q.created_at);
       if (q.resolved_to) sub += " · → " + q.resolved_to;
       dec.appendChild(el("div", "sub", sub));
       body.appendChild(dec);
@@ -899,6 +935,8 @@
     var isMulti = o.multi;
     var isSel = isMulti ? (curMulti(q).indexOf(o.value) !== -1) : (curSel(q) === o.value);
     var row = el("div", "opt" + (isSel ? " sel" : "") + (isMulti ? " multi" : ""));
+    row.setAttribute("aria-checked", isSel ? "true" : "false");
+    row.setAttribute("aria-label", o.label);
     row.appendChild(el("span", "mark"));
     var mid = el("div"); mid.style.flex = "1"; mid.style.minWidth = "0";
     if (o.rec) {
@@ -910,7 +948,7 @@
     mid.appendChild(el("div", "ol", o.label));
     if (o.desc) { var od = el("div", "od"); inlineMd(od, o.desc); mid.appendChild(od); }
     row.appendChild(mid);
-    row.addEventListener("click", function () {
+    activate(row, function () {
       if (isMulti) {
         var cur = curMulti(q).slice();
         var idx = cur.indexOf(o.value);
@@ -922,7 +960,7 @@
       // Update only the answer block in place — a full render() would rebuild the
       // scroll container and jump the reading pane to the top on every choice.
       state.answering = true; refreshAnswer(q);
-    });
+    }, isMulti ? "checkbox" : "radio");
     return row;
   }
   // Swap just the `.answer` subtree (option rows / textarea) for the current

@@ -6,7 +6,7 @@
 //! spec/auth.md for the deliberate posture shift this represents (token minting
 //! is no longer SSH-only — admin scope can mint over HTTP).
 
-use super::{body_object, get_i64, get_string_array, require_str};
+use super::{body_object, get_i64, get_string_array, reject_unknown, require_str, ApiJson};
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::now_ms;
@@ -45,12 +45,28 @@ pub async fn whoami(Extension(ctx): Extension<AuthCtx>) -> Json<Value> {
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("admin")?;
     let obj = body_object(&body)?;
+    reject_unknown(
+        obj,
+        &[
+            "actor",
+            "scopes",
+            "projects",
+            "rate_limit",
+            "expires_seconds",
+        ],
+    )?;
 
     let actor = require_str(obj, "actor")?;
+    if actor.len() > 200 {
+        return Err(ApiError::validation(
+            "token.actor",
+            "Field 'actor' must be at most 200 characters.",
+        ));
+    }
 
     let scopes = match get_string_array(obj, "scopes")? {
         Some(s) if !s.is_empty() => s,

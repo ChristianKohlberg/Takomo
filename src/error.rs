@@ -152,7 +152,10 @@ impl IntoResponse for ApiError {
 
 impl From<rusqlite::Error> for ApiError {
     fn from(e: rusqlite::Error) -> Self {
-        ApiError::internal(format!("database error: {e}"))
+        // Log the detailed error server-side; return a generic message so raw
+        // SQLite text (schema/column names, SQL fragments) never reaches clients.
+        eprintln!("database error: {e}");
+        ApiError::internal("an internal database error occurred")
     }
 }
 

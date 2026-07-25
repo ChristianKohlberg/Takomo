@@ -2,7 +2,7 @@
 
 use super::{
     all, body_object, first, get_i64, get_str, get_string_array, parse_i64_param, query_pairs,
-    require_str,
+    require_str, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
@@ -45,7 +45,7 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
@@ -220,7 +220,7 @@ pub async fn patch_one(
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
@@ -273,11 +273,12 @@ pub async fn add_comment(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
     let obj = body_object(&body)?;
+    reject_unknown_fields(obj, &["body"], "Comment")?;
     let text = require_str(obj, "body")?;
     let comment = state.store.add_comment(&id, &ctx.actor, &text)?;
     state.wake();
@@ -334,7 +335,7 @@ pub async fn promote(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
@@ -428,11 +429,12 @@ pub async fn add_dep(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     load_visible(&state, &ctx, &id)?;
     let obj = body_object(&body)?;
+    reject_unknown_fields(obj, &["blocked_by", "fence"], "Dependency")?;
     let blocked_by = require_str(obj, "blocked_by")?;
     let fence = get_i64(obj, "fence")?;
     state.store.add_dep(&id, &blocked_by, &ctx.actor, fence)?;

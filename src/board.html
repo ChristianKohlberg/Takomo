@@ -298,8 +298,8 @@
 
   // ---- i18n (shared vocabulary with /inbox) ----
   var STR = {
-    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen" },
-    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less" }
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein" },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No" }
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
   function L() { return STR[state.lang]; }
@@ -348,6 +348,30 @@
     return e;
   }
   function esc(s) { return (s == null ? "" : String(s)); }
+  // Minimal, XSS-safe markdown (bold + inline code), matching /inbox so a body
+  // renders the same on both surfaces. Builds only text nodes + <b>/<code>.
+  function inlineMd(parent, s) {
+    s = String(s == null ? "" : s);
+    var re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    var last = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) parent.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var tok = m[0];
+      if (tok.indexOf("**") === 0) { parent.appendChild(el("b", null, tok.slice(2, -2))); }
+      else { parent.appendChild(el("code", null, tok.slice(1, -1))); }
+      last = re.lastIndex;
+    }
+    if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
+  }
+  function mdBody(cls, s) { var d = el("div", cls); inlineMd(d, s); return d; }
+  // Make a clickable non-button element keyboard-operable + exposed to AT.
+  function activate(node, handler, role) {
+    node.setAttribute("role", role || "button");
+    node.setAttribute("tabindex", "0");
+    node.addEventListener("click", handler);
+    node.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); handler(e); } });
+    return node;
+  }
   function cap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
   // ---- api ----
@@ -749,7 +773,8 @@
       pb.appendChild(el("span", "page", "· " + fmtAge(pr.created_at)));
       c.appendChild(pb);
     }
-    c.addEventListener("click", function () { openDetail(t.id); });
+    c.setAttribute("aria-label", (t.id || "") + ": " + (t.title || ""));
+    activate(c, function () { openDetail(t.id); });
     return c;
   }
 
@@ -849,7 +874,7 @@
     var urg = q.urgency || "normal";
     var head = el("div", "q-head");
     head.appendChild(el("span", "uw uw-" + urg, cap(urg)));
-    head.appendChild(el("span", "uw", blocking ? "blocking" : "advisory"));
+    head.appendChild(el("span", "uw", blocking ? L().blocking : L().advisory));
     item.appendChild(head);
     item.appendChild(el("div", "q-title", q.title || "(untitled question)"));
     // one monospace identity line: agent · kind · ticket
@@ -858,20 +883,20 @@
       var aw = el("div", "q-rec", "⤺ " + L().awaiting + (q.asked_by || "agent") + L().awaitingSub);
       item.appendChild(aw);
     }
-    if (q.body) item.appendChild(el("div", "q-body", q.body));
+    if (q.body) item.appendChild(mdBody("q-body", q.body));
     if (q.recommended != null && q.recommended !== "") {
-      item.appendChild(el("div", "q-rec", (q.asked_by || "agent") + " recommends: " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
+      item.appendChild(el("div", "q-rec", (q.asked_by || "agent") + " " + L().recommends + " " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
     }
 
     var err = el("div", "q-err");
-    var note = el("input", "q-note"); note.type = "text"; note.placeholder = "optional note…";
+    var note = el("input", "q-note"); note.type = "text"; note.placeholder = L().notePlaceholder;
 
     if (state.me && state.me.canAnswer) {
       var actions = el("div", "q-actions");
       var send = function (value) { submitAnswer(q.id, value, note.value.trim(), err); };
       if (q.kind === "confirm" || q.kind === "approve") {
-        var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
-        var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
+        var yes = el("button", "primary", q.kind === "approve" ? L().approve : L().yes);
+        var no = el("button", null, q.kind === "approve" ? L().reject : L().no);
         yes.addEventListener("click", function () { send("yes"); });
         no.addEventListener("click", function () { send("no"); });
         actions.appendChild(yes); actions.appendChild(no);
@@ -882,7 +907,7 @@
           actions.appendChild(btn);
         });
       } else { // clarify
-        var input = el("input"); input.type = "text"; input.placeholder = "your answer…";
+        var input = el("input"); input.type = "text"; input.placeholder = L().answerPlaceholder;
         var go = el("button", "primary", "Send");
         var submit = function () { var v = input.value.trim(); if (v) send(v); };
         go.addEventListener("click", submit);
@@ -1285,13 +1310,13 @@
     if (q.body) { var body = el("div", null, q.body); body.style.whiteSpace = "pre-wrap"; body.style.fontSize = "14px"; body.style.lineHeight = "1.65"; body.style.color = "var(--ink2)"; body.style.margin = "0 0 20px"; wrap.appendChild(body); }
     if (q.recommended != null && q.recommended !== "") {
       var rec = el("div"); rec.style.background = "var(--col-bg)"; rec.style.borderRadius = "10px"; rec.style.padding = "12px 14px"; rec.style.margin = "0 0 16px"; rec.style.fontSize = "13.5px"; rec.style.color = "var(--text)";
-      rec.appendChild(el("span", null, (q.asked_by || "agent") + " recommends: "));
+      rec.appendChild(el("span", null, (q.asked_by || "agent") + " " + L().recommends + " "));
       rec.appendChild(document.createTextNode(typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended)));
       wrap.appendChild(rec);
     }
 
     var err = el("div", "q-err");
-    var note = el("input", "q-note"); note.type = "text"; note.placeholder = "optional note…";
+    var note = el("input", "q-note"); note.type = "text"; note.placeholder = L().notePlaceholder;
     var actions = el("div", "q-actions");
     var send = function (value) {
       err.textContent = "";
@@ -1304,8 +1329,8 @@
         });
     };
     if (q.kind === "confirm" || q.kind === "approve") {
-      var yes = el("button", "primary", q.kind === "approve" ? "Approve" : "Yes");
-      var no = el("button", null, q.kind === "approve" ? "Reject" : "No");
+      var yes = el("button", "primary", q.kind === "approve" ? L().approve : L().yes);
+      var no = el("button", null, q.kind === "approve" ? L().reject : L().no);
       yes.addEventListener("click", function () { send("yes"); });
       no.addEventListener("click", function () { send("no"); });
       actions.appendChild(yes); actions.appendChild(no);
@@ -1316,7 +1341,7 @@
         actions.appendChild(btn);
       });
     } else {
-      var input = el("input"); input.type = "text"; input.placeholder = "your answer…"; input.style.flex = "1 1 200px";
+      var input = el("input"); input.type = "text"; input.placeholder = L().answerPlaceholder; input.style.flex = "1 1 200px";
       var go = el("button", "primary", "Send");
       var submit = function () { var v = input.value.trim(); if (v) send(v); };
       go.addEventListener("click", submit);
