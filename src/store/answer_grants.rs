@@ -15,7 +15,24 @@ use super::model::AnswerGrantRow;
 use super::Store;
 use crate::error::ApiResult;
 use crate::ids::{answer_grant_id, answer_grant_token_plaintext, now_ms, token_hash};
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
+
+/// Revoke every still-live (unused, unrevoked) answer grant for a question.
+/// Called inside the caller's transaction whenever the question leaves the open
+/// state (answered / withdrawn / expired) or is reopened, so a link minted for
+/// one answering cycle can never answer a later one — enforcing the write-once
+/// invariant across ALL resolution paths, not just a successful self-answer.
+pub(crate) fn revoke_open_grants_for_question(
+    conn: &Connection,
+    question: &str,
+    now: i64,
+) -> ApiResult<()> {
+    conn.execute(
+        "UPDATE answer_grants SET revoked_at = ?2 WHERE question = ?1 AND used_at IS NULL AND revoked_at IS NULL",
+        params![question, now],
+    )?;
+    Ok(())
+}
 
 /// Default answer-link lifetime when the caller omits `ttl_seconds`: 72 hours.
 pub const DEFAULT_ANSWER_TTL_SECONDS: i64 = 3 * 86_400;

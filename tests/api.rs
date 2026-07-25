@@ -4646,3 +4646,165 @@ async fn timeout_recommendation_holds_ticket_while_another_blocking_question_is_
         "ticket must stay parked while Q2 is open, got {t}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Round-2 review fixes: grant revocation, advisory non-resume, dep scoping.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn answer_link_is_revoked_when_the_question_is_answered_elsewhere() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("grant revoke").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let qid = b["question"]["id"].as_str().unwrap().to_string();
+    // Human mints an answer link for an outsider.
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    // An internal human answers the question directly, before the outsider acts.
+    let (s, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // The outstanding link is now dead — revoked on resolution, not just single-use.
+    let (s, _) = app.get(&token, "/v1/answer/self").await;
+    assert_ne!(s, StatusCode::OK, "stale link must not resolve");
+    let (s2, _) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "no" }))
+        .await;
+    assert_ne!(s2, StatusCode::OK, "revoked link must not answer");
+}
+
+#[tokio::test]
+async fn advisory_question_never_resumes_ticket_on_recommended_timeout() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("advisory no resume").await;
+    let fence = app.to_implementing(&id).await;
+    // Park the ticket via a blocking question, then withdraw it — the ticket
+    // stays blocked with NO open blocking questions.
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "park", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let q1 = b["question"]["id"].as_str().unwrap().to_string();
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(t["state_category"], "blocked", "ticket parked");
+    let (s, _) = app
+        .post(
+            &app.admin,
+            &format!("/v1/questions/{q1}/withdraw"),
+            json!({ "reason": "n/a" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // An advisory question with on_timeout=recommended on the still-blocked ticket.
+    let (s, b2) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "mode": "advisory", "title": "adv",
+                    "recommended": "yes", "expires_in_seconds": 3600, "on_timeout": "recommended" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b2}");
+    let q2 = b2["question"]["id"].as_str().unwrap().to_string();
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        conn.execute(
+            "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
+            rusqlite::params![q2, takomo::ids::now_ms() - 1000],
+        )
+        .unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, q) = app.get(&app.admin, &format!("/v1/questions/{q2}")).await;
+        if q["status"] == "answered" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "advisory q not swept: {q}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    // Advisory must NEVER touch ticket state — it stays blocked.
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        t["state_category"], "blocked",
+        "advisory timeout must not resume, got {t}"
+    );
+}
+
+#[tokio::test]
+async fn cross_project_dep_detail_is_hidden_from_a_scoped_token() {
+    let app = TestApp::spawn().await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "tp2", "name": "Second" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp2", "type": "task", "title": "SECRET infra name" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let secret = b["id"].as_str().unwrap().to_string();
+    let a = app.create_ticket("A depends on secret").await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{a}/deps"),
+            json!({ "blocked_by": secret }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    // A token scoped ONLY to tp.
+    let (s, tk) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "agent:scoped", "scopes": ["read", "write"], "projects": ["tp"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tk}");
+    let scoped = tk["token"].as_str().unwrap().to_string();
+    let (s, detail) = app
+        .get(&scoped, &format!("/v1/tickets/{a}?include=deps"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{detail}");
+    let dep = &detail["deps"]["blocked_by"][0];
+    assert_eq!(dep["id"], secret);
+    assert_eq!(
+        dep["out_of_scope"], true,
+        "cross-project dep must be redacted: {dep}"
+    );
+    assert!(dep.get("title").is_none(), "title must not leak: {dep}");
+}

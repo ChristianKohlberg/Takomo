@@ -14,6 +14,7 @@
 //! also holds the matching free-form `expert:<tag>` scope sees the question in
 //! their "my expertise" filter.
 
+use super::answer_grants::revoke_open_grants_for_question;
 use super::helpers::{
     check_fence_for_write, clear_expired_claim, emit_event, get_ticket_required, get_workflow,
     touch_ticket,
@@ -973,6 +974,9 @@ impl Store {
                 "UPDATE questions SET status = 'answered', answer = ?2, answered_by = ?3, answered_at = ?4, resolved_to = ?5, version = version + 1, updated_at = ?4 WHERE id = ?1",
                 params![id, normalized.to_string(), actor, now, resolved_to],
             )?;
+            // The question is resolved — kill any outstanding answer links so a
+            // stale one can't answer it again (e.g. after a later reopen).
+            super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
 
             // Mirror the answer into the ticket thread so the resuming agent
             // sees it on `takomo_show`, and emit the question_answered event.
@@ -1103,6 +1107,9 @@ impl Store {
                 "UPDATE questions SET status = 'open', answer = NULL, answered_by = NULL, answered_at = NULL, resolved_to = NULL, awaiting = 'human', version = version + 1, updated_at = ?2 WHERE id = ?1",
                 params![id, now],
             )?;
+            // A fresh answering cycle needs a fresh link — make sure no grant
+            // from the prior cycle can answer the reopened question.
+            super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
             let comment = crate::ids::comment_id();
             let comment_body = format!(
                 "{actor} reopened \"{}\" — parked again pending a new answer.",
@@ -1148,6 +1155,7 @@ impl Store {
                 "UPDATE questions SET status = 'withdrawn', version = version + 1, updated_at = ?2 WHERE id = ?1",
                 params![id, now],
             )?;
+            super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
             emit_event(
                 tx,
                 Some(&q.ticket),
@@ -1452,6 +1460,7 @@ impl Store {
                 }
                 _ => {
                     // Default / recommended-without-recommendation: just flag it.
+                    revoke_open_grants_for_question(tx, &q.id, now)?;
                     tx.execute(
                         "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
                         params![q.id, now],
@@ -1476,6 +1485,8 @@ impl Store {
 /// (as actor `system`). Best-effort resume: if the ticket is no longer parked or
 /// has no clean human-gated resume edge, the answer is still recorded.
 fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiResult<()> {
+    // Terminal resolution — outstanding answer links can no longer apply.
+    revoke_open_grants_for_question(conn, &q.id, now)?;
     // For a multi choose the recommendation is the `recommended_multi` set.
     let rec_value = if q.multi {
         json!(q.recommended_multi)
@@ -1508,7 +1519,11 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
             params![q.ticket, q.id],
             |r| r.get(0),
         )?;
-        if others_blocking_open == 0
+        // Only a BLOCKING question resumes the ticket; an advisory question with
+        // on_timeout=recommended records its decision but never touches ticket
+        // state (same contract as the human-answer path).
+        if q.mode == "blocking"
+            && others_blocking_open == 0
             && wf.state(&t.state).map(|s| s.category.as_str()) == Some("blocked")
         {
             // System applies the recommendation; "human" scope is implied.
@@ -1545,6 +1560,7 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
 /// Timeout: close the question expired and best-effort cancel the ticket via a
 /// no-scope transition to a cancelled-category state.
 fn expire_and_cancel(conn: &Connection, q: &Question, now: i64) -> ApiResult<()> {
+    revoke_open_grants_for_question(conn, &q.id, now)?;
     conn.execute(
         "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
         params![q.id, now],

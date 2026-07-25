@@ -1322,10 +1322,13 @@ impl TakomoMcp {
                 )
             })?,
         };
-        let graph = self
-            .state
-            .store
-            .dep_graph(&a.id, direction, a.transitive.unwrap_or(false))?;
+        let allowed = auth.allowed_projects_vec();
+        let graph = self.state.store.dep_graph(
+            &a.id,
+            direction,
+            a.transitive.unwrap_or(false),
+            allowed.as_deref(),
+        )?;
         Ok(json!({ "ok": true, "deps": graph }))
     }
 
