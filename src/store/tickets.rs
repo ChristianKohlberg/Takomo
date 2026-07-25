@@ -1211,6 +1211,10 @@ impl Store {
         root: &str,
         direction: DepDirection,
         transitive: bool,
+        // Token project scoping: `None` = unrestricted. A node in a project not
+        // in this set is returned as a bare id (deps can cross projects, so a
+        // scoped token must not learn out-of-scope titles/states through edges).
+        allowed: Option<&[String]>,
     ) -> ApiResult<Value> {
         use std::collections::{HashSet, VecDeque};
         self.with_conn(|conn| {
@@ -1279,21 +1283,30 @@ impl Store {
                     .query_row(
                         "SELECT t.id, t.title, t.state, \
                          COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS category, \
-                         t.type FROM tickets t WHERE t.id = ?1",
+                         t.type, t.project FROM tickets t WHERE t.id = ?1",
                         params![id],
                         |r| {
-                            Ok(json!({
-                                "id": r.get::<_, String>(0)?,
-                                "title": r.get::<_, String>(1)?,
-                                "state": r.get::<_, String>(2)?,
-                                "state_category": r.get::<_, String>(3)?,
-                                "type": r.get::<_, String>(4)?,
-                            }))
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, String>(5)?,
+                            ))
                         },
                     )
                     .optional()?;
-                if let Some(v) = row {
-                    node_json.push(v);
+                if let Some((id, title, state, category, ty, project)) = row {
+                    let visible = allowed.map(|a| a.contains(&project)).unwrap_or(true);
+                    if visible {
+                        node_json.push(json!({
+                            "id": id, "title": title, "state": state,
+                            "state_category": category, "type": ty,
+                        }));
+                    } else {
+                        node_json.push(json!({ "id": id, "out_of_scope": true }));
+                    }
                 }
             }
 

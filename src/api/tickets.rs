@@ -178,11 +178,17 @@ pub async fn get_one(
                 "deps" => {
                     let mut blocked_by_detail = Vec::new();
                     for dep_id in &ticket.blocked_by {
-                        if let Some(d) = state.store.get_ticket(dep_id)? {
-                            blocked_by_detail.push(json!({
-                                "id": d.id, "title": d.title, "state": d.state,
-                                "state_category": d.state_category,
-                            }));
+                        // Deps can cross projects; only reveal title/state for a
+                        // dependency the token is allowed to see, else a bare id.
+                        match state.store.get_ticket(dep_id)? {
+                            Some(d) if ctx.can_project(&d.project) => {
+                                blocked_by_detail.push(json!({
+                                    "id": d.id, "title": d.title, "state": d.state,
+                                    "state_category": d.state_category,
+                                }))
+                            }
+                            _ => blocked_by_detail
+                                .push(json!({ "id": dep_id, "out_of_scope": true })),
                         }
                     }
                     out["deps"] = json!({
@@ -322,7 +328,10 @@ pub async fn deps_graph(
         }
     };
 
-    let out = state.store.dep_graph(&id, direction, transitive)?;
+    let allowed = ctx.allowed_projects_vec();
+    let out = state
+        .store
+        .dep_graph(&id, direction, transitive, allowed.as_deref())?;
     Ok(Json(out))
 }
 
