@@ -106,6 +106,13 @@
   .column h2 .count { color: var(--low); font-size: 12px; font-weight: 600; }
   .column.done h2 { color: var(--muted); }
   .cards { display: flex; flex-direction: column; gap: 10px; }
+  .epicsel { max-width: 190px; }
+  .grouptoggle { font-size: 12.5px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  .subhd { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px 0; margin-top: 2px; }
+  .subhd .slbl { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .subhd .scount { font-size: 11px; color: var(--low); font-weight: 600; flex: 0 0 auto; }
+  .morebtn { border: 1px dashed var(--border); background: transparent; color: var(--accent2); border-radius: 9px; padding: 8px 10px; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; text-align: center; }
+  .morebtn:hover { border-color: var(--sel-border); background: var(--hover); color: var(--accent); }
   .card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 10px; padding: 13px 14px; cursor: pointer; }
   .card:hover { border-color: var(--sel-border); }
   .card.tint { background: var(--sel); border-color: var(--sel-border); box-shadow: 0 10px 24px -14px rgba(31,78,120,.45); }
@@ -239,6 +246,8 @@
   <div class="brand" id="brand"></div>
   <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a></nav>
   <select id="projsel" title="project"></select>
+  <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
+  <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
   <span class="share-banner" id="share-scope"></span>
   <span class="grow"></span>
   <span class="status share-exp" id="share-exp"></span>
@@ -283,11 +292,14 @@
   var LS_TOKEN = "takomo.board.token";
   var LS_PROJECT = "takomo.board.project";
   var LS_LANG = "takomo.lang";
+  var LS_EPIC = "takomo.board.epic";
+  var LS_GROUP = "takomo.board.groupepic";
+  var COLLAPSE_LIMIT = 6; // cards shown per column/epic-group before "show more"
 
   // ---- i18n (shared vocabulary with /inbox) ----
   var STR = {
-    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)" },
-    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)" }
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen" },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less" }
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
   function L() { return STR[state.lang]; }
@@ -312,7 +324,10 @@
     inboxOpen: false,
     mineOnly: false,
     openQByTicket: {}, // ticket id -> { count, blocking, advisory } for open questions
-    promoByTicket: {}  // ticket id -> latest promotion { target, created_at, url }
+    promoByTicket: {}, // ticket id -> latest promotion { target, created_at, url }
+    epicFilter: localStorage.getItem(LS_EPIC) || "", // "" = all epics
+    groupByEpic: localStorage.getItem(LS_GROUP) === "1",
+    expanded: {}       // collapse key -> true (a column/epic-group showing all cards)
   };
 
   function fmtAge(iso) {
@@ -426,7 +441,21 @@
   $("projsel").addEventListener("change", function () {
     state.project = $("projsel").value;
     localStorage.setItem(LS_PROJECT, state.project);
+    // Epics are per-project; a stale filter from another project makes no sense.
+    state.epicFilter = ""; localStorage.setItem(LS_EPIC, ""); state.expanded = {};
     boot();
+  });
+  $("epicsel").addEventListener("change", function () {
+    state.epicFilter = $("epicsel").value;
+    localStorage.setItem(LS_EPIC, state.epicFilter);
+    state.expanded = {}; // fresh collapse state for the new view
+    render();
+  });
+  $("groupepic").addEventListener("change", function () {
+    state.groupByEpic = $("groupepic").checked;
+    localStorage.setItem(LS_GROUP, state.groupByEpic ? "1" : "0");
+    state.expanded = {};
+    render();
   });
 
   // ---- boot for a project: workflow + tickets, then start polling ----
@@ -559,11 +588,60 @@
       });
   }
 
+  // ---- epic grouping / filtering helpers ----
+  // Walk a ticket's parent chain (guarded against cycles / missing parents) and
+  // return the id of its top-most epic ancestor — or "" if it has none. An epic
+  // ticket heads its own group.
+  function epicOf(t) {
+    var cur = t, depth = 0, guard = {}, lastEpic = "";
+    while (cur && depth < 30 && !guard[cur.id]) {
+      guard[cur.id] = 1;
+      if (cur.type === "epic") lastEpic = cur.id;
+      if (!cur.parent) break;
+      cur = state.tickets[cur.parent]; depth++;
+    }
+    return lastEpic;
+  }
+  // True when `epicId` is `t` itself or any ancestor of `t`.
+  function inEpic(t, epicId) {
+    var cur = t, depth = 0, guard = {};
+    while (cur && depth < 30 && !guard[cur.id]) {
+      guard[cur.id] = 1;
+      if (cur.id === epicId) return true;
+      if (!cur.parent) break;
+      cur = state.tickets[cur.parent]; depth++;
+    }
+    return false;
+  }
+  function epicLabel(epicId) {
+    if (!epicId) return L().noEpic;
+    var e = state.tickets[epicId];
+    return e && e.title ? (epicId + " · " + e.title) : epicId;
+  }
+  // Keep the header's epic dropdown and group toggle in sync with the loaded
+  // tickets — populate options, prune a stale selection, hide when no epics.
+  function populateEpics() {
+    var sel = $("epicsel"), wrap = $("group-wrap"); if (!sel) return;
+    var epics = Object.keys(state.tickets).map(function (k) { return state.tickets[k]; })
+      .filter(function (t) { return t.type === "epic" && (!t.archived_at || state.showArchived); })
+      .sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
+    sel.innerHTML = "";
+    var all = el("option"); all.value = ""; all.textContent = L().allEpics; sel.appendChild(all);
+    epics.forEach(function (e) { var o = el("option"); o.value = e.id; o.textContent = e.id + " — " + (e.title || ""); sel.appendChild(o); });
+    if (state.epicFilter && !epics.some(function (e) { return e.id === state.epicFilter; })) { state.epicFilter = ""; localStorage.setItem(LS_EPIC, ""); }
+    sel.value = state.epicFilter;
+    var none = epics.length === 0;
+    sel.classList.toggle("hidden", none);
+    if (wrap) wrap.classList.toggle("hidden", none);
+    var chk = $("groupepic"); if (chk) chk.checked = state.groupByEpic;
+  }
+
   // ---- rendering ----
   function render() {
     var board = $("board");
     board.innerHTML = "";
     if (!state.workflow) return;
+    populateEpics();
     var states = state.workflow.states || [];
     var byState = {};
     var catOf = {};
@@ -571,22 +649,37 @@
     Object.keys(state.tickets).forEach(function (id) {
       var t = state.tickets[id];
       if (t.archived_at && !state.showArchived) return; // archived hidden by default
+      if (state.epicFilter && !inEpic(t, state.epicFilter)) return; // epic filter
       if (!byState[t.state]) byState[t.state] = []; // unknown/legacy state -> its own column
       byState[t.state].push(t);
     });
     // priority order for within-column sort
     var prank = { critical: 0, high: 1, normal: 2, low: 3 };
+    function bySort(a, b) {
+      var pa = prank[a.priority] == null ? 9 : prank[a.priority];
+      var pb = prank[b.priority] == null ? 9 : prank[b.priority];
+      if (pa !== pb) return pa - pb;
+      return (b.updated_at || "").localeCompare(a.updated_at || "");
+    }
     // columns in workflow order, then any leftover unknown states
     var colOrder = states.map(function (s) { return s.id; });
     Object.keys(byState).forEach(function (k) { if (colOrder.indexOf(k) === -1) colOrder.push(k); });
 
+    // Render a capped list of cards into `container`, with a "+N more" / "show
+    // less" toggle keyed by `key` so each column/group collapses independently.
+    function renderCapped(container, items, isDone, key) {
+      var expanded = !!state.expanded[key];
+      var shown = expanded ? items : items.slice(0, COLLAPSE_LIMIT);
+      shown.forEach(function (t) { container.appendChild(cardEl(t, isDone)); });
+      if (items.length > COLLAPSE_LIMIT) {
+        var btn = el("button", "morebtn", expanded ? L().showLess : L().showMore.replace("{n}", items.length - COLLAPSE_LIMIT));
+        btn.addEventListener("click", function () { state.expanded[key] = !expanded; render(); });
+        container.appendChild(btn);
+      }
+    }
+
     colOrder.forEach(function (sid) {
-      var items = (byState[sid] || []).slice().sort(function (a, b) {
-        var pa = prank[a.priority] == null ? 9 : prank[a.priority];
-        var pb = prank[b.priority] == null ? 9 : prank[b.priority];
-        if (pa !== pb) return pa - pb;
-        return (b.updated_at || "").localeCompare(a.updated_at || "");
-      });
+      var items = (byState[sid] || []).slice().sort(bySort);
       var isDone = catOf[sid] === "done";
       var col = el("div", "column" + (isDone ? " done" : ""));
       var h = el("h2");
@@ -596,8 +689,20 @@
       var cards = el("div", "cards");
       if (items.length === 0) {
         cards.appendChild(el("div", "empty-col", "—"));
+      } else if (state.groupByEpic) {
+        // Bucket the column's cards by epic, epics first (id order), "no epic" last.
+        var groups = {}, order = [];
+        items.forEach(function (t) { var e = epicOf(t); if (!groups[e]) { groups[e] = []; order.push(e); } groups[e].push(t); });
+        order.sort(function (a, b) { if (!a) return 1; if (!b) return -1; return String(a).localeCompare(String(b)); });
+        order.forEach(function (eid) {
+          var sub = el("div", "subhd");
+          sub.appendChild(el("span", "slbl", epicLabel(eid)));
+          sub.appendChild(el("span", "scount", String(groups[eid].length)));
+          cards.appendChild(sub);
+          renderCapped(cards, groups[eid], isDone, "col:" + sid + ":epic:" + (eid || "_"));
+        });
       } else {
-        items.forEach(function (t) { cards.appendChild(cardEl(t, isDone)); });
+        renderCapped(cards, items, isDone, "col:" + sid);
       }
       col.appendChild(cards);
       board.appendChild(col);
@@ -1234,6 +1339,7 @@
     $("gate-sub").textContent = L().gateSub; $("gate-tokenlabel").textContent = L().gateTokenLabel;
     $("gate-projectlabel").textContent = L().gateProjectLabel; $("g-go").textContent = L().gateOpen;
     $("arch-label").textContent = L().archived; $("askhuman-label").textContent = L().askHuman;
+    var gl = $("group-label"); if (gl) gl.textContent = L().groupEpic;
     $("refresh-label").textContent = L().refresh; $("signout-label").textContent = L().signout;
     var fi = document.querySelector("#inbox .full"); if (fi) fi.textContent = L().fullInbox;
     $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
