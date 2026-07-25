@@ -1,0 +1,87 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ChristianKohlberg/backlot/main/schema/backlot.schema.json
+#
+# backlot manifest — puts a running, SEEDED takomo in front of an agent or a
+# human: `backlot up` builds the binary, provisions a demo store, starts the
+# server, waits for /healthz, and `backlot token --role human` mints the bearer
+# token /board and /inbox ask for.
+#
+#   backlot up                    lease a warm env: build, seed, serve, print the URL
+#   backlot token --role human    a token you can paste into /board or /inbox
+#   backlot ctx                   URL + ports as one blob (what an agent reads)
+#   backlot run api               the integration suite, with a classified verdict
+#   backlot release               return the environment to the pool, warm
+name: takomo
+
+# `reset-data` and `--pristine` binds sweep every untracked env-side file that
+# is not declared here, which for a Rust repo means deleting the whole cargo
+# build directory and paying a cold LTO release build on the next bind. Worse,
+# a sweep also invalidates the upkeep ledger, so it re-runs everything. The bare
+# name matches at any depth and short-circuits the walk into it.
+caches:
+  - target
+
+# Bind order is: sync -> upkeep -> datastore create -> service build -> start.
+# The datastore's `create:` SEEDS by running the takomo binary, which is why the
+# build is declared here as well as on the service: a service `build:` runs
+# AFTER the datastore step and would be too late to seed with.
+upkeep:
+  - when: glob(src/**)
+    run: cargo build --release
+  - when: Cargo.lock
+    run: cargo build --release
+  # Content-derived template identity. The baked SQLite template is keyed on the
+  # hash of these files, so a branch that changes the schema or the seed content
+  # gets its own template instead of silently restoring a stale one.
+  - when: glob(src/store/**)
+    run: "@rebake-template main"
+  - when: src/main.rs
+    run: "@rebake-template main"
+  # The seed walks the real state machine, so the factory-default workflow is
+  # part of its content: change a state or a `requires` and the seed's output
+  # changes (or stops being reachable). Without this rule the bake key would be
+  # unchanged and a stale template would be restored by copy.
+  - when: src/workflow.rs
+    run: "@rebake-template main"
+
+services:
+  server:
+    # Gated on this service's own build fingerprint; a no-op when the upkeep
+    # rule above already built this tree.
+    build: cargo build --release
+    # {{datastores.main.url}} is the SQLite file path (for sqlite the namespace
+    # IS the file); {{ports.http}} is the engine-allocated port.
+    run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}
+    port: http
+    ready:
+      http: /healthz
+      timeout: 120
+
+datastores:
+  main:
+    driver: sqlite
+    # `dev` seeds a demo project — tickets across every workflow state, plus
+    # questions of every kind — so /board and /inbox have something to show.
+    # `empty` runs the migrations and stops there.
+    create: ./target/release/takomo --db {{ns}} seed --preset {{preset}}
+    presets: [dev, empty]
+    default_preset:
+      # A person or agent inspecting the app wants content; a check wants a
+      # clean store it can make its own assertions against.
+      session: dev
+      run: empty
+    # sqlite templating = file copy, so every bind restores in milliseconds.
+    template: true
+
+auth:
+  # Prints the bare plaintext token on stdout — backlot takes stdout verbatim as
+  # the token. Roles map onto takomo's scopes; `expert` holds the expert:<tag>
+  # scopes the seeded `approve` question gates on.
+  token: scripts/backlot-token.sh {{role}} {{datastores.main.url}}
+
+checks:
+  # The integration suite spawns its own servers on ephemeral ports, so it does
+  # not touch the leased service — but running it here classifies the outcome
+  # (work vs env vs infra) and can be detached with `backlot run api --detach`.
+  api:
+    run: cargo test --release
+    timeout: 1800

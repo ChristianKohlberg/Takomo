@@ -18,7 +18,7 @@ Setup: claim the ticket (`POST /v1/tickets/{TICKET_ID}/claim`), transition it to
    - **Non-goals** — what is deliberately excluded; kills scope creep at the source.
    - **Touchpoints** — files/modules expected to change, with one line each on why. Name existing conventions to follow (found in step 2).
    - **Test plan** — which acceptance criteria map to which kind of test (unit/integration/e2e) and where those tests live today.
-   - **Environment needs** — datastores, seeds, services, external creds; reference the repo's stack.yaml capabilities if present.
+   - **Environment needs** — datastores, seeds, services, external creds; reference the repo's backlot.yml capabilities if present.
    - **Risk class** — `routine` (self-landable if green) or `gated` (human must review), one sentence of justification. When unsure, `gated`.
    - **Estimated size** — S (≤1 session), M (1–3), L (should be split — propose the split as child tickets instead of one big spec).
 4. **Interrogate your own spec.** For each acceptance criterion ask: could two reasonable implementers build incompatible things from this? If yes, tighten it or ask.

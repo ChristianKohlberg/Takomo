@@ -28,19 +28,37 @@ The integration tests start real server instances against temporary SQLite DBs, 
 | `plugins/takomo/` | The Claude Code plugin (skill + remote MCP), served from this repo as a marketplace. |
 | `spec/` | The OpenAPI contract, the workflow format, and the auth model. |
 | `workflows/` | Shipped workflow definitions (`simple.yaml`). |
+| `scripts/` | Dev-loop helpers, e.g. the backlot `auth.token` hook. |
 | `docs/design/` | The adopt-vs-build evaluation and architecture notes. |
 
 ## A running instance for manual testing — backlot
 
-[backlot](https://github.com/ChristianKohlberg/backlot) brokers a warm, running Takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
+[backlot](https://github.com/ChristianKohlberg/backlot) (≥ 0.7) brokers a warm, running takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
 
 ```sh
-backlot up        # build, provision a fresh store, serve, print the URL + port
-backlot ctx       # the URL/ports/creds an agent needs, as one blob
-backlot release   # return the environment to the pool
+backlot up                    # build, seed a demo store, serve, print the URL + port
+backlot token --role human    # a bearer token to paste into /board or /inbox
+backlot ctx                   # the URL/ports an agent needs, as one blob
+backlot run api               # the integration suite, with a classified verdict
+backlot release               # return the environment to the pool, warm
 ```
 
-The manifest is [`stack.yaml`](../stack.yaml).
+The manifest is [`backlot.yml`](../backlot.yml). Two things it wires up are worth knowing:
+
+**Seeded, not empty.** The `main` datastore has two presets. `dev` (the default for a
+session lease) runs `takomo seed --preset dev`, which creates a `demo` project with ten
+tickets spread across every workflow state — including claims, a dependency, and an epic —
+plus questions of all four kinds, one advisory and one bounced back to its asking agent.
+That is what makes `/board` and `/inbox` worth looking at. `empty` (the default for a
+`backlot run` lease) just migrates. `takomo seed` is idempotent on the project.
+
+**A token you can actually use.** Every endpoint but `/healthz` needs a bearer token, so
+`auth.token` points at [`scripts/backlot-token.sh`](../scripts/backlot-token.sh), which maps
+a role onto takomo's scopes: `agent` → `read,write`; `human` → `+human`; `admin` → `+admin`;
+and `expert` → `+expert:domain:billing,expert:domain:product`, which is the scope the
+seeded `approve` question gates on (a plain `human` token is refused there, by design).
+The hook prints the bare plaintext on stdout, because backlot takes stdout verbatim as the
+token.
 
 ## In-session quality gates — handrail
 

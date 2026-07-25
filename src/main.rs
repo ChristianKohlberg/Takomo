@@ -42,6 +42,14 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Populate a database with demo content, for a local instance you can
+    /// actually look at (see the `backlot.yml` datastore presets).
+    Seed {
+        /// `dev` = a demo project with tickets across every workflow state and
+        /// questions of every kind; `empty` = schema only, no content.
+        #[arg(long, default_value = "dev")]
+        preset: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -63,6 +71,10 @@ enum TokenCommand {
         /// Write budget per minute (sliding window).
         #[arg(long, default_value_t = 120)]
         rate_limit: i64,
+        /// Print one JSON object (including the plaintext `token`) instead of
+        /// the human-readable block — for scripts and provisioning hooks.
+        #[arg(long)]
+        json: bool,
     },
     /// List tokens (never shows plaintext).
     List,
@@ -112,6 +124,7 @@ fn main() {
             .block_on(takomo::server::serve(&bind, &cli.db, sweep_seconds)),
         Command::Token { command } => run_token(&cli.db, command),
         Command::Project { command } => run_project(&cli.db, command),
+        Command::Seed { preset } => run_seed(&cli.db, &preset),
     };
     if let Err(msg) = result {
         eprintln!("error: {msg}");
@@ -132,6 +145,7 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
             projects,
             expires,
             rate_limit,
+            json,
         } => {
             let scopes: Vec<String> = scopes
                 .split(',')
@@ -161,6 +175,21 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                     expires_at,
                 )
                 .map_err(|e| e.into_message())?;
+            if json {
+                // The plaintext rides in this object — same "shown once" rule as
+                // the human block; a caller that discards it cannot recover it.
+                let out = serde_json::json!({
+                    "id": row.id,
+                    "actor": row.actor,
+                    "scopes": row.scopes,
+                    "projects": row.projects,
+                    "expires_at": row.expires_at.map(iso),
+                    "rate_limit": row.rate_limit,
+                    "token": plaintext,
+                });
+                println!("{out}");
+                return Ok(());
+            }
             println!("token id:  {}", row.id);
             println!("actor:     {}", row.actor);
             println!("scopes:    {}", row.scopes.join(","));
@@ -324,4 +353,37 @@ fn parse_expiry(raw: &str) -> Result<i64, String> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.timestamp_millis())
         .map_err(|_| format!("invalid expiry '{raw}': use 90d, 12h, 30m, or RFC 3339"))
+}
+
+// ---------------------------------------------------------------------------
+// seed — demo content for a local instance (backlot.yml datastore presets)
+// ---------------------------------------------------------------------------
+//
+// The content itself lives in `takomo::seed`, which drives the real state
+// machine and is tested there; this is just the CLI shell around it.
+
+fn run_seed(db: &str, preset: &str) -> Result<(), String> {
+    // Opening the store runs the migrations — which is the whole of `empty`.
+    let store = open_store(db)?;
+    match preset {
+        "empty" => {
+            println!("preset 'empty': schema only, no demo content.");
+            Ok(())
+        }
+        "dev" => {
+            let s = takomo::seed::dev(&store).map_err(|e| e.into_message())?;
+            if s.skipped {
+                println!("project '{}' already exists; nothing to seed.", s.project);
+            } else {
+                println!(
+                    "seeded project '{}': {} tickets across every workflow state, {} questions.",
+                    s.project, s.tickets, s.questions
+                );
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "unknown preset '{other}'. Use 'dev' (demo content) or 'empty' (schema only)."
+        )),
+    }
 }

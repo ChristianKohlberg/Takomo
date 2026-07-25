@@ -54,7 +54,7 @@ Need: only prompt engineering; no infra.
 Need: a worker box with git/GitHub auth, harness CLIs authenticated, and outbound access to takomo. (This is where "ideally remote" becomes real.)
 
 **Step 6 — environment & gates.** Runner adds `backlot up` before the session and injects `backlot ctx` + handrail brief; verdicts land in ticket metadata.
-Need: `stack.yaml` in target repos (backlot), `.handrail/` gates in target repos; backlot remote-substrate work only if the worker box can't run envs locally.
+Need: `backlot.yml` in target repos (backlot), `.handrail/` gates in target repos; backlot remote-substrate work only if the worker box can't run envs locally.
 
 **Step 7 — the doorbell.** SSE endpoint + push for `needs-decision`/`review` events: Telegram (official channel plugin, zero custom code) first; custom takomo channel post-preview.
 
@@ -76,5 +76,5 @@ Sort components by "state that must survive vs. compute that can die":
 - One reachable host for takomo (Tailscale box or managed platform) — the only new infrastructure.
 - One worker machine (can be the same box initially) with git + GitHub auth + authenticated harness CLIs.
 - GitHub webhook (or polling fallback) for merge auto-transition (step 8).
-- Target repos gain `stack.yaml` + `.handrail/` gates as they onboard (steps 6+).
+- Target repos gain `backlot.yml` + `.handrail/` gates as they onboard (steps 6+).
 - Token discipline: per-actor bearer tokens, `human` scope for gated transitions.
