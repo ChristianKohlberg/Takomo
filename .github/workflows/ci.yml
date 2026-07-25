@@ -47,7 +47,7 @@ jobs:
 
       # shellcheck is preinstalled on GitHub-hosted ubuntu runners.
       - name: ShellCheck
-        run: shellcheck clients/cli/takomo clients/cli/install.sh
+        run: shellcheck clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh
 
   mcp:
     name: MCP typecheck
