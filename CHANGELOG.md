@@ -5,7 +5,17 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). The `/v1` HTTP API evolves
 additively only.
 
-## [Unreleased]
+## [0.3.0] — 2026-07-25
+
+Human-in-the-loop, refined. The ask-a-human inbox is rebuilt to the "Aquarelle"
+design with a **DE/EN** language toggle, a **trailing-undo** answer flow
+(auto-advance + a 30s background undo), an **ⓘ ticket-context** popover/drawer,
+and a **follow-up thread** (bounce a question back to the agent for more
+research). Questions carry richer, decision-ready fields — **per-option
+descriptions, `confidence`, a recommendation rationale, a `summary`** — and can
+be **multi-select** or **reopened** (a conditional undo once the 30s window has
+passed). Work can be **promoted** to a named stage (prod/staging/published/…),
+and the takomo **octopus** is the site favicon.
 
 ### Added
 
