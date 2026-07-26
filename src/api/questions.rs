@@ -432,6 +432,76 @@ pub async fn reply(
     Ok(Json(question.to_json()))
 }
 
+const REVISE_FIELDS: [&str; 6] = [
+    "options",
+    "option_notes",
+    "recommended",
+    "recommended_multi",
+    "recommended_note",
+    "reason",
+];
+
+/// POST /v1/questions/{id}/options (write scope) — revise a still-open `choose`
+/// question's options.
+///
+/// Exists so an agent that learns something while answering a follow-up can fix
+/// the choices instead of withdrawing the question and losing the whole thread.
+/// `recommended`, `recommended_multi` and `recommended_note` are only touched
+/// when present in the body (send `recommended: null` to clear it); a
+/// recommendation left pointing at a removed option is a 422, not a silent drop.
+pub async fn revise_options(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let q = state
+        .store
+        .get_question(&id)?
+        .ok_or_else(|| ApiError::not_found("question", &id))?;
+    ctx.require_project(&q.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &REVISE_FIELDS)?;
+    if !obj.contains_key("options") {
+        return Err(ApiError::validation(
+            "validation.options",
+            "Field 'options' is required — send the full revised set (this replaces the options, it does not merge into them).",
+        ));
+    }
+    let (options, option_notes) = parse_options(obj)?;
+    let req = crate::store::ReviseOptionsRequest {
+        options,
+        option_notes,
+        recommended: obj.get("recommended").cloned(),
+        recommended_multi: match obj.get("recommended_multi") {
+            Some(_) => Some(get_string_array(obj, "recommended_multi")?.unwrap_or_default()),
+            None => None,
+        },
+        recommended_note: match obj.get("recommended_note") {
+            Some(Value::Null) => Some(None),
+            Some(v) => Some(Some(
+                v.as_str()
+                    .ok_or_else(|| {
+                        ApiError::validation(
+                            "validation.recommended_note",
+                            "recommended_note must be a string, or null to clear it.",
+                        )
+                    })?
+                    .to_string(),
+            )),
+            None => None,
+        },
+        reason: obj
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
+    let question = state.store.revise_question_options(&id, &ctx.actor, &req)?;
+    state.wake();
+    Ok(Json(question.to_json()))
+}
+
 // ---------------------------------------------------------------------------
 // Answer links: a per-question, expiring, write-once grant (see auth::AnswerCtx
 // and store/answer_grants.rs). Minting/revoking run on the normal token path;

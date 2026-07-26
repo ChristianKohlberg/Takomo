@@ -742,6 +742,59 @@ server.registerTool(
 );
 
 server.registerTool(
+  "takomo_options",
+  {
+    title: "Revise a choose question's options",
+    description:
+      "Revise a still-open 'choose' question's options. Use this when research (often the follow-up a " +
+      "human asked for) shows the choices you offered were wrong, incomplete, or misleading — better " +
+      "than withdrawing the question, which throws the whole thread away. Send the FULL replacement " +
+      "set (at least 2); it does not merge. `recommended` must be one of the revised options, so pass " +
+      "a new one whenever you drop the option you had recommended, or null to clear it. Give a " +
+      "`reason`: a human may already have read the old set. Options can only be revised while the " +
+      "question is open — a settled question keeps the choices it was decided on.",
+    inputSchema: {
+      id: z.string().describe("Question id (must still be open, and of kind 'choose')."),
+      options: z
+        .array(z.string())
+        .min(2)
+        .describe("The FULL revised option set — replaces the options, does not merge into them."),
+      option_notes: z
+        .array(z.string())
+        .optional()
+        .describe("One-line trade-off per option, parallel to options (same length, or omit)."),
+      recommended: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("New recommendation; must be one of the revised options. null clears it. Omit to keep."),
+      recommended_multi: z
+        .array(z.string())
+        .optional()
+        .describe("For a multi choose — the new recommended subset. Empty list clears it. Omit to keep."),
+      recommended_note: z.string().optional().describe("Short rationale for the recommendation. Omit to keep."),
+      reason: z.string().optional().describe("Why the options changed — recorded on the ticket."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { options: a.options };
+    // Only forward what the caller actually set: absent means "leave it alone",
+    // and an explicit null means "clear it".
+    if (a.option_notes !== undefined) body.option_notes = a.option_notes;
+    if (a.recommended !== undefined) body.recommended = a.recommended;
+    if (a.recommended_multi !== undefined) body.recommended_multi = a.recommended_multi;
+    if (a.recommended_note !== undefined) body.recommended_note = a.recommended_note;
+    if (a.reason !== undefined) body.reason = a.reason;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/questions/${encodeURIComponent(a.id)}/options`,
+      body,
+    });
+    return ok({ ok: true, question: res });
+  })
+);
+
+server.registerTool(
   "takomo_answer_link",
   {
     title: "Mint an answer link",

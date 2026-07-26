@@ -334,6 +334,30 @@ pub struct ReplyArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReviseOptionsArgs {
+    /// Question id (must still be open, and of kind 'choose').
+    pub id: String,
+    /// The FULL revised option set — this replaces the options, it does not
+    /// merge into them. At least 2.
+    pub options: Vec<String>,
+    /// Optional one-line trade-off per option, parallel to `options` (same
+    /// length, or omit entirely).
+    pub option_notes: Option<Vec<String>>,
+    /// New recommendation. Omit to keep the current one; it must be one of the
+    /// revised options, so pass this whenever you drop the option you had
+    /// recommended.
+    pub recommended: Option<String>,
+    /// For a multi choose: the new recommended set. Omit to keep, or send an
+    /// empty list to clear.
+    pub recommended_multi: Option<Vec<String>>,
+    /// Short rationale for the (new) recommendation. Omit to keep.
+    pub recommended_note: Option<String>,
+    /// Why the options changed — shown to the human who may already have read
+    /// the old set, and recorded on the ticket.
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AnswerLinkArgs {
     /// Question id to mint an answer link for.
     pub id: String,
@@ -690,6 +714,23 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Revise a still-open 'choose' question's options. Use this when research (often \
+        the follow-up a human asked for) shows the choices you offered were wrong, incomplete, or \
+        misleading — better than withdrawing the question, which throws the whole thread away. Send \
+        the FULL replacement set (at least 2); it does not merge. `recommended` must be one of the \
+        revised options, so pass a new one whenever you drop the option you had recommended, or null \
+        to clear it. Give a `reason`: a human may already have read the old set. Options can only be \
+        revised while the question is open — a settled question keeps the choices it was decided on."
+    )]
+    async fn takomo_options(
+        &self,
+        Parameters(a): Parameters<ReviseOptionsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_revise_options(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
         description = "Mint a per-question answer link for an outside expert who shouldn't hold a \
         token. Requires the human scope (and, for an approve question, the matching expert:<tag>). \
         Returns a single-use, expiring tka_ token + a /board#a=<token> path — share it with the person."
@@ -1038,6 +1079,36 @@ impl TakomoMcp {
             "ok": true,
             "question": question.to_json(),
             "note": "Replied — the thread is back with the human to answer. The ticket stays parked; re-check later.",
+        }))
+    }
+
+    fn do_revise_options(&self, auth: &AuthCtx, a: ReviseOptionsArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        let req = crate::store::ReviseOptionsRequest {
+            options: a.options,
+            option_notes: a.option_notes.unwrap_or_default(),
+            // `None` means "leave it alone" all the way down, so an agent that
+            // only rewords an option need not restate the recommendation.
+            recommended: a.recommended.map(Value::from),
+            recommended_multi: a.recommended_multi,
+            recommended_note: a.recommended_note.map(Some),
+            reason: a.reason,
+        };
+        let question = self
+            .state
+            .store
+            .revise_question_options(&a.id, &auth.actor, &req)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+            "note": "Options revised. The thread and whose-turn state are untouched; a human who already read the old set sees the change on the ticket.",
         }))
     }
 
