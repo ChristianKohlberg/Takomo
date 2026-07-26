@@ -790,7 +790,7 @@ cmd_person_add() {
   while [ $# -gt 0 ]; do
     case "$1" in
       -*) rest+=("$1" "${2:-}"); shift 2 ;;
-      *) [ -z "$handle" ] && { handle=$1; shift; } || die "person add: unexpected argument '$1'" ;;
+      *) if [ -z "$handle" ]; then handle=$1; shift; else die "person add: unexpected argument '$1'"; fi ;;
     esac
   done
   [ -n "$handle" ] || die "person add: HANDLE is required (e.g. ada); put the display name in --label"
