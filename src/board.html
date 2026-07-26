@@ -171,7 +171,7 @@
   #detail .dbody { padding: 16px 24px; }
   #detail section { margin-bottom: 20px; }
   #detail h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 700; margin: 0 0 8px; }
-  #detail .body-text { white-space: pre-wrap; word-break: break-word; font-size: 13.5px; line-height: 1.65; color: var(--ink2); }
+  #detail .body-text { word-break: break-word; font-size: 13.5px; line-height: 1.65; color: var(--ink2); }
   #detail .kv { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 12.5px; color: var(--muted); }
   #detail .kv .mono { font-family: var(--mono); color: var(--text); }
   .callout { background: var(--chip-bg); border-radius: 11px; padding: 14px 16px; }
@@ -180,7 +180,28 @@
   .callout a.answer-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 680; color: #fff; background: var(--accent); padding: 8px 14px; border-radius: 8px; text-decoration: none; }
   .comment { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; margin-bottom: 10px; }
   .comment .who { font-size: 11px; color: var(--muted); font-family: var(--mono); }
-  .comment .txt { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+  .md { color: var(--ink2); }
+  .md p { margin: 0 0 12px; line-height: 1.6; } .md ul { margin: 0 0 12px; padding-left: 20px; } .md li { margin: 4px 0; line-height: 1.55; }
+  .md b { color: var(--text); } .md code { font-family: var(--mono); font-size: 12px; background: var(--hover); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+  /* markdown blocks — shared vocabulary with the other surface (see mdNode) */
+  .md h3, .md h4, .md h5, .md h6 { color: var(--text); margin: 18px 0 8px; line-height: 1.35; }
+  .md h3 { font-size: 15px; font-weight: 700; } .md h4 { font-size: 13.5px; font-weight: 700; }
+  .md h5, .md h6 { font-size: 12.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md ol { margin: 0 0 12px; padding-left: 22px; }
+  .md blockquote { margin: 0 0 12px; padding: 2px 0 2px 12px; border-left: 2px solid var(--border); color: var(--muted); }
+  .md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+  .md a { color: var(--accent2); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+  /* Fenced code: scrolls in its own box so a long line never widens the page. */
+  .md pre { margin: 0 0 12px; padding: 10px 12px; background: var(--hover); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; }
+  .md pre code { font-family: var(--mono); font-size: 12px; background: none; padding: 0; border-radius: 0; color: var(--ink2); white-space: pre; }
+  /* Tables likewise: the wrapper scrolls, the page does not. */
+  .md-table { overflow-x: auto; margin: 0 0 12px; }
+  .md table { border-collapse: collapse; font-size: 12.5px; }
+  .md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+  .md th { color: var(--text); font-weight: 700; background: var(--hover); white-space: nowrap; }
+  .comment .txt { word-break: break-word; font-size: 13px; }
   .dep-item, .link-item { padding: 3px 0; word-break: break-all; font-size: 13px; color: var(--ink2); }
   .dep-item .mono, .link-item .mono { font-family: var(--mono); font-size: 12px; }
   a { color: var(--accent2); }
@@ -205,7 +226,7 @@
   .q-item .q-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
   .q-item .q-title { font-weight: 680; margin: 4px 0; word-break: break-word; }
   .q-item .q-meta { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-bottom: 6px; overflow-wrap: anywhere; }
-  .q-item .q-body { color: var(--ink2); white-space: pre-wrap; word-break: break-word; margin: 6px 0 8px; font-size: 13px; line-height: 1.55; }
+  .q-item .q-body { color: var(--ink2); word-break: break-word; margin: 6px 0 8px; font-size: 13px; line-height: 1.55; }
   .q-item .q-rec { font-size: 12.5px; color: var(--muted); background: var(--col-bg); border-radius: 8px; padding: 8px 11px; margin: 6px 0; }
   .q-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
   .q-actions button { max-width: 100%; overflow-wrap: anywhere; text-align: left; border-radius: 9px; }
@@ -362,22 +383,161 @@
     return e;
   }
   function esc(s) { return (s == null ? "" : String(s)); }
-  // Minimal, XSS-safe markdown (bold + inline code), matching /inbox so a body
-  // renders the same on both surfaces. Builds only text nodes + <b>/<code>.
-  function inlineMd(parent, s) {
+  // ---- markdown ----
+  // Small block + inline renderer built purely from DOM nodes (never innerHTML),
+  // so nothing an agent writes into a body or a thread message can turn into
+  // markup. Covers what agents actually produce: headings, tables, ordered and
+  // unordered lists, fenced code, blockquotes, rules, and inline
+  // bold/italic/code/links.
+  //
+  // Kept identical between /board and /inbox: the same body has to read the same
+  // on both surfaces, and two copies quietly drifting apart is how that stops
+  // being true.
+  var MD_INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]*\]\([^)\s]+\))/g;
+  var MD_HEADING = /^(#{1,6})\s+(.*)$/;
+  var MD_RULE = /^(-{3,}|\*{3,}|_{3,})$/;
+  var MD_OL = /^\d+[.)]\s+/;
+  var MD_UL = /^[-*+]\s+/;
+  var MD_QUOTE = /^>\s?/;
+  var MD_FENCE = /^```/;
+
+  // Only http(s) and mailto survive. Anything else (javascript:, data:) renders
+  // as its literal markdown, so a hostile link cannot hide behind link text.
+  function mdHref(u) { return /^(https?:\/\/|mailto:)/i.test(u) ? u : null; }
+
+  function mdInline(parent, s) {
     s = String(s == null ? "" : s);
-    var re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
     var last = 0, m;
-    while ((m = re.exec(s)) !== null) {
+    MD_INLINE.lastIndex = 0;
+    while ((m = MD_INLINE.exec(s)) !== null) {
       if (m.index > last) parent.appendChild(document.createTextNode(s.slice(last, m.index)));
-      var tok = m[0];
-      if (tok.indexOf("**") === 0) { parent.appendChild(el("b", null, tok.slice(2, -2))); }
-      else { parent.appendChild(el("code", null, tok.slice(1, -1))); }
-      last = re.lastIndex;
+      var tok = m[0], c0 = tok.charAt(0);
+      if (c0 === "`") {
+        parent.appendChild(el("code", null, tok.slice(1, -1)));
+      } else if (tok.indexOf("**") === 0) {
+        parent.appendChild(el("b", null, tok.slice(2, -2)));
+      } else if (c0 === "*" || c0 === "_") {
+        parent.appendChild(el("i", null, tok.slice(1, -1)));
+      } else {
+        var cut = tok.indexOf("](");
+        var href = mdHref(tok.slice(cut + 2, -1));
+        if (href) {
+          var a = el("a", null, tok.slice(1, cut));
+          a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+          parent.appendChild(a);
+        } else {
+          parent.appendChild(document.createTextNode(tok));
+        }
+      }
+      last = MD_INLINE.lastIndex;
     }
     if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
   }
-  function mdBody(cls, s) { var d = el("div", cls); inlineMd(d, s); return d; }
+
+  // `| a | b |` -> ["a","b"], tolerating the optional outer pipes.
+  function mdCells(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(function (c) { return c.trim(); });
+  }
+  // A table is a pipe row whose NEXT line is a |---|---| separator. Requiring the
+  // separator keeps prose that merely contains a pipe from becoming a table.
+  function mdIsTable(lines, i) {
+    if (lines[i].indexOf("|") === -1 || i + 1 >= lines.length) return false;
+    var sep = lines[i + 1].trim();
+    return sep.indexOf("|") !== -1 && /^\|?[\s:|-]+$/.test(sep) && sep.indexOf("-") !== -1;
+  }
+  // Does line `i` open a block? Used both to dispatch and to end a paragraph, so
+  // the two can never disagree about where a paragraph stops.
+  function mdIsBlock(lines, i) {
+    var t = lines[i].trim();
+    return t === "" || MD_FENCE.test(t) || MD_HEADING.test(t) || MD_RULE.test(t) ||
+      MD_OL.test(t) || MD_UL.test(t) || MD_QUOTE.test(t) || mdIsTable(lines, i);
+  }
+
+  function mdNode(s, cls) {
+    var wrap = el("div", cls ? "md " + cls : "md");
+    var lines = String(s == null ? "" : s).replace(/\r\n?/g, "\n").split("\n");
+    var i = 0;
+    while (i < lines.length) {
+      var t = lines[i].trim();
+      if (t === "") { i++; continue; }
+
+      if (MD_FENCE.test(t)) {
+        var lang = t.slice(3).trim();
+        var buf = [];
+        i++;
+        while (i < lines.length && !MD_FENCE.test(lines[i].trim())) { buf.push(lines[i]); i++; }
+        if (i < lines.length) i++;                       // closing fence
+        var pre = el("pre"), code = el("code", null, buf.join("\n"));
+        if (lang) code.setAttribute("data-lang", lang);
+        pre.appendChild(code); wrap.appendChild(pre);
+        continue;
+      }
+
+      var h = MD_HEADING.exec(t);
+      if (h) {
+        // Start at h3: these render inside panels that own h1/h2 already.
+        var head = el("h" + Math.min(6, h[1].length + 2));
+        mdInline(head, h[2]); wrap.appendChild(head); i++;
+        continue;
+      }
+
+      if (MD_RULE.test(t)) { wrap.appendChild(el("hr")); i++; continue; }
+
+      if (mdIsTable(lines, i)) {
+        var head2 = mdCells(lines[i]);
+        i += 2;                                          // header + separator
+        var scroll = el("div", "md-table");              // owns the x-overflow
+        var table = el("table"), thead = el("thead"), htr = el("tr");
+        head2.forEach(function (c) { var th = el("th"); mdInline(th, c); htr.appendChild(th); });
+        thead.appendChild(htr); table.appendChild(thead);
+        var tbody = el("tbody");
+        while (i < lines.length && lines[i].trim() !== "" && lines[i].indexOf("|") !== -1) {
+          var tr = el("tr");
+          mdCells(lines[i]).forEach(function (c) { var td = el("td"); mdInline(td, c); tr.appendChild(td); });
+          tbody.appendChild(tr); i++;
+        }
+        table.appendChild(tbody); scroll.appendChild(table); wrap.appendChild(scroll);
+        continue;
+      }
+
+      if (MD_QUOTE.test(t)) {
+        var bq = el("blockquote");
+        var firstQ = true;
+        while (i < lines.length && MD_QUOTE.test(lines[i].trim())) {
+          if (!firstQ) bq.appendChild(el("br"));
+          mdInline(bq, lines[i].trim().replace(MD_QUOTE, ""));
+          firstQ = false; i++;
+        }
+        wrap.appendChild(bq);
+        continue;
+      }
+
+      if (MD_OL.test(t) || MD_UL.test(t)) {
+        var ordered = MD_OL.test(t);
+        var list = el(ordered ? "ol" : "ul");
+        var re = ordered ? MD_OL : MD_UL;
+        while (i < lines.length && re.test(lines[i].trim())) {
+          var li = el("li");
+          mdInline(li, lines[i].trim().replace(re, ""));
+          list.appendChild(li); i++;
+        }
+        wrap.appendChild(list);
+        continue;
+      }
+
+      // Paragraph. A single newline becomes a <br> rather than being reflowed:
+      // agents hand-format these, and silently joining their lines changes what
+      // they wrote.
+      var p = el("p"), first = true;
+      while (i < lines.length && !mdIsBlock(lines, i)) {
+        if (!first) p.appendChild(el("br"));
+        mdInline(p, lines[i].trim());
+        first = false; i++;
+      }
+      wrap.appendChild(p);
+    }
+    return wrap;
+  }
   // Make a clickable non-button element keyboard-operable + exposed to AT.
   function activate(node, handler, role) {
     node.setAttribute("role", role || "button");
@@ -907,7 +1067,7 @@
       var aw = el("div", "q-rec", "⤺ " + L().awaiting + (q.asked_by || "agent") + L().awaitingSub);
       item.appendChild(aw);
     }
-    if (q.body) item.appendChild(mdBody("q-body", q.body));
+    if (q.body) item.appendChild(mdNode(q.body, "q-body"));
     if (q.recommended != null && q.recommended !== "") {
       item.appendChild(el("div", "q-rec", (q.asked_by || "agent") + " " + L().recommends + " " + (typeof q.recommended === "string" ? q.recommended : JSON.stringify(q.recommended))));
     }
@@ -1007,7 +1167,7 @@
     // body
     var sb = el("section");
     sb.appendChild(el("h3", null, L().description));
-    sb.appendChild(el("div", "body-text", t.body ? t.body : L().noDescription));
+    sb.appendChild(t.body ? mdNode(t.body, "body-text") : el("div", "body-text", L().noDescription));
     b.appendChild(sb);
 
     // deps
@@ -1087,7 +1247,7 @@
             meta.appendChild(document.createTextNode(p.url));
           }
           if (p.ref) { if (meta.childNodes.length) meta.appendChild(document.createTextNode(" · ")); meta.appendChild(document.createTextNode(L().refLabel + p.ref)); }
-          if (p.note) { if (meta.childNodes.length) meta.appendChild(document.createTextNode(" · ")); meta.appendChild(document.createTextNode(p.note)); }
+          if (p.note) { if (meta.childNodes.length) meta.appendChild(document.createTextNode(" · ")); mdInline(meta, p.note); }
           row.appendChild(meta);
         }
         plist.appendChild(row);
@@ -1106,7 +1266,7 @@
       comments.forEach(function (c) {
         var cc = el("div", "comment");
         cc.appendChild(el("div", "who", esc(c.author) + " · " + esc(c.created_at)));
-        cc.appendChild(el("div", "txt", esc(c.body)));
+        cc.appendChild(mdNode(c.body, "txt"));
         sc.appendChild(cc);
       });
     }

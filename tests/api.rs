@@ -3557,6 +3557,183 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
     assert_eq!(closed["code"], "question.not_open");
 }
 
+/// Revising a still-open choose question's options: the point is that an agent
+/// which learns something mid-thread can fix the choices instead of withdrawing
+/// the question and losing the thread. The revision must leave the question
+/// coherent (no recommendation pointing at a removed option), must not touch
+/// whose turn it is, and must be refused once the question is settled.
+#[tokio::test]
+async fn question_options_can_be_revised_while_open() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Pick a cache eviction policy").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Which eviction policy?",
+                "options": ["LRU", "LFU", "FIFO"],
+                "recommended": "LFU",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+
+    // Reword/extend while keeping the recommended option: recommendation stands,
+    // and whose turn it is must not move.
+    let (s, rev) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({
+                "options": ["LRU", "LFU", "ARC"],
+                "reason": "FIFO thrashes on our access pattern; ARC is the real contender",
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "revise failed: {rev}");
+    assert_eq!(rev["options"], json!(["LRU", "LFU", "ARC"]));
+    assert_eq!(rev["recommended"], "LFU", "still a valid option, so kept");
+    assert_eq!(rev["awaiting"], "human", "revising is not a turn change");
+    assert_eq!(rev["status"], "open");
+
+    // Dropping the recommended option without naming a new one is refused —
+    // a dangling recommendation must not be silently dropped.
+    let (s, dangling) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["LRU", "ARC"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{dangling}");
+    assert_eq!(dangling["code"], "validation.recommended");
+    assert!(
+        dangling["message"].as_str().unwrap().contains("LFU"),
+        "the error must name the stale recommendation: {dangling}"
+    );
+
+    // Same revision, now naming the new recommendation.
+    let (s, rev2) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["LRU", "ARC"], "recommended": "ARC", "recommended_note": "adaptive" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{rev2}");
+    assert_eq!(rev2["recommended"], "ARC");
+    assert_eq!(rev2["recommended_note"], "adaptive");
+
+    // Explicit null clears the recommendation.
+    let (s, cleared) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["LRU", "ARC"], "recommended": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{cleared}");
+    assert!(cleared["recommended"].is_null(), "{cleared}");
+
+    // Below two options it is no longer a choice.
+    let (s, one) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["LRU"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{one}");
+    assert_eq!(one["code"], "validation.options");
+
+    // The audit trail: a ticket comment naming the change, and an event.
+    let (s, t) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let comments = t["comments"].as_array().unwrap();
+    assert!(
+        comments.iter().any(|c| {
+            let b = c["body"].as_str().unwrap_or("");
+            // The comment carries the before/after sets and the stated reason, so
+            // a human who read the old options can see exactly what moved.
+            b.contains("revised the options")
+                && b.contains("LRU, LFU, FIFO")
+                && b.contains("FIFO thrashes on our access pattern")
+        }),
+        "expected a revision comment naming the change: {comments:?}"
+    );
+
+    // A human holding the ORIGINAL option list cannot land a stale pick.
+    let (s, stale) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "FIFO" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{stale}");
+    assert_eq!(stale["code"], "validation.answer");
+
+    // Answer it for real, then revising is refused: the choices a decision was
+    // made on must stay on the record.
+    let (s, answered) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": "ARC" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    let (s, settled) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["LRU", "LFU"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{settled}");
+    assert_eq!(settled["code"], "question.not_open");
+}
+
+/// Options only exist on a `choose` question, so revising any other kind is a
+/// validation error rather than a silent no-op.
+#[tokio::test]
+async fn question_options_revision_rejects_non_choose_kinds() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Drop the legacy table?").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Drop it?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let qid = body["question"]["id"].as_str().unwrap().to_string();
+    let (s, err) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["yes", "no"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "validation.kind");
+    assert!(
+        err["message"].as_str().unwrap().contains("confirm"),
+        "{err}"
+    );
+}
+
 #[tokio::test]
 async fn question_multi_select_choose_round_trip_and_answer() {
     let app = TestApp::spawn().await;
