@@ -53,6 +53,10 @@ Prefer commutative writes — they never conflict:
 
 Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<version>"`, retry on `conflict.version`). If you do that often, you should be commenting instead.
 
+## Write the way the project writes
+
+A project can carry its own writing conventions, and the store hands them to you before you write anything: a **`style_hint`** (the project's house style for ticket titles/bodies, comments, and questions) and a **`language_hint`** (the human-facing language questions belong in) on `takomo next`/`claim`/`start`/`show`/`new`. Read them and follow them as written — they are a project decision, not a suggestion from a passing reviewer. `takomo project style <project>` prints the current guide; over MCP both also appear on `takomo_workflow` as `style_guide` / `question_language`. Neither is enforced server-side, so nothing rejects sloppy text — which is exactly why it is on you to honor it.
+
 ## Finishing: the commit is the proof
 
 Before `takomo done <id>`, attach the commit that closes the ticket:

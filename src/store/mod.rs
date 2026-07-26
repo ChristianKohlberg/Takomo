@@ -22,7 +22,7 @@ pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
-pub use projects::DeletedCounts;
+pub use projects::{normalize_style_guide, DeletedCounts, MAX_STYLE_GUIDE_CHARS};
 pub use questions::{
     question_quality_hints, AskRequest, QuestionFilter, ReviseOptionsRequest, TimeoutAction,
     MAX_QUESTIONS_PAGE, QUESTION_KINDS,
@@ -194,6 +194,12 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "question_language") {
         conn.execute("ALTER TABLE projects ADD COLUMN question_language TEXT", [])?;
     }
+    // projects.style_guide: the project's house style for the text agents write
+    // — ticket titles/bodies and human-facing questions (nullable = no
+    // preference). Additive; older project tables predate it.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "style_guide") {
+        conn.execute("ALTER TABLE projects ADD COLUMN style_guide TEXT", [])?;
+    }
     Ok(())
 }
 
@@ -203,6 +209,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name              TEXT NOT NULL,
   workflow_json     TEXT NOT NULL,
   question_language TEXT,
+  style_guide       TEXT,
   created_at        INTEGER NOT NULL
 );
 

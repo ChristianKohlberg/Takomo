@@ -546,3 +546,86 @@ async fn hosted_mcp_tag_tool_tags_and_filters() {
         "tag_kind=component should list {id}: {ids:?}"
     );
 }
+
+#[tokio::test]
+async fn hosted_mcp_surfaces_project_style_guide() {
+    let app = spawn().await;
+    app.ok_call(&app.human, "initialize", init_params()).await;
+    let guide = "Two sentences max. Plain language, no marketing voice.";
+
+    // With no style guide set, the work loop stays free of the extra key.
+    let bare = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "before", "type": "task" }),
+        )
+        .await;
+    assert!(
+        bare.get("style_hint").is_none(),
+        "no guide set → no style_hint: {bare}"
+    );
+
+    // Admin sets the project's house style for agent-written text.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.human)
+        .json(&json!({ "style_guide": guide }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // takomo_workflow carries it.
+    let wf = app
+        .tool_ok(&app.human, "takomo_workflow", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(wf["style_guide"], guide);
+
+    // takomo_new echoes it at the moment the ticket text was written.
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "stil", "type": "task" }),
+        )
+        .await;
+    assert_eq!(created["style_hint"]["style_guide"], guide);
+    let id = created["ticket"]["id"].as_str().unwrap().to_string();
+
+    // …as do the claim/start/show work-loop responses.
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "spec" }),
+    )
+    .await;
+    app.tool_ok(
+        &app.human,
+        "takomo_transition",
+        json!({ "id": id, "to": "ready" }),
+    )
+    .await;
+    let started = app
+        .tool_ok(&app.worker, "takomo_start", json!({ "id": id }))
+        .await;
+    assert_eq!(started["style_hint"]["style_guide"], guide);
+    let shown = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": id }))
+        .await;
+    assert_eq!(shown["style_hint"]["style_guide"], guide);
+
+    // …and the ask response carries it too.
+    let asked = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({ "id": id, "kind": "confirm", "title": "Proceed?" }),
+        )
+        .await;
+    assert!(
+        asked["note"].as_str().unwrap().contains(guide),
+        "ask note: {asked}"
+    );
+}

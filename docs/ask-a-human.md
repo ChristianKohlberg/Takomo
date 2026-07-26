@@ -229,7 +229,15 @@ Then `takomo questions --mine` (or the board's **mine** toggle) shows only the
 questions routed to that person's tags. No people/identity table is needed — it
 rides the existing token scopes.
 
-## Per-project question language
+## Per-project conventions: language and style
+
+Two project settings shape *how* agents write, not what they do. Both exist for
+the same reason: to reach the **agent at the source**, so the text lands right
+rather than being flagged after the fact. Both are **soft nudges** — surfaced,
+never enforced — and both are project settings, so every agent and viewer sees
+the same thing.
+
+### Question language
 
 A project can declare the human-facing language its questions should be written
 in — e.g. **German** for a revamp project whose reviewers are German-speaking,
@@ -237,24 +245,53 @@ even though the agents and the underlying tickets work in English. Set it once
 (admin):
 
 ```sh
-takomo project language <project> German      # or: takomo project create … --language German
+takomo project language <project> German      # show current: omit the value
+takomo project language <project> --clear
 # over HTTP:  PUT /v1/projects/<project>/language  {"language":"German"}   (admin)
-# clear it:   takomo project language <project> --clear
+# at creation: POST /v1/projects  {"id":"…","name":"…","question_language":"German"}
 ```
 
-The point is to reach the **agent at the source**, so the question text lands in
-the right language rather than being flagged after the fact. The setting is
-surfaced wherever an agent works:
+Surfaced as a **`language_hint`** on `takomo_next` / `takomo_claim` /
+`takomo_start` / `takomo_show`, as **`question_language`** on
+`takomo_workflow`, as a reminder in the `takomo_ask` result and its tool
+description, and as a line in the MCP server instructions. The inbox also shows
+it as a reminder to the answering human.
 
-- a **`language_hint`** on `takomo_next` / `takomo_claim` / `takomo_start` /
-  `takomo_show` — so the agent sees it *before* it asks;
-- **`question_language`** on `takomo_workflow`;
-- a reminder in the `takomo_ask` result and its tool description;
-- and a line in the MCP server instructions.
+### Style guide
 
-It's a **soft nudge**, never enforced (language can't be reliably detected
-server-side). The inbox also shows it as a reminder to the answering human. It's
-a project setting, so every viewer and agent sees the same thing.
+A project can also declare its **house style for the text agents write** — ticket
+titles and bodies, comments, and human-facing questions. This is the place for
+the taste that would otherwise live in a client-side prompt: how long, what
+voice, what an agent should not do.
+
+```sh
+takomo project style takomo "Two sentences max. Plain language, no marketing voice. \
+Prefer a yes/no or a short choice over an open question."
+
+takomo project style takomo --file docs/ticket-style.md   # multi-line, from a file ('-' for stdin)
+takomo project style takomo                               # show the current guide
+takomo project style takomo --clear
+# over HTTP:  PUT /v1/projects/<project>/style  {"style_guide":"…"}   (admin)
+# at creation: POST /v1/projects  {"id":"…","name":"…","style_guide":"…"}
+```
+
+Surfaced as a **`style_hint`** on `takomo_new` / `takomo_next` /
+`takomo_claim` / `takomo_start` / `takomo_show`, as **`style_guide`** on
+`takomo_workflow`, and echoed on the `takomo_ask` / `POST /v1/questions`
+response — `takomo_new` and `ask` carry it because those are the moments an agent
+has just written something and can still fix it.
+
+It is capped at **2000 characters** (`422 project.style_guide_too_long` over
+that). The cap is the point: the guide rides along on every work-loop response,
+so it has to stay a handful of conventions an agent will actually read, not a
+second copy of the project's documentation. Put anything longer in your repo docs
+and reference it from the guide. A blank string clears it, same as `null`.
+
+**Why here and not in a client config.** A committed client config (`.takomo/`)
+is only read by the CLI — an agent on MCP, or any other client, never sees it,
+and neither does anyone reading the project on the board. A project setting
+reaches every client through the same rails as the language hint, and changing it
+doesn't mean redistributing a skill.
 
 ## Timeouts
 

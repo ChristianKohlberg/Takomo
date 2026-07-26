@@ -7,3 +7,8 @@
 
 # Takomo agent token (secret) — config is committed, token is not
 .takomo/token
+
+# Claude Code's isolated agent worktrees — real git worktrees of this repo, so
+# they must never be tracked (and untracked they make tooling that hashes the
+# working tree complain).
+.claude/worktrees/
