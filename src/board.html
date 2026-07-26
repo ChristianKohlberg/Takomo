@@ -156,6 +156,56 @@
   .uw-normal { color: var(--normal); font-weight: 600; }
   .uw-low { color: var(--low); font-weight: 600; }
 
+  /* ---- project settings modal (admin only) ----
+     A wide, scrollable sheet rather than a drawer: the style guide is a
+     paragraph-sized field, and editing it beside the language setting reads as
+     one "how this project writes" surface. Its scrim sits above the drawers so
+     opening it from anywhere is unambiguous. */
+  .modal-scrim {
+    position: fixed; inset: 0; background: var(--overlay); z-index: 70;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+    animation: tkFade .15s ease;
+  }
+  @keyframes tkFade { from { opacity: 0 } to { opacity: 1 } }
+  .sheet {
+    width: min(760px, 100%); max-height: min(88vh, 900px); display: flex; flex-direction: column;
+    background: var(--panel); border-radius: 16px; box-shadow: 0 40px 90px -30px rgba(0,0,0,.55);
+    overflow: hidden;
+  }
+  .sheet > .sh { display: flex; align-items: flex-start; gap: 12px; padding: 22px 26px 16px; border-bottom: 1px solid var(--border-soft); }
+  .sheet > .sh .titles { flex: 1 1 auto; min-width: 0; }
+  .sheet > .sh h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+  .sheet > .sh .sub { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  .sheet > .sh .sub .mono { font-family: var(--mono); color: var(--ink2); }
+  .sheet > .sh .close { background: transparent; border: none; font-size: 22px; line-height: 1; color: var(--muted); padding: 0 4px; }
+  .sheet > .sb { padding: 20px 26px; overflow-y: auto; flex: 1 1 auto; }
+  .sheet > .sf { display: flex; align-items: center; gap: 12px; padding: 16px 26px; border-top: 1px solid var(--border-soft); background: var(--col-bg); }
+  .sheet > .sf .grow { flex: 1 1 auto; }
+  .sheet > .sf button { height: 40px; padding: 0 18px; border-radius: 9px; font-weight: 660; }
+  .sheet > .sf button[disabled] { opacity: .5; cursor: not-allowed; }
+  .sheet > .sf .cancel { border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+  .sheet .fld { margin-bottom: 22px; }
+  .sheet .fld:last-child { margin-bottom: 4px; }
+  .sheet .fld label { display: block; font-size: 13px; font-weight: 680; margin-bottom: 4px; }
+  .sheet .fld .help { font-size: 12.5px; color: var(--muted); line-height: 1.55; margin-bottom: 9px; }
+  .sheet .fld input[type=text], .sheet .fld textarea {
+    width: 100%; background: var(--col-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px; color: var(--text); font: inherit;
+  }
+  .sheet .fld textarea { min-height: 190px; resize: vertical; line-height: 1.6; }
+  .sheet .fld input[type=text]:focus, .sheet .fld textarea:focus { outline: 2px solid var(--sel-border); outline-offset: -1px; }
+  .sheet .cnt { display: flex; align-items: baseline; gap: 8px; margin-top: 7px; font-size: 12px; color: var(--muted); }
+  .sheet .cnt .n { font-family: var(--mono); }
+  .sheet .cnt .n.warn { color: var(--high); }
+  .sheet .cnt .n.over { color: var(--crit); font-weight: 700; }
+  .sheet .msg { font-size: 13px; line-height: 1.5; }
+  .sheet .msg.err { color: var(--crit); }
+  .sheet .msg.ok { color: var(--ok); font-weight: 660; }
+  @media (max-width: 620px) {
+    .modal-scrim { padding: 0; align-items: stretch; }
+    .sheet { width: 100%; max-height: 100%; border-radius: 0; }
+  }
+
   /* ---- detail panel ---- */
   #overlay { position: fixed; inset: 0; background: var(--overlay); display: none; z-index: 20; }
   #overlay.open { display: block; }
@@ -284,12 +334,14 @@
   <label class="archtoggle"><input type="checkbox" id="showarch"> <span id="arch-label">archived</span></label>
   <button class="iconbtn ghost" id="inbox-btn"><span id="askhuman-label">Ask a human</span><span class="badge zero" id="inbox-count">0</span></button>
   <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
+  <button class="ghost hidden" id="settings-btn"><span id="settings-label">Settings</span></button>
   <button class="ghost" id="refresh"><span id="refresh-label">Refresh</span></button>
   <button class="ghost" id="signout"><span id="signout-label">Sign out</span></button>
 </header>
 
 <div id="board"></div>
 
+<div id="modal-root"></div>
 <div id="overlay"></div>
 <aside id="inbox" aria-hidden="true">
   <div class="dhead">
@@ -331,8 +383,8 @@
 
   // ---- i18n (shared vocabulary with /inbox) ----
   var STR = {
-    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", proofCommit:"Nachweis-Commit", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", noneForTicket:"Keine offenen Fragen für dieses Ticket.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", allTickets:"Alle Tickets", allTags:"Alle Tags", allValues:"Alle", tagsHdr:"Tags", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref " },
-    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", proofCommit:"Proof commit", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", noneForTicket:"No open questions for this ticket.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", allTickets:"All tickets", allTags:"All tags", allValues:"All", tagsHdr:"Tags", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref " }
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", proofCommit:"Nachweis-Commit", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", noneForTicket:"Keine offenen Fragen für dieses Ticket.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", allTickets:"Alle Tickets", allTags:"Alle Tags", allValues:"Alle", tagsHdr:"Tags", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref ", settings:"Einstellungen", setTitle:"Projekt-Einstellungen", setSub:"Wie dieses Projekt schreibt. Beides ist ein Hinweis an die Agenten — nichts wird erzwungen.", setLangLabel:"Sprache der Fragen", setLangHelp:"Die menschlich sichtbare Sprache, in der Agenten Fragen an Menschen stellen sollen (z. B. „German“). Leer lassen für keine Vorgabe.", setLangPh:"z. B. German", setStyleLabel:"Stil-Leitfaden", setStyleHelp:"Der Hausstil für Texte, die Agenten schreiben — Ticket-Titel und -Beschreibungen, Kommentare und Fragen. Agenten erhalten ihn bei jedem Arbeitsschritt, bevor sie schreiben.", setStylePh:"z. B. Maximal zwei Sätze. Klare Sprache, kein Marketing-Ton. Lieber eine Ja/Nein-Frage als eine offene.", setChars:"Zeichen", setOver:"über dem Limit", setSave:"Speichern", setSaving:"Speichern…", setSaved:"Gespeichert.", setCancel:"Abbrechen", setLoading:"lädt…", setLoadErr:"Einstellungen konnten nicht geladen werden: " },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", proofCommit:"Proof commit", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", noneForTicket:"No open questions for this ticket.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", allTickets:"All tickets", allTags:"All tags", allValues:"All", tagsHdr:"Tags", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref ", settings:"Settings", setTitle:"Project settings", setSub:"How this project writes. Both are hints to the agents — neither is enforced.", setLangLabel:"Question language", setLangHelp:"The human-facing language agents should phrase ask-a-human questions in (e.g. “German”). Leave empty for no preference.", setLangPh:"e.g. German", setStyleLabel:"Style guide", setStyleHelp:"The house style for text agents write — ticket titles and bodies, comments, and questions. Agents get it on every work-loop call, before they write.", setStylePh:"e.g. Two sentences max. Plain language, no marketing voice. Prefer a yes/no or a short choice over an open question.", setChars:"characters", setOver:"over the limit", setSave:"Save", setSaving:"Saving…", setSaved:"Saved.", setCancel:"Cancel", setLoading:"loading…", setLoadErr:"Could not load settings: " }
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
   function L() { return STR[state.lang]; }
@@ -578,8 +630,15 @@
         }
         if (!r.ok) {
           return r.text().then(function (t) {
+            // takomo error bodies are flat ({code, message, remedy}); the nested
+            // {error:{message}} shape is only a fallback. Reading `message` first
+            // is what surfaces a teaching remedy instead of raw JSON.
             var msg = t;
-            try { msg = JSON.parse(t).error ? JSON.parse(t).error.message : t; } catch (_) {}
+            try {
+              var j = JSON.parse(t);
+              msg = j.message || (j.error && j.error.message) || t;
+              if (j.remedy) msg += " — " + j.remedy;
+            } catch (_) {}
             var e = new Error(msg || ("HTTP " + r.status)); e.status = r.status; throw e;
           });
         }
@@ -655,6 +714,9 @@
   $("projsel").addEventListener("change", function () {
     state.project = $("projsel").value;
     localStorage.setItem(LS_PROJECT, state.project);
+    // The settings sheet is bound to one project; leaving it open across a switch
+    // would show one project's settings while Save wrote to another.
+    if (state.settings) closeSettings();
     // Epics, tickets and tags are per-project; a stale filter from another project makes no sense.
     state.epicFilter = ""; localStorage.setItem(LS_EPIC, ""); state.expanded = {};
     setTicketFilter("");
@@ -761,9 +823,20 @@
         .map(function (s) { return s.slice("expert:".length); });
       state.me = { scopes: scopes, expertise: expertise, canAnswer: scopes.indexOf("human") !== -1 };
       $("mine-wrap").classList.toggle("hidden", expertise.length === 0);
+      syncSettingsBtn();
     }).catch(function () {
       state.me = { scopes: [], expertise: [], canAnswer: false };
+      syncSettingsBtn();
     });
+  }
+
+  // The settings sheet writes project config, so it is admin-only. Share sessions
+  // can't even reach /v1/projects (share tokens are confined to /v1/shares/self*),
+  // so the button stays hidden for them regardless of what /whoami reported.
+  function syncSettingsBtn() {
+    var admin = !state.shareMode
+      && state.me && state.me.scopes && state.me.scopes.indexOf("admin") !== -1;
+    $("settings-btn").classList.toggle("hidden", !admin);
   }
 
   function fullLoad() {
@@ -1138,7 +1211,13 @@
   }
   $("d-close").addEventListener("click", closeDetail);
   $("overlay").addEventListener("click", function () { closeDetail(); closeInbox(); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { closeDetail(); closeInbox(); } });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    // The settings sheet is the topmost layer, so Escape dismisses it alone —
+    // otherwise closing it would also collapse the drawers behind it.
+    if (state.settings) { closeSettings(); return; }
+    closeDetail(); closeInbox();
+  });
 
   // ---- ask-a-human inbox ----
   function questionsQuery() {
@@ -1726,6 +1805,7 @@
     $("arch-label").textContent = L().archived; $("askhuman-label").textContent = L().askHuman;
     var gl = $("group-label"); if (gl) gl.textContent = L().groupEpic;
     $("refresh-label").textContent = L().refresh; $("signout-label").textContent = L().signout;
+    $("settings-label").textContent = L().settings; $("settings-btn").title = L().setTitle;
     var fi = document.querySelector("#inbox .full"); if (fi) fi.textContent = L().fullInbox;
     $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
     document.documentElement.lang = state.lang;
@@ -1735,9 +1815,213 @@
     if (state.workflow) render();
     if (state.inboxOpen) renderInbox();
     if (state.openTicketId) openDetail(state.openTicketId);
+    if (state.settings) renderSettings();
   }
   activate($("lang-de"), function () { setLang("de"); });
   activate($("lang-en"), function () { setLang("en"); });
+
+  // ---- project settings sheet (admin) ----
+  // Edits the two per-project writing conventions the store hands to agents:
+  // `question_language` and `style_guide`. Each has its own endpoint, so Save
+  // sends only the field that actually changed — a no-op field is never PUT, and
+  // one failing endpoint can't silently discard the other's edit.
+  function openSettings() {
+    state.settings = {
+      loading: true, saving: false, err: "", saved: false,
+      orig: { language: "", style: "" }, language: "", style: ""
+    };
+    renderSettings();
+    // Re-read from the store rather than trusting the cached project list: this
+    // is a write surface, and a stale base would let one admin's Save quietly
+    // revert another's.
+    api("/projects").then(function (projects) {
+      var p = null;
+      (projects || []).forEach(function (row) { if (row.id === state.project) p = row; });
+      if (!state.settings) return; // closed while loading
+      if (!p) throw new Error("project '" + state.project + "' not visible to this token");
+      var lang = p.question_language || "", style = p.style_guide || "";
+      state.settings.loading = false;
+      state.settings.orig = { language: lang, style: style };
+      state.settings.language = lang;
+      state.settings.style = style;
+      state.settings.workflow = p.workflow || "";
+      state.settings.name = p.name || "";
+      renderSettings();
+    }).catch(function (e) {
+      if (!state.settings) return;
+      state.settings.loading = false;
+      state.settings.err = L().setLoadErr + (e.auth ? "403" : e.message);
+      renderSettings();
+    });
+  }
+
+  function closeSettings() {
+    state.settings = null;
+    $("modal-root").innerHTML = "";
+    $("settings-btn").focus();
+  }
+
+  function saveSettings() {
+    var s = state.settings;
+    if (!s || s.saving) return;
+    var style = s.style.trim(), language = s.language.trim();
+    if (style.length > STYLE_MAX) return; // Save is disabled; belt and braces
+    var calls = [];
+    if (language !== s.orig.language.trim()) {
+      calls.push(["/projects/" + encodeURIComponent(state.project) + "/language",
+                  { language: language === "" ? null : language }]);
+    }
+    if (style !== s.orig.style.trim()) {
+      calls.push(["/projects/" + encodeURIComponent(state.project) + "/style",
+                  { style_guide: style === "" ? null : style }]);
+    }
+    if (!calls.length) { closeSettings(); return; }
+    s.saving = true; s.err = ""; s.saved = false;
+    renderSettings();
+    // Sequential, not parallel: SQLite is a single writer and two PUTs on the
+    // same project row would just serialize anyway — this way a failure reports
+    // which field it was on.
+    var chain = Promise.resolve();
+    calls.forEach(function (c) {
+      chain = chain.then(function () {
+        return api(c[0], {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(c[1])
+        });
+      });
+    });
+    chain.then(function (p) {
+      if (!state.settings) return;
+      state.settings.saving = false;
+      state.settings.saved = true;
+      // The response is the updated project, so the new baseline comes from the
+      // store rather than from what we hoped we sent.
+      state.settings.orig = {
+        language: (p && p.question_language) || "",
+        style: (p && p.style_guide) || ""
+      };
+      state.settings.language = state.settings.orig.language;
+      state.settings.style = state.settings.orig.style;
+      renderSettings();
+    }).catch(function (e) {
+      if (!state.settings) return;
+      state.settings.saving = false;
+      state.settings.err = e.auth ? "403 — this token cannot change project settings." : e.message;
+      renderSettings();
+    });
+  }
+
+  function renderSettings() {
+    var root = $("modal-root");
+    root.innerHTML = "";
+    var s = state.settings;
+    if (!s) return;
+
+    var scrim = el("div", "modal-scrim");
+    scrim.addEventListener("click", closeSettings);
+    var sheet = el("div", "sheet");
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-modal", "true");
+    sheet.setAttribute("aria-label", L().setTitle);
+    sheet.addEventListener("click", function (e) { e.stopPropagation(); });
+
+    // header
+    var head = el("div", "sh");
+    var titles = el("div", "titles");
+    titles.appendChild(el("h2", null, L().setTitle));
+    var sub = el("div", "sub");
+    var pid = el("span", "mono", state.project);
+    sub.appendChild(pid);
+    sub.appendChild(document.createTextNode(" · " + L().setSub));
+    titles.appendChild(sub);
+    head.appendChild(titles);
+    var x = el("button", "close", "×");
+    x.setAttribute("aria-label", L().setCancel);
+    x.addEventListener("click", closeSettings);
+    head.appendChild(x);
+    sheet.appendChild(head);
+
+    // body
+    var body = el("div", "sb");
+    if (s.loading) {
+      body.appendChild(el("div", "msg", L().setLoading));
+    } else if (s.err && !s.orig) {
+      body.appendChild(el("div", "msg err", s.err));
+    } else {
+      // question language
+      var f1 = el("div", "fld");
+      var l1 = el("label", null, L().setLangLabel); l1.setAttribute("for", "set-lang");
+      f1.appendChild(l1);
+      f1.appendChild(el("div", "help", L().setLangHelp));
+      var i1 = el("input"); i1.type = "text"; i1.id = "set-lang";
+      i1.value = s.language; i1.placeholder = L().setLangPh;
+      i1.addEventListener("input", function () { s.language = i1.value; s.saved = false; syncFooter(); });
+      f1.appendChild(i1);
+      body.appendChild(f1);
+
+      // style guide
+      var f2 = el("div", "fld");
+      var l2 = el("label", null, L().setStyleLabel); l2.setAttribute("for", "set-style");
+      f2.appendChild(l2);
+      f2.appendChild(el("div", "help", L().setStyleHelp));
+      var ta = el("textarea"); ta.id = "set-style";
+      ta.value = s.style; ta.placeholder = L().setStylePh;
+      ta.setAttribute("spellcheck", "true");
+      f2.appendChild(ta);
+      var cnt = el("div", "cnt");
+      var n = el("span", "n");
+      cnt.appendChild(n);
+      cnt.appendChild(el("span", null, L().setChars));
+      f2.appendChild(cnt);
+      body.appendChild(f2);
+
+      // The counter is the only place the 2000-char cap is visible before Save,
+      // so it doubles as the reason Save goes disabled.
+      var updateCount = function () {
+        var len = ta.value.trim().length;
+        n.textContent = len + " / " + STYLE_MAX;
+        n.className = "n" + (len > STYLE_MAX ? " over" : len > STYLE_MAX * 0.9 ? " warn" : "");
+      };
+      ta.addEventListener("input", function () { s.style = ta.value; s.saved = false; updateCount(); syncFooter(); });
+      updateCount();
+    }
+    sheet.appendChild(body);
+
+    // footer
+    var foot = el("div", "sf");
+    var status = el("div", "msg");
+    foot.appendChild(status);
+    foot.appendChild(el("span", "grow"));
+    var cancel = el("button", "cancel", L().setCancel);
+    cancel.addEventListener("click", closeSettings);
+    var save = el("button", "primary", L().setSave);
+    save.addEventListener("click", saveSettings);
+    foot.appendChild(cancel);
+    foot.appendChild(save);
+    sheet.appendChild(foot);
+
+    function syncFooter() {
+      var over = s.style.trim().length > STYLE_MAX;
+      var dirty = s.language.trim() !== s.orig.language.trim()
+        || s.style.trim() !== s.orig.style.trim();
+      save.textContent = s.saving ? L().setSaving : L().setSave;
+      save.disabled = s.loading || s.saving || over || !dirty;
+      status.className = "msg" + (s.err ? " err" : s.saved ? " ok" : "");
+      status.textContent = s.err ? s.err
+        : s.saved ? L().setSaved
+        : over ? L().setOver
+        : "";
+    }
+    syncFooter();
+
+    scrim.appendChild(sheet);
+    root.appendChild(scrim);
+    var first = $("set-lang");
+    if (first) first.focus();
+  }
+
+  $("settings-btn").addEventListener("click", openSettings);
 
   // 4-bar priority gauge (matches the design's rank glyph).
   function gaugeEl(prio) {
