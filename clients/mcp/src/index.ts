@@ -78,6 +78,7 @@ function brief(t: any) {
     type: t.type,
     priority: t.priority,
     labels: t.labels,
+    tags: t.tags?.length ? t.tags : undefined,
     parent: t.parent ?? undefined,
     blocked_by: t.blocked_by?.length ? t.blocked_by : undefined,
     claimed_by: t.claim?.holder ?? undefined,
@@ -155,6 +156,10 @@ server.registerTool(
       priority: z.string().optional().describe("Priority, e.g. low, normal, high, urgent."),
       parent: z.string().optional().describe("Parent ticket id (for subtasks)."),
       labels: z.array(z.string()).optional().describe("Labels to attach."),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe("Tag refs to attach, each kind:handle (e.g. person:ada, component:billing). Unknown handles are registered on the fly."),
       body: z.string().optional().describe("Markdown body / description."),
       idempotency_key: z.string().optional().describe("Override the auto-generated idempotency key."),
     },
@@ -165,6 +170,7 @@ server.registerTool(
     if (a.priority) body.priority = a.priority;
     if (a.parent) body.parent = a.parent;
     if (a.labels) body.labels = a.labels;
+    if (a.tags) body.tags = a.tags;
     if (a.body !== undefined) body.body = a.body;
     const res = await client.request<any>({
       method: "POST",
@@ -192,6 +198,8 @@ server.registerTool(
       type: z.string().optional().describe("Filter by type."),
       priority: z.string().optional().describe("Filter by priority."),
       label: z.string().optional().describe("Filter by a single label."),
+      tag: z.string().optional().describe("Filter by an exact tag ref, kind:handle (e.g. person:ada)."),
+      tag_kind: z.string().optional().describe("Filter by tag kind — match any tag of this kind (e.g. person)."),
       limit: z.number().int().positive().optional().describe("Max items (default server-defined)."),
       cursor: z.string().optional().describe("Pagination cursor from a previous call's next_cursor."),
     },
@@ -205,6 +213,8 @@ server.registerTool(
         type: a.type,
         priority: a.priority,
         label: a.label,
+        tag: a.tag,
+        tag_kind: a.tag_kind,
         limit: a.limit,
         cursor: a.cursor,
       },
@@ -467,6 +477,39 @@ server.registerTool(
       body: { links },
     });
     return ok({ ok: true, links: (res as any)?.links ?? links });
+  })
+);
+
+server.registerTool(
+  "takomo_tag",
+  {
+    title: "Tag a ticket",
+    description:
+      "Tag people or other entities onto a ticket (reference metadata only — never changes ticket " +
+      "state, claims, or routing). `add`/`remove` take kind:handle refs like 'person:ada' or " +
+      "'component:billing'; an unknown handle is registered automatically. Filter with takomo_list's " +
+      "tag / tag_kind.",
+    inputSchema: {
+      id: z.string().describe("Ticket id to tag."),
+      add: z.array(z.string()).optional().describe("Tag refs to add, each kind:handle."),
+      remove: z.array(z.string()).optional().describe("Tag refs to remove, each kind:handle."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = {};
+    if (a.add?.length) body.tags_add = a.add;
+    if (a.remove?.length) body.tags_remove = a.remove;
+    if (!body.tags_add && !body.tags_remove) {
+      return fail({ ok: false, message: "Provide at least one of add / remove (kind:handle refs)." });
+    }
+    const fence = resolveFence(a.id);
+    if (fence !== undefined) body.fence = fence;
+    const res = await client.request<any>({
+      method: "PATCH",
+      path: `/tickets/${encodeURIComponent(a.id)}`,
+      body,
+    });
+    return ok({ ok: true, tags: (res as any)?.tags ?? [] });
   })
 );
 

@@ -16,7 +16,7 @@ use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-const CREATE_FIELDS: [&str; 10] = [
+const CREATE_FIELDS: [&str; 11] = [
     "project",
     "type",
     "parent",
@@ -24,17 +24,21 @@ const CREATE_FIELDS: [&str; 10] = [
     "body",
     "priority",
     "labels",
+    "tags",
     "metadata",
     "blocked_by",
     "state",
 ];
-const PATCH_FIELDS: [&str; 10] = [
+const PATCH_FIELDS: [&str; 13] = [
     "title",
     "body",
     "priority",
     "labels",
     "labels_add",
     "labels_remove",
+    "tags",
+    "tags_add",
+    "tags_remove",
     "parent",
     "links",
     "metadata_merge",
@@ -59,6 +63,7 @@ pub async fn create(
         body: get_str(obj, "body")?,
         priority: get_str(obj, "priority")?,
         labels: get_string_array(obj, "labels")?.unwrap_or_default(),
+        tags: get_string_array(obj, "tags")?.unwrap_or_default(),
         metadata: obj.get("metadata").filter(|v| !v.is_null()).cloned(),
         blocked_by: get_string_array(obj, "blocked_by")?.unwrap_or_default(),
         state: get_str(obj, "state")?,
@@ -107,6 +112,8 @@ pub async fn list(
         state: first(&pairs, "state").map(str::to_string),
         ty: first(&pairs, "type").map(str::to_string),
         labels: all(&pairs, "label"),
+        tags: all(&pairs, "tag"),
+        tag_kinds: all(&pairs, "tag_kind"),
         parent: first(&pairs, "parent").map(str::to_string),
         q: first(&pairs, "q").map(str::to_string),
         claimed_by: first(&pairs, "claimed_by").map(str::to_string),
@@ -251,6 +258,9 @@ pub async fn patch_one(
         labels: get_string_array(obj, "labels")?,
         labels_add: get_string_array(obj, "labels_add")?.unwrap_or_default(),
         labels_remove: get_string_array(obj, "labels_remove")?.unwrap_or_default(),
+        tags: get_string_array(obj, "tags")?,
+        tags_add: get_string_array(obj, "tags_add")?.unwrap_or_default(),
+        tags_remove: get_string_array(obj, "tags_remove")?.unwrap_or_default(),
         parent: match obj.get("parent") {
             None => None,
             Some(Value::Null) => Some(None),

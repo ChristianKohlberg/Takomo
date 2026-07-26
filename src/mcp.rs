@@ -96,6 +96,9 @@ pub struct NewArgs {
     pub parent: Option<String>,
     /// Labels to attach.
     pub labels: Option<Vec<String>>,
+    /// Tag references to attach, each `kind:handle` (e.g. `person:ada`,
+    /// `component:billing`). Unknown handles are registered on the fly.
+    pub tags: Option<Vec<String>>,
     /// Markdown body / description.
     pub body: Option<String>,
 }
@@ -110,6 +113,11 @@ pub struct ListArgs {
     pub r#type: Option<String>,
     /// Filter by a single label.
     pub label: Option<String>,
+    /// Filter by an exact tag reference, `kind:handle` (e.g. `person:ada`).
+    pub tag: Option<String>,
+    /// Filter by tag kind — match tickets carrying any tag of this kind (e.g.
+    /// `person`).
+    pub tag_kind: Option<String>,
     /// Full-text query over title/body.
     pub q: Option<String>,
     /// Max items (1-200, default 50).
@@ -200,6 +208,19 @@ pub struct LinkArgs {
     pub key: String,
     /// Link value (URL or ref).
     pub value: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct TagArgs {
+    /// Ticket id to tag.
+    pub id: String,
+    /// Tag references to add, each `kind:handle` (e.g. `person:ada`,
+    /// `component:billing`). Unknown handles are registered automatically.
+    pub add: Option<Vec<String>>,
+    /// Tag references to remove.
+    pub remove: Option<Vec<String>>,
+    /// Fencing token, if you hold the ticket's lease.
+    pub fence: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -537,6 +558,20 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Tag people or other entities onto a ticket (reference metadata only — \
+        never changes ticket state, claims, or routing). `add`/`remove` take kind:handle refs \
+        like 'person:ada' or 'component:billing'; an unknown handle is registered on the fly. \
+        Filter with takomo_list's `tag`/`tag_kind`."
+    )]
+    async fn takomo_tag(
+        &self,
+        Parameters(a): Parameters<TagArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_tag(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
         description = "Record that a ticket is blocked by another ticket (adds a dependency \
         edge)."
     )]
@@ -784,6 +819,7 @@ impl TakomoMcp {
             body: a.body,
             priority: a.priority,
             labels: a.labels.unwrap_or_default(),
+            tags: a.tags.unwrap_or_default(),
             metadata: None,
             blocked_by: Vec::new(),
             state: None,
@@ -817,6 +853,8 @@ impl TakomoMcp {
             state: a.state,
             ty: a.r#type,
             labels: a.label.into_iter().collect(),
+            tags: a.tag.into_iter().collect(),
+            tag_kinds: a.tag_kind.into_iter().collect(),
             parent: None,
             q: a.q,
             claimed_by: None,
@@ -1373,6 +1411,31 @@ impl TakomoMcp {
             .patch_ticket(&a.id, &patch, &auth.actor, None)?;
         self.state.wake();
         Ok(json!({ "ok": true, "links": updated.links }))
+    }
+
+    fn do_tag(&self, auth: &AuthCtx, a: TagArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ticket = load_visible(&self.state, auth, &a.id)?;
+        let add = a.add.unwrap_or_default();
+        let remove = a.remove.unwrap_or_default();
+        if add.is_empty() && remove.is_empty() {
+            return Err(ApiError::bad_request(
+                "validation.no_changes",
+                "Provide at least one of 'add' or 'remove' (each a list of kind:handle refs).",
+            ));
+        }
+        let patch = TicketPatch {
+            tags_add: add,
+            tags_remove: remove,
+            fence: resolve_fence(&ticket, &auth.actor, a.fence),
+            ..Default::default()
+        };
+        let updated = self
+            .state
+            .store
+            .patch_ticket(&a.id, &patch, &auth.actor, None)?;
+        self.state.wake();
+        Ok(json!({ "ok": true, "tags": updated.tags }))
     }
 
     fn do_dep(&self, auth: &AuthCtx, id: &str, blocked_by: &str) -> ApiResult<Value> {

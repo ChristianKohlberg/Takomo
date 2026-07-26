@@ -32,6 +32,7 @@ tags:
   - { name: admin }
   - { name: identity }
   - { name: shares }
+  - { name: tags }
 
 paths:
   /whoami:
@@ -307,6 +308,105 @@ paths:
         "403": { description: Token lacks the admin scope }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /projects/{project}/tags:
+    get:
+      tags: [tags]
+      summary: List the project's tag registry (read scope)
+      description: |
+        The project's tag registry — named entities of some `kind` (person,
+        component, team, …) that tickets reference by `kind:handle`. Ordered by
+        (kind, handle). Reference metadata only: tags never affect ticket state,
+        claims, or question routing.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - { name: kind, in: query, schema: { type: string }, description: 'restrict to one kind, e.g. person' }
+        - { name: q, in: query, schema: { type: string }, description: 'case-insensitive substring match on handle or label' }
+      responses:
+        "200":
+          description: The registry entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Tag" } }
+        "403": { description: Token lacks the read scope or the project }
+    post:
+      tags: [tags]
+      summary: Register a tag (write scope)
+      description: |
+        Register a named entity. Conflicts (409 `tag.exists`) if the
+        (kind, handle) pair already exists in the project. Tagging a ticket with
+        an unknown handle also creates a stub here, so explicit registration is
+        only needed to set a display label or `meta` up front.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagCreate" }
+      responses:
+        "201":
+          description: The created tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tag" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "A tag with this (kind, handle) already exists" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{project}/tags/{kind}/{handle}:
+    parameters:
+      - { $ref: "#/components/parameters/project" }
+      - { name: kind, in: path, required: true, schema: { type: string } }
+      - { name: handle, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [tags]
+      summary: Get one tag (read scope)
+      responses:
+        "200":
+          description: The tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tag" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [tags]
+      summary: Update a tag's label and/or meta (write scope)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagPatch" }
+      responses:
+        "200":
+          description: The updated tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tag" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [tags]
+      summary: Delete a tag (write scope)
+      description: |
+        Removes the registry entry. Ticket references (`kind:handle` strings)
+        are deliberately left intact — the reference is the source of truth, the
+        registry row an enrichment — so the response reports how many tickets
+        still point at it.
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  still_referenced: { type: integer, description: 'tickets still carrying this kind:handle reference' }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /tickets:
     post:
       tags: [tickets]
@@ -347,6 +447,8 @@ paths:
         - { name: state, in: query, schema: { type: string }, description: state id or category }
         - { name: type, in: query, schema: { type: string } }
         - { name: label, in: query, schema: { type: string }, description: 'repeatable, AND semantics' }
+        - { name: tag, in: query, schema: { type: string }, description: 'exact `kind:handle` tag reference; repeatable, AND semantics' }
+        - { name: tag_kind, in: query, schema: { type: string }, description: 'match any tag of this kind (e.g. person); repeatable, AND semantics' }
         - { name: parent, in: query, schema: { type: string }, description: direct children of this id }
         - { name: q, in: query, schema: { type: string }, description: full-text over title+body }
         - { name: claimed_by, in: query, schema: { type: string } }
@@ -1710,6 +1812,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: The request body failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
     Project:
@@ -1729,6 +1836,41 @@ components:
         name: { type: string }
         workflow: { $ref: "#/components/schemas/Workflow" }
         question_language: { type: string, description: 'Optional: the human-facing question language for the project' }
+
+    Tag:
+      type: object
+      description: |
+        A project-scoped named entity of some `kind` (person, component, team, …)
+        that tickets reference by `kind:handle`. Generic by design — a new kind
+        is just a new string, no schema change — with per-kind attributes in the
+        free-form `meta` object. Identity is (project, kind, handle).
+      properties:
+        id: { type: string }
+        project: { type: string }
+        kind: { type: string, description: 'entity kind slug, e.g. person, component, team' }
+        handle: { type: string, description: 'identity within (project, kind)' }
+        ref: { type: string, description: 'canonical kind:handle reference stored on tickets' }
+        label: { type: string, description: human-facing display name }
+        meta: { type: object, description: 'free-form per-kind attributes, e.g. {"email": "..."}; 64 KiB cap' }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TagCreate:
+      type: object
+      required: [kind, handle]
+      properties:
+        kind: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+        handle: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        label: { type: string, description: 'display name; defaults to the handle' }
+        meta: { type: object }
+
+    TagPatch:
+      type: object
+      description: At least one of label / meta_merge is required
+      properties:
+        label: { type: string }
+        meta_merge: { type: object, description: RFC 7386 merge-patch; null deletes a key }
 
     ShareCreate:
       type: object
@@ -1844,6 +1986,10 @@ components:
         state_category: { type: string, enum: [todo, in_progress, blocked, review, done, cancelled] }
         priority: { type: string, enum: [critical, high, normal, low], default: normal }
         labels: { type: array, items: { type: string } }
+        tags:
+          type: array
+          items: { type: string }
+          description: 'canonical `kind:handle` references into the project tag registry (e.g. person:ada); reference metadata only'
         metadata:
           type: object
           description: freeform JSON; keys namespaced "<actor-or-tool>.<key>"; 64 KiB cap
@@ -1878,6 +2024,10 @@ components:
         body: { type: string }
         priority: { type: string }
         labels: { type: array, items: { type: string } }
+        tags:
+          type: array
+          items: { type: string }
+          description: '`kind:handle` tag references to attach; unknown handles are registered on the fly'
         metadata: { type: object }
         blocked_by: { type: array, items: { type: string } }
         state: { type: string, description: "optional; must be a legal initial state, defaults to workflow initial" }
@@ -1914,6 +2064,9 @@ components:
         labels: { type: array, items: { type: string } }
         labels_add: { type: array, items: { type: string } }
         labels_remove: { type: array, items: { type: string } }
+        tags: { type: array, items: { type: string }, description: 'whole-set replace of `kind:handle` tag references' }
+        tags_add: { type: array, items: { type: string }, description: 'tag references to add (commutative)' }
+        tags_remove: { type: array, items: { type: string }, description: 'tag references to remove (commutative)' }
         parent: { type: [string, "null"] }
         links: { type: object, description: "per-key merge: string value sets a key, null deletes it, untouched keys survive" }
         metadata_merge: { type: object, description: RFC 7386 merge-patch; null deletes a key }

@@ -500,3 +500,49 @@ async fn hosted_mcp_surfaces_project_language() {
         "ask note: {asked}"
     );
 }
+
+#[tokio::test]
+async fn hosted_mcp_tag_tool_tags_and_filters() {
+    let app = spawn().await;
+    app.ok_call(&app.human, "initialize", init_params()).await;
+
+    // Create a ticket with a tag inline (lazy-registers person:ada).
+    let created = app
+        .tool_ok(
+            &app.human,
+            "takomo_new",
+            json!({ "project": "tp", "title": "tagged via mcp", "tags": ["person:ada"] }),
+        )
+        .await;
+    let id = created["ticket"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["ticket"]["tags"], json!(["person:ada"]));
+
+    // takomo_tag adds and removes refs.
+    let tagged = app
+        .tool_ok(
+            &app.human,
+            "takomo_tag",
+            json!({ "id": id, "add": ["component:billing"], "remove": ["person:ada"] }),
+        )
+        .await;
+    assert_eq!(tagged["tags"], json!(["component:billing"]));
+
+    // takomo_list filters by tag kind.
+    let listed = app
+        .tool_ok(
+            &app.human,
+            "takomo_list",
+            json!({ "project": "tp", "tag_kind": "component" }),
+        )
+        .await;
+    let ids: Vec<&str> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&id.as_str()),
+        "tag_kind=component should list {id}: {ids:?}"
+    );
+}
