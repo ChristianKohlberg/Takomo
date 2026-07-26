@@ -168,6 +168,24 @@
   .md { font-size: 14.5px; color: var(--ink2); max-width: 600px; }
   .md p { margin: 0 0 12px; line-height: 1.65; } .md ul { margin: 0 0 12px; padding-left: 20px; } .md li { margin: 4px 0; line-height: 1.6; }
   .md b { color: var(--text); } .md code { font-family: var(--mono); font-size: 12px; background: var(--hover); padding: 1px 5px; border-radius: 4px; color: var(--accent-ink); }
+  /* markdown blocks — shared vocabulary with the other surface (see mdNode) */
+  .md h3, .md h4, .md h5, .md h6 { color: var(--text); margin: 18px 0 8px; line-height: 1.35; }
+  .md h3 { font-size: 15px; font-weight: 700; } .md h4 { font-size: 13.5px; font-weight: 700; }
+  .md h5, .md h6 { font-size: 12.5px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md ol { margin: 0 0 12px; padding-left: 22px; }
+  .md blockquote { margin: 0 0 12px; padding: 2px 0 2px 12px; border-left: 2px solid var(--border); color: var(--muted); }
+  .md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+  .md a { color: var(--accent2); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+  /* Fenced code: scrolls in its own box so a long line never widens the page. */
+  .md pre { margin: 0 0 12px; padding: 10px 12px; background: var(--hover); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; }
+  .md pre code { font-family: var(--mono); font-size: 12px; background: none; padding: 0; border-radius: 0; color: var(--ink2); white-space: pre; }
+  /* Tables likewise: the wrapper scrolls, the page does not. */
+  .md-table { overflow-x: auto; margin: 0 0 12px; }
+  .md table { border-collapse: collapse; font-size: 12.5px; }
+  .md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+  .md th { color: var(--text); font-weight: 700; background: var(--hover); white-space: nowrap; }
 
   .timeline { margin-top: 22px; max-width: 600px; }
   .timeline h3 { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted2); margin: 0 0 13px; }
@@ -175,6 +193,15 @@
   .tev { display: flex; gap: 12px; }
   .tev .tdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; margin-top: 5px; }
   .tev .tt { font-size: 13.5px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+  /* A thread message is markdown now, so it brings its own block spacing; the
+     row must not add another layer of it. */
+  .tev .tt .md { font-size: 13.5px; color: var(--text); max-width: none; }
+  .tev .tt .md > :last-child { margin-bottom: 0; }
+  /* Clamp long replies. The text stays in the DOM — this only limits height, so
+     ctrl-F and copy still see the whole thing. */
+  .tclip.clamped { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent); mask-image: linear-gradient(to bottom, #000 72%, transparent); }
+  .tmore { margin-top: 4px; font: inherit; font-size: 12px; font-weight: 650; color: var(--accent2); background: transparent; border: 0; padding: 2px 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .tmore:hover { color: var(--text); }
   .tev .tm { font-size: 11.5px; color: var(--muted2); margin-top: 2px; } .tev .tm .mono { font-family: var(--mono); }
   .tev.pend .tdot { background: var(--warn); animation: tkPulse 1.4s ease-in-out infinite; }
   .tev.pend .tt { color: var(--muted); }
@@ -183,6 +210,9 @@
   .decision .h { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ok); margin-bottom: 9px; }
   .decision .h .chk { width: 18px; height: 18px; border-radius: 50%; background: var(--ok); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
   .decision .v { font-size: 19px; font-weight: 700; color: var(--text); letter-spacing: -.01em; line-height: 1.3; overflow-wrap: anywhere; }
+  /* The decision is one big display line; markdown inside it must not add
+     paragraph spacing on top of that. */
+  .decision .v p { margin: 0; line-height: 1.3; }
   .decision .sub { margin-top: 12px; font-size: 12px; color: var(--muted); }
 
   /* answer area */
@@ -250,7 +280,7 @@
   .drawer .callout .t { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 5px; }
   .drawer .callout .s { font-size: 12.5px; color: var(--ink2); line-height: 1.5; }
   .drawer h4 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
-  .drawer .desc { margin: 0 0 20px; font-size: 13.5px; line-height: 1.65; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .drawer .desc { margin: 0 0 20px; font-size: 13.5px; line-height: 1.65; color: var(--ink2); overflow-wrap: anywhere; }
   .drawer .dep { font-size: 13px; color: var(--ink2); margin-bottom: 7px; } .drawer .dep .rel { color: var(--muted); } .drawer .dep .mono { font-family: var(--mono); color: var(--accent2); font-size: 12px; }
   .drawer .lnk { color: var(--accent2); font-family: var(--mono); font-size: 12.5px; margin-bottom: 7px; overflow-wrap: anywhere; }
   .drawer .df { flex: 0 0 auto; border-top: 1px solid var(--border-soft); padding: 14px 24px; background: var(--col-bg); }
@@ -374,8 +404,8 @@
 
   // ---- i18n ----
   var STR = {
-    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", tagsHdr:"Tags", allTags:"Alle Tags", allValues:"Alle", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", backToList:"Zurück zur Liste", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", advTag:"beratend", customDivider:"oder eigene Anweisung", customPlaceholder:"Eigene Anweisung schreiben …", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren." },
-    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", tagsHdr:"Tags", allTags:"All tags", allValues:"All", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", backToList:"Back to list", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here.", advTag:"advisory", customDivider:"or your own instruction", customPlaceholder:"Write your own instruction …", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually." }
+    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", tagsHdr:"Tags", allTags:"Alle Tags", allValues:"Alle", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", backToList:"Zurück zur Liste", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", advTag:"beratend", customDivider:"oder eigene Anweisung", customPlaceholder:"Eigene Anweisung schreiben …", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren.", msgMore:"Ganze Antwort zeigen", msgLess:"Antwort einklappen" },
+    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", tagsHdr:"Tags", allTags:"All tags", allValues:"All", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", backToList:"Back to list", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here.", advTag:"advisory", customDivider:"or your own instruction", customPlaceholder:"Write your own instruction …", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually.", msgMore:"Show full reply", msgLess:"Collapse reply" }
   };
 
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -420,41 +450,179 @@
   }
   function cap(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-  // ---- tiny markdown (bold, code, bullet lists, paragraphs) — output built as DOM, XSS-safe ----
-  function inlineMd(parent, s) {
+  // ---- markdown ----
+  // Small block + inline renderer built purely from DOM nodes (never innerHTML),
+  // so nothing an agent writes into a body or a thread message can turn into
+  // markup. Covers what agents actually produce: headings, tables, ordered and
+  // unordered lists, fenced code, blockquotes, rules, and inline
+  // bold/italic/code/links.
+  //
+  // Kept identical between /board and /inbox: the same body has to read the same
+  // on both surfaces, and two copies quietly drifting apart is how that stops
+  // being true.
+  var MD_INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]*\]\([^)\s]+\))/g;
+  var MD_HEADING = /^(#{1,6})\s+(.*)$/;
+  var MD_RULE = /^(-{3,}|\*{3,}|_{3,})$/;
+  var MD_OL = /^\d+[.)]\s+/;
+  var MD_UL = /^[-*+]\s+/;
+  var MD_QUOTE = /^>\s?/;
+  var MD_FENCE = /^```/;
+
+  // Only http(s) and mailto survive. Anything else (javascript:, data:) renders
+  // as its literal markdown, so a hostile link cannot hide behind link text.
+  function mdHref(u) { return /^(https?:\/\/|mailto:)/i.test(u) ? u : null; }
+
+  function mdInline(parent, s) {
     s = String(s == null ? "" : s);
-    // split on ** and ` alternately using a simple tokenizer
-    var re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
     var last = 0, m;
-    while ((m = re.exec(s)) !== null) {
+    MD_INLINE.lastIndex = 0;
+    while ((m = MD_INLINE.exec(s)) !== null) {
       if (m.index > last) parent.appendChild(document.createTextNode(s.slice(last, m.index)));
-      var tok = m[0];
-      if (tok.indexOf("**") === 0) { parent.appendChild(el("b", null, tok.slice(2, -2))); }
-      else { parent.appendChild(el("code", null, tok.slice(1, -1))); }
-      last = re.lastIndex;
+      var tok = m[0], c0 = tok.charAt(0);
+      if (c0 === "`") {
+        parent.appendChild(el("code", null, tok.slice(1, -1)));
+      } else if (tok.indexOf("**") === 0) {
+        parent.appendChild(el("b", null, tok.slice(2, -2)));
+      } else if (c0 === "*" || c0 === "_") {
+        parent.appendChild(el("i", null, tok.slice(1, -1)));
+      } else {
+        var cut = tok.indexOf("](");
+        var href = mdHref(tok.slice(cut + 2, -1));
+        if (href) {
+          var a = el("a", null, tok.slice(1, cut));
+          a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+          parent.appendChild(a);
+        } else {
+          parent.appendChild(document.createTextNode(tok));
+        }
+      }
+      last = MD_INLINE.lastIndex;
     }
     if (last < s.length) parent.appendChild(document.createTextNode(s.slice(last)));
   }
-  function mdNode(s) {
-    var wrap = el("div", "md");
-    String(s == null ? "" : s).split("\n\n").forEach(function (block) {
-      var lines = block.split("\n");
-      var i = 0;
-      while (i < lines.length) {
-        if (lines[i].trim().indexOf("- ") === 0) {
-          var ul = el("ul");
-          while (i < lines.length && lines[i].trim().indexOf("- ") === 0) {
-            var li = el("li"); inlineMd(li, lines[i].trim().slice(2)); ul.appendChild(li); i++;
-          }
-          wrap.appendChild(ul);
-        } else {
-          var p = el("p"); inlineMd(p, lines[i]); wrap.appendChild(p); i++;
-        }
+
+  // `| a | b |` -> ["a","b"], tolerating the optional outer pipes.
+  function mdCells(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(function (c) { return c.trim(); });
+  }
+  // A table is a pipe row whose NEXT line is a |---|---| separator. Requiring the
+  // separator keeps prose that merely contains a pipe from becoming a table.
+  function mdIsTable(lines, i) {
+    if (lines[i].indexOf("|") === -1 || i + 1 >= lines.length) return false;
+    var sep = lines[i + 1].trim();
+    return sep.indexOf("|") !== -1 && /^\|?[\s:|-]+$/.test(sep) && sep.indexOf("-") !== -1;
+  }
+  // Does line `i` open a block? Used both to dispatch and to end a paragraph, so
+  // the two can never disagree about where a paragraph stops.
+  function mdIsBlock(lines, i) {
+    var t = lines[i].trim();
+    return t === "" || MD_FENCE.test(t) || MD_HEADING.test(t) || MD_RULE.test(t) ||
+      MD_OL.test(t) || MD_UL.test(t) || MD_QUOTE.test(t) || mdIsTable(lines, i);
+  }
+
+  function mdNode(s, cls) {
+    var wrap = el("div", cls ? "md " + cls : "md");
+    var lines = String(s == null ? "" : s).replace(/\r\n?/g, "\n").split("\n");
+    var i = 0;
+    while (i < lines.length) {
+      var t = lines[i].trim();
+      if (t === "") { i++; continue; }
+
+      if (MD_FENCE.test(t)) {
+        var lang = t.slice(3).trim();
+        var buf = [];
+        i++;
+        while (i < lines.length && !MD_FENCE.test(lines[i].trim())) { buf.push(lines[i]); i++; }
+        if (i < lines.length) i++;                       // closing fence
+        var pre = el("pre"), code = el("code", null, buf.join("\n"));
+        if (lang) code.setAttribute("data-lang", lang);
+        pre.appendChild(code); wrap.appendChild(pre);
+        continue;
       }
-    });
+
+      var h = MD_HEADING.exec(t);
+      if (h) {
+        // Start at h3: these render inside panels that own h1/h2 already.
+        var head = el("h" + Math.min(6, h[1].length + 2));
+        mdInline(head, h[2]); wrap.appendChild(head); i++;
+        continue;
+      }
+
+      if (MD_RULE.test(t)) { wrap.appendChild(el("hr")); i++; continue; }
+
+      if (mdIsTable(lines, i)) {
+        var head2 = mdCells(lines[i]);
+        i += 2;                                          // header + separator
+        var scroll = el("div", "md-table");              // owns the x-overflow
+        var table = el("table"), thead = el("thead"), htr = el("tr");
+        head2.forEach(function (c) { var th = el("th"); mdInline(th, c); htr.appendChild(th); });
+        thead.appendChild(htr); table.appendChild(thead);
+        var tbody = el("tbody");
+        while (i < lines.length && lines[i].trim() !== "" && lines[i].indexOf("|") !== -1) {
+          var tr = el("tr");
+          mdCells(lines[i]).forEach(function (c) { var td = el("td"); mdInline(td, c); tr.appendChild(td); });
+          tbody.appendChild(tr); i++;
+        }
+        table.appendChild(tbody); scroll.appendChild(table); wrap.appendChild(scroll);
+        continue;
+      }
+
+      if (MD_QUOTE.test(t)) {
+        var bq = el("blockquote");
+        var firstQ = true;
+        while (i < lines.length && MD_QUOTE.test(lines[i].trim())) {
+          if (!firstQ) bq.appendChild(el("br"));
+          mdInline(bq, lines[i].trim().replace(MD_QUOTE, ""));
+          firstQ = false; i++;
+        }
+        wrap.appendChild(bq);
+        continue;
+      }
+
+      if (MD_OL.test(t) || MD_UL.test(t)) {
+        var ordered = MD_OL.test(t);
+        var list = el(ordered ? "ol" : "ul");
+        var re = ordered ? MD_OL : MD_UL;
+        while (i < lines.length && re.test(lines[i].trim())) {
+          var li = el("li");
+          mdInline(li, lines[i].trim().replace(re, ""));
+          list.appendChild(li); i++;
+        }
+        wrap.appendChild(list);
+        continue;
+      }
+
+      // Paragraph. A single newline becomes a <br> rather than being reflowed:
+      // agents hand-format these, and silently joining their lines changes what
+      // they wrote.
+      var p = el("p"), first = true;
+      while (i < lines.length && !mdIsBlock(lines, i)) {
+        if (!first) p.appendChild(el("br"));
+        mdInline(p, lines[i].trim());
+        first = false; i++;
+      }
+      wrap.appendChild(p);
+    }
     return wrap;
   }
-  function plain(s) { return String(s || "").replace(/`/g, "").replace(/\*\*/g, "").replace(/^\s*[-*]\s+/gm, "").replace(/\s+/g, " ").trim(); }
+  // Flatten markdown to one line of readable prose — for previews and snippets,
+  // where a rendered block would not fit. It must strip every marker it can see:
+  // leaving `##` and table pipes in was what made a preview read like source.
+  function plain(s) {
+    return String(s || "")
+      .replace(/```[^\n]*/g, "")                    // fences (keep the code text)
+      .replace(/^\s*#{1,6}\s+/gm, "")               // headings
+      .replace(/^\s*>\s?/gm, "")                    // blockquotes
+      .replace(/^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/gm, "") // table separators
+      .replace(/\|/g, " ")                          // table cell borders
+      .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")    // list markers
+      .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "")      // rules
+      .replace(/\[([^\]]*)\]\([^)\s]+\)/g, "$1")    // links -> label
+      .replace(/`/g, "")
+      .replace(/\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
   function snippetOf(q) {
     var s = q.summary && q.summary.trim() ? q.summary.trim() : plain(q.body || "");
     if (!s) return "";
@@ -875,7 +1043,7 @@
     if (q.id === state.landedId) title.appendChild(el("span", "landtick", "✓"));
     title.appendChild(document.createTextNode(q.title || "(untitled)"));
     row.appendChild(title);
-    var ctx = answered ? (t().decision + ": " + answerText(q)) : snippetOf(q);
+    var ctx = answered ? (t().decision + ": " + plain(answerText(q))) : snippetOf(q);
     if (ctx) row.appendChild(el("div", "qc", ctx));
     var meta = el("div", "qm");
     meta.appendChild(el("span", "who", (q.asked_by || "—") + " · " + q.kind + (q.mode === "advisory" ? " · " + t().advTag : "")));
@@ -956,7 +1124,7 @@
     if (answered) {
       var dec = el("div", "decision");
       var h = el("div", "h"); h.appendChild(el("span", "chk", "✓")); h.appendChild(document.createTextNode(q.status === "answered" ? t().decision : cap(q.status))); dec.appendChild(h);
-      dec.appendChild(el("div", "v", answerText(q)));
+      dec.appendChild(mdNode(answerText(q), "v"));
       var sub = t().answeredBy + " · " + fmtAge(q.answered_at || q.created_at);
       if (q.resolved_to) sub += " · → " + q.resolved_to;
       dec.appendChild(el("div", "sub", sub));
@@ -1017,7 +1185,7 @@
     var th = state.threads[q.id] || [];
     th.forEach(function (m) {
       var human = m.role === "human";
-      evs.appendChild(tevent(human ? "var(--accent2)" : "var(--ok)", human ? (state.me && state.me.actor ? state.me.actor : "you") : (m.author || q.asked_by), fmtAge(m.created_at), (human ? "" : "") + (m.body || "")));
+      evs.appendChild(tevent(human ? "var(--accent2)" : "var(--ok)", human ? (state.me && state.me.actor ? state.me.actor : "you") : (m.author || q.asked_by), fmtAge(m.created_at), messageNode(m.body || "")));
     });
     if (q.status === "open" && q.awaiting === "agent") {
       var p = el("div", "tev pend");
@@ -1030,11 +1198,40 @@
     if (!state.threads[q.id]) loadThread(q.id);
     return wrap;
   }
+  // A thread message is an agent handing over real research — it can run to
+  // thousands of characters, and the timeline row it lands in is styled for a
+  // one-liner. Render it as markdown, and clamp anything long behind a toggle so
+  // one long reply doesn't bury the rest of the thread. The full text is always
+  // in the DOM (never truncated), so find-in-page and copy still get all of it.
+  var MSG_CLAMP_CHARS = 700;
+  function messageNode(body) {
+    var md = mdNode(body);
+    var s = String(body == null ? "" : body);
+    if (s.length <= MSG_CLAMP_CHARS && s.split("\n").length <= 12) return md;
+    var wrap = el("div", "tmsg");
+    var clip = el("div", "tclip clamped");
+    clip.appendChild(md);
+    var btn = el("button", "tmore", t().msgMore);
+    btn.type = "button";
+    btn.setAttribute("aria-expanded", "false");
+    btn.addEventListener("click", function () {
+      var open = clip.classList.toggle("clamped") === false;
+      btn.textContent = open ? t().msgLess : t().msgMore;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    wrap.appendChild(clip); wrap.appendChild(btn);
+    return wrap;
+  }
+
+  // `text` may be a string (the short status lines) or a prepared node (a thread
+  // message, which is markdown and can be long).
   function tevent(color, who, time, text) {
     var ev = el("div", "tev");
     var dot = el("span", "tdot"); dot.style.background = color; ev.appendChild(dot);
     var d = el("div");
-    d.appendChild(el("div", "tt", text));
+    var tt = el("div", "tt");
+    if (text && text.nodeType) tt.appendChild(text); else tt.textContent = text == null ? "" : text;
+    d.appendChild(tt);
     var m = el("div", "tm"); m.appendChild(el("span", "mono", who || "—")); m.appendChild(document.createTextNode(" · " + time)); d.appendChild(m);
     ev.appendChild(d); return ev;
   }
@@ -1143,8 +1340,8 @@
       rec.appendChild(el("span", "rl", isMulti ? t().recommended : confLabel(q)));
       mid.appendChild(rec);
     }
-    mid.appendChild(el("div", "ol", o.label));
-    if (o.desc) { var od = el("div", "od"); inlineMd(od, o.desc); mid.appendChild(od); }
+    var olab = el("div", "ol"); mdInline(olab, o.label); mid.appendChild(olab);
+    if (o.desc) { var od = el("div", "od"); mdInline(od, o.desc); mid.appendChild(od); }
     row.appendChild(mid);
     activate(row, function () {
       // Preserve keyboard position: refreshAnswer rebuilds the .answer subtree,
@@ -1239,7 +1436,7 @@
     var db = el("div", "db tk-scroll");
     var callout = el("div", "callout"); callout.appendChild(el("div", "t", t().blockedQ)); callout.appendChild(el("div", "s", t().blockedSub)); db.appendChild(callout);
     db.appendChild(el("h4", null, t().description));
-    db.appendChild(el("div", "desc", plain(d.body || q.body || "")));
+    db.appendChild(mdNode(d.body || q.body || "", "desc"));
     var deps = d.deps || {};
     var bb = deps.blocked_by || [], bl = deps.blocks || [];
     if (bb.length || bl.length) {
@@ -1346,11 +1543,14 @@
     document.body.appendChild(cue);
     setTimeout(function () { if (cue.parentNode) cue.parentNode.removeChild(cue); }, 520);
   }
+  // Feeds the undo snackbar — one line in a fixed-width toast, so markdown gets
+  // flattened rather than rendered: an option written as `**ARC**` must confirm
+  // as "ARC", not as its source.
   function displayVal(q, value) {
-    if (value && typeof value === "object" && !Array.isArray(value)) return String(value.value); // custom answer
-    if (Array.isArray(value)) return value.join(", ");
+    if (value && typeof value === "object" && !Array.isArray(value)) return plain(String(value.value)); // custom answer
+    if (Array.isArray(value)) return value.map(plain).join(", ");
     if (answerType(q) === "binary") return value === "yes" ? (q.kind === "approve" ? t().approve : t().confirm) : (q.kind === "approve" ? t().holdApprove : t().holdConfirm);
-    return String(value);
+    return plain(String(value));
   }
   var snackTimer = null;
   function startSnackTimer() {

@@ -1135,6 +1135,50 @@ print(f"replied to {q.get('id','?')} — now awaiting {q.get('awaiting','human')
 PY
 }
 
+cmd_options() {
+  local id=${1:-}; [ -n "$id" ] || die "options: usage: takomo options QID --option O [--option O]... [--option-desc D]... [--recommend R|--clear-recommend] [--rec-multi O]... [--rec-note WHY] [--reason WHY]"; shift
+  local options=() optdescs=() recmulti=() rec="" recnote="" reason="" clearrec=0 have_recmulti=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --option)          options+=("$2"); shift 2 ;;
+      --option-desc)     optdescs+=("$2"); shift 2 ;;
+      --recommend)       rec=$2; shift 2 ;;
+      --clear-recommend) clearrec=1; shift ;;
+      --rec-multi)       recmulti+=("$2"); have_recmulti=1; shift 2 ;;
+      --rec-note)        recnote=$2; shift 2 ;;
+      --reason)          reason=$2; shift 2 ;;
+      *) die "options: unknown flag $1" ;;
+    esac
+  done
+  [ ${#options[@]} -ge 2 ] || die "options: give at least 2 --option values — this REPLACES the option set, it does not merge into it"
+  local data; data=$(TS_OPTS="$(printf '%s\n' "${options[@]}")" \
+    TS_DESCS="$(printf '%s\n' "${optdescs[@]:-}")" \
+    TS_RECMULTI="$(printf '%s\n' "${recmulti[@]:-}")" \
+    TS_REC="$rec" TS_CLEARREC="$clearrec" TS_HAVE_RECMULTI="$have_recmulti" \
+    TS_RECNOTE="$recnote" TS_REASON="$reason" python3 <<'PY'
+import json, os
+def lines(v): return [l for l in os.environ.get(v, "").split("\n") if l != ""]
+d = {"options": lines("TS_OPTS")}
+descs = lines("TS_DESCS")
+if descs: d["option_notes"] = descs
+if os.environ.get("TS_CLEARREC") == "1": d["recommended"] = None
+elif os.environ.get("TS_REC", ""):        d["recommended"] = os.environ["TS_REC"]
+if os.environ.get("TS_HAVE_RECMULTI") == "1": d["recommended_multi"] = lines("TS_RECMULTI")
+if os.environ.get("TS_RECNOTE", ""): d["recommended_note"] = os.environ["TS_RECNOTE"]
+if os.environ.get("TS_REASON", ""):  d["reason"] = os.environ["TS_REASON"]
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/questions/$(urlenc "$id")/options" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1]))
+print(f"options revised on {q.get('id','?')}: " + ", ".join(q.get("options") or []))
+rec = q.get("recommended")
+if rec not in (None, ""): print(f"  recommended: {rec}")
+PY
+}
+
 cmd_answer_link() {
   # `answer-link revoke ID` | `answer-link QID [--ttl SECS] [--actor NAME]`
   if [ "${1:-}" = "revoke" ]; then
@@ -2177,6 +2221,14 @@ Ask a human (block on a human decision, then resume):
   takomo reply QID MESSAGE   (write scope) answer a human's follow-up request
          with the research they asked for; the question stays parked, awaiting
          flips back to the human
+  takomo options QID --option O --option O [--option-desc D]... [--recommend R]
+         [--clear-recommend] [--rec-multi O]... [--rec-note WHY] [--reason WHY]
+         (write scope) revise a still-open choose question's options when your
+         research shows the choices were wrong — better than withdrawing and
+         losing the thread. REPLACES the set (give all of them, min 2). The
+         recommendation must be one of the new options: pass --recommend, or
+         --clear-recommend if none applies. --reason is recorded on the ticket
+         for a human who already read the old set.
   takomo reopen QID          (human scope) take back an answered question while
          its answer isn't yet in use (re-parks the ticket)
   takomo withdraw QID [REASON]
@@ -2284,6 +2336,7 @@ main() {
     withdraw)    cmd_withdraw "$@" ;;
     reopen)      cmd_reopen "$@" ;;
     reply)       cmd_reply "$@" ;;
+    options)     cmd_options "$@" ;;
     share)   cmd_share "$@" ;;
     export)  cmd_export "$@" ;;
     import)  cmd_import "$@" ;;

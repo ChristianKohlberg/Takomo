@@ -1597,7 +1597,7 @@ paths:
               type: object
               required: [message]
               properties:
-                message: { type: string, description: What the agent should look into }
+                message: { type: string, maxLength: 32768, description: What the agent should look into }
       responses:
         "200":
           description: The question, now awaiting the agent.
@@ -1624,10 +1624,73 @@ paths:
               type: object
               required: [message]
               properties:
-                message: { type: string, description: The research/context the human asked for }
+                message: { type: string, maxLength: 32768, description: The research/context the human asked for }
       responses:
         "200":
           description: The question, now awaiting the human.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Question" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /questions/{id}/options:
+    post:
+      tags: [questions]
+      summary: Revise a still-open choose question's options
+      description: |
+        Requires the `write` scope. Replaces the option set of an open `choose`
+        question, so an agent that learns something while answering a follow-up
+        can fix the choices instead of withdrawing the question and losing the
+        whole thread.
+
+        `options` is required and **replaces** the set (it does not merge).
+        `recommended`, `recommended_multi` and `recommended_note` are only touched
+        when present in the body — send `recommended: null` to clear it. A
+        recommendation left pointing at an option that no longer exists is a 422,
+        not a silent drop: the caller decides what it should now be.
+
+        Whose turn it is (`awaiting`) is deliberately unchanged — revising is
+        orthogonal to the thread. A human still holding the old option list is
+        protected by the answer path, which validates the chosen option against
+        the current set. Revising an answered, withdrawn or expired question is a
+        409: it would rewrite what was decided.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [options]
+              properties:
+                options:
+                  type: array
+                  minItems: 2
+                  description: "The full replacement set: strings, or {value, desc} objects."
+                  items:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        required: [value]
+                        properties:
+                          value: { type: string }
+                          desc: { type: string }
+                option_notes:
+                  type: array
+                  items: { type: string }
+                  description: One-line trade-off per option, parallel to options (1:1 or omitted).
+                recommended:
+                  description: New recommendation; must be one of the revised options. null clears it. Omit to keep.
+                recommended_multi:
+                  type: array
+                  items: { type: string }
+                  description: For a multi choose — the new recommended subset. Empty list clears it. Omit to keep.
+                recommended_note: { type: [string, "null"], description: Rationale for the recommendation. null clears it. Omit to keep. }
+                reason: { type: string, maxLength: 32768, description: Why the options changed — recorded on the ticket for a human who read the old set. }
+      responses:
+        "200":
+          description: The question with its revised options.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Question" }
