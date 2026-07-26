@@ -60,8 +60,11 @@ const QUESTION_COLS: &str = "id, project, ticket, asked_by, mode, kind, title, b
     expires_at, on_timeout, awaiting, confidence, recommended_note, summary, option_notes, \
     multi, recommended_multi, created_at, updated_at, version";
 
-/// Max length of a single follow-up message body.
-const MAX_MESSAGE_LEN: usize = 8_192;
+/// Max length of a single follow-up message body. Generous on purpose: a
+/// follow-up reply is an agent handing over real research (source excerpts,
+/// tables, a walked-through code path), and 8 KB truncated that mid-argument.
+/// Still well under `MAX_BODY` — a thread turn is an answer, not a document.
+const MAX_MESSAGE_LEN: usize = 32_768;
 
 /// What the expiry sweep does when a question's `expires_at` passes unanswered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +131,27 @@ pub struct AskRequest {
     pub on_timeout: Option<TimeoutAction>,
     /// The asking agent's fencing token (echoed when it holds the ticket's lease).
     pub fence: Option<i64>,
+}
+
+/// A revision of a still-open `choose` question's options.
+///
+/// The recommendation fields are `Option` so a revision that merely rewords an
+/// option doesn't have to restate it: `None` leaves it untouched, `Some(...)`
+/// replaces it, and `Some(Value::Null)` clears it (mirroring how a `links` patch
+/// deletes a key). What is *not* allowed is leaving the question incoherent — a
+/// recommendation pointing at an option that no longer exists is rejected rather
+/// than silently dropped.
+#[derive(Debug, Clone, Default)]
+pub struct ReviseOptionsRequest {
+    pub options: Vec<String>,
+    /// Per-option descriptions, parallel to `options` (empty vec = none).
+    pub option_notes: Vec<String>,
+    pub recommended: Option<Value>,
+    pub recommended_multi: Option<Vec<String>>,
+    pub recommended_note: Option<Option<String>>,
+    /// Why the options changed — recorded on the thread and the ticket, because a
+    /// human who already read the old set deserves to know what moved.
+    pub reason: Option<String>,
 }
 
 /// Filter for listing questions (the inbox read-model).
@@ -205,6 +229,46 @@ fn get_question_row(conn: &Connection, id: &str) -> ApiResult<Question> {
 
 /// Validate + normalize a proposed answer against the question kind. Returns the
 /// canonical JSON stored as the answer.
+/// Validate an option set and its parallel descriptions. Shared by asking and
+/// revising so the two paths cannot drift — a revision must satisfy exactly the
+/// rules the original ask did.
+fn validate_options(options: &[String], option_notes: &[String]) -> ApiResult<()> {
+    if options.len() > MAX_OPTIONS {
+        return Err(ApiError::validation(
+            "validation.options",
+            format!("at most {MAX_OPTIONS} options are allowed."),
+        ));
+    }
+    for o in options {
+        if o.is_empty() || o.len() > MAX_OPTION_LEN {
+            return Err(ApiError::validation(
+                "validation.options",
+                format!("each option must be 1-{MAX_OPTION_LEN} characters."),
+            ));
+        }
+    }
+    // Per-option descriptions must line up 1:1 with the options.
+    if !option_notes.is_empty() && option_notes.len() != options.len() {
+        return Err(ApiError::validation(
+            "validation.option_notes",
+            format!(
+                "option descriptions must match the options 1:1 ({} options, {} descriptions). Send options as [{{\"value\":\"…\",\"desc\":\"…\"}}] to pair them.",
+                options.len(),
+                option_notes.len()
+            ),
+        ));
+    }
+    for d in option_notes {
+        if d.len() > MAX_OPTION_DESC {
+            return Err(ApiError::validation(
+                "validation.option_notes",
+                format!("each option description must be at most {MAX_OPTION_DESC} characters."),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_answer(
     kind: &str,
     options: &[String],
@@ -663,41 +727,7 @@ impl Store {
                 ));
             }
         }
-        if req.options.len() > MAX_OPTIONS {
-            return Err(ApiError::validation(
-                "validation.options",
-                format!("at most {MAX_OPTIONS} options are allowed."),
-            ));
-        }
-        for o in &req.options {
-            if o.is_empty() || o.len() > MAX_OPTION_LEN {
-                return Err(ApiError::validation(
-                    "validation.options",
-                    format!("each option must be 1-{MAX_OPTION_LEN} characters."),
-                ));
-            }
-        }
-        // Per-option descriptions must line up 1:1 with the options.
-        if !req.option_notes.is_empty() && req.option_notes.len() != req.options.len() {
-            return Err(ApiError::validation(
-                "validation.option_notes",
-                format!(
-                    "option descriptions must match the options 1:1 ({} options, {} descriptions). Send options as [{{\"value\":\"…\",\"desc\":\"…\"}}] to pair them.",
-                    req.options.len(),
-                    req.option_notes.len()
-                ),
-            ));
-        }
-        for d in &req.option_notes {
-            if d.len() > MAX_OPTION_DESC {
-                return Err(ApiError::validation(
-                    "validation.option_notes",
-                    format!(
-                        "each option description must be at most {MAX_OPTION_DESC} characters."
-                    ),
-                ));
-            }
-        }
+        validate_options(&req.options, &req.option_notes)?;
         if let Some(c) = req.confidence {
             if !(1..=4).contains(&c) {
                 return Err(ApiError::validation(
@@ -1300,6 +1330,156 @@ impl Store {
                 actor,
                 event,
                 json!({ "question": id, "message": msg_id, "awaiting": awaiting, "comment": comment }),
+                now,
+            )?;
+            get_question_row(tx, id)
+        })
+    }
+
+    /// Revise a still-open `choose` question's options.
+    ///
+    /// The point: an agent that learns something while answering a follow-up can
+    /// fix the choices instead of withdrawing the question and throwing the whole
+    /// thread away. Deliberately narrow — it changes the options, their
+    /// descriptions and the recommendation, and nothing else. It does not touch
+    /// `awaiting`: revising is orthogonal to whose turn it is.
+    ///
+    /// A human who is looking at the old options while this lands is protected by
+    /// the answer path, which validates the chosen option against the *current*
+    /// set and rejects a stale pick with a teaching error.
+    pub fn revise_question_options(
+        &self,
+        id: &str,
+        actor: &str,
+        req: &ReviseOptionsRequest,
+    ) -> ApiResult<Question> {
+        if req.options.len() < 2 {
+            return Err(ApiError::validation(
+                "validation.options",
+                "A 'choose' question needs at least 2 options — revise it to a real choice, or withdraw it if the choice went away.",
+            ));
+        }
+        validate_options(&req.options, &req.option_notes)?;
+        if let Some(Some(note)) = &req.recommended_note {
+            if note.len() > MAX_REC_NOTE {
+                return Err(ApiError::validation(
+                    "validation.recommended_note",
+                    format!("recommended_note must be at most {MAX_REC_NOTE} characters."),
+                ));
+            }
+        }
+        if let Some(reason) = &req.reason {
+            if reason.len() > MAX_MESSAGE_LEN {
+                return Err(ApiError::validation(
+                    "validation.reason",
+                    format!("The reason must be at most {MAX_MESSAGE_LEN} bytes."),
+                ));
+            }
+        }
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let q = get_question_row(tx, id)?;
+            if q.status != "open" {
+                return Err(ApiError::conflict(
+                    "question.not_open",
+                    format!(
+                        "Question '{id}' is '{}', not open — revising the options of a settled question would rewrite what the human decided against.",
+                        q.status
+                    ),
+                ));
+            }
+            if q.kind != "choose" {
+                return Err(ApiError::validation(
+                    "validation.kind",
+                    format!(
+                        "Question '{id}' is kind '{}', which carries no options; only a 'choose' question has any to revise.",
+                        q.kind
+                    ),
+                ));
+            }
+
+            // The revision must leave the question coherent: a recommendation
+            // that points at a removed option is rejected, not quietly dropped,
+            // so the caller decides what it should now be.
+            let effective_rec = req.recommended.clone().unwrap_or(q.recommended.clone());
+            if let Some(rec) = effective_rec.as_str() {
+                if !req.options.iter().any(|o| o == rec) {
+                    return Err(ApiError::validation(
+                        "validation.recommended",
+                        format!(
+                            "The recommendation '{rec}' is not among the revised options ({}). Pass a new `recommended`, or `null` to clear it.",
+                            req.options.join(", ")
+                        ),
+                    ));
+                }
+            }
+            let effective_multi = req
+                .recommended_multi
+                .clone()
+                .unwrap_or(q.recommended_multi.clone());
+            for r in &effective_multi {
+                if !req.options.iter().any(|o| o == r) {
+                    return Err(ApiError::validation(
+                        "validation.recommended_multi",
+                        format!(
+                            "recommended_multi contains '{r}', which is not among the revised options ({}). Pass a new `recommended_multi`, or an empty list to clear it.",
+                            req.options.join(", ")
+                        ),
+                    ));
+                }
+            }
+
+            let before = q.options.clone();
+            tx.execute(
+                "UPDATE questions SET options = ?2, option_notes = ?3, recommended = ?4, \
+                 recommended_multi = ?5, recommended_note = ?6, version = version + 1, \
+                 updated_at = ?7 WHERE id = ?1",
+                params![
+                    id,
+                    serde_json::to_string(&req.options).unwrap(),
+                    serde_json::to_string(&req.option_notes).unwrap(),
+                    serde_json::to_string(&effective_rec).unwrap(),
+                    serde_json::to_string(&effective_multi).unwrap(),
+                    match &req.recommended_note {
+                        Some(v) => v.clone(),
+                        None => q.recommended_note.clone(),
+                    },
+                    now,
+                ],
+            )?;
+
+            // Mirror onto the ticket like a thread turn does: the exchange stays
+            // visible to the normal work loop (takomo_show), and a human who
+            // already read the old options can see they moved.
+            let comment = crate::ids::comment_id();
+            let mut comment_body = format!(
+                "{actor} revised the options on \"{}\": [{}] → [{}]",
+                q.title,
+                before.join(", "),
+                req.options.join(", ")
+            );
+            if let Some(reason) = req.reason.as_deref().map(str::trim) {
+                if !reason.is_empty() {
+                    comment_body.push_str(&format!(" — {reason}"));
+                }
+            }
+            tx.execute(
+                "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![comment, q.ticket, actor, comment_body, now],
+            )?;
+            emit_event(
+                tx,
+                Some(&q.ticket),
+                Some(&q.project),
+                actor,
+                "question_options_revised",
+                json!({
+                    "question": id,
+                    "before": before,
+                    "after": req.options,
+                    "reason": req.reason,
+                    "comment": comment,
+                }),
                 now,
             )?;
             get_question_row(tx, id)

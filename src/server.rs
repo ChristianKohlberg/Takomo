@@ -145,6 +145,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::api::questions::reply),
         )
         .route(
+            "/v1/questions/{id}/options",
+            post(crate::api::questions::revise_options),
+        )
+        .route(
             "/v1/questions/{id}/answer-link",
             post(crate::api::questions::create_link),
         )
