@@ -313,6 +313,120 @@ async fn inbox_and_board_pages_served_unauthenticated() {
     }
 }
 
+/// The ticket filter on `/board` and `/inbox` is client-side, so its contract has
+/// two halves that break independently: the API must keep exposing the fields the
+/// filter reads, and the pages must keep shipping the control that reads them.
+/// A server-side rename of `parent`/`ticket` would silently degrade both filters to
+/// "matches nothing" without failing any other test.
+#[tokio::test]
+async fn ticket_filter_contract_on_board_and_inbox() {
+    let app = TestApp::spawn().await;
+
+    // An epic with a child, so the board's subtree filter has a chain to walk:
+    // filtering by the epic must keep its subtasks visible, not orphan them.
+    let epic = app.create_typed("Billing revamp", "epic", None).await;
+    let child = app
+        .create_typed("Migrate off billing_v1", "task", Some(&epic))
+        .await;
+    let other = app.create_typed("Unrelated work", "task", None).await;
+
+    // Advisory: needs no claim/fence and parks nothing, so the ticket stays put.
+    let (status, q) = app
+        .post(
+            &app.admin,
+            "/v1/questions",
+            json!({
+                "ticket": child,
+                "mode": "advisory",
+                "kind": "confirm",
+                "title": "Drop the legacy column?",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "ask failed: {q}");
+
+    // ---- half 1: the fields the filters read ----
+    // The board walks `parent` upward to decide subtree membership.
+    let (_, list) = app
+        .get(&app.admin, "/v1/tickets?project=tp&limit=200")
+        .await;
+    let listed = list["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|t| t["id"] == json!(child))
+        .expect("child ticket is listed");
+    assert_eq!(
+        listed["parent"],
+        json!(epic),
+        "tickets must expose `parent`; the board's subtree filter walks it"
+    );
+
+    // The inbox groups the queue by `ticket` — that field both populates its
+    // picker and decides which questions a chosen ticket shows.
+    let (_, qs) = app
+        .get(&app.admin, "/v1/questions?project=tp&status=open")
+        .await;
+    assert!(
+        qs["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .any(|x| x["ticket"] == json!(child)),
+        "questions must expose `ticket`; the inbox filter groups on it"
+    );
+
+    // The same narrowing over HTTP, so an integrator filtering server-side gets
+    // what the page computes client-side.
+    let (_, only) = app
+        .get(
+            &app.admin,
+            &format!("/v1/questions?ticket={child}&status=open"),
+        )
+        .await;
+    let items = only["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "?ticket= narrows to that ticket: {only}");
+    assert_eq!(items[0]["ticket"], json!(child));
+    let (_, none) = app
+        .get(
+            &app.admin,
+            &format!("/v1/questions?ticket={other}&status=open"),
+        )
+        .await;
+    assert!(
+        none["items"].as_array().expect("items array").is_empty(),
+        "?ticket= on a ticket with no questions returns nothing: {none}"
+    );
+
+    // ---- half 2: the control that reads them ----
+    for (path, wiring) in [("/board", "inSubtree("), ("/inbox", "visible()")] {
+        let body = app
+            .client
+            .get(format!("{}{}", app.base, path))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("id=\"ticksel\""),
+            "{path} ships the ticket-filter control"
+        );
+        assert!(
+            body.contains(wiring),
+            "{path} wires the ticket filter into its render path ('{wiring}')"
+        );
+        // One STR table per language: a key added to only one renders as
+        // `undefined` for whichever locale was forgotten.
+        assert_eq!(
+            body.matches("allTickets:").count(),
+            2,
+            "{path} needs `allTickets` in both the DE and EN string tables"
+        );
+    }
+}
+
 #[tokio::test]
 async fn favicon_served_unauthenticated_as_svg() {
     let app = TestApp::spawn().await;
@@ -4278,6 +4392,147 @@ async fn project_question_language_surfaces_to_agents() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn project_style_guide_surfaces_to_agents() {
+    let app = TestApp::spawn().await;
+    let guide = "Two sentences max. Plain language, no marketing voice.";
+
+    // Admin sets the project's house style for agent-written text.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "style_guide": guide }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["style_guide"], guide);
+
+    // It shows up in the project list…
+    let (_, list) = app.get(&app.worker, "/v1/projects").await;
+    let tp = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "tp")
+        .unwrap();
+    assert_eq!(tp["style_guide"], guide);
+
+    // …and the ask response echoes it back, so an agent that asked before
+    // reading the conventions can still fix the question it just wrote.
+    let id = app.create_ticket("Style check").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, asked) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "confirm", "title": "Proceed?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{asked}");
+    assert!(
+        asked["note"].as_str().unwrap().contains(guide),
+        "ask note should carry the style guide: {asked}"
+    );
+
+    // A guide over the cap is refused with a teaching 422 — and the previous
+    // guide survives, so a bad update never silently wipes the setting.
+    let too_long = "x".repeat(2001);
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "style_guide": too_long }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let err: Value = resp.json().await.unwrap();
+    assert_eq!(err["code"], "project.style_guide_too_long");
+    assert_eq!(err["details"]["max_chars"], 2000);
+    let (_, still) = app.get(&app.worker, "/v1/projects").await;
+    assert_eq!(
+        still
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "tp")
+            .unwrap()["style_guide"],
+        guide,
+        "a rejected update must not clear the existing guide"
+    );
+
+    // A blank string is a clear, so callers never have to distinguish "" from null.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "style_guide": "   " }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let cleared: Value = resp.json().await.unwrap();
+    assert!(cleared["style_guide"].is_null(), "{cleared}");
+
+    // Omitting the field is an error, not a silent clear.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Non-admins can't set it.
+    let resp = app
+        .client
+        .put(format!("{}/v1/projects/tp/style", app.base))
+        .bearer_auth(&app.worker)
+        .json(&json!({ "style_guide": "anything" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn project_create_rejects_oversized_style_guide_before_creating() {
+    let app = TestApp::spawn().await;
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "styl", "name": "Style", "style_guide": "x".repeat(2001) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.style_guide_too_long");
+
+    // The project must not exist: the guide is validated before the insert, so a
+    // rejected create leaves nothing half-configured behind.
+    let (_, list) = app.get(&app.admin, "/v1/projects").await;
+    assert!(
+        !list.as_array().unwrap().iter().any(|p| p["id"] == "styl"),
+        "rejected create must not leave a project behind: {list}"
+    );
+
+    // A valid one sets the guide at creation time.
+    let (s, made) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "styl", "name": "Style", "style_guide": "Terse. Imperative mood." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    assert_eq!(made["style_guide"], "Terse. Imperative mood.");
 }
 
 #[tokio::test]
