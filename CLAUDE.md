@@ -52,7 +52,41 @@ units — anything touching the HTTP surface belongs in `tests/`.
 
 `.handrail/` gates surface project norms in-session via hooks in `.claude/settings.json`; they
 guide, CI is the wall. Run `handrail run --changed` before wrapping up (`handrail list` for the
-menu: `fmt`, `clippy`, `route-test-pairing`, `openapi-current`, `openapi-valid`).
+menu: `fmt`, `clippy`, `route-test-pairing`, `openapi-current`, `openapi-valid`). When no changed
+file maps to a gate — a clean tree, or a docs-only edit — `--changed` reports "no gates selected"
+and they stay `stale`. `stale` means "not evaluated against this tree", not "failing"; a `git pull`
+invalidates every earlier verdict the same way. Name them explicitly to evaluate them:
+`handrail run fmt clippy openapi-valid`. The two detectors then report `skipped` (exit 2) rather
+than green, because they compare a changed HTTP surface against its companion and there is none.
+
+### Verify a branch in a worktree, not in a dirty tree
+
+This repo is worked on by several sessions at once, so the working tree often carries **someone
+else's uncommitted changes**. When it does, a local `cargo test` says nothing about your branch: it
+compiles their code together with yours. Two ways that has already drawn blood here:
+
+- Staging a whole file with `git add <file>` swept up another change's tests. They passed locally
+  because that change's `src/` was present uncommitted; CI, building the branch alone, failed them.
+- `git apply -3` writes to the **index**, not just the worktree, so it silently stages the other
+  change's hunks along with yours.
+
+So before trusting a result, check out the exact commit somewhere clean:
+
+```sh
+git worktree add --detach /tmp/verify <sha>
+cd /tmp/verify && cargo test --release && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+git worktree remove /tmp/verify
+```
+
+A worktree is also the way to merge or rebase at all when the tree is dirty: `git merge` refuses if
+any file it must touch has local changes, and stashing someone else's work in order to proceed risks
+losing it. Check `git worktree list` first — another session's live workspace shows up there, and its
+branch must be left alone.
+
+Related: `git rev-list main..<branch>` reports commits "not in main" even for a fully merged branch,
+because the repo **squash-merges** PRs — the original commits never become ancestors of the squash
+commit. Decide whether work has landed by comparing content (`git diff main <branch>`, or the trees),
+never by ancestry.
 
 ## Architecture
 
