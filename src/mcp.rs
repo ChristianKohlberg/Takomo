@@ -452,7 +452,9 @@ impl TakomoMcp {
 
     #[tool(
         description = "Move a ticket to the workflow's terminal done state. Fence resolved \
-        automatically."
+        automatically. Attach the closing commit first (`takomo_link` with key='commit') so \
+        the finished state carries proof; some projects enforce it via \
+        `guard:has_link:commit` and will reject this call until it is set."
     )]
     async fn takomo_done(
         &self,
@@ -497,7 +499,10 @@ impl TakomoMcp {
 
     #[tool(
         description = "Attach or update a named link on a ticket (e.g. key='pr'). Existing \
-        links are merged, not replaced."
+        links are merged, not replaced. Use key='commit' with the FULL commit SHA (or its \
+        commit URL) for the work that closes the ticket — that is the proof a later reader \
+        checks instead of trusting the status, and what release/deploy answers are derived \
+        from. Short SHAs are ambiguous; don't use them."
     )]
     async fn takomo_link(
         &self,
@@ -1443,7 +1448,14 @@ impl ServerHandler for TakomoMcp {
                 "takomo: the central tracker for AI agent fleets. Typical work loop: \
                  `takomo_next` to claim the next ready ticket, `takomo_start` to move it \
                  in-progress, `takomo_comment`/`takomo_link` to record progress, then \
-                 `takomo_done` (or `takomo_block`/`takomo_cancel`). When you need a human \
+                 `takomo_done` (or `takomo_block`/`takomo_cancel`). Before finishing a ticket, \
+                 attach the commit that closes it: `takomo_link { key: \"commit\", value: \
+                 \"<full sha or commit URL>\" }`. Without it, `done` is a claim nobody can \
+                 check later; with it, any reader can verify the work — and derive which \
+                 release and environment carry it (`git tag --contains <sha>`, \
+                 `git merge-base --is-ancestor <sha> <deployed sha>`). Use the full SHA; short \
+                 ones are ambiguous. Some projects enforce this with a \
+                 `guard:has_link:commit` on the done transition. When you need a human \
                  decision (confirmation, a choice, a clarification, approval), call \
                  `takomo_ask` — it parks the ticket and releases your lease; end your run and \
                  resume once the answer appears on the ticket (`takomo_show`). When a project \

@@ -870,6 +870,97 @@ async fn no_open_children_guard_blocks_done() {
     assert_eq!(body["state_category"], "done");
 }
 
+/// `guard:has_link:commit` makes "done" prove itself: without a commit link the
+/// transition 409s naming the missing key (not ticket ids), and passes once the
+/// link is set. An empty value must not satisfy it — a blank string would make
+/// the proof a formality.
+#[tokio::test]
+async fn has_link_guard_requires_proof_before_done() {
+    let app = TestApp::spawn().await;
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({
+                "id": "proof",
+                "name": "Proof required",
+                "workflow": {
+                    "name": "proof-wf",
+                    "initial": "ready",
+                    "states": [
+                        { "id": "ready", "category": "todo", "claimable": true },
+                        { "id": "review", "category": "review" },
+                        { "id": "done", "category": "done", "terminal": true },
+                        { "id": "cancelled", "category": "cancelled", "terminal": true }
+                    ],
+                    "transitions": [
+                        { "from": "ready", "to": "review" },
+                        { "from": "ready", "to": "cancelled" },
+                        { "from": "review", "to": "done", "requires": ["guard:has_link:commit"] },
+                        { "from": "review", "to": "cancelled" }
+                    ]
+                }
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "proof", "title": "Work that must prove itself" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    let id = t["id"].as_str().unwrap().to_string();
+    let (s, b) = app.transition(&app.admin, &id, "review").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    // No commit link: blocked, and the error teaches which key is missing.
+    let (s, body) = app.transition(&app.admin, &id, "done").await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "transition.guard");
+    assert_eq!(body["details"]["guard"], "has_link:commit");
+    // The subject is this ticket, so no offender list is invented.
+    assert!(
+        body["details"]["offending_tickets"].is_null(),
+        "has_link failures must not name ticket ids: {body}"
+    );
+    let msg = body["message"].as_str().unwrap();
+    assert!(msg.contains("commit"), "{msg}");
+    let remedy = body["remedy"].as_str().unwrap();
+    assert!(remedy.contains("takomo_link"), "{remedy}");
+
+    // A blank value is not proof.
+    let resp = app
+        .client
+        .patch(format!("{}/v1/tickets/{id}", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "links": { "commit": "   " } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, body) = app.transition(&app.admin, &id, "done").await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "transition.guard");
+
+    // A real sha satisfies it.
+    let resp = app
+        .client
+        .patch(format!("{}/v1/tickets/{id}", app.base))
+        .bearer_auth(&app.admin)
+        .json(&json!({ "links": { "commit": "5caea2a0f3b91c7d4e28a6b5f0c1d9e8a7b6c5d4" } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, body) = app.transition(&app.admin, &id, "done").await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "done");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn event_cursor_orders_and_longpoll_wakes() {
     let app = TestApp::spawn().await;

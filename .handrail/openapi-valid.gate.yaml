@@ -1,0 +1,13 @@
+id: openapi-valid
+# Mechanical verdict, blocking: the check is instant, offline and deterministic,
+# and a red here means the published contract says something other than what was
+# written. Complements openapi-current (which only asks whether the spec was
+# touched when routes changed) — being updated and being correct are different
+# properties, and this file was silently the second kind of broken for a while.
+expectation: spec/openapi.yaml stays a valid OpenAPI document — it parses, and it means what it says.
+desc: Flags unparseable YAML, stray keys from commas in unquoted descriptions, and 3.0-only `nullable` in a 3.1 document. CI additionally runs full Redocly schema validation.
+kind: verdict
+semantics: blocking
+cmd: bash .handrail/openapi-sane.sh
+paths: [spec/openapi.yaml]
+order: 45

@@ -26,6 +26,7 @@ takomo next                                         # atomically claim the next 
 takomo start <id>                                   # claim if needed + move to in_progress
 takomo comment <id> "opened PR, waiting on CI"      # narrate progress
 takomo link <id> --pr <url> --branch <b>            # attach evidence
+takomo link <id> --commit <full-sha>                # the proof that closes it
 takomo done <id>                                    # finish (claim auto-releases)
 takomo show <id>                                     # full ticket incl. comments/deps
 takomo ls -q frobnicator                            # search
@@ -52,6 +53,26 @@ Prefer commutative writes — they never conflict:
 
 Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<version>"`, retry on `conflict.version`). If you do that often, you should be commenting instead.
 
+## Finishing: the commit is the proof
+
+Before `takomo done <id>`, attach the commit that closes the ticket:
+
+```bash
+takomo link <id> --commit 5caea2a0f3b91c7d4e28a6b5f0c1d9e8a7b6c5d4
+```
+
+Use the **full SHA** — short ones collide and are ambiguous across repos. A commit URL works too and carries the repo identity.
+
+Why it matters: `done` on its own is a claim, and nobody can check it once everyone involved has moved on. A commit SHA is checkable forever, by anyone, without trusting whoever set the status. It is also the anchor for questions asked later, all answered from git with no extra bookkeeping:
+
+```bash
+git merge-base --is-ancestor <sha> origin/main   # did the work actually land?
+git tag --contains <sha>                          # which release carries it (empty = not released yet)
+git merge-base --is-ancestor <sha> <deployed-sha> # is it in what production runs?
+```
+
+Some projects enforce this with `guard:has_link:commit` on the done transition; there, `takomo done` is rejected with a teaching remedy until the link is set. Where it is not enforced, attach it anyway — the ticket is worth little without it.
+
 ## Ask a human when you are blocked on a decision
 
 When progressing needs a human judgment you cannot make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — do not guess and do not silently stall. Ask: `takomo ask <id> --title "..." --kind confirm|choose|clarify|approve [--option ...] [--expertise domain:billing] [--recommend "..."]`. This parks the ticket in a blocked state, releases your lease, and posts the question to the ask-a-human board. **Then end your run** — this is block-and-resume, not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer (also on the board / `takomo questions`); the answer resumes the ticket into a claimable state. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if the work has a deadline. Withdraw with `takomo withdraw <qid>` if you no longer need the answer. **Make it decision-ready:** give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and `--confidence` 1–4, and add a `--summary` for the inbox preview; for a multiple-choice question add `--multi` (pre-select with `--rec-multi <opt>`). The ask response returns `hints` for anything still missing. If the human bounces the question back for more research, `takomo show <id>` shows the thread as `awaiting: agent` — do the work and answer it with `takomo reply <qid> "..."` (write scope), which returns the ball to the human without closing the question. When a ticket's work reaches a real stage, record it with `takomo promote <id> <target> [--url ...] [--ref ...]` (free-form target — staging, production, published, delivered — latest badges the board).
@@ -71,5 +92,5 @@ Under the hood every call is `curl -sS -H "Authorization: Bearer $TAKOMO_TOKEN" 
 1. Claim before you work; release (`takomo release <id>`) if you stop without finishing so the ticket returns to the queue.
 2. Never work around a workflow rejection — it encodes a project decision. Read `allowed_transitions` and move a legal way.
 3. One ticket = one deliverable. Split with child tickets rather than letting scope creep.
-4. Attach evidence links the moment they exist; a ticket without links is an unverifiable claim.
+4. Attach evidence links the moment they exist; a ticket without links is an unverifiable claim. Never finish a ticket without `--commit <full-sha>`.
 5. On any `429`, honor `Retry-After` and slow your loop — you are hammering the store.

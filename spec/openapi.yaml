@@ -101,7 +101,7 @@ paths:
       tags: [identity]
       summary: Revoke a token by its public id (admin scope)
       parameters:
-        - { name: id, in: path, required: true, schema: { type: string }, description: token id, e.g. "tok_a8f2k1x9" }
+        - { name: id, in: path, required: true, schema: { type: string }, description: 'token id, e.g. "tok_a8f2k1x9"' }
       responses:
         "204": { description: Revoked }
         "403":
@@ -297,7 +297,7 @@ paths:
               type: object
               required: [language]
               properties:
-                language: { type: string, nullable: true, description: 'e.g. "German"; null clears it' }
+                language: { type: [string, "null"], description: 'e.g. "German"; null clears it' }
       responses:
         "200":
           description: The updated project.
@@ -346,7 +346,7 @@ paths:
         - { name: project, in: query, schema: { type: string } }
         - { name: state, in: query, schema: { type: string }, description: state id or category }
         - { name: type, in: query, schema: { type: string } }
-        - { name: label, in: query, schema: { type: string }, description: repeatable, AND semantics }
+        - { name: label, in: query, schema: { type: string }, description: 'repeatable, AND semantics' }
         - { name: parent, in: query, schema: { type: string }, description: direct children of this id }
         - { name: q, in: query, schema: { type: string }, description: full-text over title+body }
         - { name: claimed_by, in: query, schema: { type: string } }
@@ -377,7 +377,7 @@ paths:
         "200":
           description: OK
           headers:
-            ETag: { schema: { type: string }, description: current version, e.g. "7" }
+            ETag: { schema: { type: string }, description: 'current version, e.g. "7"' }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Ticket" }
@@ -949,7 +949,7 @@ paths:
         `self*` endpoint. Allowed for the share's creator or any admin.
         Idempotent — revoking an already-revoked share still returns 204.
       parameters:
-        - { name: id, in: path, required: true, schema: { type: string }, description: share id, e.g. "share_a8f2k1x9q7z3" }
+        - { name: id, in: path, required: true, schema: { type: string }, description: 'share id, e.g. "share_a8f2k1x9q7z3"' }
       responses:
         "204": { description: Revoked }
         "403":
@@ -1139,7 +1139,7 @@ paths:
         - { name: project, in: query, schema: { type: string } }
         - { name: ticket, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string }, description: "Comma-separated: open (default), answered, withdrawn, expired" }
-        - { name: mine, in: query, schema: { type: boolean }, description: Only questions routed to your expert:<tag> scopes }
+        - { name: mine, in: query, schema: { type: boolean }, description: "Only questions routed to your expert:<tag> scopes" }
         - { name: expertise, in: query, schema: { type: string }, description: Repeatable tag filter (match any) }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 500 }, description: Max questions per page }
         - { name: cursor, in: query, schema: { type: integer, minimum: 0 }, description: Row offset from a previous next_cursor }
@@ -1155,8 +1155,7 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/Question" }
                   next_cursor:
-                    type: integer
-                    nullable: true
+                    type: [integer, "null"]
                     description: Pass as `cursor` to fetch the next page; null when the last page was returned.
     post:
       tags: [questions]
@@ -1200,8 +1199,8 @@ paths:
                   type: array
                   items: { type: string }
                   description: 'Alternative to {value,desc}: per-option descriptions parallel to `options` (same length).'
-                multi: { type: boolean, description: For kind=choose, allow selecting several options (multi-select) }
-                recommended_multi: { type: array, items: { type: string }, description: For a multi choose, the recommended set of options }
+                multi: { type: boolean, description: 'For kind=choose, allow selecting several options (multi-select)' }
+                recommended_multi: { type: array, items: { type: string }, description: 'For a multi choose, the recommended set of options' }
                 recommended: { description: The agent's suggested answer (any JSON); for a single choose the exact option string }
                 recommended_note: { type: string, description: A short rationale for the recommendation ("why") }
                 confidence: { type: integer, minimum: 1, maximum: 4, description: How strong the recommendation is (1 tentative … 4 very strong) }
@@ -1289,7 +1288,7 @@ paths:
               type: object
               required: [answer]
               properties:
-                answer: { description: Scalar or { value, note } }
+                answer: { description: "Scalar or { value, note }" }
                 resume_to: { type: string, description: Override the resume state }
       responses:
         "200":
@@ -1392,9 +1391,9 @@ paths:
                 type: object
                 properties:
                   question: { $ref: "#/components/schemas/Question" }
-                  ticket: { type: object, nullable: true }
+                  ticket: { type: [object, "null"] }
                   expires_at: { type: string, format: date-time }
-        "410": { description: The link is expired, used, or revoked. }
+        "410": { description: 'The link is expired, used, or revoked.' }
     post:
       tags: [questions]
       summary: Answer the one question the link grants (answer-grant auth, single-use)
@@ -1412,7 +1411,7 @@ paths:
               type: object
               required: [answer]
               properties:
-                answer: { description: Scalar or { value, note } }
+                answer: { description: "Scalar or { value, note }" }
                 resume_to: { type: string }
       responses:
         "200":
@@ -1424,7 +1423,7 @@ paths:
                 properties:
                   question: { $ref: "#/components/schemas/Question" }
                   ticket: { $ref: "#/components/schemas/Ticket" }
-        "410": { description: The link is expired, used, or revoked. }
+        "410": { description: 'The link is expired, used, or revoked.' }
 
   /questions/{id}/withdraw:
     post:
@@ -1653,10 +1652,10 @@ components:
     Project:
       type: object
       properties:
-        id: { type: string, description: short slug, also the ticket id prefix }
+        id: { type: string, description: 'short slug, also the ticket id prefix' }
         name: { type: string }
         workflow: { type: string, description: workflow name in effect }
-        question_language: { type: string, nullable: true, description: 'Human-facing language agents should phrase ask-a-human questions in (e.g. "German"); null = no preference' }
+        question_language: { type: [string, "null"], description: 'Human-facing language agents should phrase ask-a-human questions in (e.g. "German"); null = no preference' }
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -1685,7 +1684,7 @@ components:
       type: object
       description: Share metadata — never carries the plaintext token or its hash.
       properties:
-        id: { type: string, description: public handle for list/revoke, e.g. "share_a8f2k1x9q7z3" }
+        id: { type: string, description: 'public handle for list/revoke, e.g. "share_a8f2k1x9q7z3"' }
         kind: { type: string, enum: [project, subtree], description: "stored kind; an 'epic' request is stored as 'subtree'" }
         ref: { type: string, description: project id or root ticket id }
         project: { type: string, description: denormalized project the share is scoped to }
@@ -1716,7 +1715,7 @@ components:
     WhoAmI:
       type: object
       properties:
-        token_id: { type: string, description: public token handle, e.g. "tok_a8f2k1x9" }
+        token_id: { type: string, description: 'public token handle, e.g. "tok_a8f2k1x9"' }
         actor: { type: string, description: this token's actor identity }
         scopes: { type: array, items: { type: string } }
         projects:
@@ -1729,7 +1728,7 @@ components:
       type: object
       description: Token metadata — never carries the plaintext or the at-rest hash.
       properties:
-        id: { type: string, description: public handle for list/revoke, e.g. "tok_a8f2k1x9" }
+        id: { type: string, description: 'public handle for list/revoke, e.g. "tok_a8f2k1x9"' }
         actor: { type: string }
         scopes: { type: array, items: { type: string } }
         projects:
@@ -1766,7 +1765,7 @@ components:
         - $ref: "#/components/schemas/Token"
         - type: object
           properties:
-            token: { type: string, description: the plaintext tk_ token — shown ONCE, never again }
+            token: { type: string, description: 'the plaintext tk_ token — shown ONCE, never again' }
             warning: { type: string }
 
     Ticket:
@@ -1803,7 +1802,7 @@ components:
         created_by: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
-        archived_at: { type: [string, "null"], format: date-time, description: when archived (hidden from default views), or null when active }
+        archived_at: { type: [string, "null"], format: date-time, description: 'when archived (hidden from default views), or null when active' }
 
     TicketCreate:
       type: object
@@ -1839,7 +1838,7 @@ components:
                   title: { type: string }
                   state: { type: string }
                   type: { type: string }
-                  score: { type: number, description: blended similarity, 0..1 (2 d.p.) }
+                  score: { type: number, description: 'blended similarity, 0..1 (2 d.p.)' }
                   matched_terms: { type: array, items: { type: string }, description: title tokens that overlapped }
 
     TicketPatch:
@@ -1874,9 +1873,9 @@ components:
         ticket: { type: string }
         project: { type: string }
         target: { type: string, description: 'Free-form stage, e.g. "staging", "production", "published"' }
-        url: { type: string, nullable: true }
-        ref: { type: string, nullable: true, description: version/commit/build id }
-        note: { type: string, nullable: true }
+        url: { type: [string, "null"] }
+        ref: { type: [string, "null"], description: version/commit/build id }
+        note: { type: [string, "null"] }
         actor: { type: string }
         created_at: { type: string, format: date-time }
 
@@ -1899,8 +1898,8 @@ components:
         expires_at: { type: string, format: date-time }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
-        used_at: { type: string, format: date-time, nullable: true }
-        revoked_at: { type: string, format: date-time, nullable: true }
+        used_at: { type: [string, "null"], format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
 
     Question:
       type: object
@@ -1918,19 +1917,19 @@ components:
         option_notes: { type: array, items: { type: string }, description: 'Per-option descriptions, parallel to options (empty when none)' }
         multi: { type: boolean, description: 'A choose question that takes several options' }
         recommended_multi: { type: array, items: { type: string }, description: 'For a multi choose, the recommended set' }
-        recommended: { description: The agent's suggested answer (any JSON), or null }
-        recommended_note: { type: string, nullable: true, description: Short rationale for the recommendation }
-        confidence: { type: integer, nullable: true, minimum: 1, maximum: 4, description: Recommendation strength (1 tentative … 4 very strong) }
-        summary: { type: string, nullable: true, description: One-line list-preview summary }
+        recommended: { description: "The agent's suggested answer (any JSON), or null" }
+        recommended_note: { type: [string, "null"], description: Short rationale for the recommendation }
+        confidence: { type: [integer, "null"], minimum: 1, maximum: 4, description: Recommendation strength (1 tentative … 4 very strong) }
+        summary: { type: [string, "null"], description: One-line list-preview summary }
         expertise: { type: array, items: { type: string }, description: 'Routing tags, e.g. ["domain:billing"]' }
         urgency: { type: string, enum: [critical, high, normal, low] }
         status: { type: string, enum: [open, answered, withdrawn, expired] }
         answer: { description: 'The recorded human answer ({ value, note? }), or null while open' }
-        answered_by: { type: string, nullable: true }
-        answered_at: { type: string, format: date-time, nullable: true }
-        resolved_to: { type: string, nullable: true, description: State the ticket was resumed into }
-        expires_at: { type: string, format: date-time, nullable: true }
-        on_timeout: { type: string, nullable: true, enum: [recommended, escalate, cancel] }
+        answered_by: { type: [string, "null"] }
+        answered_at: { type: [string, "null"], format: date-time }
+        resolved_to: { type: [string, "null"], description: State the ticket was resumed into }
+        expires_at: { type: [string, "null"], format: date-time }
+        on_timeout: { type: [string, "null"], enum: [recommended, escalate, cancel, null] }
         awaiting: { type: string, enum: [human, agent], description: 'Whose turn on the follow-up thread while open: human (ready to answer) or agent (a human asked for more research)' }
         thread:
           type: array
@@ -1943,7 +1942,7 @@ components:
     Event:
       type: object
       properties:
-        seq: { type: integer, description: global, strictly increasing }
+        seq: { type: integer, description: 'global, strictly increasing' }
         ticket: { type: string }
         project: { type: string }
         actor: { type: string }
@@ -1981,7 +1980,12 @@ components:
               requires:
                 type: array
                 items: { type: string }
-                description: "any of: claim | scope:<scope> | guard:<guard-id>"
+                description: >-
+                  any of: claim | scope:<scope> | guard:<guard-id> |
+                  guard:has_link:<key>. Guard ids are no_open_children and
+                  no_open_blockers; guard:has_link:<key> requires a non-empty
+                  links.<key> on the ticket (guard:has_link:commit is the
+                  evidence gate for done — see spec/workflow-format.md).
         guards:
           type: object
           description: named guard configs, e.g. no_open_children on done-category entry
@@ -1992,7 +1996,7 @@ components:
       properties:
         code: { type: string, description: "stable machine code, e.g. conflict.version, claim.held, fence.stale (superseded lease), fence.invalid (fence never issued — a client bug)" }
         message: { type: string, description: written for LLM readers — states what is wrong AND what to do }
-        remedy: { type: string, description: the exact next call to make, when one exists }
+        remedy: { type: string, description: 'the exact next call to make, when one exists' }
         current_version: { type: integer }
         details: { type: object }
 

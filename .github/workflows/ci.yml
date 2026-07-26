@@ -49,6 +49,51 @@ jobs:
       - name: ShellCheck
         run: shellcheck clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh
 
+  spec:
+    name: OpenAPI spec (valid 3.1 + loadable everywhere)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The spec is the published contract (README points at it), but nothing
+      # used to load it — so it drifted twice over, in ways a human reading the
+      # file cannot see:
+      #   * unquoted plain scalars in flow mappings broke parsing outright, and
+      #   * a comma inside an unquoted description silently truncated the
+      #     sentence and turned its tail into a junk key, while `nullable: true`
+      #     (3.0 syntax) was ignored outright by 3.1 tooling.
+      # The second class PARSES FINE, so a parse check alone is false comfort —
+      # hence the schema validation below is the primary gate.
+      - name: Validate against the OpenAPI 3.1 schema (Redocly)
+        run: npx --yes @redocly/cli@2.40.0 lint spec/openapi.yaml --config spec/redocly.yaml
+
+      # Cross-language loadability, on top of schema validity: the spec is meant
+      # to be consumed by whatever a client is written in. Two parsers on purpose
+      # — PyYAML and Psych reject *different* constructs (a bare `:` in a flow
+      # scalar passes PyYAML and fails Psych), so either one alone gives false
+      # confidence. Both are preinstalled on the runner.
+      # Explicit setup rather than trusting the runner image's system Python to
+      # carry PyYAML — a red build from a missing dev dependency teaches nothing.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Loads in Python (PyYAML)
+        run: |
+          pip install --quiet pyyaml
+          python3 - <<'PY'
+          import sys, yaml
+          with open("spec/openapi.yaml", encoding="utf-8") as f:
+              doc = yaml.safe_load(f)
+          missing = [k for k in ("openapi", "info", "paths") if k not in doc]
+          if missing:
+              sys.exit(f"spec/openapi.yaml parses but is not an OpenAPI document: missing {missing}")
+          print(f"ok - OpenAPI {doc['openapi']}, {len(doc['paths'])} paths")
+          PY
+
+      - name: Loads in Ruby (Psych — stricter on flow scalars)
+        run: ruby -ryaml -e 'YAML.load_file("spec/openapi.yaml"); puts "ok - Psych accepts it too"'
+
   mcp:
     name: MCP typecheck
     runs-on: ubuntu-latest
