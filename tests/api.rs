@@ -313,6 +313,120 @@ async fn inbox_and_board_pages_served_unauthenticated() {
     }
 }
 
+/// The ticket filter on `/board` and `/inbox` is client-side, so its contract has
+/// two halves that break independently: the API must keep exposing the fields the
+/// filter reads, and the pages must keep shipping the control that reads them.
+/// A server-side rename of `parent`/`ticket` would silently degrade both filters to
+/// "matches nothing" without failing any other test.
+#[tokio::test]
+async fn ticket_filter_contract_on_board_and_inbox() {
+    let app = TestApp::spawn().await;
+
+    // An epic with a child, so the board's subtree filter has a chain to walk:
+    // filtering by the epic must keep its subtasks visible, not orphan them.
+    let epic = app.create_typed("Billing revamp", "epic", None).await;
+    let child = app
+        .create_typed("Migrate off billing_v1", "task", Some(&epic))
+        .await;
+    let other = app.create_typed("Unrelated work", "task", None).await;
+
+    // Advisory: needs no claim/fence and parks nothing, so the ticket stays put.
+    let (status, q) = app
+        .post(
+            &app.admin,
+            "/v1/questions",
+            json!({
+                "ticket": child,
+                "mode": "advisory",
+                "kind": "confirm",
+                "title": "Drop the legacy column?",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "ask failed: {q}");
+
+    // ---- half 1: the fields the filters read ----
+    // The board walks `parent` upward to decide subtree membership.
+    let (_, list) = app
+        .get(&app.admin, "/v1/tickets?project=tp&limit=200")
+        .await;
+    let listed = list["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|t| t["id"] == json!(child))
+        .expect("child ticket is listed");
+    assert_eq!(
+        listed["parent"],
+        json!(epic),
+        "tickets must expose `parent`; the board's subtree filter walks it"
+    );
+
+    // The inbox groups the queue by `ticket` — that field both populates its
+    // picker and decides which questions a chosen ticket shows.
+    let (_, qs) = app
+        .get(&app.admin, "/v1/questions?project=tp&status=open")
+        .await;
+    assert!(
+        qs["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .any(|x| x["ticket"] == json!(child)),
+        "questions must expose `ticket`; the inbox filter groups on it"
+    );
+
+    // The same narrowing over HTTP, so an integrator filtering server-side gets
+    // what the page computes client-side.
+    let (_, only) = app
+        .get(
+            &app.admin,
+            &format!("/v1/questions?ticket={child}&status=open"),
+        )
+        .await;
+    let items = only["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "?ticket= narrows to that ticket: {only}");
+    assert_eq!(items[0]["ticket"], json!(child));
+    let (_, none) = app
+        .get(
+            &app.admin,
+            &format!("/v1/questions?ticket={other}&status=open"),
+        )
+        .await;
+    assert!(
+        none["items"].as_array().expect("items array").is_empty(),
+        "?ticket= on a ticket with no questions returns nothing: {none}"
+    );
+
+    // ---- half 2: the control that reads them ----
+    for (path, wiring) in [("/board", "inSubtree("), ("/inbox", "visible()")] {
+        let body = app
+            .client
+            .get(format!("{}{}", app.base, path))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("id=\"ticksel\""),
+            "{path} ships the ticket-filter control"
+        );
+        assert!(
+            body.contains(wiring),
+            "{path} wires the ticket filter into its render path ('{wiring}')"
+        );
+        // One STR table per language: a key added to only one renders as
+        // `undefined` for whichever locale was forgotten.
+        assert_eq!(
+            body.matches("allTickets:").count(),
+            2,
+            "{path} needs `allTickets` in both the DE and EN string tables"
+        );
+    }
+}
+
 #[tokio::test]
 async fn favicon_served_unauthenticated_as_svg() {
     let app = TestApp::spawn().await;

@@ -94,9 +94,13 @@ lists every open question on the ticket so a resuming agent sees the full set.
 A human answers on the dedicated **`/inbox`** page — an email-style triage
 surface with a status folder rail (Open / Answered / Withdrawn / Expired), a
 scannable question list, and a reading/answer pane (with a **mine** filter for
-your expertise, inline answering, withdraw, and "create answer link"). The
-`/board` also has a lightweight **Ask a human** drawer with an unread badge for
-answering in context. Or over the API:
+your expertise, inline answering, withdraw, and "create answer link"). A
+**ticket filter** narrows the queue to one ticket's questions — the folder counts
+follow it, and the choice is deep-linkable as `#ticket=<id>`, so "everything
+still open on TKM-42" is a URL you can share. The `/board` also has a
+lightweight **Ask a human** drawer with an unread badge for answering in
+context; the board's own ticket filter narrows that drawer too, including the
+selected ticket's subtasks. Or over the API:
 
 ```sh
 takomo answer q-9f3ka2xz yes --note "confirmed with the data team"

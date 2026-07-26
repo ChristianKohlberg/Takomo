@@ -85,15 +85,17 @@
   .nav a, .nav .navpill { font-size: 13px; font-weight: 650; color: var(--muted); text-decoration: none; padding: 6px 13px; border-radius: 8px; cursor: pointer; }
   .nav a:hover { color: var(--accent); background: var(--hover); }
   .nav .active { color: var(--accent); background: var(--chip-bg); font-weight: 680; }
-  .projpick { position: relative; display: inline-flex; align-items: center; }
-  .projpick select {
+  .projpick, .tickpick { position: relative; display: inline-flex; align-items: center; }
+  .projpick select, .tickpick select {
     appearance: none; -webkit-appearance: none;
     font: inherit; font-weight: 650; font-size: 13px; color: var(--ink2);
     background: var(--col-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 7px 30px 7px 12px; max-width: 220px; cursor: pointer; text-overflow: ellipsis;
   }
-  .projpick select:hover { border-color: var(--sel-border); color: var(--accent); }
-  .projpick::after { content: "▾"; position: absolute; right: 11px; color: var(--muted); font-size: 11px; pointer-events: none; }
+  .projpick select:hover, .tickpick select:hover { border-color: var(--sel-border); color: var(--accent); }
+  .projpick::after, .tickpick::after { content: "▾"; position: absolute; right: 11px; color: var(--muted); font-size: 11px; pointer-events: none; }
+  /* Only meaningful once some question carries a ticket — hidden when empty. */
+  .tickpick select { font-family: var(--mono); font-size: 12.5px; max-width: 190px; }
   .grow { flex: 1 1 auto; }
   .hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
   .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -354,6 +356,7 @@
     .hint { display: none; }
     .nav a, .nav .navpill { padding: 6px 10px; }
     .projpick select { max-width: 150px; }
+    .tickpick select { max-width: 120px; }
   }
 </style>
 </head>
@@ -375,6 +378,7 @@
   <div class="brand" id="brand"></div>
   <nav class="nav"><a href="/board" id="nav-board">Board</a><span class="navpill active" id="nav-inbox">Inbox</span></nav>
   <div class="projpick"><select id="projsel" title="project"></select></div>
+  <div class="tickpick hidden" id="tickpick"><select id="ticksel" title="filter by ticket"></select></div>
   <span class="grow"></span>
   <span class="hint" id="kbd-hint"></span>
   <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
@@ -409,8 +413,8 @@
 
   // ---- i18n ----
   var STR = {
-    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", tagsHdr:"Tags", allTags:"Alle Tags", allValues:"Alle", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", backToList:"Zurück zur Liste", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", advTag:"beratend", customDivider:"oder eigene Anweisung", customPlaceholder:"Eigene Anweisung schreiben …", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren.", msgMore:"Ganze Antwort zeigen", msgLess:"Antwort einklappen", morePending:"weitere ausstehend" },
-    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", tagsHdr:"Tags", allTags:"All tags", allValues:"All", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", backToList:"Back to list", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", followupSent:"Sent to the agent — the reply appears here.", advTag:"advisory", customDivider:"or your own instruction", customPlaceholder:"Write your own instruction …", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually.", msgMore:"Show full reply", msgLess:"Collapse reply", morePending:"more pending" }
+    de: { inbox:"Inbox", board:"Board", kbd:"j / k bewegen · ↵ antworten", folders:"Ordner", open:"Offen", answered:"Beantwortet", withdrawn:"Zurückgezogen", expired:"Abgelaufen", scope:"Bereich", mine:"nur meine", tagsHdr:"Tags", allTags:"Alle Tags", allValues:"Alle", listHintOpen:"Dringlichkeit · Alter", listHintAns:"neueste", crit:"Kritisch", high:"Hoch", normal:"Normal", low:"Niedrig", allClear:"Alles erledigt", noneForTicket:"Keine Fragen für dieses Ticket.", allClearSub:"Keine offenen Fragen. Die Flotte arbeitet.", nothingSel:"Nichts ausgewählt", nothingSelSub:"Wähle links eine Frage aus.", ticketUpdate:"Ticket-Update", typeAnswer:"Antwort eingeben…", answer:"Antworten & fortsetzen", answerAdvis:"Antworten & aufzeichnen", askFollow:"Rückfrage stellen…", to:"an", share:"Antwort-Link erstellen", withdraw:"Zurückziehen", undo:"Rückgängig", decision:"Entscheidung", answeredBy:"beantwortet von dir", closed:"Diese Frage ist geschlossen.", reopen:"Wieder öffnen", reopened:"Frage wieder geöffnet.", ticketCtx:"Ticket-Kontext", status:"Status", claimed:"beansprucht von", openTicket:"Ticket öffnen →", blockedQ:"Blockiert — 1 offene Frage", blockedSub:"Dieses Ticket wartet auf die Frage, die du gerade siehst.", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", backToQ:"Zurück zur Frage", backToList:"Zurück zur Liste", withdrawTitle:"Frage zurückziehen?", withdrawBody:"Die Frage wird geschlossen und der Agent bekommt keine Antwort. Das Ticket bleibt blockiert.", cancel:"Abbrechen", recommended:"Empfehlung", confVery:"Sehr starke Empfehlung", confStrong:"Starke Empfehlung", confMod:"Mittel — sehenswert", confTent:"Vorläufig", approve:"Genehmigen", confirm:"Bestätigen", holdApprove:"Ablehnen", holdConfirm:"Ablehnen", nothingChanges:"Nichts ändert sich.", gate:"Du kannst antworten — Experte für ", resumedInto:" fortgesetzt", recorded:"Erfasst — Entscheidung aufgezeichnet", blockedEvt:"Blockiert — wartet auf deine Antwort.", waitingAgent:"Wartet auf ", waitingAgent2:" — du hast um mehr Kontext gebeten.", noReply:" wurde benachrichtigt. Die Antwort erscheint hier.", advisory:"Beratend — kein Statuswechsel", readonly:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung).", suggested:"Vorschlag des Agenten:", agentSuggests:"empfiehlt", gateTokenSub:"Fragen, die auf einen Menschen warten. Token einfügen (Berechtigung 'human' zum Antworten).", gateLabel:"Token", gateOpen:"Inbox öffnen", selectQuestion:"Wähle eine Frage zum Lesen und Beantworten.", answerLinkCreated:"Antwort-Link erstellt (einmalig gültig).", withdrawn2:"Frage zurückgezogen.", cancelled:"Nicht gesendet — abgebrochen.", sendFirst:"Zuerst eine Antwort wählen.", typeFirst:"Zuerst eine Antwort eingeben.", allProjects:"Alle Projekte", allTickets:"Alle Tickets", followupSent:"An den Agenten gesendet — die Antwort erscheint hier.", advTag:"beratend", customDivider:"oder eigene Anweisung", customPlaceholder:"Eigene Anweisung schreiben …", linkTitle:"Antwort-Link erstellt", linkBody:"Ein einmalig gültiger Link, mit dem genau diese Frage beantwortet werden kann — ohne eigenes Token. Teile ihn nur mit der vorgesehenen Person.", linkOnce:"Wird nur einmal angezeigt — jetzt kopieren.", copy:"Kopieren", copied:"Kopiert", done:"Fertig", validUntil:"Gültig bis", copyFail:"Kopieren fehlgeschlagen — manuell markieren.", msgMore:"Ganze Antwort zeigen", msgLess:"Antwort einklappen", morePending:"weitere ausstehend" },
+    en: { inbox:"Inbox", board:"Board", kbd:"j / k move · ↵ answer", folders:"Folders", open:"Open", answered:"Answered", withdrawn:"Withdrawn", expired:"Expired", scope:"Scope", mine:"mine", tagsHdr:"Tags", allTags:"All tags", allValues:"All", listHintOpen:"urgency · age", listHintAns:"most recent", crit:"Critical", high:"High", normal:"Normal", low:"Low", allClear:"All clear", noneForTicket:"No questions for this ticket.", allClearSub:"No open questions. The fleet is working.", nothingSel:"Nothing selected", nothingSelSub:"Pick a question from the list.", ticketUpdate:"Ticket update", typeAnswer:"Type your answer…", answer:"Answer & resume", answerAdvis:"Answer & record", askFollow:"Ask a follow-up…", to:"to", share:"Create answer link", withdraw:"Withdraw", undo:"Undo", decision:"Decision", answeredBy:"answered by you", closed:"This question is closed.", reopen:"Reopen", reopened:"Question reopened.", ticketCtx:"Ticket context", status:"Status", claimed:"claimed by", openTicket:"Open ticket →", blockedQ:"Blocked — 1 open question", blockedSub:"This ticket is parked on the question you are viewing.", description:"Description", dependencies:"Dependencies", links:"Links", backToQ:"Back to the question", backToList:"Back to list", withdrawTitle:"Withdraw this question?", withdrawBody:"The question closes and the agent gets no answer. The ticket stays blocked.", cancel:"Cancel", recommended:"Recommended", confVery:"Very strong recommendation", confStrong:"Strong recommendation", confMod:"Moderate — worth a look", confTent:"Tentative", approve:"Approve", confirm:"Confirm", holdApprove:"Reject", holdConfirm:"Decline", nothingChanges:"Nothing changes.", gate:"You can answer this — expert for ", resumedInto:" resumed", recorded:"Recorded — decision logged", blockedEvt:"Blocked — waiting on your answer.", waitingAgent:"Waiting on ", waitingAgent2:" — you asked for more context.", noReply:" was notified. The reply appears here.", advisory:"Advisory — no state change", readonly:"This token can't answer (no 'human' scope).", suggested:"Agent suggested:", agentSuggests:"recommends", gateTokenSub:"Questions waiting for a human. Paste a token (needs the 'human' scope to answer).", gateLabel:"Token", gateOpen:"Open inbox", selectQuestion:"Select a question to read and answer.", answerLinkCreated:"Answer link created (single-use).", withdrawn2:"Question withdrawn.", cancelled:"Not sent — cancelled.", sendFirst:"Select an answer first.", typeFirst:"Type an answer first.", allProjects:"All projects", allTickets:"All tickets", followupSent:"Sent to the agent — the reply appears here.", advTag:"advisory", customDivider:"or your own instruction", customPlaceholder:"Write your own instruction …", linkTitle:"Answer link created", linkBody:"A single-use link that lets someone answer just this one question — no token of their own needed. Share it only with the intended person.", linkOnce:"Shown only once — copy it now.", copy:"Copy", copied:"Copied", done:"Done", validUntil:"Valid until", copyFail:"Copy failed — select it manually.", msgMore:"Show full reply", msgLess:"Collapse reply", morePending:"more pending" }
   };
 
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -419,6 +423,8 @@
     token: localStorage.getItem(LS_TOKEN) || "",
     lang: initialLang === "de" ? "de" : "en",
     project: localStorage.getItem(LS_PROJECT) || "", mineOnly: false, folder: "open",
+    ticket: "", // "" = every ticket; else only questions raised on that ticket
+
     tagKind: localStorage.getItem(LS_TAGKIND) || "", // "" = all kinds
     tagRef: localStorage.getItem(LS_TAGREF) || "",   // "" = all of the kind; else "kind:handle"
     ticketTags: {},   // ticket id -> [refs]  (for filtering questions by their ticket's tags)
@@ -703,7 +709,19 @@
     localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null; clearLanded(); showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
-  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; localStorage.setItem(LS_PROJECT, state.project); state.answering = false; clearLanded(); state.tagKind = ""; state.tagRef = ""; state.ticketTags = {}; state.tagLabels = {}; localStorage.setItem(LS_TAGKIND, ""); localStorage.setItem(LS_TAGREF, ""); fetchAll(); });
+  // Tickets are per-project, so a filter carried across projects would only ever
+  // show an empty inbox.
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; localStorage.setItem(LS_PROJECT, state.project); state.ticket = ""; state.answering = false; clearLanded(); state.tagKind = ""; state.tagRef = ""; state.ticketTags = {}; state.tagLabels = {}; localStorage.setItem(LS_TAGKIND, ""); localStorage.setItem(LS_TAGREF, ""); fetchAll(); });
+  $("ticksel").addEventListener("change", function () {
+    state.ticket = $("ticksel").value;
+    state.drawerOpen = false; state.ticketOpen = false; state.composeOpen = false;
+    // The landed tint also marks the Answered folder, which the new filter may
+    // now count as empty — drop it rather than flash a checkmark over a 0.
+    clearLanded();
+    // Keep the reading pane on a question the list still shows.
+    if (state.selectedId && !visible().some(function (q) { return q.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; }
+    render();
+  });
   activate($("lang-de"), function () { setLang("de"); });
   activate($("lang-en"), function () { setLang("en"); });
   function setLang(l) { state.lang = l; localStorage.setItem(LS_LANG, l); applyChrome(); render(); applyGateStrings(); }
@@ -737,7 +755,7 @@
   }
   function getLang() { return (state.project && state.projLang[state.project]) || ""; }
 
-  // ---- URL routing: deep-linkable, bookmarkable #q=<id>&folder=<f>&project=<p> ----
+  // ---- URL routing: deep-linkable, bookmarkable #q=<id>&folder=<f>&project=<p>&ticket=<t> ----
   var suppressHash = false;
   var deepLinkQ = null; // a #q= present at first load — open its reading pane on mobile
   function parseHash() {
@@ -745,7 +763,7 @@
     (location.hash || "").replace(/^#/, "").split("&").forEach(function (kv) {
       if (!kv) return;
       var i = kv.indexOf("="), k = i < 0 ? kv : kv.slice(0, i), v = i < 0 ? "" : decodeURIComponent(kv.slice(i + 1));
-      if (k === "q" || k === "folder" || k === "project") out[k] = v;
+      if (k === "q" || k === "folder" || k === "project" || k === "ticket") out[k] = v;
     });
     return out;
   }
@@ -754,6 +772,7 @@
     if (state.selectedId) parts.push("q=" + encodeURIComponent(state.selectedId));
     if (state.folder && state.folder !== "open") parts.push("folder=" + encodeURIComponent(state.folder));
     if (state.project) parts.push("project=" + encodeURIComponent(state.project));
+    if (state.ticket) parts.push("ticket=" + encodeURIComponent(state.ticket));
     return parts.length ? "#" + parts.join("&") : "#";
   }
   function syncHash(push) {
@@ -770,11 +789,14 @@
     if (h.folder && VALID[h.folder]) state.folder = h.folder;
     var projChanged = false;
     if (h.project != null && h.project !== state.project) { state.project = h.project; localStorage.setItem(LS_PROJECT, state.project); projChanged = true; }
+    // Absent means "all tickets" — hashString() omits an empty filter, so this
+    // round-trips and back/forward actually clears it.
+    state.ticket = h.ticket || "";
     if (h.q) { state.selectedId = h.q; if (initial) deepLinkQ = h.q; }
     if (initial) return;
     if (projChanged) { var sel = $("projsel"); if (sel) sel.value = state.project; state.answering = false; fetchAll(); }
     else {
-      if (state.selectedId && !state.questions.some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; }
+      if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; }
       render();
     }
   }
@@ -814,7 +836,7 @@
       state.questions = items || [];
       return loadTagData(); // ticket->tags map + registry labels, for the tag filter
     }).then(function () {
-      if (state.selectedId && !state.questions.some(function (q) { return q.id === state.selectedId; })) state.selectedId = null;
+      if (state.selectedId && !visible().some(function (q) { return q.id === state.selectedId; })) state.selectedId = null;
       if (!state.selectedId) { var first = inFolder()[0]; state.selectedId = first ? first.id : null; }
       // A bookmarked/shared #q= that resolves should open its reading pane even
       // on mobile (where the list otherwise hides the pane until a tap).
@@ -863,14 +885,14 @@
       var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
         (document.activeElement && $("read").contains(document.activeElement));
       if (busy) { setLive("live", "live ·"); return; }
-      return loadQuestions().then(function (items) { state.questions = items || []; return loadTagData(); }).then(function () { if (state.selectedId && !state.questions.some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
+      return loadQuestions().then(function (items) { state.questions = items || []; return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
     }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
   }
 
   // ---- data helpers ----
   function counts() {
     var c = { open: 0, answered: 0, withdrawn: 0, expired: 0 };
-    state.questions.forEach(function (q) { if (c[q.status] != null && questionMatchesTag(q)) c[q.status]++; });
+    visible().forEach(function (q) { if (c[q.status] != null) c[q.status]++; });
     return c;
   }
   // ---- tag filter (by the question's ticket's tags) ----
@@ -891,8 +913,16 @@
     var pref = state.tagKind + ":";
     return tags.some(function (r) { return r.indexOf(pref) === 0; });
   }
+  // The questions the filters admit — ticket AND tag, ANDed. Everything
+  // user-facing (folder counts, the list, which selection is still legal) reads
+  // through this, so the rail never advertises questions the list won't show.
+  function visible() {
+    return state.questions.filter(function (q) {
+      return (!state.ticket || q.ticket === state.ticket) && questionMatchesTag(q);
+    });
+  }
   function inFolder() {
-    return state.questions.filter(function (q) { return q.status === state.folder && questionMatchesTag(q); }).sort(function (a, b) {
+    return visible().filter(function (q) { return q.status === state.folder; }).sort(function (a, b) {
       var pr = { critical: 0, high: 1, normal: 2, low: 3 };
       var pa = pr[a.urgency] == null ? 9 : pr[a.urgency], pb = pr[b.urgency] == null ? 9 : pr[b.urgency];
       if (pa !== pb) return pa - pb; return (a.created_at || "").localeCompare(b.created_at || "");
@@ -925,7 +955,29 @@
   }
 
   // ---- render ----
-  function render() { renderRail(); renderList(); renderReading(); renderSnackbar(); renderModal(); syncHash(false); }
+  function render() { renderTicketPick(); renderRail(); renderList(); renderReading(); renderSnackbar(); renderModal(); syncHash(false); }
+
+  // The ticket dropdown is built from the tickets that actually carry questions
+  // (across every folder, so switching folders never makes an option vanish) —
+  // there is no ticket list to fetch and no dead option to pick. An active filter
+  // is always listed, even once its last question is gone, so the empty list has a
+  // visible cause the reader can undo.
+  function renderTicketPick() {
+    var sel = $("ticksel"), wrap = $("tickpick"); if (!sel || !wrap) return;
+    var n = {};
+    state.questions.forEach(function (q) { if (q.ticket) n[q.ticket] = (n[q.ticket] || 0) + 1; });
+    if (state.ticket && n[state.ticket] == null) n[state.ticket] = 0;
+    var ids = Object.keys(n).sort(function (a, b) { return a.localeCompare(b); });
+    sel.innerHTML = "";
+    var all = el("option"); all.value = ""; all.textContent = t().allTickets; sel.appendChild(all);
+    ids.forEach(function (id) {
+      var o = el("option"); o.value = id;
+      o.textContent = n[id] ? id + " · " + n[id] : id;
+      sel.appendChild(o);
+    });
+    sel.value = state.ticket;
+    wrap.classList.toggle("hidden", ids.length === 0);
+  }
 
   function renderRail() {
     var rail = $("rail"); rail.innerHTML = "";
@@ -1019,8 +1071,14 @@
     if (items.length === 0) {
       var e = el("div", "listempty");
       var svg = document.createElement("span"); svg.innerHTML = LOGO; svg.style.color = "var(--low)"; e.appendChild(svg);
-      e.appendChild(el("div", "t", t().allClear));
-      e.appendChild(el("p", null, t().allClearSub));
+      // With a ticket filter on, "all clear" would be a lie about the whole queue.
+      if (state.ticket) {
+        e.appendChild(el("div", "t", state.ticket));
+        e.appendChild(el("p", null, t().noneForTicket));
+      } else {
+        e.appendChild(el("div", "t", t().allClear));
+        e.appendChild(el("p", null, t().allClearSub));
+      }
       list.appendChild(e); return;
     }
 

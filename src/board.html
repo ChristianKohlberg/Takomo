@@ -107,6 +107,7 @@
   .column.done h2 { color: var(--muted); }
   .cards { display: flex; flex-direction: column; gap: 10px; }
   .epicsel { max-width: 190px; }
+  .ticksel { max-width: 190px; }
   .grouptoggle { font-size: 12.5px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
   .subhd { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px 0; margin-top: 2px; }
   .subhd .slbl { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -273,6 +274,7 @@
   <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a></nav>
   <select id="projsel" title="project"></select>
   <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
+  <select id="ticksel" class="ticksel hidden" title="filter by ticket"></select>
   <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
   <select id="tagvalsel" class="epicsel hidden" title="filter by tag value"></select>
   <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
@@ -321,6 +323,7 @@
   var LS_PROJECT = "takomo.board.project";
   var LS_LANG = "takomo.lang";
   var LS_EPIC = "takomo.board.epic";
+  var LS_TICKET = "takomo.board.ticket";
   var LS_GROUP = "takomo.board.groupepic";
   var LS_TAGKIND = "takomo.board.tagkind";
   var LS_TAGREF = "takomo.board.tagref";
@@ -328,8 +331,8 @@
 
   // ---- i18n (shared vocabulary with /inbox) ----
   var STR = {
-    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", proofCommit:"Nachweis-Commit", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", allTags:"Alle Tags", allValues:"Alle", tagsHdr:"Tags", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref " },
-    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", proofCommit:"Proof commit", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", allTags:"All tags", allValues:"All", tagsHdr:"Tags", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref " }
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", proofCommit:"Nachweis-Commit", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", noneForTicket:"Keine offenen Fragen für dieses Ticket.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", allTickets:"Alle Tickets", allTags:"Alle Tags", allValues:"Alle", tagsHdr:"Tags", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref " },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", proofCommit:"Proof commit", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", noneForTicket:"No open questions for this ticket.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", allTickets:"All tickets", allTags:"All tags", allValues:"All", tagsHdr:"Tags", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref " }
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
   function L() { return STR[state.lang]; }
@@ -356,12 +359,18 @@
     openQByTicket: {}, // ticket id -> { count, blocking, advisory } for open questions
     promoByTicket: {}, // ticket id -> latest promotion { target, created_at, url }
     epicFilter: localStorage.getItem(LS_EPIC) || "", // "" = all epics
+    ticketFilter: localStorage.getItem(LS_TICKET) || "", // "" = all tickets; else that ticket + its subtree
     groupByEpic: localStorage.getItem(LS_GROUP) === "1",
+    ticketFilter: localStorage.getItem(LS_TICKET) || "", // "" = all tickets; else that ticket + its subtree
     tagKind: localStorage.getItem(LS_TAGKIND) || "", // "" = all kinds
     tagRef: localStorage.getItem(LS_TAGREF) || "",   // "" = all of the kind; else "kind:handle"
     tagLabels: {},     // ref -> display label (from the registry, when available)
-    expanded: {}       // collapse key -> true (a column/epic-group showing all cards)
+    expanded: {},      // collapse key -> true (a column/epic-group showing all cards)
+    // Project-settings modal (admin only). `orig` is what the store returned, so
+    // Save can send only what actually changed and Cancel needs no undo logic.
+    settings: null     // { open, loading, saving, err, saved, orig:{language,style}, language, style }
   };
+  var STYLE_MAX = 2000; // must match store::MAX_STYLE_GUIDE_CHARS
 
   function fmtAge(iso) {
     var d = new Date(iso); if (isNaN(d.getTime())) return "";
@@ -646,8 +655,9 @@
   $("projsel").addEventListener("change", function () {
     state.project = $("projsel").value;
     localStorage.setItem(LS_PROJECT, state.project);
-    // Epics and tags are per-project; a stale filter from another project makes no sense.
+    // Epics, tickets and tags are per-project; a stale filter from another project makes no sense.
     state.epicFilter = ""; localStorage.setItem(LS_EPIC, ""); state.expanded = {};
+    setTicketFilter("");
     state.tagKind = ""; state.tagRef = ""; state.tagLabels = {};
     localStorage.setItem(LS_TAGKIND, ""); localStorage.setItem(LS_TAGREF, "");
     boot();
@@ -655,8 +665,19 @@
   $("epicsel").addEventListener("change", function () {
     state.epicFilter = $("epicsel").value;
     localStorage.setItem(LS_EPIC, state.epicFilter);
+    // The ticket list is scoped to the chosen epic, so a ticket outside it would
+    // otherwise leave the board empty with no visible cause.
+    if (state.ticketFilter && state.epicFilter && !inSubtree(state.tickets[state.ticketFilter], state.epicFilter)) setTicketFilter("");
     state.expanded = {}; // fresh collapse state for the new view
     render();
+  });
+  $("ticksel").addEventListener("change", function () {
+    setTicketFilter($("ticksel").value);
+    state.expanded = {};
+    render();
+    // The drawer's queue and its badge follow the filter.
+    refreshInboxCount();
+    if (state.inboxOpen) renderInbox();
   });
   $("groupepic").addEventListener("change", function () {
     state.groupByEpic = $("groupepic").checked;
@@ -837,12 +858,14 @@
     }
     return lastEpic;
   }
-  // True when `epicId` is `t` itself or any ancestor of `t`.
-  function inEpic(t, epicId) {
+  // True when `ancestorId` is `t` itself or any ancestor of `t` — i.e. `t` lies in
+  // that ticket's subtree. Used by both the epic filter and the ticket filter, so
+  // "filter by TK-7" keeps TK-7's subtasks visible instead of orphaning them.
+  function inSubtree(t, ancestorId) {
     var cur = t, depth = 0, guard = {};
     while (cur && depth < 30 && !guard[cur.id]) {
       guard[cur.id] = 1;
-      if (cur.id === epicId) return true;
+      if (cur.id === ancestorId) return true;
       if (!cur.parent) break;
       cur = state.tickets[cur.parent]; depth++;
     }
@@ -869,6 +892,30 @@
     sel.classList.toggle("hidden", none);
     if (wrap) wrap.classList.toggle("hidden", none);
     var chk = $("groupepic"); if (chk) chk.checked = state.groupByEpic;
+  }
+
+  function setTicketFilter(id) {
+    state.ticketFilter = id || "";
+    localStorage.setItem(LS_TICKET, state.ticketFilter);
+  }
+  function ticketLabel(t) { return t.title ? (t.id + " — " + t.title) : t.id; }
+  // Keep the header's ticket dropdown in sync with the loaded tickets. The list is
+  // scoped by the active epic filter so the two compose: pick an epic, then narrow
+  // to one of its tickets.
+  function populateTickets() {
+    var sel = $("ticksel"); if (!sel) return;
+    var tickets = Object.keys(state.tickets).map(function (k) { return state.tickets[k]; })
+      .filter(function (t) { return !t.archived_at || state.showArchived; })
+      .filter(function (t) { return !state.epicFilter || inSubtree(t, state.epicFilter); })
+      .sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
+    sel.innerHTML = "";
+    var all = el("option"); all.value = ""; all.textContent = L().allTickets; sel.appendChild(all);
+    tickets.forEach(function (t) { var o = el("option"); o.value = t.id; o.textContent = ticketLabel(t); sel.appendChild(o); });
+    // A filter pointing at a ticket that is gone (or now hidden) would blank the
+    // board with no visible cause — drop it instead.
+    if (state.ticketFilter && !tickets.some(function (t) { return t.id === state.ticketFilter; })) setTicketFilter("");
+    sel.value = state.ticketFilter;
+    sel.classList.toggle("hidden", tickets.length === 0);
   }
 
   // Distinct tag references currently in use across the (visible) tickets. The
@@ -938,6 +985,7 @@
     board.innerHTML = "";
     if (!state.workflow) return;
     populateEpics();
+    populateTickets();
     populateTagFilter();
     var states = state.workflow.states || [];
     var byState = {};
@@ -946,7 +994,8 @@
     Object.keys(state.tickets).forEach(function (id) {
       var t = state.tickets[id];
       if (t.archived_at && !state.showArchived) return; // archived hidden by default
-      if (state.epicFilter && !inEpic(t, state.epicFilter)) return; // epic filter
+      if (state.epicFilter && !inSubtree(t, state.epicFilter)) return; // epic filter
+      if (state.ticketFilter && !inSubtree(t, state.ticketFilter)) return; // ticket filter (incl. subtasks)
       if (!matchesTagFilter(t)) return; // tag filter (kind / kind:handle)
       if (!byState[t.state]) byState[t.state] = []; // unknown/legacy state -> its own column
       byState[t.state].push(t);
@@ -1098,15 +1147,26 @@
     return q;
   }
 
+  // The ticket filter narrows the drawer's queue the same way it narrows the
+  // board: a question counts when its ticket is in the filtered subtree. Falls
+  // back to an id match for a question whose ticket isn't loaded.
+  function questionInFilter(q) {
+    if (!state.ticketFilter) return true;
+    var t = state.tickets[q.ticket];
+    return t ? inSubtree(t, state.ticketFilter) : q.ticket === state.ticketFilter;
+  }
+
   function refreshInboxCount() {
     if (state.shareMode) return;
     api(questionsQuery()).then(function (res) {
       var items = res.items || [];
+      var shown = items.filter(questionInFilter);
       var b = $("inbox-count");
-      b.textContent = String(items.length);
-      b.classList.toggle("zero", items.length === 0);
-      // Build the per-ticket open-question map so cards can show an indicator
-      // and the detail drawer can offer "Answer in Inbox".
+      b.textContent = String(shown.length);
+      b.classList.toggle("zero", shown.length === 0);
+      // Build the per-ticket open-question map from the UNfiltered set so every
+      // visible card keeps its indicator, and the detail drawer can offer
+      // "Answer in Inbox".
       var map = {};
       items.forEach(function (q) {
         var m = map[q.ticket] || (map[q.ticket] = { count: 0, blocking: false, advisory: false });
@@ -1136,13 +1196,13 @@
   function renderInbox() {
     var body = $("inbox-body");
     api(questionsQuery()).then(function (res) {
-      var items = res.items || [];
+      var items = (res.items || []).filter(questionInFilter);
       body.innerHTML = "";
       if (state.me && !state.me.canAnswer) {
         body.appendChild(el("div", "q-readonly", L().cantAnswer));
       }
       if (items.length === 0) {
-        body.appendChild(el("div", "q-empty", L().allClear));
+        body.appendChild(el("div", "q-empty", state.ticketFilter ? L().noneForTicket : L().allClear));
         return;
       }
       items.forEach(function (q) { body.appendChild(qItemEl(q)); });
