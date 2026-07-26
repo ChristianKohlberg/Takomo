@@ -5231,3 +5231,271 @@ async fn human_can_answer_a_single_choose_with_a_custom_free_text_answer() {
     assert_eq!(q["answer"]["value"], "phased rollout instead");
     assert_eq!(q["answer"]["custom"], true);
 }
+
+// ---------------------------------------------------------------------------
+// Tag registry + ticket tagging
+
+#[tokio::test]
+async fn tag_registry_crud_and_conflict() {
+    let app = TestApp::spawn().await;
+
+    // Create a person entity.
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "ada", "label": "Ada Lovelace", "meta": { "email": "ada@x", "role": "eng" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    assert_eq!(t["ref"], "person:ada");
+    assert_eq!(t["label"], "Ada Lovelace");
+    assert_eq!(t["meta"]["email"], "ada@x");
+
+    // Duplicate (project, kind, handle) is a 409.
+    let (s, e) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert_eq!(e["code"], "tag.exists");
+
+    // A different kind with the same handle is allowed (identity is kind+handle).
+    let (s, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "component", "handle": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // List (ordered by kind, handle) and kind filter.
+    let (s, list) = app.get(&app.admin, "/v1/projects/tp/tags").await;
+    assert_eq!(s, StatusCode::OK);
+    let refs: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["ref"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        refs,
+        vec!["component:ada", "person:ada"],
+        "ordered by kind,handle"
+    );
+    let (_, people) = app
+        .get(&app.admin, "/v1/projects/tp/tags?kind=person")
+        .await;
+    assert_eq!(people["items"].as_array().unwrap().len(), 1);
+
+    // Substring search on handle/label.
+    let (_, q) = app.get(&app.admin, "/v1/projects/tp/tags?q=love").await;
+    assert_eq!(q["items"].as_array().unwrap().len(), 1);
+    assert_eq!(q["items"][0]["ref"], "person:ada");
+
+    // Get one.
+    let (s, one) = app.get(&app.admin, "/v1/projects/tp/tags/person/ada").await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    assert_eq!(one["label"], "Ada Lovelace");
+
+    // Patch label + merge meta (null deletes a key).
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            "/v1/projects/tp/tags/person/ada",
+            json!({ "label": "Ada L.", "meta_merge": { "role": null, "team": "core" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["label"], "Ada L.");
+    assert_eq!(patched["meta"]["email"], "ada@x");
+    assert_eq!(patched["meta"]["team"], "core");
+    assert!(
+        patched["meta"].get("role").is_none(),
+        "role deleted via null"
+    );
+
+    // Delete; ticket refs (none yet) => still_referenced 0.
+    let resp = app
+        .client
+        .delete(format!("{}/v1/projects/tp/tags/person/ada", app.base))
+        .bearer_auth(&app.admin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let del: Value = resp.json().await.unwrap();
+    assert_eq!(del["still_referenced"], 0);
+
+    // Get after delete is 404.
+    let (s, _) = app.get(&app.admin, "/v1/projects/tp/tags/person/ada").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ticket_tags_lazy_create_patch_and_filter() {
+    let app = TestApp::spawn().await;
+
+    // Create a ticket tagged with an unregistered handle: it is lazily registered.
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Invoice rounding", "tags": ["person:ada", "component:billing", "person:ada"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    let id = t["id"].as_str().unwrap().to_string();
+    // Deduped, order preserved.
+    assert_eq!(t["tags"], json!(["person:ada", "component:billing"]));
+
+    // The lazy-created registry stub exists (label defaults to the handle).
+    let (s, stub) = app.get(&app.admin, "/v1/projects/tp/tags/person/ada").await;
+    assert_eq!(s, StatusCode::OK, "{stub}");
+    assert_eq!(stub["label"], "ada");
+
+    // tags_add / tags_remove are commutative set ops.
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags_add": ["team:core"], "tags_remove": ["component:billing"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["tags"], json!(["person:ada", "team:core"]));
+
+    // Whole-set replace.
+    let (_, replaced) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags": ["person:ada"] }),
+        )
+        .await;
+    assert_eq!(replaced["tags"], json!(["person:ada"]));
+
+    // A second ticket with a different person.
+    let (_, t2) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Payroll", "tags": ["person:grace"] }),
+        )
+        .await;
+    let id2 = t2["id"].as_str().unwrap().to_string();
+
+    // Filter by exact ref.
+    let (_, byref) = app
+        .get(&app.admin, "/v1/tickets?project=tp&tag=person:ada")
+        .await;
+    let ids: Vec<&str> = byref["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&id.as_str()) && !ids.contains(&id2.as_str()),
+        "tag=person:ada -> {ids:?}"
+    );
+
+    // Filter by kind (both tickets carry a person tag).
+    let (_, bykind) = app
+        .get(&app.admin, "/v1/tickets?project=tp&tag_kind=person")
+        .await;
+    assert_eq!(
+        bykind["items"].as_array().unwrap().len(),
+        2,
+        "tag_kind=person matches both"
+    );
+
+    // Deleting the registry entry reports the tickets still referencing it.
+    let resp = app
+        .client
+        .delete(format!("{}/v1/projects/tp/tags/person/ada", app.base))
+        .bearer_auth(&app.admin)
+        .send()
+        .await
+        .unwrap();
+    let del: Value = resp.json().await.unwrap();
+    assert_eq!(
+        del["still_referenced"], 1,
+        "one ticket still tags person:ada"
+    );
+    // The ticket reference survives the registry delete.
+    let (_, still) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(still["tags"], json!(["person:ada"]));
+}
+
+#[tokio::test]
+async fn tag_validation_and_scope() {
+    let app = TestApp::spawn().await;
+
+    // Malformed ref on a ticket (no colon) is a teaching 422.
+    let (s, e) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "x", "tags": ["ada"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.tag_ref");
+
+    // Bad kind (uppercase) and bad handle are rejected on registry create.
+    let (s, e) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "Person", "handle": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.tag_kind");
+
+    let (s, e) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "Ada Lovelace" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.tag_handle");
+
+    // Mint a read-only token: it cannot create a tag or tag a ticket.
+    let (_, minted) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "agent:ro", "scopes": ["read"] }),
+        )
+        .await;
+    let ro = minted["token"].as_str().unwrap().to_string();
+
+    let (s, e) = app
+        .post(
+            &ro,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    assert_eq!(e["code"], "auth.scope");
+
+    let id = app.create_ticket("taggable").await;
+    let (s, e) = app
+        .patch(
+            &ro,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags_add": ["person:ada"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    assert_eq!(e["code"], "auth.scope");
+}

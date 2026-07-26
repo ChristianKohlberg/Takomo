@@ -81,6 +81,23 @@ When progressing needs a human judgment you cannot make — a confirmation ("OK 
 
 Always search first (`takomo ls -q <keywords>`). `takomo new` auto-sends an Idempotency-Key and surfaces a `similar` list in the response — **read it**; if your ticket already exists, use the existing one. Structure work with `epic` parents grouping `task`/`bug` children (`--parent <epic-id>`); real dependencies are `blocked_by` edges (`takomo dep <id> --blocked-by <other>`), not prose.
 
+## Tagging people and other entities
+
+Each project has a **tag registry** — named entities of some `kind` (`person`, `component`, `team`, whatever the project uses) that you attach to tickets as `kind:handle` references. It is reference metadata only: a tag never changes a ticket's state, claim, or question routing — it is for grouping, filtering, and showing *who/what* a ticket touches.
+
+```bash
+takomo person add ada --label "Ada Lovelace"        # register a person (alias for the 'person' kind)
+takomo tag new --kind component --handle billing     # any other kind: just a new string, no setup
+takomo tag add <id> person:ada component:billing     # attach refs to a ticket
+takomo tag rm  <id> person:ada                        # detach
+takomo ls --tag person:ada                            # tickets tagged with that person
+takomo ls --tag-kind person                           # tickets carrying any person tag
+takomo tag ls --kind person                           # browse the registry (sortable/filterable)
+takomo new "Fix invoice rounding" --tag person:ada --tag component:billing
+```
+
+The registry is **extensible by design** — a new kind is just a new value in `kind:handle`, needing no setup. Handles are the identity (lowercase slug); the display name lives in `--label`, and per-kind attributes go in `--meta key=value` (e.g. `--meta email=ada@…`). Tagging a not-yet-registered handle registers a stub automatically, so you can tag first and enrich later. Deleting a registry entry leaves existing ticket references intact.
+
 ## Raw HTTP (for non-`takomo` clients)
 
 Under the hood every call is `curl -sS -H "Authorization: Bearer $TAKOMO_TOKEN" -H "Content-Type: application/json"` against `$TAKOMO_URL`. Every error body is self-describing: read `message`, `remedy`, and (on transitions) `allowed_transitions`.

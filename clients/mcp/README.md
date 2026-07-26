@@ -28,8 +28,8 @@ not change or embed the server in any way.
 
 | Tool | Purpose |
 | --- | --- |
-| `takomo_new` | Create a ticket (`project`, `title`, `type`, `priority`, `parent`, `labels`, `body`). Auto Idempotency-Key; surfaces `similar` duplicates. |
-| `takomo_list` | List tickets with filters (`project`, `state`, `type`, `priority`, `label`, `limit`, `cursor`). |
+| `takomo_new` | Create a ticket (`project`, `title`, `type`, `priority`, `parent`, `labels`, `tags`, `body`). Auto Idempotency-Key; surfaces `similar` duplicates. |
+| `takomo_list` | List tickets with filters (`project`, `state`, `type`, `priority`, `label`, `tag`, `tag_kind`, `limit`, `cursor`). |
 | `takomo_ready` | List the ready queue (optionally by `project`). |
 | `takomo_show` | Fetch one full ticket by `id` (plus any lease you hold). |
 | `takomo_claim` | Claim a specific ticket by `id`; remembers the fence. |
@@ -41,6 +41,7 @@ not change or embed the server in any way.
 | `takomo_cancel` | Move to the workflow's cancelled terminal state. |
 | `takomo_comment` | Add a comment (`id`, `body`). |
 | `takomo_link` | Attach/update a named link (`key`, `value`), merging with existing links. |
+| `takomo_tag` | Tag entities onto a ticket — `add`/`remove` `kind:handle` refs (e.g. `person:ada`); reference metadata only. |
 | `takomo_dep` | Record that a ticket is `blocked_by` another. |
 | `takomo_release` | Release your claim, echoing the fence; clears the remembered fence. |
 | `takomo_projects` | List projects and their workflows. |

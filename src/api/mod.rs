@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod projects;
 pub mod questions;
 pub mod shares;
+pub mod tags;
 pub mod tickets;
 pub mod tokens;
 pub mod transition;

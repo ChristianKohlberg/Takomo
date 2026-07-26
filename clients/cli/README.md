@@ -103,6 +103,12 @@ takomo done myproj-a1b2                     # -> done
 takomo ls   --project myproj --state in_progress
 takomo ls   --project myproj -q frobnicator
 takomo show myproj-a1b2
+
+# tag people / components / … onto tickets (reference metadata only)
+takomo person add ada --label "Ada Lovelace"   # register an entity in the project
+takomo tag add  myproj-a1b2 person:ada component:billing
+takomo ls  --project myproj --tag-kind person   # filter by tag kind
+takomo tag ls --kind person                      # browse the registry
 ```
 
 If a move is illegal for the project's workflow, `takomo` prints the store's

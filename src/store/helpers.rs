@@ -10,11 +10,12 @@ use serde_json::Value;
 /// Column list every ticket SELECT uses, with `t` as the tickets alias.
 pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.body, t.state, \
     COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS state_category, \
-    t.priority, t.labels, t.metadata, t.links, t.claim_holder, t.claim_expires_at, \
+    t.priority, t.labels, t.tags, t.metadata, t.links, t.claim_holder, t.claim_expires_at, \
     t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, t.archived_at";
 
 pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
     let labels_raw: String = row.get("labels")?;
+    let tags_raw: String = row.get("tags")?;
     let metadata_raw: String = row.get("metadata")?;
     let links_raw: String = row.get("links")?;
     Ok(Ticket {
@@ -28,6 +29,7 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         state_category: row.get("state_category")?,
         priority: row.get("priority")?,
         labels: serde_json::from_str(&labels_raw).unwrap_or_default(),
+        tags: serde_json::from_str(&tags_raw).unwrap_or_default(),
         metadata: serde_json::from_str(&metadata_raw).unwrap_or(Value::Null),
         links: serde_json::from_str(&links_raw).unwrap_or(Value::Null),
         blocked_by: Vec::new(), // filled by load_blocked_by
