@@ -394,7 +394,7 @@
     custom: {},       // qid -> free-text "write your own" answer (single choose)
     customOn: {},     // qid -> true when the "write your own" option is selected
     snack: null,      // { qid, decision, detail, remaining }
-    landedId: null,   // qid whose answer was just written — tints its row + folder
+    landedId: null,   // qid just answered — briefly tints its row + the Answered folder
     linkModal: null,  // { url, expires_at, actor } for the answer-link modal
   };
   function t() { return STR[state.lang]; }
@@ -517,10 +517,10 @@
     state.token = tk; localStorage.setItem(LS_TOKEN, tk); $("g-err").textContent = ""; hideGate(); boot();
   });
   $("signout").addEventListener("click", function () {
-    localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null; clearTimeout(landTimer); state.landedId = null; showGate("");
+    localStorage.removeItem(LS_TOKEN); state.token = ""; state.questions = []; state.selectedId = null; clearLanded(); showGate("");
   });
   $("refresh").addEventListener("click", fetchAll);
-  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; localStorage.setItem(LS_PROJECT, state.project); state.answering = false; clearTimeout(landTimer); state.landedId = null; fetchAll(); });
+  $("projsel").addEventListener("change", function () { state.project = $("projsel").value; localStorage.setItem(LS_PROJECT, state.project); state.answering = false; clearLanded(); fetchAll(); });
   activate($("lang-de"), function () { setLang("de"); });
   activate($("lang-en"), function () { setLang("en"); });
   function setLang(l) { state.lang = l; localStorage.setItem(LS_LANG, l); applyChrome(); render(); applyGateStrings(); }
@@ -1216,6 +1216,10 @@
     if (state.folder === "open") { var nx = inFolder()[0]; state.selectedId = nx ? nx.id : null; }
     state.snack = { q: q, qid: q.id, value: value, prev: prev, decision: t().decision + ": " + displayVal(q, value), detail: blocking ? (q.ticket + t().resumedInto) : t().recorded, remaining: UNDO_SECONDS, blocking: blocking };
     state.advanced = true; // slide the newly-shown item in
+    // Tint the row and the Answered folder now, as the item leaves Open and the
+    // Answered count ticks up — the tint rides along with a movement you are
+    // already watching. The write itself happens when the undo window closes.
+    markLanded(q.id);
     // Deliberate hand-off: slide the finished item out (with a ✓ badge), then
     // render the next one sliding in. Instant fallback for reduced motion / when
     // not advancing within the Open folder.
@@ -1271,6 +1275,7 @@
   function flushPending() { if (state.snack) commitSnack(); }
   function undoSnack() {
     clearInterval(snackTimer);
+    clearLanded();
     var s = state.snack;
     if (s) {
       delete state.pending[s.qid];
@@ -1285,19 +1290,21 @@
   function emitAnswer(q, value) {
     var payload = answerType(q) === "binary" ? value : value; // string values; API coerces yes/no
     api("/questions/" + encodeURIComponent(q.id) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
-      .then(function () { markLanded(q.id); fetchAll(); })
+      .then(function () { fetchAll(); })
       .catch(function (e) { toast((e && e.message ? e.message : "error") + (e && e.status === 403 ? " (human scope)" : ""), "error"); fetchAll(); });
   }
-  // The write landed. Rather than a floating success toast, say so in the data:
-  // tint the answered row and the Answered folder and give both a ✓ for ~2s. The
-  // flag lives in state so the tint survives the fetchAll() re-render that follows.
+  // Rather than a floating success toast, the answer confirms itself in the data:
+  // the answered row and the Answered folder tint and carry a ✓ for ~2s. Does not
+  // render on its own — the caller owns that, so the tint lands together with the
+  // hand-off animation. The flag lives in state so it survives the re-renders that
+  // follow. undoSnack clears it, so taking an answer back takes the tint with it.
   var landTimer = null;
   function markLanded(id) {
     clearTimeout(landTimer);
     state.landedId = id;
     if (id != null) landTimer = setTimeout(function () { state.landedId = null; render(); }, 1900);
-    render();
   }
+  function clearLanded() { clearTimeout(landTimer); state.landedId = null; }
 
   function renderSnackbar() {
     var root = $("snackbar-root"); root.innerHTML = "";
