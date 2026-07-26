@@ -244,14 +244,21 @@ pub async fn create(
     let (question, ticket) = state.store.ask_question(&req, &ctx.actor)?;
     state.wake();
     crate::notify::question_asked(&state, &question);
-    let lang_note = match state.store.get_project(&question.project)? {
-        Some(p) => p
-            .question_language
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| format!(" This project expects the question (and any options) written in {l} — re-ask in {l} if this one wasn't.")),
-        None => None,
-    }
-    .unwrap_or_default();
+    // The project's writing conventions, echoed back on the ask so an agent that
+    // asked before reading them can still fix this question.
+    let project = state.store.get_project(&question.project)?;
+    let lang_note = project
+        .as_ref()
+        .and_then(|p| p.question_language.as_deref())
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| format!(" This project expects the question (and any options) written in {l} — re-ask in {l} if this one wasn't."))
+        .unwrap_or_default();
+    let style_note = project
+        .as_ref()
+        .and_then(|p| p.style_guide.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!(" This project's style guide for what you write: {s}"))
+        .unwrap_or_default();
     let note = if question.mode == "advisory" {
         format!(
             "Advisory question recorded on '{}' — no state change, no lease effect. A human answers via the board or POST /v1/questions/{}/answer; the decision is recorded (the ticket is not resumed).",
@@ -269,7 +276,7 @@ pub async fn create(
         Json(json!({
             "question": question.to_json(),
             "ticket": ticket.to_json(now_ms()),
-            "note": note + &lang_note,
+            "note": note + &lang_note + &style_note,
             "hints": hints,
         })),
     ))

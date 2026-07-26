@@ -308,6 +308,46 @@ paths:
         "403": { description: Token lacks the admin scope }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /projects/{project}/style:
+    put:
+      tags: [workflow]
+      summary: Set the project's style guide for agent-written text (admin scope)
+      description: |
+        The project's house style for the text agents write — ticket titles and
+        bodies, comments, and human-facing questions. Surfaced back to agents as
+        a `style_hint` on the MCP work-loop tools (`takomo_next`/`claim`/`start`/
+        `show`/`new`), as `style_guide` on `takomo_workflow`, and echoed on the
+        `POST /v1/questions` response note. Soft — never enforced, exactly like
+        the language setting.
+
+        Capped at 2000 characters: it rides along on every work-loop response, so
+        it has to stay a short set of conventions rather than a second copy of the
+        project's documentation. Over the cap is a `422
+        project.style_guide_too_long`. A blank string is treated as a clear, and
+        `{"style_guide": null}` clears it explicitly.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [style_guide]
+              properties:
+                style_guide:
+                  type: [string, "null"]
+                  maxLength: 2000
+                  description: 'e.g. "Two sentences max. Plain language, no marketing voice."; null clears it'
+      responses:
+        "200":
+          description: The updated project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { description: The style guide exceeds 2000 characters }
+
   /projects/{project}/tags:
     get:
       tags: [tags]
@@ -1826,6 +1866,7 @@ components:
         name: { type: string }
         workflow: { type: string, description: workflow name in effect }
         question_language: { type: [string, "null"], description: 'Human-facing language agents should phrase ask-a-human questions in (e.g. "German"); null = no preference' }
+        style_guide: { type: [string, "null"], description: "House style for the text agents write on this project — ticket titles/bodies, comments, and human-facing questions; null = no preference" }
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -1836,6 +1877,7 @@ components:
         name: { type: string }
         workflow: { $ref: "#/components/schemas/Workflow" }
         question_language: { type: string, description: 'Optional: the human-facing question language for the project' }
+        style_guide: { type: string, description: "Optional: the project's house style for agent-written text (max 2000 characters)" }
 
     Tag:
       type: object

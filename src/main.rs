@@ -98,6 +98,10 @@ enum ProjectCommand {
         /// (e.g. "German"). Omit for no preference.
         #[arg(long)]
         language: Option<String>,
+        /// House style for the text agents write on this project — ticket
+        /// titles/bodies, comments, and questions. Omit for no preference.
+        #[arg(long)]
+        style: Option<String>,
     },
     /// Set (or clear) a project's ask-a-human question language.
     Language {
@@ -106,6 +110,19 @@ enum ProjectCommand {
         /// The language, e.g. "German". Omit with --clear to remove it.
         language: Option<String>,
         /// Clear the language instead of setting it.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Set (or clear) a project's style guide for agent-written text.
+    Style {
+        /// Project id.
+        id: String,
+        /// The style guide. Omit with --clear (or --file) to remove/replace it.
+        style: Option<String>,
+        /// Read the style guide from a file instead of the argument.
+        #[arg(long)]
+        file: Option<String>,
+        /// Clear the style guide instead of setting it.
         #[arg(long)]
         clear: bool,
     },
@@ -258,6 +275,7 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             name,
             workflow,
             language,
+            style,
         } => {
             let wf: Option<Workflow> = match workflow {
                 None => None,
@@ -282,14 +300,23 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
                     .set_question_language(&id, Some(&lang), "cli:admin")
                     .map_err(|e| e.into_message())?;
             }
+            if let Some(style) = style {
+                project = store
+                    .set_style_guide(&id, Some(&style), "cli:admin")
+                    .map_err(|e| e.into_message())?;
+            }
             println!(
-                "created project '{}' ({}) with workflow '{}'{}",
+                "created project '{}' ({}) with workflow '{}'{}{}",
                 project.id,
                 project.name,
                 project.workflow.name,
                 project
                     .question_language
                     .map(|l| format!("; question language: {l}"))
+                    .unwrap_or_default(),
+                project
+                    .style_guide
+                    .map(|_| "; style guide set".to_string())
                     .unwrap_or_default()
             );
             Ok(())
@@ -309,6 +336,45 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             match project.question_language {
                 Some(l) => println!("project '{}' question language set to: {l}", project.id),
                 None => println!("project '{}' question language cleared", project.id),
+            }
+            Ok(())
+        }
+        ProjectCommand::Style {
+            id,
+            style,
+            file,
+            clear,
+        } => {
+            // --file reads the guide from disk ("-" = stdin), so a multi-line
+            // house style doesn't have to survive shell quoting.
+            let from_file = match &file {
+                None => None,
+                Some(path) if path == "-" => {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                        .map_err(|e| format!("cannot read the style guide from stdin: {e}"))?;
+                    Some(buf)
+                }
+                Some(path) => Some(
+                    std::fs::read_to_string(path)
+                        .map_err(|e| format!("cannot read style file '{path}': {e}"))?,
+                ),
+            };
+            if clear && (style.is_some() || from_file.is_some()) {
+                return Err("--clear takes no value".to_string());
+            }
+            let text = from_file.or(style);
+            if text.is_none() && !clear {
+                return Err(
+                    "provide a style guide (or --file PATH), or --clear to remove it".to_string(),
+                );
+            }
+            let project = store
+                .set_style_guide(&id, text.as_deref(), "cli:admin")
+                .map_err(|e| e.into_message())?;
+            match project.style_guide {
+                Some(s) => println!("project '{}' style guide set to:\n{s}", project.id),
+                None => println!("project '{}' style guide cleared", project.id),
             }
             Ok(())
         }

@@ -674,8 +674,8 @@ impl TakomoMcp {
         (why) and `confidence` 1-4; add a one-line `summary` for the list preview. The ask \
         response returns `hints` naming anything that would make the inbox render richer. Phrase \
         the question (and options) in the project's expected human-facing language when one is \
-        set — see the `language_hint` on takomo_show/next/start or takomo_workflow's \
-        `question_language`."
+        set, and follow its style guide — see the `language_hint` and `style_hint` on \
+        takomo_show/next/start or takomo_workflow's `question_language` / `style_guide`."
     )]
     async fn takomo_ask(
         &self,
@@ -840,6 +840,9 @@ impl TakomoMcp {
                 similar.len()
             ));
         }
+        // Echo the project's conventions back on create: the ticket text was just
+        // written, so this is the moment an agent can still fix it.
+        self.attach_conventions(&mut out, &ticket.project);
         Ok(out)
     }
 
@@ -924,10 +927,7 @@ impl TakomoMcp {
         if !promos.is_empty() {
             out["promotions"] = json!(promos.iter().map(|p| p.to_json()).collect::<Vec<_>>());
         }
-        let hint = self.language_hint(&ticket.project);
-        if !hint.is_null() {
-            out["language_hint"] = hint;
-        }
+        self.attach_conventions(&mut out, &ticket.project);
         Ok(out)
     }
 
@@ -976,12 +976,18 @@ impl TakomoMcp {
                 updated.id, updated.state
             )
         };
-        // Soft language nudge: if the project expects a specific human-facing
-        // language, remind the agent (re-ask correctly if this one wasn't).
+        // Soft nudges: if the project expects a specific human-facing language or
+        // sets a house style, remind the agent — the question it just wrote is
+        // still fixable (re-ask), unlike one already sitting in someone's inbox.
         if let Ok(Some(p)) = self.state.store.get_project(&question.project) {
             if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
                 note.push_str(&format!(
                     " This project expects the question (and any options) written in {lang} — re-ask in {lang} if this one wasn't.",
+                ));
+            }
+            if let Some(style) = p.style_guide.filter(|s| !s.trim().is_empty()) {
+                note.push_str(&format!(
+                    " This project's style guide for what you write: {style}"
                 ));
             }
         }
@@ -1220,10 +1226,7 @@ impl TakomoMcp {
         let (_ticket, lease) = self.state.store.claim_ticket(id, &auth.actor, None)?;
         self.state.wake();
         let mut out = json!({ "ok": true, "lease": lease.to_json() });
-        let hint = self.language_hint(&ticket.project);
-        if !hint.is_null() {
-            out["language_hint"] = hint;
-        }
+        self.attach_conventions(&mut out, &ticket.project);
         Ok(out)
     }
 
@@ -1249,10 +1252,7 @@ impl TakomoMcp {
                 let mut out = ticket.to_json(now_ms());
                 out["lease"] = lease.to_json();
                 let mut res = json!({ "ok": true, "claimed": true, "ticket": out });
-                let hint = self.language_hint(&project);
-                if !hint.is_null() {
-                    res["language_hint"] = hint;
-                }
+                self.attach_conventions(&mut res, &project);
                 return Ok(res);
             }
             if now_ms() >= deadline {
@@ -1314,10 +1314,7 @@ impl TakomoMcp {
         self.state.wake();
         let mut out =
             json!({ "ok": true, "transitioned_to": target, "ticket": updated.to_json(now_ms()) });
-        let hint = self.language_hint(&updated.project);
-        if !hint.is_null() {
-            out["language_hint"] = hint;
-        }
+        self.attach_conventions(&mut out, &updated.project);
         Ok(out)
     }
 
@@ -1530,12 +1527,15 @@ impl TakomoMcp {
         auth.require_scope("read")?;
         auth.require_project(project)?;
         let wf = self.workflow_for(project)?;
-        let lang = self
-            .state
-            .store
-            .get_project(project)?
-            .and_then(|p| p.question_language);
-        Ok(json!({ "ok": true, "workflow": wf, "question_language": lang }))
+        let p = self.state.store.get_project(project)?;
+        let lang = p.as_ref().and_then(|p| p.question_language.clone());
+        let style = p.as_ref().and_then(|p| p.style_guide.clone());
+        Ok(json!({
+            "ok": true,
+            "workflow": wf,
+            "question_language": lang,
+            "style_guide": style,
+        }))
     }
 
     fn do_roadmap(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
@@ -1545,19 +1545,29 @@ impl TakomoMcp {
         Ok(json!({ "ok": true, "roadmap": roadmap }))
     }
 
-    /// A hint about the project's expected human-facing question language, for
-    /// attaching to work-loop responses so an agent phrases `takomo_ask`
-    /// questions correctly. Null when the project sets no language.
-    fn language_hint(&self, project: &str) -> Value {
-        match self.state.store.get_project(project) {
-            Ok(Some(p)) => match p.question_language {
-                Some(lang) if !lang.trim().is_empty() => json!({
-                    "question_language": lang,
-                    "note": format!("This project expects human-facing questions (takomo_ask) and their options written in {lang}. Internal ticket text may be in another language."),
-                }),
-                _ => Value::Null,
-            },
-            _ => Value::Null,
+    /// Attach the project's writing conventions to a work-loop response, so an
+    /// agent sees them *before* it writes a ticket or asks a question:
+    ///
+    /// - `language_hint` — the human-facing language questions belong in;
+    /// - `style_hint` — the project's style guide for text the agent writes.
+    ///
+    /// Each key is omitted when the project sets nothing, so a project with no
+    /// conventions gets no extra payload. `out` must be a JSON object.
+    fn attach_conventions(&self, out: &mut Value, project: &str) {
+        let Ok(Some(p)) = self.state.store.get_project(project) else {
+            return;
+        };
+        if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
+            out["language_hint"] = json!({
+                "question_language": lang,
+                "note": format!("This project expects human-facing questions (takomo_ask) and their options written in {lang}. Internal ticket text may be in another language."),
+            });
+        }
+        if let Some(style) = p.style_guide.filter(|s| !s.trim().is_empty()) {
+            out["style_hint"] = json!({
+                "style_guide": style,
+                "note": "This project's house style for text you write — ticket titles and bodies, comments, and human-facing questions. Follow it as written.",
+            });
         }
     }
 
@@ -1595,7 +1605,9 @@ impl ServerHandler for TakomoMcp {
                  resume once the answer appears on the ticket (`takomo_show`). When a project \
                  sets a human-facing language (surfaced as `language_hint` on \
                  takomo_next/claim/start/show and `question_language` on takomo_workflow), \
-                 phrase ask-a-human questions in it. Illegal \
+                 phrase ask-a-human questions in it. When it sets a style guide (`style_hint` \
+                 on the same tools, `style_guide` on takomo_workflow), write ticket titles, \
+                 bodies, comments, and questions the way it says. Illegal \
                  transitions return the workflow's allowed_transitions so you can self-correct; \
                  call `takomo_workflow` to see a project's full state machine."
                     .to_string(),

@@ -70,6 +70,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             put(crate::api::projects::put_language),
         )
         .route(
+            "/v1/projects/{project}/style",
+            put(crate::api::projects::put_style),
+        )
+        .route(
             "/v1/projects/{project}/tags",
             get(crate::api::tags::list).post(crate::api::tags::create),
         )
