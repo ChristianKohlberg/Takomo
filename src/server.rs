@@ -80,6 +80,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(axum::routing::delete(crate::api::tags::delete)),
         )
         .route(
+            "/v1/projects/{project}/style",
+            put(crate::api::projects::put_style),
+        )
+        .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
         )

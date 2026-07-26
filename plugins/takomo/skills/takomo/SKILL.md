@@ -52,6 +52,10 @@ Prefer commutative writes — they never conflict:
 
 Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<version>"`, retry on `conflict.version`). If you do that often, you should be commenting instead.
 
+## Write the way the project writes
+
+A project can carry its own writing conventions, and the store hands them to you before you write anything: a **`style_hint`** (the project's house style for ticket titles/bodies, comments, and questions) and a **`language_hint`** (the human-facing language questions belong in) on `takomo next`/`claim`/`start`/`show`/`new`. Read them and follow them as written — they're a project decision, not a suggestion from a passing reviewer. `takomo project style <project>` prints the current guide; over MCP both also appear on `takomo_workflow` as `style_guide` / `question_language`. Neither is enforced server-side, so nothing rejects sloppy text — which is exactly why it's on you to honor it.
+
 ## Ask a human when you're blocked on a decision
 
 When progressing needs a human judgment you can't make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — don't guess and don't silently stall. Ask:

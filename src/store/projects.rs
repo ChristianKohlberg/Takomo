@@ -8,6 +8,35 @@ use crate::ids::now_ms;
 use crate::workflow::Workflow;
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// Cap on a project's style guide. It is attached to work-loop responses an
+/// agent reads constantly, so it has to stay a glanceable convention rather
+/// than a second copy of the project's documentation.
+pub const MAX_STYLE_GUIDE_CHARS: usize = 2000;
+
+/// Normalize a style-guide value: trim it, treat blank as "clear it", and refuse
+/// anything over [`MAX_STYLE_GUIDE_CHARS`] with a teaching error.
+///
+/// Exposed so the create-project path can reject an oversized guide *before*
+/// inserting the project, rather than leaving a half-configured project behind.
+pub fn normalize_style_guide(style: Option<&str>) -> ApiResult<Option<String>> {
+    let style = style.map(str::trim).filter(|s| !s.is_empty());
+    let Some(s) = style else { return Ok(None) };
+    let chars = s.chars().count();
+    if chars > MAX_STYLE_GUIDE_CHARS {
+        return Err(ApiError::validation(
+            "project.style_guide_too_long",
+            format!(
+                "The style guide is {chars} characters; the limit is {MAX_STYLE_GUIDE_CHARS}. It rides along on every work-loop response, so keep it to the few conventions that change how an agent writes — put anything longer in a ticket or your repo docs and reference it here."
+            ),
+        )
+        .details(serde_json::json!({
+            "chars": chars,
+            "max_chars": MAX_STYLE_GUIDE_CHARS,
+        })));
+    }
+    Ok(Some(s.to_string()))
+}
+
 /// Row counts removed by a cascade project delete, for the audit trail and the
 /// CLI's "what was deleted" summary.
 #[derive(Debug, Clone, Copy, Default)]
@@ -100,6 +129,7 @@ impl Store {
                 name: name.to_string(),
                 workflow: wf,
                 question_language: None,
+                style_guide: None,
                 created_at: now,
             })
         })
@@ -108,7 +138,7 @@ impl Store {
     pub fn list_projects(&self) -> ApiResult<Vec<Project>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, workflow_json, question_language, created_at FROM projects ORDER BY id",
+                "SELECT id, name, workflow_json, question_language, style_guide, created_at FROM projects ORDER BY id",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((
@@ -116,12 +146,13 @@ impl Store {
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)?,
                 ))
             })?;
             let mut out = Vec::new();
             for row in rows {
-                let (id, name, wf_raw, question_language, created_at) = row?;
+                let (id, name, wf_raw, question_language, style_guide, created_at) = row?;
                 let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
                     ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
                 })?;
@@ -130,6 +161,7 @@ impl Store {
                     name,
                     workflow,
                     question_language,
+                    style_guide,
                     created_at,
                 });
             }
@@ -141,7 +173,7 @@ impl Store {
         self.with_conn(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT id, name, workflow_json, question_language, created_at FROM projects WHERE id = ?1",
+                    "SELECT id, name, workflow_json, question_language, style_guide, created_at FROM projects WHERE id = ?1",
                     params![id],
                     |r| {
                         Ok((
@@ -149,14 +181,15 @@ impl Store {
                             r.get::<_, String>(1)?,
                             r.get::<_, String>(2)?,
                             r.get::<_, Option<String>>(3)?,
-                            r.get::<_, i64>(4)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, i64>(5)?,
                         ))
                     },
                 )
                 .optional()?;
             match row {
                 None => Ok(None),
-                Some((id, name, wf_raw, question_language, created_at)) => {
+                Some((id, name, wf_raw, question_language, style_guide, created_at)) => {
                     let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
                         ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
                     })?;
@@ -165,6 +198,7 @@ impl Store {
                         name,
                         workflow,
                         question_language,
+                        style_guide,
                         created_at,
                     }))
                 }
@@ -200,6 +234,49 @@ impl Store {
                 actor,
                 "project_updated",
                 serde_json::json!({ "question_language": language }),
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_project(id)?
+            .ok_or_else(|| ApiError::not_found("project", id))
+    }
+
+    /// Set (or clear, with None) a project's style guide — the house style for
+    /// the text agents write on this project.
+    ///
+    /// A whitespace-only value clears it, so callers never have to distinguish
+    /// "" from null. Refuses anything over [`MAX_STYLE_GUIDE_CHARS`]: this is a
+    /// short convention an agent reads on every work-loop call, not a place to
+    /// park project documentation.
+    pub fn set_style_guide(
+        &self,
+        id: &str,
+        style: Option<&str>,
+        actor: &str,
+    ) -> ApiResult<Project> {
+        let style = normalize_style_guide(style)?;
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let exists: Option<String> = tx
+                .query_row("SELECT id FROM projects WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if exists.is_none() {
+                return Err(ApiError::not_found("project", id));
+            }
+            tx.execute(
+                "UPDATE projects SET style_guide = ?2 WHERE id = ?1",
+                params![id, style],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "project_updated",
+                serde_json::json!({ "style_guide": style }),
                 now,
             )?;
             Ok(())

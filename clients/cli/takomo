@@ -1318,12 +1318,100 @@ cmd_token_revoke() {
 # --- project administration (admin scope) ------------------------------------
 
 cmd_project() {
-  local sub=${1:-}; [ -n "$sub" ] || die "project: usage: takomo project rm ID [--force]"
+  local sub=${1:-}; [ -n "$sub" ] || die "project: usage: takomo project rm|style|language ..."
   shift
   case "$sub" in
     rm|remove|delete) cmd_project_rm "$@" ;;
-    *) die "project: unknown subcommand '$sub' (rm)" ;;
+    style) cmd_project_style "$@" ;;
+    language|lang) cmd_project_language "$@" ;;
+    *) die "project: unknown subcommand '$sub' (rm, style, language)" ;;
   esac
+}
+
+# Read a project field out of GET /v1/projects (the authoritative list).
+project_field() {
+  api GET /v1/projects >/dev/null
+  python3 - "$REQ_OUT" "$1" "$2" <<'PY'
+import json, sys
+rows, pid, field = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+for p in rows:
+    if p.get("id") == pid:
+        print(p.get(field) or "")
+        sys.exit(0)
+sys.stderr.write(f"no project '{pid}' visible to this token\n")
+sys.exit(2)
+PY
+}
+
+# takomo project style PROJECT ["text" | --file PATH | --clear] — the project's
+# house style for the text agents write (ticket titles/bodies, comments, and
+# ask-a-human questions). With no value, prints the current guide. Advisory: the
+# store surfaces it to agents as `style_hint`, it never rejects anything.
+cmd_project_style() {
+  local id="" text="" file="" clear="" have=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --clear) clear=1; have=1; shift ;;
+      --file) file=$2; have=1; shift 2 ;;
+      -*) die "project style: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else text=$1; have=1; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "project style: PROJECT is required"
+  [ -z "$clear" ] || [ -z "$file$text" ] || die "project style: --clear takes no value"
+
+  if [ -z "$have" ]; then
+    local cur; cur=$(project_field "$id" style_guide) || exit 1
+    if [ -n "$cur" ]; then printf '%s\n' "$cur"; else echo "(no style guide set for $id)"; fi
+    return 0
+  fi
+
+  if [ -n "$file" ]; then
+    if [ "$file" = "-" ]; then text=$(cat); else
+      [ -f "$file" ] || die "project style: no such file '$file'"
+      text=$(cat "$file")
+    fi
+  fi
+
+  local data
+  if [ -n "$clear" ]; then
+    data='{"style_guide":null}'
+  else
+    data=$(TS_S="$text" python3 -c 'import json,os; print(json.dumps({"style_guide":os.environ["TS_S"]}))')
+  fi
+  api PUT "/v1/projects/$(urlenc "$id")/style" "$data" >/dev/null
+  if [ -n "$clear" ]; then echo "cleared the style guide for $id"; else echo "set the style guide for $id"; fi
+}
+
+# takomo project language PROJECT [LANG | --clear] — the human-facing language
+# ask-a-human questions should be written in. With no value, prints the current
+# setting. Also advisory (surfaced to agents as `language_hint`).
+cmd_project_language() {
+  local id="" lang="" clear=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --clear) clear=1; shift ;;
+      -*) die "project language: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else lang=$1; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "project language: PROJECT is required"
+  [ -z "$clear" ] || [ -z "$lang" ] || die "project language: --clear takes no value"
+
+  if [ -z "$clear" ] && [ -z "$lang" ]; then
+    local cur; cur=$(project_field "$id" question_language) || exit 1
+    if [ -n "$cur" ]; then printf '%s\n' "$cur"; else echo "(no question language set for $id)"; fi
+    return 0
+  fi
+
+  local data
+  if [ -n "$clear" ]; then
+    data='{"language":null}'
+  else
+    data=$(TS_L="$lang" python3 -c 'import json,os; print(json.dumps({"language":os.environ["TS_L"]}))')
+  fi
+  api PUT "/v1/projects/$(urlenc "$id")/language" "$data" >/dev/null
+  if [ -n "$clear" ]; then echo "cleared the question language for $id"; else echo "set the question language for $id to $lang"; fi
 }
 
 # takomo project rm ID [--force] — cascade-delete a project and ALL of its tickets,
@@ -2181,6 +2269,13 @@ Project administration (admin scope):
          cascade-delete a project and ALL its tickets, comments, deps, and
          events. Refused if a ticket has an active claim unless --force is given.
          Tokens scoped to the project are left as-is (revoke with `takomo token revoke`).
+  takomo project style ID ["TEXT" | --file PATH | --clear]
+         the project's house style for the text agents write — ticket titles and
+         bodies, comments, and ask-a-human questions. Agents get it back as a
+         `style_hint` on the work loop. With no value, prints the current guide.
+  takomo project language ID [LANG | --clear]
+         the human-facing language ask-a-human questions belong in (e.g. German).
+         With no value, prints the current setting. Both settings are advisory.
 
 Finding & creating work:
   takomo new [--project P] [--type task|bug|epic|spike] [--priority critical|high|normal|low]

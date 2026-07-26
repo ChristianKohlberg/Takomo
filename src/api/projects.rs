@@ -33,7 +33,10 @@ pub async fn create(
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("admin")?;
     let obj = body_object(&body)?;
-    reject_unknown(obj, &["id", "name", "workflow", "question_language"])?;
+    reject_unknown(
+        obj,
+        &["id", "name", "workflow", "question_language", "style_guide"],
+    )?;
     let id = require_str(obj, "id")?;
     let name = require_str(obj, "name")?;
     ctx.require_project(&id)?;
@@ -41,6 +44,10 @@ pub async fn create(
         None | Some(Value::Null) => None,
         Some(raw) => Some(parse_workflow(raw)?),
     };
+    // Validated before the insert so an oversized guide is a clean 422 rather
+    // than a created-but-unconfigured project.
+    let style =
+        crate::store::normalize_style_guide(super::get_str(obj, "style_guide")?.as_deref())?;
     let mut project = state
         .store
         .create_project(&id, &name, workflow, &ctx.actor)?;
@@ -49,6 +56,10 @@ pub async fn create(
         project = state
             .store
             .set_question_language(&id, Some(&lang), &ctx.actor)?;
+    }
+    // Optional per-project style guide for agent-written text, set at creation.
+    if let Some(style) = style {
+        project = state.store.set_style_guide(&id, Some(&style), &ctx.actor)?;
     }
     state.wake();
     Ok((StatusCode::CREATED, Json(project.to_json())))
@@ -87,6 +98,43 @@ pub async fn put_language(
     let project = state
         .store
         .set_question_language(&project, language.as_deref(), &ctx.actor)?;
+    state.wake();
+    Ok(Json(project.to_json()))
+}
+
+/// PUT /v1/projects/{project}/style (admin) — set the project's style guide:
+/// the house style agents should write ticket text and human-facing questions
+/// in. Body: `{"style_guide": "Keep it short…"}`, or `{"style_guide": null}` to
+/// clear it. Advisory, like the language setting — nothing is enforced.
+pub async fn put_style(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["style_guide"])?;
+    // `style_guide` present-and-null clears it; a string sets it; absent is an
+    // error, so a typo'd field name can never silently clear the guide.
+    let style = match obj.get("style_guide") {
+        None => return Err(ApiError::bad_request(
+            "validation.field_required",
+            "Field 'style_guide' is required (a string of writing conventions, or null to clear).",
+        )),
+        Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.field_type",
+                "Field 'style_guide' must be a string or null.",
+            ))
+        }
+    };
+    let project = state
+        .store
+        .set_style_guide(&project, style.as_deref(), &ctx.actor)?;
     state.wake();
     Ok(Json(project.to_json()))
 }

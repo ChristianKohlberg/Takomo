@@ -271,6 +271,10 @@ pub struct Project {
     /// Human-facing language agents should phrase ask-a-human questions in for
     /// this project (e.g. "German"). None = no preference.
     pub question_language: Option<String>,
+    /// The project's house style for text agents write — ticket titles/bodies
+    /// and human-facing questions (e.g. "Keep it to two sentences; no
+    /// marketing voice"). Free-form and advisory. None = no preference.
+    pub style_guide: Option<String>,
     pub created_at: i64,
 }
 
@@ -281,6 +285,7 @@ impl Project {
             "name": self.name,
             "workflow": self.workflow.name,
             "question_language": self.question_language,
+            "style_guide": self.style_guide,
             "created_at": iso(self.created_at),
         })
     }
