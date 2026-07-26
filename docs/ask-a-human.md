@@ -237,6 +237,9 @@ rather than being flagged after the fact. Both are **soft nudges** — surfaced,
 never enforced — and both are project settings, so every agent and viewer sees
 the same thing.
 
+Either can be edited from the **Settings** sheet on `/board` (see
+[On the board](#on-the-board) below) or from the CLI/API as shown here.
+
 ### Question language
 
 A project can declare the human-facing language its questions should be written
@@ -292,6 +295,23 @@ is only read by the CLI — an agent on MCP, or any other client, never sees it,
 and neither does anyone reading the project on the board. A project setting
 reaches every client through the same rails as the language hint, and changing it
 doesn't mean redistributing a skill.
+
+### On the board
+
+Both settings are editable in the **Settings** sheet on `/board`, which is the
+better surface for the style guide: it is a paragraph, awkward to pass through
+shell quoting, and the sheet's live character counter is the only place the
+2000-character cap is visible *before* you save.
+
+The button appears only for a token carrying the **`admin`** scope, and never in a
+share session — a share link cannot reach `/v1/projects` at all, so the board
+stays read-only for everyone else. Saving writes only the field you actually
+changed, so editing the style guide never touches the language setting (and one
+failing request cannot discard the other's edit).
+
+The sheet re-reads the project when it opens rather than trusting the board's
+cached list. That matters with more than one admin: a stale base would let your
+save quietly revert someone else's.
 
 ## Timeouts
 
