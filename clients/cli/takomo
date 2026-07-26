@@ -166,6 +166,7 @@ urlenc() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], 
 cmd_new() {
   local project="" type="" priority="" parent="" body=""
   local -a labels=()
+  local -a tags=()
   local title=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -175,6 +176,7 @@ cmd_new() {
       --parent)  parent=$2; shift 2 ;;
       --body)    body=$2; shift 2 ;;
       --label)   labels+=("$2"); shift 2 ;;
+      --tag)     tags+=("$2"); shift 2 ;;
       --) shift; break ;;
       -*) die "new: unknown flag $1" ;;
       *) title=$1; shift ;;
@@ -186,7 +188,8 @@ cmd_new() {
   local data
   data=$(TS_PROJECT="$project" TS_TYPE="$type" TS_TITLE="$title" TS_BODY="$body" \
     TS_PRIORITY="$priority" TS_PARENT="$parent" \
-    TS_LABELS="$(printf '%s\n' "${labels[@]+"${labels[@]}"}")" python3 <<'PY'
+    TS_LABELS="$(printf '%s\n' "${labels[@]+"${labels[@]}"}")" \
+    TS_TAGS="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 <<'PY'
 import json, os
 d = {"project": os.environ["TS_PROJECT"], "title": os.environ["TS_TITLE"]}
 for env, key in (("TS_TYPE","type"),("TS_PRIORITY","priority"),("TS_PARENT","parent")):
@@ -195,6 +198,8 @@ for env, key in (("TS_TYPE","type"),("TS_PRIORITY","priority"),("TS_PARENT","par
 if os.environ.get("TS_BODY", ""): d["body"] = os.environ["TS_BODY"]
 labels = [l for l in os.environ.get("TS_LABELS","").splitlines() if l.strip()]
 if labels: d["labels"] = labels
+tags = [t for t in os.environ.get("TS_TAGS","").splitlines() if t.strip()]
+if tags: d["tags"] = tags
 print(json.dumps(d))
 PY
 )
@@ -214,11 +219,15 @@ PY
 cmd_ls() {
   local project="" state="" q="" mine="" archived=""
   local -a labels=()
+  local -a tags=()
+  local -a tag_kinds=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=$2; shift 2 ;;
       --state)   state=$2; shift 2 ;;
       --label)   labels+=("$2"); shift 2 ;;
+      --tag)     tags+=("$2"); shift 2 ;;
+      --tag-kind) tag_kinds+=("$2"); shift 2 ;;
       --mine)    mine=1; shift ;;
       --archived) archived=1; shift ;;
       -q|--query) q=$2; shift 2 ;;
@@ -233,6 +242,8 @@ cmd_ls() {
   [ -n "$archived" ] && qs="$qs&archived=only"
   [ -n "$q" ] && qs="$qs&q=$(urlenc "$q")"
   for l in "${labels[@]+"${labels[@]}"}"; do qs="$qs&label=$(urlenc "$l")"; done
+  for t in "${tags[@]+"${tags[@]}"}"; do qs="$qs&tag=$(urlenc "$t")"; done
+  for k in "${tag_kinds[@]+"${tag_kinds[@]}"}"; do qs="$qs&tag_kind=$(urlenc "$k")"; done
   if [ -n "$mine" ]; then
     [ -n "${TAKOMO_ACTOR:-}" ] || die "ls --mine needs TAKOMO_ACTOR set to your actor name"
     qs="$qs&claimed_by=$(urlenc "$TAKOMO_ACTOR")"
@@ -249,8 +260,10 @@ print(f"{'ID':<14} {'STATE':<12} {'PRI':<8} {'TYPE':<6} TITLE")
 for t in items:
     claim = t.get("claim") or {}
     holder = f"  @{claim['holder']}" if claim else ""
+    tags = t.get("tags") or []
+    tagstr = "  " + " ".join(f"#{x}" for x in tags) if tags else ""
     print(f"{t['id']:<14} {t.get('state',''):<12} {t.get('priority',''):<8} "
-          f"{t.get('type',''):<6} {trunc(t.get('title',''),56)}{holder}")
+          f"{t.get('type',''):<6} {trunc(t.get('title',''),56)}{holder}{tagstr}")
 if d.get("next_cursor"):
     print(f"\n(more results; next_cursor={d['next_cursor']})")
 PY
@@ -587,6 +600,214 @@ PY
 )
   api PATCH "/v1/tickets/$(urlenc "$id")" "$data" >/dev/null
   echo "links updated on $id"
+}
+
+# tag: manage the project tag registry (person/component/team/… entities) and
+# attach/detach `kind:handle` references on tickets. Reference metadata only —
+# tagging never changes ticket state, claims, or question routing.
+cmd_tag() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "tag: usage: takomo tag add|rm TICKET REF...  |  takomo tag ls|new|show|delete ..."
+  shift
+  case "$sub" in
+    add)          cmd_tag_ticket tags_add "$@" ;;
+    rm|remove)    cmd_tag_ticket tags_remove "$@" ;;
+    ls|list)      cmd_tag_ls "$@" ;;
+    new|register) cmd_tag_new "$@" ;;
+    show)         cmd_tag_show "$@" ;;
+    delete|del)   cmd_tag_delete "$@" ;;
+    *) die "tag: unknown subcommand '$sub' (add|rm|ls|new|show|delete)" ;;
+  esac
+}
+
+cmd_tag_ticket() {
+  local key=$1; shift
+  local id=${1:-}; [ -n "$id" ] || die "tag: TICKET is required (e.g. takomo tag add rvp-x7k2 person:ada)"; shift
+  local -a refs=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*) die "tag: unknown flag $1" ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  [ ${#refs[@]} -gt 0 ] || die "tag: give at least one kind:handle ref (e.g. person:ada)"
+  local fence; fence=$(fence_load "$id")
+  local data; data=$(TS_KEY="$key" TS_FENCE="$fence" \
+    TS_REFS="$(printf '%s\n' "${refs[@]}")" python3 <<'PY'
+import json, os
+refs = [r for r in os.environ["TS_REFS"].splitlines() if r.strip()]
+d = {os.environ["TS_KEY"]: refs}
+if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
+print(json.dumps(d))
+PY
+)
+  api PATCH "/v1/tickets/$(urlenc "$id")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+tags = d.get("tags") or []
+print(f"{d['id']} tags: " + (" ".join('#'+t for t in tags) if tags else "(none)"))
+PY
+}
+
+cmd_tag_ls() {
+  local project="" kind="" q=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --kind) kind=$2; shift 2 ;;
+      -q|--query) q=$2; shift 2 ;;
+      -*) die "tag ls: unknown flag $1" ;;
+      *) die "tag ls: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  local qs="" sep="?"
+  [ -n "$kind" ] && { qs="$qs${sep}kind=$(urlenc "$kind")"; sep="&"; }
+  [ -n "$q" ] && { qs="$qs${sep}q=$(urlenc "$q")"; sep="&"; }
+  api GET "/v1/projects/$(urlenc "$project")/tags$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print("(no tags)"); sys.exit()
+print(f"{'REF':<28} LABEL")
+for t in items:
+    print(f"{t.get('ref',''):<28} {t.get('label','')}")
+PY
+}
+
+cmd_tag_new() {
+  local project="" kind="" handle="" label=""
+  local -a metas=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --kind) kind=$2; shift 2 ;;
+      --handle) handle=$2; shift 2 ;;
+      --label) label=$2; shift 2 ;;
+      --meta) metas+=("$2"); shift 2 ;;
+      -*) die "tag new: unknown flag $1" ;;
+      *) die "tag new: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -n "$kind" ] || die "tag new: --kind is required (e.g. person, component, team)"
+  [ -n "$handle" ] || die "tag new: --handle is required (e.g. ada)"
+  project=$(resolve_project "$project")
+  local data; data=$(TS_KIND="$kind" TS_HANDLE="$handle" TS_LABEL="$label" \
+    TS_META="$(printf '%s\n' "${metas[@]+"${metas[@]}"}")" python3 <<'PY'
+import json, os
+d = {"kind": os.environ["TS_KIND"], "handle": os.environ["TS_HANDLE"]}
+if os.environ.get("TS_LABEL",""): d["label"] = os.environ["TS_LABEL"]
+meta = {}
+for pair in os.environ.get("TS_META","").splitlines():
+    if not pair.strip(): continue
+    k, _, v = pair.partition("=")
+    meta[k.strip()] = v
+if meta: d["meta"] = meta
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/projects/$(urlenc "$project")/tags" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"registered {d.get('ref')}  {d.get('label','')}")
+PY
+}
+
+# Split a `kind:handle` ref into its two path segments; die on a malformed ref.
+_tag_ref_split() {
+  case "$1" in *:*) ;; *) die "tag: ref must be kind:handle (e.g. person:ada)" ;; esac
+  TAG_KIND=${1%%:*}; TAG_HANDLE=${1#*:}
+}
+
+cmd_tag_show() {
+  local project="" ref=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "tag show: unknown flag $1" ;;
+      *) ref=$1; shift ;;
+    esac
+  done
+  [ -n "$ref" ] || die "tag show: give a kind:handle ref (e.g. person:ada)"
+  _tag_ref_split "$ref"
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/tags/$(urlenc "$TAG_KIND")/$(urlenc "$TAG_HANDLE")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"ref:   {d.get('ref')}")
+print(f"label: {d.get('label','')}")
+meta = d.get("meta") or {}
+if meta:
+    print("meta:")
+    for k, v in meta.items():
+        print(f"  {k}: {v}")
+PY
+}
+
+cmd_tag_delete() {
+  local project="" ref=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "tag delete: unknown flag $1" ;;
+      *) ref=$1; shift ;;
+    esac
+  done
+  [ -n "$ref" ] || die "tag delete: give a kind:handle ref (e.g. person:ada)"
+  _tag_ref_split "$ref"
+  project=$(resolve_project "$project")
+  api DELETE "/v1/projects/$(urlenc "$project")/tags/$(urlenc "$TAG_KIND")/$(urlenc "$TAG_HANDLE")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = d.get("still_referenced", 0)
+print(f"deleted; {n} ticket(s) still reference it" if n else "deleted")
+PY
+}
+
+# person: ergonomic alias over the `person` tag kind. `takomo person add ada`
+# is just `takomo tag new --kind person --handle ada`; ls/rm mirror it.
+cmd_person() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "person: usage: takomo person add HANDLE [--label ...] [--meta k=v]  |  person ls  |  person rm HANDLE"
+  shift
+  case "$sub" in
+    add)              cmd_person_add "$@" ;;
+    ls|list)          cmd_tag_ls --kind person "$@" ;;
+    rm|remove|delete) cmd_person_rm "$@" ;;
+    *) die "person: unknown subcommand '$sub' (add|ls|rm)" ;;
+  esac
+}
+
+cmd_person_add() {
+  local handle=""
+  local -a rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*) rest+=("$1" "${2:-}"); shift 2 ;;
+      *) [ -z "$handle" ] && { handle=$1; shift; } || die "person add: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -n "$handle" ] || die "person add: HANDLE is required (e.g. ada); put the display name in --label"
+  cmd_tag_new --kind person --handle "$handle" "${rest[@]+"${rest[@]}"}"
+}
+
+cmd_person_rm() {
+  local handle=""
+  local -a rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*) rest+=("$1" "${2:-}"); shift 2 ;;
+      *) handle=$1; shift ;;
+    esac
+  done
+  [ -n "$handle" ] || die "person rm: HANDLE is required (e.g. ada)"
+  cmd_tag_delete "person:$handle" "${rest[@]+"${rest[@]}"}"
 }
 
 cmd_dep() {
@@ -1976,6 +2197,20 @@ Annotating:
   takomo deps ID [--blocks] [--tree]   show what blocks ID (or, with --blocks, what
                                    ID blocks); --tree walks the chain transitively
 
+Tagging (name entities per project, then tag tickets — reference metadata only):
+  takomo tag add ID REF...             tag a ticket, each REF a kind:handle
+                                   (e.g. person:ada component:billing); unknown
+                                   handles are registered on the fly
+  takomo tag rm ID REF...              remove tag references from a ticket
+  takomo tag ls [--kind K] [-q TEXT]   list the project's tag registry
+  takomo tag new --kind K --handle H [--label L] [--meta k=v ...]   register/enrich
+  takomo tag show REF                  show one entity (REF = kind:handle)
+  takomo tag delete REF                remove a registry entry (ticket refs kept)
+  takomo person add HANDLE [--label L] [--meta k=v]   alias for the 'person' kind
+  takomo person ls                     list people;  takomo person rm HANDLE
+         Filter tickets by tag:  takomo ls --tag person:ada  |  --tag-kind person
+         Attach at creation:     takomo new "…" --tag person:ada
+
 Shareable read-only web views (write scope):
   takomo share --project P [--ttl 24h]   mint a read-only, expiring link to a whole
                                      project's board; prints the full URL
@@ -2034,6 +2269,8 @@ main() {
     move)    cmd_move "$@" ;;
     comment) cmd_comment "$@" ;;
     link)    cmd_link "$@" ;;
+    tag)     cmd_tag "$@" ;;
+    person)  cmd_person "$@" ;;
     dep)     cmd_dep "$@" ;;
     deps)    cmd_deps "$@" ;;
     archive) cmd_archive "$@" ;;

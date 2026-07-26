@@ -70,6 +70,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             put(crate::api::projects::put_language),
         )
         .route(
+            "/v1/projects/{project}/tags",
+            get(crate::api::tags::list).post(crate::api::tags::create),
+        )
+        .route(
+            "/v1/projects/{project}/tags/{kind}/{handle}",
+            get(crate::api::tags::get_one)
+                .merge(patch(crate::api::tags::patch))
+                .merge(axum::routing::delete(crate::api::tags::delete)),
+        )
+        .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
         )

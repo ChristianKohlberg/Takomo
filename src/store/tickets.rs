@@ -9,6 +9,7 @@ use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
     TICKET_TYPES,
 };
+use super::tags::{ensure_tags_exist, normalize_tag_ref};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{comment_id, now_ms, promotion_id, sha256_hex, ticket_suffix};
@@ -42,6 +43,9 @@ pub struct TicketCreate {
     pub body: Option<String>,
     pub priority: Option<String>,
     pub labels: Vec<String>,
+    /// Tag references (`kind:handle`) to attach at creation; normalized and
+    /// lazily registered.
+    pub tags: Vec<String>,
     pub metadata: Option<Value>,
     pub blocked_by: Vec<String>,
     pub state: Option<String>,
@@ -55,6 +59,11 @@ pub struct TicketPatch {
     pub labels: Option<Vec<String>>,
     pub labels_add: Vec<String>,
     pub labels_remove: Vec<String>,
+    /// Tag references (`kind:handle`). Same commutative semantics as labels:
+    /// whole-set replace via `tags`, or add/remove for conflict-free updates.
+    pub tags: Option<Vec<String>>,
+    pub tags_add: Vec<String>,
+    pub tags_remove: Vec<String>,
     /// None = absent; Some(None) = clear parent; Some(Some(id)) = set parent.
     pub parent: Option<Option<String>>,
     pub links: Option<Value>,
@@ -71,6 +80,9 @@ impl TicketPatch {
             && self.labels.is_none()
             && self.labels_add.is_empty()
             && self.labels_remove.is_empty()
+            && self.tags.is_none()
+            && self.tags_add.is_empty()
+            && self.tags_remove.is_empty()
             && self.parent.is_none()
             && self.links.is_none()
             && self.metadata_merge.is_some()
@@ -128,6 +140,11 @@ pub struct TicketListFilter {
     pub ty: Option<String>,
     /// AND semantics.
     pub labels: Vec<String>,
+    /// Exact `kind:handle` tag references; AND semantics.
+    pub tags: Vec<String>,
+    /// Tag kinds (e.g. `person`) — match any ticket carrying a tag of the kind;
+    /// AND semantics across multiple kinds.
+    pub tag_kinds: Vec<String>,
     pub parent: Option<String>,
     pub q: Option<String>,
     pub claimed_by: Option<String>,
@@ -202,6 +219,19 @@ fn validate_labels(labels: &[String]) -> ApiResult<()> {
         }
     }
     Ok(())
+}
+
+/// Normalize a set of `kind:handle` tag references: validate each and drop
+/// exact duplicates, preserving order.
+fn normalize_tags(refs: &[String]) -> ApiResult<Vec<String>> {
+    let mut out: Vec<String> = Vec::with_capacity(refs.len());
+    for r in refs {
+        let norm = normalize_tag_ref(r)?;
+        if !out.contains(&norm) {
+            out.push(norm);
+        }
+    }
+    Ok(out)
 }
 
 fn validate_metadata_size(metadata: &Value) -> ApiResult<()> {
@@ -410,6 +440,7 @@ impl Store {
         let priority = req.priority.clone().unwrap_or_else(|| "normal".to_string());
         validate_priority(&priority)?;
         validate_labels(&req.labels)?;
+        let tags = normalize_tags(&req.tags)?;
         let metadata = req.metadata.clone().unwrap_or_else(|| json!({}));
         if !metadata.is_object() {
             return Err(ApiError::validation(
@@ -493,8 +524,8 @@ impl Store {
 
             let id = generate_ticket_id(tx, &req.project)?;
             tx.execute(
-                "INSERT INTO tickets (id, project, type, parent, title, body, state, priority, labels, metadata, links, created_by, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '{}', ?11, ?12, ?12)",
+                "INSERT INTO tickets (id, project, type, parent, title, body, state, priority, labels, tags, metadata, links, created_by, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, '{}', ?12, ?13, ?13)",
                 params![
                     id,
                     req.project,
@@ -505,11 +536,13 @@ impl Store {
                     state,
                     priority,
                     serde_json::to_string(&req.labels).unwrap(),
+                    serde_json::to_string(&tags).unwrap(),
                     metadata.to_string(),
                     actor,
                     now
                 ],
             )?;
+            ensure_tags_exist(tx, &req.project, &tags, actor, now)?;
             for dep in &req.blocked_by {
                 tx.execute(
                     "INSERT OR IGNORE INTO deps (ticket, blocked_by) VALUES (?1, ?2)",
@@ -646,6 +679,19 @@ impl Store {
             for label in &filter.labels {
                 sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(t.labels) WHERE json_each.value = ?)");
                 params_vec.push(SqlValue::Text(label.clone()));
+            }
+            for tag in &filter.tags {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?)",
+                );
+                params_vec.push(SqlValue::Text(tag.clone()));
+            }
+            for kind in &filter.tag_kinds {
+                // `kind:%` is a literal prefix because kinds forbid `%`/`_`.
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value LIKE ?)",
+                );
+                params_vec.push(SqlValue::Text(format!("{kind}:%")));
             }
             if let Some(p) = &filter.parent {
                 sql.push_str(" AND t.parent = ?");
@@ -785,6 +831,27 @@ impl Store {
                     params![id, serde_json::to_string(&labels).unwrap()],
                 )?;
                 changed.push("labels");
+            }
+
+            if patch.tags.is_some() || !patch.tags_add.is_empty() || !patch.tags_remove.is_empty() {
+                let base = match &patch.tags {
+                    Some(set) => set.clone(),
+                    None => t.tags.clone(),
+                };
+                let mut tags = normalize_tags(&base)?;
+                for r in &normalize_tags(&patch.tags_add)? {
+                    if !tags.contains(r) {
+                        tags.push(r.clone());
+                    }
+                }
+                let remove = normalize_tags(&patch.tags_remove)?;
+                tags.retain(|r| !remove.contains(r));
+                ensure_tags_exist(tx, &t.project, &tags, actor, now)?;
+                tx.execute(
+                    "UPDATE tickets SET tags = ?2 WHERE id = ?1",
+                    params![id, serde_json::to_string(&tags).unwrap()],
+                )?;
+                changed.push("tags");
             }
 
             if let Some(parent_change) = &patch.parent {
@@ -932,7 +999,7 @@ impl Store {
             if changed.is_empty() {
                 return Err(ApiError::validation(
                     "validation.empty_patch",
-                    "The patch contains no changes. Provide at least one of: title, body, priority, labels, labels_add, labels_remove, parent, links, metadata_merge.",
+                    "The patch contains no changes. Provide at least one of: title, body, priority, labels, labels_add, labels_remove, tags, tags_add, tags_remove, parent, links, metadata_merge.",
                 ));
             }
 

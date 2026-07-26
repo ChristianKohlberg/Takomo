@@ -37,6 +37,11 @@ pub fn promotion_id() -> String {
     format!("pr-{}", random_chars(BASE36, 8))
 }
 
+/// Tag (project entity — person, component, …) id, e.g. "tag-9f3ka2xz".
+pub fn tag_id() -> String {
+    format!("tag-{}", random_chars(BASE36, 8))
+}
+
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".
 pub fn token_id() -> String {
     format!("tok_{}", random_chars(BASE36, 8))

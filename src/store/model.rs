@@ -23,6 +23,10 @@ pub struct Ticket {
     pub state_category: String,
     pub priority: String,
     pub labels: Vec<String>,
+    /// Tag references onto this ticket, each a canonical `kind:handle` string
+    /// (e.g. `person:ada`, `component:billing`). Reference metadata only — never
+    /// affects claims, leases, or question routing.
+    pub tags: Vec<String>,
     pub metadata: Value,
     pub links: Value,
     pub blocked_by: Vec<String>,
@@ -63,6 +67,7 @@ impl Ticket {
             "state_category": self.state_category,
             "priority": self.priority,
             "labels": self.labels,
+            "tags": self.tags,
             "metadata": self.metadata,
             "links": self.links,
             "blocked_by": self.blocked_by,
@@ -373,6 +378,47 @@ impl Promotion {
             "note": self.note,
             "actor": self.actor,
             "created_at": iso(self.created_at),
+        })
+    }
+}
+
+/// A project-scoped tag: a named entity of some `kind` (e.g. `person`,
+/// `component`, `team`) that tickets can be tagged with by its `handle`. The
+/// registry is deliberately generic — a new kind is just a new `kind` string,
+/// no schema change — and per-kind attributes live in the free-form `meta`
+/// object (a person's email, a component's owner, …). Identity is
+/// `(project, kind, handle)`; `label` is the human-facing display name.
+#[derive(Debug, Clone)]
+pub struct Tag {
+    pub id: String,
+    pub project: String,
+    pub kind: String,
+    pub handle: String,
+    pub label: String,
+    pub meta: Value,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl Tag {
+    /// Canonical `kind:handle` reference string used on tickets.
+    pub fn reference(&self) -> String {
+        format!("{}:{}", self.kind, self.handle)
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "kind": self.kind,
+            "handle": self.handle,
+            "ref": self.reference(),
+            "label": self.label,
+            "meta": self.meta,
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
         })
     }
 }

@@ -13,6 +13,7 @@ mod projects;
 mod questions;
 mod roadmap;
 mod shares;
+mod tags;
 mod tickets;
 mod tokens;
 mod transition;
@@ -27,6 +28,7 @@ pub use questions::{
     QUESTION_KINDS,
 };
 pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
+pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, TagPatch};
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
 };
@@ -104,6 +106,16 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     };
     if !columns.iter().any(|c| c == "archived_at") {
         conn.execute("ALTER TABLE tickets ADD COLUMN archived_at TEXT", [])?;
+    }
+    // tickets.tags: canonical `kind:handle` references into the project tag
+    // registry. Additive; older ticket tables predate it. Defaults to the empty
+    // JSON array, matching the `labels` precedent. The `tags` table itself is in
+    // SCHEMA (CREATE TABLE IF NOT EXISTS), so it appears on old DBs automatically.
+    if !columns.iter().any(|c| c == "tags") {
+        conn.execute(
+            "ALTER TABLE tickets ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
     }
     // Partial index to keep `archived=only` and the default `archived_at IS
     // NULL` filter cheap. Created after the column is guaranteed to exist.
@@ -215,6 +227,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   state            TEXT NOT NULL,
   priority         TEXT NOT NULL DEFAULT 'normal',
   labels           TEXT NOT NULL DEFAULT '[]',
+  tags             TEXT NOT NULL DEFAULT '[]',
   metadata         TEXT NOT NULL DEFAULT '{}',
   links            TEXT NOT NULL DEFAULT '{}',
   claim_holder     TEXT,
@@ -279,6 +292,25 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 CREATE INDEX IF NOT EXISTS idx_questions_project ON questions(project);
 CREATE INDEX IF NOT EXISTS idx_questions_ticket ON questions(ticket);
+
+-- Project-scoped tag registry: named entities of some free-form `kind`
+-- (person, component, team, …) that tickets reference by `kind:handle`. Generic
+-- by design — a new kind needs no schema change — with per-kind attributes in
+-- the free-form `meta` JSON object. Identity is (project, kind, handle); tagging
+-- a ticket stores the canonical `kind:handle` string in tickets.tags.
+CREATE TABLE IF NOT EXISTS tags (
+  id         TEXT PRIMARY KEY,
+  project    TEXT NOT NULL REFERENCES projects(id),
+  kind       TEXT NOT NULL,
+  handle     TEXT NOT NULL,
+  label      TEXT NOT NULL DEFAULT '',
+  meta       TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project, kind, handle)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_project_kind ON tags(project, kind);
 
 -- The follow-up thread on a question: a human can bounce a question back to the
 -- asking agent for more research (role='human'), and the agent replies
