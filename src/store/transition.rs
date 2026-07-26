@@ -10,7 +10,7 @@ use super::model::Ticket;
 use super::Store;
 use crate::error::{AllowedTransition, ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
-use crate::workflow::{Requirement, Workflow, WorkflowTransition};
+use crate::workflow::{Requirement, Workflow, WorkflowTransition, GUARD_HAS_LINK};
 use axum::http::StatusCode;
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -79,6 +79,26 @@ fn eval_guard(conn: &Connection, guard: &str, ticket: &Ticket) -> ApiResult<Opti
                 Ok(Some(ReqFailure::GuardFailed {
                     guard: guard.to_string(),
                     offenders: open,
+                }))
+            }
+        }
+        // `has_link:<key>` — the ticket must carry a non-empty links.<key>.
+        // `offenders` stays empty on purpose: the subject is this ticket, not a
+        // related one, and requirement_error has a dedicated arm that explains
+        // which key is missing instead of naming ticket ids.
+        g if g.starts_with(GUARD_HAS_LINK) => {
+            let key = &g[GUARD_HAS_LINK.len()..];
+            let present = ticket
+                .links
+                .get(key)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.trim().is_empty());
+            if present {
+                Ok(None)
+            } else {
+                Ok(Some(ReqFailure::GuardFailed {
+                    guard: g.to_string(),
+                    offenders: Vec::new(),
                 }))
             }
         }
@@ -472,6 +492,22 @@ fn requirement_error(
                     offenders.join(", ")
                 ),
             ),
+            g if g.starts_with(GUARD_HAS_LINK) => {
+                let key = &g[GUARD_HAS_LINK.len()..];
+                let proof = if key == "commit" {
+                    " Use the full commit SHA (or its commit URL) of the work that closes this ticket — a short SHA is ambiguous."
+                } else {
+                    ""
+                };
+                (
+                    format!(
+                        "guard '{g}' failed: this transition must prove itself with a '{key}' link on the ticket, and none is set"
+                    ),
+                    format!(
+                        "Attach it first: PATCH /v1/tickets/{id} with {{\"links\":{{\"{key}\":\"<value>\"}}}} (MCP: takomo_link, CLI: takomo link {id} --{key} <value>), then retry.{proof}"
+                    ),
+                )
+            }
             other => (
                 format!(
                     "guard '{other}' failed for ticket(s) {}",
@@ -480,12 +516,16 @@ fn requirement_error(
                 "Resolve the named tickets, then retry this transition.".to_string(),
             ),
         };
+        let mut details = json!({ "guard": guard });
+        if !offenders.is_empty() {
+            details["offending_tickets"] = json!(offenders);
+        }
         return ApiError::conflict(
             "transition.guard",
             format!("Transition blocked on '{id}': {explain}."),
         )
         .remedy(remedy)
-        .details(json!({ "guard": guard, "offending_tickets": offenders }))
+        .details(details)
         .current_state(t.state.clone())
         .allowed_transitions(allowed);
     }

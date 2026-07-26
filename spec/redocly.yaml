@@ -1,0 +1,14 @@
+# Redocly config for validating spec/openapi.yaml in CI.
+#
+# Deliberately ONE rule. `struct` is the OpenAPI-schema conformance check: does
+# the document actually obey 3.1, or does it merely parse? That distinction is
+# the whole point — this file was valid YAML for a long time while quietly
+# meaning something other than what was written (a comma inside an unquoted
+# description turns the rest of the sentence into a junk key; `nullable: true`
+# is 3.0 syntax that 3.1 tooling ignores outright).
+#
+# Style rules (operationId conventions, tag descriptions, server URLs, …) stay
+# off on purpose: this gate guards the contract's meaning, not its prose. Adding
+# `extends: [recommended]` would bury the errors that matter in stylistic noise.
+rules:
+  struct: error

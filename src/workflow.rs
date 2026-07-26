@@ -13,8 +13,16 @@ pub const CATEGORIES: [&str; 6] = [
     "cancelled",
 ];
 
-/// v1 server-side guards.
+/// v1 server-side guards that take no parameter.
 pub const GUARDS: [&str; 2] = ["no_open_children", "no_open_blockers"];
+
+/// Prefix of the parameterized guard family `has_link:<key>`: the ticket must
+/// carry a non-empty `links.<key>`. `has_link:commit` is the intended use — it
+/// turns "done" from a claim into something a later reader can verify, because
+/// the commit is checkable long after everyone involved has forgotten. The key
+/// is free-form so a project can demand whatever its own proof is (`pr`,
+/// `env`, `run`).
+pub const GUARD_HAS_LINK: &str = "has_link:";
 
 // deny_unknown_fields everywhere: a typo like "require" or "claimble" must be
 // a 422, not a silently deleted approval gate.
@@ -70,9 +78,17 @@ impl Requirement {
         } else if let Some(guard) = raw.strip_prefix("guard:") {
             if GUARDS.contains(&guard) {
                 Ok(Requirement::Guard(guard.to_string()))
+            } else if let Some(key) = guard.strip_prefix(GUARD_HAS_LINK) {
+                if key.trim().is_empty() {
+                    Err(format!(
+                        "guard '{guard}' in requirement '{raw}' names no link key; write the key it must prove, e.g. 'guard:{GUARD_HAS_LINK}commit'"
+                    ))
+                } else {
+                    Ok(Requirement::Guard(guard.to_string()))
+                }
             } else {
                 Err(format!(
-                    "unknown guard '{guard}' in requirement '{raw}'; v1 guards are: {}",
+                    "unknown guard '{guard}' in requirement '{raw}'; v1 guards are: {}, or '{GUARD_HAS_LINK}<key>' (e.g. '{GUARD_HAS_LINK}commit')",
                     GUARDS.join(", ")
                 ))
             }
@@ -300,6 +316,44 @@ mod tests {
         wf.transitions.retain(|t| t.from != "brief");
         let problems = wf.validate(&[]);
         assert!(problems.iter().any(|p| p.contains("brief")));
+    }
+
+    #[test]
+    fn parses_parameterized_has_link_guard() {
+        assert_eq!(
+            Requirement::parse("guard:has_link:commit"),
+            Ok(Requirement::Guard("has_link:commit".to_string()))
+        );
+        // Any key, not just commit — a project decides what its proof is.
+        assert_eq!(
+            Requirement::parse("guard:has_link:pr"),
+            Ok(Requirement::Guard("has_link:pr".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_has_link_without_a_key() {
+        for raw in ["guard:has_link:", "guard:has_link:   "] {
+            let err = Requirement::parse(raw).unwrap_err();
+            assert!(err.contains("names no link key"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn unknown_guard_error_mentions_the_has_link_family() {
+        let err = Requirement::parse("guard:has_commit").unwrap_err();
+        assert!(err.contains("has_link:"), "{err}");
+    }
+
+    #[test]
+    fn workflow_with_has_link_guard_validates() {
+        let mut wf = factory_default();
+        for t in wf.transitions.iter_mut() {
+            if t.from == "review" && t.to == "done" {
+                t.requires.push("guard:has_link:commit".to_string());
+            }
+        }
+        assert!(wf.validate(&[]).is_empty(), "{:?}", wf.validate(&[]));
     }
 
     #[test]

@@ -134,6 +134,11 @@
   .card .promo .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
   .card .promo .ptarget { font-family: var(--mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card .promo .page { color: var(--muted); flex: 0 0 auto; }
+  /* Commit proof — quieter than the promotion badge: it says "verifiable",
+     not "shipped", and must not compete with the deploy signal. */
+  .card .proof { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .card .proof .pmark { flex: 0 0 auto; opacity: .75; }
+  .card .proof .psha { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty-col { color: var(--muted); font-size: 12px; text-align: center; padding: 14px 4px; opacity: .6; }
   .promo-list { display: flex; flex-direction: column; gap: 8px; }
   .promo-row { display: flex; flex-direction: column; gap: 3px; border-left: 2px solid var(--ok); padding: 2px 0 4px 10px; }
@@ -298,8 +303,8 @@
 
   // ---- i18n (shared vocabulary with /inbox) ----
   var STR = {
-    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref " },
-    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref " }
+    de: { board:"Board", inbox:"Inbox", gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.", gateTokenLabel:"Lese-Token", gateProjectLabel:"Projekt", gateOpen:"Board öffnen", archived:"archiviert", askHuman:"Mensch fragen", refresh:"Aktualisieren", signout:"Abmelden", idle:"bereit", loading:"lädt…", live:"live", reconnecting:"neu verbinden…", fullInbox:"volle Inbox →", mine:"nur meine", description:"Beschreibung", dependencies:"Abhängigkeiten", links:"Links", labels:"Labels", comments:"Kommentare", promotions:"Promotions", proofCommit:"Nachweis-Commit", noComments:"Keine Kommentare.", blockedN:"Blockiert — {n} offene Frage(n)", answerInInbox:"In der Inbox beantworten →", answeringResumes:"Antworten setzt dieses Ticket fort.", decisionRouted:"Eine Entscheidung wird geroutet.", allClear:"Alles erledigt — keine offenen Fragen.", cantAnswer:"Dieses Token kann nicht antworten (keine 'human'-Berechtigung). Warteschlange nur lesbar.", couldNotLoadQ:"Fragen konnten nicht geladen werden: ", blocking:"blockierend", advisory:"beratend", awaiting:"wartet auf ", awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.", state:"Status", claimedBy:"beansprucht von", unclaimed:"frei", question1:"1 Frage", questionsN:"{n} Fragen", openQ:"offene Frage(n)", allEpics:"Alle Epics", groupEpic:"nach Epic", noEpic:"Ohne Epic", showMore:"+ {n} weitere", showLess:"weniger anzeigen", recommends:"empfiehlt:", notePlaceholder:"Notiz (optional)…", answerPlaceholder:"Deine Antwort…", approve:"Genehmigen", reject:"Ablehnen", yes:"Ja", no:"Nein", send:"Senden", noDescription:"(keine Beschreibung)", blockedByRel:"blockiert von ", blocksRel:"blockiert ", agoSep:" · ", refLabel:"Ref " },
+    en: { board:"Board", inbox:"Inbox", gateSub:"Read-only kanban. Paste a read token to view a project's tickets.", gateTokenLabel:"Read token", gateProjectLabel:"Project", gateOpen:"Open board", archived:"archived", askHuman:"Ask a human", refresh:"Refresh", signout:"Sign out", idle:"idle", loading:"loading…", live:"live", reconnecting:"reconnecting…", fullInbox:"full inbox →", mine:"mine", description:"Description", dependencies:"Dependencies", links:"Links", labels:"Labels", comments:"Comments", promotions:"Promotions", proofCommit:"Proof commit", noComments:"No comments.", blockedN:"Blocked — {n} open question(s)", answerInInbox:"Answer in Inbox →", answeringResumes:"Answering resumes this ticket.", decisionRouted:"A decision is routed for this ticket.", allClear:"All clear — no open questions.", cantAnswer:"This token cannot answer (no 'human' scope). Showing the queue read-only.", couldNotLoadQ:"Could not load questions: ", blocking:"blocking", advisory:"advisory", awaiting:"awaiting ", awaitingSub:" — a human asked for more info. Full thread in the inbox.", state:"state", claimedBy:"claimed by", unclaimed:"unclaimed", question1:"1 question", questionsN:"{n} questions", openQ:"open question(s)", allEpics:"All epics", groupEpic:"by epic", noEpic:"No epic", showMore:"+ {n} more", showLess:"show less", recommends:"recommends:", notePlaceholder:"optional note…", answerPlaceholder:"your answer…", approve:"Approve", reject:"Reject", yes:"Yes", no:"No", send:"Send", noDescription:"(no description)", blockedByRel:"blocked by ", blocksRel:"blocks ", agoSep:" ago · ", refLabel:"ref " }
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
   function L() { return STR[state.lang]; }
@@ -337,6 +342,15 @@
     if (s < 3600) return Math.floor(s / 60) + "m";
     if (s < 86400) return Math.floor(s / 3600) + "h";
     return Math.floor(s / 86400) + "d";
+  }
+
+  // A commit link may be a bare sha or a commit URL; show a readable stub and
+  // keep the full value in the title so nothing is silently lost.
+  function shortCommit(v) {
+    if (typeof v !== "string") return "";
+    var s = v.trim().replace(/[\/#?]+$/, "");
+    var seg = s.split("/").pop() || s;
+    return /^[0-9a-f]{7,40}$/i.test(seg) ? seg.slice(0, 7) : seg.slice(0, 14);
   }
 
   // ---- tiny dom helpers ----
@@ -764,6 +778,16 @@
       bot.appendChild(gaugeEl(prio));
       c.appendChild(bot);
     }
+    // Commit proof badge (e.g. "⌗ 5caea2a") — the ticket carries a checkable
+    // commit, so its state is more than someone's word.
+    var commit = t.links && typeof t.links === "object" ? t.links.commit : null;
+    if (typeof commit === "string" && commit.trim()) {
+      var cb = el("div", "proof");
+      cb.title = L().proofCommit + ": " + commit;
+      cb.appendChild(el("span", "pmark", "⌗"));
+      cb.appendChild(el("span", "psha", shortCommit(commit)));
+      c.appendChild(cb);
+    }
     // Latest promotion badge (e.g. "● production · 2h").
     var pr = state.promoByTicket[t.id];
     if (pr) {
@@ -1024,8 +1048,17 @@
         var v = links[k];
         var row = el("div", "link-item");
         row.appendChild(el("strong", null, k + ": "));
+        // The commit is the proof, so it must stay readable: show the stub,
+        // full value on hover, and never wrap a 40-char sha across the drawer.
+        var isCommit = k === "commit" && typeof v === "string" && v.trim();
         if (typeof v === "string" && /^https?:\/\//.test(v)) {
-          var a = el("a"); a.href = v; a.textContent = v; a.target = "_blank"; a.rel = "noopener"; row.appendChild(a);
+          var a = el("a"); a.href = v; a.textContent = isCommit ? shortCommit(v) : v;
+          if (isCommit) a.title = v;
+          a.target = "_blank"; a.rel = "noopener"; row.appendChild(a);
+        } else if (isCommit) {
+          var sha = el("span", "mono", shortCommit(v));
+          sha.title = v;
+          row.appendChild(sha);
         } else {
           row.appendChild(document.createTextNode(typeof v === "string" ? v : JSON.stringify(v)));
         }

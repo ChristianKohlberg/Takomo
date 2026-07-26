@@ -62,10 +62,11 @@ token.
 
 ## In-session quality gates — handrail
 
-[handrail](https://github.com/ChristianKohlberg/handrail) gates in [`.handrail/`](../.handrail/) surface project norms *in-session* — they guide, they don't enforce (CI is the wall): new/changed HTTP routes should ship with an integration test, `spec/openapi.yaml` should track route changes, and `cargo fmt`/`clippy` stay clean. With `handrail` installed: `handrail list`, `handrail run --changed`.
+[handrail](https://github.com/ChristianKohlberg/handrail) gates in [`.handrail/`](../.handrail/) surface project norms *in-session* — they guide, they don't enforce (CI is the wall): new/changed HTTP routes should ship with an integration test, `spec/openapi.yaml` should track route changes *and stay a valid document*, and `cargo fmt`/`clippy` stay clean. With `handrail` installed: `handrail list`, `handrail run --changed`.
 
 ## Conventions
 
 - Every new/changed HTTP route ships with an integration test and an `spec/openapi.yaml` update.
+- The spec must stay a *valid* OpenAPI 3.1 document, not merely parseable YAML. CI runs `redocly lint` against [`spec/redocly.yaml`](../spec/redocly.yaml); `.handrail/openapi-sane.sh` is the instant offline version. Two traps, both invisible to a human reader: a comma inside an unquoted description in a flow mapping silently truncates the sentence and turns its tail into a junk key, and `nullable: true` is 3.0 syntax that 3.1 tooling ignores (write `type: [string, "null"]`).
 - Errors are part of the contract: reject with a stable `code`, a `message` written for an LLM reader, and (for transitions) `allowed_transitions` + a `remedy`. Never fail silently.
 - Keep the CLI shellcheck-clean and the MCP typecheck green.

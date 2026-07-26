@@ -30,6 +30,7 @@ set -euo pipefail
 
 PROG=takomo
 die() { echo "$PROG: $*" >&2; exit 2; }
+warn() { echo "$PROG: $*" >&2; }
 
 # --- repo-local config (.takomo) -----------------------------------------
 # Walk up from the cwd for a `.takomo/config` (KEY=VALUE) and `.takomo/token`.
@@ -549,26 +550,34 @@ cmd_comment() {
 
 cmd_link() {
   local id=${1:-}; [ -n "$id" ] || die "link: ID is required"; shift
-  local pr="" branch="" env="" run=""
+  local pr="" branch="" env="" run="" commit=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pr)     pr=$2; shift 2 ;;
       --branch) branch=$2; shift 2 ;;
       --env)    env=$2; shift 2 ;;
       --run)    run=$2; shift 2 ;;
+      --commit) commit=$2; shift 2 ;;
       *) die "link: unknown flag $1" ;;
     esac
   done
-  [ -n "$pr$branch$env$run" ] || die "link: give at least one of --pr --branch --env --run"
+  [ -n "$pr$branch$env$run$commit" ] || die "link: give at least one of --pr --branch --env --run --commit"
+  # A short SHA is ambiguous and the link is meant to be verifiable years later,
+  # so nudge (not block — the value may legitimately be a commit URL).
+  case "$commit" in
+    "") ;;
+    *://*) ;;
+    *) [ ${#commit} -ge 40 ] || warn "link: '--commit $commit' looks like a short SHA; prefer the full 40-char SHA (or the commit URL) so it stays unambiguous" ;;
+  esac
   # links is a whole-object replace; merge onto whatever is already there.
   api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
   local fence; fence=$(fence_load "$id")
   local data; data=$(TS_FILE="$REQ_OUT" TS_PR="$pr" TS_BRANCH="$branch" TS_ENV="$env" \
-    TS_RUN="$run" TS_FENCE="$fence" python3 <<'PY'
+    TS_RUN="$run" TS_COMMIT="$commit" TS_FENCE="$fence" python3 <<'PY'
 import json, os
 cur = json.load(open(os.environ["TS_FILE"]))
 links = dict(cur.get("links") or {})
-for env, key in (("TS_PR","pr"),("TS_BRANCH","branch"),("TS_ENV","env"),("TS_RUN","run")):
+for env, key in (("TS_PR","pr"),("TS_BRANCH","branch"),("TS_ENV","env"),("TS_RUN","run"),("TS_COMMIT","commit")):
     v = os.environ.get(env, "")
     if v: links[key] = v
 d = {"links": links}
@@ -1957,7 +1966,12 @@ Ask a human (block on a human decision, then resume):
 
 Annotating:
   takomo comment ID TEXT
-  takomo link ID [--pr URL] [--branch B] [--env URL] [--run URL]
+  takomo link ID [--pr URL] [--branch B] [--env URL] [--run URL] [--commit SHA]
+         --commit is the proof a ticket is really done: the FULL sha (or commit
+         URL) of the work that closes it. Checkable long after the fact, and
+         what `git tag --contains` / `git merge-base --is-ancestor` answer
+         release and deploy questions from. Projects can require it via
+         `guard:has_link:commit` on the done transition.
   takomo dep ID --blocked-by OTHER
   takomo deps ID [--blocks] [--tree]   show what blocks ID (or, with --blocks, what
                                    ID blocks); --tree walks the chain transitively
