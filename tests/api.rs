@@ -141,7 +141,12 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     );
 
     // ---- half 2: the control that reads them ----
-    for (path, wiring) in [("/board", "inSubtree("), ("/inbox", "visible()")] {
+    // The two surfaces mount different controls: /board's ticket filter is a
+    // typeahead (takomo-fo1j), /inbox still uses the native <select>.
+    for (path, control, wiring) in [
+        ("/board", "id=\"tickfilter\"", "inSubtree("),
+        ("/inbox", "id=\"ticksel\"", "visible()"),
+    ] {
         let body = app
             .request(Method::GET, path)
             .send()
@@ -151,8 +156,8 @@ async fn ticket_filter_contract_on_board_and_inbox() {
             .await
             .unwrap();
         assert!(
-            body.contains("id=\"ticksel\""),
-            "{path} ships the ticket-filter control"
+            body.contains(control),
+            "{path} ships the ticket-filter control ('{control}')"
         );
         assert!(
             body.contains(wiring),
@@ -166,6 +171,74 @@ async fn ticket_filter_contract_on_board_and_inbox() {
             "{path} needs `allTickets` in both the DE and EN string tables"
         );
     }
+
+    // The board's typeahead has to stay keyboard-operable: the <select> it
+    // replaced was, for free. No JS test lane exists here, so this asserts the
+    // markers whose absence means the control has silently become mouse-only —
+    // the ARIA combobox wiring and the key handling that drives it.
+    let board = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for marker in [
+        "role\", \"combobox\"",  // the input announces itself as a combobox
+        "aria-expanded",         // …and whether its popup is open
+        "aria-activedescendant", // …and which option the arrow keys are on
+        "role\", \"listbox\"",   // the popup is a real listbox
+        "role\", \"option\"",    // with real options
+        "\"ArrowDown\"",         // arrow keys move the active option
+        "\"Enter\"",             // Enter commits it
+        "\"Escape\"",            // Escape dismisses the popup
+        "ta-clear",              // and the selection is clearable
+    ] {
+        assert!(
+            board.contains(marker),
+            "/board's ticket typeahead must keep '{marker}' — without it the control \
+             is no longer fully keyboard-operable, which the <select> it replaced was"
+        );
+    }
+}
+
+/// `/board`'s tag-value filter is the *same* typeahead as its ticket filter
+/// (takomo-0yl3), not a second bespoke control. That is the decision worth
+/// pinning: two mount points, one `makeTypeahead`. If a later change forks them,
+/// the ARIA and keyboard guarantees above stop covering the tag filter and
+/// nothing else would say so.
+#[tokio::test]
+async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
+    let app = TestApp::spawn().await;
+    let body = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        body.contains("id=\"tagvalfilter\""),
+        "/board mounts the tag-value typeahead"
+    );
+    assert!(
+        body.contains("id=\"tagkindsel\""),
+        "the tag *kind* stays a <select> — a handful of kinds needs no search"
+    );
+    assert_eq!(
+        body.matches("makeTypeahead(").count(),
+        3,
+        "one factory, two callers: the tag-value filter must reuse the ticket \
+         filter's control rather than growing a second implementation"
+    );
+    assert_eq!(
+        body.matches("taTagValue:").count(),
+        2,
+        "/board needs `taTagValue` in both the DE and EN string tables"
+    );
 }
 
 /// Keys of one locale's `STR` table, in declaration order.

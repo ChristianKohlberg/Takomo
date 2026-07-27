@@ -104,7 +104,47 @@
   .column.done h2 { color: var(--muted); }
   .cards { display: flex; flex-direction: column; gap: 10px; }
   .epicsel { max-width: 190px; }
-  .ticksel { max-width: 190px; }
+
+  /* ---- typeahead (combobox) — the ticket filter, and later the tag values ----
+     Sized to sit in the header next to the plain <select>s, and self-contained:
+     the popup is absolutely positioned inside .ta, so the whole control can be
+     moved or stacked (see the mobile-layout ticket) without touching this. */
+  .ta { position: relative; display: inline-flex; align-items: center; max-width: 100%; }
+  /* Visually hidden, still read: the control needs a name, and the header has
+     no room for a visible one. */
+  .ta-label {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .ta input { width: 190px; max-width: 100%; padding-right: 28px; text-overflow: ellipsis; }
+  .ta.narrow input { width: 150px; } /* tag handles are short; a ticket line is not */
+  .ta.has-value input { font-weight: 620; border-color: var(--sel-border); background: var(--sel); }
+  .ta-clear {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    border: 0; background: transparent; color: var(--muted); line-height: 1;
+    font-size: 15px; padding: 3px 5px; border-radius: 6px;
+  }
+  .ta-clear:hover { color: var(--crit); background: var(--hover); }
+  .ta-pop {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+    min-width: 100%; width: max-content; max-width: min(420px, calc(100vw - 28px));
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .ta-list { list-style: none; margin: 0; padding: 4px; max-height: 46vh; overflow-y: auto; }
+  .ta-list:empty { display: none; }
+  .ta-list li {
+    display: flex; align-items: baseline; gap: 7px; padding: 6px 9px; border-radius: 7px;
+    cursor: pointer; font-size: 13px;
+  }
+  .ta-list li .tlead { font-family: var(--mono); font-size: 12px; color: var(--low); flex: 0 0 auto; }
+  .ta-list li .ttext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ta-list li[aria-selected="true"] { font-weight: 680; }
+  .ta-list li[aria-selected="true"] .tlead { color: var(--accent2); }
+  .ta-list li.on { background: var(--sel); color: var(--accent); }
+  .ta-note { padding: 7px 11px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border-soft); }
+  .ta-note:empty { display: none; }
+
   .grouptoggle { font-size: 12.5px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
   .subhd { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px 0; margin-top: 2px; }
   .subhd .slbl { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -321,9 +361,9 @@
   <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a></nav>
   <select id="projsel" title="project"></select>
   <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
-  <select id="ticksel" class="ticksel hidden" title="filter by ticket"></select>
+  <div id="tickfilter" class="ta hidden"></div>
   <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
-  <select id="tagvalsel" class="epicsel hidden" title="filter by tag value"></select>
+  <div id="tagvalfilter" class="ta narrow hidden"></div>
   <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
   <span class="share-banner" id="share-scope"></span>
   <span class="grow"></span>
@@ -462,6 +502,13 @@
       setCancel:"Abbrechen",
       setLoading:"lädt…",
       setLoadErr:"Einstellungen konnten nicht geladen werden: ",
+      taTicket:"Nach Ticket filtern (ID oder Titel)",
+      taClear:"Filter löschen",
+      taNoMatch:"Kein Treffer für „{q}“",
+      taMore:"+{n} weitere — weitertippen zum Eingrenzen",
+      taCount:"{n} Treffer",
+      taCount1:"1 Treffer",
+      taTagValue:"Nach Tag-Wert filtern (Handle oder Name)",
     },
     en: {
       board:"Board",
@@ -545,6 +592,13 @@
       setCancel:"Cancel",
       setLoading:"loading…",
       setLoadErr:"Could not load settings: ",
+      taTicket:"Filter by ticket (id or title)",
+      taClear:"Clear filter",
+      taNoMatch:"No match for “{q}”",
+      taMore:"+{n} more — keep typing to narrow",
+      taCount:"{n} matches",
+      taCount1:"1 match",
+      taTagValue:"Filter by tag value (handle or name)",
     },
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -894,14 +948,6 @@
     state.expanded = {}; // fresh collapse state for the new view
     render();
   });
-  $("ticksel").addEventListener("change", function () {
-    setTicketFilter($("ticksel").value);
-    state.expanded = {};
-    render();
-    // The drawer's queue and its badge follow the filter.
-    refreshInboxCount();
-    if (state.inboxOpen) renderInbox();
-  });
   $("groupepic").addEventListener("change", function () {
     state.groupByEpic = $("groupepic").checked;
     localStorage.setItem(LS_GROUP, state.groupByEpic ? "1" : "0");
@@ -913,12 +959,6 @@
     state.tagRef = ""; // a value from the previous kind no longer applies
     localStorage.setItem(LS_TAGKIND, state.tagKind);
     localStorage.setItem(LS_TAGREF, "");
-    state.expanded = {};
-    render();
-  });
-  $("tagvalsel").addEventListener("change", function () {
-    state.tagRef = $("tagvalsel").value;
-    localStorage.setItem(LS_TAGREF, state.tagRef);
     state.expanded = {};
     render();
   });
@@ -1123,28 +1163,291 @@
     var chk = $("groupepic"); if (chk) chk.checked = state.groupByEpic;
   }
 
+  // ---- typeahead: a dependency-free single-select combobox ----
+  //
+  // Replaces a <select> whose option list has outgrown scanning. Same contract
+  // as the <select> it stands in for — a value, "" meaning "no filter", and one
+  // onChange — so the callers keep their existing state handling.
+  //
+  // Three things it is careful about:
+  //  * Keyboard. A <select> is fully operable by keyboard for free; a typeahead
+  //    that is only clickable would be a regression. This follows the ARIA
+  //    combobox pattern (aria-expanded/-controls/-activedescendant on the input,
+  //    role=listbox on the popup) so open/type/arrow/Enter/Escape all work, and
+  //    the clear button is a real <button> in the tab order.
+  //  * Locale. Every visible string comes from a callback that is re-run on each
+  //    setItems(), and setItems() runs inside render(), which setLang() calls —
+  //    so switching DE/EN repaints this control's own text immediately. That is
+  //    the bug class in takomo-fcog (a <select> keeping its old-locale label
+  //    until reopened), and it is worth not reproducing.
+  //  * Never innerHTML. Rows are built node by node, so a ticket title or a tag
+  //    label cannot turn into markup.
+  //
+  // Scale: filtering is a substring scan over a few hundred pre-lowercased
+  // strings — far below anything a keystroke would notice — so the list is
+  // recomputed on every keystroke rather than indexed. What is bounded is the
+  // DOM: at most TA_MAX_ROWS rows are built, and the rest sit behind a
+  // "keep typing" note. That keeps the cost flat as a project grows without
+  // dragging in virtual scrolling.
+  var TA_MAX_ROWS = 60;
+
+  // cfg: { id, label(), allLabel(), onChange(value) }. `id` is a placeholder
+  // element in the header that this fills in.
+  function makeTypeahead(cfg) {
+    var root = $(cfg.id); if (!root) return null;
+    var items = [];   // [{ value, display, lead, text, hay }] — hay is pre-lowercased
+    var value = "";   // current selection; "" = no filter
+    var open = false;
+    var query = "";   // typed since opening; "" = show everything
+    var view = [];    // items currently listed
+    var hasAll = false; // is view[0] the synthetic "all" row?
+    var active = -1;  // index into view
+    var noAutoOpen = false;
+
+    var label = el("label", "ta-label");
+    label.setAttribute("for", cfg.id + "-in");
+    var input = el("input");
+    input.type = "text"; input.id = cfg.id + "-in";
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-haspopup", "listbox");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-controls", cfg.id + "-list");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("autocomplete", "off");
+    input.setAttribute("spellcheck", "false");
+    var clear = el("button", "ta-clear hidden", "×");
+    clear.type = "button";
+    var pop = el("div", "ta-pop hidden");
+    var list = el("ul", "ta-list");
+    list.id = cfg.id + "-list";
+    list.setAttribute("role", "listbox");
+    // The note carries the result count, the no-match message and the overflow
+    // hint. It is a live region so a screen reader hears the list change while
+    // focus stays in the input — otherwise typing is silent.
+    var note = el("div", "ta-note");
+    note.setAttribute("role", "status");
+    note.setAttribute("aria-live", "polite");
+    pop.appendChild(list); pop.appendChild(note);
+    root.appendChild(label); root.appendChild(input); root.appendChild(clear); root.appendChild(pop);
+
+    function displayOf(v) {
+      for (var i = 0; i < items.length; i++) if (items[i].value === v) return items[i].display;
+      return v; // selection not in the current set yet — show the raw value rather than nothing
+    }
+    function syncText() {
+      var name = cfg.label();
+      label.textContent = name;
+      list.setAttribute("aria-label", name);
+      // The box is 190px, so a chosen ticket shows truncated. Its full text
+      // belongs in the tooltip, or the selection is only half-legible.
+      input.title = value ? (name + ": " + displayOf(value)) : name;
+      input.placeholder = cfg.allLabel();
+      clear.setAttribute("aria-label", L().taClear);
+      clear.title = L().taClear;
+      clear.classList.toggle("hidden", !value);
+      root.classList.toggle("has-value", !!value);
+      if (!open) input.value = value ? displayOf(value) : "";
+    }
+
+    // Every whitespace-separated token must appear somewhere in the haystack, so
+    // "fo1j filter" and "filter fo1j" both find the same ticket. Rows whose lead
+    // (the id) starts with the first token float to the top: typing an id should
+    // land on that ticket, not on something that merely mentions it.
+    function compute() {
+      var toks = query.toLowerCase().split(/\s+/).filter(function (s) { return s; });
+      if (!toks.length) {
+        hasAll = true;
+        view = [{ value: "", display: "", lead: "", text: cfg.allLabel() }].concat(items);
+        return;
+      }
+      hasAll = false;
+      var head = [], rest = [];
+      items.forEach(function (it) {
+        for (var i = 0; i < toks.length; i++) if (it.hay.indexOf(toks[i]) === -1) return;
+        (it.lead && it.lead.toLowerCase().indexOf(toks[0]) === 0 ? head : rest).push(it);
+      });
+      view = head.concat(rest);
+    }
+    function paintActive() {
+      for (var i = 0; i < list.children.length; i++) list.children[i].classList.toggle("on", i === active);
+      if (active >= 0 && active < list.children.length) {
+        input.setAttribute("aria-activedescendant", list.children[active].id);
+        if (list.children[active].scrollIntoView) list.children[active].scrollIntoView({ block: "nearest" });
+      } else {
+        input.removeAttribute("aria-activedescendant");
+      }
+    }
+    function renderList() {
+      list.innerHTML = "";
+      view.slice(0, TA_MAX_ROWS).forEach(function (it, i) {
+        var li = el("li");
+        li.id = cfg.id + "-o" + i;
+        li.setAttribute("role", "option");
+        li.setAttribute("aria-selected", it.value === value ? "true" : "false");
+        if (it.lead) li.appendChild(el("span", "tlead", it.lead));
+        if (it.text) li.appendChild(el("span", "ttext", it.text));
+        // The two halves are separate spans held apart by a flex gap, which gives
+        // a screen reader nothing to pause on — name the option with the same
+        // one-line form the input shows once it is chosen.
+        var full = it.display || it.text || it.lead;
+        li.title = full;
+        li.setAttribute("aria-label", full);
+        // mousedown, not click: click fires after blur, and blur closes the popup.
+        li.addEventListener("mousedown", function (e) { e.preventDefault(); choose(it.value); });
+        list.appendChild(li);
+      });
+      var n = view.length - (hasAll ? 1 : 0);
+      if (!view.length) note.textContent = L().taNoMatch.replace("{q}", query);
+      else if (view.length > TA_MAX_ROWS) note.textContent = L().taMore.replace("{n}", String(view.length - TA_MAX_ROWS));
+      else note.textContent = n === 1 ? L().taCount1 : L().taCount.replace("{n}", String(n));
+      paintActive();
+    }
+    function openList() {
+      query = "";
+      open = true;
+      pop.classList.remove("hidden");
+      input.setAttribute("aria-expanded", "true");
+      compute();
+      active = -1;
+      for (var i = 0; i < view.length && i < TA_MAX_ROWS; i++) if (view[i].value === value) { active = i; break; }
+      if (active === -1 && view.length) active = 0;
+      renderList();
+    }
+    function closeList() {
+      if (!open) return;
+      open = false; query = ""; active = -1;
+      pop.classList.add("hidden");
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      input.value = value ? displayOf(value) : "";
+    }
+    function choose(v) {
+      var changed = (v || "") !== value;
+      value = v || "";
+      closeList();
+      syncText();
+      if (changed) cfg.onChange(value);
+    }
+
+    input.addEventListener("focus", function () {
+      if (!open && !noAutoOpen) openList();
+      input.select(); // typing replaces the shown selection instead of editing it
+    });
+    input.addEventListener("click", function () { if (!open) openList(); });
+    input.addEventListener("input", function () {
+      query = input.value;
+      if (!open) { open = true; pop.classList.remove("hidden"); input.setAttribute("aria-expanded", "true"); }
+      compute();
+      active = view.length ? 0 : -1;
+      renderList();
+    });
+    input.addEventListener("keydown", function (e) {
+      var k = e.key, n = Math.min(view.length, TA_MAX_ROWS);
+      if (k === "ArrowDown" || k === "ArrowUp") {
+        e.preventDefault();
+        if (!open) { openList(); return; }
+        if (!n) return;
+        active = active < 0 ? (k === "ArrowDown" ? 0 : n - 1) : (active + (k === "ArrowDown" ? 1 : -1) + n) % n;
+        paintActive();
+      } else if (open && (k === "Home" || k === "End")) {
+        if (!n) return;
+        e.preventDefault();
+        active = k === "Home" ? 0 : n - 1;
+        paintActive();
+      } else if (k === "Enter") {
+        if (!open) return;
+        e.preventDefault();
+        if (active >= 0 && active < n) choose(view[active].value);
+      } else if (k === "Escape" || k === "Esc") {
+        // Stop here: the document-level Escape handler closes the drawers, and
+        // dismissing this popup should not also close what is behind it.
+        if (open) { e.preventDefault(); e.stopPropagation(); closeList(); }
+        else if (value) { e.preventDefault(); e.stopPropagation(); choose(""); }
+      } else if ((k === "Backspace" || k === "Delete") && value && input.value === "") {
+        choose(""); // deleting the shown selection clears the filter
+      } else if (k === "Tab") {
+        closeList();
+      }
+    });
+    clear.addEventListener("click", function () {
+      choose("");
+      // Keep focus reachable — the button hides itself once there is nothing to
+      // clear, and focus must not fall back to <body> mid-keyboard-run.
+      noAutoOpen = true; input.focus(); noAutoOpen = false;
+    });
+    // Closes on click-away and on tabbing out, but not while focus moves inside
+    // the control itself.
+    root.addEventListener("focusout", function (e) {
+      if (e.relatedTarget && root.contains(e.relatedTarget)) return;
+      closeList();
+    });
+
+    return {
+      // Safe to call while the popup is open and the user is mid-word: the query,
+      // the input text and focus are all left alone, so a background poll that
+      // adds a ticket just extends the list under the cursor.
+      setItems: function (next) {
+        items = next || [];
+        if (open) {
+          compute();
+          if (active >= Math.min(view.length, TA_MAX_ROWS)) active = view.length ? 0 : -1;
+          renderList();
+        }
+        syncText();
+      },
+      setValue: function (v) { value = v || ""; syncText(); },
+      show: function (visible) {
+        if (!visible) closeList();
+        root.classList.toggle("hidden", !visible);
+      }
+    };
+  }
+
   function setTicketFilter(id) {
     state.ticketFilter = id || "";
     localStorage.setItem(LS_TICKET, state.ticketFilter);
   }
   function ticketLabel(t) { return t.title ? (t.id + " — " + t.title) : t.id; }
-  // Keep the header's ticket dropdown in sync with the loaded tickets. The list is
+
+  var tickTA = makeTypeahead({
+    id: "tickfilter",
+    label: function () { return L().taTicket; },
+    allLabel: function () { return L().allTickets; },
+    onChange: function (v) {
+      setTicketFilter(v);
+      state.expanded = {};
+      render();
+      // The drawer's queue and its badge follow the filter.
+      refreshInboxCount();
+      if (state.inboxOpen) renderInbox();
+    }
+  });
+
+  // Keep the header's ticket filter in sync with the loaded tickets. The list is
   // scoped by the active epic filter so the two compose: pick an epic, then narrow
   // to one of its tickets.
   function populateTickets() {
-    var sel = $("ticksel"); if (!sel) return;
+    if (!tickTA) return;
     var tickets = Object.keys(state.tickets).map(function (k) { return state.tickets[k]; })
       .filter(function (t) { return !t.archived_at || state.showArchived; })
       .filter(function (t) { return !state.epicFilter || inSubtree(t, state.epicFilter); })
       .sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
-    sel.innerHTML = "";
-    var all = el("option"); all.value = ""; all.textContent = L().allTickets; sel.appendChild(all);
-    tickets.forEach(function (t) { var o = el("option"); o.value = t.id; o.textContent = ticketLabel(t); sel.appendChild(o); });
     // A filter pointing at a ticket that is gone (or now hidden) would blank the
     // board with no visible cause — drop it instead.
     if (state.ticketFilter && !tickets.some(function (t) { return t.id === state.ticketFilter; })) setTicketFilter("");
-    sel.value = state.ticketFilter;
-    sel.classList.toggle("hidden", tickets.length === 0);
+    tickTA.setItems(tickets.map(function (t) {
+      return {
+        value: t.id,
+        display: ticketLabel(t),
+        lead: t.id,
+        text: t.title || "",
+        hay: (t.id + " " + (t.title || "")).toLowerCase()
+      };
+    }));
+    tickTA.setValue(state.ticketFilter);
+    // Nothing to filter (no tickets, or an epic with none): hide it rather than
+    // offer an empty search box, which is what the <select> did too.
+    tickTA.show(tickets.length > 0);
   }
 
   // Distinct tag references currently in use across the (visible) tickets. The
@@ -1166,10 +1469,28 @@
     return lbl && lbl !== h ? (lbl + " (" + h + ")") : h;
   }
 
-  // Keep the two tag dropdowns (kind, then value within that kind) in sync with
-  // the tags in play; prune stale selections; hide when there are none.
+  // The second half of the tag filter reuses the ticket typeahead unchanged. The
+  // two lists differ only in what a row is made of — id/title there, handle/label
+  // here — which is the one thing the factory already takes as data, so sharing
+  // it costs nothing. The *kind* picker stays a <select>: a project has a handful
+  // of kinds, they fit without truncating, and "all of this kind" is a filter in
+  // its own right, so there is nothing there to search.
+  var tagvalTA = makeTypeahead({
+    id: "tagvalfilter",
+    label: function () { return L().taTagValue; },
+    allLabel: function () { return L().allValues; },
+    onChange: function (v) {
+      state.tagRef = v;
+      localStorage.setItem(LS_TAGREF, state.tagRef);
+      state.expanded = {};
+      render();
+    }
+  });
+
+  // Keep the tag kind dropdown and the value typeahead in sync with the tags in
+  // play; prune stale selections; hide when there are none.
   function populateTagFilter() {
-    var ksel = $("tagkindsel"), vsel = $("tagvalsel"); if (!ksel || !vsel) return;
+    var ksel = $("tagkindsel"); if (!ksel || !tagvalTA) return;
     var refs = ticketTagRefs();
     var kinds = [];
     refs.forEach(function (r) { var k = refKind(r); if (kinds.indexOf(k) === -1) kinds.push(k); });
@@ -1188,13 +1509,23 @@
     if (state.tagRef && vals.indexOf(state.tagRef) === -1) {
       state.tagRef = ""; localStorage.setItem(LS_TAGREF, "");
     }
-    vsel.innerHTML = "";
-    var vAll = el("option"); vAll.value = ""; vAll.textContent = L().allValues; vsel.appendChild(vAll);
-    vals.forEach(function (r) { var o = el("option"); o.value = r; o.textContent = refLabelText(r); vsel.appendChild(o); });
-    vsel.value = state.tagRef;
+    // Searchable on either half: `ada` finds the handle, `Lovelace` the display
+    // label from the registry. The handle leads the row in mono, the way a ticket
+    // id does, so the identifier column stays scannable.
+    tagvalTA.setItems(vals.map(function (r) {
+      var h = refHandle(r), lbl = state.tagLabels[r] || "";
+      return {
+        value: r,
+        display: refLabelText(r),
+        lead: h,
+        text: lbl && lbl !== h ? lbl : "",
+        hay: (h + " " + lbl).toLowerCase()
+      };
+    }));
+    tagvalTA.setValue(state.tagRef);
 
     ksel.classList.toggle("hidden", kinds.length === 0);
-    vsel.classList.toggle("hidden", kinds.length === 0 || !state.tagKind);
+    tagvalTA.show(kinds.length > 0 && !!state.tagKind);
   }
 
   // A ticket passes the tag filter when: no kind chosen (all), OR a specific

@@ -233,6 +233,29 @@ single ticket.
 
 ### Changed
 
+- **`/board`'s ticket filter is a search box, not a 130-option dropdown.**
+  The "All tickets" `<select>` listed every ticket in the project; past a
+  hundred, the options are long, truncated and near-identical, so picking one
+  was guesswork. It is now a typeahead: type to filter on **id or title** (any
+  order — `sweeper fence` and `fence sweeper` find the same ticket), with
+  id-prefix matches ranked first so typing an id lands on that ticket. Built by
+  DOM construction with no library, following the ARIA combobox pattern, so it
+  stays fully keyboard-operable the way the `<select>` was for free: Tab to
+  reach it, arrows to move, Enter to pick, Escape to dismiss without changing
+  the filter, and a `×` button in the tab order (or Backspace on an empty box)
+  to clear. The popup always says where it stands — the match count, `no match
+  for "…"` when nothing hits, and a `keep typing` hint past 60 rendered rows so
+  the DOM cost stays flat as a project grows. Every visible string is re-read on
+  render, so the DE/EN toggle repaints the control immediately instead of
+  leaving a stale label behind.
+- **`/board`'s tag-value filter is the same typeahead.** The second half of the
+  kind-then-value tag picker has the ticket filter's problem over a real
+  registry, so it reuses the ticket filter's control rather than growing a
+  second one — the two lists differ only in what a row is made of. Search hits
+  either half: `ada` finds the handle, `Lovelace` the registry's display label.
+  The *kind* picker stays a `<select>`: a project has a handful of kinds, they
+  fit without truncating, and "any tag of this kind" is a useful filter in its
+  own right, so there is nothing there to search.
 - **`workflows/` is the one place a shipped workflow is defined.**
   `factory-default` moved out of a `serde_json::json!` literal in
   `src/workflow.rs` into `workflows/factory-default.yaml`, embedded with
