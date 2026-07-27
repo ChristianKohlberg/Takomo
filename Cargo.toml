@@ -7,7 +7,12 @@ license = "Apache-2.0"
 
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
+# Named features rather than "full": this binary uses `time` (sleep, sleep_until,
+# interval, timeout), `net` (TcpListener), `sync` (Notify), `rt-multi-thread` (the
+# runtime and tokio::spawn) and `macros` (#[tokio::main], #[tokio::test], select!).
+# Nothing here touches tokio's fs, process, signal or io stacks. Adding a feature
+# back is a one-line change — leaving "full" hides which of them the server relies on.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
