@@ -70,6 +70,10 @@ claude mcp add --transport http \
   takomo https://<your-host>/mcp
 ```
 
+The default `--scope local` keeps this in `~/.claude.json`. `--scope project` instead writes it
+into `.mcp.json` at the repo root, bearer token included — fine to share with a team, but only
+after checking that file is gitignored (Takomo's own is).
+
 The agent then gets native `takomo_new / ready / next / start / done / comment / link / dep / roadmap / …` tools. See [plugins/takomo/README.md](plugins/takomo/README.md) and [clients/mcp/README.md](clients/mcp/README.md).
 
 ## 3. Use it from the CLI

@@ -85,6 +85,10 @@ single ticket.
 - `spec/openapi.yaml` was not a valid 3.1 document in two ways invisible to a
   human reader; CI now validates it against the schema and loads it from Python
   and Ruby.
+- `.mcp.json` is now gitignored. `claude mcp add --scope project` writes a
+  bearer token into that file in plaintext, and nothing was stopping a `git add .`
+  from committing it. The README now says which scope does this next to the
+  command it documents.
 
 ### Changed
 
