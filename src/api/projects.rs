@@ -1,6 +1,6 @@
 //! /v1/projects and per-project workflow endpoints.
 
-use super::{body_object, first, query_pairs, reject_unknown, require_str, ApiJson};
+use super::{blocking_read, body_object, first, query_pairs, reject_unknown, require_str, ApiJson};
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
@@ -173,7 +173,10 @@ pub async fn roadmap(
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
     ctx.require_project(&project)?;
-    let out = state.store.roadmap(&project)?;
+    // A rollup per epic over its whole descendant subtree: a scan, off the
+    // runtime (see `blocking_read`).
+    let state = state.clone();
+    let out = blocking_read(move || state.store.roadmap(&project)).await?;
     Ok(Json(out))
 }
 

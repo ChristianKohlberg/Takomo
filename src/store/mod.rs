@@ -34,18 +34,47 @@ pub use tickets::{
 };
 
 use crate::error::{ApiError, ApiResult};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+/// How many read-only companion connections back `with_conn`.
+///
+/// Small on purpose. They exist so a table scan (`/v1/export`, `/v1/metrics`, a
+/// project roadmap, a transitive dep graph) cannot queue behind — or in front
+/// of — a claim, not to scale reads horizontally: SQLite reads come off the page
+/// cache and are CPU-bound, so more connections than cores buys nothing but file
+/// handles and page caches. Four is enough that a slow export leaves readers for
+/// the board's event polling.
+const READ_CONNECTIONS: usize = 4;
+
 pub struct Store {
+    /// **The** writer. Every mutation goes through `with_tx` and this mutex, and
+    /// that serialization is the exactly-one-claimant guarantee for the ready
+    /// queue. There is deliberately never a second writer: no call site in this
+    /// codebase handles `SQLITE_BUSY` on a write, because with one writer it
+    /// cannot happen.
     conn: Mutex<Connection>,
+    /// Read-only companions for `with_conn`. Opened `SQLITE_OPEN_READ_ONLY` with
+    /// `query_only` on top, so a write that strays onto the read path fails loudly
+    /// instead of quietly becoming a second writer. Empty means "no reader" —
+    /// see [`Store::open`] — and `with_conn` falls back to the writer.
+    readers: Vec<Mutex<Connection>>,
+    /// Round-robin cursor, used only when every reader is busy.
+    next_reader: AtomicUsize,
 }
 
 impl Store {
     /// Open (creating if needed) the database at `path` and initialize schema.
+    ///
+    /// Ordering matters: the writer runs `SCHEMA` and `migrate()` to completion
+    /// **before** any read connection is opened, so a reader can never observe a
+    /// half-migrated database (and never has to `CREATE`/`ALTER` anything itself
+    /// — it could not, being read-only).
     pub fn open(path: impl AsRef<Path>) -> ApiResult<Store> {
-        let conn = Connection::open(path.as_ref())
+        let path = path.as_ref();
+        let conn = Connection::open(path)
             .map_err(|e| ApiError::internal(format!("cannot open database: {e}")))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -53,14 +82,37 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+
+        // A second connection to `:memory:` (or to a private temp database) is a
+        // *different, empty* database, not a second view of this one. Nothing in
+        // this repo opens the store that way, but rather than leave the trap
+        // armed for whoever does, detect it and run without readers: `with_conn`
+        // then falls back to the writer, which is exactly the old behavior.
+        let readers = if is_private_db(path) {
+            Vec::new()
+        } else {
+            let mut readers = Vec::with_capacity(READ_CONNECTIONS);
+            for _ in 0..READ_CONNECTIONS {
+                readers.push(Mutex::new(open_reader(path)?));
+            }
+            readers
+        };
+
         Ok(Store {
             conn: Mutex::new(conn),
+            readers,
+            next_reader: AtomicUsize::new(0),
         })
     }
 
     /// Run `f` inside a single IMMEDIATE transaction. SQLite's single-writer
     /// model plus this process-wide mutex is the claim-serialization
     /// guarantee: every mutating operation is one atomic step.
+    ///
+    /// The closure is **synchronous, and must stay synchronous**: that is what
+    /// makes holding this connection across an `.await` structurally impossible.
+    /// An async variant would trade the latency problem `with_conn` used to have
+    /// for a whole class of deadlocks.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
@@ -77,13 +129,101 @@ impl Store {
         Ok(out)
     }
 
-    /// Run `f` with a plain connection (reads).
+    /// Run `f` with a connection for reading.
+    ///
+    /// Reads run on a read-only companion connection, never on the writer, so a
+    /// long scan cannot stall a claim, a transition or a heartbeat. WAL is what
+    /// makes that safe: readers do not block the writer and the writer does not
+    /// block readers.
+    ///
+    /// `f` runs inside a DEFERRED transaction, i.e. one WAL snapshot for the
+    /// whole closure. That is not decoration — several reads here are
+    /// multi-statement (the export scans tickets, then queries deps and comments
+    /// per ticket), and on the shared mutex they used to be atomic against
+    /// writers by accident. The snapshot keeps that property on purpose.
     pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> ApiResult<T>) -> ApiResult<T> {
-        let conn = self
-            .conn
+        if self.readers.is_empty() {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| ApiError::internal("store lock poisoned"))?;
+            return f(&conn);
+        }
+        // Prefer any idle reader; only when all of them are busy pick one to
+        // queue on, round-robin so concurrent readers spread out.
+        for reader in &self.readers {
+            if let Ok(mut conn) = reader.try_lock() {
+                return read_snapshot(&mut conn, f);
+            }
+        }
+        let idx = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        let mut conn = self.readers[idx]
             .lock()
             .map_err(|_| ApiError::internal("store lock poisoned"))?;
-        f(&conn)
+        read_snapshot(&mut conn, f)
+    }
+}
+
+/// Run a read closure inside a DEFERRED transaction — a stable WAL snapshot for
+/// its whole duration — and end it without committing (there is nothing to
+/// commit; the connection could not write if it tried).
+fn read_snapshot<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Connection) -> ApiResult<T>,
+) -> ApiResult<T> {
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+        .map_err(ApiError::from)?;
+    let out = f(&tx)?;
+    drop(tx); // rollback: ends the read snapshot
+    Ok(out)
+}
+
+/// A read-only companion connection to an already-migrated database.
+///
+/// Which pragmas a reader needs, and which it does not:
+/// - `busy_timeout`: **needed**. WAL keeps readers off the writer's back for
+///   normal commits, but a reader can still meet a busy database — a checkpoint
+///   restarting the WAL, or another process recovering it. Without a timeout
+///   that surfaces as an immediate `SQLITE_BUSY`; with one it just waits.
+/// - `foreign_keys`: set for parity with the writer. Inert for pure reads (it
+///   only governs constraint enforcement on writes), but it costs nothing and
+///   keeps the two connections from differing in a way someone would later have
+///   to reason about.
+/// - `query_only`: belt to `SQLITE_OPEN_READ_ONLY`'s braces. The open flag
+///   already refuses writes; this refuses them one layer earlier, so a stray
+///   write on the read path is a loud error rather than a silent second writer.
+/// - `journal_mode`: **not** set. It is a property of the database file, already
+///   WAL, and setting it is itself a write — a read-only connection would fail.
+/// - `synchronous`: **not** set. It only governs fsync on commit, and this
+///   connection never commits.
+fn open_reader(path: &Path) -> ApiResult<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| ApiError::internal(format!("cannot open read-only database connection: {e}")))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "query_only", "ON")?;
+    Ok(conn)
+}
+
+/// True when `path` names a database no second connection can reach: SQLite's
+/// in-memory database, or the anonymous on-disk temp database an empty path
+/// asks for. Both are private per connection.
+fn is_private_db(path: &Path) -> bool {
+    match path.to_str() {
+        Some(s) => {
+            s.is_empty()
+                || s == ":memory:"
+                || (s.starts_with("file:")
+                    && s.contains("mode=memory")
+                    && !s.contains("cache=shared"))
+        }
+        None => false,
     }
 }
 
@@ -434,3 +574,95 @@ CREATE TABLE IF NOT EXISTS promotions (
 CREATE INDEX IF NOT EXISTS idx_promotions_ticket ON promotions(ticket);
 CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project);
 "#;
+
+#[cfg(test)]
+mod read_connection_tests {
+    use super::*;
+
+    fn temp_store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(tmp.path().join("read.db")).expect("open store");
+        (tmp, store)
+    }
+
+    /// The read path must be genuinely read-only. A write that strays onto it
+    /// has to fail loudly — a silent second writer would invalidate the
+    /// single-writer assumption every claim rests on.
+    #[test]
+    fn read_connection_refuses_writes() {
+        let (_tmp, store) = temp_store();
+        // The raw SQLite error is inspected inside the closure: `ApiError::from`
+        // deliberately flattens every database error to one generic message, so
+        // an API-level assertion could not tell "refused the write" from any
+        // other failure.
+        let sqlite_error = store
+            .with_conn(|conn| {
+                Ok(conn
+                    .execute(
+                        "INSERT INTO projects (id, name, workflow_json, created_at) VALUES ('x', 'x', '{}', 0)",
+                        [],
+                    )
+                    .expect_err("a write through with_conn must be refused")
+                    .to_string()
+                    .to_lowercase())
+            })
+            .expect("the closure itself runs");
+        assert!(
+            sqlite_error.contains("readonly") || sqlite_error.contains("read-only"),
+            "expected a read-only refusal, got: {sqlite_error}"
+        );
+        // And nothing landed.
+        let rows: i64 = store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+                    .map_err(ApiError::from)
+            })
+            .expect("read");
+        assert_eq!(rows, 0, "the refused write must not have been applied");
+    }
+
+    /// A reader is a separate connection, so read-your-writes is worth pinning:
+    /// each `with_conn` opens a fresh snapshot and must see everything committed
+    /// by `with_tx` before it.
+    #[test]
+    fn read_connection_sees_committed_writes() {
+        let (_tmp, store) = temp_store();
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO projects (id, name, workflow_json, created_at) VALUES ('p1', 'P', '{}', 0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("write");
+        let seen: i64 = store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM projects WHERE id = 'p1'", [], |r| {
+                    r.get(0)
+                })
+                .map_err(ApiError::from)
+            })
+            .expect("read");
+        assert_eq!(seen, 1, "a reader must see writes the writer committed");
+    }
+
+    /// An in-memory path gets no readers (a second connection to `:memory:` is a
+    /// different database), and `with_conn` still works by falling back to the
+    /// writer.
+    #[test]
+    fn in_memory_store_falls_back_to_the_writer() {
+        let store = Store::open(":memory:").expect("open in-memory store");
+        assert!(
+            store.readers.is_empty(),
+            "no readers for a private database"
+        );
+        let n: i64 = store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+                    .map_err(ApiError::from)
+            })
+            .expect("read via the writer");
+        assert_eq!(n, 0);
+    }
+}

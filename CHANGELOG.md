@@ -79,6 +79,17 @@ single ticket.
   free, and every mutating tool debits exactly one write. The 429 also says what
   it means — it names the budget, states that reads are free and still work, and
   carries a `remedy`.
+- **One `/v1/export` no longer stalls every claim and heartbeat in the process.**
+  Reads and writes shared a single SQLite connection behind one mutex, so any
+  long read — an unfiltered export, `/v1/metrics`, a project roadmap, a
+  transitive dep graph — froze every claim, transition and heartbeat for its
+  whole duration. Measured on 8k tickets: a claim that normally takes 0.2ms took
+  **104ms**, about 80% of the export. Reads now run on read-only companion
+  connections (WAL makes them concurrent with the writer, and each read still
+  gets one consistent snapshot), and the scan-shaped endpoints run off the async
+  runtime. Same claim during the same export: **under 10ms**, with roughly twice
+  as many claims completing while it runs. There is still exactly one writer —
+  the guarantee that a ready ticket goes to exactly one claimant is untouched.
 - **The inbox no longer goes silent while you are answering.** `/inbox` defers a
   batch of events while a human is mid-answer — but it advanced the event cursor
   *before* deciding to defer, so the skipped batch was consumed and never fetched

@@ -378,6 +378,130 @@ async fn concurrent_ready_claims_are_exactly_once() {
     }
 }
 
+/// Reads must not serialize writers. `GET /v1/export` with no project filter
+/// walks the whole tickets table and, per ticket, queries its deps and its
+/// comments — the longest read in the API. While it is in flight, claims and
+/// heartbeats have to keep completing at their normal speed.
+///
+/// Before the read connections landed, `with_conn` and `with_tx` shared one
+/// `Mutex<Connection>`, so one export stalled every claim, transition and
+/// heartbeat in the process for as long as the scan took. Measured on this test
+/// at 8k tickets: the worst claim during an export was **104ms** (~80% of the
+/// whole export) against a 1.8ms worst case with the store idle. With the read
+/// connections: **6-17ms**, and roughly twice as many claims complete during the
+/// same export.
+///
+/// The claim is issued in a loop rather than once, because a single sample can
+/// miss the scan window and pass a broken store. The loop samples the entire
+/// export: the first iteration claims, the rest are lease renewals — both are
+/// `with_tx` writes, which is exactly what used to queue.
+///
+/// The assertion is a ratio (plus an absolute escape hatch), not a wall-clock
+/// budget: a loaded box inflates both numbers together, but only a store that
+/// serializes reads against writes makes a claim take a large *fraction of the
+/// export*.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn long_export_does_not_stall_claims_and_heartbeats() {
+    let app = TestApp::spawn().await;
+    let target = app
+        .create_ticket("Claim me while a full export is in flight")
+        .await;
+    app.to_ready(&target).await;
+    // Enough rows that an unfiltered export is a real scan, seeded straight into
+    // the DB — 8k tickets over HTTP would dominate the suite's runtime.
+    const BULK: usize = 8_000;
+    app.seed_bulk_tickets(BULK);
+
+    // Warm the page cache, so the timings below measure the scan and not the
+    // first read of a cold file.
+    let (warm, _, _) = app.get_raw(&app.admin, "/v1/export").await;
+    assert_eq!(warm, StatusCode::OK);
+
+    // What a claim/renewal costs with the store otherwise idle.
+    let mut idle: Vec<Duration> = Vec::new();
+    for _ in 0..20 {
+        let started = Instant::now();
+        let (s, lease) = app
+            .post(
+                &app.worker,
+                &format!("/v1/tickets/{target}/claim"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "claim failed: {lease}");
+        assert!(lease["fence"].as_i64().unwrap() >= 1);
+        idle.push(started.elapsed());
+    }
+    idle.sort();
+    let idle_worst = *idle.last().expect("idle samples");
+
+    // What the export costs with nothing to contend with.
+    let started = Instant::now();
+    let (status, _, text) = app.get_raw(&app.admin, "/v1/export").await;
+    let solo_export = started.elapsed();
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.lines().count() > BULK,
+        "export must cover the bulk rows, got {} lines",
+        text.lines().count()
+    );
+    assert!(
+        solo_export >= Duration::from_millis(50),
+        "the export ran in {solo_export:?} — too fast to prove anything; raise BULK"
+    );
+
+    // Now the same export, sampled by claims for its whole duration.
+    let client = app.client.clone();
+    let url = app.url("/v1/export");
+    let admin = app.admin.clone();
+    let export = tokio::spawn(async move {
+        let resp = client
+            .get(url)
+            .bearer_auth(admin)
+            .send()
+            .await
+            .expect("export request");
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        (status, body.lines().count())
+    });
+
+    let mut during: Vec<Duration> = Vec::new();
+    while !export.is_finished() {
+        let started = Instant::now();
+        let (s, lease) = app
+            .post(
+                &app.worker,
+                &format!("/v1/tickets/{target}/claim"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "claim during export failed: {lease}");
+        during.push(started.elapsed());
+    }
+    let (export_status, export_lines) = export.await.expect("join export task");
+    assert_eq!(export_status, StatusCode::OK);
+    assert!(
+        export_lines > BULK,
+        "the concurrent export must be complete"
+    );
+
+    during.sort();
+    let worst = *during.last().expect("samples during the export");
+    eprintln!(
+        "export {solo_export:?} | idle claim worst {idle_worst:?} | \
+         {} claims during the export, median {:?}, worst {worst:?}",
+        during.len(),
+        during[during.len() / 2],
+    );
+
+    assert!(
+        worst * 4 < solo_export || worst < Duration::from_millis(25),
+        "the worst claim during the export took {worst:?} out of an export that runs in \
+         {solo_export:?} alone (idle worst: {idle_worst:?}) — reads are serializing writers again"
+    );
+}
+
 #[tokio::test]
 async fn fence_goes_stale_after_expiry_and_reclaim() {
     let app = TestApp::spawn().await;
