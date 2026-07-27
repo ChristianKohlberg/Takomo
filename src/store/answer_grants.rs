@@ -4,8 +4,11 @@
 //! that authorizes exactly ONE write: answering the one referenced question. It
 //! is what you hand an outside domain expert (a lawyer, a client) who should not
 //! hold a standing token — scoped to a single question, auto-expiring, and
-//! write-once (spent once the question leaves the open state, and explicitly
-//! marked `used_at` after a successful answer).
+//! write-once. Write-once is enforced by [`spend_grant`], a conditional
+//! `used_at` write made in the SAME transaction that records the answer; a
+//! grant is additionally dead once its question leaves the open state
+//! ([`revoke_open_grants_for_question`]), so a link minted for one answering
+//! cycle can never answer a later one.
 //!
 //! Validated on a distinct auth path (`auth::answer_auth_middleware`) that
 //! reaches ONLY `/v1/answer/self*`, so a grant token can neither read arbitrary
@@ -32,6 +35,24 @@ pub(crate) fn revoke_open_grants_for_question(
         params![question, now],
     )?;
     Ok(())
+}
+
+/// Spend a grant: the conditional write that IS the single-use guarantee.
+///
+/// Runs inside the caller's transaction — always the same transaction that
+/// records the answer (`Store::answer_question_via_grant`), never one of its
+/// own. Because `with_tx` serializes every mutation behind one `IMMEDIATE`
+/// transaction, the `used_at IS NULL AND revoked_at IS NULL` predicate makes
+/// this row the point at which concurrent attempts are ordered: exactly one
+/// caller sees `true`, and a caller that sees `false` aborts the whole
+/// transaction, so nothing is recorded for it. A grant is equally unspendable
+/// once revoked, so a revoke landing mid-flight is honoured too.
+pub(crate) fn spend_grant(conn: &Connection, id: &str, now: i64) -> ApiResult<bool> {
+    let n = conn.execute(
+        "UPDATE answer_grants SET used_at = ?2 WHERE id = ?1 AND used_at IS NULL AND revoked_at IS NULL",
+        params![id, now],
+    )?;
+    Ok(n > 0)
 }
 
 /// Default answer-link lifetime when the caller omits `ttl_seconds`: 72 hours.
@@ -122,17 +143,6 @@ impl Store {
                 )
                 .optional()?;
             Ok(row)
-        })
-    }
-
-    /// Mark a grant spent (write-once). Idempotent.
-    pub fn mark_answer_grant_used(&self, id: &str) -> ApiResult<()> {
-        self.with_tx(|tx| {
-            tx.execute(
-                "UPDATE answer_grants SET used_at = ?2 WHERE id = ?1 AND used_at IS NULL",
-                params![id, now_ms()],
-            )?;
-            Ok(())
         })
     }
 

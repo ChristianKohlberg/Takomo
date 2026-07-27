@@ -661,7 +661,9 @@ pub async fn self_get(
 /// IS the human authorization: it answers as its recorded actor with a
 /// synthesized scope set (`human` plus the question's expertise), so it can
 /// satisfy the human gate and an `approve`'s expert requirement for THIS
-/// question only. Marks the grant used (single-use) on success.
+/// question only. The grant is spent inside the same transaction that records
+/// the answer, so exactly one of N concurrent attempts on one link can win; the
+/// losers get a 410 `answer_link.spent` and change nothing.
 pub async fn self_answer(
     State(state): State<Arc<AppState>>,
     Extension(grant): Extension<AnswerCtx>,
@@ -692,14 +694,17 @@ pub async fn self_answer(
         scopes.insert(format!("expert:{tag}"));
     }
 
-    let (question, ticket) = state.store.answer_question(
+    // ONE transaction spends the link and records the answer, so single-use is
+    // the transaction itself rather than a follow-up write that a concurrent
+    // holder could slip past (or a crash could lose).
+    let (question, ticket) = state.store.answer_question_via_grant(
         &grant.question,
         &grant.actor,
         &scopes,
         &answer,
         resume_to.as_deref(),
+        &grant.grant_id,
     )?;
-    state.store.mark_answer_grant_used(&grant.grant_id)?;
     state.wake();
     Ok(Json(json!({
         "question": question.to_json(),
