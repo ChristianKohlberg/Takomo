@@ -74,6 +74,26 @@ single ticket.
 
 ### Fixed
 
+- **`/inbox` presentation: a stable undo button, a readable queue, one banner
+  fewer.** Three faults reported from real use, all in the reading surface.
+  The **undo snackbar** rebuilt its whole subtree once a second so that one
+  digit of the countdown could change, which destroyed the Undo button under
+  the pointer and under keyboard focus — a reader who tabbed to it lost focus
+  within a second and could not activate a 30-second escape hatch at all — and
+  replayed the toast's entry animation on every tick. Rows are now built when
+  the set of pending answers changes and a tick only rewrites the label text,
+  so the button survives; Undo stays bound to the question id, so overlapping
+  windows still each take back their own answer (takomo-42o8). The **question
+  list** ended each row with `agent:runner-2 · confirm · advisory`, three raw
+  field values that scan as a debug dump: `kind` is gone (the reading pane
+  already says it as the control you are handed), the asker is now framed —
+  `asked by agent:runner-2` — because it is the only place the queue says who
+  is blocked on you, and blocking-vs-advisory survives as a labelled chip
+  because it changes what answering does (takomo-4s5z). And the **"This
+  project expects answers in X" banner** above every answer area is gone; the
+  project's `question_language` still reaches a human as the hint inside the
+  answer placeholder and beside the project name in the picker, and still
+  reaches agents as `language_hint` (takomo-9u54).
 - **`transition.claim_required` no longer sends the caller into a dead end.** Its
   remedy was a flat `POST /v1/tickets/{id}/claim`, but a lease can only be taken
   in a state the workflow marks `claimable` — and the state you are stuck in when

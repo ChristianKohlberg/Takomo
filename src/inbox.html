@@ -138,9 +138,14 @@
   .qrow.read .qt { font-weight: 600; color: var(--ink2); }
   .qrow .qc { font-size: 13px; line-height: 1.45; color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }
   .qrow.answered .qc { color: var(--ok); }
-  .qrow .qm { display: flex; align-items: center; justify-content: space-between; }
-  .qrow .qm .who { font-family: var(--mono); font-size: 11.5px; color: var(--muted2); }
-  .qrow .qm .age { font-size: 12px; color: var(--low); }
+  .qrow .qm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  /* The asker is the only part that can run long, so it is the only part that
+     shrinks: a fleet with long actor names must not clip away the advisory
+     chip, which is the bit that says what answering will do. */
+  .qrow .qm .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted2); }
+  .qrow .qm .who .mono { font-family: var(--mono); color: var(--muted); }
+  .qrow .qm .advchip { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent2) 13%, transparent); color: var(--accent2); font-size: 10.5px; letter-spacing: .02em; }
+  .qrow .qm .age { flex: 0 0 auto; font-size: 12px; color: var(--low); }
   .listempty { padding: 60px 30px; text-align: center; color: var(--muted); }
   .listempty .t { font-size: 17px; font-weight: 700; color: var(--text); margin: 10px 0 6px; }
   .listempty p { font-size: 13px; line-height: 1.6; margin: 0; }
@@ -244,7 +249,6 @@
   .clarify { width: 100%; height: 84px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel); outline: none; }
   .suggest { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .suggest button { font-family: var(--mono); font-size: 12px; color: var(--accent2); background: var(--chip-bg); border: none; padding: 3px 9px; border-radius: 6px; cursor: pointer; }
-  .lang-nudge { font-size: 12.5px; color: var(--high); background: color-mix(in srgb, var(--high) 10%, transparent); border: 1px solid color-mix(in srgb, var(--high) 34%, transparent); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
 
   /* footer */
   .rfoot { flex: 0 0 auto; border-top: 1px solid var(--border-soft); padding: 14px 34px 16px; background: var(--col-bg); }
@@ -500,6 +504,7 @@
       allTickets:"Alle Tickets",
       followupSent:"An den Agenten gesendet — die Antwort erscheint hier.",
       advTag:"beratend",
+      askedBy:"gefragt von",
       customDivider:"oder eigene Anweisung",
       customPlaceholder:"Eigene Anweisung schreiben …",
       linkTitle:"Antwort-Link erstellt",
@@ -602,6 +607,7 @@
       allTickets:"All tickets",
       followupSent:"Sent to the agent — the reply appears here.",
       advTag:"advisory",
+      askedBy:"asked by",
       customDivider:"or your own instruction",
       customPlaceholder:"Write your own instruction …",
       linkTitle:"Answer link created",
@@ -1322,7 +1328,19 @@
     var ctx = answered ? (t().decision + ": " + plain(answerText(q))) : snippetOf(q);
     if (ctx) row.appendChild(el("div", "qc", ctx));
     var meta = el("div", "qm");
-    meta.appendChild(el("span", "who", (q.asked_by || "—") + " · " + q.kind + (q.mode === "advisory" ? " · " + t().advTag : "")));
+    // This line used to read `agent:runner-1 · confirm · advisory` — three raw
+    // field values in a row, which scans as a debug dump rather than as
+    // information. `kind` is gone: it is the API's taxonomy, not something a
+    // triager acts on, and the reading pane already says it better as the
+    // control you are handed (yes/no, a list of options, a text box) with the
+    // affirmative button labelled Confirm or Approve. The two that change what
+    // answering DOES stay, in words a reader parses: who is waiting on you, and
+    // — when it applies — that this one only records a decision.
+    var who = el("span", "who");
+    who.appendChild(document.createTextNode(t().askedBy + " "));
+    who.appendChild(el("span", "mono", q.asked_by || "—"));
+    meta.appendChild(who);
+    if (q.mode === "advisory") meta.appendChild(el("span", "advchip", t().advTag));
     meta.appendChild(el("span", "age", fmtAge(q.created_at)));
     row.appendChild(meta);
     activate(row, function () { selectQ(q.id); });
@@ -1514,8 +1532,15 @@
 
   function answerArea(q) {
     var wrap = el("div", "answer");
+    // The project's `question_language` reaches the human here only as a hint
+    // inside the text placeholder. It used to also head the answer area as a
+    // standing banner ("This project expects answers in German.") on every
+    // question of every such project, which is a rule stated once too often.
+    // It was also the one visible string in this file spelled out inline with
+    // its own `state.lang` ternary instead of coming from STR, so the parity
+    // check that guards every other string never saw it. The setting itself is
+    // untouched: agents still get it as `language_hint`.
     var lang = getLang();
-    if (lang) wrap.appendChild(el("div", "lang-nudge", (state.lang === "de" ? "Dieses Projekt erwartet Antworten auf " : "This project expects answers in ") + lang + "."));
     if (q.kind === "approve") {
       var gate = el("div", "gatenote");
       gate.appendChild(lockIcon());
@@ -2029,22 +2054,68 @@
   // the overflow is stated rather than hidden silently, and surfaces as the older
   // windows close.
   var SNACK_VISIBLE = 5;
+  // Unlike every other render function here, this one runs on a TIMER — once a
+  // second for up to 30s per pending answer — and the only thing that changes
+  // between ticks is one number. Clearing and rebuilding the subtree would
+  // therefore destroy the Undo button under the pointer and, worse, under the
+  // keyboard: a reader who tabs to Undo lost focus every second and could not
+  // activate the escape hatch at all. It also replayed `.snackbar`'s entry
+  // animation each tick, which is what made it read as flashing.
+  //
+  // So rows are built once, when the SET of pending answers changes, and a tick
+  // only writes into a text node the row kept a reference to. Nothing is
+  // destroyed, so node identity — and focus, hover, and the animation's
+  // finished state — survives a tick.
+  var snackNodes = {};   // qid -> { row: <div.snackbar>, label: Text inside .undo }
+  var snackMore = null;  // the "+n more pending" line, kept and re-texted the same way
+  function snackRow(s) {
+    var row = el("div", "snackbar");
+    row.appendChild(el("span", "chk", "✓"));
+    var d = el("div", "txt"); d.appendChild(el("div", "d1", s.decision)); d.appendChild(el("div", "d2", s.detail));
+    row.appendChild(d);
+    // Bound to the question id, not to this row's position in the list.
+    var u = el("button", "undo");
+    var label = document.createTextNode("");
+    u.appendChild(label);
+    u.addEventListener("click", function () { undoSnack(s.qid); });
+    row.appendChild(u);
+    return { row: row, label: label };
+  }
   function renderSnackbar() {
-    var root = $("snackbar-root"); root.innerHTML = "";
-    if (!state.snacks.length) return;
+    var root = $("snackbar-root");
     var shown = state.snacks.slice(-SNACK_VISIBLE).reverse();
+    // Retire rows whose answer is no longer pending (committed, undone) or which
+    // the cap has pushed out of sight.
+    var live = {};
+    shown.forEach(function (s) { live[s.qid] = true; });
+    Object.keys(snackNodes).forEach(function (qid) {
+      if (live[qid]) return;
+      var gone = snackNodes[qid].row;
+      if (gone.parentNode) gone.parentNode.removeChild(gone);
+      delete snackNodes[qid];
+    });
+    // Build once per answer; from then on only the label text changes. The whole
+    // label (not just the digits) is rewritten so a language switch mid-window
+    // still lands, exactly as the full rebuild used to give for free.
+    var prev = null;
     shown.forEach(function (s) {
-      var sb = el("div", "snackbar");
-      sb.appendChild(el("span", "chk", "✓"));
-      var d = el("div", "txt"); d.appendChild(el("div", "d1", s.decision)); d.appendChild(el("div", "d2", s.detail)); sb.appendChild(d);
-      // Bound to the question id, not to this row's position in the list.
-      var u = el("button", "undo", t().undo + " · " + s.remaining + "s");
-      u.addEventListener("click", function () { undoSnack(s.qid); });
-      sb.appendChild(u);
-      root.appendChild(sb);
+      var n = snackNodes[s.qid] || (snackNodes[s.qid] = snackRow(s));
+      n.label.nodeValue = t().undo + " · " + s.remaining + "s";
+      // Re-inserting a node restarts its animation, so only place a row that is
+      // not already where it belongs — which is add/remove, never a tick.
+      var want = prev ? prev.nextSibling : root.firstChild;
+      if (n.row !== want) root.insertBefore(n.row, want);
+      prev = n.row;
     });
     var hidden = state.snacks.length - shown.length;
-    if (hidden > 0) root.appendChild(el("div", "snackmore", "+" + hidden + " " + t().morePending));
+    if (hidden > 0) {
+      if (!snackMore) snackMore = el("div", "snackmore");
+      var more = "+" + hidden + " " + t().morePending;
+      if (snackMore.textContent !== more) snackMore.textContent = more;
+      if (snackMore.parentNode !== root) root.appendChild(snackMore);
+    } else if (snackMore && snackMore.parentNode) {
+      snackMore.parentNode.removeChild(snackMore);
+    }
   }
 
   function renderModal() {
