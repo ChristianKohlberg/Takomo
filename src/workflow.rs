@@ -257,56 +257,130 @@ impl Workflow {
     }
 }
 
-/// The built-in `factory-default` workflow from spec/workflow-format.md.
+/// The canonical text of the built-in workflow. `workflows/` is the one place
+/// a shipped workflow is defined; embedding it here rather than re-typing it in
+/// Rust is what keeps the file and the server from drifting apart. It is baked
+/// in at compile time (like `src/board.html`), so a deployed binary never reads
+/// this path at runtime.
+pub const FACTORY_DEFAULT_YAML: &str = include_str!("../workflows/factory-default.yaml");
+
+/// The built-in `factory-default` workflow. Format: spec/workflow-format.md;
+/// definition: `workflows/factory-default.yaml`.
+///
+/// The parse cannot fail on a shipped file without failing for every caller at
+/// once, so it panics rather than returning a Result — and
+/// `factory_default_parses` below turns that into a test failure instead of a
+/// startup failure.
 pub fn factory_default() -> Workflow {
-    let json = serde_json::json!({
-        "name": "factory-default",
-        "initial": "brief",
-        "states": [
-            { "id": "brief",          "category": "todo" },
-            { "id": "spec",           "category": "in_progress", "claimable": true },
-            { "id": "needs-decision", "category": "blocked" },
-            { "id": "ready",          "category": "todo",        "claimable": true },
-            { "id": "implementing",   "category": "in_progress" },
-            { "id": "review",         "category": "review" },
-            { "id": "done",           "category": "done",        "terminal": true },
-            { "id": "cancelled",      "category": "cancelled",   "terminal": true }
-        ],
-        "transitions": [
-            { "from": "brief",          "to": "spec" },
-            { "from": "brief",          "to": "cancelled" },
-            { "from": "spec",           "to": "needs-decision" },
-            { "from": "needs-decision", "to": "spec",           "requires": ["scope:human"] },
-            { "from": "spec",           "to": "ready",          "requires": ["scope:human"] },
-            { "from": "spec",           "to": "cancelled" },
-            { "from": "ready",          "to": "implementing",   "requires": ["claim"] },
-            { "from": "implementing",   "to": "needs-decision" },
-            { "from": "implementing",   "to": "review",         "requires": ["claim"] },
-            { "from": "implementing",   "to": "ready" },
-            { "from": "needs-decision", "to": "ready",          "requires": ["scope:human"] },
-            { "from": "needs-decision", "to": "implementing",   "requires": ["scope:human"] },
-            { "from": "review",         "to": "implementing" },
-            { "from": "review",         "to": "done",           "requires": ["scope:human", "guard:no_open_children"] },
-            { "from": "review",         "to": "cancelled",      "requires": ["scope:human"] },
-            { "from": "ready",          "to": "cancelled" }
-        ],
-        "guards": {
-            "no_open_children": {
-                "description": "every child ticket must be in a terminal state"
-            }
-        }
-    });
-    serde_json::from_value(json).expect("factory-default workflow is valid")
+    serde_yaml::from_str(FACTORY_DEFAULT_YAML)
+        .expect("workflows/factory-default.yaml is a valid workflow")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The shipped YAML files, by path relative to the crate root. `workflows/`
+    /// is meant to be the only place a shipped workflow is defined, so every
+    /// file in it must be a workflow the server would accept.
+    const SHIPPED: [&str; 2] = ["workflows/factory-default.yaml", "workflows/simple.yaml"];
+
+    fn read_shipped(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("{rel}: {e}"))
+    }
+
     #[test]
     fn factory_default_is_valid() {
         let wf = factory_default();
         assert!(wf.validate(&[]).is_empty());
+    }
+
+    /// `factory_default()` panics on a malformed file, which would take down
+    /// every project creation at once. Fail here instead, at build time.
+    #[test]
+    fn factory_default_parses() {
+        let wf: Workflow = serde_yaml::from_str(FACTORY_DEFAULT_YAML)
+            .expect("workflows/factory-default.yaml must parse");
+        assert_eq!(wf.name, "factory-default");
+        assert_eq!(wf.initial, "brief");
+    }
+
+    /// The embedded copy is `include_str!`'d at compile time, so a stale build
+    /// could in principle disagree with the file on disk. Reading the file back
+    /// at test time is what proves the two are the same text.
+    #[test]
+    fn embedded_factory_default_matches_the_file() {
+        assert_eq!(
+            FACTORY_DEFAULT_YAML,
+            read_shipped("workflows/factory-default.yaml"),
+            "src/workflow.rs embeds a different factory-default than workflows/ ships"
+        );
+    }
+
+    /// Every shipped workflow must be one the server would accept on
+    /// `PUT /v1/projects/{p}/workflow` — a file in `workflows/` that the server
+    /// would 422 is worse than no file at all, because it reads as blessed.
+    #[test]
+    fn every_shipped_workflow_is_valid() {
+        for rel in SHIPPED {
+            let wf: Workflow = serde_yaml::from_str(&read_shipped(rel))
+                .unwrap_or_else(|e| panic!("{rel} does not parse: {e}"));
+            let problems = wf.validate(&[]);
+            assert!(problems.is_empty(), "{rel} is invalid: {problems:?}");
+        }
+    }
+
+    /// Compare by parsed shape, not by text: the copies below are legitimately
+    /// formatted differently (comments, JSON vs YAML), and only a difference in
+    /// what the state machine *means* is a bug.
+    fn shape(wf: &Workflow) -> serde_json::Value {
+        serde_json::to_value(wf).expect("a workflow serializes")
+    }
+
+    /// spec/workflow-format.md prints factory-default inline so the format doc
+    /// is readable on its own. That copy is prose, not the definition — this
+    /// pins it to the file so the documented default cannot quietly become a
+    /// different state machine from the shipped one.
+    #[test]
+    fn spec_doc_factory_default_matches_the_file() {
+        let doc = read_shipped("spec/workflow-format.md");
+        let block = doc
+            .split("```yaml")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("spec/workflow-format.md has a ```yaml block");
+        let documented: Workflow =
+            serde_yaml::from_str(block).expect("the doc's yaml block is a workflow");
+        assert_eq!(
+            shape(&documented),
+            shape(&factory_default()),
+            "spec/workflow-format.md documents a different factory-default than workflows/ ships"
+        );
+    }
+
+    /// clients/cli/takomo embeds `simple` as JSON so `takomo init` still works
+    /// when the CLI is symlinked away from the repo and cannot reach
+    /// workflows/. The fallback is legitimate; silently applying a *different*
+    /// state machine depending on how the CLI was installed is not.
+    #[test]
+    fn cli_embedded_simple_matches_the_file() {
+        let cli = read_shipped("clients/cli/takomo");
+        let body = cli
+            .split("simple_workflow_json() {")
+            .nth(1)
+            .and_then(|rest| rest.split("cat <<'EOF'").nth(1))
+            .and_then(|rest| rest.split("\nEOF").next())
+            .expect("clients/cli/takomo defines simple_workflow_json with a heredoc");
+        let embedded: Workflow =
+            serde_json::from_str(body).expect("the CLI's embedded workflow is a workflow");
+        let shipped: Workflow = serde_yaml::from_str(&read_shipped("workflows/simple.yaml"))
+            .expect("workflows/simple.yaml is a workflow");
+        assert_eq!(
+            shape(&embedded),
+            shape(&shipped),
+            "clients/cli/takomo embeds a different `simple` than workflows/simple.yaml"
+        );
     }
 
     #[test]

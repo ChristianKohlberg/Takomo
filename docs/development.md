@@ -27,7 +27,7 @@ The integration tests start real server instances against temporary SQLite DBs, 
 | `clients/claude-skill/` | The runtime + onboarding skills. |
 | `plugins/takomo/` | The Claude Code plugin (skill + remote MCP), served from this repo as a marketplace. |
 | `spec/` | The OpenAPI contract, the workflow format, and the auth model. |
-| `workflows/` | Shipped workflow definitions (`simple.yaml`). |
+| `workflows/` | Shipped workflow definitions, and the canonical source for them: `factory-default.yaml` (embedded by `src/workflow.rs`, what the server gives a project created without one) and `simple.yaml` (what the CLI's `takomo init` applies). Copies elsewhere are pinned to these by unit tests. |
 | `scripts/` | Dev-loop helpers, e.g. the backlot `auth.token` hook. |
 | `docs/design/` | The adopt-vs-build evaluation and architecture notes. |
 

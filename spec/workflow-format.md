@@ -4,6 +4,13 @@ A workflow is the per-project state machine. It is data, not code: a YAML (or JS
 
 ## Format
 
+The example below is the built-in workflow. It is reproduced here so this
+document reads on its own; the definition itself lives in
+[`workflows/factory-default.yaml`](../workflows/factory-default.yaml), which the
+server embeds at compile time. Edit the file, not this block — a unit test
+(`spec_doc_factory_default_matches_the_file`) fails if the two describe
+different state machines.
+
 ```yaml
 name: factory-default
 initial: brief
@@ -83,4 +90,8 @@ guards:
 
 ## Default workflow
 
-The server ships exactly one built-in workflow — the `factory-default` above. Projects that want beans-style simplicity define their own five-state machine; the format is the product, the default is a suggestion.
+The server ships exactly one built-in workflow — the `factory-default` above, defined in [`workflows/factory-default.yaml`](../workflows/factory-default.yaml). It is what a project gets when it is created without an explicit workflow.
+
+Projects that want beans-style simplicity define their own five-state machine; the format is the product, the default is a suggestion. One such machine ships alongside it as [`workflows/simple.yaml`](../workflows/simple.yaml) — no approval gates, `todo → in_progress → done` — and that, not `factory-default`, is what the shell CLI's `takomo init` applies. The two defaults differ on purpose: the server's is the pipeline, the CLI's is the plain tracker.
+
+`workflows/` is the canonical home for both. Nothing else defines a shipped workflow: `src/workflow.rs` embeds the YAML rather than restating it, and the copies that exist for other reasons — this document, and the CLI's offline fallback — are pinned to the files by unit tests.
