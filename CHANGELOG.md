@@ -68,6 +68,14 @@ single ticket.
 
 ### Fixed
 
+- **The inbox no longer goes silent while you are answering.** `/inbox` defers a
+  batch of events while a human is mid-answer — but it advanced the event cursor
+  *before* deciding to defer, so the skipped batch was consumed and never fetched
+  again. Since focus inside the reading pane counts as busy, and every answer now
+  holds a 30-second undo window, a normal pass through the queue kept it busy
+  continuously: new questions never arrived, answered ones never left, and only a
+  reload recovered. The cursor now advances only over events that were actually
+  applied, so a deferred batch is re-delivered on the next idle poll.
 - **Every answer gets its own undo window**, and an answer is confirmed in the
   data as it is given rather than 30 seconds later or in a floating toast.
 - The reading pane keeps its scroll position when a choice is selected.
