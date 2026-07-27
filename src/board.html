@@ -74,9 +74,6 @@
   .share-banner { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; }
   .share-banner:empty { display: none; }
   .share-exp:empty { display: none; }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
-  .dot.live { background: var(--ok); }
-  .dot.err { background: var(--crit); }
   .archtoggle { font-size: 12.5px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
   .iconbtn { position: relative; font-weight: 650; color: var(--accent2); }
   .iconbtn:hover { background: var(--hover); }
@@ -928,7 +925,6 @@
 
   // ---- boot for a project: workflow + tickets, then start polling ----
   function boot() {
-    setLive("loading", "loading…");
     // Ensure the header dropdown is populated and reflects the active project
     // (it may have been chosen via the gate's free-text field or restored from
     // storage, before any token-change populate ran).
@@ -1004,7 +1000,6 @@
   }
 
   function fullLoad() {
-    setLive("loading", "loading…");
     // page through tickets for the project
     var all = {};
     function page(cursor) {
@@ -1026,7 +1021,6 @@
       .then(function (ev) {
         if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor;
         render();
-        setLive("live", "live");
       })
       .catch(handleErr);
   }
@@ -1047,12 +1041,12 @@
       .then(function (res) {
         var events = res.events || [];
         if (typeof res.cursor === "number") state.cursor = res.cursor;
-        if (events.length === 0) { setLive("live", "live"); return; }
+        if (events.length === 0) return;
         // Collect touched ticket ids; refetch each affected ticket.
         var touched = {};
         events.forEach(function (e) { if (e.ticket) touched[e.ticket] = true; });
         var ids = Object.keys(touched);
-        if (ids.length === 0) { setLive("live", "live · " + events.length + " event(s)"); return; }
+        if (ids.length === 0) return;
         return Promise.all(ids.map(refreshTicket)).then(function () {
           render();
           refreshInboxCount();
@@ -1060,12 +1054,10 @@
           // Don't rebuild the inbox from under a human who is mid-answer: a
           // full re-render (innerHTML = "") would wipe typed text and focus.
           if (state.inboxOpen && !$("inbox").contains(document.activeElement)) renderInbox();
-          setLive("live", "live · updated " + ids.length);
         });
       })
       .catch(function (e) {
-        if (e.auth) { handleErr(e); return; }
-        setLive("err", "reconnecting…");
+        if (e.auth) handleErr(e);
       })
       .then(function () { state.polling = false; });
   }
@@ -1683,18 +1675,9 @@
     b.appendChild(sc);
   }
 
-  // ---- status pill + errors ----
-  function setLive(kind, text) {
-    // The live indicator was removed from the navbar; keep this tolerant so the
-    // many call sites (incl. share mode) don't need touching.
-    var dot = $("live-dot");
-    if (dot) dot.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : "");
-    var txt = $("live-text");
-    if (txt) txt.textContent = text;
-  }
+  // ---- errors ----
   function handleErr(e) {
     if (e && e.auth) { showGate("Token was rejected (" + (e.status || "") + "). Enter a valid read token."); return; }
-    setLive("err", "error");
     var board = $("board");
     board.innerHTML = "";
     var m = el("div", "empty-col", "Could not load: " + (e && e.message ? e.message : "unknown error"));
@@ -1771,12 +1754,10 @@
     $("projsel").classList.add("hidden");
     $("signout").classList.add("hidden");
     $("inbox-btn").classList.add("hidden"); // questions are not part of a read-only share
-    setLive("loading", "loading…");
     shareLoad().catch(handleShareErr);
   }
 
   function shareLoad() {
-    setLive("loading", "loading…");
     return shareApi("/self")
       .then(function (meta) {
         state.share.meta = meta;
@@ -1792,13 +1773,11 @@
         (res.items || []).forEach(function (t) { all[t.id] = t; });
         state.tickets = all;
         render();
-        setLive("live", "read-only");
       });
   }
 
   function handleShareErr(e) {
     if (e && e.expired) { showExpired(); return; }
-    setLive("err", "error");
     var board = $("board");
     board.innerHTML = "";
     var m = el("div", "empty-col", "Could not load the shared view: " + (e && e.message ? e.message : "unknown error"));

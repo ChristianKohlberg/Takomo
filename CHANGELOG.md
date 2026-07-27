@@ -181,6 +181,16 @@ single ticket.
   pinned to the files by unit tests. `backlot.yml` and the `Dockerfile` learned
   that `workflows/` is a build input.
 - Removed `prompts/spec-agent.md`; nothing referenced it.
+- **`setLive` is gone from both web surfaces.** 0.3.0 dropped the navbar live
+  indicator from `/board` and `/inbox` but kept `setLive` as a null-tolerant
+  no-op so its call sites did not have to change — leaving a function named like
+  a status indicator that wrote to `#live-dot` and `#live-text`, neither of which
+  exists. Every call was silently doing nothing, which is exactly the trap the
+  removal was meant to avoid elsewhere. The function, its 20 call sites (8 in
+  `/inbox`, 12 in `/board`) and the orphaned `.dot` CSS are deleted from both
+  files. No user-visible change — the calls already did nothing, and the strings
+  they passed were hardcoded English that never reached a `STR` table — but the
+  next reader of the poll loop no longer has to discover that for themselves.
 - **Dependency hygiene.** Workflow YAML is now parsed by `serde_norway` instead
   of `serde_yaml`, which upstream archived in March 2024 and publishes as
   `0.9.34+deprecated`; it is the same 0.9 API, keeps the MIT OR Apache-2.0
