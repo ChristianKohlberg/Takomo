@@ -633,6 +633,31 @@ fn ensure_edge_answerable(
     Ok(())
 }
 
+/// The rejection an answer-link holder gets when the link could not be spent —
+/// another attempt on the same link won the race, or it was revoked. Written for
+/// the outside expert who is reading it: what happened to their submission, and
+/// that the next move is not theirs. 410 matches the answer-auth path, which
+/// already returns Gone for a link that is spent, revoked, or expired.
+fn spent_link_error(question: &str, status: &str) -> ApiError {
+    let what = if status == "open" {
+        format!(
+            "Question '{question}' is still open, but this link can no longer answer it — it was revoked."
+        )
+    } else {
+        format!("Question '{question}' is already '{status}' — another answer landed first.")
+    };
+    ApiError::new(
+        axum::http::StatusCode::GONE,
+        "answer_link.spent",
+        format!(
+            "This answer link is single-use and has already been spent. {what} Nothing was recorded for this attempt, and the answer already on the question stands."
+        ),
+    )
+    .remedy(format!(
+        "No further action is needed from you. If another answer is still wanted, whoever sent you the link can mint a fresh one with POST /v1/questions/{question}/answer-link."
+    ))
+}
+
 /// Move a parked ticket to `to`, clearing any claim (auto-release) and emitting
 /// the transition + release events. Must run in a write tx; `to` is assumed
 /// already validated as a legal, answerable edge from the ticket's state.
@@ -955,9 +980,52 @@ impl Store {
         answer: &Value,
         resume_to: Option<&str>,
     ) -> ApiResult<(Question, Ticket)> {
+        self.answer_question_inner(id, actor, scopes, answer, resume_to, None)
+    }
+
+    /// [`Store::answer_question`] on behalf of an answer-link grant (`tka_`),
+    /// spending the grant in the SAME transaction that records the answer.
+    ///
+    /// This is the single-use guarantee for a credential handed to someone
+    /// outside the org, and it is enforced here rather than by a follow-up
+    /// write: the conditional `used_at` update is the first thing the
+    /// transaction does, so of N concurrent attempts on one link exactly one
+    /// proceeds and the rest abort having recorded nothing. It also means a
+    /// rejected answer — a bad option, a missing expert scope — rolls the spend
+    /// back with everything else, so a link is never burned by an attempt that
+    /// did not land.
+    pub fn answer_question_via_grant(
+        &self,
+        id: &str,
+        actor: &str,
+        scopes: &HashSet<String>,
+        answer: &Value,
+        resume_to: Option<&str>,
+        grant_id: &str,
+    ) -> ApiResult<(Question, Ticket)> {
+        self.answer_question_inner(id, actor, scopes, answer, resume_to, Some(grant_id))
+    }
+
+    fn answer_question_inner(
+        &self,
+        id: &str,
+        actor: &str,
+        scopes: &HashSet<String>,
+        answer: &Value,
+        resume_to: Option<&str>,
+        grant_id: Option<&str>,
+    ) -> ApiResult<(Question, Ticket)> {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            // Spend the answer link before anything else this transaction does:
+            // the grant row, not the question's status, is what orders
+            // concurrent holders of the same link.
+            if let Some(grant_id) = grant_id {
+                if !super::answer_grants::spend_grant(tx, grant_id, now)? {
+                    return Err(spent_link_error(id, &q.status));
+                }
+            }
             if q.status != "open" {
                 return Err(ApiError::conflict(
                     "question.not_open",

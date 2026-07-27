@@ -170,6 +170,12 @@ answer. No login, no token to manage, no access to anything else. It expires
 (default 3 days, max 30) and is spent after one answer. Revoke early with
 `takomo answer-link revoke <grant-id>`.
 
+Spending is atomic: the link is marked used in the **same transaction** that
+records the answer. If the link is submitted more than once at once — two tabs,
+a double-click, a forwarded message — exactly one submission lands and the rest
+get `410` (`answer_link.spent`) having changed nothing. A revoke that arrives
+while an answer is in flight wins the same way.
+
 You can only delegate authority you hold: minting a link for an `approve`
 question requires you to hold the matching `expert:<tag>` scope. The link then
 carries exactly the authority that one question needs — including satisfying the

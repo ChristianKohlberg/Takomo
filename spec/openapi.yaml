@@ -1555,7 +1555,13 @@ paths:
       description: |
         Authenticated by the `tka_` answer-link token. The grant IS the human
         authorization: it answers as its recorded actor with exactly the scope
-        needed for this question. Marks the link used (single-use) on success.
+        needed for this question.
+
+        Single-use is atomic: the link is marked used in the SAME transaction
+        that records the answer. Of any number of simultaneous submissions on one
+        link exactly one is applied; every other gets `410` and changes nothing.
+        A rejected answer (bad option, missing expert scope) rolls the spend back
+        with it, so a link is never burned by an attempt that did not land.
       security:
         - answerBearer: []
       requestBody:
@@ -1578,7 +1584,12 @@ paths:
                 properties:
                   question: { $ref: "#/components/schemas/Question" }
                   ticket: { $ref: "#/components/schemas/Ticket" }
-        "410": { description: 'The link is expired, used, or revoked.' }
+        "410":
+          description: >-
+            The link is expired, used, or revoked (`answer.expired`); or it was
+            spent by a simultaneous submission while this one was in flight
+            (`answer_link.spent`, raised inside the answering transaction — this
+            request recorded nothing).
 
   /questions/{id}/withdraw:
     post:
@@ -1838,8 +1849,10 @@ components:
         An ANSWER-LINK token (`tka_`-prefixed), minted by
         `POST /v1/questions/{id}/answer-link`. A distinct auth path: it
         authorizes ONLY `/v1/answer/self` for the one referenced question,
-        is single-use (spent after one answer), auto-expires, and is rejected on
-        every other endpoint. Expired/used/revoked links return `410 Gone`.
+        is single-use (spent in the same transaction that records the answer, so
+        simultaneous submissions on one link resolve to exactly one applied
+        answer), auto-expires, and is rejected on every other endpoint.
+        Expired/used/revoked links return `410 Gone`.
 
   parameters:
     id:

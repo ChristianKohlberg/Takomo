@@ -90,6 +90,23 @@ single ticket.
   runtime. Same claim during the same export: **under 10ms**, with roughly twice
   as many claims completing while it runs. There is still exactly one writer —
   the guarantee that a ready ticket goes to exactly one claimant is untouched.
+- **An answer link is now spent in the same transaction as the answer it
+  carries.** The `tka_` token you hand an outside expert is single-use, but the
+  write that marked it used committed *after* the answer, in a transaction of its
+  own. Single-use still held — a second attempt found the question no longer open
+  — yet it held by accident of unrelated bookkeeping rather than by the
+  transaction that claimed it, and the observable behaviour was wrong in a way
+  the expert saw: because the question's resolution sweep revoked the link before
+  the follow-up write could mark it used, someone who reloaded a link they had
+  just used was told it *"has been revoked"*. The spend is now the first thing the
+  answering transaction does, so it is what orders simultaneous submissions on
+  one link (two tabs, a double-click, a forwarded message): exactly one is
+  applied, and the rest get `410` with the new `answer_link.spent`, telling the
+  reader another answer landed first and nothing of theirs was recorded. A link
+  spent by its own answer now correctly reports itself used, a revoke arriving
+  while an answer is in flight wins, and a rejected answer — a bad option, a
+  missing expert scope — rolls the spend back with it, so a link is never burned
+  by an attempt that did not land.
 - **The inbox no longer goes silent while you are answering.** `/inbox` defers a
   batch of events while a human is mid-answer — but it advanced the event cursor
   *before* deciding to defer, so the skipped batch was consumed and never fetched

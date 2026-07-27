@@ -4849,6 +4849,218 @@ async fn answer_link_is_revoked_when_the_question_is_answered_elsewhere() {
     assert_ne!(s2, StatusCode::OK, "revoked link must not answer");
 }
 
+// ---------------------------------------------------------------------------
+// Answer-link single-use is a property of ONE transaction (takomo-o4uw): the
+// grant is spent in the same tx that records the answer, not by a follow-up
+// write. These two tests pin both halves of that — the race, and the row it
+// leaves behind.
+// ---------------------------------------------------------------------------
+
+/// Eight holders of ONE answer link answer simultaneously. The grant row is the
+/// serialization point, so exactly one wins and the other seven are rejected
+/// with a message an outside expert can act on — and, crucially, the question
+/// carries exactly one answer and one mirrored comment afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_answers_on_one_link_spend_it_exactly_once() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Outside expert races itself").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Which vendor?",
+                "options": ["alpha", "beta"],
+                "fence": fence,
+            }),
+        )
+        .await;
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    let gid = link["id"].as_str().unwrap().to_string();
+
+    // Every attempt sends a DIFFERENT answer, so a second write that landed
+    // would be visible in the recorded value, not merely in a status code.
+    const N: usize = 8;
+    let mut futures = Vec::new();
+    for i in 0..N {
+        let token = token.clone();
+        let client = app.client.clone();
+        let base = app.base.clone();
+        futures.push(tokio::spawn(async move {
+            let choice = if i % 2 == 0 { "alpha" } else { "beta" };
+            let resp = client
+                .post(format!("{base}/v1/answer/self"))
+                .bearer_auth(token)
+                .json(&json!({ "answer": choice }))
+                .send()
+                .await
+                .expect("answer request");
+            let status = resp.status();
+            let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+            (status, body)
+        }));
+    }
+    let results: Vec<(StatusCode, Value)> = join_all(futures)
+        .await
+        .into_iter()
+        .map(|r| r.expect("join"))
+        .collect();
+
+    let winners: Vec<&(StatusCode, Value)> = results
+        .iter()
+        .filter(|(s, _)| *s == StatusCode::OK)
+        .collect();
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one of {N} concurrent answers may win: {results:?}"
+    );
+
+    // EVERY loser is a coherent, teaching 410 — never a 500, never a 409 left
+    // over from some other module's bookkeeping, never a silent no-op. A loser
+    // is turned away either by the answer-auth path (its link was already spent
+    // when the request arrived: `answer.expired`) or, if it got past auth in the
+    // window before the winner committed, by the spend inside the answering
+    // transaction itself (`answer_link.spent`). Both tell the holder the link
+    // was single-use and is gone.
+    for (status, body) in results.iter().filter(|(s, _)| *s != StatusCode::OK) {
+        assert_eq!(*status, StatusCode::GONE, "loser response: {body}");
+        let code = body["code"].as_str().expect("loser code");
+        assert!(
+            matches!(code, "answer_link.spent" | "answer.expired"),
+            "loser needs a stable spent-link code, got: {body}"
+        );
+        let message = body["message"].as_str().expect("loser message");
+        assert!(
+            message.contains("single-use"),
+            "loser must be told the link was single-use: {message}"
+        );
+        if code == "answer_link.spent" {
+            // The in-transaction rejection also says what became of the question
+            // and that nothing of theirs was recorded.
+            assert!(
+                message.contains("another answer landed first")
+                    && message.contains("Nothing was recorded"),
+                "in-tx loser must be told their submission did not land: {message}"
+            );
+            assert!(
+                body["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+                "in-tx loser needs a remedy: {body}"
+            );
+        }
+    }
+
+    // The state the winner left behind: one answer, one answered event, one
+    // mirrored comment. Seven rolled-back transactions wrote nothing.
+    let winning_answer = winners[0].1["question"]["answer"]["value"].clone();
+    let (s, q) = app.get(&app.human, &format!("/v1/questions/{qid}")).await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert_eq!(q["status"], "answered");
+    assert_eq!(q["answer"]["value"], winning_answer);
+    assert_eq!(q["answered_by"], "human:contractor");
+
+    let (_, events) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=question_answered"),
+        )
+        .await;
+    assert_eq!(
+        events["events"].as_array().unwrap().len(),
+        1,
+        "exactly one question_answered event: {events}"
+    );
+    let (_, ticket) = app
+        .get(&app.human, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let mirrored = ticket["comments"]
+        .as_array()
+        .expect("comments")
+        .iter()
+        .filter(|c| {
+            c["body"]
+                .as_str()
+                .is_some_and(|b| b.starts_with("Human answered"))
+        })
+        .count();
+    assert_eq!(mirrored, 1, "exactly one mirrored answer comment: {ticket}");
+
+    // The grant is spent, not revoked: the winning transaction marked it used,
+    // so the resolution sweep (which only touches still-unused links) left it be.
+    let grant = app.open_store().get_answer_grant(&gid).unwrap().unwrap();
+    assert!(grant.used_at.is_some(), "the winner must spend the link");
+    assert!(
+        grant.revoked_at.is_none(),
+        "a link spent by its own answer is used, not revoked"
+    );
+}
+
+/// A link the holder spent themselves must report itself USED, not revoked —
+/// the distinction the outside expert reads on the 410. It only holds if the
+/// spend happens inside the answering transaction, ahead of the sweep that
+/// revokes every still-unused link for a resolved question.
+#[tokio::test]
+async fn a_link_spent_by_its_own_answer_reports_used_not_revoked() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Spent link reports used").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
+        )
+        .await;
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    let gid = link["id"].as_str().unwrap().to_string();
+
+    let (s, answered) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+
+    let grant = app.open_store().get_answer_grant(&gid).unwrap().unwrap();
+    assert!(grant.used_at.is_some(), "used_at must be set by the answer");
+    assert!(
+        grant.revoked_at.is_none(),
+        "the answering link is spent, not revoked: {:?}",
+        grant.revoked_at
+    );
+
+    // So the holder who reloads their link is told what actually happened.
+    for (s, body) in [
+        app.get(&token, "/v1/answer/self").await,
+        app.post(&token, "/v1/answer/self", json!({ "answer": "no" }))
+            .await,
+    ] {
+        assert_eq!(s, StatusCode::GONE, "{body}");
+        assert_eq!(body["code"], "answer.expired", "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("already been used")),
+            "a self-spent link must read as used, not revoked: {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn advisory_question_never_resumes_ticket_on_recommended_timeout() {
     let app = TestApp::spawn().await;
