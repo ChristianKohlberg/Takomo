@@ -1034,6 +1034,7 @@
     setLive("loading", "…");
     return loadQuestions().then(function (items) {
       state.questions = items || [];
+      applySnacks(); // server truth minus the answers still inside their undo window
       return loadTagData(); // ticket->tags map + registry labels, for the tag filter
     }).then(function () {
       if (state.selectedId && !visible().some(function (q) { return q.id === state.selectedId; })) state.selectedId = null;
@@ -1094,7 +1095,7 @@
       // until a reload.
       if (busy) { setLive("live", "live ·"); return; }
       if (typeof res.cursor === "number") state.cursor = res.cursor;
-      return loadQuestions().then(function (items) { state.questions = items || []; return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
+      return loadQuestions().then(function (items) { state.questions = items || []; applySnacks(); return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
     }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
   }
 
@@ -1766,6 +1767,32 @@
   }
   function qById(id) { for (var i = 0; i < state.questions.length; i++) { if (state.questions[i].id === id) return state.questions[i]; } return null; }
 
+  // Write one pending answer into the loaded list, remembering on the snack what it
+  // displaced so Undo can put that back. `prev` is (re-)captured from the question as
+  // it stands right now, so after a reload Undo restores what the server currently
+  // says rather than a snapshot taken up to 30s earlier.
+  function applySnack(s) {
+    var qi = qById(s.qid);
+    if (!qi) return; // not in this view (project switched, ticket filter, tag filter)
+    s.prev = { status: qi.status, answer: qi.answer, awaiting: qi.awaiting, resolved_to: qi.resolved_to, answered_by: qi.answered_by };
+    var isCustom = s.value && typeof s.value === "object" && !Array.isArray(s.value) && s.value.custom;
+    qi.status = "answered";
+    qi.answer = isCustom ? { value: s.value.value, custom: true } : { value: s.value };
+    qi.answered_by = state.me && state.me.actor;
+  }
+  // A pending answer exists only in this tab until its window closes, so every reload
+  // of `state.questions` comes back with those questions still `open` on the server
+  // and, left alone, would undo their optimistic completion: the item pops back into
+  // Open and its count while its own snackbar is still counting down, and since
+  // `state.pending` still holds it, pressing Answer again returns at the guard in
+  // `queueAnswer` and does nothing. Every reload therefore re-applies them — which is
+  // why this sits with the reload, not with the one caller (a closing undo window)
+  // that first exposed it: `fetchAll` also runs on project switch, withdraw, reopen
+  // and follow-up. The poll refetches the whole list as well; its `busy` check keeps
+  // it from doing so while anything is pending, and calling this there too means the
+  // invariant does not quietly depend on that check staying exactly as it is.
+  function applySnacks() { for (var i = 0; i < state.snacks.length; i++) applySnack(state.snacks[i]); }
+
   // Trailing undo: an answer takes effect optimistically at once — the item is
   // marked done and drops out of Open, and we jump to the next open question with
   // a micro-animation — while a 30s undo runs in the background. Only Undo brings
@@ -1778,14 +1805,11 @@
     if (state.pending[q.id]) return;
     state.pending[q.id] = true; state.answering = false; state.composeOpen = false;
     var blocking = q.mode !== "advisory";
-    // Optimistically complete it locally so it leaves the Open folder.
-    var qi = qById(q.id);
-    var prev = qi ? { status: qi.status, answer: qi.answer, awaiting: qi.awaiting, resolved_to: qi.resolved_to, answered_by: qi.answered_by } : null;
-    var isCustom = value && typeof value === "object" && !Array.isArray(value) && value.custom;
-    if (qi) { qi.status = "answered"; qi.answer = isCustom ? { value: value.value, custom: true } : { value: value }; qi.answered_by = state.me && state.me.actor; }
+    var s = { q: q, qid: q.id, value: value, prev: null, decision: t().decision + ": " + displayVal(q, value), detail: blocking ? (q.ticket + t().resumedInto) : t().recorded, remaining: UNDO_SECONDS, blocking: blocking };
+    state.snacks.push(s);
+    applySnack(s); // optimistically complete it locally so it leaves the Open folder
     // Auto-advance to the next open question (inFolder now excludes the answered one).
     if (state.folder === "open") { var nx = inFolder()[0]; state.selectedId = nx ? nx.id : null; }
-    state.snacks.push({ q: q, qid: q.id, value: value, prev: prev, decision: t().decision + ": " + displayVal(q, value), detail: blocking ? (q.ticket + t().resumedInto) : t().recorded, remaining: UNDO_SECONDS, blocking: blocking });
     state.advanced = true; // slide the newly-shown item in
     // Tint the row and the Answered folder now, as the item leaves Open and the
     // Answered count ticks up — the tint rides along with a movement you are
