@@ -961,6 +961,28 @@ async fn write_rate_limit_returns_429_with_retry_after() {
     assert!((1..=60).contains(&retry_after));
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["code"], "rate.limited");
+    let message = body["message"].as_str().expect("message");
+    assert!(
+        message.contains("write budget of 3 writes/minute"),
+        "429 names the budget the caller actually spent: {message}"
+    );
+    assert!(
+        message.contains("reads are free"),
+        "429 tells the caller reads still work: {message}"
+    );
+    assert!(
+        body["remedy"].as_str().is_some_and(|r| r.contains("Wait")),
+        "429 carries a remedy: {body}"
+    );
+
+    // …and that is true: a GET is not charged, so reads keep working while the
+    // write budget is exhausted.
+    let (status, _) = app.get(&tight, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reads stay free while writes are limited"
+    );
 }
 
 #[tokio::test]

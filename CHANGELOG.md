@@ -68,6 +68,17 @@ single ticket.
 
 ### Fixed
 
+- **Reading the tracker over MCP no longer spends the write budget.** Every MCP
+  frame is a `POST /mcp`, and the rate limiter classified writes by HTTP method,
+  so `takomo_show`, `takomo_list`, `takomo_ready` — and even `tools/list` — each
+  debited the token's 120 writes/minute and, on exhaustion, came back with a 429
+  saying the token had "exceeded its write budget", sending an agent hunting for
+  writes it never made. An agent could rate-limit itself out of the tracker with
+  zero mutations. The budget is now charged per tool call: the read-only tools
+  are free (as `GET /v1/...` already was), the handshake and `tools/list` are
+  free, and every mutating tool debits exactly one write. The 429 also says what
+  it means — it names the budget, states that reads are free and still work, and
+  carries a `remedy`.
 - **The inbox no longer goes silent while you are answering.** `/inbox` defers a
   batch of events while a human is mid-answer — but it advanced the event cursor
   *before* deciding to defer, so the skipped batch was consumed and never fetched

@@ -6,11 +6,15 @@
 //! Node stdio wrapper in `clients/mcp`. Tools call the internal `Store` directly
 //! — no HTTP round-trip back to this process, no duplicated API logic.
 //!
-//! Auth: the `/mcp` endpoint is wrapped in the SAME bearer-token middleware as
-//! the REST API (`crate::auth::auth_middleware`), so a missing/invalid token or
+//! Auth: the `/mcp` endpoint is wrapped in the SAME bearer-token path as the
+//! REST API (`crate::auth::mcp_auth_middleware`), so a missing/invalid token or
 //! a share (`tks_`) token is rejected before any MCP frame is processed, and the
 //! resolved [`AuthCtx`] rides in the request extensions. Every tool re-checks
 //! scope and project access exactly like the matching REST handler.
+//!
+//! Rate limiting: the per-token write budget is debited per tool call here (see
+//! [`READ_TOOLS`] and `TakomoMcp::call_tool`), not in the middleware — every MCP
+//! frame is `POST /mcp`, so the HTTP method cannot tell a read from a write.
 //!
 //! Fences: the Node wrapper remembers a claimed ticket's fencing token in
 //! process memory; a hosted server cannot rely on session affinity, so instead
@@ -21,7 +25,7 @@
 //! mirroring the CLI and the Node MCP.
 
 use crate::api::tickets::load_visible;
-use crate::auth::{auth_middleware, AuthCtx};
+use crate::auth::{debit_write_budget, mcp_auth_middleware, AuthCtx};
 use crate::error::{AllowedTransition, ApiError, ApiResult};
 use crate::ids::now_ms;
 use crate::server::AppState;
@@ -69,8 +73,34 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     Router::new()
         .nest_service("/mcp", service)
-        .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            mcp_auth_middleware,
+        ))
 }
+
+/// The MCP tools that only read. Everything else mutates and debits the
+/// caller's per-minute write budget (see `TakomoMcp::call_tool`).
+///
+/// Reads are free here because they are free on the REST surface too — `GET
+/// /v1/tickets/{id}` costs nothing, and `takomo_show` is the same query through
+/// a different door. The budget exists to contain runaway *mutation* loops, not
+/// to meter reads, and metering them here would let an agent rate-limit itself
+/// out of the tracker without having changed anything.
+///
+/// A name that is not listed counts as a write, so a tool added later is
+/// charged until it is deliberately declared a read — the safe direction.
+pub const READ_TOOLS: &[&str] = &[
+    "takomo_deps",
+    "takomo_list",
+    "takomo_projects",
+    "takomo_questions",
+    "takomo_ready",
+    "takomo_roadmap",
+    "takomo_show",
+    "takomo_whoami",
+    "takomo_workflow",
+];
 
 /// The MCP tool surface. Cloned per session by the transport's service factory;
 /// all real state lives behind the shared `Arc<AppState>`.
@@ -1585,6 +1615,41 @@ impl TakomoMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for TakomoMcp {
+    /// Dispatch a tool call, charging the write budget first when the tool
+    /// writes.
+    ///
+    /// The debit lives here rather than in the auth middleware because this is
+    /// the first point at which the operation has a *name*. The middleware sees
+    /// `POST /mcp` with an opaque body; classifying there would mean buffering
+    /// and parsing the JSON-RPC frame in the auth path — duplicating the
+    /// transport's own parsing to reach a conclusion the transport is about to
+    /// hand us for free. The cost of that placement is that this returns a
+    /// tool-level error rather than an HTTP 429; the body still carries the
+    /// status, code, message and remedy verbatim (`respond`), which is exactly
+    /// how every other rejection reaches an MCP caller.
+    ///
+    /// `initialize`, `tools/list` and the rest of the handshake never reach
+    /// here and therefore cost nothing: an agent must be able to discover the
+    /// tools before it can spend anything, and discovery mutates nothing. An
+    /// unknown tool name is not charged either — the router is about to reject
+    /// it, and billing a write for a call that never ran would make the 429
+    /// message a lie.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let name = request.name.as_ref();
+        if self.tool_router.has_route(name) && !READ_TOOLS.contains(&name) {
+            let auth = require_auth(&context)?;
+            if let Err(err) = debit_write_budget(&self.state, &auth) {
+                return respond(Err(err));
+            }
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("takomo", crate::server::VERSION))

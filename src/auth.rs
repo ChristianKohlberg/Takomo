@@ -18,6 +18,11 @@ pub struct AuthCtx {
     pub scopes: HashSet<String>,
     /// None = all projects.
     pub projects: Option<HashSet<String>>,
+    /// This token's per-minute write budget. Carried on the context so a
+    /// surface that can only classify a write *after* the middleware has run —
+    /// MCP, where the operation's name lives inside the JSON-RPC body — can
+    /// debit the same window (see [`debit_write_budget`]).
+    pub rate_limit: i64,
 }
 
 impl AuthCtx {
@@ -81,10 +86,59 @@ impl AuthCtx {
     }
 }
 
+/// Which surface a `tk_` request arrived on. It decides *where* a write is
+/// classified, never whether the budget applies.
+///
+/// - [`Surface::Rest`]: one HTTP request is one operation, so the method is a
+///   faithful classifier — `GET`/`HEAD` are reads and free, everything else
+///   debits.
+/// - [`Surface::Mcp`]: every MCP frame is `POST /mcp` and the operation's name
+///   lives inside an opaque JSON-RPC body, so the method classifies nothing —
+///   it would bill `takomo_show` and even `tools/list` as writes. The
+///   middleware therefore only authenticates, and `crate::mcp` debits by tool
+///   name at the point where the frame is already parsed and dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    Rest,
+    Mcp,
+}
+
+impl Surface {
+    /// Does the middleware debit this request itself?
+    fn debits_in_middleware(self, method: &Method) -> bool {
+        match self {
+            Surface::Rest => !matches!(*method, Method::GET | Method::HEAD),
+            Surface::Mcp => false,
+        }
+    }
+}
+
+/// Bearer auth for the REST surface (`/v1/*`): writes are classified by method.
 pub async fn auth_middleware(
+    state: State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authenticate(state, request, next, Surface::Rest).await
+}
+
+/// Bearer auth for the MCP surface (`/mcp`). The same `tk_` token path — same
+/// table, same scopes, same project allowlist, same rate-limit window — with
+/// the write debit deferred to the tool dispatch in `crate::mcp`, which is the
+/// first place that knows whether the frame is a read or a write.
+pub async fn mcp_auth_middleware(
+    state: State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authenticate(state, request, next, Surface::Mcp).await
+}
+
+async fn authenticate(
     State(state): State<Arc<AppState>>,
     mut request: Request,
     next: Next,
+    surface: Surface,
 ) -> Result<Response, ApiError> {
     let header = request
         .headers()
@@ -114,53 +168,69 @@ pub async fn auth_middleware(
         }
     }
 
+    let ctx = AuthCtx {
+        token_id: row.id,
+        actor: row.actor,
+        scopes: row.scopes.into_iter().collect(),
+        projects: row.projects.map(|p| p.into_iter().collect()),
+        rate_limit: row.rate_limit,
+    };
+
     // Per-token sliding-window write rate limit (contains runaway agent loops).
-    let is_write = !matches!(*request.method(), Method::GET | Method::HEAD);
-    if is_write {
-        let mut windows = state.rate.lock().expect("rate lock");
-        let window = windows.entry(row.id.clone()).or_default();
-        let cutoff = now - 60_000;
-        while window.front().is_some_and(|t| *t <= cutoff) {
-            window.pop_front();
-        }
-        if window.len() as i64 >= row.rate_limit {
-            let oldest = *window.front().expect("non-empty window");
-            let retry_after_secs = ((oldest + 60_000 - now) / 1000).max(1);
-            return Err(ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "rate.limited",
-                format!(
-                    "Token '{}' exceeded its write budget of {} writes/minute. If you are retrying a rejected call in a loop, stop and re-read the error's remedy instead. Wait {retry_after_secs}s before the next write.",
-                    row.actor, row.rate_limit
-                ),
-            )
-            .header("Retry-After", retry_after_secs.to_string()));
-        }
-        window.push_back(now);
+    if surface.debits_in_middleware(request.method()) {
+        debit_write_budget(&state, &ctx)?;
     }
 
     // Touch last_used_at at most once a minute per token.
     {
         let mut touched = state.last_touch.lock().expect("touch lock");
         let due = touched
-            .get(&row.id)
+            .get(&ctx.token_id)
             .map(|t| now - *t >= 60_000)
             .unwrap_or(true);
         if due {
-            touched.insert(row.id.clone(), now);
+            touched.insert(ctx.token_id.clone(), now);
             drop(touched);
-            let _ = state.store.touch_token(&row.id);
+            let _ = state.store.touch_token(&ctx.token_id);
         }
     }
 
-    let ctx = AuthCtx {
-        token_id: row.id,
-        actor: row.actor,
-        scopes: row.scopes.into_iter().collect(),
-        projects: row.projects.map(|p| p.into_iter().collect()),
-    };
     request.extensions_mut().insert(ctx);
     Ok(next.run(request).await)
+}
+
+/// Charge one write to this token's sliding-window budget, or reject with the
+/// teaching 429. Both surfaces call this, so a write costs exactly the same
+/// whether it arrives as `POST /v1/tickets/{id}/comments` or as the
+/// `takomo_comment` MCP tool — and a read costs nothing on either.
+pub fn debit_write_budget(state: &AppState, ctx: &AuthCtx) -> ApiResult<()> {
+    let now = now_ms();
+    let mut windows = state.rate.lock().expect("rate lock");
+    let window = windows.entry(ctx.token_id.clone()).or_default();
+    let cutoff = now - 60_000;
+    while window.front().is_some_and(|t| *t <= cutoff) {
+        window.pop_front();
+    }
+    if window.len() as i64 >= ctx.rate_limit {
+        // `unwrap_or(now)` covers a rate_limit of 0, where the window is empty
+        // and every write is refused: retry a full window later.
+        let oldest = window.front().copied().unwrap_or(now);
+        let retry_after_secs = ((oldest + 60_000 - now) / 1000).max(1);
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate.limited",
+            format!(
+                "Token '{}' exceeded its write budget of {} writes/minute. Only writes are charged: reads are free and still work — GET on /v1, and the read-only MCP tools (takomo_show, takomo_list, takomo_ready, takomo_deps, takomo_questions, takomo_projects, takomo_workflow, takomo_roadmap, takomo_whoami). If you are retrying a rejected call in a loop, stop and re-read the error's remedy instead. Wait {retry_after_secs}s before the next write.",
+                ctx.actor, ctx.rate_limit
+            ),
+        )
+        .remedy(format!(
+            "Wait {retry_after_secs}s, then retry this exact call; keep reading meanwhile if you need to."
+        ))
+        .header("Retry-After", retry_after_secs.to_string()));
+    }
+    window.push_back(now);
+    Ok(())
 }
 
 fn invalid_token(why: &str) -> ApiError {
