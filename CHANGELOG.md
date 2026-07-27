@@ -76,6 +76,18 @@ single ticket.
   continuously: new questions never arrived, answered ones never left, and only a
   reload recovered. The cursor now advances only over events that were actually
   applied, so a deferred batch is re-delivered on the next idle poll.
+- **Committing one pending answer no longer resurrects the others.** When an undo
+  window closed, `/inbox` wrote that answer and reloaded the list — and the reload
+  replaced every other still-pending answer with the server's view, where those
+  questions are of course still open. They popped back into the Open folder and its
+  count while their own snackbars were still counting down, one of them was
+  auto-selected with its full answer UI, and pressing "Answer & resume" on it did
+  nothing at all, because that answer was already queued. Answering two questions
+  within 30 seconds of each other was enough. Every reload of the question list —
+  a closing window, a project switch, a withdraw, a reopen, a follow-up, a poll —
+  now re-applies the answers still inside their undo window over the fresh list, so
+  the queue never asks again for work you have already done. Undo keeps working
+  across such a reload, and puts back what the server currently says.
 - **`DELETE /v1/projects/{project}` 500'd on any project that had ever carried a
   question, a tag, an answer link or a promotion.** The cascade cleared tickets,
   comments, deps, events and idempotency records but not `questions`,
