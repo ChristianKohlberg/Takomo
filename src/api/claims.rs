@@ -2,8 +2,8 @@
 
 use super::tickets::load_visible;
 use super::{
-    body_object, clamp_wait, first, get_i64, get_str, get_string_array, long_poll, parse_i64_param,
-    query_pairs, reject_unknown, ApiJson,
+    attach_conventions, body_object, clamp_wait, first, get_i64, get_str, get_string_array,
+    long_poll, parse_i64_param, query_pairs, reject_unknown, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
@@ -33,9 +33,14 @@ pub async fn claim(
             get_i64(obj, "ttl_seconds")?
         }
     };
-    let (_ticket, lease) = state.store.claim_ticket(&id, &ctx.actor, ttl)?;
+    let (ticket, lease) = state.store.claim_ticket(&id, &ctx.actor, ttl)?;
     state.wake();
-    Ok(Json(lease.to_json()))
+    // The response *is* the lease, so the hints ride as siblings of its fields
+    // rather than in an envelope — `/v1` is additive only, and a caller reading
+    // `fence` never sees the difference.
+    let mut out = lease.to_json();
+    attach_conventions(&state, &mut out, &ticket.project);
+    Ok(Json(out))
 }
 
 pub async fn heartbeat(
@@ -164,6 +169,7 @@ pub async fn ready_claim(
             state.wake();
             let mut out = ticket.to_json(now_ms());
             out["lease"] = lease.to_json();
+            attach_conventions(&state, &mut out, &ticket.project);
             Ok(Json(out).into_response())
         }
     }

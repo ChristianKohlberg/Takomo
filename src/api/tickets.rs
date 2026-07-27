@@ -1,8 +1,8 @@
 //! /v1/tickets: create, list/search, get, patch, comments, deps.
 
 use super::{
-    all, blocking_read, body_object, first, get_i64, get_str, get_string_array, parse_i64_param,
-    query_pairs, require_str, ApiJson,
+    all, attach_conventions, blocking_read, body_object, first, get_i64, get_str, get_string_array,
+    parse_i64_param, query_pairs, require_str, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
@@ -88,6 +88,9 @@ pub async fn create(
     state.wake();
     let mut out = ticket.to_json(now_ms());
     out["similar"] = Value::Array(similar);
+    // Echo the project's conventions back on create: the ticket text was just
+    // written, so this is the moment an agent can still fix it.
+    attach_conventions(&state, &mut out, &ticket.project);
     let status = if replayed {
         StatusCode::OK
     } else {
@@ -223,6 +226,10 @@ pub async fn get_one(
             }
         }
     }
+
+    // Single-ticket read: one project row, no per-item cost. The list endpoint
+    // above builds straight from `Ticket::to_json`, so arrays stay untouched.
+    attach_conventions(&state, &mut out, &ticket.project);
 
     let etag = format!("\"{}\"", ticket.version);
     Ok(([("ETag", etag)], Json(out)))

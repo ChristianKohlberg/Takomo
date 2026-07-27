@@ -289,7 +289,9 @@ paths:
       description: |
         The human-facing language agents should phrase ask-a-human questions
         (and options) in for this project. Surfaced back to agents as a
-        `language_hint` on the MCP work-loop tools and `question_language` on
+        `language_hint` on the work loop of both surfaces — `POST /tickets`,
+        `GET /tickets/{id}`, `POST /tickets/{id}/claim`, `POST /ready/claim`, and
+        the MCP tools over the same ground — plus `question_language` on
         `takomo_workflow`, and shown as a nudge on the inbox. Soft — never
         enforced. Send `{"language": null}` to clear it.
       parameters: [ { $ref: "#/components/parameters/project" } ]
@@ -416,8 +418,10 @@ paths:
       description: |
         The project's house style for the text agents write — ticket titles and
         bodies, comments, and human-facing questions. Surfaced back to agents as
-        a `style_hint` on the MCP work-loop tools (`takomo_next`/`claim`/`start`/
-        `show`/`new`), as `style_guide` on `takomo_workflow`, and echoed on the
+        a `style_hint` on the work loop of both surfaces — `POST /tickets`,
+        `GET /tickets/{id}`, `POST /tickets/{id}/claim`, `POST /ready/claim`, and
+        the MCP tools (`takomo_next`/`claim`/`start`/`show`/`new`) over the same
+        ground — as `style_guide` on `takomo_workflow`, and echoed on the
         `POST /v1/questions` response note. Soft — never enforced, exactly like
         the language setting.
 
@@ -514,6 +518,12 @@ paths:
     get:
       tags: [tickets]
       summary: Get a ticket
+      description: |
+        Also carries the project's `style_hint` / `language_hint` (see
+        ConventionHints) when it sets them: reading a ticket is the start of
+        working on it, and the conventions have to arrive before the agent
+        writes. The list endpoint deliberately does not — hints are per project,
+        not per ticket, and would be a per-row cost for a repeated value.
       parameters:
         - { $ref: "#/components/parameters/id" }
         - { name: include, in: query, schema: { type: string }, description: "comma list: comments,children,deps,events,promotions" }
@@ -524,7 +534,10 @@ paths:
             ETag: { schema: { type: string }, description: 'current version, e.g. "7"' }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Ticket" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Ticket"
+                  - $ref: "#/components/schemas/ConventionHints"
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [tickets]
@@ -817,7 +830,9 @@ paths:
       description: |
         Succeeds only if the ticket is in a claimable state, unclaimed (or the
         caller already holds it — idempotent renewal), and unblocked. Returns
-        the lease with the fencing token all subsequent mutating calls must echo.
+        the lease with the fencing token all subsequent mutating calls must echo,
+        plus the project's `style_hint` / `language_hint` (see ConventionHints)
+        when it sets them.
       parameters: [ { $ref: "#/components/parameters/id" } ]
       requestBody:
         content:
@@ -831,7 +846,10 @@ paths:
           description: Claimed
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Lease" }
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Lease"
+                  - $ref: "#/components/schemas/ConventionHints"
         "409":
           description: Already claimed by another holder, blocked, or state not claimable
           content:
@@ -912,7 +930,9 @@ paths:
         Long-poll: with `wait`, the request blocks until a matching ticket
         becomes ready or the wait elapses (204). Exactly one caller receives a
         given ticket. This is the intended worker loop: claim → work →
-        transition → repeat; the blocking call is the sleep.
+        transition → repeat; the blocking call is the sleep. The claimed ticket
+        comes back with its `lease` and, when the project sets them, its
+        `style_hint` / `language_hint` (see ConventionHints).
       requestBody:
         content:
           application/json:
@@ -932,6 +952,7 @@ paths:
               schema:
                 allOf:
                   - $ref: "#/components/schemas/Ticket"
+                  - $ref: "#/components/schemas/ConventionHints"
                   - type: object
                     properties:
                       lease: { $ref: "#/components/schemas/Lease" }
@@ -2100,9 +2121,34 @@ components:
         blocked_by: { type: array, items: { type: string } }
         state: { type: string, description: "optional; must be a legal initial state, defaults to workflow initial" }
 
+    ConventionHints:
+      type: object
+      description: |
+        The project's advisory writing conventions, attached to the work-loop
+        responses an agent reads before it writes: create a ticket, read one,
+        claim one, pop the ready queue. Each key is absent when the project sets
+        nothing, so a project with no conventions carries no extra payload.
+        Neither is enforced server-side. Set them with
+        `PUT /projects/{project}/style` and `PUT /projects/{project}/language`,
+        and read them back as plain fields on `GET /projects`.
+      properties:
+        style_hint:
+          type: object
+          description: Present only when the project has a style guide set.
+          properties:
+            style_guide: { type: string, description: "the project's house style for ticket titles/bodies, comments, and human-facing questions" }
+            note: { type: string, description: "what to do with it, written for an LLM reader" }
+        language_hint:
+          type: object
+          description: Present only when the project has a question language set.
+          properties:
+            question_language: { type: string, description: 'the human-facing language ask-a-human questions and their options belong in (e.g. "German")' }
+            note: { type: string, description: "what to do with it, written for an LLM reader" }
+
     TicketCreated:
       allOf:
         - $ref: "#/components/schemas/Ticket"
+        - $ref: "#/components/schemas/ConventionHints"
         - type: object
           properties:
             similar:

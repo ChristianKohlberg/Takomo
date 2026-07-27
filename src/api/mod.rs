@@ -45,6 +45,47 @@ where
     }
 }
 
+// ---------------------------------------------------------------------------
+// Work-loop conventions.
+
+/// Attach the project's writing conventions to a work-loop response, so an agent
+/// sees them *before* it writes a ticket, a comment, or a question:
+///
+/// - `language_hint` — the human-facing language questions belong in;
+/// - `style_hint` — the project's style guide for text the agent writes.
+///
+/// They ride as top-level sibling keys on whatever object the response already
+/// is (a ticket, a created ticket, a lease), the way `similar` and `lease`
+/// already do — so `/v1` stays additive and no existing field moves or changes
+/// type. Each key is omitted when the project sets nothing, so a project with no
+/// conventions gets no extra payload at all.
+///
+/// This is the single source of the hint wording for *both* surfaces: `src/mcp.rs`
+/// calls it too, so REST and MCP cannot drift into telling agents different
+/// things. `out` must be a JSON object; anything else is left untouched.
+pub fn attach_conventions(state: &AppState, out: &mut Value, project: &str) {
+    if !out.is_object() {
+        return;
+    }
+    // A hint is advisory: a project that vanished under us must not turn a
+    // successful claim into an error.
+    let Ok(conv) = state.store.project_conventions(project) else {
+        return;
+    };
+    if let Some(lang) = conv.question_language {
+        out["language_hint"] = serde_json::json!({
+            "question_language": lang,
+            "note": format!("This project expects human-facing questions (takomo_ask) and their options written in {lang}. Internal ticket text may be in another language."),
+        });
+    }
+    if let Some(style) = conv.style_guide {
+        out["style_hint"] = serde_json::json!({
+            "style_guide": style,
+            "note": "This project's house style for text you write — ticket titles and bodies, comments, and human-facing questions. Follow it as written.",
+        });
+    }
+}
+
 pub async fn healthz() -> Json<Value> {
     Json(serde_json::json!({ "status": "ok", "version": crate::server::VERSION }))
 }

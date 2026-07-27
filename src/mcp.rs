@@ -1575,30 +1575,14 @@ impl TakomoMcp {
         Ok(json!({ "ok": true, "roadmap": roadmap }))
     }
 
-    /// Attach the project's writing conventions to a work-loop response, so an
-    /// agent sees them *before* it writes a ticket or asks a question:
+    /// Attach the project's writing conventions (`language_hint` / `style_hint`)
+    /// to a work-loop response.
     ///
-    /// - `language_hint` — the human-facing language questions belong in;
-    /// - `style_hint` — the project's style guide for text the agent writes.
-    ///
-    /// Each key is omitted when the project sets nothing, so a project with no
-    /// conventions gets no extra payload. `out` must be a JSON object.
+    /// The wording lives in [`crate::api::attach_conventions`] and is shared with
+    /// the REST work loop, so the two surfaces cannot drift into telling agents
+    /// different things about the same project.
     fn attach_conventions(&self, out: &mut Value, project: &str) {
-        let Ok(Some(p)) = self.state.store.get_project(project) else {
-            return;
-        };
-        if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
-            out["language_hint"] = json!({
-                "question_language": lang,
-                "note": format!("This project expects human-facing questions (takomo_ask) and their options written in {lang}. Internal ticket text may be in another language."),
-            });
-        }
-        if let Some(style) = p.style_guide.filter(|s| !s.trim().is_empty()) {
-            out["style_hint"] = json!({
-                "style_guide": style,
-                "note": "This project's house style for text you write — ticket titles and bodies, comments, and human-facing questions. Follow it as written.",
-            });
-        }
+        crate::api::attach_conventions(&self.state, out, project)
     }
 
     /// Load a project's workflow, or a teaching not-found error.

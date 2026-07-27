@@ -44,10 +44,16 @@ single ticket.
   titles and bodies, comments and questions, declared once on the project so it
   reaches every client instead of one checkout. `PUT /v1/projects/{project}/style`
   (admin), or `style_guide` at creation; capped at 2000 characters
-  (`422 project.style_guide_too_long`). Surfaced as `style_hint` on the MCP
-  work-loop tools and `style_guide` on `takomo_workflow` — the moment an agent has
-  just written something and can still fix it. Advisory, never enforced. Also
-  editable, with the question language, from a project-settings sheet on `/board`.
+  (`422 project.style_guide_too_long`). Surfaced as `style_hint`, alongside
+  `language_hint`, on the work loop of **every** client — `POST /v1/tickets`,
+  `GET /v1/tickets/{id}`, `POST /v1/tickets/{id}/claim` and `POST /v1/ready/claim`
+  over REST, the matching MCP tools, and printed by `takomo new` / `show` /
+  `claim` / `next` / `start` — so an agent driving the store through the CLI reads
+  the house style at the moment it has just written something and can still fix
+  it. A project that sets no conventions gets no extra keys, and the hints stay
+  off list responses, which are per ticket where the conventions are per project.
+  Also on `takomo_workflow` as `style_guide`. Advisory, never enforced. Editable,
+  with the question language, from a project-settings sheet on `/board`.
 
 - **Filter the queue and the board by one ticket.** Both surfaces could already
   be narrowed by epic or expertise, but neither answered "what is still open on
