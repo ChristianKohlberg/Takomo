@@ -272,7 +272,7 @@ pub const FACTORY_DEFAULT_YAML: &str = include_str!("../workflows/factory-defaul
 /// `factory_default_parses` below turns that into a test failure instead of a
 /// startup failure.
 pub fn factory_default() -> Workflow {
-    serde_yaml::from_str(FACTORY_DEFAULT_YAML)
+    serde_norway::from_str(FACTORY_DEFAULT_YAML)
         .expect("workflows/factory-default.yaml is a valid workflow")
 }
 
@@ -300,7 +300,7 @@ mod tests {
     /// every project creation at once. Fail here instead, at build time.
     #[test]
     fn factory_default_parses() {
-        let wf: Workflow = serde_yaml::from_str(FACTORY_DEFAULT_YAML)
+        let wf: Workflow = serde_norway::from_str(FACTORY_DEFAULT_YAML)
             .expect("workflows/factory-default.yaml must parse");
         assert_eq!(wf.name, "factory-default");
         assert_eq!(wf.initial, "brief");
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn every_shipped_workflow_is_valid() {
         for rel in SHIPPED {
-            let wf: Workflow = serde_yaml::from_str(&read_shipped(rel))
+            let wf: Workflow = serde_norway::from_str(&read_shipped(rel))
                 .unwrap_or_else(|e| panic!("{rel} does not parse: {e}"));
             let problems = wf.validate(&[]);
             assert!(problems.is_empty(), "{rel} is invalid: {problems:?}");
@@ -351,7 +351,7 @@ mod tests {
             .and_then(|rest| rest.split("```").next())
             .expect("spec/workflow-format.md has a ```yaml block");
         let documented: Workflow =
-            serde_yaml::from_str(block).expect("the doc's yaml block is a workflow");
+            serde_norway::from_str(block).expect("the doc's yaml block is a workflow");
         assert_eq!(
             shape(&documented),
             shape(&factory_default()),
@@ -374,7 +374,7 @@ mod tests {
             .expect("clients/cli/takomo defines simple_workflow_json with a heredoc");
         let embedded: Workflow =
             serde_json::from_str(body).expect("the CLI's embedded workflow is a workflow");
-        let shipped: Workflow = serde_yaml::from_str(&read_shipped("workflows/simple.yaml"))
+        let shipped: Workflow = serde_norway::from_str(&read_shipped("workflows/simple.yaml"))
             .expect("workflows/simple.yaml is a workflow");
         assert_eq!(
             shape(&embedded),
