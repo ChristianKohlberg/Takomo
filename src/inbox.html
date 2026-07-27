@@ -880,11 +880,20 @@
     var q = "/events?since=" + state.cursor + "&limit=200&wait=0&kind=question_asked,question_answered,question_withdrawn,question_expired,question_escalated,question_followup_requested,question_replied";
     if (state.project) q += "&project=" + encodeURIComponent(state.project);
     api(q).then(function (res) {
-      if (typeof res.cursor === "number") state.cursor = res.cursor;
       if ((res.events || []).length === 0) { setLive("live", "live"); return; }
       var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
         (document.activeElement && $("read").contains(document.activeElement));
+      // Leave the cursor where it is while busy. Rebuilding the list under a
+      // human who is mid-answer would wipe typed text and focus, so this batch
+      // is skipped — but skipping it must not consume it: `since` still points
+      // before these events, so the next non-busy poll fetches them again (the
+      // server returns everything after `since`, in seq order, so nothing is
+      // reordered or seen twice). Advancing first dropped them for good, and
+      // since `pending` stays non-empty for the whole 30s undo window, a normal
+      // pass through the queue is busy continuously — the inbox went silent
+      // until a reload.
       if (busy) { setLive("live", "live ·"); return; }
+      if (typeof res.cursor === "number") state.cursor = res.cursor;
       return loadQuestions().then(function (items) { state.questions = items || []; return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
     }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
   }
