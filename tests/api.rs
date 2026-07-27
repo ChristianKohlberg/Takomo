@@ -141,7 +141,12 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     );
 
     // ---- half 2: the control that reads them ----
-    for (path, wiring) in [("/board", "inSubtree("), ("/inbox", "visible()")] {
+    // The two surfaces mount different controls: /board's ticket filter is a
+    // typeahead (takomo-fo1j), /inbox still uses the native <select>.
+    for (path, control, wiring) in [
+        ("/board", "id=\"tickfilter\"", "inSubtree("),
+        ("/inbox", "id=\"ticksel\"", "visible()"),
+    ] {
         let body = app
             .request(Method::GET, path)
             .send()
@@ -151,8 +156,8 @@ async fn ticket_filter_contract_on_board_and_inbox() {
             .await
             .unwrap();
         assert!(
-            body.contains("id=\"ticksel\""),
-            "{path} ships the ticket-filter control"
+            body.contains(control),
+            "{path} ships the ticket-filter control ('{control}')"
         );
         assert!(
             body.contains(wiring),
@@ -164,6 +169,36 @@ async fn ticket_filter_contract_on_board_and_inbox() {
             body.matches("allTickets:").count(),
             2,
             "{path} needs `allTickets` in both the DE and EN string tables"
+        );
+    }
+
+    // The board's typeahead has to stay keyboard-operable: the <select> it
+    // replaced was, for free. No JS test lane exists here, so this asserts the
+    // markers whose absence means the control has silently become mouse-only —
+    // the ARIA combobox wiring and the key handling that drives it.
+    let board = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    for marker in [
+        "role\", \"combobox\"",  // the input announces itself as a combobox
+        "aria-expanded",         // …and whether its popup is open
+        "aria-activedescendant", // …and which option the arrow keys are on
+        "role\", \"listbox\"",   // the popup is a real listbox
+        "role\", \"option\"",    // with real options
+        "\"ArrowDown\"",         // arrow keys move the active option
+        "\"Enter\"",             // Enter commits it
+        "\"Escape\"",            // Escape dismisses the popup
+        "ta-clear",              // and the selection is clearable
+    ] {
+        assert!(
+            board.contains(marker),
+            "/board's ticket typeahead must keep '{marker}' — without it the control \
+             is no longer fully keyboard-operable, which the <select> it replaced was"
         );
     }
 }
