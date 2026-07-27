@@ -249,7 +249,6 @@
   .clarify { width: 100%; height: 84px; resize: vertical; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font: inherit; font-size: 14px; color: var(--text); background: var(--panel); outline: none; }
   .suggest { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .suggest button { font-family: var(--mono); font-size: 12px; color: var(--accent2); background: var(--chip-bg); border: none; padding: 3px 9px; border-radius: 6px; cursor: pointer; }
-  .lang-nudge { font-size: 12.5px; color: var(--high); background: color-mix(in srgb, var(--high) 10%, transparent); border: 1px solid color-mix(in srgb, var(--high) 34%, transparent); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
 
   /* footer */
   .rfoot { flex: 0 0 auto; border-top: 1px solid var(--border-soft); padding: 14px 34px 16px; background: var(--col-bg); }
@@ -1533,8 +1532,15 @@
 
   function answerArea(q) {
     var wrap = el("div", "answer");
+    // The project's `question_language` reaches the human here only as a hint
+    // inside the text placeholder. It used to also head the answer area as a
+    // standing banner ("This project expects answers in German.") on every
+    // question of every such project, which is a rule stated once too often.
+    // It was also the one visible string in this file spelled out inline with
+    // its own `state.lang` ternary instead of coming from STR, so the parity
+    // check that guards every other string never saw it. The setting itself is
+    // untouched: agents still get it as `language_hint`.
     var lang = getLang();
-    if (lang) wrap.appendChild(el("div", "lang-nudge", (state.lang === "de" ? "Dieses Projekt erwartet Antworten auf " : "This project expects answers in ") + lang + "."));
     if (q.kind === "approve") {
       var gate = el("div", "gatenote");
       gate.appendChild(lockIcon());
