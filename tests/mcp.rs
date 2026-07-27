@@ -6,85 +6,20 @@
 //! tool discovery, a full ticket work loop through the internal store, and the
 //! bearer-auth boundary (missing / invalid / share-token requests are rejected).
 
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
-use std::time::Duration;
-use takomo::server::{build_router, spawn_sweeper, AppState};
-use takomo::store::{ShareKind, Store};
+use takomo::store::ShareKind;
+
+mod common;
+use common::TestApp;
 
 const PROTO: &str = "2025-06-18";
-
-struct TestApp {
-    base: String,
-    /// read,write,human,admin — can drive human-gated transitions.
-    human: String,
-    /// read,write only.
-    worker: String,
-    /// A share token (`tks_...`) — must NOT be accepted at /mcp.
-    share: String,
-    client: reqwest::Client,
-    _tmp: tempfile::TempDir,
-}
-
-fn scopes(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
-}
-
-async fn spawn() -> TestApp {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(tmp.path().join("test.db")).expect("open store");
-    store
-        .create_project("tp", "Test Project", None, "test:setup")
-        .expect("create project");
-    let (_, human) = store
-        .create_token(
-            "human:admin",
-            &scopes(&["read", "write", "human", "admin"]),
-            None,
-            10_000,
-            None,
-        )
-        .unwrap();
-    let (_, worker) = store
-        .create_token("agent:w1", &scopes(&["read", "write"]), None, 10_000, None)
-        .unwrap();
-    // A read-only share token, scoped to the project. It lives in the shares
-    // table, not tokens, so the normal bearer path must reject it.
-    let (_, share) = store
-        .create_share(
-            ShareKind::Project,
-            "tp",
-            "tp",
-            takomo::ids::now_ms() + 3_600_000,
-            "human:admin",
-        )
-        .unwrap();
-
-    let state = AppState::new(store);
-    spawn_sweeper(state.clone(), Duration::from_millis(250));
-    let router = build_router(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
-    });
-
-    TestApp {
-        base: format!("http://{addr}"),
-        human,
-        worker,
-        share,
-        client: reqwest::Client::new(),
-        _tmp: tmp,
-    }
-}
 
 impl TestApp {
     /// Raw JSON-RPC POST to /mcp. `token` None omits the Authorization header.
     async fn rpc(&self, token: Option<&str>, method: &str, params: Value) -> reqwest::Response {
         let mut req = self
-            .client
-            .post(format!("{}/mcp", self.base))
+            .request(Method::POST, "/mcp")
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", PROTO)
@@ -151,7 +86,7 @@ fn init_params() -> Value {
 
 #[tokio::test]
 async fn hosted_mcp_handshake_and_tool_discovery() {
-    let app = spawn().await;
+    let app = TestApp::spawn().await;
 
     let init = app.ok_call(&app.worker, "initialize", init_params()).await;
     assert_eq!(init["protocolVersion"].as_str().unwrap(), PROTO);
@@ -190,17 +125,17 @@ async fn hosted_mcp_handshake_and_tool_discovery() {
 
 #[tokio::test]
 async fn hosted_mcp_drives_full_work_loop() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
 
     // whoami reflects the bearer identity.
-    let who = app.tool_ok(&app.human, "takomo_whoami", json!({})).await;
+    let who = app.tool_ok(&app.admin, "takomo_whoami", json!({})).await;
     assert_eq!(who["whoami"]["actor"].as_str().unwrap(), "human:admin");
 
     // new — created in the workflow's initial state ("brief").
     let created = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_new",
             json!({ "project": "tp", "title": "hosted mcp loop", "type": "task" }),
         )
@@ -214,7 +149,7 @@ async fn hosted_mcp_drives_full_work_loop() {
     // Advance brief -> spec -> ready (spec->ready needs scope:human).
     let to_spec = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_transition",
             json!({ "id": id, "to": "spec" }),
         )
@@ -222,7 +157,7 @@ async fn hosted_mcp_drives_full_work_loop() {
     assert_eq!(to_spec["ticket"]["state"].as_str().unwrap(), "spec");
     let to_ready = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_transition",
             json!({ "id": id, "to": "ready" }),
         )
@@ -231,7 +166,7 @@ async fn hosted_mcp_drives_full_work_loop() {
 
     // ready — the ticket now shows up in the ready queue.
     let ready = app
-        .tool_ok(&app.human, "takomo_ready", json!({ "project": "tp" }))
+        .tool_ok(&app.admin, "takomo_ready", json!({ "project": "tp" }))
         .await;
     let ready_ids: Vec<&str> = ready["items"]
         .as_array()
@@ -246,7 +181,7 @@ async fn hosted_mcp_drives_full_work_loop() {
 
     // claim — takes the lease and returns a fencing token.
     let claim = app
-        .tool_ok(&app.human, "takomo_claim", json!({ "id": id }))
+        .tool_ok(&app.admin, "takomo_claim", json!({ "id": id }))
         .await;
     assert!(
         claim["lease"]["fence"].is_number(),
@@ -255,14 +190,14 @@ async fn hosted_mcp_drives_full_work_loop() {
 
     // start — moves ready -> implementing (auto-resolves the held fence).
     let started = app
-        .tool_ok(&app.human, "takomo_start", json!({ "id": id }))
+        .tool_ok(&app.admin, "takomo_start", json!({ "id": id }))
         .await;
     assert_eq!(started["ticket"]["state"].as_str().unwrap(), "implementing");
 
     // implementing -> review (needs the claim; fence resolved automatically).
     let to_review = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_transition",
             json!({ "id": id, "to": "review" }),
         )
@@ -271,7 +206,7 @@ async fn hosted_mcp_drives_full_work_loop() {
 
     // done — review -> done (needs scope:human + no open children).
     let done = app
-        .tool_ok(&app.human, "takomo_done", json!({ "id": id }))
+        .tool_ok(&app.admin, "takomo_done", json!({ "id": id }))
         .await;
     assert_eq!(done["transitioned_to"].as_str().unwrap(), "done");
     assert_eq!(done["ticket"]["state"].as_str().unwrap(), "done");
@@ -279,12 +214,12 @@ async fn hosted_mcp_drives_full_work_loop() {
 
 #[tokio::test]
 async fn hosted_mcp_relays_store_errors_for_self_correction() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
 
     let created = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_new",
             json!({ "project": "tp", "title": "illegal move" }),
         )
@@ -295,7 +230,7 @@ async fn hosted_mcp_relays_store_errors_for_self_correction() {
     // back as a tool-level error with allowed_transitions, not a 500.
     let (payload, is_error) = app
         .tool(
-            &app.human,
+            &app.admin,
             "takomo_transition",
             json!({ "id": id, "to": "done" }),
         )
@@ -313,7 +248,7 @@ async fn hosted_mcp_relays_store_errors_for_self_correction() {
 
 #[tokio::test]
 async fn hosted_mcp_rejects_unauthorized_requests() {
-    let app = spawn().await;
+    let app = TestApp::spawn().await;
 
     // No Authorization header.
     let missing = app.rpc(None, "initialize", init_params()).await;
@@ -335,7 +270,17 @@ async fn hosted_mcp_rejects_unauthorized_requests() {
 
     // A valid *share* token (tks_...) must not work on /mcp — it lives in the
     // shares table and never resolves against the normal bearer path.
-    let shared = app.rpc(Some(&app.share), "initialize", init_params()).await;
+    let (_, share) = app
+        .open_store()
+        .create_share(
+            ShareKind::Project,
+            "tp",
+            "tp",
+            takomo::ids::now_ms() + 3_600_000,
+            "human:admin",
+        )
+        .unwrap();
+    let shared = app.rpc(Some(&share), "initialize", init_params()).await;
     assert_eq!(
         shared.status(),
         StatusCode::UNAUTHORIZED,
@@ -345,15 +290,9 @@ async fn hosted_mcp_rejects_unauthorized_requests() {
     // Sanity: the share string really is a share token, and it does authorize
     // the share-scoped read endpoint — proving the /mcp rejection is about the
     // endpoint boundary, not a malformed token.
-    let share_ok = app
-        .client
-        .get(format!("{}/v1/shares/self", app.base))
-        .header("Authorization", format!("Bearer {}", app.share))
-        .send()
-        .await
-        .unwrap();
+    let (share_status, _) = app.get(&share, "/v1/shares/self").await;
     assert_eq!(
-        share_ok.status(),
+        share_status,
         StatusCode::OK,
         "share token works on its own endpoint"
     );
@@ -361,8 +300,8 @@ async fn hosted_mcp_rejects_unauthorized_requests() {
 
 #[tokio::test]
 async fn hosted_mcp_ask_and_answer_round_trip() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
 
     // Create and drive a ticket to implementing (worker holds the lease).
     let created = app
@@ -375,13 +314,13 @@ async fn hosted_mcp_ask_and_answer_round_trip() {
     let id = created["ticket"]["id"].as_str().unwrap().to_string();
     // brief -> spec -> ready needs the human scope.
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "spec" }),
     )
     .await;
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "ready" }),
     )
@@ -426,7 +365,7 @@ async fn hosted_mcp_ask_and_answer_round_trip() {
     // The human answers; the ticket resumes into a claimable state.
     let answered = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_answer",
             json!({ "id": qid, "answer": "yes" }),
         )
@@ -437,23 +376,22 @@ async fn hosted_mcp_ask_and_answer_round_trip() {
 
 #[tokio::test]
 async fn hosted_mcp_surfaces_project_language() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
 
     // Admin sets the project's expected human-facing question language.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/language", app.base))
-        .bearer_auth(&app.human)
-        .json(&json!({ "language": "German" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/language",
+            json!({ "language": "German" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 
     // takomo_workflow carries it.
     let wf = app
-        .tool_ok(&app.human, "takomo_workflow", json!({ "project": "tp" }))
+        .tool_ok(&app.admin, "takomo_workflow", json!({ "project": "tp" }))
         .await;
     assert_eq!(wf["question_language"], "German");
 
@@ -467,13 +405,13 @@ async fn hosted_mcp_surfaces_project_language() {
         .await;
     let id = created["ticket"]["id"].as_str().unwrap().to_string();
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "spec" }),
     )
     .await;
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "ready" }),
     )
@@ -503,13 +441,13 @@ async fn hosted_mcp_surfaces_project_language() {
 
 #[tokio::test]
 async fn hosted_mcp_tag_tool_tags_and_filters() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
 
     // Create a ticket with a tag inline (lazy-registers person:ada).
     let created = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_new",
             json!({ "project": "tp", "title": "tagged via mcp", "tags": ["person:ada"] }),
         )
@@ -520,7 +458,7 @@ async fn hosted_mcp_tag_tool_tags_and_filters() {
     // takomo_tag adds and removes refs.
     let tagged = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_tag",
             json!({ "id": id, "add": ["component:billing"], "remove": ["person:ada"] }),
         )
@@ -530,7 +468,7 @@ async fn hosted_mcp_tag_tool_tags_and_filters() {
     // takomo_list filters by tag kind.
     let listed = app
         .tool_ok(
-            &app.human,
+            &app.admin,
             "takomo_list",
             json!({ "project": "tp", "tag_kind": "component" }),
         )
@@ -549,8 +487,8 @@ async fn hosted_mcp_tag_tool_tags_and_filters() {
 
 #[tokio::test]
 async fn hosted_mcp_surfaces_project_style_guide() {
-    let app = spawn().await;
-    app.ok_call(&app.human, "initialize", init_params()).await;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
     let guide = "Two sentences max. Plain language, no marketing voice.";
 
     // With no style guide set, the work loop stays free of the extra key.
@@ -567,19 +505,18 @@ async fn hosted_mcp_surfaces_project_style_guide() {
     );
 
     // Admin sets the project's house style for agent-written text.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.human)
-        .json(&json!({ "style_guide": guide }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": guide }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 
     // takomo_workflow carries it.
     let wf = app
-        .tool_ok(&app.human, "takomo_workflow", json!({ "project": "tp" }))
+        .tool_ok(&app.admin, "takomo_workflow", json!({ "project": "tp" }))
         .await;
     assert_eq!(wf["style_guide"], guide);
 
@@ -596,13 +533,13 @@ async fn hosted_mcp_surfaces_project_style_guide() {
 
     // …as do the claim/start/show work-loop responses.
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "spec" }),
     )
     .await;
     app.tool_ok(
-        &app.human,
+        &app.admin,
         "takomo_transition",
         json!({ "id": id, "to": "ready" }),
     )
