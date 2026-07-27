@@ -111,6 +111,22 @@ and it performs the ticket's human-gated resume transition (in the factory
 default, `needs-decision → ready`). `POST /v1/questions/{id}/answer` / the
 `takomo_answer` MCP tool are the other two surfaces.
 
+**Where the workflow has no approval gate.** A `scope:human` edge is how a
+workflow marks "leaving this state is a human's call". The `simple` workflow —
+the one `takomo init` applies — deliberately has none anywhere, so there is no
+such edge to resume through. There, the answer resumes the ticket through any
+exit from the parked state the answerer can take (scope satisfied, no claim, no
+guard) that leads somewhere non-terminal and unblocked, preferring a claimable
+`todo` — so `blocked → todo`, back into the ready queue. A human gate that *does*
+exist but is not takeable (guarded, claim-gated, or needing a scope the answerer
+lacks) is never routed around: the ticket stays parked instead.
+
+When a ticket that should have resumed cannot, the answer is still recorded, and
+it is not silent about it. The answer response carries a `resume` block
+(`resumed: false` plus a `code`, a `message` naming every exit from the parked
+state, and a `remedy`), and a comment lands on the ticket saying the work is
+still parked and out of the ready queue.
+
 An agent that no longer needs its answer withdraws it: `takomo withdraw <qid>`.
 
 ## Taking an answer back (reopen)

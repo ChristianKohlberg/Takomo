@@ -90,6 +90,30 @@ single ticket.
   `reentry_states` so a machine reader need not parse the prose. The error code
   and status are unchanged, and whether an expired lease should block closing at
   all is a separate open question (takomo-jb5i).
+- **Answering a blocking question resumes the ticket on the `simple` workflow —
+  the half of ask-a-human that never worked on the default.** The resume looked
+  only at `scope:human` transitions out of the parked state. `simple` — the
+  workflow `takomo init` applies — has no `scope:human` edge anywhere, by
+  design, so there was nothing to resume through: every answer recorded fine and
+  left its ticket sitting in `blocked`, out of the ready queue, where no agent
+  would ever pick it up again. Where the parked state has no human-gated exit at
+  all, the resume now goes through any exit the answerer can take (scope
+  satisfied, no claim, no guard) that leads somewhere non-terminal and
+  unblocked, preferring a claimable `todo` — on `simple`, `blocked → todo`, back
+  into the ready queue. A human gate that exists but is not takeable is still
+  never routed around, so `factory-default`'s approval path is unchanged.
+- **An answer that cannot resume its ticket now says so.** Previously it
+  returned `200` with `resolved_to: null` and nothing else — the answerer was
+  told the ticket would resume and had no way to learn it hadn't. The answer
+  response now carries a `resume` block: `resumed`, the state it moved to, and,
+  when it could not, a machine-readable `code`, a `message` listing every exit
+  from the parked state with what each would take, and a `remedy` naming the
+  next call. A comment lands on the ticket too, so it is visible to whoever
+  reads the ticket rather than the response. The answer is still recorded either
+  way. `takomo answer` used to print `ticket X resumed to 'blocked'` — the
+  parked state read back as if it were the resume target; it now reports what
+  actually happened, and prints the reason and remedy when the ticket did not
+  move.
 - **The `/inbox` answer button now says what it will do, and is live only when it
   can do it.** Three faults in the same control. It was armed before anything had
   been chosen, so it could be pressed in a state where it could only refuse; it

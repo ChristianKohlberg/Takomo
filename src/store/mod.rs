@@ -24,8 +24,8 @@ pub use events::EventFilter;
 pub use model::*;
 pub use projects::{normalize_style_guide, Conventions, DeletedCounts, MAX_STYLE_GUIDE_CHARS};
 pub use questions::{
-    question_quality_hints, AskRequest, QuestionFilter, ReviseOptionsRequest, TimeoutAction,
-    MAX_QUESTIONS_PAGE, QUESTION_KINDS,
+    question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
+    ReviseOptionsRequest, TimeoutAction, MAX_QUESTIONS_PAGE, QUESTION_KINDS,
 };
 pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
 pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, TagPatch};

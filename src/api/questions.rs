@@ -334,14 +334,15 @@ pub async fn answer(
         })?;
     let resume_to = get_str(obj, "resume_to")?;
 
-    let (question, ticket) =
+    let outcome =
         state
             .store
             .answer_question(&id, &ctx.actor, &ctx.scopes, &answer, resume_to.as_deref())?;
     state.wake();
     Ok(Json(json!({
-        "question": question.to_json(),
-        "ticket": ticket.to_json(now_ms()),
+        "question": outcome.question.to_json(),
+        "ticket": outcome.ticket.to_json(now_ms()),
+        "resume": outcome.resume_json(),
     })))
 }
 
@@ -697,7 +698,7 @@ pub async fn self_answer(
     // ONE transaction spends the link and records the answer, so single-use is
     // the transaction itself rather than a follow-up write that a concurrent
     // holder could slip past (or a crash could lose).
-    let (question, ticket) = state.store.answer_question_via_grant(
+    let outcome = state.store.answer_question_via_grant(
         &grant.question,
         &grant.actor,
         &scopes,
@@ -707,8 +708,9 @@ pub async fn self_answer(
     )?;
     state.wake();
     Ok(Json(json!({
-        "question": question.to_json(),
-        "ticket": ticket.to_json(now_ms()),
+        "question": outcome.question.to_json(),
+        "ticket": outcome.ticket.to_json(now_ms()),
+        "resume": outcome.resume_json(),
     })))
 }
 

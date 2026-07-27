@@ -1458,14 +1458,27 @@ paths:
       tags: [questions]
       summary: Answer a question (the human authorization gate) and resume the ticket
       description: |
-        Requires the `human` scope. Records the reply and performs the ticket's
-        human-gated transition to resume it. `answer` may be a scalar (`true`,
-        an option string, or clarification text) or `{ "value": ..., "note": ... }`
-        (a top-level `note` sibling is rejected). An `approve` question
-        additionally requires the answerer to hold a matching `expert:<tag>`
-        scope. An explicit `resume_to` is strict (a bad target errors); with no
+        Requires the `human` scope. Records the reply and resumes the ticket.
+        `answer` may be a scalar (`true`, an option string, or clarification
+        text) or `{ "value": ..., "note": ... }` (a top-level `note` sibling is
+        rejected). An `approve` question additionally requires the answerer to
+        hold a matching `expert:<tag>` scope.
+
+        The resume goes through the workflow's human-gated (`scope:human`)
+        transition out of the parked state. Where the parked state has no
+        human-gated exit at all — the `simple` workflow has none anywhere, by
+        design — it goes instead through any exit the answerer can take
+        (scope satisfied, no claim, no guard) that leads somewhere non-terminal
+        and unblocked, preferring a claimable `todo` so the ticket re-enters the
+        ready queue. A human gate that exists but is not takeable is never
+        routed around.
+
+        An explicit `resume_to` is strict (a bad target errors). With no
         `resume_to`, the answer is recorded even if the ticket cannot be
-        auto-resumed (`resolved_to` is then null).
+        auto-resumed: `resolved_to` is then null and the `resume` block of the
+        response carries a `code`, a `message` and a `remedy` saying why the
+        ticket is still parked and what to call next. That case also posts a
+        comment on the ticket.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1488,6 +1501,7 @@ paths:
                 properties:
                   question: { $ref: "#/components/schemas/Question" }
                   ticket: { $ref: "#/components/schemas/Ticket" }
+                  resume: { $ref: "#/components/schemas/AnswerResume" }
         "400":
           description: Missing `answer`, or an unknown top-level field.
           content:
@@ -1617,6 +1631,7 @@ paths:
                 properties:
                   question: { $ref: "#/components/schemas/Question" }
                   ticket: { $ref: "#/components/schemas/Ticket" }
+                  resume: { $ref: "#/components/schemas/AnswerResume" }
         "410":
           description: >-
             The link is expired, used, or revoked (`answer.expired`); or it was
@@ -2280,6 +2295,24 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         version: { type: integer }
+
+    AnswerResume:
+      type: object
+      description: |
+        What an answer did to its ticket. `resumed` and `to` say whether this
+        answer moved the ticket out of its blocked state and where to.
+
+        When a blocking answer cleared the barrier but no transition out of the
+        parked state could carry the resume, the answer is still recorded and
+        the ticket stays parked — and `code`, `message` and `remedy` say why and
+        what to call next, so a caller never has to infer "still parked" from a
+        null `resolved_to`. Those three are absent when nothing went wrong.
+      properties:
+        resumed: { type: boolean, description: Whether this answer moved the ticket }
+        to: { type: [string, "null"], description: State the ticket was resumed into }
+        code: { type: string, description: "Machine-readable reason the ticket could not be resumed, e.g. question.no_resume" }
+        message: { type: string, description: "What is wrong, including every exit from the parked state and what each would take" }
+        remedy: { type: string, description: The exact next call that gets the ticket moving again }
 
     Event:
       type: object

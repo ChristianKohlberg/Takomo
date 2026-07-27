@@ -515,10 +515,92 @@ fn park_target(wf: &Workflow, from: &str) -> Option<String> {
     })
 }
 
+/// What an answer did: the recorded question, the ticket as it now stands, and
+/// — when the ticket should have resumed but could not — why it did not.
+pub struct AnswerOutcome {
+    pub question: Question,
+    pub ticket: Ticket,
+    pub resume_blocked: Option<ResumeBlocked>,
+}
+
+impl AnswerOutcome {
+    /// The `resume` block every answer response carries. `resumed`/`to` say
+    /// whether this answer moved the ticket and where; when it should have and
+    /// could not, `code`/`message`/`remedy` say why and what to do next — so a
+    /// caller never has to infer "still parked" from a null `resolved_to`.
+    pub fn resume_json(&self) -> Value {
+        match &self.resume_blocked {
+            None => json!({
+                "resumed": self.question.resolved_to.is_some(),
+                "to": self.question.resolved_to,
+            }),
+            Some(rb) => json!({
+                "resumed": false,
+                "to": Value::Null,
+                "code": rb.code,
+                "message": rb.message,
+                "remedy": rb.remedy,
+            }),
+        }
+    }
+}
+
+/// Why an answer that should have resumed its ticket left it parked instead.
+/// Carries the `resume_target` rejection out to the caller so the answer
+/// response and the ticket thread can say what happened — the answer is still
+/// recorded (discarding a human's decision would be worse), but it is never
+/// silent about the ticket staying blocked.
+#[derive(Debug, Clone)]
+pub struct ResumeBlocked {
+    pub code: String,
+    pub message: String,
+    pub remedy: Option<String>,
+}
+
+impl ResumeBlocked {
+    fn from_error(e: ApiError) -> Self {
+        ResumeBlocked {
+            code: e.body.code.clone(),
+            message: e.body.message.clone(),
+            remedy: e.body.remedy.clone(),
+        }
+    }
+}
+
+/// True when `t` carries a `scope:human` requirement — a workflow author's mark
+/// that leaving this state is a human's call.
+fn is_human_gated(t: &crate::workflow::WorkflowTransition) -> bool {
+    t.requires
+        .iter()
+        .any(|r| matches!(Requirement::parse(r), Ok(Requirement::Scope(s)) if s == "human"))
+}
+
+/// A fallback resume has to actually un-stick the ticket: never into a terminal
+/// state (an answer must not silently close or cancel work) and never into
+/// another blocked state (which would leave it out of the ready queue anyway).
+fn resumes_work(wf: &Workflow, to: &str) -> bool {
+    wf.state(to)
+        .map(|s| !s.terminal && s.category != "blocked")
+        .unwrap_or(false)
+}
+
 /// Choose the state to resume a parked ticket into once a human answers.
-/// Preference: a human-gated, claimable `todo` state (the ready queue re-entry),
-/// then any human-gated claimable state, then any human-gated target. Returns
-/// the chosen state and whether the caller's scopes satisfy that edge.
+/// Preference: a claimable `todo` state (the ready queue re-entry), then any
+/// claimable state, then any target — over the human-gated edges out of `from`.
+///
+/// **The fallback for workflows with no approval gate.** A `scope:human` edge is
+/// how a workflow author marks "leaving this state is a human's decision": on
+/// `factory-default` every exit from `needs-decision` carries one, and resuming
+/// through it is what records the authorisation. But `simple` — the default
+/// `takomo init` applies — has no `scope:human` edge anywhere, deliberately, so
+/// this lookup found nothing and every answered ticket stayed parked, silently
+/// (takomo-sk4e). So: when `from` offers **no human-gated exit at all**, the
+/// author has said leaving it needs no human authority, and we fall back to the
+/// edges the answerer could take anyway (scope satisfied, unclaimed, unguarded)
+/// that lead somewhere work can continue. When human-gated exits DO exist but
+/// none is takeable — guarded, claim-gated, or needing a scope the answerer
+/// lacks — the fallback stays off: that gate is real and must not be routed
+/// around. `factory-default` is therefore untouched by this.
 fn resume_target(
     wf: &Workflow,
     from: &str,
@@ -529,11 +611,7 @@ fn resume_target(
     let human_gated: Vec<&crate::workflow::WorkflowTransition> = edges
         .iter()
         .copied()
-        .filter(|t| {
-            t.requires
-                .iter()
-                .any(|r| matches!(Requirement::parse(r), Ok(Requirement::Scope(s)) if s == "human"))
-        })
+        .filter(|t| is_human_gated(t))
         .collect();
 
     if let Some(req) = requested {
@@ -559,11 +637,19 @@ fn resume_target(
 
     // Only consider edges the caller can actually take (scope satisfied, no
     // claim/guard requirement) — so a guarded edge never shadows a clean one.
-    let answerable: Vec<&crate::workflow::WorkflowTransition> = human_gated
-        .iter()
-        .copied()
-        .filter(|t| ensure_edge_answerable(t, scopes).is_ok())
-        .collect();
+    let answerable: Vec<&crate::workflow::WorkflowTransition> = if human_gated.is_empty() {
+        edges
+            .iter()
+            .copied()
+            .filter(|t| ensure_edge_answerable(t, scopes).is_ok() && resumes_work(wf, &t.to))
+            .collect()
+    } else {
+        human_gated
+            .iter()
+            .copied()
+            .filter(|t| ensure_edge_answerable(t, scopes).is_ok())
+            .collect()
+    };
     let pick = answerable
         .iter()
         .find(|t| {
@@ -577,15 +663,39 @@ fn resume_target(
                 .find(|t| wf.state(&t.to).map(|s| s.claimable).unwrap_or(false))
         })
         .or_else(|| answerable.first())
-        .ok_or_else(|| {
-            ApiError::conflict(
-                "question.no_resume",
-                format!(
-                    "Ticket state '{from}' has no human-gated transition this token can take to resume the ticket. Resume it manually via POST /v1/tickets/{{id}}/transition, or pass an explicit resume_to."
-                ),
-            )
-        })?;
+        .ok_or_else(|| no_resume_error(from, &edges))?;
     Ok(pick.to.clone())
+}
+
+/// The rejection when no edge out of the parked state can carry the resume.
+/// Written for whoever reads it *after* the answer landed: the decision is
+/// safe, the ticket is not moving on its own, and here is every exit with what
+/// it would take, so the next call can be made without a second request.
+fn no_resume_error(from: &str, edges: &[&crate::workflow::WorkflowTransition]) -> ApiError {
+    let exits = if edges.is_empty() {
+        "none — it is a dead end in this workflow".to_string()
+    } else {
+        edges
+            .iter()
+            .map(|t| {
+                if t.requires.is_empty() {
+                    t.to.clone()
+                } else {
+                    format!("{} (requires {})", t.to, t.requires.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    ApiError::conflict(
+        "question.no_resume",
+        format!(
+            "No transition out of '{from}' can resume this ticket automatically: every exit is gated by a claim, a guard, or a scope this token lacks, or leads only to a terminal/blocked state. Exits from '{from}': {exits}."
+        ),
+    )
+    .remedy(format!(
+        "The answer is recorded, but the ticket stays in '{from}' and out of the ready queue. Move it on with POST /v1/tickets/{{id}}/transition (claiming it first if the edge requires a claim), or answer with an explicit resume_to naming a state this token can reach."
+    ))
 }
 
 /// A resume edge must have all its scope requirements met by the caller and no
@@ -979,7 +1089,7 @@ impl Store {
         scopes: &HashSet<String>,
         answer: &Value,
         resume_to: Option<&str>,
-    ) -> ApiResult<(Question, Ticket)> {
+    ) -> ApiResult<AnswerOutcome> {
         self.answer_question_inner(id, actor, scopes, answer, resume_to, None)
     }
 
@@ -1002,7 +1112,7 @@ impl Store {
         answer: &Value,
         resume_to: Option<&str>,
         grant_id: &str,
-    ) -> ApiResult<(Question, Ticket)> {
+    ) -> ApiResult<AnswerOutcome> {
         self.answer_question_inner(id, actor, scopes, answer, resume_to, Some(grant_id))
     }
 
@@ -1014,7 +1124,7 @@ impl Store {
         answer: &Value,
         resume_to: Option<&str>,
         grant_id: Option<&str>,
-    ) -> ApiResult<(Question, Ticket)> {
+    ) -> ApiResult<AnswerOutcome> {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
@@ -1081,9 +1191,12 @@ impl Store {
             // Resume rules (only on the barrier-clearing answer):
             //   - explicit resume_to: strict — a bad target aborts before
             //     anything is recorded, so the caller can retry with a valid one.
-            //   - auto (no resume_to): best-effort — if there is no clean
-            //     human-gated edge (e.g. an unusual workflow), still RECORD the
-            //     answer and leave the ticket parked, rather than discarding it.
+            //   - auto (no resume_to): best-effort — if no edge out of the
+            //     parked state can carry the resume, still RECORD the answer
+            //     rather than discarding it. Best-effort, never silent: the
+            //     rejection travels back out as `resume_blocked` so the response
+            //     and the ticket thread both say the ticket is still parked.
+            let mut resume_blocked: Option<ResumeBlocked> = None;
             let resolved_to = if !should_resume {
                 None
             } else if resume_to.is_some() {
@@ -1096,7 +1209,10 @@ impl Store {
                         apply_resume(tx, &t, &target, actor, &format!("resolved by human ({id})"), now)?;
                         Some(target)
                     }
-                    Err(_) => None,
+                    Err(e) => {
+                        resume_blocked = Some(ResumeBlocked::from_error(e));
+                        None
+                    }
                 }
             };
 
@@ -1118,6 +1234,23 @@ impl Store {
                 "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![comment, t.id, actor, comment_body, now],
             )?;
+            // A ticket that was supposed to resume and did not is stranded: out
+            // of the ready queue, so no agent will ever pick it up again. Say so
+            // in the thread — a second comment rather than a longer answer
+            // comment, because this is the server speaking, not the answerer.
+            if let Some(rb) = &resume_blocked {
+                let note = crate::ids::comment_id();
+                let note_body = format!(
+                    "Ticket NOT resumed. The answer above is recorded, but this ticket is still in '{}' and out of the ready queue, so no agent will pick it up. {} {}",
+                    t.state,
+                    rb.message,
+                    rb.remedy.as_deref().unwrap_or_default()
+                );
+                tx.execute(
+                    "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![note, t.id, "system", note_body.trim(), now],
+                )?;
+            }
             emit_event(
                 tx,
                 Some(&t.id),
@@ -1129,13 +1262,18 @@ impl Store {
                     "answer": normalized,
                     "resolved_to": resolved_to,
                     "comment": comment,
+                    "resume_blocked": resume_blocked.as_ref().map(|rb| rb.code.clone()),
                 }),
                 now,
             )?;
 
             let question = get_question_row(tx, id)?;
-            let fresh = get_ticket_required(tx, &t.id)?;
-            Ok((question, fresh))
+            let ticket = get_ticket_required(tx, &t.id)?;
+            Ok(AnswerOutcome {
+                question,
+                ticket,
+                resume_blocked,
+            })
         })
     }
 

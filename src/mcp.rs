@@ -1043,7 +1043,7 @@ impl TakomoMcp {
             Some(n) => json!({ "value": a.answer, "note": n }),
             None => json!({ "value": a.answer }),
         };
-        let (question, ticket) = self.state.store.answer_question(
+        let outcome = self.state.store.answer_question(
             &a.id,
             &auth.actor,
             &auth.scopes,
@@ -1053,8 +1053,9 @@ impl TakomoMcp {
         self.state.wake();
         Ok(json!({
             "ok": true,
-            "question": question.to_json(),
-            "ticket": ticket.to_json(now_ms()),
+            "question": outcome.question.to_json(),
+            "ticket": outcome.ticket.to_json(now_ms()),
+            "resume": outcome.resume_json(),
         }))
     }
 
