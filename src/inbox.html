@@ -444,8 +444,7 @@
       nothingSelSub:"Wähle links eine Frage aus.",
       ticketUpdate:"Ticket-Update",
       typeAnswer:"Antwort eingeben…",
-      answer:"Antworten & fortsetzen",
-      answerAdvis:"Antworten & aufzeichnen",
+      submit:"Absenden",
       askFollow:"Rückfrage stellen…",
       to:"an",
       share:"Antwort-Link erstellen",
@@ -547,8 +546,7 @@
       nothingSelSub:"Pick a question from the list.",
       ticketUpdate:"Ticket update",
       typeAnswer:"Type your answer…",
-      answer:"Answer & resume",
-      answerAdvis:"Answer & record",
+      submit:"Submit",
       askFollow:"Ask a follow-up…",
       to:"to",
       share:"Create answer link",
@@ -1700,7 +1698,7 @@
     var reason = composing
       ? ((state.draft[q.id] || "").trim() ? "" : t().followFirst)
       : answerBlockReason(q);
-    btn.textContent = composing ? t().sendFollow : (q.mode === "advisory" ? t().answerAdvis : t().answer);
+    btn.textContent = composing ? t().sendFollow : t().submit;
     btn.className = "btn-primary" + (reason ? " off" : "");
     btn.setAttribute("aria-disabled", reason ? "true" : "false");
     if (reason) btn.title = reason; else btn.removeAttribute("title");
