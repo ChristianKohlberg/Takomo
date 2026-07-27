@@ -1,0 +1,66 @@
+# factory-default — the built-in workflow, and the canonical copy of it.
+#
+# This file IS the definition: src/workflow.rs embeds it with include_str! and
+# parses it at startup, so the server cannot disagree with what you read here.
+# Edit this file to change the built-in workflow; there is no second place.
+# (Embedded at compile time, not read from disk, so a deployed binary carries
+# no runtime dependency on this path — same trick as src/board.html.)
+#
+# It is what a project gets when it is created without an explicit workflow
+# (src/store/projects.rs). The `simple` workflow next door is the no-ceremony
+# alternative the shell CLI's `takomo init` applies instead.
+#
+# The pipeline this encodes: a brief is specced, the spec is approved by a
+# human, implementation is claimed off the ready queue, and done is gated on a
+# human plus every child ticket being closed. Format and semantics:
+# spec/workflow-format.md.
+#
+# Apply it to an existing project (the endpoint takes JSON; convert this YAML or
+# send the equivalent JSON body):
+#   PUT /v1/projects/<id>/workflow   (admin scope)
+name: factory-default
+initial: brief
+
+states:
+  - id: brief          # inbox: anything, zero quality bar
+    category: todo
+  - id: spec           # spec agent is developing it
+    category: in_progress
+    claimable: true    # spec work is claimed like any other work
+  - id: needs-decision # a human answer is required to proceed
+    category: blocked
+  - id: ready          # specced, approved, unblocked → the dispatch queue
+    category: todo
+    claimable: true
+  - id: implementing
+    category: in_progress
+  - id: review         # PR open, evidence attached
+    category: review
+  - id: done
+    category: done
+    terminal: true
+  - id: cancelled
+    category: cancelled
+    terminal: true
+
+transitions:
+  - { from: brief,          to: spec }
+  - { from: brief,          to: cancelled }
+  - { from: spec,           to: needs-decision }
+  - { from: needs-decision, to: spec,           requires: [scope:human] }
+  - { from: spec,           to: ready,          requires: [scope:human] }   # spec approval gate
+  - { from: spec,           to: cancelled }
+  - { from: ready,          to: implementing,   requires: [claim] }
+  - { from: implementing,   to: needs-decision }
+  - { from: implementing,   to: review,         requires: [claim] }
+  - { from: implementing,   to: ready }          # released/failed → back to queue
+  - { from: needs-decision, to: ready,          requires: [scope:human] }   # ask-a-human resume → re-enter the queue
+  - { from: needs-decision, to: implementing,   requires: [scope:human] }
+  - { from: review,         to: implementing }   # review feedback → back to work
+  - { from: review,         to: done,           requires: [scope:human, guard:no_open_children] }
+  - { from: review,         to: cancelled,      requires: [scope:human] }
+  - { from: ready,          to: cancelled }
+
+guards:
+  no_open_children:
+    description: every child ticket must be in a terminal state

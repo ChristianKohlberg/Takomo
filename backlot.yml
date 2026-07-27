@@ -29,6 +29,11 @@ upkeep:
     run: cargo build --release
   - when: Cargo.lock
     run: cargo build --release
+  # workflows/factory-default.yaml is include_str!'d by src/workflow.rs, so it
+  # is a build input living outside src/. Without this rule a change to the
+  # built-in state machine would leave a stale binary behind.
+  - when: glob(workflows/**)
+    run: cargo build --release
   # Content-derived template identity. The baked SQLite template is keyed on the
   # hash of these files, so a branch that changes the schema or the seed content
   # gets its own template instead of silently restoring a stale one.
@@ -40,7 +45,13 @@ upkeep:
   # part of its content: change a state or a `requires` and the seed's output
   # changes (or stops being reachable). Without this rule the bake key would be
   # unchanged and a stale template would be restored by copy.
+  #
+  # Both halves of that machine are listed: the engine in src/workflow.rs, and
+  # the definition it embeds from workflows/. Dropping either one is how a
+  # template goes stale without anything looking wrong.
   - when: src/workflow.rs
+    run: "@rebake-template main"
+  - when: glob(workflows/**)
     run: "@rebake-template main"
 
 services:
