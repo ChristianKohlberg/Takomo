@@ -168,6 +168,76 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     }
 }
 
+/// Keys of one locale's `STR` table, in declaration order.
+///
+/// The tables are one `key:"value",` per line (takomo-f9y5), so a line scan
+/// reads them without pulling in a parser; anything else inside the block is a
+/// hard error rather than a silently skipped key.
+fn str_keys(file: &str, src: &str, locale: &str) -> Vec<String> {
+    let open = format!("{locale}: {{");
+    let mut lines = src.lines();
+    lines
+        .find(|l| l.trim() == "var STR = {")
+        .unwrap_or_else(|| panic!("{file}: no `var STR = {{` table to check"));
+    lines
+        .find(|l| l.trim() == open)
+        .unwrap_or_else(|| panic!("{file}: `STR` has no `{locale}` table"));
+    let keys: Vec<String> = lines
+        .map(str::trim)
+        .take_while(|l| *l != "},")
+        .map(|l| {
+            let (key, _) = l.split_once(':').unwrap_or_else(|| {
+                panic!("{file}: `{locale}` line is not `key:\"value\",` — cannot read it: {l}")
+            });
+            key.to_string()
+        })
+        .collect();
+    assert!(
+        !keys.is_empty(),
+        "{file}: read 0 keys from `{locale}` — the one-key-per-line table layout this scan \
+         relies on is gone, so it is guarding nothing"
+    );
+    keys
+}
+
+/// Every UI string must exist in both locales: a key added to only one renders
+/// as `undefined` for whoever gets that language. `include_str!` reads exactly
+/// the bytes the binary embeds, so no server is needed here — and a moved file
+/// fails the build instead of quietly checking nothing.
+#[test]
+fn spa_string_tables_agree_on_every_key() {
+    for (file, src) in [
+        ("src/board.html", include_str!("../src/board.html")),
+        ("src/inbox.html", include_str!("../src/inbox.html")),
+    ] {
+        let de = str_keys(file, src, "de");
+        let en = str_keys(file, src, "en");
+        for (have, want, missing) in [(&de, &en, "en"), (&en, &de, "de")] {
+            for key in have {
+                assert!(
+                    want.contains(key),
+                    "{file}: STR key `{key}` is missing from the `{missing}` table — add it, \
+                     or that string renders as `undefined` for {missing} readers"
+                );
+            }
+        }
+        assert_eq!(
+            de.len(),
+            en.len(),
+            "{file}: the de and en tables use the same key names but differ in length — \
+             one of them repeats a key"
+        );
+        if let Some(i) = de.iter().zip(&en).position(|(d, e)| d != e) {
+            let (d, e) = (&de[i], &en[i]);
+            panic!(
+                "{file}: de and en list the same keys in a different order (entry {i}: de has \
+                 `{d}`, en has `{e}`) — keep the tables line-for-line parallel so a UI diff \
+                 stays reviewable"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn favicon_served_unauthenticated_as_svg() {
     let app = TestApp::spawn().await;
