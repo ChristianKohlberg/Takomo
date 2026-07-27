@@ -140,9 +140,10 @@ pub async fn put_style(
 }
 
 /// DELETE /v1/projects/{project} (admin) — cascade-delete the project and every
-/// ticket, comment, dep, and event under it, in one transaction. Refuses with
-/// 409 when a ticket holds an active claim unless `?force=true` is passed; 404
-/// for an unknown project. Tokens scoped to the project are left as-is (they
+/// ticket, comment, dep, event, question (with its follow-up thread and answer
+/// grants), promotion, and tag registry entry under it, in one transaction.
+/// Refuses with 409 when a ticket holds an active claim unless `?force=true` is
+/// passed; 404 for an unknown project. Tokens scoped to the project are left as-is (they
 /// simply stop resolving once the project is gone). Returns 204 on success.
 pub async fn delete(
     State(state): State<Arc<AppState>>,
