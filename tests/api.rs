@@ -4422,6 +4422,144 @@ async fn project_create_rejects_oversized_style_guide_before_creating() {
 }
 
 #[tokio::test]
+async fn rest_work_loop_carries_project_conventions() {
+    let app = TestApp::spawn().await;
+
+    // Nothing set: the work loop must add no keys at all, so a project with no
+    // conventions pays no payload for the feature.
+    let (s, bare) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Before any conventions" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{bare}");
+    assert!(bare.get("style_hint").is_none(), "{bare}");
+    assert!(bare.get("language_hint").is_none(), "{bare}");
+
+    let guide = "Two sentences max. Plain language, no marketing voice.";
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": guide }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/language",
+            json!({ "language": "German" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // `takomo new` -> POST /v1/tickets. The hints ride alongside `similar`,
+    // which must survive untouched.
+    let (s, created) = app
+        .post(
+            &app.worker,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Styled ticket" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    assert_eq!(created["style_hint"]["style_guide"], guide);
+    assert_eq!(created["language_hint"]["question_language"], "German");
+    assert!(
+        created["style_hint"]["note"]
+            .as_str()
+            .expect("style note")
+            .contains("house style"),
+        "the hint has to say what to do with it: {created}"
+    );
+    assert!(created["similar"].is_array(), "{created}");
+    let id = created["id"].as_str().expect("ticket id").to_string();
+
+    // `takomo show` -> GET /v1/tickets/{id}.
+    let (s, shown) = app.get(&app.worker, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(s, StatusCode::OK, "{shown}");
+    assert_eq!(shown["style_hint"]["style_guide"], guide);
+    assert_eq!(shown["language_hint"]["question_language"], "German");
+
+    // `takomo claim` -> POST /v1/tickets/{id}/claim. The response *is* the lease,
+    // so the hints are siblings of its fields; the lease shape must be intact.
+    app.to_ready(&id).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    assert_eq!(lease["ticket"], id);
+    assert!(lease["fence"].is_i64(), "{lease}");
+    assert_eq!(lease["style_hint"]["style_guide"], guide);
+    assert_eq!(lease["language_hint"]["question_language"], "German");
+
+    // `takomo next` -> POST /v1/ready/claim, the worker primitive.
+    let other = app.create_ticket("Next up").await;
+    app.to_ready(&other).await;
+    let (s, next) = app
+        .post(&app.worker2, "/v1/ready/claim", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{next}");
+    assert_eq!(next["id"], other);
+    assert!(next["lease"]["fence"].is_i64(), "{next}");
+    assert_eq!(next["style_hint"]["style_guide"], guide);
+    assert_eq!(next["language_hint"]["question_language"], "German");
+
+    // Clearing the guide stops the hint: an agent must never be left following a
+    // convention the project has dropped.
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, shown) = app.get(&app.worker, &format!("/v1/tickets/{id}")).await;
+    assert!(shown.get("style_hint").is_none(), "{shown}");
+    assert_eq!(
+        shown["language_hint"]["question_language"], "German",
+        "clearing one convention leaves the other: {shown}"
+    );
+}
+
+#[tokio::test]
+async fn ticket_lists_stay_free_of_convention_hints() {
+    let app = TestApp::spawn().await;
+    let (s, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": "Terse. Imperative mood." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let id = app.create_ticket("Listed").await;
+    app.to_ready(&id).await;
+
+    // The hints are per project, not per ticket: repeating them on every row of a
+    // list would mean a project read per row and a payload that grows with the
+    // page. List responses stay exactly as they were.
+    let (s, list) = app.get(&app.worker, "/v1/tickets?project=tp").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert!(list.get("style_hint").is_none(), "{list}");
+    for t in list["items"].as_array().expect("items") {
+        assert!(t.get("style_hint").is_none(), "{t}");
+        assert!(t.get("language_hint").is_none(), "{t}");
+    }
+
+    let (s, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
+    assert_eq!(s, StatusCode::OK, "{ready}");
+    for t in ready.as_array().expect("ready array") {
+        assert!(t.get("style_hint").is_none(), "{t}");
+        assert!(t.get("language_hint").is_none(), "{t}");
+    }
+}
+
+#[tokio::test]
 async fn question_barrier_resumes_only_when_all_answered() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Two decisions").await;

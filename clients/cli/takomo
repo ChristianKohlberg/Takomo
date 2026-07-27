@@ -161,6 +161,33 @@ resolve_project() {
 # urlencode a single query value
 urlenc() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$1"; }
 
+# Print the project's writing conventions carried by a work-loop response — the
+# `style_hint` / `language_hint` the store attaches to new/show/claim/next/start.
+# The CLI never dumps raw JSON, so without this the hints would arrive on the
+# wire and never reach the agent reading the terminal.
+#
+# Reads $1 (a response body file; defaults to the last $REQ_OUT) and prints
+# nothing at all when the project sets no conventions.
+print_conventions() {
+  python3 - "${1:-$REQ_OUT}" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+style = (d.get("style_hint") or {}).get("style_guide")
+lang = (d.get("language_hint") or {}).get("question_language")
+if style:
+    print("\nstyle guide (this project's house style — follow it as written):")
+    for line in style.splitlines():
+        print("  " + line)
+if lang:
+    print(f"\nquestion language: {lang}  (human-facing questions and their options)")
+PY
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_new() {
@@ -214,6 +241,7 @@ if sim:
     for s in sim:
         print(f"  {s.get('id')}  [{s.get('state','?')}]  {s.get('title','')}")
 PY
+  print_conventions
 }
 
 cmd_ls() {
@@ -367,6 +395,7 @@ if cs:
     for c in cs:
         print(f"  [{c.get('created_at','')}] @{c.get('author','')}: {c.get('body','')}")
 PY
+  print_conventions
 }
 
 # save the fence emitted by a claim/ready-claim response for ticket $1
@@ -389,6 +418,7 @@ cmd_claim() {
   api POST "/v1/tickets/$(urlenc "$id")/claim" '{}' >/dev/null
   local fence; fence=$(save_fence_from_response "$id")
   echo "claimed $id  (fence $fence saved)"
+  print_conventions
 }
 
 cmd_next() {
@@ -413,6 +443,7 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 print(f"claimed {d['id']}  [{d.get('state','')}]  {d.get('title','')}  (fence {sys.argv[2]} saved)")
 PY
+  print_conventions
 }
 
 # transition ID TO_STATE — auto-echoes the stored fence; clears it on terminal.
@@ -507,11 +538,15 @@ ticket_field() {
 cmd_start() {
   local id=${1:-}; [ -n "$id" ] || die "start: ID is required"
   api GET "/v1/tickets/$(urlenc "$id")" >/dev/null
+  # Keep this response: it carries the project's style/language hints, and every
+  # later call (workflow, claim, transition) overwrites $REQ_OUT.
+  local conv_file; conv_file=$(mktemp); cp "$REQ_OUT" "$conv_file"
   local state project; state=$(ticket_field state); project=$(ticket_field project)
   local wf_file; wf_file=$(mktemp)
   wf_fetch "$project" "$wf_file"
   if [ "$(wf_state_field "$wf_file" "$state" category)" = "in_progress" ]; then
-    rm -f "$wf_file"; echo "$id already in progress ($state)"; return
+    rm -f "$wf_file"; echo "$id already in progress ($state)"
+    print_conventions "$conv_file"; rm -f "$conv_file"; return
   fi
   # Claim first when the current state is claimable and we do not already hold it.
   if [ -z "$(fence_load "$id")" ] && [ "$(wf_state_field "$wf_file" "$state" claimable)" = "true" ]; then
@@ -521,10 +556,11 @@ cmd_start() {
   fi
   local target
   if ! target=$(wf_resolve_target "$wf_file" "$state" in_progress); then
-    rm -f "$wf_file"; die "start: $target"
+    rm -f "$wf_file" "$conv_file"; die "start: $target"
   fi
   rm -f "$wf_file"
   do_transition "$id" "$target"
+  print_conventions "$conv_file"; rm -f "$conv_file"
 }
 
 # done / block / cancel — resolve the terminal/blocked target from the ticket's

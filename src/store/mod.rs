@@ -22,7 +22,7 @@ pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
-pub use projects::{normalize_style_guide, DeletedCounts, MAX_STYLE_GUIDE_CHARS};
+pub use projects::{normalize_style_guide, Conventions, DeletedCounts, MAX_STYLE_GUIDE_CHARS};
 pub use questions::{
     question_quality_hints, AskRequest, QuestionFilter, ReviseOptionsRequest, TimeoutAction,
     MAX_QUESTIONS_PAGE, QUESTION_KINDS,

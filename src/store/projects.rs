@@ -37,6 +37,29 @@ pub fn normalize_style_guide(style: Option<&str>) -> ApiResult<Option<String>> {
     Ok(Some(s.to_string()))
 }
 
+/// A project's advisory writing conventions: the house style for the text
+/// agents write, and the human-facing language questions belong in. Both
+/// optional; a project that sets neither yields the default, and the work loop
+/// then sends no hint at all rather than an empty one.
+#[derive(Debug, Clone, Default)]
+pub struct Conventions {
+    pub question_language: Option<String>,
+    pub style_guide: Option<String>,
+}
+
+impl Conventions {
+    /// True when the project sets neither convention.
+    pub fn is_empty(&self) -> bool {
+        self.question_language.is_none() && self.style_guide.is_none()
+    }
+}
+
+/// Treat a stored blank as unset: a guide cleared to whitespace must read as
+/// "no preference", not as an empty hint an agent has to interpret.
+fn nonblank(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
+}
+
 /// Which questions belong to a project, as a reusable SQL predicate over `?1`.
 /// `questions` carries both a `project` and a `ticket` column and both are
 /// foreign keys, so the delete cascade has to clear a row that matches *either*
@@ -217,6 +240,38 @@ impl Store {
                     }))
                 }
             }
+        })
+    }
+
+    /// A project's advisory writing conventions, for attaching to a work-loop
+    /// response.
+    ///
+    /// Deliberately not `get_project`: every work-loop call would otherwise
+    /// deserialize the whole stored workflow document to read two strings. Two
+    /// columns, one row, no JSON parse. An unknown project yields the empty set
+    /// rather than an error — a hint is advisory and must never be the thing
+    /// that fails a claim.
+    pub fn project_conventions(&self, project: &str) -> ApiResult<Conventions> {
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT question_language, style_guide FROM projects WHERE id = ?1",
+                    params![project],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((question_language, style_guide)) = row else {
+                return Ok(Conventions::default());
+            };
+            Ok(Conventions {
+                question_language: nonblank(question_language),
+                style_guide: nonblank(style_guide),
+            })
         })
     }
 
