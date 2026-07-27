@@ -138,9 +138,14 @@
   .qrow.read .qt { font-weight: 600; color: var(--ink2); }
   .qrow .qc { font-size: 13px; line-height: 1.45; color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }
   .qrow.answered .qc { color: var(--ok); }
-  .qrow .qm { display: flex; align-items: center; justify-content: space-between; }
-  .qrow .qm .who { font-family: var(--mono); font-size: 11.5px; color: var(--muted2); }
-  .qrow .qm .age { font-size: 12px; color: var(--low); }
+  .qrow .qm { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  /* The asker is the only part that can run long, so it is the only part that
+     shrinks: a fleet with long actor names must not clip away the advisory
+     chip, which is the bit that says what answering will do. */
+  .qrow .qm .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted2); }
+  .qrow .qm .who .mono { font-family: var(--mono); color: var(--muted); }
+  .qrow .qm .advchip { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent2) 13%, transparent); color: var(--accent2); font-size: 10.5px; letter-spacing: .02em; }
+  .qrow .qm .age { flex: 0 0 auto; font-size: 12px; color: var(--low); }
   .listempty { padding: 60px 30px; text-align: center; color: var(--muted); }
   .listempty .t { font-size: 17px; font-weight: 700; color: var(--text); margin: 10px 0 6px; }
   .listempty p { font-size: 13px; line-height: 1.6; margin: 0; }
@@ -500,6 +505,7 @@
       allTickets:"Alle Tickets",
       followupSent:"An den Agenten gesendet — die Antwort erscheint hier.",
       advTag:"beratend",
+      askedBy:"gefragt von",
       customDivider:"oder eigene Anweisung",
       customPlaceholder:"Eigene Anweisung schreiben …",
       linkTitle:"Antwort-Link erstellt",
@@ -602,6 +608,7 @@
       allTickets:"All tickets",
       followupSent:"Sent to the agent — the reply appears here.",
       advTag:"advisory",
+      askedBy:"asked by",
       customDivider:"or your own instruction",
       customPlaceholder:"Write your own instruction …",
       linkTitle:"Answer link created",
@@ -1322,7 +1329,19 @@
     var ctx = answered ? (t().decision + ": " + plain(answerText(q))) : snippetOf(q);
     if (ctx) row.appendChild(el("div", "qc", ctx));
     var meta = el("div", "qm");
-    meta.appendChild(el("span", "who", (q.asked_by || "—") + " · " + q.kind + (q.mode === "advisory" ? " · " + t().advTag : "")));
+    // This line used to read `agent:runner-1 · confirm · advisory` — three raw
+    // field values in a row, which scans as a debug dump rather than as
+    // information. `kind` is gone: it is the API's taxonomy, not something a
+    // triager acts on, and the reading pane already says it better as the
+    // control you are handed (yes/no, a list of options, a text box) with the
+    // affirmative button labelled Confirm or Approve. The two that change what
+    // answering DOES stay, in words a reader parses: who is waiting on you, and
+    // — when it applies — that this one only records a decision.
+    var who = el("span", "who");
+    who.appendChild(document.createTextNode(t().askedBy + " "));
+    who.appendChild(el("span", "mono", q.asked_by || "—"));
+    meta.appendChild(who);
+    if (q.mode === "advisory") meta.appendChild(el("span", "advchip", t().advTag));
     meta.appendChild(el("span", "age", fmtAge(q.created_at)));
     row.appendChild(meta);
     activate(row, function () { selectQ(q.id); });
