@@ -26,6 +26,7 @@ takomo next                                         # atomically claim the next 
 takomo start <id>                                   # claim if needed + move to in_progress
 takomo comment <id> "opened PR, waiting on CI"      # narrate progress
 takomo link <id> --pr <url> --branch <b>            # attach evidence
+takomo link <id> --commit <full-sha>                # the proof that closes it
 takomo done <id>                                    # finish (claim auto-releases)
 takomo show <id>                                     # full ticket incl. comments/deps
 takomo ls -q frobnicator                            # search
@@ -54,35 +55,52 @@ Only whole-`body` replacement needs the CAS dance (GET, send `If-Match: "<versio
 
 ## Write the way the project writes
 
-A project can carry its own writing conventions, and the store hands them to you before you write anything: a **`style_hint`** (the project's house style for ticket titles/bodies, comments, and questions) and a **`language_hint`** (the human-facing language questions belong in) on `takomo next`/`claim`/`start`/`show`/`new`. Read them and follow them as written — they're a project decision, not a suggestion from a passing reviewer. `takomo project style <project>` prints the current guide; over MCP both also appear on `takomo_workflow` as `style_guide` / `question_language`. Neither is enforced server-side, so nothing rejects sloppy text — which is exactly why it's on you to honor it.
+A project can carry its own writing conventions, and the store hands them to you before you write anything: a **`style_hint`** (the project's house style for ticket titles/bodies, comments, and questions) and a **`language_hint`** (the human-facing language questions belong in) on `takomo next`/`claim`/`start`/`show`/`new`. Read them and follow them as written — they are a project decision, not a suggestion from a passing reviewer. `takomo project style <project>` prints the current guide; over MCP both also appear on `takomo_workflow` as `style_guide` / `question_language`. Neither is enforced server-side, so nothing rejects sloppy text — which is exactly why it is on you to honor it.
 
-## Ask a human when you're blocked on a decision
+## Finishing: the commit is the proof
 
-When progressing needs a human judgment you can't make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — don't guess and don't silently stall. Ask:
+Before `takomo done <id>`, attach the commit that closes the ticket:
 
 ```bash
-takomo ask <id> --title "OK to drop billing_v1?" --kind confirm --expertise domain:billing --recommend yes --rec-note "no reads in 90d" --confidence 4
-takomo ask <id> --title "Which migration strategy?" --kind choose \
-  --option big-bang   --option-desc "Fastest, but hits every tenant at once." \
-  --option dual-write  --option-desc "Safe, auto-rollback, ~1 week to full." \
-  --recommend dual-write --rec-note "keeps a fragile endpoint from thundering" --confidence 3
+takomo link <id> --commit 5caea2a0f3b91c7d4e28a6b5f0c1d9e8a7b6c5d4
 ```
 
-**Write a decision-ready question** so the human can answer without digging: give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and a `--confidence` 1–4, and add a `--summary` for the inbox list preview. When several options can be picked together, add `--multi` (pre-select the sensible set with `--rec-multi <opt>`, repeatable) — the answer comes back as an array. The ask response returns `hints` naming anything still missing — read them and improve the next one. (Over MCP/HTTP, options may be `[{"value","desc"}]` and the same fields exist: `option_notes`, `recommended_note`, `confidence`, `summary`, `multi`, `recommended_multi`.)
+Use the **full SHA** — short ones collide and are ambiguous across repos. A commit URL works too and carries the repo identity.
 
-A **blocking** ask (the default) parks the ticket and releases your lease (block-and-resume): **end your run** — this is not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer, and the ticket resumes once *every* open question on it is answered. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if it has a deadline; `takomo withdraw <qid>` if you resolve it yourself. Blocking resume needs a workflow with a human gate (the built-in `factory-default` has one; the `simple` tracker does not).
+Why it matters: `done` on its own is a claim, and nobody can check it once everyone involved has moved on. A commit SHA is checkable forever, by anyone, without trusting whoever set the status. It is also the anchor for questions asked later, all answered from git with no extra bookkeeping:
 
-For a decision that **shouldn't freeze the ticket** — an epic-level or strategic call ("which direction for this epic?") — add `--advisory`: it records a routed decision with no state change, works on any ticket/state, and never blocks. Check the queue with `takomo questions` (add `--mine` to see only your `expert:<tag>` domains); answer with `takomo answer <qid> <answer>` (needs the `human` scope).
+```bash
+git merge-base --is-ancestor <sha> origin/main   # did the work actually land?
+git tag --contains <sha>                          # which release carries it (empty = not released yet)
+git merge-base --is-ancestor <sha> <deployed-sha> # is it in what production runs?
+```
 
-**The human may ask for more research before deciding.** When that happens the question stays open and the ticket stays parked, but `takomo show <id>` shows a follow-up thread with `awaiting: agent`. Do the research and reply with `takomo reply <qid> "what you found"` (write scope) — this flips `awaiting` back to the human and leaves the question open for them to answer. Treat an `awaiting: agent` question as actionable work, not a wait.
+Some projects enforce this with `guard:has_link:commit` on the done transition; there, `takomo done` is rejected with a teaching remedy until the link is set. Where it is not enforced, attach it anyway — the ticket is worth little without it.
 
-## Record where work landed
+## Ask a human when you are blocked on a decision
 
-When a ticket's work reaches a real stage — deployed to staging/production, published, delivered, shipped — record it with `takomo promote <id> <target> [--url <link>] [--ref <commit/version>] [--note "..."]`. `target` is free-form (not just software: "staging", "production", "published", "delivered"…), the history is append-only, and the latest promotion badges the board card so humans see at a glance what has gone live.
+When progressing needs a human judgment you cannot make — a confirmation ("OK to drop this table?"), a choice between options, a clarification, or an approval — do not guess and do not silently stall. Ask: `takomo ask <id> --title "..." --kind confirm|choose|clarify|approve [--option ...] [--expertise domain:billing] [--recommend "..."]`. This parks the ticket in a blocked state, releases your lease, and posts the question to the ask-a-human board. **Then end your run** — this is block-and-resume, not a wait. When you (or the next worker) pick the ticket back up, `takomo show <id>` carries the human's answer (also on the board / `takomo questions`); the answer resumes the ticket into a claimable state. Route to the right person with `--expertise` tags; set `--expires-in`/`--on-timeout` if the work has a deadline. Withdraw with `takomo withdraw <qid>` if you no longer need the answer. **Make it decision-ready:** give each `choose` option a one-line trade-off (`--option-desc`, parallel to `--option`), set `--recommend` with a short `--rec-note` (the *why*) and `--confidence` 1–4, and add a `--summary` for the inbox preview; for a multiple-choice question add `--multi` (pre-select with `--rec-multi <opt>`). The ask response returns `hints` for anything still missing. If the human bounces the question back for more research, `takomo show <id>` shows the thread as `awaiting: agent` — do the work and answer it with `takomo reply <qid> "..."` (write scope), which returns the ball to the human without closing the question. **If that research shows the options you offered were wrong,** fix them with `takomo options <qid> --option ... --option ... --reason "..."` instead of withdrawing — withdrawing throws the whole thread away. It replaces the set (give all of them), and the recommendation must be one of the new options, so pass `--recommend` or `--clear-recommend` when you drop the one you had recommended. Only while the question is open: once it is answered, the choices it was decided on stay on the record. When a ticket's work reaches a real stage, record it with `takomo promote <id> <target> [--url ...] [--ref ...]` (free-form target — staging, production, published, delivered — latest badges the board).
 
 ## Creating tickets
 
 Always search first (`takomo ls -q <keywords>`). `takomo new` auto-sends an Idempotency-Key and surfaces a `similar` list in the response — **read it**; if your ticket already exists, use the existing one. Structure work with `epic` parents grouping `task`/`bug` children (`--parent <epic-id>`); real dependencies are `blocked_by` edges (`takomo dep <id> --blocked-by <other>`), not prose.
+
+## Tagging people and other entities
+
+Each project has a **tag registry** — named entities of some `kind` (`person`, `component`, `team`, whatever the project uses) that you attach to tickets as `kind:handle` references. It is reference metadata only: a tag never changes a ticket's state, claim, or question routing — it is for grouping, filtering, and showing *who/what* a ticket touches.
+
+```bash
+takomo person add ada --label "Ada Lovelace"        # register a person (alias for the 'person' kind)
+takomo tag new --kind component --handle billing     # any other kind: just a new string, no setup
+takomo tag add <id> person:ada component:billing     # attach refs to a ticket
+takomo tag rm  <id> person:ada                        # detach
+takomo ls --tag person:ada                            # tickets tagged with that person
+takomo ls --tag-kind person                           # tickets carrying any person tag
+takomo tag ls --kind person                           # browse the registry (sortable/filterable)
+takomo new "Fix invoice rounding" --tag person:ada --tag component:billing
+```
+
+The registry is **extensible by design** — a new kind is just a new value in `kind:handle`, needing no setup. Handles are the identity (lowercase slug); the display name lives in `--label`, and per-kind attributes go in `--meta key=value` (e.g. `--meta email=ada@…`). Tagging a not-yet-registered handle registers a stub automatically, so you can tag first and enrich later. Deleting a registry entry leaves existing ticket references intact.
 
 ## Raw HTTP (for non-`takomo` clients)
 
@@ -95,5 +113,5 @@ Under the hood every call is `curl -sS -H "Authorization: Bearer $TAKOMO_TOKEN" 
 1. Claim before you work; release (`takomo release <id>`) if you stop without finishing so the ticket returns to the queue.
 2. Never work around a workflow rejection — it encodes a project decision. Read `allowed_transitions` and move a legal way.
 3. One ticket = one deliverable. Split with child tickets rather than letting scope creep.
-4. Attach evidence links the moment they exist; a ticket without links is an unverifiable claim.
+4. Attach evidence links the moment they exist; a ticket without links is an unverifiable claim. Never finish a ticket without `--commit <full-sha>`.
 5. On any `429`, honor `Retry-After` and slow your loop — you are hammering the store.

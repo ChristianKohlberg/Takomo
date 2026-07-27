@@ -49,6 +49,21 @@ jobs:
       - name: ShellCheck
         run: shellcheck clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh
 
+  copies:
+    name: Duplicated files stay in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The plugin ships the same agent-facing skill as clients/claude-skill,
+      # because a plugin must be self-contained — a marketplace install gets only
+      # plugins/takomo/. That makes it a copy, and copies drift: the plugin's
+      # went two features stale (the commit-proof rule and tagging) while both
+      # files were still being edited. Cheap to assert, expensive to miss, since
+      # the symptom is an agent quietly following outdated instructions.
+      - name: Agent skill (client vs plugin)
+        run: diff -u clients/claude-skill/takomo/SKILL.md plugins/takomo/skills/takomo/SKILL.md
+
   spec:
     name: OpenAPI spec (valid 3.1 + loadable everywhere)
     runs-on: ubuntu-latest

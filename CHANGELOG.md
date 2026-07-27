@@ -5,6 +5,90 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). The `/v1` HTTP API evolves
 additively only.
 
+## [Unreleased]
+
+Naming things, and proving them. Tickets can carry **tags** from a per-project
+registry, so a project names the people, components and teams it cares about
+instead of encoding them in free text. `done` can be made **checkable** — a
+project can require the closing commit as a link. Projects can declare the
+**house style** agents write in, and both web surfaces can be narrowed to a
+single ticket.
+
+### Added
+
+- **Per-project tag registry.** A project names entities of any `kind`
+  (`person`, `component`, `team`, …) and attaches them to tickets by
+  `kind:handle`. A new kind is just a new string — no schema change — and
+  per-kind attributes live in a free-form `meta`. Tagging is reference metadata
+  only: it never touches ticket state, claims, or question routing.
+  `/v1/projects/{project}/tags` CRUD, `tags`/`tags_add`/`tags_remove` on ticket
+  create and patch, `?tag=` / `?tag_kind=` list filters, `takomo tag …` /
+  `takomo person …`, and `takomo_tag` over MCP. Tagging a ticket with an unknown
+  handle lazily registers it; deleting a tag keeps ticket references and reports
+  how many still point at it. Both `/board` and `/inbox` gain a two-step
+  kind-then-value tag filter.
+
+- **`guard:has_link:<key>` — prove "done" instead of claiming it.** A
+  parameterized guard family: the ticket must carry a non-empty `links.<key>`.
+  `has_link:commit` is the intended use — a full SHA stays checkable long after
+  everyone has forgotten the ticket, and release/deploy questions derive from it
+  (`git tag --contains`, `git merge-base --is-ancestor`) with no extra
+  bookkeeping — but the key is free-form, so a project can demand `pr`, `run` or
+  `env`. Opt-in per project; `factory-default` is unchanged, so no existing
+  workflow starts rejecting anything. Rejections name the missing key and the
+  remedy. `takomo link ID --commit SHA` warns on a short SHA, and `/board` shows
+  a quiet `⌗ <sha>` badge — deliberately softer than the promotion badge, since
+  it means "verifiable", not "shipped".
+
+- **Per-project style guide for agent-written text.** The house style for ticket
+  titles and bodies, comments and questions, declared once on the project so it
+  reaches every client instead of one checkout. `PUT /v1/projects/{project}/style`
+  (admin), or `style_guide` at creation; capped at 2000 characters
+  (`422 project.style_guide_too_long`). Surfaced as `style_hint` on the MCP
+  work-loop tools and `style_guide` on `takomo_workflow` — the moment an agent has
+  just written something and can still fix it. Advisory, never enforced. Also
+  editable, with the question language, from a project-settings sheet on `/board`.
+
+- **Filter the queue and the board by one ticket.** Both surfaces could already
+  be narrowed by epic or expertise, but neither answered "what is still open on
+  this one ticket". `/board` gets a ticket picker that composes with the epic
+  filter and keeps subtasks visible; `/inbox` gets one built from the tickets
+  that actually carry questions, deep-linkable as `#ticket=<id>`. A filtered
+  empty queue says "no questions for this ticket" rather than "all clear", which
+  would lie about the whole queue.
+
+- **Real markdown in the inbox**, clamped long replies, and agents can revise a
+  question's options (`takomo options <qid>`) after research shows the original
+  set was wrong — instead of withdrawing and throwing the thread away.
+
+- **Deep-linkable inbox**, an answer-link modal, and epic grouping on the board.
+
+- **backlot 0.7 integration** (`backlot.yml`) — a warm, seeded instance in one
+  command, with role-mapped tokens via `scripts/backlot-token.sh`.
+
+### Fixed
+
+- **Every answer gets its own undo window**, and an answer is confirmed in the
+  data as it is given rather than 30 seconds later or in a floating toast.
+- The reading pane keeps its scroll position when a choice is selected.
+- A clear answer→next transition, with the custom answer always available.
+- Security, correctness, a11y and i18n findings from two review rounds:
+  advisory resume, dependency scoping, and answer-grant revocation.
+- `spec/openapi.yaml` was not a valid 3.1 document in two ways invisible to a
+  human reader; CI now validates it against the schema and loads it from Python
+  and Ruby.
+
+### Changed
+
+- **`workflows/` is the one place a shipped workflow is defined.**
+  `factory-default` moved out of a `serde_json::json!` literal in
+  `src/workflow.rs` into `workflows/factory-default.yaml`, embedded with
+  `include_str!`. The copies that remain for other reasons — the block in
+  `spec/workflow-format.md`, and the CLI's offline fallback for `simple` — are
+  pinned to the files by unit tests. `backlot.yml` and the `Dockerfile` learned
+  that `workflows/` is a build input.
+- Removed `prompts/spec-agent.md`; nothing referenced it.
+
 ## [0.3.0] — 2026-07-25
 
 Human-in-the-loop, refined. The ask-a-human inbox is rebuilt to the "Aquarelle"
