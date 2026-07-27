@@ -3,7 +3,7 @@ id: route-test-pairing
 # heuristic has legitimate misses (pure refactors, error-message tweaks) — fix
 # it by adding a test, or put the reason on the record with `handrail waive`.
 expectation: New or changed HTTP surface ships with an integration test that exercises it.
-desc: Flags touched src/api/* or src/server.rs route wiring with no touched change under tests/.
+desc: Flags touched src/api/*, src/server.rs route wiring, src/mcp.rs, or src/store with no touched change under tests/.
 kind: detector
 semantics: waivable
 cmd: HR_PRIMARY='src/api src/mcp.rs src/store' HR_PAIRED='tests' bash .handrail/route-test-pairing.sh
