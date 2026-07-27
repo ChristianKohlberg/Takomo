@@ -594,6 +594,18 @@ paths:
         auto-releases that claim as a side effect (emitting a `released` event
         alongside `transitioned`). This override is scoped to human-required
         transitions; ordinary `claim`-required transitions keep the holder lock.
+
+        A `claim`-required transition attempted without a lease is
+        `transition.claim_required` (409), and its `remedy` depends on where the
+        ticket sits, because a lease can only be taken in a state the workflow
+        marks `claimable`. From a claimable state the remedy is the claim itself
+        plus the transition to retry with the new fence. From a non-claimable one
+        — the usual shape of a lease that expired while the work ran — claiming
+        would be refused with `claim.state`, so the remedy instead names the
+        re-entry edges out of the current state that land in a claimable state,
+        and warns that taking one returns the ticket to the ready queue. Either
+        way `details` carries `claimable_states`, and the non-claimable case also
+        carries `reentry_states`.
       parameters: [ { $ref: "#/components/parameters/id" } ]
       requestBody:
         required: true
@@ -2343,3 +2355,17 @@ components:
             properties:
               to: { type: string }
               requires: { type: array, items: { type: string } }
+        details:
+          type: object
+          description: |
+            extra context keyed to the `code`. For `transition.claim_required`:
+            `claimable_states`, every state of this workflow in which a lease may
+            be taken, and — when the current state is not one of them —
+            `reentry_states`, the states reachable from here that are, i.e. the
+            route back to a claimable position. For `transition.guard`: the
+            `guard` that failed and any `offending_tickets`.
+          properties:
+            claimable_states: { type: array, items: { type: string } }
+            reentry_states: { type: array, items: { type: string } }
+            guard: { type: string }
+            offending_tickets: { type: array, items: { type: string } }
