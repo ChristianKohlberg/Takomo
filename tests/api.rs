@@ -4703,6 +4703,188 @@ async fn question_barrier_resumes_only_when_all_answered() {
     assert_eq!(a2["ticket"]["state"], "ready");
 }
 
+/// The regression test for takomo-sk4e. `simple` — the workflow `takomo init`
+/// applies, and so the one most installs run — has no `scope:human` edge
+/// anywhere by design, and the resume lookup used to consider *only*
+/// human-gated edges. Every answered blocking question therefore left its
+/// ticket parked in `blocked`, out of the ready queue, and said nothing about
+/// it. The whole point of ask-a-human is that the answer puts the work back.
+#[tokio::test]
+async fn question_answer_resumes_on_the_simple_workflow() {
+    let app = TestApp::spawn().await;
+    app.create_project_with("sw", common::simple_workflow())
+        .await;
+    let id = app.create_ticket_in("sw", "Needs a call").await;
+
+    // todo -> claim -> in_progress, then park on a blocking question.
+    let fence = app.claim(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "in_progress", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->in_progress failed: {b}");
+    let (qid, asked) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Drop the column?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(
+        asked["ticket"]["state"], "blocked",
+        "ask must park: {asked}"
+    );
+
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
+    assert_eq!(s, StatusCode::OK, "answer failed: {ans}");
+    // `blocked -> todo` is the only exit that resumes work here: `-> in_progress`
+    // is claim-gated and `-> cancelled` is terminal.
+    assert_eq!(
+        ans["question"]["resolved_to"], "todo",
+        "answer must resume the ticket: {ans}"
+    );
+    assert_eq!(ans["ticket"]["state"], "todo", "{ans}");
+    assert_eq!(ans["resume"]["resumed"], true, "{ans}");
+    assert_eq!(ans["resume"]["to"], "todo", "{ans}");
+    assert!(
+        ans["resume"]["code"].is_null(),
+        "nothing went wrong, so no reason: {ans}"
+    );
+
+    // The point of resuming: the ticket is back in the ready queue, so an agent
+    // will actually pick it up again.
+    let (_, ready) = app.get(&app.admin, "/v1/ready?project=sw").await;
+    let ids: Vec<&str> = ready
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        ids.contains(&id.as_str()),
+        "resumed ticket must be ready: {ready}"
+    );
+}
+
+/// The widening must not weaken `factory-default`: every exit from
+/// `needs-decision` there carries `scope:human`, so the answer still resumes
+/// through the approval edge and lands in `ready`, exactly as before.
+#[tokio::test]
+async fn question_answer_still_resumes_through_the_human_gate() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Gated resume").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, asked) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(asked["ticket"]["state"], "needs-decision");
+
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
+    assert_eq!(s, StatusCode::OK, "answer failed: {ans}");
+    assert_eq!(ans["question"]["resolved_to"], "ready", "{ans}");
+    assert_eq!(ans["ticket"]["state"], "ready", "{ans}");
+    assert_eq!(ans["resume"]["resumed"], true, "{ans}");
+    assert_eq!(ans["resume"]["to"], "ready", "{ans}");
+}
+
+/// A workflow whose parked state DOES carry a `scope:human` exit, but where
+/// that exit is guarded: the fallback must stay off — a real approval gate is
+/// never routed around — and the answer must stop being silent about it. The
+/// answer is still recorded (throwing away a human's decision would be worse),
+/// but the response carries a machine-readable reason and the ticket thread
+/// says the work is stranded.
+#[tokio::test]
+async fn question_answer_that_cannot_resume_says_so() {
+    let app = TestApp::spawn().await;
+    app.create_project_with(
+        "gated",
+        json!({
+            "name": "gated",
+            "initial": "todo",
+            "states": [
+                { "id": "todo", "category": "todo", "claimable": true },
+                { "id": "doing", "category": "in_progress" },
+                { "id": "parked", "category": "blocked" },
+                { "id": "done", "category": "done", "terminal": true },
+            ],
+            "transitions": [
+                { "from": "todo", "to": "doing", "requires": ["claim"] },
+                { "from": "doing", "to": "parked" },
+                { "from": "doing", "to": "done", "requires": ["claim"] },
+                // The only exit from `parked` a human could take is guarded, and
+                // the other one is terminal.
+                { "from": "parked", "to": "todo", "requires": ["scope:human", "guard:no_open_children"] },
+                { "from": "parked", "to": "done" },
+            ],
+            "guards": { "no_open_children": { "description": "every child ticket must be terminal" } },
+        }),
+    )
+    .await;
+    let id = app.create_ticket_in("gated", "Stuck either way").await;
+    let fence = app.claim(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "doing", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->doing failed: {b}");
+    let (qid, asked) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Proceed?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(asked["ticket"]["state"], "parked");
+
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
+    assert_eq!(s, StatusCode::OK, "the answer is still recorded: {ans}");
+    assert_eq!(ans["question"]["status"], "answered", "{ans}");
+    assert!(ans["question"]["resolved_to"].is_null(), "{ans}");
+    assert_eq!(
+        ans["ticket"]["state"], "parked",
+        "a guarded human gate is not routed around: {ans}"
+    );
+
+    // Not silent: the response says what happened and what to do next.
+    assert_eq!(ans["resume"]["resumed"], false, "{ans}");
+    assert_eq!(ans["resume"]["code"], "question.no_resume", "{ans}");
+    let msg = ans["resume"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("parked"),
+        "the reason names the state and its exits: {ans}"
+    );
+    assert!(
+        ans["resume"]["remedy"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("resume_to"),
+        "the remedy names the next call: {ans}"
+    );
+
+    // And the ticket thread says the work is stranded, for whoever reads the
+    // ticket rather than the answer response.
+    let (_, detail) = app
+        .get(&app.human, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let bodies: Vec<&str> = detail["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert!(
+        bodies.iter().any(|b| b.contains("NOT resumed")),
+        "the thread must say the ticket is still parked: {bodies:?}"
+    );
+}
+
 #[tokio::test]
 async fn question_advisory_on_epic_does_not_park() {
     let app = TestApp::spawn().await;

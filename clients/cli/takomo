@@ -1105,8 +1105,21 @@ PY
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-t = d.get("ticket", {})
-print(f"answered {d.get('question',{}).get('id','?')} — ticket {t.get('id','?')} resumed to '{t.get('state','?')}'")
+q, t = d.get("question", {}), d.get("ticket", {})
+r = d.get("resume", {})
+qid, tid, state = q.get("id","?"), t.get("id","?"), t.get("state","?")
+# Never report a resume that did not happen. A blocking answer can land with the
+# ticket left parked, and it is then out of the ready queue until someone moves
+# it — printing the blocked state as if it were the resume target is how that
+# went unnoticed.
+if r.get("resumed"):
+    print(f"answered {qid} — ticket {tid} resumed to '{r.get('to') or state}'")
+elif r.get("code"):
+    print(f"answered {qid} — ticket {tid} NOT resumed: still '{state}', out of the ready queue")
+    for line in (r.get("message"), r.get("remedy")):
+        if line: print(f"  {line}")
+else:
+    print(f"answered {qid} — recorded; ticket {tid} unchanged ('{state}')")
 PY
 }
 

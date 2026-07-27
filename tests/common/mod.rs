@@ -419,6 +419,32 @@ impl TestApp {
 
     // --- projects ------------------------------------------------------------
 
+    /// Create project `id` running `workflow` instead of `factory-default`.
+    /// The standard four tokens carry no project allowlist, so they reach it.
+    pub async fn create_project_with(&self, id: &str, workflow: Value) {
+        let (s, body) = self
+            .post(
+                &self.admin,
+                "/v1/projects",
+                json!({ "id": id, "name": id, "workflow": workflow }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "create project {id} failed: {body}");
+    }
+
+    /// A ticket in project `project` — the `create_ticket` family is `tp`-only.
+    pub async fn create_ticket_in(&self, project: &str, title: &str) -> String {
+        let (s, body) = self
+            .post(
+                &self.admin,
+                "/v1/tickets",
+                json!({ "project": project, "title": title }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "create failed: {body}");
+        body["id"].as_str().expect("ticket id").to_string()
+    }
+
     /// The row for project `id` as `token` sees it in `GET /v1/projects`.
     pub async fn project(&self, token: &str, id: &str) -> Value {
         let (s, list) = self.get(token, "/v1/projects").await;
@@ -430,4 +456,15 @@ impl TestApp {
             .unwrap_or_else(|| panic!("project {id} not in list: {list}"))
             .clone()
     }
+}
+
+/// The shipped `simple` workflow (`workflows/simple.yaml`) as the JSON the
+/// project endpoints take. Read from the file rather than copied inline, so a
+/// test can never end up asserting against a stale duplicate of the workflow
+/// `takomo init` actually applies.
+pub fn simple_workflow() -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/simple.yaml");
+    let yaml =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_norway::from_str(&yaml).expect("workflows/simple.yaml is a workflow document")
 }
