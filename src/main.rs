@@ -286,7 +286,7 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
                         serde_json::from_str(&raw)
                             .map_err(|e| format!("invalid workflow JSON: {e}"))?
                     } else {
-                        serde_yaml::from_str(&raw)
+                        serde_norway::from_str(&raw)
                             .map_err(|e| format!("invalid workflow YAML: {e}"))?
                     };
                     Some(wf)

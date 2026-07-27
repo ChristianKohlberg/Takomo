@@ -7,17 +7,28 @@ license = "Apache-2.0"
 
 [dependencies]
 axum = { version = "0.8", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
+# Named features rather than "full": this binary uses `time` (sleep, sleep_until,
+# interval, timeout), `net` (TcpListener), `sync` (Notify), `rt-multi-thread` (the
+# runtime and tokio::spawn) and `macros` (#[tokio::main], #[tokio::test], select!).
+# Nothing here touches tokio's fs, process, signal or io stacks. Adding a feature
+# back is a one-line change — leaving "full" hides which of them the server relies on.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# Workflow definitions are authored in YAML (workflows/*.yaml, spec/workflow-format.md),
+# so the parser is what makes a typo like `require:` a hard error instead of a silently
+# dropped approval gate — see the deny_unknown_fields note in src/workflow.rs.
+# serde_norway is a maintained fork of dtolnay's serde_yaml, which was archived in March
+# 2024 and publishes as 0.9.34+deprecated. Picked over the other live fork (serde_yaml_ng)
+# because it is still the 0.9 API, so the parse behaviour this depends on is unchanged; it
+# keeps the MIT OR Apache-2.0 licensing; and it also replaces the archived `unsafe-libyaml`
+# backend — where the unsafe parsing code actually lives — with a fork that is not archived.
+serde_norway = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
-tokio-stream = "0.1"
 async-stream = "0.3"
 futures-core = "0.3"
 # Official Rust MCP SDK. Hosts the streamable-HTTP MCP server transport in-process

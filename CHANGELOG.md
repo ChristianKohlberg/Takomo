@@ -108,6 +108,17 @@ single ticket.
   pinned to the files by unit tests. `backlot.yml` and the `Dockerfile` learned
   that `workflows/` is a build input.
 - Removed `prompts/spec-agent.md`; nothing referenced it.
+- **Dependency hygiene.** Workflow YAML is now parsed by `serde_norway` instead
+  of `serde_yaml`, which upstream archived in March 2024 and publishes as
+  `0.9.34+deprecated`; it is the same 0.9 API, keeps the MIT OR Apache-2.0
+  licensing, and drops the archived `unsafe-libyaml` backend along with it.
+  Strict workflow parsing is unchanged — a typo like `require:` is still a hard
+  error naming the field and the line, not a silently dropped approval gate.
+  `tower` and `tokio-stream` were declared with zero call sites and are gone
+  (they remain transitively via axum/rmcp, so the build is unaffected), and
+  `tokio` now names the five features this binary actually uses instead of
+  `full`, dropping six crates from the lockfile. A new CI job runs
+  `cargo-machete` so an unused dependency cannot creep back in.
 
 ## [0.3.0] — 2026-07-25
 
