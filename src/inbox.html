@@ -259,6 +259,10 @@
   .footrow { display: flex; align-items: center; gap: 12px; }
   .btn-primary { flex: 1 1 auto; height: 52px; border: none; border-radius: 10px; background: var(--accent); color: #fff; font: inherit; font-size: 15px; font-weight: 680; cursor: pointer; box-shadow: 0 10px 22px -12px rgba(31,78,120,.7); }
   .btn-primary:hover { background: var(--accent-ink); }
+  /* The primary is armed only once there is something to submit; `.off` is the
+     explained-disabled look and `.foothint` carries the explanation. */
+  .btn-primary.off, .btn-primary.off:hover { background: var(--gaugeoff); box-shadow: none; cursor: not-allowed; }
+  .foothint { font-size: 12.5px; color: var(--muted2); margin: 0 0 9px; }
   .btn-msg { position: relative; flex: 0 0 auto; width: 52px; height: 52px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
   .btn-msg.on { border-color: var(--accent); background: var(--sel); color: var(--accent); }
   .btn-msg .badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
@@ -1525,10 +1529,10 @@
     if (ty === "text") {
       var ta = el("textarea", "clarify"); ta.placeholder = t().typeAnswer + (lang ? " (" + lang + ")" : "");
       ta.value = curSel(q) || "";
-      ta.addEventListener("input", function () { state.answering = true; state.clarify[q.id] = ta.value; });
+      ta.addEventListener("input", function () { state.answering = true; state.clarify[q.id] = ta.value; syncPrimary(q); });
       wrap.appendChild(ta);
       var rv = recValue(q);
-      if (rv) { var sg = el("div", "suggest"); sg.appendChild(document.createTextNode(t().suggested + " ")); var b = el("button", null, rv); b.addEventListener("click", function () { ta.value = rv; state.clarify[q.id] = rv; state.answering = true; }); sg.appendChild(b); wrap.appendChild(sg); }
+      if (rv) { var sg = el("div", "suggest"); sg.appendChild(document.createTextNode(t().suggested + " ")); var b = el("button", null, rv); b.addEventListener("click", function () { ta.value = rv; state.clarify[q.id] = rv; state.answering = true; syncPrimary(q); }); sg.appendChild(b); wrap.appendChild(sg); }
     } else {
       var opts = el("div", "opts");
       buildOptions(q).forEach(function (o) { opts.appendChild(optionRow(q, o)); });
@@ -1561,7 +1565,7 @@
     row.appendChild(pencilIcon());
     var inp = el("input"); inp.type = "text"; inp.placeholder = t().customPlaceholder;
     inp.value = state.custom[q.id] || "";
-    function pick() { state.customOn[q.id] = true; state.answering = true; markCustomSelected(row); }
+    function pick() { state.customOn[q.id] = true; state.answering = true; markCustomSelected(row); syncPrimary(q); }
     inp.addEventListener("focus", pick);
     inp.addEventListener("input", function () { state.custom[q.id] = inp.value; pick(); });
     row.appendChild(inp);
@@ -1651,11 +1655,52 @@
     var old = read ? read.querySelector(".answer") : null;
     if (!old || !old.parentNode) { render(); return; }
     old.parentNode.replaceChild(answerArea(q), old);
+    syncPrimary(q); // the footer is outside .answer and would keep a stale state
   }
   function lockIcon() {
     var s = document.createElement("span");
     s.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
     return s;
+  }
+
+  // ---- the primary control ----
+  // What counts as "answered" differs by kind, so the guard that arms the primary
+  // button has to as well:
+  //   clarify (text)     non-empty text — an agent recommendation pre-fills it
+  //   choose, multi      at least one option ticked (defaults to `recommended_multi`,
+  //                      so a recommended set arms the button straight away)
+  //   choose, single     a preset selected, or "write your own" active and non-empty
+  //   confirm / approve  yes or no picked (a recommendation preselects one)
+  // Returns "" when the button may fire, otherwise the reason to show the reader.
+  // Kept as the single source of truth: `submitAnswer` refuses on the same test,
+  // so the visual state and the actual refusal cannot drift apart.
+  function answerBlockReason(q) {
+    var ty = answerType(q);
+    if (ty === "text") return (curSel(q) || "").trim() ? "" : t().typeFirst;
+    if (ty === "multi") return curMulti(q).length ? "" : t().sendFirst;
+    if (ty === "single" && state.customOn[q.id]) return (state.custom[q.id] || "").trim() ? "" : t().typeFirst;
+    return curSel(q) == null ? t().sendFirst : "";
+  }
+  // Paint the primary for the panel's current state. Deliberately NOT the native
+  // `disabled` attribute: that drops the control out of the tab order and explains
+  // nothing, which is the same dead-control trap as a silently inert button.
+  // `aria-disabled` keeps it focusable and announces it as unavailable, the visible
+  // `.foothint` — wired up as the button's accessible description — carries the
+  // reason for everyone, and pressing it anyway repeats that reason as a toast.
+  function applyPrimary(q, btn, hint) {
+    var reason = answerBlockReason(q);
+    btn.textContent = q.mode === "advisory" ? t().answerAdvis : t().answer;
+    btn.className = "btn-primary" + (reason ? " off" : "");
+    btn.setAttribute("aria-disabled", reason ? "true" : "false");
+    if (reason) btn.title = reason; else btn.removeAttribute("title");
+    hint.textContent = reason;
+    hint.style.display = reason ? "" : "none";
+  }
+  // Picking an option only rebuilds the `.answer` subtree (refreshAnswer) and typing
+  // rebuilds nothing at all, so the footer has to be told the answer changed.
+  function syncPrimary(q) {
+    var btn = $("qprimary"), hint = $("qhint");
+    if (btn && hint) applyPrimary(q, btn, hint);
   }
 
   function footer(q) {
@@ -1673,9 +1718,13 @@
       foot.appendChild(comp);
       setTimeout(function () { inp.focus(); }, 0);
     }
+    var hint = el("div", "foothint"); hint.id = "qhint";
+    foot.appendChild(hint);
     var row = el("div", "footrow");
-    var primary = el("button", "btn-primary", q.mode === "advisory" ? t().answerAdvis : t().answer);
+    var primary = el("button", "btn-primary"); primary.id = "qprimary"; primary.type = "button";
+    primary.setAttribute("aria-describedby", "qhint");
     primary.addEventListener("click", function () { submitAnswer(q); });
+    applyPrimary(q, primary, hint);
     row.appendChild(primary);
     var msg = el("button", "btn-msg" + (state.composeOpen ? " on" : "")); msg.title = t().askFollow;
     msg.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
@@ -1746,23 +1795,16 @@
 
   // ---- answer (1 click → 30s undo snackbar) ----
   function submitAnswer(q) {
+    // The button is painted `off` in exactly this case; pressing it anyway (or
+    // arriving by the ↵ shortcut, which never touches the button) says why.
+    var reason = answerBlockReason(q);
+    if (reason) { toast(reason, "error"); return; }
     var ty = answerType(q);
-    if (ty === "multi") {
-      var arr = curMulti(q);
-      if (!arr || !arr.length) { toast(t().sendFirst, "error"); return; }
-      queueAnswer(q, arr.slice());
-      return;
-    }
+    if (ty === "multi") { queueAnswer(q, curMulti(q).slice()); return; }
     // Single-select choose with "write your own" active → submit the custom text.
-    if (ty === "single" && state.customOn[q.id]) {
-      var txt = (state.custom[q.id] || "").trim();
-      if (!txt) { toast(t().typeFirst, "error"); return; }
-      queueAnswer(q, { value: txt, custom: true });
-      return;
-    }
+    if (ty === "single" && state.customOn[q.id]) { queueAnswer(q, { value: (state.custom[q.id] || "").trim(), custom: true }); return; }
     var val = curSel(q);
-    if (ty === "text") { val = (val || "").trim(); if (!val) { toast(t().typeFirst, "error"); return; } }
-    else if (val == null) { toast(t().sendFirst, "error"); return; }
+    if (ty === "text") val = (val || "").trim();
     queueAnswer(q, val);
   }
   function qById(id) { for (var i = 0; i < state.questions.length; i++) { if (state.questions[i].id === id) return state.questions[i]; } return null; }
