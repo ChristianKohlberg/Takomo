@@ -2,274 +2,25 @@
 //! over HTTP with reqwest.
 
 use futures::future::join_all;
+use reqwest::Method;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use takomo::server::{build_router, spawn_sweeper, AppState};
-use takomo::store::{ShareKind, Store};
+use takomo::store::ShareKind;
 
-struct TestApp {
-    base: String,
-    /// read,write,human,admin on all projects.
-    admin: String,
-    /// read,write,human.
-    human: String,
-    /// read,write (agent:w1).
-    worker: String,
-    /// read,write (agent:w2).
-    worker2: String,
-    client: reqwest::Client,
-    _tmp: tempfile::TempDir,
-}
-
-fn scopes(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
-}
-
-impl TestApp {
-    async fn spawn() -> TestApp {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = Store::open(tmp.path().join("test.db")).expect("open store");
-        store
-            .create_project("tp", "Test Project", None, "test:setup")
-            .expect("create project");
-        let (_, admin) = store
-            .create_token(
-                "human:admin",
-                &scopes(&["read", "write", "human", "admin"]),
-                None,
-                10_000,
-                None,
-            )
-            .unwrap();
-        let (_, human) = store
-            .create_token(
-                "human:reviewer",
-                &scopes(&["read", "write", "human"]),
-                None,
-                10_000,
-                None,
-            )
-            .unwrap();
-        let (_, worker) = store
-            .create_token("agent:w1", &scopes(&["read", "write"]), None, 10_000, None)
-            .unwrap();
-        let (_, worker2) = store
-            .create_token("agent:w2", &scopes(&["read", "write"]), None, 10_000, None)
-            .unwrap();
-
-        let state = AppState::new(store);
-        spawn_sweeper(state.clone(), Duration::from_millis(250));
-        let router = build_router(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-
-        TestApp {
-            base: format!("http://{addr}"),
-            admin,
-            human,
-            worker,
-            worker2,
-            client: reqwest::Client::new(),
-            _tmp: tmp,
-        }
-    }
-
-    async fn post(&self, token: &str, path: &str, body: Value) -> (StatusCode, Value) {
-        let resp = self
-            .client
-            .post(format!("{}{}", self.base, path))
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await
-            .expect("request");
-        let status = resp.status();
-        let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-        (status, value)
-    }
-
-    async fn get(&self, token: &str, path: &str) -> (StatusCode, Value) {
-        let resp = self
-            .client
-            .get(format!("{}{}", self.base, path))
-            .bearer_auth(token)
-            .send()
-            .await
-            .expect("request");
-        let status = resp.status();
-        let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-        (status, value)
-    }
-
-    /// GET returning the raw response (status, content-type, body text) — used
-    /// for the JSONL export endpoint, which is not a single JSON document.
-    async fn get_raw(&self, token: &str, path: &str) -> (StatusCode, String, String) {
-        let resp = self
-            .client
-            .get(format!("{}{}", self.base, path))
-            .bearer_auth(token)
-            .send()
-            .await
-            .expect("request");
-        let status = resp.status();
-        let ctype = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let text = resp.text().await.unwrap_or_default();
-        (status, ctype, text)
-    }
-
-    async fn patch(&self, token: &str, path: &str, body: Value) -> (StatusCode, Value) {
-        let resp = self
-            .client
-            .patch(format!("{}{}", self.base, path))
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await
-            .expect("request");
-        let status = resp.status();
-        let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-        (status, value)
-    }
-
-    async fn create_ticket(&self, title: &str) -> String {
-        let (status, body) = self
-            .post(
-                &self.admin,
-                "/v1/tickets",
-                json!({ "project": "tp", "title": title }),
-            )
-            .await;
-        assert_eq!(status, StatusCode::CREATED, "create failed: {body}");
-        body["id"].as_str().expect("ticket id").to_string()
-    }
-
-    async fn transition(&self, token: &str, id: &str, to: &str) -> (StatusCode, Value) {
-        self.post(
-            token,
-            &format!("/v1/tickets/{id}/transition"),
-            json!({ "to": to }),
-        )
-        .await
-    }
-
-    /// brief -> spec -> ready (human approval path).
-    async fn to_ready(&self, id: &str) {
-        let (s1, b1) = self.transition(&self.human, id, "spec").await;
-        assert_eq!(s1, StatusCode::OK, "brief->spec failed: {b1}");
-        let (s2, b2) = self.transition(&self.human, id, "ready").await;
-        assert_eq!(s2, StatusCode::OK, "spec->ready failed: {b2}");
-    }
-
-    /// Create a ticket with an explicit type and optional parent (admin token).
-    /// The live server's SQLite file. Tests that must seed states the API
-    /// deliberately refuses to create — a dangling `parent`, a `parent` cycle —
-    /// write them here directly with foreign keys off, so the row lands exactly
-    /// as a corrupted or hand-edited database would have it.
-    fn db_path(&self) -> std::path::PathBuf {
-        self._tmp.path().join("test.db")
-    }
-
-    /// Repoint `id`'s parent straight in the database, bypassing validation.
-    fn force_parent(&self, id: &str, parent: &str) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .expect("busy timeout");
-        conn.pragma_update(None, "foreign_keys", "OFF")
-            .expect("foreign_keys off");
-        let n = conn
-            .execute(
-                "UPDATE tickets SET parent = ?2 WHERE id = ?1",
-                rusqlite::params![id, parent],
-            )
-            .expect("force parent");
-        assert_eq!(n, 1, "force_parent should touch exactly one row ({id})");
-    }
-
-    async fn create_typed(&self, title: &str, ty: &str, parent: Option<&str>) -> String {
-        let mut body = json!({ "project": "tp", "title": title, "type": ty });
-        if let Some(p) = parent {
-            body["parent"] = json!(p);
-        }
-        let (status, b) = self.post(&self.admin, "/v1/tickets", body).await;
-        assert_eq!(status, StatusCode::CREATED, "create_typed failed: {b}");
-        b["id"].as_str().expect("ticket id").to_string()
-    }
-
-    /// Drive a leaf ticket all the way to `done`: ready -> claim -> implementing
-    /// -> review -> done (the human gate auto-releases the worker's claim).
-    async fn drive_to_done(&self, id: &str) {
-        self.to_ready(id).await;
-        let (s, lease) = self
-            .post(&self.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-            .await;
-        assert_eq!(s, StatusCode::OK, "claim failed: {lease}");
-        let fence = lease["fence"].as_i64().unwrap();
-        let (s, b) = self
-            .post(
-                &self.worker,
-                &format!("/v1/tickets/{id}/transition"),
-                json!({ "to": "implementing", "fence": fence }),
-            )
-            .await;
-        assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
-        let (s, b) = self
-            .post(
-                &self.worker,
-                &format!("/v1/tickets/{id}/transition"),
-                json!({ "to": "review", "fence": fence }),
-            )
-            .await;
-        assert_eq!(s, StatusCode::OK, "->review failed: {b}");
-        let (s, b) = self.transition(&self.human, id, "done").await;
-        assert_eq!(s, StatusCode::OK, "->done failed: {b}");
-    }
-
-    /// Drive a leaf ticket to `implementing` and return the worker's fence, so
-    /// question tests can park an in-progress ticket.
-    async fn to_implementing(&self, id: &str) -> i64 {
-        self.to_ready(id).await;
-        let (s, lease) = self
-            .post(&self.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-            .await;
-        assert_eq!(s, StatusCode::OK, "claim failed: {lease}");
-        let fence = lease["fence"].as_i64().unwrap();
-        let (s, b) = self
-            .post(
-                &self.worker,
-                &format!("/v1/tickets/{id}/transition"),
-                json!({ "to": "implementing", "fence": fence }),
-            )
-            .await;
-        assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
-        fence
-    }
-}
+mod common;
+use common::TestApp;
 
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn healthz_open_everything_else_authed() {
     let app = TestApp::spawn().await;
-    let resp = app
-        .client
-        .get(format!("{}/healthz", app.base))
-        .send()
-        .await
-        .unwrap();
+    let resp = app.request(Method::GET, "/healthz").send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let resp = app
-        .client
-        .get(format!("{}/v1/tickets", app.base))
+        .request(Method::GET, "/v1/tickets")
         .send()
         .await
         .unwrap();
@@ -278,8 +29,7 @@ async fn healthz_open_everything_else_authed() {
     assert_eq!(body["code"], "auth.missing");
 
     let resp = app
-        .client
-        .get(format!("{}/v1/tickets", app.base))
+        .request(Method::GET, "/v1/tickets")
         .bearer_auth("tk_bogusbogusbogusbogus1")
         .send()
         .await
@@ -291,12 +41,7 @@ async fn healthz_open_everything_else_authed() {
 async fn inbox_and_board_pages_served_unauthenticated() {
     let app = TestApp::spawn().await;
     for (path, marker) in [("/inbox", "takomo · inbox"), ("/board", "takomo")] {
-        let resp = app
-            .client
-            .get(format!("{}{}", app.base, path))
-            .send()
-            .await
-            .unwrap();
+        let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
         let body = resp.text().await.unwrap();
         assert!(
@@ -331,19 +76,16 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     let other = app.create_typed("Unrelated work", "task", None).await;
 
     // Advisory: needs no claim/fence and parks nothing, so the ticket stays put.
-    let (status, q) = app
-        .post(
-            &app.admin,
-            "/v1/questions",
-            json!({
-                "ticket": child,
-                "mode": "advisory",
-                "kind": "confirm",
-                "title": "Drop the legacy column?",
-            }),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "ask failed: {q}");
+    app.ask(
+        &app.admin,
+        json!({
+            "ticket": child,
+            "mode": "advisory",
+            "kind": "confirm",
+            "title": "Drop the legacy column?",
+        }),
+    )
+    .await;
 
     // ---- half 1: the fields the filters read ----
     // The board walks `parent` upward to decide subtree membership.
@@ -401,8 +143,7 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     // ---- half 2: the control that reads them ----
     for (path, wiring) in [("/board", "inSubtree("), ("/inbox", "visible()")] {
         let body = app
-            .client
-            .get(format!("{}{}", app.base, path))
+            .request(Method::GET, path)
             .send()
             .await
             .unwrap()
@@ -431,12 +172,7 @@ async fn ticket_filter_contract_on_board_and_inbox() {
 async fn favicon_served_unauthenticated_as_svg() {
     let app = TestApp::spawn().await;
     for path in ["/favicon.svg", "/favicon.ico"] {
-        let resp = app
-            .client
-            .get(format!("{}{}", app.base, path))
-            .send()
-            .await
-            .unwrap();
+        let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
         let ct = resp
             .headers()
@@ -579,15 +315,7 @@ async fn fence_goes_stale_after_expiry_and_reclaim() {
     app.to_ready(&id).await;
 
     // Worker 1 claims with a 1-second lease.
-    let (s, lease) = app
-        .post(
-            &app.worker,
-            &format!("/v1/tickets/{id}/claim"),
-            json!({ "ttl_seconds": 1 }),
-        )
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let old_fence = lease["fence"].as_i64().unwrap();
+    let old_fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
 
     // Let the lease expire (sweep interval is 250ms in tests).
     tokio::time::sleep(Duration::from_millis(1600)).await;
@@ -606,11 +334,8 @@ async fn fence_goes_stale_after_expiry_and_reclaim() {
     );
 
     // Worker 2 claims it; the fence must be strictly greater.
-    let (s, lease2) = app
-        .post(&app.worker2, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease2}");
-    assert!(lease2["fence"].as_i64().unwrap() > old_fence);
+    let new_fence = app.claim_as(&app.worker2, &id).await;
+    assert!(new_fence > old_fence);
 
     // Zombie worker 1 heartbeats with the stale fence: teaching 409.
     let (s, body) = app
@@ -624,16 +349,14 @@ async fn fence_goes_stale_after_expiry_and_reclaim() {
     assert_eq!(body["code"], "fence.stale");
 
     // Stale-fence patch by the zombie also bounces (claim held by w2).
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "title": "hijack attempt", "fence": old_fence }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "hijack attempt", "fence": old_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "claim.held");
 }
 
@@ -646,15 +369,7 @@ async fn heartbeat_renewal_emits_no_event() {
     let id = app.create_ticket("Heartbeat quiet test").await;
     app.to_ready(&id).await;
 
-    let (s, lease) = app
-        .post(
-            &app.worker,
-            &format!("/v1/tickets/{id}/claim"),
-            json!({ "ttl_seconds": 900 }),
-        )
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let fence = lease["fence"].as_i64().unwrap();
+    let fence = app.claim_ttl(&app.worker, &id, Some(900)).await;
 
     // Two heartbeats on the same lease.
     for _ in 0..2 {
@@ -670,10 +385,7 @@ async fn heartbeat_renewal_emits_no_event() {
     }
 
     // An idempotent re-claim by the same holder is also a renewal.
-    let (s, _) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    app.claim(&id).await;
 
     // No heartbeat event ever reached the log.
     let (_, hb) = app
@@ -708,55 +420,47 @@ async fn body_replacement_requires_cas() {
     let id = app.create_ticket("CAS body test").await;
 
     // No If-Match: refused with instructions.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "body": "new body" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "body": "new body" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "conflict.if_match_required");
     assert_eq!(body["current_version"], 1);
 
     // Wrong If-Match: version conflict with current version + body hash.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .header("If-Match", "\"99\"")
-        .json(&json!({ "body": "new body" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch_with(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            &[("If-Match", "\"99\"")],
+            json!({ "body": "new body" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "conflict.version");
     assert_eq!(body["current_version"], 1);
     assert!(body["details"]["body_sha256"].is_string());
 
     // Correct If-Match succeeds and bumps the version.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .header("If-Match", "\"1\"")
-        .json(&json!({ "body": "new body" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch_with(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            &[("If-Match", "\"1\"")],
+            json!({ "body": "new body" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(body["body"], "new body");
     assert_eq!(body["version"], 2);
 
     // ETag on GET reflects the version.
     let resp = app
-        .client
-        .get(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
+        .authed(Method::GET, &app.admin, &format!("/v1/tickets/{id}"))
         .send()
         .await
         .unwrap();
@@ -771,33 +475,25 @@ async fn idempotent_create_replays() {
     let app = TestApp::spawn().await;
     let req = json!({ "project": "tp", "title": "Idempotency replay test" });
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/tickets", app.base))
-        .bearer_auth(&app.admin)
-        .header("Idempotency-Key", "create-once")
-        .json(&req)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let first: Value = resp.json().await.unwrap();
+    let (s, first) = app
+        .post_with(
+            &app.admin,
+            "/v1/tickets",
+            &[("Idempotency-Key", "create-once")],
+            req.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
 
-    let resp = app
-        .client
-        .post(format!("{}/v1/tickets", app.base))
-        .bearer_auth(&app.admin)
-        .header("Idempotency-Key", "create-once")
-        .json(&req)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "replay must be 200, not a twin 201"
-    );
-    let second: Value = resp.json().await.unwrap();
+    let (s, second) = app
+        .post_with(
+            &app.admin,
+            "/v1/tickets",
+            &[("Idempotency-Key", "create-once")],
+            req.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "replay must be 200, not a twin 201");
     assert_eq!(first["id"], second["id"]);
 
     // Only one ticket exists with that title.
@@ -832,15 +528,14 @@ async fn blocked_tickets_never_ready_including_inherited() {
         .await;
 
     // child under epic; epic blocked_by blocker.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{child}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "parent": epic }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{child}"),
+            json!({ "parent": epic }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     let (s, _) = app
         .post(
             &app.admin,
@@ -915,27 +610,18 @@ async fn no_open_children_guard_blocks_done() {
     let app = TestApp::spawn().await;
     let parent = app.create_ticket("Parent epic with open child").await;
     let child = app.create_ticket("Open child of the epic").await;
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{child}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "parent": parent }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{child}"),
+            json!({ "parent": parent }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 
     // Drive parent to review: ready -> claim -> implementing -> review -> release.
     app.to_ready(&parent).await;
-    let (s, lease) = app
-        .post(
-            &app.worker,
-            &format!("/v1/tickets/{parent}/claim"),
-            json!({}),
-        )
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let fence = lease["fence"].as_i64().unwrap();
+    let fence = app.claim(&parent).await;
 
     // ready -> implementing requires the claim; without a fence it teaches.
     let (s, body) = app.transition(&app.worker, &parent, "implementing").await;
@@ -958,15 +644,14 @@ async fn no_open_children_guard_blocks_done() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{body}");
-    let resp = app
-        .client
-        .post(format!("{}/v1/tickets/{parent}/release", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "fence": fence, "reason": "PR open" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{parent}/release"),
+            json!({ "fence": fence, "reason": "PR open" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
 
     // review -> done blocked by the open child, naming it.
     let (s, body) = app.transition(&app.human, &parent, "done").await;
@@ -1047,29 +732,27 @@ async fn has_link_guard_requires_proof_before_done() {
     assert!(remedy.contains("takomo_link"), "{remedy}");
 
     // A blank value is not proof.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "links": { "commit": "   " } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "links": { "commit": "   " } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     let (s, body) = app.transition(&app.admin, &id, "done").await;
     assert_eq!(s, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "transition.guard");
 
     // A real sha satisfies it.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "links": { "commit": "5caea2a0f3b91c7d4e28a6b5f0c1d9e8a7b6c5d4" } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "links": { "commit": "5caea2a0f3b91c7d4e28a6b5f0c1d9e8a7b6c5d4" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     let (s, body) = app.transition(&app.admin, &id, "done").await;
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "done");
@@ -1181,20 +864,14 @@ async fn write_rate_limit_returns_429_with_retry_after() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Rate limit target").await;
 
-    // Mint a tight token directly in a fresh store handle? No — use the CLI
-    // path via the store the server owns is not reachable from here, so mint
-    // through a second connection to the same DB file.
-    let store = Store::open(app._tmp.path().join("test.db")).unwrap();
-    let (_, tight) = store
-        .create_token("agent:chatty", &scopes(&["read", "write"]), None, 3, None)
-        .unwrap();
+    // The store the server owns is not reachable from here, so mint through a
+    // second connection to the same DB file — the CLI's root of trust.
+    let tight = app.mint_limited("agent:chatty", &["read", "write"], None, 3);
 
     let mut last = None;
     for i in 0..4 {
         let resp = app
-            .client
-            .post(format!("{}/v1/tickets/{id}/comments", app.base))
-            .bearer_auth(&tight)
+            .authed(Method::POST, &tight, &format!("/v1/tickets/{id}/comments"))
             .json(&json!({ "body": format!("comment {i}") }))
             .send()
             .await
@@ -1221,38 +898,33 @@ async fn patch_rejects_state_and_unknown_fields() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Patch teaching test").await;
 
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "state": "done" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "state": "done" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "patch.state_not_patchable");
     assert!(body["remedy"].as_str().unwrap().contains("/transition"));
 
     // metadata_merge with RFC 7386 delete semantics.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "metadata_merge": { "test.keep": "yes", "test.drop": "tmp" } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "metadata_merge": { "test.drop": null } }))
-        .send()
-        .await
-        .unwrap();
-    let body: Value = resp.json().await.unwrap();
+    let (s, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "metadata_merge": { "test.keep": "yes", "test.drop": "tmp" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, body) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "metadata_merge": { "test.drop": null } }),
+        )
+        .await;
     assert_eq!(body["metadata"]["test.keep"], "yes");
     assert!(body["metadata"].get("test.drop").is_none());
 }
@@ -1262,45 +934,38 @@ async fn non_holder_writes_restricted_while_claimed() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Claimed-ticket write restrictions").await;
     app.to_ready(&id).await;
-    let (s, _lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    app.claim(&id).await;
 
     // Non-holder title patch: 409 claim.held.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker2)
-        .json(&json!({ "title": "stolen" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.worker2,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "stolen" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "claim.held");
 
     // Non-holder may merge metadata under its own namespace.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker2)
-        .json(&json!({ "metadata_merge": { "agent:w2.note": "observed" } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.worker2,
+            &format!("/v1/tickets/{id}"),
+            json!({ "metadata_merge": { "agent:w2.note": "observed" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 
     // ...but not under someone else's namespace.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker2)
-        .json(&json!({ "metadata_merge": { "agent:w1.note": "forged" } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let (s, _) = app
+        .patch(
+            &app.worker2,
+            &format!("/v1/tickets/{id}"),
+            json!({ "metadata_merge": { "agent:w1.note": "forged" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
 
     // Comments stay open to everyone.
     let (s, _) = app
@@ -1313,16 +978,14 @@ async fn non_holder_writes_restricted_while_claimed() {
     assert_eq!(s, StatusCode::CREATED);
 
     // Holder must echo the fence even for its own patches.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "title": "renamed by holder" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "renamed by holder" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "fence.required");
 }
 
@@ -1332,9 +995,7 @@ async fn sse_stream_delivers_events() {
     app.create_ticket("SSE seed ticket").await;
 
     let resp = app
-        .client
-        .get(format!("{}/v1/events/stream?since=0", app.base))
-        .bearer_auth(&app.admin)
+        .authed(Method::GET, &app.admin, "/v1/events/stream?since=0")
         .send()
         .await
         .unwrap();
@@ -1368,19 +1029,10 @@ async fn sse_stream_delivers_events() {
 #[tokio::test]
 async fn project_scoped_token_is_fenced_in() {
     let app = TestApp::spawn().await;
-    let store = Store::open(app._tmp.path().join("test.db")).unwrap();
-    store
+    app.open_store()
         .create_project("other", "Other Project", None, "test:setup")
         .unwrap();
-    let (_, scoped) = store
-        .create_token(
-            "agent:tp-only",
-            &scopes(&["read", "write"]),
-            Some(&["tp".to_string()]),
-            10_000,
-            None,
-        )
-        .unwrap();
+    let scoped = app.mint("agent:tp-only", &["read", "write"], Some(&["tp"]));
 
     let (s, body) = app
         .post(
@@ -1410,35 +1062,28 @@ async fn stale_fence_bounces_even_on_unclaimed_ticket() {
 
     // Claim/release twice: fence advances to 2, ticket ends unclaimed.
     for expected_fence in 1..=2i64 {
-        let (s, lease) = app
-            .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-            .await;
-        assert_eq!(s, StatusCode::OK, "{lease}");
-        let fence = lease["fence"].as_i64().unwrap();
+        let fence = app.claim(&id).await;
         assert_eq!(fence, expected_fence);
-        let resp = app
-            .client
-            .post(format!("{}/v1/tickets/{id}/release", app.base))
-            .bearer_auth(&app.worker)
-            .json(&json!({ "fence": fence }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let (s, _) = app
+            .post(
+                &app.worker,
+                &format!("/v1/tickets/{id}/release"),
+                json!({ "fence": fence }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
     }
 
     // A zombie echoing fence 1 must bounce on PATCH even though the ticket is
     // unclaimed now.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "title": "zombie write", "fence": 1 }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "zombie write", "fence": 1 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(body["code"], "fence.stale");
 
     // Same on transition.
@@ -1453,15 +1098,14 @@ async fn stale_fence_bounces_even_on_unclaimed_ticket() {
     assert_eq!(body["code"], "fence.stale");
 
     // The current fence (2) is accepted on an unclaimed ticket.
-    let resp = app
-        .client
-        .patch(format!("{}/v1/tickets/{id}", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "title": "current fence ok", "fence": 2 }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (s, _) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "current fence ok", "fence": 2 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1470,11 +1114,7 @@ async fn deps_respect_claims_and_fences() {
     let id = app.create_ticket("Deps under claim").await;
     let other = app.create_ticket("A blocker candidate").await;
     app.to_ready(&id).await;
-    let (s, lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let fence = lease["fence"].as_i64().unwrap();
+    let fence = app.claim(&id).await;
 
     // Non-holder cannot add a dep to a claimed ticket.
     let (s, body) = app
@@ -1514,32 +1154,20 @@ async fn deps_respect_claims_and_fences() {
     assert_eq!(after["blocked_by"][0], other.as_str());
 
     // Removal follows the same rule (fence via query param).
-    let resp = app
-        .client
-        .delete(format!(
-            "{}/v1/tickets/{id}/deps?blocked_by={other}",
-            app.base
-        ))
-        .bearer_auth(&app.worker)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::CONFLICT,
-        "holder needs fence on delete too"
-    );
-    let resp = app
-        .client
-        .delete(format!(
-            "{}/v1/tickets/{id}/deps?blocked_by={other}&fence={fence}",
-            app.base
-        ))
-        .bearer_auth(&app.worker)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (s, _) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/tickets/{id}/deps?blocked_by={other}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "holder needs fence on delete too");
+    let (s, _) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/tickets/{id}/deps?blocked_by={other}&fence={fence}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -1575,16 +1203,7 @@ async fn autoland_twin_edge_selects_most_actionable_error() {
         .await;
     assert_eq!(s, StatusCode::CREATED, "{body}");
 
-    let store = Store::open(app._tmp.path().join("test.db")).unwrap();
-    let (_, orch) = store
-        .create_token(
-            "orch:main",
-            &scopes(&["read", "write", "autoland"]),
-            None,
-            10_000,
-            None,
-        )
-        .unwrap();
+    let orch = app.mint("orch:main", &["read", "write", "autoland"], None);
 
     let (s, t) = app
         .post(
@@ -1758,10 +1377,7 @@ async fn holder_lock_still_blocks_non_holder_ordinary_transition() {
     app.to_ready(&id).await;
 
     // Worker 1 holds the lease.
-    let (s, _lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    app.claim(&id).await;
 
     // Worker 2 (non-holder, no human scope) attempts ready->implementing, an
     // ordinary `claim`-required edge. The holder lock still blocks it.
@@ -1780,10 +1396,7 @@ async fn error_ordering_legality_and_scope_precede_fence() {
     assert_eq!(s, StatusCode::OK, "brief->spec: {b}");
     // Worker holds the lease but echoes NO fence on the attempts below; before
     // the fix both would have surfaced `fence.required`.
-    let (s, _lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    app.claim(&id).await;
 
     // (scope before fence) The worker attempts spec->ready, a human gate it
     // lacks the scope for: a 403 transition.scope, not fence.required.
@@ -1869,14 +1482,10 @@ async fn token_mint_list_revoke_and_whoami_over_http() {
     }
 
     // Admin revokes it; the minted token then fails auth.
-    let resp = app
-        .client
-        .delete(format!("{}/v1/tokens/{token_id}", app.base))
-        .bearer_auth(&app.admin)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (s, _) = app
+        .delete(&app.admin, &format!("/v1/tokens/{token_id}"))
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
 
     let (s, body) = app.get(&plaintext, "/v1/whoami").await;
     assert_eq!(
@@ -1887,14 +1496,8 @@ async fn token_mint_list_revoke_and_whoami_over_http() {
     assert_eq!(body["code"], "auth.invalid");
 
     // Revoking an unknown id is a teaching 404.
-    let resp = app
-        .client
-        .delete(format!("{}/v1/tokens/tok_nope", app.base))
-        .bearer_auth(&app.admin)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let (s, _) = app.delete(&app.admin, "/v1/tokens/tok_nope").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1916,14 +1519,8 @@ async fn token_admin_endpoints_require_admin_scope() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["code"], "auth.scope");
 
-    let resp = app
-        .client
-        .delete(format!("{}/v1/tokens/tok_whatever", app.base))
-        .bearer_auth(&app.worker)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (s, _) = app.delete(&app.worker, "/v1/tokens/tok_whatever").await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 
     // But whoami is open to any valid token, and admin sees projects "*".
     let (s, who) = app.get(&app.worker, "/v1/whoami").await;
@@ -2027,11 +1624,7 @@ async fn fence_greater_than_current_is_invalid_not_stale() {
     app.to_ready(&id).await;
 
     // Claim: fence becomes 1.
-    let (s, lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let fence = lease["fence"].as_i64().unwrap();
+    let fence = app.claim(&id).await;
     assert_eq!(fence, 1);
 
     // Holder echoes a fence the store never issued (fabricated, too high).
@@ -2211,16 +1804,7 @@ async fn export_streams_jsonl_with_comments_and_deps() {
     assert_eq!(comments[0]["body"], "a note");
 
     // A read-only (no write) token can export; project scoping is honored.
-    let store = Store::open(app._tmp.path().join("test.db")).unwrap();
-    let (_, reader) = store
-        .create_token(
-            "agent:reader",
-            &scopes(&["read"]),
-            Some(&["tp".to_string()]),
-            10_000,
-            None,
-        )
-        .unwrap();
+    let reader = app.mint("agent:reader", &["read"], Some(&["tp"]));
     let (status, _c, text) = app.get_raw(&reader, "/v1/export?project=tp").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(text.lines().filter(|l| !l.trim().is_empty()).count(), 2);
@@ -2235,10 +1819,7 @@ async fn metrics_counts_by_state_category_and_claims() {
     app.create_ticket("Metrics ticket two").await;
     // Drive one into a claimed state.
     app.to_ready(&a).await;
-    let (s, _lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{a}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    app.claim(&a).await;
 
     let (s, m) = app.get(&app.admin, "/v1/metrics").await;
     assert_eq!(s, StatusCode::OK, "{m}");
@@ -2257,19 +1838,10 @@ async fn metrics_counts_by_state_category_and_claims() {
     );
 
     // A token scoped to a different project sees no tp counts.
-    let store = Store::open(app._tmp.path().join("test.db")).unwrap();
-    store
+    app.open_store()
         .create_project("solo", "Solo", None, "test:setup")
         .unwrap();
-    let (_, scoped) = store
-        .create_token(
-            "agent:solo",
-            &scopes(&["read", "write"]),
-            Some(&["solo".to_string()]),
-            10_000,
-            None,
-        )
-        .unwrap();
+    let scoped = app.mint("agent:solo", &["read", "write"], Some(&["solo"]));
     let (s, m) = app.get(&scoped, "/v1/metrics").await;
     assert_eq!(s, StatusCode::OK);
     assert!(
@@ -2280,21 +1852,6 @@ async fn metrics_counts_by_state_category_and_claims() {
 }
 
 // --- project delete ---------------------------------------------------------
-
-impl TestApp {
-    async fn delete(&self, token: &str, path: &str) -> (StatusCode, Value) {
-        let resp = self
-            .client
-            .delete(format!("{}{}", self.base, path))
-            .bearer_auth(token)
-            .send()
-            .await
-            .expect("request");
-        let status = resp.status();
-        let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-        (status, value)
-    }
-}
 
 // DELETE /v1/projects/{id} cascade-removes the project and all of its tickets,
 // comments, deps, and events in one shot. 404 for an unknown project.
@@ -2370,14 +1927,7 @@ async fn project_delete_refuses_active_claim_unless_forced() {
         .await;
     app.to_ready(&id).await;
     // Long lease so it stays active across the test.
-    let (s, lease) = app
-        .post(
-            &app.worker,
-            &format!("/v1/tickets/{id}/claim"),
-            json!({ "ttl_seconds": 900 }),
-        )
-        .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
+    app.claim_ttl(&app.worker, &id, Some(900)).await;
 
     // Without force: 409 naming the active claim.
     let (s, body) = app.delete(&app.admin, "/v1/projects/tp").await;
@@ -2404,20 +1954,15 @@ async fn project_delete_allows_after_claim_released() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Released before project delete").await;
     app.to_ready(&id).await;
-    let (s, lease) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+    let fence = app.claim(&id).await;
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/release"),
+            json!({ "fence": fence }),
+        )
         .await;
-    assert_eq!(s, StatusCode::OK, "{lease}");
-    let fence = lease["fence"].as_i64().unwrap();
-    let resp = app
-        .client
-        .post(format!("{}/v1/tickets/{id}/release", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "fence": fence }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(s, StatusCode::NO_CONTENT);
 
     // No active claim now: plain delete works without force.
     let (s, _) = app.delete(&app.admin, "/v1/projects/tp").await;
@@ -2551,15 +2096,12 @@ async fn project_delete_cascades_questions_tags_grants_and_promotions() {
     // (answer_grants), both of which REFERENCE questions(id).
     let asked = app.create_ticket("Parked on a human decision").await;
     let fence = app.to_implementing(&asked).await;
-    let (s, q) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": asked, "kind": "confirm", "title": "OK to drop the table?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{q}");
-    let qid = q["question"]["id"].as_str().unwrap().to_string();
     let (s, fu) = app
         .post(
             &app.human,
@@ -3208,14 +2750,6 @@ async fn archive_hides_from_default_views_and_migration_is_additive() {
 
 // --- shareable read-only web views (takomo share) -------------------------------
 
-impl TestApp {
-    /// Open a second connection to the running server's DB (WAL allows it) — used
-    /// to mint a backdated/expired share without waiting on wall-clock time.
-    fn open_store(&self) -> Store {
-        Store::open(self._tmp.path().join("test.db")).unwrap()
-    }
-}
-
 // A project share lists exactly that project's tickets, and nothing from any
 // other project. Also covers self-meta (workflow + scope) and per-ticket detail
 // scoping (in-scope 200, out-of-scope 404).
@@ -3550,10 +3084,7 @@ async fn share_creation_validates_ref_and_authority() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 
     // a read-only token cannot mint a share (needs write scope).
-    let store = app.open_store();
-    let (_, readonly) = store
-        .create_token("agent:ro", &scopes(&["read"]), None, 10_000, None)
-        .unwrap();
+    let readonly = app.mint("agent:ro", &["read"], None);
     let (s, _) = app
         .post(
             &readonly,
@@ -3564,15 +3095,7 @@ async fn share_creation_validates_ref_and_authority() {
     assert_eq!(s, StatusCode::FORBIDDEN, "share mint needs write scope");
 
     // a token scoped to a different project cannot share tp.
-    let (_, scoped) = store
-        .create_token(
-            "agent:elsewhere",
-            &scopes(&["read", "write"]),
-            Some(&["other".to_string()]),
-            10_000,
-            None,
-        )
-        .unwrap();
+    let scoped = app.mint("agent:elsewhere", &["read", "write"], Some(&["other"]));
     let (s, _) = app
         .post(
             &scoped,
@@ -3597,10 +3120,9 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
     let fence = app.to_implementing(&id).await;
 
     // Agent asks a confirm question, echoing its lease fence.
-    let (s, body) = app
-        .post(
+    let (qid, body) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "confirm",
@@ -3612,11 +3134,6 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
-    let qid = body["question"]["id"]
-        .as_str()
-        .expect("question id")
-        .to_string();
     // Ticket is parked in the blocked state and the lease was released.
     assert_eq!(body["ticket"]["state"], "needs-decision");
     assert!(
@@ -3633,13 +3150,7 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
     assert_eq!(list["items"][0]["id"], qid);
 
     // A token without the human scope cannot answer.
-    let (s, denied) = app
-        .post(
-            &app.worker,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, denied) = app.answer(&app.worker, &qid, json!("yes")).await;
     assert_eq!(
         s,
         StatusCode::FORBIDDEN,
@@ -3649,10 +3160,10 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
 
     // The human answers yes; the ticket resumes into the claimable ready state.
     let (s, answered) = app
-        .post(
+        .answer(
             &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": { "value": "yes", "note": "confirmed with data team" } }),
+            &qid,
+            json!({ "value": "yes", "note": "confirmed with data team" }),
         )
         .await;
     assert_eq!(s, StatusCode::OK, "answer failed: {answered}");
@@ -3674,13 +3185,7 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
     );
 
     // Answering again is rejected — the question is closed.
-    let (s, again) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "no" }),
-        )
-        .await;
+    let (s, again) = app.answer(&app.human, &qid, json!("no")).await;
     assert_eq!(s, StatusCode::CONFLICT, "{again}");
     assert_eq!(again["code"], "question.not_open");
 }
@@ -3694,10 +3199,9 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
     let fence = app.to_implementing(&id).await;
 
     // Agent asks a blocking approve question; the ticket parks.
-    let (s, body) = app
-        .post(
+    let (qid, body) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "confirm",
@@ -3708,8 +3212,6 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
     assert_eq!(
         body["question"]["awaiting"], "human",
         "fresh question awaits a human"
@@ -3774,13 +3276,7 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
     assert_eq!(detail2["thread"].as_array().unwrap().len(), 2);
 
     // Now the human answers; the ticket resumes.
-    let (s, answered) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, answered) = app.answer(&app.human, &qid, json!("yes")).await;
     assert_eq!(s, StatusCode::OK, "answer failed: {answered}");
     assert_eq!(answered["question"]["status"], "answered");
     assert_eq!(answered["ticket"]["state"], "ready");
@@ -3808,10 +3304,9 @@ async fn question_options_can_be_revised_while_open() {
     let id = app.create_ticket("Pick a cache eviction policy").await;
     let fence = app.to_implementing(&id).await;
 
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "choose",
@@ -3822,8 +3317,6 @@ async fn question_options_can_be_revised_while_open() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "ask failed: {body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     // Reword/extend while keeping the recommended option: recommendation stands,
     // and whose turn it is must not move.
@@ -3912,25 +3405,13 @@ async fn question_options_can_be_revised_while_open() {
     );
 
     // A human holding the ORIGINAL option list cannot land a stale pick.
-    let (s, stale) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "FIFO" }),
-        )
-        .await;
+    let (s, stale) = app.answer(&app.human, &qid, json!("FIFO")).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{stale}");
     assert_eq!(stale["code"], "validation.answer");
 
     // Answer it for real, then revising is refused: the choices a decision was
     // made on must stay on the record.
-    let (s, answered) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "ARC" }),
-        )
-        .await;
+    let (s, answered) = app.answer(&app.human, &qid, json!("ARC")).await;
     assert_eq!(s, StatusCode::OK, "{answered}");
     let (s, settled) = app
         .post(
@@ -3950,15 +3431,12 @@ async fn question_options_revision_rejects_non_choose_kinds() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Drop the legacy table?").await;
     let fence = app.to_implementing(&id).await;
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Drop it?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
     let (s, err) = app
         .post(
             &app.worker,
@@ -3980,10 +3458,9 @@ async fn question_multi_select_choose_round_trip_and_answer() {
     let id = app.create_ticket("Enable regions").await;
     let fence = app.to_implementing(&id).await;
 
-    let (s, body) = app
-        .post(
+    let (qid, body) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "choose",
@@ -3995,19 +3472,11 @@ async fn question_multi_select_choose_round_trip_and_answer() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "multi ask failed: {body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
     assert_eq!(body["question"]["multi"], true);
     assert_eq!(body["question"]["recommended_multi"], json!(["US", "EU"]));
 
     // Answer with a subset array.
-    let (s, ans) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": ["US", "APAC"] }),
-        )
-        .await;
+    let (s, ans) = app.answer(&app.human, &qid, json!(["US", "APAC"])).await;
     assert_eq!(s, StatusCode::OK, "multi answer failed: {ans}");
     assert_eq!(ans["question"]["status"], "answered");
     assert_eq!(ans["question"]["answer"]["value"], json!(["US", "APAC"]));
@@ -4024,13 +3493,7 @@ async fn question_multi_select_choose_round_trip_and_answer() {
         )
         .await;
     let qid2 = b2["question"]["id"].as_str().unwrap().to_string();
-    let (s, bad) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid2}/answer"),
-            json!({ "answer": "A" }),
-        )
-        .await;
+    let (s, bad) = app.answer(&app.human, &qid2, json!("A")).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
 
     // multi on a non-choose kind is refused at ask time.
@@ -4054,22 +3517,13 @@ async fn question_reopen_takes_back_answer_until_the_ticket_is_in_use() {
     let fence = app.to_implementing(&id).await;
 
     // Ask + answer: the ticket resumes into 'ready'.
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Run it?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
-    let (s, ans) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
     assert_eq!(s, StatusCode::OK, "{ans}");
     assert_eq!(ans["question"]["status"], "answered");
     assert_eq!(ans["ticket"]["state"], "ready");
@@ -4100,18 +3554,9 @@ async fn question_reopen_takes_back_answer_until_the_ticket_is_in_use() {
 
     // Answer again, then claim the resumed ticket → reopen is now refused because
     // a worker relies on the answer.
-    let (_, ans2) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (_, ans2) = app.answer(&app.human, &qid, json!("yes")).await;
     assert_eq!(ans2["ticket"]["state"], "ready");
-    let (s, _claim) = app
-        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
-        .await;
-    assert_eq!(s, StatusCode::OK, "claim should succeed");
+    app.claim(&id).await;
     let (s, blocked) = app
         .post(
             &app.human,
@@ -4193,28 +3638,26 @@ async fn question_rich_fields_round_trip_and_quality_hints() {
 
     // A well-formed choose: options with per-option descriptions, a recommended
     // option, a rationale, confidence, and a summary.
-    let (s, body) = app
-        .post(
+    let (_, body) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
-                "ticket": id,
-                "kind": "choose",
-                "title": "How should the migration run?",
-                "body": "Long enough body to matter for the summary hint. ".repeat(6),
-                "options": [
-                    { "value": "Run it now", "desc": "Additive & reversible; unblocks today." },
-                    { "value": "Wait for the window", "desc": "Safer timing, but parks the work ~2 days." }
-                ],
-                "recommended": "Run it now",
-                "recommended_note": "additive and reversible",
-                "confidence": 3,
-                "summary": "Additive migration — run now or wait for the window.",
-                "fence": fence,
-            }),
+            "ticket": id,
+            "kind": "choose",
+            "title": "How should the migration run?",
+            "body": "Long enough body to matter for the summary hint. ".repeat(6),
+            "options": [
+                { "value": "Run it now", "desc": "Additive & reversible; unblocks today." },
+                { "value": "Wait for the window", "desc": "Safer timing, but parks the work ~2 days." }
+            ],
+            "recommended": "Run it now",
+            "recommended_note": "additive and reversible",
+            "confidence": 3,
+            "summary": "Additive migration — run now or wait for the window.",
+            "fence": fence,
+        }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "rich ask failed: {body}");
     let q = &body["question"];
     assert_eq!(q["options"], json!(["Run it now", "Wait for the window"]));
     assert_eq!(
@@ -4240,10 +3683,9 @@ async fn question_rich_fields_round_trip_and_quality_hints() {
     // A bare confirm (no recommendation, long body, no summary) → gets hints.
     let id2 = app.create_ticket("Bump toolchain").await;
     let fence2 = app.to_implementing(&id2).await;
-    let (s, body2) = app
-        .post(
+    let (_, body2) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id2,
                 "kind": "confirm",
@@ -4253,7 +3695,6 @@ async fn question_rich_fields_round_trip_and_quality_hints() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body2}");
     let hints = body2["hints"].as_array().unwrap();
     assert!(
         !hints.is_empty(),
@@ -4280,10 +3721,9 @@ async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     let id = app.create_ticket("Which migration strategy?").await;
     let fence = app.to_implementing(&id).await;
 
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "choose",
@@ -4294,16 +3734,10 @@ async fn question_choose_validates_options_and_mine_filters_by_expertise() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     // An answer outside the offered options is rejected with a teaching error.
     let (s, bad) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "rewrite-everything" }),
-        )
+        .answer(&app.human, &qid, json!("rewrite-everything"))
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     assert_eq!(bad["code"], "validation.answer");
@@ -4341,13 +3775,7 @@ async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     assert_eq!(none["items"].as_array().unwrap().len(), 0, "{none}");
 
     // The expert answers and resumes the ticket.
-    let (s, answered) = app
-        .post(
-            &expert,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "dual-write" }),
-        )
-        .await;
+    let (s, answered) = app.answer(&expert, &qid, json!("dual-write")).await;
     assert_eq!(s, StatusCode::OK, "{answered}");
     assert_eq!(answered["question"]["answer"]["value"], "dual-write");
     assert_eq!(answered["ticket"]["state"], "ready");
@@ -4358,15 +3786,12 @@ async fn question_withdraw_closes_it_without_answering() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Never mind, found it").await;
     let fence = app.to_implementing(&id).await;
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "clarify", "title": "What does archived mean here?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     let (s, w) = app
         .post(
@@ -4385,13 +3810,7 @@ async fn question_withdraw_closes_it_without_answering() {
     assert_eq!(list["items"].as_array().unwrap().len(), 0, "{list}");
 
     // A withdrawn question can no longer be answered.
-    let (s, _) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "some text" }),
-        )
-        .await;
+    let (s, _) = app.answer(&app.human, &qid, json!("some text")).await;
     assert_eq!(s, StatusCode::CONFLICT);
 }
 
@@ -4400,15 +3819,12 @@ async fn answer_link_lets_an_outsider_answer_once() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Outside review").await;
     let fence = app.to_implementing(&id).await;
-    let (s, b) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let qid = b["question"]["id"].as_str().unwrap().to_string();
 
     // A write-only worker cannot mint a link (delegating needs the human scope).
     let (s, _) = app
@@ -4464,15 +3880,12 @@ async fn answer_link_delegates_approve_only_with_expertise() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("Legal sign-off").await;
     let fence = app.to_implementing(&id).await;
-    let (s, b) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "approve", "title": "OK legally?", "expertise": ["domain:legal"], "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let qid = b["question"]["id"].as_str().unwrap().to_string();
 
     // A plain human (no expert:domain:legal) cannot mint a link for an approve
     // question — you can't delegate authority you don't hold.
@@ -4537,14 +3950,10 @@ async fn answer_link_revoke_kills_it() {
     let gid = link["id"].as_str().unwrap().to_string();
 
     // Revoke it, then the token is gone.
-    let resp = app
-        .client
-        .delete(format!("{}/v1/answer-links/{gid}", app.base))
-        .bearer_auth(&app.human)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let (s, _) = app
+        .delete(&app.human, &format!("/v1/answer-links/{gid}"))
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
     let (s, _) = app.get(&token, "/v1/answer/self").await;
     assert_eq!(s, StatusCode::GONE);
 }
@@ -4579,10 +3988,9 @@ async fn question_expiry_applies_recommendation() {
     let fence = app.to_implementing(&id).await;
 
     // A valid (>= minimum) recommended-timeout window.
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id,
                 "kind": "confirm",
@@ -4594,8 +4002,6 @@ async fn question_expiry_applies_recommendation() {
             }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     // Backdate the deadline directly in the DB (as an aged question would be),
     // so the sweeper picks it up without waiting an hour.
@@ -4634,67 +4040,54 @@ async fn project_question_language_surfaces_to_agents() {
     let app = TestApp::spawn().await;
 
     // Admin sets the project's human-facing question language.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/language", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "language": "German" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/language",
+            json!({ "language": "German" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(body["question_language"], "German");
 
     // It shows up in the project list…
-    let (_, list) = app.get(&app.worker, "/v1/projects").await;
-    let tp = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "tp")
-        .unwrap();
+    let tp = app.project(&app.worker, "tp").await;
     assert_eq!(tp["question_language"], "German");
 
     // …and the ask response nudges the agent toward that language.
     let id = app.create_ticket("Sprachtest").await;
     let fence = app.to_implementing(&id).await;
-    let (s, asked) = app
-        .post(
+    let (_, asked) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Weitermachen?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{asked}");
     assert!(
         asked["note"].as_str().unwrap().contains("German"),
         "ask note should nudge the language: {asked}"
     );
 
     // Clearing it removes the nudge.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/language", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "language": null }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let cleared: Value = resp.json().await.unwrap();
+    let (s, cleared) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/language",
+            json!({ "language": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert!(cleared["question_language"].is_null());
 
     // Non-admins can't set it.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/language", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "language": "French" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (s, _) = app
+        .put(
+            &app.worker,
+            "/v1/projects/tp/language",
+            json!({ "language": "French" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -4703,40 +4096,30 @@ async fn project_style_guide_surfaces_to_agents() {
     let guide = "Two sentences max. Plain language, no marketing voice.";
 
     // Admin sets the project's house style for agent-written text.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "style_guide": guide }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: Value = resp.json().await.unwrap();
+    let (s, body) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": guide }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(body["style_guide"], guide);
 
     // It shows up in the project list…
-    let (_, list) = app.get(&app.worker, "/v1/projects").await;
-    let tp = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "tp")
-        .unwrap();
+    let tp = app.project(&app.worker, "tp").await;
     assert_eq!(tp["style_guide"], guide);
 
     // …and the ask response echoes it back, so an agent that asked before
     // reading the conventions can still fix the question it just wrote.
     let id = app.create_ticket("Style check").await;
     let fence = app.to_implementing(&id).await;
-    let (s, asked) = app
-        .post(
+    let (_, asked) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Proceed?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{asked}");
     assert!(
         asked["note"].as_str().unwrap().contains(guide),
         "ask note should carry the style guide: {asked}"
@@ -4745,64 +4128,48 @@ async fn project_style_guide_surfaces_to_agents() {
     // A guide over the cap is refused with a teaching 422 — and the previous
     // guide survives, so a bad update never silently wipes the setting.
     let too_long = "x".repeat(2001);
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "style_guide": too_long }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let err: Value = resp.json().await.unwrap();
+    let (s, err) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": too_long }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(err["code"], "project.style_guide_too_long");
     assert_eq!(err["details"]["max_chars"], 2000);
-    let (_, still) = app.get(&app.worker, "/v1/projects").await;
     assert_eq!(
-        still
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == "tp")
-            .unwrap()["style_guide"],
+        app.project(&app.worker, "tp").await["style_guide"],
         guide,
         "a rejected update must not clear the existing guide"
     );
 
     // A blank string is a clear, so callers never have to distinguish "" from null.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({ "style_guide": "   " }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let cleared: Value = resp.json().await.unwrap();
+    let (s, cleared) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": "   " }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert!(cleared["style_guide"].is_null(), "{cleared}");
 
     // Omitting the field is an error, not a silent clear.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.admin)
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (s, _) = app
+        .put(&app.admin, "/v1/projects/tp/style", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 
     // Non-admins can't set it.
-    let resp = app
-        .client
-        .put(format!("{}/v1/projects/tp/style", app.base))
-        .bearer_auth(&app.worker)
-        .json(&json!({ "style_guide": "anything" }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (s, _) = app
+        .put(
+            &app.worker,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": "anything" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -4845,35 +4212,23 @@ async fn question_barrier_resumes_only_when_all_answered() {
     let fence = app.to_implementing(&id).await;
 
     // Two distinct questions on the same parked ticket.
-    let (s, b1) = app
-        .post(
+    let (q1, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "OK to drop the table?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b1}");
-    let q1 = b1["question"]["id"].as_str().unwrap().to_string();
     // Second ask: ticket is already parked + unclaimed, so no fence needed.
-    let (s, b2) = app
-        .post(
+    let (q2, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "choose", "title": "Which migration?", "options": ["a", "b"] }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b2}");
-    let q2 = b2["question"]["id"].as_str().unwrap().to_string();
     assert_ne!(q1, q2);
 
     // Answering the first does NOT resume — the barrier is not cleared.
-    let (s, a1) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{q1}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, a1) = app.answer(&app.human, &q1, json!("yes")).await;
     assert_eq!(s, StatusCode::OK, "{a1}");
     assert!(
         a1["question"]["resolved_to"].is_null(),
@@ -4882,13 +4237,7 @@ async fn question_barrier_resumes_only_when_all_answered() {
     assert_eq!(a1["ticket"]["state"], "needs-decision");
 
     // Answering the last one resumes the ticket.
-    let (s, a2) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{q2}/answer"),
-            json!({ "answer": "a" }),
-        )
-        .await;
+    let (s, a2) = app.answer(&app.human, &q2, json!("a")).await;
     assert_eq!(s, StatusCode::OK, "{a2}");
     assert_eq!(a2["question"]["resolved_to"], "ready");
     assert_eq!(a2["ticket"]["state"], "ready");
@@ -4917,29 +4266,21 @@ async fn question_advisory_on_epic_does_not_park() {
     );
     assert_eq!(blocked["code"], "question.no_park");
 
-    let (s, body) = app
-        .post(
+    let (_, body) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": epic, "mode": "advisory", "kind": "choose",
-                    "title": "Which direction for the epic?", "options": ["rewrite", "incremental"],
-                    "expertise": ["domain:product"] }),
+                "title": "Which direction for the epic?", "options": ["rewrite", "incremental"],
+                "expertise": ["domain:product"] }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
     assert_eq!(body["question"]["mode"], "advisory");
     // The epic did not move and holds no claim.
     assert_eq!(body["ticket"]["state"], "brief");
     let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     // Answering records the decision but changes no ticket state.
-    let (s, ans) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "incremental" }),
-        )
-        .await;
+    let (s, ans) = app.answer(&app.human, &qid, json!("incremental")).await;
     assert_eq!(s, StatusCode::OK, "{ans}");
     assert_eq!(ans["question"]["status"], "answered");
     assert!(ans["question"]["resolved_to"].is_null());
@@ -4956,34 +4297,22 @@ async fn question_advisory_does_not_gate_the_barrier() {
     let fence = app.to_implementing(&id).await;
 
     // A blocking question parks the ticket.
-    let (s, b) = app
-        .post(
+    let (blocking, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "OK to proceed?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let blocking = b["question"]["id"].as_str().unwrap().to_string();
     // An advisory question on the same (now parked, unclaimed) ticket.
-    let (s, a) = app
-        .post(
+    let (advisory, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "mode": "advisory", "kind": "clarify", "title": "FYI: any concerns?" }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{a}");
-    let advisory = a["question"]["id"].as_str().unwrap().to_string();
 
     // Answering the advisory one does NOT resume — and, being advisory, never would.
-    let (s, _) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{advisory}/answer"),
-            json!({ "answer": "none" }),
-        )
-        .await;
+    let (s, _) = app.answer(&app.human, &advisory, json!("none")).await;
     assert_eq!(s, StatusCode::OK);
     let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
     assert_eq!(
@@ -4993,13 +4322,7 @@ async fn question_advisory_does_not_gate_the_barrier() {
 
     // Answering the blocking one resumes, even though... the advisory was the
     // only other open question and advisory never counts toward the barrier.
-    let (s, done) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{blocking}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, done) = app.answer(&app.human, &blocking, json!("yes")).await;
     assert_eq!(s, StatusCode::OK, "{done}");
     assert_eq!(done["ticket"]["state"], "ready");
 }
@@ -5014,14 +4337,12 @@ async fn question_ask_is_idempotent_on_retry() {
     assert_eq!(s, StatusCode::CREATED, "{first}");
     // A retry with identical (asker, kind, title) returns the same question,
     // not a duplicate.
-    let (s, again) = app
-        .post(
+    let (_, again) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Same question?" }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{again}");
     assert_eq!(first["question"]["id"], again["question"]["id"]);
     let (_, list) = app
         .get(&app.human, "/v1/questions?project=tp&status=open")
@@ -5050,24 +4371,15 @@ async fn question_approve_requires_a_matching_domain_expert() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     assert_eq!(bad["code"], "validation.expertise");
 
-    let (s, body) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "approve", "title": "Sign off?", "expertise": ["domain:legal"], "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{body}");
-    let qid = body["question"]["id"].as_str().unwrap().to_string();
 
     // A plain human (no matching expert scope) is refused — approve has teeth.
-    let (s, denied) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, denied) = app.answer(&app.human, &qid, json!("yes")).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
     assert_eq!(denied["code"], "question.approve_expertise");
 
@@ -5081,13 +4393,7 @@ async fn question_approve_requires_a_matching_domain_expert() {
         .await;
     assert_eq!(s, StatusCode::CREATED, "{tok}");
     let expert = tok["token"].as_str().unwrap().to_string();
-    let (s, ok) = app
-        .post(
-            &expert,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, ok) = app.answer(&expert, &qid, json!("yes")).await;
     assert_eq!(s, StatusCode::OK, "{ok}");
     assert_eq!(ok["ticket"]["state"], "ready");
 }
@@ -5141,14 +4447,14 @@ async fn questions_list_is_paginated_with_limit_and_cursor() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("q host").await;
     for i in 0..3 {
-        let (st, b) = app
-            .post(
-                &app.admin,
-                "/v1/questions",
-                json!({ "ticket": id, "kind": "clarify", "mode": "advisory", "title": format!("q{i}") }),
-            )
-            .await;
-        assert_eq!(st, StatusCode::CREATED, "ask q{i}: {b}");
+        app.ask(
+            &app.admin,
+            json!({
+                "ticket": id, "kind": "clarify", "mode": "advisory",
+                "title": format!("q{i}"),
+            }),
+        )
+        .await;
     }
     // First page of one, with a cursor for more.
     let (st, page1) = app
@@ -5179,12 +4485,7 @@ async fn questions_list_is_paginated_with_limit_and_cursor() {
 async fn html_apps_send_security_headers() {
     let app = TestApp::spawn().await;
     for path in ["/board", "/inbox"] {
-        let resp = app
-            .client
-            .get(format!("{}{}", app.base, path))
-            .send()
-            .await
-            .unwrap();
+        let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path}");
         let h = resp.headers();
         assert!(
@@ -5213,9 +4514,11 @@ async fn malformed_json_body_returns_a_teaching_error() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("bad body").await;
     let resp = app
-        .client
-        .post(format!("{}/v1/tickets/{id}/comments", app.base))
-        .bearer_auth(&app.admin)
+        .authed(
+            Method::POST,
+            &app.admin,
+            &format!("/v1/tickets/{id}/comments"),
+        )
         .header("content-type", "application/json")
         .body("{ this is not json")
         .send()
@@ -5238,10 +4541,9 @@ async fn timeout_recommendation_holds_ticket_while_another_blocking_question_is_
     let fence = app.to_implementing(&id).await;
 
     // Q1: recommended-on-timeout.
-    let (s1, b1) = app
-        .post(
+    let (q1, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({
                 "ticket": id, "kind": "confirm", "title": "Q1 auto?",
                 "recommended": "yes", "expires_in_seconds": 3600,
@@ -5249,8 +4551,6 @@ async fn timeout_recommendation_holds_ticket_while_another_blocking_question_is_
             }),
         )
         .await;
-    assert_eq!(s1, StatusCode::CREATED, "{b1}");
-    let q1 = b1["question"]["id"].as_str().unwrap().to_string();
 
     // Q2: a second blocking question on the same (now parked) ticket.
     let (s2, b2) = app
@@ -5305,15 +4605,12 @@ async fn answer_link_is_revoked_when_the_question_is_answered_elsewhere() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("grant revoke").await;
     let fence = app.to_implementing(&id).await;
-    let (s, b) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "Ship?", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let qid = b["question"]["id"].as_str().unwrap().to_string();
     // Human mints an answer link for an outsider.
     let (s, link) = app
         .post(
@@ -5325,13 +4622,7 @@ async fn answer_link_is_revoked_when_the_question_is_answered_elsewhere() {
     assert_eq!(s, StatusCode::CREATED, "{link}");
     let token = link["token"].as_str().unwrap().to_string();
     // An internal human answers the question directly, before the outsider acts.
-    let (s, _) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "yes" }),
-        )
-        .await;
+    let (s, _) = app.answer(&app.human, &qid, json!("yes")).await;
     assert_eq!(s, StatusCode::OK);
     // The outstanding link is now dead — revoked on resolution, not just single-use.
     let (s, _) = app.get(&token, "/v1/answer/self").await;
@@ -5349,15 +4640,12 @@ async fn advisory_question_never_resumes_ticket_on_recommended_timeout() {
     let fence = app.to_implementing(&id).await;
     // Park the ticket via a blocking question, then withdraw it — the ticket
     // stays blocked with NO open blocking questions.
-    let (s, b) = app
-        .post(
+    let (q1, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "title": "park", "fence": fence }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let q1 = b["question"]["id"].as_str().unwrap().to_string();
     let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
     assert_eq!(t["state_category"], "blocked", "ticket parked");
     let (s, _) = app
@@ -5369,16 +4657,13 @@ async fn advisory_question_never_resumes_ticket_on_recommended_timeout() {
         .await;
     assert_eq!(s, StatusCode::OK);
     // An advisory question with on_timeout=recommended on the still-blocked ticket.
-    let (s, b2) = app
-        .post(
+    let (q2, _) = app
+        .ask(
             &app.worker,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "confirm", "mode": "advisory", "title": "adv",
-                    "recommended": "yes", "expires_in_seconds": 3600, "on_timeout": "recommended" }),
+                "recommended": "yes", "expires_in_seconds": 3600, "on_timeout": "recommended" }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b2}");
-    let q2 = b2["question"]["id"].as_str().unwrap().to_string();
     {
         let conn = rusqlite::Connection::open(app.db_path()).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(5))
@@ -5462,23 +4747,16 @@ async fn cross_project_dep_detail_is_hidden_from_a_scoped_token() {
 async fn human_can_answer_a_single_choose_with_a_custom_free_text_answer() {
     let app = TestApp::spawn().await;
     let id = app.create_ticket("custom answer").await;
-    let (s, b) = app
-        .post(
+    let (qid, _) = app
+        .ask(
             &app.admin,
-            "/v1/questions",
             json!({ "ticket": id, "kind": "choose", "mode": "advisory", "title": "Which path?",
-                    "options": ["big-bang", "canary"] }),
+                "options": ["big-bang", "canary"] }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{b}");
-    let qid = b["question"]["id"].as_str().unwrap().to_string();
     // A free-text answer that isn't one of the options is rejected WITHOUT the flag.
     let (s, _) = app
-        .post(
-            &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": "phased rollout instead" }),
-        )
+        .answer(&app.human, &qid, json!("phased rollout instead"))
         .await;
     assert_eq!(
         s,
@@ -5487,10 +4765,10 @@ async fn human_can_answer_a_single_choose_with_a_custom_free_text_answer() {
     );
     // With custom:true the human's own instruction is accepted and recorded verbatim.
     let (s, ans) = app
-        .post(
+        .answer(
             &app.human,
-            &format!("/v1/questions/{qid}/answer"),
-            json!({ "answer": { "value": "phased rollout instead", "custom": true } }),
+            &qid,
+            json!({ "value": "phased rollout instead", "custom": true }),
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{ans}");
@@ -5587,15 +4865,10 @@ async fn tag_registry_crud_and_conflict() {
     );
 
     // Delete; ticket refs (none yet) => still_referenced 0.
-    let resp = app
-        .client
-        .delete(format!("{}/v1/projects/tp/tags/person/ada", app.base))
-        .bearer_auth(&app.admin)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let del: Value = resp.json().await.unwrap();
+    let (s, del) = app
+        .delete(&app.admin, "/v1/projects/tp/tags/person/ada")
+        .await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(del["still_referenced"], 0);
 
     // Get after delete is 404.
@@ -5682,14 +4955,9 @@ async fn ticket_tags_lazy_create_patch_and_filter() {
     );
 
     // Deleting the registry entry reports the tickets still referencing it.
-    let resp = app
-        .client
-        .delete(format!("{}/v1/projects/tp/tags/person/ada", app.base))
-        .bearer_auth(&app.admin)
-        .send()
-        .await
-        .unwrap();
-    let del: Value = resp.json().await.unwrap();
+    let (_, del) = app
+        .delete(&app.admin, "/v1/projects/tp/tags/person/ada")
+        .await;
     assert_eq!(
         del["still_referenced"], 1,
         "one ticket still tags person:ada"
