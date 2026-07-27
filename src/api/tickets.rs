@@ -1,8 +1,8 @@
 //! /v1/tickets: create, list/search, get, patch, comments, deps.
 
 use super::{
-    all, body_object, first, get_i64, get_str, get_string_array, parse_i64_param, query_pairs,
-    require_str, ApiJson,
+    all, blocking_read, body_object, first, get_i64, get_str, get_string_array, parse_i64_param,
+    query_pairs, require_str, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
@@ -338,10 +338,17 @@ pub async fn deps_graph(
         }
     };
 
+    // With `transitive`, the walk chases the whole chain — a query per node, for
+    // as many nodes as the graph reaches. Off the runtime (see `blocking_read`);
+    // the direct case rides along rather than branching on cost.
     let allowed = ctx.allowed_projects_vec();
-    let out = state
-        .store
-        .dep_graph(&id, direction, transitive, allowed.as_deref())?;
+    let state = state.clone();
+    let out = blocking_read(move || {
+        state
+            .store
+            .dep_graph(&id, direction, transitive, allowed.as_deref())
+    })
+    .await?;
     Ok(Json(out))
 }
 

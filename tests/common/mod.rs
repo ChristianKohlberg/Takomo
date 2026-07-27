@@ -246,6 +246,33 @@ impl TestApp {
         plaintext
     }
 
+    /// Bulk-insert `n` extra tickets straight into the running server's DB in a
+    /// single transaction. The only practical way to grow the table until an
+    /// unfiltered scan (`GET /v1/export`) takes measurable time — the same
+    /// number of tickets over HTTP would be a minute of round-trips. Rows are
+    /// minimal but valid, so the export path reads them back through the normal
+    /// ticket mapping. Ids are `bulk-NNNNNN`, well clear of the generated ones.
+    pub fn seed_bulk_tickets(&self, n: usize) {
+        let mut conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(Duration::from_secs(10))
+            .expect("busy timeout");
+        let tx = conn.transaction().expect("begin");
+        let base = 1_700_000_000_000i64;
+        for i in 0..n {
+            tx.execute(
+                "INSERT INTO tickets (id, project, type, title, state, priority, created_by, created_at, updated_at) \
+                 VALUES (?1, 'tp', 'task', ?2, 'brief', 'normal', 'test:bulk', ?3, ?3)",
+                rusqlite::params![
+                    format!("bulk-{i:06}"),
+                    format!("Bulk ticket {i}"),
+                    base + i as i64
+                ],
+            )
+            .expect("insert bulk ticket");
+        }
+        tx.commit().expect("commit bulk tickets");
+    }
+
     /// Repoint `id`'s parent straight in the database, bypassing validation.
     pub fn force_parent(&self, id: &str, parent: &str) {
         let conn = rusqlite::Connection::open(self.db_path()).expect("open db");

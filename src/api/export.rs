@@ -2,7 +2,7 @@
 //! JSONL (one JSON object per line). Read scope. The output round-trips through
 //! `takomo import --from takomo`.
 
-use super::{first, query_pairs};
+use super::{blocking_read, first, query_pairs};
 use crate::auth::AuthCtx;
 use crate::error::ApiResult;
 use crate::ids::now_ms;
@@ -29,17 +29,27 @@ pub async fn export(
         ctx.require_project(p)?;
     }
 
-    let rows = state
-        .store
-        .export_tickets(project, ctx.allowed_projects_vec().as_deref())?;
-    let now = now_ms();
-    let mut body = String::new();
-    for (ticket, comments) in &rows {
-        let mut line = ticket.to_json(now);
-        line["comments"] = Value::Array(comments.iter().map(|c| c.to_json()).collect());
-        body.push_str(&line.to_string());
-        body.push('\n');
-    }
+    // Unfiltered, this walks every ticket in the database and serializes the lot
+    // into one String — the scan the read connections and the blocking pool
+    // exist for. Both the query and the JSON building happen off the runtime.
+    let project = project.map(str::to_string);
+    let allowed = ctx.allowed_projects_vec();
+    let state = state.clone();
+    let body = blocking_read(move || {
+        let rows = state
+            .store
+            .export_tickets(project.as_deref(), allowed.as_deref())?;
+        let now = now_ms();
+        let mut body = String::new();
+        for (ticket, comments) in &rows {
+            let mut line = ticket.to_json(now);
+            line["comments"] = Value::Array(comments.iter().map(|c| c.to_json()).collect());
+            body.push_str(&line.to_string());
+            body.push('\n');
+        }
+        Ok(body)
+    })
+    .await?;
 
     Ok(([(header::CONTENT_TYPE, "application/x-ndjson")], body))
 }

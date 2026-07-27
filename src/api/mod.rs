@@ -281,6 +281,32 @@ pub fn clamp_wait(wait: Option<i64>) -> Duration {
 }
 
 // ---------------------------------------------------------------------------
+// Scan-shaped reads: off the async runtime, onto the blocking pool.
+
+/// Run a scan-shaped store read on tokio's blocking pool.
+///
+/// Store calls are synchronous and hold a connection for their duration. For a
+/// point read that is a few microseconds and not worth a thread hop, but the
+/// endpoints that walk whole tables — `/v1/export`, `/v1/metrics`, a project
+/// roadmap, a dep graph — run for as long as the database is big, and on an
+/// async worker thread each one occupies a thread the runtime has only
+/// `num_cpus` of.
+///
+/// The read-only connections behind `Store::with_conn` are what keep such a scan
+/// from stalling *writers*; this is what keeps it from stalling the *runtime*.
+pub async fn blocking_read<T, F>(f: F) -> ApiResult<T>
+where
+    F: FnOnce() -> ApiResult<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.map_err(|e| {
+        ApiError::internal(format!(
+            "read task failed before it could answer: {e}. Retry the request."
+        ))
+    })?
+}
+
+// ---------------------------------------------------------------------------
 // Long-poll: re-check `check` after every store mutation until the deadline.
 
 pub async fn long_poll<T>(

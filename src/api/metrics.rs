@@ -2,6 +2,7 @@
 //! readable projects. Returns ticket counts by state and category per project,
 //! open claim counts, and the total event count.
 
+use super::blocking_read;
 use crate::auth::AuthCtx;
 use crate::error::ApiResult;
 use crate::server::AppState;
@@ -15,6 +16,9 @@ pub async fn metrics(
     Extension(ctx): Extension<AuthCtx>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let out = state.store.metrics(ctx.allowed_projects_vec().as_deref())?;
+    // Aggregates over every ticket and every event row: a scan, off the runtime.
+    let allowed = ctx.allowed_projects_vec();
+    let state = state.clone();
+    let out = blocking_read(move || state.store.metrics(allowed.as_deref())).await?;
     Ok(Json(out))
 }

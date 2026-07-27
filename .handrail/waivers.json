@@ -1,0 +1,8 @@
+{
+  "openapi-current": {
+    "reason": "Internal concurrency change only: reads move to read-only companion connections and the scan-shaped handlers (export, metrics, roadmap, deps) move onto tokio's blocking pool. No route, parameter, status code or response body changes — every endpoint returns byte-for-byte what it did, so there is nothing for spec/openapi.yaml to record.",
+    "scopeHash": "87755606bbf7",
+    "at": "2026-07-27T21:29:30Z",
+    "by": "Christian Kohlberg"
+  }
+}
