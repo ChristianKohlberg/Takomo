@@ -8,6 +8,10 @@ FROM rust:1.97-slim AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# workflows/ is a BUILD input, not runtime data: src/workflow.rs include_str!s
+# workflows/factory-default.yaml, so the build fails without it. Anything else
+# the source embeds from outside src/ has to be copied here too.
+COPY workflows ./workflows
 RUN cargo build --release
 
 # Fetch the Litestream binary (pinned release) in a throwaway stage.
