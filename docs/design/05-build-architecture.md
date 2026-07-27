@@ -1,5 +1,16 @@
 # Build architecture: a central task store for agent fleets
 
+> **Historical design record — written before the code existed, dated sections from 2026-07-19. Not a description
+> of what Takomo is today.** This file froze the reasoning that produced the build: the shape proposed, what was
+> considered and rejected, and what was known at the time. It is deliberately *not* kept in sync with the code,
+> because a decision record edited to match reality stops being a record — the value of "Considered and rejected"
+> below is exactly that it says what we knew then.
+>
+> For the current architecture read the **Architecture** section of [CLAUDE.md](../../CLAUDE.md); for the contract
+> read [spec/openapi.yaml](../../spec/openapi.yaml), [spec/workflow-format.md](../../spec/workflow-format.md) and
+> [spec/auth.md](../../spec/auth.md). Where shipped code has since contradicted a passage, a **Shipped:** note
+> records what happened instead; the original prose is left standing.
+
 Premise: we build our own hosted task manager (Option C from [00-synthesis.md](00-synthesis.md)). What shape, and what breaks in reality with 8–64 concurrent agents.
 
 ## Guiding insight
@@ -20,6 +31,12 @@ orchestrators ◀──SSE event stream (?since=seq) ──── └───�
 - **Server**: Go (or TS) single static binary. Compact REST/JSON — no HAL, no GraphQL. Systemd + Tailscale/reverse-proxy TLS. MCP server and CLI are thin adapters over the same REST API; one write path only.
 - **Storage**: SQLite in WAL mode default (single file, single writer = trivially correct serialization; Litestream for continuous backup). Postgres optional backend (JSONB queries, LISTEN/NOTIFY, `FOR UPDATE SKIP LOCKED`) — same API, config choice.
 - **Auth**: bearer tokens per actor (agent, orchestrator, human), hashed at rest. Token = identity for attribution and per-token rate limiting. Scopes: read-only, project-scoped, admin.
+
+> **Shipped:** the language was still open here — it is settled three sections down under
+> [Stack decision (2026-07-19)](#stack-decision-2026-07-19) as Rust, not Go or TS. The MCP adapter did not stay a
+> thin adapter over REST either: `src/mcp.rs` hosts rmcp in-process and its tools call `Store` directly, so there is
+> no HTTP loopback — the "one write path only" rule holds at the `Store` layer instead of at REST. Postgres is
+> still the someday-backend; the shipped store is SQLite only.
 
 ## Data model
 
@@ -77,6 +94,17 @@ orchestrators ◀──SSE event stream (?since=seq) ──── └───�
 
 **Language: Rust.** axum + tokio single static binary; `rmcp` (official Rust MCP SDK) for the MCP adapter; tower middleware for auth/rate limiting; utoipa for OpenAPI generation.
 
+> **Shipped:** Rust, axum + tokio and `rmcp` all held. The last two clauses never happened.
+> *Not tower* — the auth paths are plain axum middleware functions (`auth_middleware`, `mcp_auth_middleware`,
+> `share_auth_middleware`, `answer_auth_middleware` in `src/auth.rs`), each attached with
+> `axum::middleware::from_fn_with_state` in `src/server.rs` (`mcp_auth_middleware` in `src/mcp.rs`), and the
+> per-token sliding-window write limit is
+> hand-rolled alongside them in `debit_write_budget`. tower stayed a declared dependency with zero call sites until
+> `takomo-v7ha` removed it; it remains only as a transitive dependency of axum.
+> *Not utoipa* — it was never a dependency and no generation step was ever written. `spec/openapi.yaml` is
+> hand-maintained and defended instead: handrail's `openapi-current` detector pairs an HTTP-surface change with a
+> spec change, and CI checks the document is valid OpenAPI 3.1.
+
 **Database: SQLite (or libsql) behind a repository trait; Postgres as optional later backend.**
 
 Considered and rejected:
@@ -111,3 +139,7 @@ Fleet recipe: workers = (2); supervisors = (1) baseline, custom channel as low-l
 ## Deliberate non-goals (v1)
 
 Multi-node HA, horizontal scaling, users/teams/permissions beyond token scopes, human web UI beyond a read-only board, plugins, non-HTTP protocols, real-time collaborative editing, general PM features (sprints, estimates, burndowns).
+
+> **Shipped:** the human web UI outgrew "read-only board". `/inbox` (`src/inbox.html`) is a write surface — humans
+> answer questions, open follow-up threads, and mint answer links from it — and `/board` answers questions and
+> persists its settings sheet rather than only rendering. The rest of this list held.
