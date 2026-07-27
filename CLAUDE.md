@@ -105,8 +105,12 @@ database. The `Store` surface is kept connection-agnostic so Postgres could slot
 **Four independent auth paths, not one middleware with branches** — a token of one kind cannot
 reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 
-- `tk_` bearer → `auth_middleware` → the whole `/v1` API and `/mcp`. Scopes + per-project
-  allowlist + a per-token sliding-window write rate limit.
+- `tk_` bearer → `auth_middleware` (the whole `/v1` API) or `mcp_auth_middleware` (`/mcp`) —
+  same token lookup, scopes, per-project allowlist, and per-token sliding-window write budget;
+  they differ only in where a write is classified. REST classifies by method in the middleware
+  (GET/HEAD free). MCP cannot — every frame is `POST /mcp` — so the middleware only
+  authenticates and `src/mcp.rs` debits at tool dispatch by name (`READ_TOOLS` free, `initialize`
+  and `tools/list` free, unlisted name counts as a write).
 - `tks_` share → `share_auth_middleware` → **only** `/v1/shares/self*`, read-only.
 - `tka_` answer grant → `answer_auth_middleware` → **only** `/v1/answer/self`: read and answer
   exactly one question, then it's spent. This is what an outside expert gets.
