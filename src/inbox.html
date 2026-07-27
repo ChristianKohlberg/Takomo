@@ -517,6 +517,8 @@
       msgMore:"Ganze Antwort zeigen",
       msgLess:"Antwort einklappen",
       morePending:"weitere ausstehend",
+      sendFollow:"Rückfrage senden",
+      followFirst:"Zuerst eine Rückfrage eingeben.",
     },
     en: {
       inbox:"Inbox",
@@ -618,6 +620,8 @@
       msgMore:"Show full reply",
       msgLess:"Collapse reply",
       morePending:"more pending",
+      sendFollow:"Send follow-up",
+      followFirst:"Type a follow-up first.",
     },
   };
 
@@ -1687,9 +1691,16 @@
   // `aria-disabled` keeps it focusable and announces it as unavailable, the visible
   // `.foothint` — wired up as the button's accessible description — carries the
   // reason for everyone, and pressing it anyway repeats that reason as a toast.
+  // While the follow-up composer is open the primary IS the follow-up submit.
+  // Replaced rather than merely disabled: two primary buttons with one of them
+  // inert still leaves the reader guessing which one they pressed, and the wrong
+  // guess here submits a decision that resumes the ticket.
   function applyPrimary(q, btn, hint) {
-    var reason = answerBlockReason(q);
-    btn.textContent = q.mode === "advisory" ? t().answerAdvis : t().answer;
+    var composing = state.composeOpen;
+    var reason = composing
+      ? ((state.draft[q.id] || "").trim() ? "" : t().followFirst)
+      : answerBlockReason(q);
+    btn.textContent = composing ? t().sendFollow : (q.mode === "advisory" ? t().answerAdvis : t().answer);
     btn.className = "btn-primary" + (reason ? " off" : "");
     btn.setAttribute("aria-disabled", reason ? "true" : "false");
     if (reason) btn.title = reason; else btn.removeAttribute("title");
@@ -1709,7 +1720,7 @@
       var comp = el("div", "compose");
       var to = el("div", "to"); to.appendChild(document.createTextNode(t().to + " ")); to.appendChild(el("span", "mono", q.asked_by || "agent")); comp.appendChild(to);
       var inp = el("input"); inp.placeholder = t().askFollow; inp.value = state.draft[q.id] || "";
-      inp.addEventListener("input", function () { state.draft[q.id] = inp.value; state.answering = true; sendBtn.className = "send" + (inp.value.trim() ? " on" : ""); });
+      inp.addEventListener("input", function () { state.draft[q.id] = inp.value; state.answering = true; sendBtn.className = "send" + (inp.value.trim() ? " on" : ""); syncPrimary(q); });
       inp.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); sendFollowup(q); } });
       comp.appendChild(inp);
       var sendBtn = el("button", "send" + ((state.draft[q.id] || "").trim() ? " on" : "")); sendBtn.title = "Send"; sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
@@ -1789,12 +1800,22 @@
     var msg = (state.draft[q.id] || "").trim();
     if (!msg) return;
     api("/questions/" + encodeURIComponent(q.id) + "/followup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg }) })
-      .then(function () { state.draft[q.id] = ""; state.answering = false; toast(t().followupSent, "success"); loadThread(q.id); fetchAll(); })
+      // Close the composer on a successful send: with nothing left in flight the
+      // primary goes back to being the answer button. Leaving it open would park
+      // a permanently unarmed "send follow-up" over the control instead.
+      .then(function () { state.draft[q.id] = ""; state.answering = false; state.composeOpen = false; toast(t().followupSent, "success"); loadThread(q.id); fetchAll(); })
       .catch(function (e) { toast((e && e.message) || "error", "error"); });
   }
 
   // ---- answer (1 click → 30s undo snackbar) ----
   function submitAnswer(q) {
+    // An open follow-up composer owns the primary — see applyPrimary. The guard
+    // lives here rather than on the click handler because the ↵ shortcut calls
+    // submitAnswer directly, without going anywhere near the button.
+    if (state.composeOpen) {
+      if (!(state.draft[q.id] || "").trim()) { toast(t().followFirst, "error"); return; }
+      sendFollowup(q); return;
+    }
     // The button is painted `off` in exactly this case; pressing it anyway (or
     // arriving by the ↵ shortcut, which never touches the button) says why.
     var reason = answerBlockReason(q);
