@@ -74,6 +74,22 @@ single ticket.
 
 ### Fixed
 
+- **`transition.claim_required` no longer sends the caller into a dead end.** Its
+  remedy was a flat `POST /v1/tickets/{id}/claim`, but a lease can only be taken
+  in a state the workflow marks `claimable` — and the state you are stuck in when
+  the lease expires mid-work (`in_progress`, `implementing`) is exactly one that
+  is not. Following the remedy came back with `claim.state` — "state X is not
+  claimable" — so the two errors pointed at each other and an agent trying to
+  close a finished ticket had nothing left to try. The remedy now checks whether
+  claiming works from here: in a claimable state it is still the plain claim,
+  followed by the exact transition to retry with the new fence; in a
+  non-claimable one it says outright that claiming would be refused, names the
+  re-entry edges out of the current state that land somewhere a lease *can* be
+  taken, and warns that going that way puts the ticket back in the ready queue
+  where another worker could pick it up. `details` carries `claimable_states` and
+  `reentry_states` so a machine reader need not parse the prose. The error code
+  and status are unchanged, and whether an expired lease should block closing at
+  all is a separate open question (takomo-jb5i).
 - **The `/inbox` answer button now says what it will do, and is live only when it
   can do it.** Three faults in the same control. It was armed before anything had
   been chosen, so it could be pressed in a state where it could only refuse; it

@@ -555,6 +555,112 @@ async fn fence_goes_stale_after_expiry_and_reclaim() {
 }
 
 #[tokio::test]
+async fn claim_required_after_lease_expiry_names_an_escapable_route() {
+    // takomo-jb5i: closing a ticket whose lease expired mid-work used to point
+    // the caller straight back into `claim.state`. `implementing` is not
+    // claimable, so "POST /claim" is refused from exactly the state the error is
+    // raised in, and the two errors point at each other with no way out. The
+    // remedy must name the re-entry route instead — and it must actually work.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Close after the lease expired").await;
+    app.to_ready(&id).await;
+
+    // Claim with a one-second lease, start work, and let the work outlive it
+    // (the test sweeper runs every 250ms, so the claim is really cleared).
+    let fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "implementing", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+
+    // Closing now fails for want of a claim.
+    let (s, err) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "review" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "expected a claim complaint: {err}");
+    assert_eq!(err["code"], "transition.claim_required");
+
+    // The claim the old remedy named really is refused from here...
+    let (s, refused) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "claim should be refused: {refused}"
+    );
+    assert_eq!(refused["code"], "claim.state");
+
+    // ...so the error must say so and point somewhere else.
+    let message = err["message"].as_str().expect("message");
+    let remedy = err["remedy"].as_str().expect("remedy");
+    assert!(
+        message.contains("not claimable") && message.contains("claim.state"),
+        "the message must warn that claiming is refused from here: {message}"
+    );
+    assert!(
+        !remedy.starts_with(&format!("POST /v1/tickets/{id}/claim")),
+        "the remedy must not lead with the call that is refused: {remedy}"
+    );
+    assert!(
+        remedy.contains("\"to\":\"ready\""),
+        "the remedy must name the re-entry state: {remedy}"
+    );
+    assert_eq!(
+        err["details"]["reentry_states"],
+        json!(["ready"]),
+        "machine readers get the route too: {err}"
+    );
+    assert_eq!(err["details"]["claimable_states"], json!(["spec", "ready"]));
+
+    // Walking the remedy actually closes the ticket.
+    let (s, b) = app.transition(&app.worker, &id, "ready").await;
+    assert_eq!(s, StatusCode::OK, "re-entry to ready failed: {b}");
+    let fence = app.claim_as(&app.worker, &id).await;
+    for to in ["implementing", "review"] {
+        let (s, b) = app
+            .post(
+                &app.worker,
+                &format!("/v1/tickets/{id}/transition"),
+                json!({ "to": to, "fence": fence }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "->{to} failed: {b}");
+    }
+}
+
+#[tokio::test]
+async fn claim_required_from_a_claimable_state_still_points_at_claim() {
+    // The other half of takomo-jb5i: where claiming *does* work, the remedy must
+    // still be the plain claim — the fix must not send everyone on a detour.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Claim me first").await;
+    app.to_ready(&id).await;
+
+    let (s, err) = app.transition(&app.worker, &id, "implementing").await;
+    assert_eq!(s, StatusCode::CONFLICT, "expected a claim complaint: {err}");
+    assert_eq!(err["code"], "transition.claim_required");
+    let remedy = err["remedy"].as_str().expect("remedy");
+    assert!(
+        remedy.starts_with(&format!("POST /v1/tickets/{id}/claim")),
+        "ready is claimable, so claiming is the remedy: {remedy}"
+    );
+    assert!(
+        remedy.contains("\"to\":\"implementing\""),
+        "the remedy names the transition being retried: {remedy}"
+    );
+}
+
+#[tokio::test]
 async fn heartbeat_renewal_emits_no_event() {
     // ts-8zks: lease renewal is silent bookkeeping. Heartbeats must not write
     // to the append-only event log (they flood it at fleet scale), while the

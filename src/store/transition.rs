@@ -338,7 +338,7 @@ impl Store {
             }
 
             if !passed {
-                return Err(requirement_error(id, &t, edge_failures, allowed));
+                return Err(requirement_error(id, &t, to, &wf, edge_failures, allowed));
             }
 
             // Apply. A held claim is auto-released when a human transition
@@ -420,6 +420,98 @@ fn scope_error(
     .allowed_transitions(allowed)
 }
 
+/// The 409 for a claim-gated transition the caller holds no lease for.
+///
+/// The remedy has to name a call that actually works *from the current state*.
+/// Claiming only works in a state the workflow marks `claimable`, and the state
+/// a worker is stuck in when its lease expires mid-task is precisely one that is
+/// not (`in_progress`, `implementing`): a flat "POST /claim" remedy is answered
+/// by `claim.state` — "state X is not claimable" — and the two errors point at
+/// each other with no way out (takomo-jb5i). So when the ticket sits in a
+/// non-claimable state the remedy names the re-entry route instead: the edges
+/// out of here that land somewhere a lease can be taken, plus the warning that
+/// they pass back through the ready queue.
+fn claim_required_error(
+    id: &str,
+    t: &Ticket,
+    to: &str,
+    wf: &Workflow,
+    allowed: Vec<AllowedTransition>,
+) -> ApiError {
+    let claimable_states: Vec<&str> = wf
+        .states
+        .iter()
+        .filter(|s| s.claimable)
+        .map(|s| s.id.as_str())
+        .collect();
+
+    if wf.state(&t.state).is_some_and(|s| s.claimable) {
+        return ApiError::conflict(
+            "transition.claim_required",
+            format!(
+                "This transition requires an active claim on '{id}', and you do not hold one. State '{}' is claimable, so take the lease first and retry echoing its fence.",
+                t.state
+            ),
+        )
+        .remedy(format!(
+            "POST /v1/tickets/{id}/claim, then POST /v1/tickets/{id}/transition with {{\"to\":\"{to}\",\"fence\":<the fence from the claim response>}}."
+        ))
+        .details(json!({ "claimable_states": claimable_states }))
+        .current_state(t.state.clone())
+        .allowed_transitions(allowed);
+    }
+
+    // Re-entry routes: edges out of here into a claimable state that do not
+    // themselves demand a claim — one that did would deadlock the same way.
+    let reentry: Vec<&AllowedTransition> = allowed
+        .iter()
+        .filter(|a| wf.state(&a.to).is_some_and(|s| s.claimable))
+        .filter(|a| !a.requires.iter().any(|r| r == "claim"))
+        .collect();
+    let reentry_states: Vec<&str> = reentry.iter().map(|a| a.to.as_str()).collect();
+
+    let stuck = format!(
+        "This transition requires an active claim on '{id}', and you do not hold one — most often the lease expired while the work ran (nothing heartbeats it for you). State '{}' is not claimable in project '{}', so POST /v1/tickets/{id}/claim would be refused with 'claim.state': a lease can only be taken in {}.",
+        t.state,
+        t.project,
+        if claimable_states.is_empty() {
+            "no state of this workflow".to_string()
+        } else {
+            claimable_states.join(", ")
+        }
+    );
+
+    let (message, remedy) = match reentry.first() {
+        Some(route) => {
+            let gate = if route.requires.is_empty() {
+                String::new()
+            } else {
+                format!(" (that edge requires {})", route.requires.join(", "))
+            };
+            (
+                format!("{stuck} Re-enter a claimable state first, then claim, then walk forward again."),
+                format!(
+                    "POST /v1/tickets/{id}/transition {{\"to\":\"{0}\"}}{gate}, then POST /v1/tickets/{id}/claim for a fresh lease, then transition forward to '{to}' again echoing the new fence on every claim-gated move. Note that '{0}' puts the ticket back in the ready queue, where another worker may pick it up before you re-claim it.",
+                    route.to
+                ),
+            )
+        }
+        None => (
+            format!("{stuck} No transition out of '{}' leads to a claimable state either, so as this workflow stands no one can take a lease on this ticket.", t.state),
+            format!(
+                "Ask an operator to move the ticket along a scope-gated edge into a claimable state, or to adjust the workflow so one is reachable (PUT /v1/projects/{}/workflow, admin scope).",
+                t.project
+            ),
+        ),
+    };
+
+    ApiError::conflict("transition.claim_required", message)
+        .remedy(remedy)
+        .details(json!({ "claimable_states": claimable_states, "reentry_states": reentry_states }))
+        .current_state(t.state.clone())
+        .allowed_transitions(allowed)
+}
+
 /// Turn per-edge requirement failures into the single most actionable error.
 /// Preference order: an edge failing only on claim/guard (the caller is
 /// authorized, just not set up) beats scope-failing edges; scope-only failures
@@ -427,6 +519,8 @@ fn scope_error(
 fn requirement_error(
     id: &str,
     t: &Ticket,
+    to: &str,
+    wf: &Workflow,
     edge_failures: Vec<Vec<ReqFailure>>,
     allowed: Vec<AllowedTransition>,
 ) -> ApiError {
@@ -443,17 +537,8 @@ fn requirement_error(
         .unwrap_or_default();
 
     // Claim first (most common agent mistake), then scope, then guard.
-    if let Some(ReqFailure::NeedsClaim) = best.iter().find(|f| matches!(f, ReqFailure::NeedsClaim))
-    {
-        return ApiError::conflict(
-            "transition.claim_required",
-            format!(
-                "This transition requires an active claim on '{id}', and you do not hold one. Claim the ticket first, then retry the transition echoing the lease's fence."
-            ),
-        )
-        .remedy(format!("POST /v1/tickets/{id}/claim"))
-        .current_state(t.state.clone())
-        .allowed_transitions(allowed);
+    if best.iter().any(|f| matches!(f, ReqFailure::NeedsClaim)) {
+        return claim_required_error(id, t, to, wf, allowed);
     }
 
     let missing_scopes: Vec<String> = best
