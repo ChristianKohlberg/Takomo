@@ -6,6 +6,6 @@ expectation: New or changed HTTP surface ships with an integration test that exe
 desc: Flags touched src/api/* or src/server.rs route wiring with no touched change under tests/.
 kind: detector
 semantics: waivable
-cmd: HR_PRIMARY='src/api' HR_PAIRED='tests' bash .handrail/route-test-pairing.sh
-paths: [src/api, src/server.rs]
+cmd: HR_PRIMARY='src/api src/mcp.rs src/store' HR_PAIRED='tests' bash .handrail/route-test-pairing.sh
+paths: [src/api, src/server.rs, src/mcp.rs, src/store]
 order: 30

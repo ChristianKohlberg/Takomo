@@ -6,6 +6,6 @@ expectation: When the HTTP surface changes, spec/openapi.yaml is updated to matc
 desc: Flags touched src/api/* or src/server.rs route wiring shipping without a spec/openapi.yaml change.
 kind: detector
 semantics: waivable
-cmd: HR_SURFACE='src/api' HR_RECORD='spec/openapi.yaml' bash .handrail/openapi-current.sh
-paths: [src/api, src/server.rs]
+cmd: HR_SURFACE='src/api src/mcp.rs src/store' HR_RECORD='spec/openapi.yaml' bash .handrail/openapi-current.sh
+paths: [src/api, src/server.rs, src/mcp.rs, src/store]
 order: 40
