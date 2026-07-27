@@ -566,3 +566,133 @@ async fn hosted_mcp_surfaces_project_style_guide() {
         "ask note: {asked}"
     );
 }
+// ---- rate limiting: the MCP surface classifies by tool, not HTTP method -----
+
+#[tokio::test]
+async fn mcp_reads_do_not_debit_the_write_budget() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("MCP read budget").await;
+    // Room for exactly two writes a minute.
+    let tight = app.mint_limited("agent:reader", &["read", "write"], None, 2);
+
+    // Every read-only tool, several times over: none of these is a write, even
+    // though each one arrives as POST /mcp.
+    for _ in 0..2 {
+        app.tool_ok(&tight, "takomo_whoami", json!({})).await;
+        app.tool_ok(&tight, "takomo_list", json!({ "project": "tp" }))
+            .await;
+        app.tool_ok(&tight, "takomo_ready", json!({ "project": "tp" }))
+            .await;
+        app.tool_ok(&tight, "takomo_show", json!({ "id": id }))
+            .await;
+        app.tool_ok(&tight, "takomo_deps", json!({ "id": id }))
+            .await;
+        app.tool_ok(&tight, "takomo_questions", json!({ "project": "tp" }))
+            .await;
+        app.tool_ok(&tight, "takomo_projects", json!({})).await;
+        app.tool_ok(&tight, "takomo_workflow", json!({ "project": "tp" }))
+            .await;
+        app.tool_ok(&tight, "takomo_roadmap", json!({ "project": "tp" }))
+            .await;
+    }
+
+    // The whole two-write budget is still there.
+    app.tool_ok(&tight, "takomo_comment", json!({ "id": id, "body": "one" }))
+        .await;
+    app.tool_ok(&tight, "takomo_comment", json!({ "id": id, "body": "two" }))
+        .await;
+}
+
+#[tokio::test]
+async fn mcp_writes_still_debit_and_the_429_names_what_was_spent() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("MCP write budget").await;
+    let tight = app.mint_limited("agent:chatty", &["read", "write"], None, 1);
+
+    app.tool_ok(&tight, "takomo_comment", json!({ "id": id, "body": "one" }))
+        .await;
+
+    let (payload, is_error) = app
+        .tool(&tight, "takomo_comment", json!({ "id": id, "body": "two" }))
+        .await;
+    assert!(is_error, "second write should be refused: {payload}");
+    assert_eq!(payload["code"], "rate.limited");
+    assert_eq!(payload["status"], 429);
+    let message = payload["message"].as_str().expect("message");
+    assert!(
+        message.contains("write budget of 1 writes/minute"),
+        "429 names the budget the caller actually spent: {message}"
+    );
+    assert!(
+        message.contains("reads are free"),
+        "429 tells the caller reads still work: {message}"
+    );
+    assert!(
+        payload["remedy"]
+            .as_str()
+            .is_some_and(|r| r.contains("Wait")),
+        "429 carries a remedy: {payload}"
+    );
+
+    // …and that is true: the reads it points at still work while writes are
+    // refused.
+    app.tool_ok(&tight, "takomo_show", json!({ "id": id }))
+        .await;
+}
+
+#[tokio::test]
+async fn mcp_handshake_discovery_and_unknown_tools_are_free() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("MCP handshake budget").await;
+    // Room for exactly one write a minute.
+    let tight = app.mint_limited("agent:prober", &["read", "write"], None, 1);
+
+    // Attaching to the server must not cost anything: an agent that cannot even
+    // discover the tools without spending its write budget is the sharpest form
+    // of this bug.
+    for _ in 0..3 {
+        app.ok_call(&tight, "initialize", init_params()).await;
+        app.ok_call(&tight, "tools/list", json!({})).await;
+    }
+
+    // A tool that does not exist is not charged either — the router is about to
+    // reject it, and billing a write for a call that never ran would make the
+    // 429 message a lie.
+    let resp = app
+        .rpc(
+            Some(&tight),
+            "tools/call",
+            json!({ "name": "takomo_nonexistent", "arguments": {} }),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("json body");
+    assert!(
+        body.get("error").is_some() || body["result"]["isError"] == json!(true),
+        "unknown tool should be rejected: {body}"
+    );
+
+    // The single write is still available.
+    app.tool_ok(&tight, "takomo_comment", json!({ "id": id, "body": "one" }))
+        .await;
+}
+
+#[tokio::test]
+async fn read_tools_are_all_real_advertised_tools() {
+    let app = TestApp::spawn().await;
+    let list = app.ok_call(&app.worker, "tools/list", json!({})).await;
+    let names: Vec<&str> = list["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    // A renamed or removed read tool would silently start debiting the write
+    // budget again, so pin the free list against what the server advertises.
+    for read in takomo::mcp::READ_TOOLS {
+        assert!(
+            names.contains(read),
+            "READ_TOOLS names '{read}', which is not an advertised tool: {names:?}"
+        );
+    }
+}

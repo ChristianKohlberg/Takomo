@@ -1200,12 +1200,23 @@ paths:
         `tools/call`, ...); no session id is issued and none is required, which
         lets the endpoint scale horizontally with no session affinity.
 
-        Auth: the SAME bearer-token middleware as the REST API. Send
+        Auth: the SAME bearer-token path as the REST API. Send
         `Authorization: Bearer tk_...` on every request; missing, invalid, and
         SHARE (`tks_`) tokens are rejected with 401 before any MCP frame is
         processed. Each tool re-checks scope and project access exactly like the
         equivalent REST endpoint, and calls the internal store directly (no HTTP
         round-trip back to this process).
+
+        Rate limiting: the per-token write budget is charged **per tool call**,
+        not per HTTP request — every MCP frame is a POST, so the method cannot
+        tell a read from a write. The read-only tools (`takomo_show`,
+        `takomo_list`, `takomo_ready`, `takomo_deps`, `takomo_questions`,
+        `takomo_projects`, `takomo_workflow`, `takomo_roadmap`,
+        `takomo_whoami`) cost nothing, and neither do `initialize`,
+        `tools/list`, or an unknown tool name; every other tool debits one
+        write. Exhausting the budget comes back as a tool-level error (HTTP
+        200, `result.isError`) whose payload carries `code: rate.limited`,
+        `status: 429`, and the same message and remedy the REST surface sends.
 
         Tools (mirroring the Node MCP work loop): `takomo_new`,
         `takomo_list`, `takomo_ready`, `takomo_show`, `takomo_claim`,
