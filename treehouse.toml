@@ -1,0 +1,24 @@
+# Pooled git worktrees, one per parallel agent — see CLAUDE.md "Verify a branch
+# in a worktree, not in a dirty tree" for why an agent must not build in the
+# shared checkout.
+#
+# This is a CEILING, not an allocation: treehouse creates slots on demand, so an
+# unused slot costs nothing. Each slot that actually gets used carries its own
+# cargo target directory (~3G for debug, more once it has built release too),
+# which is what buys the incremental builds — a slot survives `treehouse return`.
+#
+# 16 matches treehouse's own default; it is pinned here rather than left
+# implicit so the ceiling is a decision this repo owns, not one a future
+# treehouse release can change underneath it.
+#
+# What bounds real parallelism is not this number but RAM during builds:
+# `[profile.release] lto = true` in Cargo.toml is FAT LTO, whose final link is
+# single-threaded and memory-hungry, so simultaneous links across many slots
+# contend for RAM rather than for cores. The lever for that is CARGO_BUILD_JOBS
+# in .claude/settings.json (set to 4 against this machine's 12 cores), which
+# bounds how much of the machine any one build takes.
+max_trees = 16
+
+# root = "" keeps the pool at $HOME/.treehouse, where the existing warm Takomo
+# slot already lives. Changing it strands that slot's build cache.
+root = ""
