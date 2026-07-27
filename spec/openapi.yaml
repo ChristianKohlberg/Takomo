@@ -143,10 +143,13 @@ paths:
       summary: Delete a project and everything under it (admin scope)
       description: |
         Cascade-deletes the project together with ALL of its tickets, comments,
-        dependency edges, and events, in a single transaction. Dependency edges
-        that point INTO this project from another project's tickets are cleared
-        too. A store-level `project_deleted` audit event (with a null `project`,
-        so per-project event queries stay empty) records the deletion.
+        dependency edges, events, questions (including their follow-up threads
+        and any minted answer links), promotions, and tag registry entries, in a
+        single transaction. Dependency edges that point INTO this project from
+        another project's tickets are cleared too. A store-level
+        `project_deleted` audit event (with a null `project`, so per-project
+        event queries stay empty) records the deletion; its `deleted` payload
+        carries the per-table row counts removed.
 
         Refused with `409 project.active_claims` when any ticket still holds an
         active (unexpired) claim — deleting under a live lease would yank work

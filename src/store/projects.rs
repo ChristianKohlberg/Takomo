@@ -37,6 +37,15 @@ pub fn normalize_style_guide(style: Option<&str>) -> ApiResult<Option<String>> {
     Ok(Some(s.to_string()))
 }
 
+/// Which questions belong to a project, as a reusable SQL predicate over `?1`.
+/// `questions` carries both a `project` and a `ticket` column and both are
+/// foreign keys, so the delete cascade has to clear a row that matches *either*
+/// — otherwise a stray row survives and aborts `DELETE FROM projects`/`tickets`
+/// on the immediate FK check. It is a fixed literal (no interpolated data), so
+/// splicing it into a query string is injection-free.
+const QUESTIONS_OF_PROJECT: &str =
+    "project = ?1 OR ticket IN (SELECT id FROM tickets WHERE project = ?1)";
+
 /// Row counts removed by a cascade project delete, for the audit trail and the
 /// CLI's "what was deleted" summary.
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,6 +54,11 @@ pub struct DeletedCounts {
     pub comments: i64,
     pub deps: i64,
     pub events: i64,
+    pub questions: i64,
+    pub question_messages: i64,
+    pub answer_grants: i64,
+    pub tags: i64,
+    pub promotions: i64,
 }
 
 fn project_id_valid(id: &str) -> bool {
@@ -286,7 +300,9 @@ impl Store {
     }
 
     /// Cascade-delete a project and everything under it (tickets, comments,
-    /// deps, events, and idempotency records), in one transaction.
+    /// deps, events, idempotency records, questions with their follow-up
+    /// threads and answer grants, promotions, and the tag registry), in one
+    /// transaction.
     ///
     /// Refuses with a teaching 409 if any ticket carries an active (unexpired)
     /// claim, unless `force` is set — deleting under a live lease would yank
@@ -349,6 +365,31 @@ impl Store {
                     params![id],
                     |r| r.get(0),
                 )?,
+                questions: tx.query_row(
+                    &format!("SELECT COUNT(*) FROM questions WHERE {QUESTIONS_OF_PROJECT}"),
+                    params![id],
+                    |r| r.get(0),
+                )?,
+                question_messages: tx.query_row(
+                    &format!("SELECT COUNT(*) FROM question_messages WHERE question IN (SELECT id FROM questions WHERE {QUESTIONS_OF_PROJECT})"),
+                    params![id],
+                    |r| r.get(0),
+                )?,
+                answer_grants: tx.query_row(
+                    &format!("SELECT COUNT(*) FROM answer_grants WHERE project = ?1 OR question IN (SELECT id FROM questions WHERE {QUESTIONS_OF_PROJECT})"),
+                    params![id],
+                    |r| r.get(0),
+                )?,
+                tags: tx.query_row(
+                    "SELECT COUNT(*) FROM tags WHERE project = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?,
+                promotions: tx.query_row(
+                    "SELECT COUNT(*) FROM promotions WHERE project = ?1 OR ticket IN (SELECT id FROM tickets WHERE project = ?1)",
+                    params![id],
+                    |r| r.get(0),
+                )?,
             };
 
             // Cascade in FK-safe order: children referencing tickets first, then
@@ -357,6 +398,17 @@ impl Store {
             // project's tickets (including parent/child pairs) in one statement
             // leaves no dangling reference. deps are cleared in both directions
             // because a blocked_by edge may originate in another project.
+            //
+            // The order below is load-bearing, not cosmetic — every one of these
+            // tables holds a real REFERENCES, so a statement run too early aborts
+            // the whole transaction with a 500:
+            //   question_messages, answer_grants -> questions(id)
+            //   questions                        -> projects(id) AND tickets(id)
+            //   promotions                       -> tickets(id)
+            //   tags                             -> projects(id)
+            // `shares` is deliberately NOT swept here: shares.project is a plain
+            // TEXT column with no REFERENCES, so it leaks orphan rows rather than
+            // blocking the delete. That is a separate bug with its own ticket.
             tx.execute(
                 "DELETE FROM deps WHERE ticket IN (SELECT id FROM tickets WHERE project = ?1) OR blocked_by IN (SELECT id FROM tickets WHERE project = ?1)",
                 params![id],
@@ -373,7 +425,25 @@ impl Store {
                 "DELETE FROM events WHERE project = ?1 OR ticket IN (SELECT id FROM tickets WHERE project = ?1)",
                 params![id],
             )?;
+            // The question thread and its answer links, before the questions.
+            tx.execute(
+                &format!("DELETE FROM question_messages WHERE question IN (SELECT id FROM questions WHERE {QUESTIONS_OF_PROJECT})"),
+                params![id],
+            )?;
+            tx.execute(
+                &format!("DELETE FROM answer_grants WHERE project = ?1 OR question IN (SELECT id FROM questions WHERE {QUESTIONS_OF_PROJECT})"),
+                params![id],
+            )?;
+            tx.execute(
+                &format!("DELETE FROM questions WHERE {QUESTIONS_OF_PROJECT}"),
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM promotions WHERE project = ?1 OR ticket IN (SELECT id FROM tickets WHERE project = ?1)",
+                params![id],
+            )?;
             tx.execute("DELETE FROM tickets WHERE project = ?1", params![id])?;
+            tx.execute("DELETE FROM tags WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM workflow_states WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
 
@@ -391,6 +461,11 @@ impl Store {
                         "comments": counts.comments,
                         "deps": counts.deps,
                         "events": counts.events,
+                        "questions": counts.questions,
+                        "question_messages": counts.question_messages,
+                        "answer_grants": counts.answer_grants,
+                        "tags": counts.tags,
+                        "promotions": counts.promotions,
                     }
                 }),
                 now,

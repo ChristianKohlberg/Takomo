@@ -2506,6 +2506,132 @@ async fn project_delete_is_scoped_and_clears_cross_project_deps() {
     );
 }
 
+// Regression: deleting a project that has ever carried a question, a tag, an
+// answer link or a promotion used to 500. Each of those tables holds a real
+// REFERENCES into questions/tickets/projects, so a cascade that skips them hits
+// the immediate foreign-key check and aborts the whole transaction. The other
+// delete tests never create any of them, which is how this survived.
+#[tokio::test]
+async fn project_delete_cascades_questions_tags_grants_and_promotions() {
+    let app = TestApp::spawn().await;
+
+    // A tagged ticket — creating with `tags` auto-registers the `person:ada`
+    // stub in the project tag registry (tags REFERENCES projects(id)) — plus a
+    // registry entry no ticket refers to.
+    let (s, tagged) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Tagged before its project is deleted", "tags": ["person:ada"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tagged}");
+    let tagged = tagged["id"].as_str().unwrap().to_string();
+    let (s, reg) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "component", "handle": "billing" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{reg}");
+
+    // A promotion (REFERENCES tickets(id)).
+    let (s, promo) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{tagged}/promote"),
+            json!({ "target": "staging" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{promo}");
+
+    // A blocking question (REFERENCES projects(id) AND tickets(id)) with a
+    // follow-up thread (question_messages) and a minted answer link
+    // (answer_grants), both of which REFERENCE questions(id).
+    let asked = app.create_ticket("Parked on a human decision").await;
+    let fence = app.to_implementing(&asked).await;
+    let (s, q) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": asked, "kind": "confirm", "title": "OK to drop the table?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{q}");
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let (s, fu) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/followup"),
+            json!({ "message": "How many rows and how long is the lock?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{fu}");
+    let (s, rep) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/reply"),
+            json!({ "message": "40k rows, ~2s lock, reversible." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{rep}");
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+
+    // Asking parked the ticket and released the lease, so no force is needed:
+    // this must be a clean 204, not a 500 from an aborted transaction.
+    let (s, body) = app.delete(&app.admin, "/v1/projects/tp").await;
+    assert_eq!(
+        s,
+        StatusCode::NO_CONTENT,
+        "delete must cascade the question/tag/grant/promotion tables: {body}"
+    );
+
+    // Nothing survives in the tables the cascade used to skip. Read them
+    // straight from SQLite: some have no list endpoint once the project is gone.
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    for table in [
+        "questions",
+        "question_messages",
+        "answer_grants",
+        "tags",
+        "promotions",
+    ] {
+        let n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0, "{table} rows survived the project delete");
+    }
+
+    // The audit event accounts for every table it cleared.
+    let payload: String = conn
+        .query_row(
+            "SELECT payload FROM events WHERE kind = 'project_deleted'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("audit event");
+    let payload: Value = serde_json::from_str(&payload).expect("payload json");
+    let deleted = &payload["deleted"];
+    assert_eq!(deleted["tickets"], 2, "{deleted}");
+    assert_eq!(deleted["questions"], 1, "{deleted}");
+    assert_eq!(deleted["question_messages"], 2, "{deleted}");
+    assert_eq!(deleted["answer_grants"], 1, "{deleted}");
+    assert_eq!(deleted["tags"], 2, "{deleted}");
+    assert_eq!(deleted["promotions"], 1, "{deleted}");
+
+    // And the project itself is gone.
+    let (s, _) = app.delete(&app.admin, "/v1/projects/tp").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn roadmap_rolls_up_epic_subtree() {
     let app = TestApp::spawn().await;

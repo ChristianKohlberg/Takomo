@@ -76,6 +76,14 @@ single ticket.
   continuously: new questions never arrived, answered ones never left, and only a
   reload recovered. The cursor now advances only over events that were actually
   applied, so a deferred batch is re-delivered on the next idle poll.
+- **`DELETE /v1/projects/{project}` 500'd on any project that had ever carried a
+  question, a tag, an answer link or a promotion.** The cascade cleared tickets,
+  comments, deps, events and idempotency records but not `questions`,
+  `question_messages`, `answer_grants`, `tags` or `promotions` — each of which
+  holds a real foreign key into `questions`, `tickets` or `projects`, so SQLite
+  aborted the transaction and the caller got an opaque internal error. All five
+  are now cleared in foreign-key-safe order inside the same transaction, and the
+  `project_deleted` audit event reports the rows removed per table.
 - **Every answer gets its own undo window**, and an answer is confirmed in the
   data as it is given rather than 30 seconds later or in a floating toast.
 - The reading pane keeps its scroll position when a choice is selected.
