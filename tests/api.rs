@@ -203,6 +203,44 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     }
 }
 
+/// `/board`'s tag-value filter is the *same* typeahead as its ticket filter
+/// (takomo-0yl3), not a second bespoke control. That is the decision worth
+/// pinning: two mount points, one `makeTypeahead`. If a later change forks them,
+/// the ARIA and keyboard guarantees above stop covering the tag filter and
+/// nothing else would say so.
+#[tokio::test]
+async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
+    let app = TestApp::spawn().await;
+    let body = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        body.contains("id=\"tagvalfilter\""),
+        "/board mounts the tag-value typeahead"
+    );
+    assert!(
+        body.contains("id=\"tagkindsel\""),
+        "the tag *kind* stays a <select> — a handful of kinds needs no search"
+    );
+    assert_eq!(
+        body.matches("makeTypeahead(").count(),
+        3,
+        "one factory, two callers: the tag-value filter must reuse the ticket \
+         filter's control rather than growing a second implementation"
+    );
+    assert_eq!(
+        body.matches("taTagValue:").count(),
+        2,
+        "/board needs `taTagValue` in both the DE and EN string tables"
+    );
+}
+
 /// Keys of one locale's `STR` table, in declaration order.
 ///
 /// The tables are one `key:"value",` per line (takomo-f9y5), so a line scan

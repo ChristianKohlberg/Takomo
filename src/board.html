@@ -117,6 +117,7 @@
     overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
   }
   .ta input { width: 190px; max-width: 100%; padding-right: 28px; text-overflow: ellipsis; }
+  .ta.narrow input { width: 150px; } /* tag handles are short; a ticket line is not */
   .ta.has-value input { font-weight: 620; border-color: var(--sel-border); background: var(--sel); }
   .ta-clear {
     position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
@@ -362,7 +363,7 @@
   <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
   <div id="tickfilter" class="ta hidden"></div>
   <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
-  <select id="tagvalsel" class="epicsel hidden" title="filter by tag value"></select>
+  <div id="tagvalfilter" class="ta narrow hidden"></div>
   <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
   <span class="share-banner" id="share-scope"></span>
   <span class="grow"></span>
@@ -507,6 +508,7 @@
       taMore:"+{n} weitere — weitertippen zum Eingrenzen",
       taCount:"{n} Treffer",
       taCount1:"1 Treffer",
+      taTagValue:"Nach Tag-Wert filtern (Handle oder Name)",
     },
     en: {
       board:"Board",
@@ -596,6 +598,7 @@
       taMore:"+{n} more — keep typing to narrow",
       taCount:"{n} matches",
       taCount1:"1 match",
+      taTagValue:"Filter by tag value (handle or name)",
     },
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -959,12 +962,6 @@
     state.expanded = {};
     render();
   });
-  $("tagvalsel").addEventListener("change", function () {
-    state.tagRef = $("tagvalsel").value;
-    localStorage.setItem(LS_TAGREF, state.tagRef);
-    state.expanded = {};
-    render();
-  });
 
   // ---- boot for a project: workflow + tickets, then start polling ----
   function boot() {
@@ -1288,11 +1285,12 @@
         li.setAttribute("role", "option");
         li.setAttribute("aria-selected", it.value === value ? "true" : "false");
         if (it.lead) li.appendChild(el("span", "tlead", it.lead));
-        li.appendChild(el("span", "ttext", it.text));
-        var full = (it.lead ? it.lead + " — " : "") + it.text;
+        if (it.text) li.appendChild(el("span", "ttext", it.text));
+        // The two halves are separate spans held apart by a flex gap, which gives
+        // a screen reader nothing to pause on — name the option with the same
+        // one-line form the input shows once it is chosen.
+        var full = it.display || it.text || it.lead;
         li.title = full;
-        // The id and the title are separate spans held apart by a flex gap, which
-        // gives a screen reader nothing to pause on — name the option explicitly.
         li.setAttribute("aria-label", full);
         // mousedown, not click: click fires after blur, and blur closes the popup.
         li.addEventListener("mousedown", function (e) { e.preventDefault(); choose(it.value); });
@@ -1471,10 +1469,28 @@
     return lbl && lbl !== h ? (lbl + " (" + h + ")") : h;
   }
 
-  // Keep the two tag dropdowns (kind, then value within that kind) in sync with
-  // the tags in play; prune stale selections; hide when there are none.
+  // The second half of the tag filter reuses the ticket typeahead unchanged. The
+  // two lists differ only in what a row is made of — id/title there, handle/label
+  // here — which is the one thing the factory already takes as data, so sharing
+  // it costs nothing. The *kind* picker stays a <select>: a project has a handful
+  // of kinds, they fit without truncating, and "all of this kind" is a filter in
+  // its own right, so there is nothing there to search.
+  var tagvalTA = makeTypeahead({
+    id: "tagvalfilter",
+    label: function () { return L().taTagValue; },
+    allLabel: function () { return L().allValues; },
+    onChange: function (v) {
+      state.tagRef = v;
+      localStorage.setItem(LS_TAGREF, state.tagRef);
+      state.expanded = {};
+      render();
+    }
+  });
+
+  // Keep the tag kind dropdown and the value typeahead in sync with the tags in
+  // play; prune stale selections; hide when there are none.
   function populateTagFilter() {
-    var ksel = $("tagkindsel"), vsel = $("tagvalsel"); if (!ksel || !vsel) return;
+    var ksel = $("tagkindsel"); if (!ksel || !tagvalTA) return;
     var refs = ticketTagRefs();
     var kinds = [];
     refs.forEach(function (r) { var k = refKind(r); if (kinds.indexOf(k) === -1) kinds.push(k); });
@@ -1493,13 +1509,23 @@
     if (state.tagRef && vals.indexOf(state.tagRef) === -1) {
       state.tagRef = ""; localStorage.setItem(LS_TAGREF, "");
     }
-    vsel.innerHTML = "";
-    var vAll = el("option"); vAll.value = ""; vAll.textContent = L().allValues; vsel.appendChild(vAll);
-    vals.forEach(function (r) { var o = el("option"); o.value = r; o.textContent = refLabelText(r); vsel.appendChild(o); });
-    vsel.value = state.tagRef;
+    // Searchable on either half: `ada` finds the handle, `Lovelace` the display
+    // label from the registry. The handle leads the row in mono, the way a ticket
+    // id does, so the identifier column stays scannable.
+    tagvalTA.setItems(vals.map(function (r) {
+      var h = refHandle(r), lbl = state.tagLabels[r] || "";
+      return {
+        value: r,
+        display: refLabelText(r),
+        lead: h,
+        text: lbl && lbl !== h ? lbl : "",
+        hay: (h + " " + lbl).toLowerCase()
+      };
+    }));
+    tagvalTA.setValue(state.tagRef);
 
     ksel.classList.toggle("hidden", kinds.length === 0);
-    vsel.classList.toggle("hidden", kinds.length === 0 || !state.tagKind);
+    tagvalTA.show(kinds.length > 0 && !!state.tagKind);
   }
 
   // A ticket passes the tag filter when: no kind chosen (all), OR a specific
