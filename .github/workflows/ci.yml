@@ -39,6 +39,37 @@ jobs:
       - name: Test (release)
         run: cargo test --release
 
+  deps:
+    name: No unused dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cargo.toml is how a reader learns what this crate actually uses, and it
+      # had drifted: `tower` and `tokio-stream` were declared with zero call
+      # sites, kept alive only transitively by axum/rmcp — so nothing failed and
+      # nothing noticed. cargo-machete reads the sources rather than building, so
+      # this whole job is a download plus ~0.1s of work; it is not on the
+      # critical path of the Rust job.
+      #
+      # Pinned release tarball rather than the upstream composite action, which
+      # is only published at @main: this repo pins its other third-party tools
+      # (@redocly/cli@2.40.0) and an unpinned action is remote code. The checksum
+      # is the published one for this asset — bump both lines together.
+      #
+      # False positives are possible (a dep used only through a macro can look
+      # unused). The fix is `[package.metadata.cargo-machete] ignored = [...]` in
+      # Cargo.toml with a comment saying why, never deleting the check.
+      - name: Unused dependency check (cargo-machete)
+        run: |
+          set -euo pipefail
+          ver=0.9.2
+          url="https://github.com/bnjbvr/cargo-machete/releases/download/v${ver}/cargo-machete-v${ver}-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSLf -o "$RUNNER_TEMP/machete.tar.gz" "$url"
+          echo "48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9  $RUNNER_TEMP/machete.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/machete.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/cargo-machete-v${ver}-x86_64-unknown-linux-musl/cargo-machete"
+
   shell:
     name: Shell lint
     runs-on: ubuntu-latest
