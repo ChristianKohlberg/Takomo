@@ -74,6 +74,22 @@ single ticket.
 
 ### Fixed
 
+- **The `/inbox` answer button now says what it will do, and is live only when it
+  can do it.** Three faults in the same control. It was armed before anything had
+  been chosen, so it could be pressed in a state where it could only refuse; it
+  is now inert until the question is actually answered — non-empty text for a
+  `clarify`, at least one option for a `multi` choose, a preset or a non-empty
+  "write your own" for a single choose, yes or no for `confirm`/`approve` — and
+  it says why in a hint that reaches hover, keyboard and screen reader alike
+  (`aria-disabled` plus an `aria-describedby` hint, rather than a native
+  `disabled` that would drop it out of the tab order and explain nothing). With
+  the **follow-up composer** open it kept submitting an answer, so a reader who
+  had just typed a question back to the agent could resume the ticket by pressing
+  the one big button under it; while the composer is open the primary now *is*
+  the follow-up submit, by the `↵` shortcut as well as by click. And its label is
+  simply **Submit** / **Absenden** instead of "Answer & resume" / "Answer &
+  record" — advisory questions stay marked as advisory in the header, in the list
+  and in the confirmation.
 - **Reading the tracker over MCP no longer spends the write budget.** Every MCP
   frame is a `POST /mcp`, and the rate limiter classified writes by HTTP method,
   so `takomo_show`, `takomo_list`, `takomo_ready` — and even `tools/list` — each
