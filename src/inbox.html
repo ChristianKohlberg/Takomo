@@ -2029,22 +2029,68 @@
   // the overflow is stated rather than hidden silently, and surfaces as the older
   // windows close.
   var SNACK_VISIBLE = 5;
+  // Unlike every other render function here, this one runs on a TIMER — once a
+  // second for up to 30s per pending answer — and the only thing that changes
+  // between ticks is one number. Clearing and rebuilding the subtree would
+  // therefore destroy the Undo button under the pointer and, worse, under the
+  // keyboard: a reader who tabs to Undo lost focus every second and could not
+  // activate the escape hatch at all. It also replayed `.snackbar`'s entry
+  // animation each tick, which is what made it read as flashing.
+  //
+  // So rows are built once, when the SET of pending answers changes, and a tick
+  // only writes into a text node the row kept a reference to. Nothing is
+  // destroyed, so node identity — and focus, hover, and the animation's
+  // finished state — survives a tick.
+  var snackNodes = {};   // qid -> { row: <div.snackbar>, label: Text inside .undo }
+  var snackMore = null;  // the "+n more pending" line, kept and re-texted the same way
+  function snackRow(s) {
+    var row = el("div", "snackbar");
+    row.appendChild(el("span", "chk", "✓"));
+    var d = el("div", "txt"); d.appendChild(el("div", "d1", s.decision)); d.appendChild(el("div", "d2", s.detail));
+    row.appendChild(d);
+    // Bound to the question id, not to this row's position in the list.
+    var u = el("button", "undo");
+    var label = document.createTextNode("");
+    u.appendChild(label);
+    u.addEventListener("click", function () { undoSnack(s.qid); });
+    row.appendChild(u);
+    return { row: row, label: label };
+  }
   function renderSnackbar() {
-    var root = $("snackbar-root"); root.innerHTML = "";
-    if (!state.snacks.length) return;
+    var root = $("snackbar-root");
     var shown = state.snacks.slice(-SNACK_VISIBLE).reverse();
+    // Retire rows whose answer is no longer pending (committed, undone) or which
+    // the cap has pushed out of sight.
+    var live = {};
+    shown.forEach(function (s) { live[s.qid] = true; });
+    Object.keys(snackNodes).forEach(function (qid) {
+      if (live[qid]) return;
+      var gone = snackNodes[qid].row;
+      if (gone.parentNode) gone.parentNode.removeChild(gone);
+      delete snackNodes[qid];
+    });
+    // Build once per answer; from then on only the label text changes. The whole
+    // label (not just the digits) is rewritten so a language switch mid-window
+    // still lands, exactly as the full rebuild used to give for free.
+    var prev = null;
     shown.forEach(function (s) {
-      var sb = el("div", "snackbar");
-      sb.appendChild(el("span", "chk", "✓"));
-      var d = el("div", "txt"); d.appendChild(el("div", "d1", s.decision)); d.appendChild(el("div", "d2", s.detail)); sb.appendChild(d);
-      // Bound to the question id, not to this row's position in the list.
-      var u = el("button", "undo", t().undo + " · " + s.remaining + "s");
-      u.addEventListener("click", function () { undoSnack(s.qid); });
-      sb.appendChild(u);
-      root.appendChild(sb);
+      var n = snackNodes[s.qid] || (snackNodes[s.qid] = snackRow(s));
+      n.label.nodeValue = t().undo + " · " + s.remaining + "s";
+      // Re-inserting a node restarts its animation, so only place a row that is
+      // not already where it belongs — which is add/remove, never a tick.
+      var want = prev ? prev.nextSibling : root.firstChild;
+      if (n.row !== want) root.insertBefore(n.row, want);
+      prev = n.row;
     });
     var hidden = state.snacks.length - shown.length;
-    if (hidden > 0) root.appendChild(el("div", "snackmore", "+" + hidden + " " + t().morePending));
+    if (hidden > 0) {
+      if (!snackMore) snackMore = el("div", "snackmore");
+      var more = "+" + hidden + " " + t().morePending;
+      if (snackMore.textContent !== more) snackMore.textContent = more;
+      if (snackMore.parentNode !== root) root.appendChild(snackMore);
+    } else if (snackMore && snackMore.parentNode) {
+      snackMore.parentNode.removeChild(snackMore);
+    }
   }
 
   function renderModal() {
