@@ -103,9 +103,6 @@
   .langtoggle span.on { background: var(--accent); color: #fff; }
   .iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--muted); cursor: pointer; }
   .iconbtn:hover { border-color: var(--sel-border); color: var(--accent); }
-  .status { font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; }
-  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
-  .dot.live { background: var(--ok); } .dot.err { background: var(--crit); }
 
   /* ---- 3-pane layout ---- */
   main { flex: 1 1 auto; display: grid; grid-template-columns: 214px 400px 1fr; min-height: 0; }
@@ -934,7 +931,6 @@
 
   // ---- boot ----
   function boot() {
-    setLive("loading", "…");
     Promise.all([loadProjects(), loadMe()]).then(fetchAll).then(startPolling).catch(handleErr);
   }
   function loadProjects() {
@@ -1037,7 +1033,6 @@
     return page(null, 0);
   }
   function fetchAll() {
-    setLive("loading", "…");
     return loadQuestions().then(function (items) {
       state.questions = items || [];
       applySnacks(); // server truth minus the answers still inside their undo window
@@ -1051,7 +1046,7 @@
       deepLinkQ = null;
       render();
       return api("/events?since=0&limit=1&wait=0" + (state.project ? "&project=" + encodeURIComponent(state.project) : ""));
-    }).then(function (ev) { if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor; setLive("live", "live"); }).catch(handleErr);
+    }).then(function (ev) { if (ev && typeof ev.cursor === "number") state.cursor = ev.cursor; }).catch(handleErr);
   }
 
   // Best-effort: a ticket_id -> tags map (sparse `fields=id,tags` fetch) so
@@ -1087,7 +1082,7 @@
     var q = "/events?since=" + state.cursor + "&limit=200&wait=0&kind=question_asked,question_answered,question_withdrawn,question_expired,question_escalated,question_followup_requested,question_replied";
     if (state.project) q += "&project=" + encodeURIComponent(state.project);
     api(q).then(function (res) {
-      if ((res.events || []).length === 0) { setLive("live", "live"); return; }
+      if ((res.events || []).length === 0) return;
       var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
         (document.activeElement && $("read").contains(document.activeElement));
       // Leave the cursor where it is while busy. Rebuilding the list under a
@@ -1099,10 +1094,10 @@
       // since `pending` stays non-empty for the whole 30s undo window, a normal
       // pass through the queue is busy continuously — the inbox went silent
       // until a reload.
-      if (busy) { setLive("live", "live ·"); return; }
+      if (busy) return;
       if (typeof res.cursor === "number") state.cursor = res.cursor;
-      return loadQuestions().then(function (items) { state.questions = items || []; applySnacks(); return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); setLive("live", "live"); });
-    }).catch(function (e) { if (e.auth) { handleErr(e); return; } setLive("err", "…"); }).then(function () { state.polling = false; });
+      return loadQuestions().then(function (items) { state.questions = items || []; applySnacks(); return loadTagData(); }).then(function () { if (state.selectedId && !visible().some(function (x) { return x.id === state.selectedId; })) { var f = inFolder()[0]; state.selectedId = f ? f.id : null; } render(); });
+    }).catch(function (e) { if (e.auth) handleErr(e); }).then(function () { state.polling = false; });
   }
 
   // ---- data helpers ----
@@ -2147,13 +2142,9 @@
     else if (e.key === "Enter") { var q = list[idx < 0 ? 0 : idx]; if (q && q.status === "open" && state.me && state.me.canAnswer) { submitAnswer(q); e.preventDefault(); } }
   });
 
-  // ---- status + errors ----
-  // The live indicator was removed from the navbar; setLive is now a no-op kept
-  // so the many call sites don't need touching (and any hidden element is safe).
-  function setLive(kind, text) { var d = $("live-dot"); if (d) d.className = "dot" + (kind === "live" ? " live" : kind === "err" ? " err" : ""); var x = $("live-text"); if (x) x.textContent = text; }
+  // ---- errors ----
   function handleErr(e) {
     if (e && e.auth) { showGate((state.lang === "de" ? "Token abgelehnt (" : "Token rejected (") + (e.status || "") + ")."); return; }
-    setLive("err", "error");
     $("list").innerHTML = ""; $("list").appendChild(el("div", "listempty", (state.lang === "de" ? "Ladefehler: " : "Could not load: ") + (e && e.message ? e.message : "error")));
   }
 
