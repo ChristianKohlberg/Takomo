@@ -20,6 +20,7 @@ use super::helpers::{
     touch_ticket,
 };
 use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
+use super::transition::{apply_transition, MoveKind};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, question_id};
@@ -768,10 +769,83 @@ fn spent_link_error(question: &str, status: &str) -> ApiError {
     ))
 }
 
-/// Move a parked ticket to `to`, clearing any claim (auto-release) and emitting
-/// the transition + release events. Must run in a write tx; `to` is assumed
-/// already validated as a legal, answerable edge from the ticket's state.
-fn apply_resume(
+/// Move a parked ticket into `to` through the transition machinery, inside the
+/// transaction that resolves its question — the resume when an answer lands, and
+/// the cancel when `on_timeout: cancel` fires.
+///
+/// **The identity that carries the move is the answerer's**, not the parked
+/// agent's: `actor` and `scopes` are whoever answered (a `human`-scoped
+/// operator, a domain expert, the holder of a single-use answer link, or
+/// `system` applying an `on_timeout` recommendation). Answering *is* the human
+/// authorization gate, so the workflow's `scope:human` edge must be checked
+/// against their token — which is what makes the resume an authorization rather
+/// than an assumption.
+///
+/// Nothing is relaxed for them, and nothing needs to be:
+/// - **No lease, no fence.** Asking released the lease, so there is none to
+///   echo; the fence is only ever demanded of the holder.
+/// - **A lease someone else took while the ticket was parked** (possible only
+///   where a workflow marks a blocked state `claimable`) is superseded exactly
+///   when the resume edge is `scope:human` — the ordinary rule in
+///   `apply_transition`. Where the workflow declared no human authority on that
+///   edge, the answer does not yank a live lease: the move is refused with
+///   `claim.held` and the answer path reports it as `resume_blocked`.
+/// - **`guard:` and `claim` requirements** on the edge were already refused by
+///   `ensure_edge_answerable` when the target was chosen, with a resume-specific
+///   teaching error; if one somehow reaches here it is refused again here.
+///
+/// `to` must be an edge the actor is entitled to take — from [`resume_target`]
+/// for a resume, or `ensure_edge_answerable`-filtered for the timeout cancel.
+fn question_transition(
+    conn: &Connection,
+    t: &Ticket,
+    to: &str,
+    actor: &str,
+    scopes: &HashSet<String>,
+    reason: &str,
+    now: i64,
+) -> ApiResult<()> {
+    apply_transition(
+        conn,
+        &t.id,
+        to,
+        Some(reason),
+        None,
+        actor,
+        scopes,
+        now,
+        MoveKind::Normal,
+    )?;
+    Ok(())
+}
+
+/// Set a ticket's state **without** consulting the workflow — the one state
+/// write in this crate that does not go through `apply_transition`, with exactly
+/// one caller: [`Store::reopen_question`].
+///
+/// Why it has to exist. Reopening is an administrative *reversal* of a resume
+/// that already happened, and the workflow has no edge for it: on
+/// `factory-default` the answer resumed `needs-decision -> ready`, and there is
+/// no `ready -> needs-decision` edge to walk back along (nor should there be —
+/// no agent should be able to park a ticket it does not hold). So the reversal
+/// is a write by fiat, and the honest thing is to name it rather than to let a
+/// raw `UPDATE` sit in the middle of a function that reads like ordinary
+/// bookkeeping.
+///
+/// What it therefore skips, and what stands in for each: edge **legality** (the
+/// caller must pass a state the workflow defines — `reopen_question` takes the
+/// workflow's own blocked state); every **`requires` entry** — `claim`,
+/// `scope:<s>`, `guard:<id>` (`reopen_question` gates itself instead: the
+/// question must be `answered`, an `approve` question needs the same
+/// `expert:<tag>` scope that could have answered it, and the ticket must still
+/// be unarchived, unclaimed, and sitting in the exact state the answer resumed
+/// it into — so nothing has come to rely on the answer); the **holder lock and
+/// fence echo** (there is provably no active claim, having just been checked);
+/// and the **auto-release policy** (with no claim there is nothing to release).
+///
+/// The events it emits are deliberately identical in shape to the normal path's,
+/// so an event consumer sees one kind of `transitioned` payload, not two.
+fn override_state(
     conn: &Connection,
     t: &Ticket,
     to: &str,
@@ -1011,7 +1085,23 @@ impl Store {
                         )
                         .current_state(t.state.clone())
                     })?;
-                    apply_resume(tx, &t, &target, actor, "parked to ask a human", now)?;
+                    // Park through the same machinery a caller's transition
+                    // uses. `MoveKind::ParkForQuestion` releases the lease
+                    // (block-and-resume) and accepts the `claim` requirement
+                    // `check_fence_for_write` already stood in for; scopes are
+                    // empty because `park_target` only ever returns an edge
+                    // with no `scope:` requirement, so there is none to satisfy.
+                    apply_transition(
+                        tx,
+                        &t.id,
+                        &target,
+                        Some("parked to ask a human"),
+                        req.fence,
+                        actor,
+                        &HashSet::new(),
+                        now,
+                        MoveKind::ParkForQuestion,
+                    )?;
                 } else if t.active_claim(now).is_some() {
                     // Already blocked but still leased: release so it can be re-picked.
                     tx.execute(
@@ -1196,19 +1286,26 @@ impl Store {
             //     rather than discarding it. Best-effort, never silent: the
             //     rejection travels back out as `resume_blocked` so the response
             //     and the ticket thread both say the ticket is still parked.
+            //
+            // Either way the move itself goes through the transition
+            // machinery (`question_transition`), so its rejections join
+            // `resume_target`'s under the same two rules — strict for an
+            // explicit target, `resume_blocked` for an automatic one.
             let mut resume_blocked: Option<ResumeBlocked> = None;
+            let reason = format!("resolved by human ({id})");
             let resolved_to = if !should_resume {
                 None
             } else if resume_to.is_some() {
                 let target = resume_target(&wf, &t.state, resume_to, scopes)?;
-                apply_resume(tx, &t, &target, actor, &format!("resolved by human ({id})"), now)?;
+                question_transition(tx, &t, &target, actor, scopes, &reason, now)?;
                 Some(target)
             } else {
-                match resume_target(&wf, &t.state, None, scopes) {
-                    Ok(target) => {
-                        apply_resume(tx, &t, &target, actor, &format!("resolved by human ({id})"), now)?;
-                        Some(target)
-                    }
+                let auto = resume_target(&wf, &t.state, None, scopes).and_then(|target| {
+                    question_transition(tx, &t, &target, actor, scopes, &reason, now)?;
+                    Ok(target)
+                });
+                match auto {
+                    Ok(target) => Some(target),
                     Err(e) => {
                         resume_blocked = Some(ResumeBlocked::from_error(e));
                         None
@@ -1357,8 +1454,11 @@ impl Store {
                     }
                     // Reopen is an administrative reversal of the resume, so we
                     // set the ticket back into a blocked state directly (the
-                    // resumed state, e.g. `ready`, usually has no self-service
-                    // edge back into `blocked`). Use the workflow's blocked state.
+                    // resumed state, e.g. `ready`, usually has no edge back into
+                    // `blocked` at all). Use the workflow's blocked state — and
+                    // `override_state`, whose doc comment is where the fact that
+                    // this one move does not consult the workflow is recorded,
+                    // together with what gates it instead.
                     let park = wf
                         .states
                         .iter()
@@ -1370,7 +1470,14 @@ impl Store {
                                 format!("The '{}' workflow has no blocked state to re-park '{}' into; move it manually and re-ask instead.", wf.name, t.id),
                             )
                         })?;
-                    apply_resume(tx, &t, &park, actor, &format!("reopened question ({id})"), now)?;
+                    override_state(
+                        tx,
+                        &t,
+                        &park,
+                        actor,
+                        &format!("reopened question ({id})"),
+                        now,
+                    )?;
                     reblocked_to = Some(park);
                 }
                 // resolved_to == None: the ticket was left parked; nothing to reverse.
@@ -1925,6 +2032,7 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
         }
     };
     let mut resolved_to: Option<String> = None;
+    let mut resume_blocked: Option<String> = None;
     if let Ok(mut t) = get_ticket_required(conn, &q.ticket) {
         clear_expired_claim(conn, &t, now)?;
         if t.active_claim(now).is_none() {
@@ -1948,16 +2056,27 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
         {
             // System applies the recommendation; "human" scope is implied.
             let sys_scopes: HashSet<String> = ["human".to_string()].into_iter().collect();
-            if let Ok(target) = resume_target(&wf, &t.state, None, &sys_scopes) {
-                apply_resume(
+            // Best-effort, but never silent: the resume goes through the
+            // transition machinery like a human answer's, and if the machinery
+            // (or the target lookup) refuses, the recommendation is still
+            // recorded and the refusal's code lands on the `question_answered`
+            // event — the same key the human path reports it under. There is no
+            // response to carry it on: the sweeper has no caller.
+            let attempt = resume_target(&wf, &t.state, None, &sys_scopes).and_then(|target| {
+                question_transition(
                     conn,
                     &t,
                     &target,
                     "system",
+                    &sys_scopes,
                     &format!("timeout: applied recommendation ({})", q.id),
                     now,
                 )?;
-                resolved_to = Some(target);
+                Ok(target)
+            });
+            match attempt {
+                Ok(target) => resolved_to = Some(target),
+                Err(e) => resume_blocked = Some(e.body.code.clone()),
             }
         }
     }
@@ -1971,7 +2090,7 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
         Some(&q.project),
         "system",
         "question_answered",
-        json!({ "question": q.id, "answer": normalized, "resolved_to": resolved_to, "reason": "timeout-recommended" }),
+        json!({ "question": q.id, "answer": normalized, "resolved_to": resolved_to, "reason": "timeout-recommended", "resume_blocked": resume_blocked }),
         now,
     )?;
     Ok(())
@@ -1996,19 +2115,26 @@ fn expire_and_cancel(conn: &Connection, q: &Question, now: i64) -> ApiResult<()>
     )?;
     if let Ok(t) = get_ticket_required(conn, &q.ticket) {
         let wf = get_workflow(conn, &t.project)?;
+        // Same authority as the recommendation path: `system` acting with the
+        // implied `human` scope the asking agent opted into via `on_timeout`.
+        // The edge has to be one that authority can actually take, so it is
+        // picked with `ensure_edge_answerable` and then walked with the
+        // transition machinery. A claim-gated cancel edge is therefore left
+        // alone rather than forced: nobody holds a lease on a parked ticket, and
+        // an `Err` here would roll back the expiry itself.
+        let sys_scopes: HashSet<String> = ["human".to_string()].into_iter().collect();
         let cancel_edge = wf.transitions_from(&t.state).into_iter().find(|e| {
             wf.state(&e.to).map(|s| s.category.as_str()) == Some("cancelled")
-                && e.requires
-                    .iter()
-                    .all(|r| matches!(Requirement::parse(r), Ok(Requirement::Claim)))
+                && ensure_edge_answerable(e, &sys_scopes).is_ok()
         });
         if let Some(edge) = cancel_edge {
             let to = edge.to.clone();
-            apply_resume(
+            question_transition(
                 conn,
                 &t,
                 &to,
                 "system",
+                &sys_scopes,
                 &format!("timeout: cancelled ({})", q.id),
                 now,
             )?;

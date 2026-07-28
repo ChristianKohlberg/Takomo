@@ -127,6 +127,19 @@ guard) that leads somewhere non-terminal and unblocked, preferring a claimable
 exist but is not takeable (guarded, claim-gated, or needing a scope the answerer
 lacks) is never routed around: the ticket stays parked instead.
 
+**The resume is a real transition, not a state write.** It goes through the same
+machinery as `POST /v1/tickets/{id}/transition` (`src/store/transition.rs`),
+inside the answer's transaction, with the **answerer** as the actor and their
+token's scopes as the authority — which is what makes "answering is the
+authorization gate" true rather than assumed. No lease is held or echoed (asking
+released it), and nothing else is relaxed. One consequence is worth knowing: if a
+worker took a lease on the ticket *while it was parked* — possible only where a
+workflow marks a blocked state `claimable` — the answer supersedes that lease
+only when the resume edge is `scope:human`. Where the workflow declares no human
+authority on that edge, the answer is still recorded but the ticket stays parked
+with `resume.code: claim.held`, rather than being moved out from under whoever is
+holding it.
+
 When a ticket that should have resumed cannot, the answer is still recorded, and
 it is not silent about it. The answer response carries a `resume` block
 (`resumed: false` plus a `code`, a `message` naming every exit from the parked

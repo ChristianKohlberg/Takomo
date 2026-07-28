@@ -1,6 +1,19 @@
 //! State transitions — the only way a ticket's state changes. Every rejection
 //! is a teaching error: stable code, LLM-legible message, exact remedy, and
 //! the full list of allowed transitions from the current state.
+//!
+//! "The only way" is close to literal: every module reaches ticket state
+//! through `apply_transition` — including ask-a-human, which parks a ticket on a
+//! blocking question and resumes it on the answer (`store::questions`). What
+//! differs between those callers is captured in [`MoveKind`], not in a second
+//! code path, so no caller can quietly skip a workflow's approval gate.
+//!
+//! There is exactly one other `UPDATE tickets SET state` in the codebase —
+//! `store::questions::override_state`, the administrative reversal behind
+//! reopening an answered question, for which the workflow has no edge. Its doc
+//! comment enumerates every check it therefore skips and what gates it instead.
+//! `grep -rn "SET state" src/` should return those two and nothing else; a third
+//! is a bug.
 
 use super::helpers::{
     clear_expired_claim, emit_event, get_ticket_required, get_workflow, stale_fence_error,
@@ -15,6 +28,35 @@ use axum::http::StatusCode;
 use rusqlite::{params, Connection};
 use serde_json::json;
 use std::collections::HashSet;
+
+/// What kind of state move this is — the **only** axis on which a
+/// store-internal move differs from a caller's own transition. Every variant
+/// runs the same legality, scope and guard checks against the same workflow;
+/// that identity is the point of routing every state change through here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MoveKind {
+    /// A caller-initiated transition (`POST /v1/tickets/{id}/transition`) —
+    /// and also the resume of a parked ticket when a human answers its last
+    /// blocking question, which needs no exemption at all: the answerer is a
+    /// real caller with a real token, the fence is only ever demanded of the
+    /// lease holder, and a `scope:human` resume edge is authoritative over
+    /// someone else's lease by the ordinary rule in step (3) below.
+    Normal,
+    /// The park half of block-and-resume (`Store::ask_question`). Two narrow,
+    /// deliberate differences from `Normal`, and nothing else:
+    ///
+    /// 1. The lease is always released on entry — parking hands the ticket back
+    ///    while a human decides, and the asking agent ends its run. `Normal`
+    ///    would keep it, since a blocked-category state is not terminal.
+    /// 2. A `claim` requirement on the park edge counts as met. The asker's
+    ///    right to write was already established by `check_fence_for_write`
+    ///    (holder plus a matching fence, or an unclaimed ticket), and an agent
+    ///    whose lease expired mid-task must still be able to hand its decision
+    ///    to a human instead of being told to walk back through the ready queue
+    ///    (takomo-jb5i). The holder lock, the fence echo, and every `scope:`
+    ///    and `guard:` requirement still apply unchanged.
+    ParkForQuestion,
+}
 
 /// Why a single requirement failed on a candidate edge.
 #[derive(Debug, Clone)]
@@ -109,7 +151,6 @@ fn eval_guard(conn: &Connection, guard: &str, ticket: &Ticket) -> ApiResult<Opti
 }
 
 impl Store {
-    #[allow(clippy::too_many_arguments)]
     pub fn transition(
         &self,
         id: &str,
@@ -121,282 +162,324 @@ impl Store {
     ) -> ApiResult<Ticket> {
         let now = now_ms();
         self.with_tx(|tx| {
-            let mut t = get_ticket_required(tx, id)?;
-            let wf = get_workflow(tx, &t.project)?;
-            if clear_expired_claim(tx, &t, now)? {
-                t.claim_holder = None;
-                t.claim_expires_at = None;
-            }
-            let allowed = allowed_from(&wf, &t.state);
-
-            // Validation is ordered legality -> scope -> claim/fence so the
-            // headline error names the FIRST real blocker (pilot finding B):
-            // an illegal target or a missing authorization scope must never be
-            // masked by a fencing complaint.
-
-            // (1a) Legality — the target must be a real state in this workflow.
-            if wf.state(to).is_none() {
-                return Err(ApiError::conflict(
-                    "transition.unknown_state",
-                    format!(
-                        "State '{to}' does not exist in project '{}''s workflow '{}'. See allowed_transitions for the legal moves from '{}'.",
-                        t.project, wf.name, t.state
-                    ),
-                )
-                .current_state(t.state.clone())
-                .allowed_transitions(allowed));
-            }
-
-            // (1b) Legality — a defined (from, to) edge must exist. Multiple
-            // edges with different `requires` may exist (e.g. a human gate plus
-            // an autoland gate); the transition succeeds if any one edge's
-            // requirements all hold.
-            let candidates: Vec<&WorkflowTransition> = wf
-                .transitions_from(&t.state)
-                .into_iter()
-                .filter(|e| e.to == to)
-                .collect();
-
-            if candidates.is_empty() {
-                let remedy = if allowed.is_empty() {
-                    format!("'{}' is a terminal state; no transitions leave it.", t.state)
-                } else {
-                    format!(
-                        "Legal next states from '{}': {}. Pick one of those with POST /v1/tickets/{id}/transition.",
-                        t.state,
-                        allowed
-                            .iter()
-                            .map(|a| a.to.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                };
-                return Err(ApiError::conflict(
-                    "transition.illegal",
-                    format!(
-                        "Transition '{}' -> '{to}' is not defined in workflow '{}' for project '{}'. State changes only happen along defined transitions.",
-                        t.state, wf.name, t.project
-                    ),
-                )
-                .remedy(remedy)
-                .current_state(t.state.clone())
-                .allowed_transitions(allowed));
-            }
-
-            // Parse every candidate edge's requirements once.
-            let parsed: Vec<Vec<Requirement>> = candidates
-                .iter()
-                .map(|edge| {
-                    edge.requires
-                        .iter()
-                        .map(|raw| {
-                            Requirement::parse(raw).map_err(|e| {
-                                ApiError::internal(format!("stored workflow corrupt: {e}"))
-                            })
-                        })
-                        .collect::<ApiResult<Vec<_>>>()
-                })
-                .collect::<ApiResult<Vec<_>>>()?;
-
-            // (2) Scope — the caller must satisfy the scope requirements of at
-            // least one candidate edge. A missing scope (e.g. human approval)
-            // is an authorization gate, not a fencing mistake, so it is decided
-            // before the claim/fence checks below.
-            let missing_scopes_per_edge: Vec<Vec<String>> = parsed
-                .iter()
-                .map(|reqs| {
-                    reqs.iter()
-                        .filter_map(|r| match r {
-                            Requirement::Scope(s) if !scopes.contains(s) => Some(s.clone()),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .collect();
-            if !missing_scopes_per_edge.iter().any(|m| m.is_empty()) {
-                // Best edge: the one demanding the fewest missing scopes.
-                let missing = missing_scopes_per_edge
-                    .into_iter()
-                    .min_by_key(|m| m.len())
-                    .unwrap_or_default();
-                return Err(scope_error(&t, missing, allowed));
-            }
-
-            // Finding A: a human-required transition the caller is authorized
-            // for is authoritative over a claim held by another actor — it is
-            // allowed despite the holder lock and auto-releases the claim as a
-            // side effect. Scoped to `scope:human` edges only; ordinary
-            // `claim`-required transitions keep the holder lock unchanged.
-            let human_authoritative = parsed
-                .iter()
-                .zip(&missing_scopes_per_edge)
-                .any(|(reqs, missing)| {
-                    missing.is_empty()
-                        && reqs
-                            .iter()
-                            .any(|r| matches!(r, Requirement::Scope(s) if s == "human"))
-                });
-
-            // (3) Claim / fence — amended by finding A's human override.
-            let active_claim: Option<(String, i64)> =
-                t.active_claim(now).map(|(h, e)| (h.to_string(), e));
-            let has_active_claim = active_claim.is_some();
-            let caller_holds_claim = match &active_claim {
-                Some((holder, expires)) => {
-                    if human_authoritative {
-                        // Authoritative human transition: bypass the holder lock
-                        // and fence echo; the held claim is auto-released below.
-                        holder == actor
-                    } else if holder != actor {
-                        return Err(ApiError::conflict(
-                            "claim.held",
-                            format!(
-                                "Ticket '{id}' is claimed by '{holder}' until {}. Only the lease holder may transition a claimed ticket. Ask the holder to release it (POST /v1/tickets/{id}/release), wait for the lease to expire, or work something else via POST /v1/ready/claim.",
-                                iso(*expires)
-                            ),
-                        )
-                        .details(json!({ "holder": holder, "expires_at": iso(*expires) }))
-                        .current_state(t.state.clone())
-                        .allowed_transitions(allowed));
-                    } else {
-                        match fence {
-                            None => {
-                                return Err(ApiError::conflict(
-                                    "fence.required",
-                                    format!(
-                                        "Ticket '{id}' is claimed by you; transitions must echo the lease's fencing token. Include \"fence\": {} in the request body.",
-                                        t.fence_seq
-                                    ),
-                                )
-                                .current_state(t.state.clone())
-                                .allowed_transitions(allowed));
-                            }
-                            Some(f) if f != t.fence_seq => {
-                                return Err(ApiError::conflict(
-                                    "fence.stale",
-                                    format!(
-                                        "Fencing token {f} is stale (current fence is {}). Your lease was lost; the ticket may have been reclaimed. Stop writing and re-claim via POST /v1/tickets/{id}/claim if appropriate.",
-                                        t.fence_seq
-                                    ),
-                                )
-                                .current_state(t.state.clone())
-                                .allowed_transitions(allowed));
-                            }
-                            Some(_) => {}
-                        }
-                        true
-                    }
-                }
-                None => {
-                    // Unclaimed — but an echoed fence must still be current: a
-                    // zombie writer bounces even after release/expiry cleared
-                    // the claim it once held. A human override does not echo a
-                    // fence, so this check is skipped for it.
-                    if !human_authoritative {
-                        if let Some(f) = fence {
-                            if f != t.fence_seq {
-                                return Err(stale_fence_error(id, f, t.fence_seq)
-                                    .current_state(t.state.clone())
-                                    .allowed_transitions(allowed));
-                            }
-                        }
-                    }
-                    false
-                }
-            };
-
-            // (4) Remaining requirements (claim + guard). Scope was decided
-            // above; an edge succeeds when all of its requirements hold.
-            let mut edge_failures: Vec<Vec<ReqFailure>> = Vec::new();
-            let mut passed = false;
-            for reqs in &parsed {
-                let mut failures = Vec::new();
-                for req in reqs {
-                    match req {
-                        Requirement::Claim => {
-                            if !caller_holds_claim {
-                                failures.push(ReqFailure::NeedsClaim);
-                            }
-                        }
-                        Requirement::Scope(scope) => {
-                            if !scopes.contains(scope) {
-                                failures.push(ReqFailure::NeedsScope(scope.clone()));
-                            }
-                        }
-                        Requirement::Guard(guard) => {
-                            if let Some(f) = eval_guard(tx, guard, &t)? {
-                                failures.push(f);
-                            }
-                        }
-                    }
-                }
-                if failures.is_empty() {
-                    passed = true;
-                    break;
-                }
-                edge_failures.push(failures);
-            }
-
-            if !passed {
-                return Err(requirement_error(id, &t, to, &wf, edge_failures, allowed));
-            }
-
-            // Apply. A held claim is auto-released when a human transition
-            // supersedes it (finding A) or when entering a done/cancelled-
-            // category state; leaving a claimable state otherwise keeps the
-            // lease.
-            let target = wf.state(to).expect("validated above");
-            let (do_release, release_reason) = if has_active_claim {
-                if human_authoritative {
-                    (true, "superseded by human transition")
-                } else if matches!(target.category.as_str(), "done" | "cancelled") {
-                    (true, "auto-release on terminal-category entry")
-                } else {
-                    (false, "")
-                }
-            } else {
-                (false, "")
-            };
-            if do_release {
-                tx.execute(
-                    "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL WHERE id = ?1",
-                    params![id],
-                )?;
-            }
-            let from = t.state.clone();
-            tx.execute(
-                "UPDATE tickets SET state = ?2 WHERE id = ?1",
-                params![id, to],
-            )?;
-            touch_ticket(tx, id, now)?;
-            emit_event(
+            apply_transition(
                 tx,
-                Some(id),
-                Some(&t.project),
+                id,
+                to,
+                reason,
+                fence,
                 actor,
-                "transitioned",
-                json!({
-                    "from": from,
-                    "to": to,
-                    "reason": reason,
-                    "auto_released": do_release,
-                }),
+                scopes,
                 now,
-            )?;
-            if do_release {
-                emit_event(
-                    tx,
-                    Some(id),
-                    Some(&t.project),
-                    actor,
-                    "released",
-                    json!({ "fence": t.fence_seq, "reason": release_reason }),
-                    now,
-                )?;
-            }
-            get_ticket_required(tx, id)
+                MoveKind::Normal,
+            )
         })
     }
+}
+
+/// Move a ticket's state — **the single writer of `tickets.state`**, and the
+/// reason every rejection above is a teaching error.
+///
+/// Runs inside the caller's write transaction so a state change and the
+/// `transitioned` event it emits cannot drift apart, and so a caller that has
+/// more to record atomically with the move (parking a ticket to ask a human,
+/// resuming it when the answer lands) shares one transaction with it instead of
+/// hand-rolling the `UPDATE`. `Store::transition` is the thin `with_tx` wrapper
+/// for the HTTP route.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_transition(
+    tx: &Connection,
+    id: &str,
+    to: &str,
+    reason: Option<&str>,
+    fence: Option<i64>,
+    actor: &str,
+    scopes: &HashSet<String>,
+    now: i64,
+    kind: MoveKind,
+) -> ApiResult<Ticket> {
+    let mut t = get_ticket_required(tx, id)?;
+    let wf = get_workflow(tx, &t.project)?;
+    if clear_expired_claim(tx, &t, now)? {
+        t.claim_holder = None;
+        t.claim_expires_at = None;
+    }
+    let allowed = allowed_from(&wf, &t.state);
+
+    // Validation is ordered legality -> scope -> claim/fence so the
+    // headline error names the FIRST real blocker (pilot finding B):
+    // an illegal target or a missing authorization scope must never be
+    // masked by a fencing complaint.
+
+    // (1a) Legality — the target must be a real state in this workflow.
+    if wf.state(to).is_none() {
+        return Err(ApiError::conflict(
+            "transition.unknown_state",
+            format!(
+                "State '{to}' does not exist in project '{}''s workflow '{}'. See allowed_transitions for the legal moves from '{}'.",
+                t.project, wf.name, t.state
+            ),
+        )
+        .current_state(t.state.clone())
+        .allowed_transitions(allowed));
+    }
+
+    // (1b) Legality — a defined (from, to) edge must exist. Multiple
+    // edges with different `requires` may exist (e.g. a human gate plus
+    // an autoland gate); the transition succeeds if any one edge's
+    // requirements all hold.
+    let candidates: Vec<&WorkflowTransition> = wf
+        .transitions_from(&t.state)
+        .into_iter()
+        .filter(|e| e.to == to)
+        .collect();
+
+    if candidates.is_empty() {
+        let remedy = if allowed.is_empty() {
+            format!(
+                "'{}' is a terminal state; no transitions leave it.",
+                t.state
+            )
+        } else {
+            format!(
+                "Legal next states from '{}': {}. Pick one of those with POST /v1/tickets/{id}/transition.",
+                t.state,
+                allowed
+                    .iter()
+                    .map(|a| a.to.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        return Err(ApiError::conflict(
+            "transition.illegal",
+            format!(
+                "Transition '{}' -> '{to}' is not defined in workflow '{}' for project '{}'. State changes only happen along defined transitions.",
+                t.state, wf.name, t.project
+            ),
+        )
+        .remedy(remedy)
+        .current_state(t.state.clone())
+        .allowed_transitions(allowed));
+    }
+
+    // Parse every candidate edge's requirements once.
+    let parsed: Vec<Vec<Requirement>> = candidates
+        .iter()
+        .map(|edge| {
+            edge.requires
+                .iter()
+                .map(|raw| {
+                    Requirement::parse(raw)
+                        .map_err(|e| ApiError::internal(format!("stored workflow corrupt: {e}")))
+                })
+                .collect::<ApiResult<Vec<_>>>()
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+
+    // (2) Scope — the caller must satisfy the scope requirements of at
+    // least one candidate edge. A missing scope (e.g. human approval)
+    // is an authorization gate, not a fencing mistake, so it is decided
+    // before the claim/fence checks below.
+    let missing_scopes_per_edge: Vec<Vec<String>> = parsed
+        .iter()
+        .map(|reqs| {
+            reqs.iter()
+                .filter_map(|r| match r {
+                    Requirement::Scope(s) if !scopes.contains(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
+    if !missing_scopes_per_edge.iter().any(|m| m.is_empty()) {
+        // Best edge: the one demanding the fewest missing scopes.
+        let missing = missing_scopes_per_edge
+            .into_iter()
+            .min_by_key(|m| m.len())
+            .unwrap_or_default();
+        return Err(scope_error(&t, missing, allowed));
+    }
+
+    // Finding A: a human-required transition the caller is authorized
+    // for is authoritative over a claim held by another actor — it is
+    // allowed despite the holder lock and auto-releases the claim as a
+    // side effect. Scoped to `scope:human` edges only; ordinary
+    // `claim`-required transitions keep the holder lock unchanged.
+    let human_authoritative = parsed
+        .iter()
+        .zip(&missing_scopes_per_edge)
+        .any(|(reqs, missing)| {
+            missing.is_empty()
+                && reqs
+                    .iter()
+                    .any(|r| matches!(r, Requirement::Scope(s) if s == "human"))
+        });
+
+    // (3) Claim / fence — amended by finding A's human override.
+    let active_claim: Option<(String, i64)> = t.active_claim(now).map(|(h, e)| (h.to_string(), e));
+    let has_active_claim = active_claim.is_some();
+    let caller_holds_claim = match &active_claim {
+        Some((holder, expires)) => {
+            if human_authoritative {
+                // Authoritative human transition: bypass the holder lock
+                // and fence echo; the held claim is auto-released below.
+                holder == actor
+            } else if holder != actor {
+                return Err(ApiError::conflict(
+                    "claim.held",
+                    format!(
+                        "Ticket '{id}' is claimed by '{holder}' until {}. Only the lease holder may transition a claimed ticket. Ask the holder to release it (POST /v1/tickets/{id}/release), wait for the lease to expire, or work something else via POST /v1/ready/claim.",
+                        iso(*expires)
+                    ),
+                )
+                .details(json!({ "holder": holder, "expires_at": iso(*expires) }))
+                .current_state(t.state.clone())
+                .allowed_transitions(allowed));
+            } else {
+                match fence {
+                    None => {
+                        return Err(ApiError::conflict(
+                            "fence.required",
+                            format!(
+                                "Ticket '{id}' is claimed by you; transitions must echo the lease's fencing token. Include \"fence\": {} in the request body.",
+                                t.fence_seq
+                            ),
+                        )
+                        .current_state(t.state.clone())
+                        .allowed_transitions(allowed));
+                    }
+                    Some(f) if f != t.fence_seq => {
+                        return Err(ApiError::conflict(
+                            "fence.stale",
+                            format!(
+                                "Fencing token {f} is stale (current fence is {}). Your lease was lost; the ticket may have been reclaimed. Stop writing and re-claim via POST /v1/tickets/{id}/claim if appropriate.",
+                                t.fence_seq
+                            ),
+                        )
+                        .current_state(t.state.clone())
+                        .allowed_transitions(allowed));
+                    }
+                    Some(_) => {}
+                }
+                true
+            }
+        }
+        None => {
+            // Unclaimed — but an echoed fence must still be current: a
+            // zombie writer bounces even after release/expiry cleared
+            // the claim it once held. A human override does not echo a
+            // fence, so this check is skipped for it.
+            if !human_authoritative {
+                if let Some(f) = fence {
+                    if f != t.fence_seq {
+                        return Err(stale_fence_error(id, f, t.fence_seq)
+                            .current_state(t.state.clone())
+                            .allowed_transitions(allowed));
+                    }
+                }
+            }
+            false
+        }
+    };
+
+    // A park for a blocking question satisfies `claim` by other means —
+    // see MoveKind::ParkForQuestion for exactly which, and why.
+    let claim_requirement_met = caller_holds_claim || kind == MoveKind::ParkForQuestion;
+
+    // (4) Remaining requirements (claim + guard). Scope was decided
+    // above; an edge succeeds when all of its requirements hold.
+    let mut edge_failures: Vec<Vec<ReqFailure>> = Vec::new();
+    let mut passed = false;
+    for reqs in &parsed {
+        let mut failures = Vec::new();
+        for req in reqs {
+            match req {
+                Requirement::Claim => {
+                    if !claim_requirement_met {
+                        failures.push(ReqFailure::NeedsClaim);
+                    }
+                }
+                Requirement::Scope(scope) => {
+                    if !scopes.contains(scope) {
+                        failures.push(ReqFailure::NeedsScope(scope.clone()));
+                    }
+                }
+                Requirement::Guard(guard) => {
+                    if let Some(f) = eval_guard(tx, guard, &t)? {
+                        failures.push(f);
+                    }
+                }
+            }
+        }
+        if failures.is_empty() {
+            passed = true;
+            break;
+        }
+        edge_failures.push(failures);
+    }
+
+    if !passed {
+        return Err(requirement_error(id, &t, to, &wf, edge_failures, allowed));
+    }
+
+    // Apply. A held claim is auto-released when the ticket is parked to
+    // ask a human (block-and-resume hands it back), when a human
+    // transition supersedes it (finding A), or when entering a
+    // done/cancelled-category state; leaving a claimable state
+    // otherwise keeps the lease.
+    let target = wf.state(to).expect("validated above");
+    let (do_release, release_reason) = if has_active_claim {
+        if kind == MoveKind::ParkForQuestion {
+            (true, "released to ask a human")
+        } else if human_authoritative {
+            (true, "superseded by human transition")
+        } else if matches!(target.category.as_str(), "done" | "cancelled") {
+            (true, "auto-release on terminal-category entry")
+        } else {
+            (false, "")
+        }
+    } else {
+        (false, "")
+    };
+    if do_release {
+        tx.execute(
+            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    let from = t.state.clone();
+    tx.execute(
+        "UPDATE tickets SET state = ?2 WHERE id = ?1",
+        params![id, to],
+    )?;
+    touch_ticket(tx, id, now)?;
+    emit_event(
+        tx,
+        Some(id),
+        Some(&t.project),
+        actor,
+        "transitioned",
+        json!({
+            "from": from,
+            "to": to,
+            "reason": reason,
+            "auto_released": do_release,
+        }),
+        now,
+    )?;
+    if do_release {
+        emit_event(
+            tx,
+            Some(id),
+            Some(&t.project),
+            actor,
+            "released",
+            json!({ "fence": t.fence_seq, "reason": release_reason }),
+            now,
+        )?;
+    }
+    get_ticket_required(tx, id)
 }
 
 /// The 403 for a transition whose scope requirements the caller cannot meet.
