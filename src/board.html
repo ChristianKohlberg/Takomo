@@ -377,11 +377,15 @@
   @media (max-width: 760px) {
     header { gap: 8px; row-gap: 6px; padding: 8px 12px; min-height: 0; }
     .brand span { display: none; }               /* the mark alone; the tab already says takomo */
-    .nav a, .nav span.navpill { padding: 7px 10px; }
+    /* Every header control is a finger target here, not a cursor target: 44px
+       on the short side. The nav pills and the language toggle come along for
+       free — they share a row with a button that is already 44px tall, so the
+       row does not grow for them. */
+    .nav a, .nav span.navpill { padding: 7px 10px; min-height: 44px; display: inline-flex; align-items: center; }
     header .lbl { display: none; }
     header .ico { display: inline-block; }
-    header button.ghost, header .iconbtn { min-height: 38px; padding: 7px 10px; }
-    .langtoggle span { padding: 9px 10px; }
+    header button.ghost, header .iconbtn { min-width: 44px; min-height: 44px; padding: 7px 10px; }
+    .langtoggle span { padding: 9px 10px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
     /* The spacer becomes a zero-height full-width break, so the header is two
        deliberate rows — navigation on the first, actions on the second — and
        not whatever the wrap happens to produce for a given locale. */
@@ -425,6 +429,40 @@
        exactly one, which is today's column order read top to bottom. */
     .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); align-items: start; }
     .cards > .subhd, .cards > .morebtn, .cards > .empty-col { grid-column: 1 / -1; }
+
+    /* The two drawers. Both are full-bleed below 480/520px, and that part is
+       right — 390px minus 2x24px of padding is already the narrowest the
+       reading column should ever get, so narrowing the sheet to uncover a
+       scrim would buy an exit by spending line length.
+
+       What is wrong is the stacking: #overlay is the tap-to-close scrim at
+       z-index 20 and the sheets sit at 21, so at full width the scrim is
+       completely behind them and cannot be tapped. Escape closes them too, but
+       a phone has no Escape key — which left one exit, a 20px glyph in 2px 6px
+       of padding, about a 24px target.
+
+       So keep the width and move the sheet down: it rises from the bottom and
+       stops short of the top, putting the scrim back on screen as a full-width
+       strip you can tap to dismiss. The dimmed header showing through it is
+       the point — you can see what you are going back to. That restores the
+       desktop's two independent ways out, and the close button below becomes
+       the second one at a real touch size. */
+    #detail, #inbox {
+      top: 56px; bottom: 0; left: 0; right: 0; width: auto; height: auto;
+      border-left: none; border-top: 1px solid var(--border);
+      border-radius: 14px 14px 0 0;
+      box-shadow: 0 -18px 50px -30px rgba(20,40,55,.5);
+      transform: translateY(100%);
+    }
+    #detail.open, #inbox.open { transform: translateY(0); }
+    /* 44px of target, not 44px of chrome: the negative margins let the button
+       grow out into the header's own padding, so the hit box is 44x44 while
+       the header keeps the height (and the glyph the position) it had. */
+    #detail .close, #inbox .close {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 44px; min-height: 44px; font-size: 26px;
+      padding: 0; margin: -9px -10px -9px 0;
+    }
   }
 </style>
 </head>

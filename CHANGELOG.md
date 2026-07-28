@@ -74,6 +74,36 @@ single ticket.
 
 ### Fixed
 
+- **A phone could open the ticket drawer and not get back out.** `/board`'s two
+  drawers — the ticket detail and the ask-a-human queue — are full-bleed below
+  480/520px, which is right for reading. But `#overlay`, the tap-to-close scrim,
+  sits at `z-index: 20` and the drawers at `21`, so at full width the scrim was
+  entirely behind them and could never be tapped. Escape closed them too, and a
+  phone has no Escape key. That left exactly one exit, a 20px glyph in 2px 6px
+  of padding: a measured 23.7 × 24 target, against the 44px touch minimum.
+
+  The drawers keep their width — 390px minus the reading padding is already as
+  narrow as that column should get, so uncovering the scrim by narrowing the
+  sheet would have bought an exit with line length. Instead the sheet now rises
+  from the bottom and stops 56px short of the top, putting the scrim back on
+  screen as a full-width strip you can tap to dismiss, with the dimmed board
+  showing through it. The close button becomes a real 44 × 44 target in the same
+  motion, grown into the header's own padding so the header keeps its height.
+  A phone now has the two independent ways out a desktop always had; Escape and
+  keyboard focus are untouched.
+
+  `/inbox` is built the same way and its scrim is buried the same way, but it
+  has always shipped a reachable exit — the pinned, full-width, 44px-tall *Back
+  to the question* button — so only its close glyph needed the touch size.
+
+  The same pass raises the controls that were under 44px at phone width on both
+  surfaces: the header's ghost and icon buttons, the language toggle, the nav
+  pills, and `/inbox`'s *back to list* and ticket buttons, which are the phone's
+  only navigation once the list pane is hidden. All of it is CSS inside the
+  existing `@media (max-width: 760px)` blocks — every byte of both files outside
+  those blocks is unchanged, and the desktop board and inbox render pixel-for-
+  pixel identically at 1440 (0 of 1,296,000 pixels differ on either surface).
+
 - **`/board` now shows when a question came back with a question.** A human can
   bounce a question back to the asking agent for more research instead of
   answering it; the question stays open and the ticket stays parked, but the
