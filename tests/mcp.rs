@@ -868,3 +868,163 @@ async fn mcp_heartbeat_refusals_say_what_to_do() {
         "an expired lease must not be heartbeatable back to life: {expired}"
     );
 }
+
+// ---- takomo_link: one key per call, `null` deletes (takomo-12ax) ------------
+
+/// `takomo_link` must send only the key it was asked to write.
+///
+/// It used to read the ticket's `links` (outside the transaction), insert the new
+/// key client-side, and send the whole object back — a read-modify-write straddling
+/// a transaction boundary. The store already merges links per key *inside* the
+/// transaction, so the pre-merge bought nothing and cost a lost update: any key
+/// deleted between the tool's read and its write came back from the dead. REST,
+/// which sends `{"<key>": <value>}` and lets the store merge, cannot lose an
+/// update this way.
+///
+/// The interleaving is forced rather than raced. A second connection to the same
+/// SQLite file takes the write lock, so the tool's write parks behind it (the
+/// store's `busy_timeout` is 5s) *after* it has already read `links`; the delete
+/// then commits inside that window. The raw `UPDATE` is exactly what the store's
+/// per-key merge issues for `links: {"branch": null}` — the point of doing it on
+/// the other connection is the timing, not a different code path (the
+/// `null`-deletes-through-REST path is asserted below).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mcp_link_cannot_resurrect_a_link_deleted_mid_call() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let id = app.create_ticket("mcp link lost update").await;
+
+    // The link that must stay deleted once someone deletes it.
+    let first = app
+        .tool_ok(
+            &app.admin,
+            "takomo_link",
+            json!({ "id": id, "key": "branch", "value": "feat/doomed" }),
+        )
+        .await;
+    assert_eq!(first["links"]["branch"], "feat/doomed");
+
+    let conn = rusqlite::Connection::open(app.db_path()).expect("second connection");
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .expect("take write lock");
+
+    let deleter_id = id.clone();
+    let deleter = std::thread::spawn(move || {
+        // Long enough that the tool call below has certainly read the ticket and
+        // is now blocked on the write lock.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        conn.execute(
+            "UPDATE tickets SET links = ?2 WHERE id = ?1",
+            (&deleter_id, "{}"),
+        )
+        .expect("delete the branch link");
+        conn.execute_batch("COMMIT").expect("commit the delete");
+    });
+
+    // A *different* key, so nothing about this call is about `branch` — yet the
+    // old client-side merge would carry `branch` along and re-insert it.
+    let linked = app
+        .tool_ok(
+            &app.admin,
+            "takomo_link",
+            json!({ "id": id, "key": "pr", "value": "https://example.test/pr/1" }),
+        )
+        .await;
+    deleter.join().expect("deleter thread");
+
+    assert_eq!(linked["links"]["pr"], "https://example.test/pr/1");
+    assert!(
+        linked["links"].get("branch").is_none(),
+        "takomo_link resurrected a link deleted after it read the ticket — it must \
+         send only the key it was given and let the store merge: {linked}"
+    );
+
+    // …and that is the stored state, not just what the tool echoed.
+    let (status, ticket) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        ticket["links"].get("branch").is_none(),
+        "the deleted link is back in the store: {}",
+        ticket["links"]
+    );
+    assert_eq!(ticket["links"]["pr"], "https://example.test/pr/1");
+}
+
+/// The other half of the asymmetry: `value` was `String`, so MCP could set a link
+/// but never delete one, while REST has deleted with `links: {"key": null}` all
+/// along. Also pins the merge the tool depends on — writing one key must leave the
+/// others alone.
+#[tokio::test]
+async fn mcp_link_deletes_with_null_and_leaves_other_keys_alone() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let id = app.create_ticket("mcp link delete").await;
+
+    app.tool_ok(
+        &app.admin,
+        "takomo_link",
+        json!({ "id": id, "key": "branch", "value": "feat/x" }),
+    )
+    .await;
+    // A second key set through REST, to prove the tool merges rather than replaces.
+    let (status, _) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "links": { "design": "https://example.test/doc" } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let added = app
+        .tool_ok(
+            &app.admin,
+            "takomo_link",
+            json!({ "id": id, "key": "pr", "value": "https://example.test/pr/2" }),
+        )
+        .await;
+    assert_eq!(added["links"]["branch"], "feat/x");
+    assert_eq!(added["links"]["design"], "https://example.test/doc");
+    assert_eq!(added["links"]["pr"], "https://example.test/pr/2");
+
+    // null deletes exactly that key.
+    let deleted = app
+        .tool_ok(
+            &app.admin,
+            "takomo_link",
+            json!({ "id": id, "key": "branch", "value": null }),
+        )
+        .await;
+    assert!(
+        deleted["links"].get("branch").is_none(),
+        "value=null must delete the key: {deleted}"
+    );
+    assert_eq!(deleted["links"]["pr"], "https://example.test/pr/2");
+    assert_eq!(deleted["links"]["design"], "https://example.test/doc");
+
+    // Omitting `value` entirely is the same request (`Option<String>` → null), and
+    // deleting a key that is not there is a no-op, not an error: an agent cleaning
+    // up should not have to read first to know whether it may.
+    let absent = app
+        .tool_ok(
+            &app.admin,
+            "takomo_link",
+            json!({ "id": id, "key": "never-set" }),
+        )
+        .await;
+    assert!(
+        absent["links"].get("never-set").is_none(),
+        "deleting an unset key must not create it: {absent}"
+    );
+    assert_eq!(absent["links"]["pr"], "https://example.test/pr/2");
+
+    // Same view over REST — the two transports agree on the stored links.
+    let (status, ticket) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        ticket["links"],
+        json!({ "design": "https://example.test/doc", "pr": "https://example.test/pr/2" })
+    );
+}
