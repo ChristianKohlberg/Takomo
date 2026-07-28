@@ -11,7 +11,7 @@ cargo build --release                              # build the binary (takomo)
 cargo test --release                               # integration suite (spawns real servers on ephemeral ports)
 cargo clippy --all-targets -- -D warnings          # lint, warnings-as-errors
 cargo fmt                                           # format (rustfmt.toml); CI runs --check
-shellcheck clients/cli/takomo clients/cli/install.sh   # shell CLI lint
+shellcheck -x clients/cli/takomo clients/cli/install.sh .handrail/*.sh   # shell lint (CI adds scripts/ and .handrail/adapters/)
 (cd clients/mcp && npm ci && npm run build)         # MCP typecheck
 ```
 

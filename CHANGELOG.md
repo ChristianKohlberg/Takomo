@@ -74,6 +74,23 @@ single ticket.
 
 ### Fixed
 
+- **The `.handrail/` norm detectors can now see a committed branch.**
+  `route-test-pairing` and `openapi-current` computed their changed set with
+  `git diff --name-only HEAD`, which reports only *uncommitted* work — so on a
+  finished branch, the moment you would most want a verdict, both exited 2 and
+  reported `skipped`. That reads as "nothing to check" when it actually meant
+  "I cannot see your change", and the workaround (re-apply the branch diff
+  unstaged in a scratch worktree) was being reinvented per ticket. Both scripts
+  now accept `HR_BASE`: unset it behaves exactly as before, while
+  `HR_BASE=origin/main handrail run route-test-pairing openapi-current` compares
+  `merge-base(origin/main, HEAD)` against the working tree — the branch's own
+  changes plus anything uncommitted, and not whatever landed on `main`
+  underneath it. Skips now say which kind they are: `SKIP[not-in-scope]` (your
+  change did not touch that surface) versus `SKIP[no-changes-visible]` (the
+  detector saw nothing and checked nothing — not a pass). A `HR_BASE` that does
+  not resolve exits 3 (red) instead of silently degrading to "no changes". CI's
+  shellcheck job now covers `.handrail/*.sh`, which it did not before.
+
 - **The CLI no longer drops a write on a ten-second gateway blip.** `takomo`
   issued exactly one request per command, so a transient `502` from a proxy in
   front of the store — `/healthz` green throughout — failed the command

@@ -77,8 +77,12 @@ jobs:
       - uses: actions/checkout@v4
 
       # shellcheck is preinstalled on GitHub-hosted ubuntu runners.
+      # .handrail/*.sh was outside this list until takomo-u2k4: the gate scripts
+      # are the repo's own norm detectors, and a syntax slip in one of them
+      # degrades to a silent skip rather than a visible failure. -x follows the
+      # `source=` directive into .handrail/hr-changed.sh.
       - name: ShellCheck
-        run: shellcheck clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh
+        run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh .handrail/*.sh .handrail/adapters/*.sh
 
   copies:
     name: Duplicated files stay in sync
