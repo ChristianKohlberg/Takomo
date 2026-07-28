@@ -259,6 +259,20 @@ ticket.
   not resolve exits 3 (red) instead of silently degrading to "no changes". CI's
   shellcheck job now covers `.handrail/*.sh`, which it did not before.
 
+- **A whitespace edit satisfied both norm detectors.** They asked "was the
+  companion file touched", and `git diff --name-only` answers that from the blob
+  hash — so reindenting `spec/openapi.yaml` counted as "the spec is up to date",
+  and a stray blank line under `tests/` counted as "ships with a test". Both
+  produced a green `OK` with nothing recorded and nothing tested. A file whose
+  only difference from the base is whitespace no longer counts as changed, on
+  either side of either detector. The filter can only shrink the change set, so
+  it turns a false pass into a red (record side) or into an explicit exit-2 skip
+  (surface side) — never a red into a pass. It is still a touched-ness test, not
+  a correspondence test: it cannot tell whether the spec change describes the
+  route you touched, and both gate files now say so where someone reading a
+  green would see it. The check that compares the real router against the real
+  spec belongs in the test suite, where CI runs it on every commit.
+
 - **`/board` declared `ticketFilter` twice in one object literal, and nothing in
   the repo could have noticed.** Both declarations had identical initialisers so
   JavaScript kept the last and the board behaved correctly — which is the
