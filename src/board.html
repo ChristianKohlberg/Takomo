@@ -2474,14 +2474,38 @@
         var scope = meta.kind === "project" ? ("project " + meta.project) : ("subtree " + meta.ref);
         $("share-scope").textContent = "Shared view — " + scope;
         $("share-exp").textContent = "expires " + fmtExpiry(meta.expires_at);
-        return shareApi("/self/tickets" + (state.showArchived ? "?include_archived=true" : ""));
+        return sharePages();
       })
-      .then(function (res) {
-        var all = {};
-        (res.items || []).forEach(function (t) { all[t.id] = t; });
+      .then(function (all) {
         state.tickets = all;
         render();
       });
+  }
+
+  // Page through the share's tickets, the way fullLoad() does for the normal
+  // path. GET /v1/shares/self/tickets returns at most 200 rows plus a
+  // next_cursor, so a single fetch renders a shared scope larger than one page
+  // as a silent prefix (takomo-32iv).
+  //
+  // Deliberately NOT a retry loop: a shared link is rate limited to 120
+  // requests/minute, so the request count has to stay proportional to the data
+  // (200 per page is a handful even for a big project) and an error must
+  // propagate to handleShareErr rather than be re-tried here.
+  function sharePages() {
+    var all = {};
+    // include_archived has to ride along on EVERY page, not just the first:
+    // unlike fullLoad(), which always fetches archived and lets render() filter,
+    // the share toggle re-loads, so this flag decides each page's contents.
+    var arch = state.showArchived ? "&include_archived=true" : "";
+    function page(cursor) {
+      var q = "/self/tickets?limit=200" + arch;
+      if (cursor) q += "&cursor=" + encodeURIComponent(cursor);
+      return shareApi(q).then(function (res) {
+        (res.items || []).forEach(function (t) { all[t.id] = t; });
+        if (res.next_cursor) return page(res.next_cursor);
+      });
+    }
+    return page(null).then(function () { return all; });
   }
 
   function handleShareErr(e) {
