@@ -13,7 +13,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use crate::server::AppState;
 use crate::store::{
-    AskRequest, QuestionFilter, TimeoutAction, DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS,
+    AskRequest, Question, QuestionFilter, Ticket, TimeoutAction, DEFAULT_ANSWER_TTL_SECONDS,
+    MAX_ANSWER_TTL_SECONDS,
 };
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -101,6 +102,83 @@ fn parse_options(obj: &serde_json::Map<String, Value>) -> ApiResult<(Vec<String>
         return Ok((values, list));
     }
     Ok((values, if any_note { notes } else { Vec::new() }))
+}
+
+// ---------------------------------------------------------------------------
+// Ask: the parts of raising a question that are policy rather than parsing, so
+// REST (`POST /v1/questions`) and MCP (`takomo_ask`) cannot answer the same
+// question differently. Field mapping into `AskRequest` deliberately stays at
+// each call site: the struct has no `Default`, so a new field breaks both
+// surfaces at compile time — the drift that needs a human is the *prose*.
+
+/// Which surface an ask arrived on. It selects only the one sentence that
+/// legitimately differs — REST names the HTTP endpoint a human will use, MCP
+/// tells the agent what to do with its run — and both wordings live here, side by
+/// side, so an edit to one is made where the other is visible.
+pub(crate) enum AskSurface {
+    Rest,
+    Mcp,
+}
+
+/// The `note` on an ask response: what just happened to the ticket, plus the
+/// project's writing conventions echoed back.
+///
+/// The nudge is the reason this is one function. It is agent-facing instruction
+/// about the project's house style, and it was written out twice — so the two
+/// surfaces could, and did, tell agents different things about the same
+/// convention. Asking is also the last moment the text is still fixable (re-ask),
+/// unlike a question already sitting in someone's inbox, which is why it rides on
+/// the response at all rather than only on the work-loop hints
+/// ([`crate::api::attach_conventions`]).
+pub(crate) fn ask_note(
+    state: &AppState,
+    question: &Question,
+    ticket: &Ticket,
+    surface: AskSurface,
+) -> String {
+    let mut note = match (question.mode.as_str(), surface) {
+        ("advisory", AskSurface::Rest) => format!(
+            "Advisory question recorded on '{}' — no state change, no lease effect. A human answers via the board or POST /v1/questions/{}/answer; the decision is recorded (the ticket is not resumed).",
+            ticket.id, question.id
+        ),
+        ("advisory", AskSurface::Mcp) => format!(
+            "Advisory question recorded on '{}' — it does not change the ticket's state or your lease. It's routed to the inbox for a human; keep working or end your run as you see fit.",
+            ticket.id
+        ),
+        (_, AskSurface::Rest) => format!(
+            "Ticket parked in '{}' and your lease released. A human answers via the board or POST /v1/questions/{}/answer; the ticket resumes once every open question on it is answered. Re-check with GET /v1/tickets/{} later.",
+            ticket.state, question.id, ticket.id
+        ),
+        (_, AskSurface::Mcp) => format!(
+            "Parked '{}' in '{}' and released your lease. End your run; resume once every open question on it is answered (the answers land on this ticket).",
+            ticket.id, ticket.state
+        ),
+    };
+    // A hint is advisory: a project that vanished under us must not turn a
+    // successful ask into an error.
+    if let Ok(Some(p)) = state.store.get_project(&question.project) {
+        if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
+            note.push_str(&format!(
+                " This project expects the question (and any options) written in {lang} — re-ask in {lang} if this one wasn't."
+            ));
+        }
+        if let Some(style) = p.style_guide.filter(|s| !s.trim().is_empty()) {
+            note.push_str(&format!(
+                " This project's style guide for what you write: {style}"
+            ));
+        }
+    }
+    note
+}
+
+/// Absolute expiry for an ask's `expires_in_seconds`, or `None` when it names no
+/// deadline. A non-positive window means "no deadline", not "already expired" —
+/// both surfaces have always agreed on that, and now they agree by construction.
+pub(crate) fn ask_expires_at(expires_in_seconds: Option<i64>) -> Option<i64> {
+    match expires_in_seconds {
+        Some(secs) if secs > 0 => Some(now_ms() + secs * 1000),
+        _ => None,
+    }
 }
 
 /// Expertise tags a token covers, derived from its free-form `expert:<tag>`
@@ -206,10 +284,7 @@ pub async fn create(
         .ok_or_else(|| ApiError::not_found("ticket", &ticket))?;
     ctx.require_project(&t.project)?;
 
-    let expires_at = match get_i64(obj, "expires_in_seconds")? {
-        Some(secs) if secs > 0 => Some(now_ms() + secs * 1000),
-        _ => None,
-    };
+    let expires_at = ask_expires_at(get_i64(obj, "expires_in_seconds")?);
     let on_timeout = match get_str(obj, "on_timeout")? {
         Some(raw) => Some(TimeoutAction::parse(&raw)?),
         None => None,
@@ -244,39 +319,14 @@ pub async fn create(
     let (question, ticket) = state.store.ask_question(&req, &ctx.actor)?;
     state.wake();
     crate::notify::question_asked(&state, &question);
-    // The project's writing conventions, echoed back on the ask so an agent that
-    // asked before reading them can still fix this question.
-    let project = state.store.get_project(&question.project)?;
-    let lang_note = project
-        .as_ref()
-        .and_then(|p| p.question_language.as_deref())
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| format!(" This project expects the question (and any options) written in {l} — re-ask in {l} if this one wasn't."))
-        .unwrap_or_default();
-    let style_note = project
-        .as_ref()
-        .and_then(|p| p.style_guide.as_deref())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| format!(" This project's style guide for what you write: {s}"))
-        .unwrap_or_default();
-    let note = if question.mode == "advisory" {
-        format!(
-            "Advisory question recorded on '{}' — no state change, no lease effect. A human answers via the board or POST /v1/questions/{}/answer; the decision is recorded (the ticket is not resumed).",
-            ticket.id, question.id
-        )
-    } else {
-        format!(
-            "Ticket parked in '{}' and your lease released. A human answers via the board or POST /v1/questions/{}/answer; the ticket resumes once every open question on it is answered. Re-check with GET /v1/tickets/{} later.",
-            ticket.state, question.id, ticket.id
-        )
-    };
+    let note = ask_note(&state, &question, &ticket, AskSurface::Rest);
     let hints = crate::store::question_quality_hints(&question);
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "question": question.to_json(),
             "ticket": ticket.to_json(now_ms()),
-            "note": note + &lang_note + &style_note,
+            "note": note,
             "hints": hints,
         })),
     ))
@@ -517,28 +567,53 @@ pub async fn revise_options(
 
 const ANSWER_LINK_FIELDS: [&str; 2] = ["ttl_seconds", "actor"];
 
-/// POST /v1/questions/{id}/answer-link (human scope) — mint a scoped, expiring,
-/// single-use link an outside expert can use to answer this one question. You
-/// can only delegate authority you hold: minting for an `approve` question
-/// requires the matching `expert:<tag>` scope. Returns `{token, path, ...}` —
-/// `token` (a `tka_...`) is shown ONCE.
-pub async fn create_link(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<AuthCtx>,
-    Path(id): Path<String>,
-    body: Option<Json<Value>>,
-) -> ApiResult<impl IntoResponse> {
+/// Shown once, on every surface that mints a link — the same convention the other
+/// two credential mints follow (`api/tokens.rs`, `api/shares.rs`).
+const ANSWER_LINK_WARNING: &str = "This answer-link token is shown ONCE. Anyone with the link can answer this one question until it expires or is used (single-use). Share it only with the intended person.";
+
+/// Mint a per-question answer link — the whole of it, for every surface.
+///
+/// An answer link is a **bearer credential handed to someone outside the org**,
+/// so what it is allowed to do must not depend on which transport the caller
+/// happened to use. That is why the authority checks, the lifetime rules and the
+/// response body all live here and nowhere else; REST
+/// (`POST /v1/questions/{id}/answer-link`) and MCP (`takomo_answer_link`) do
+/// nothing but shape the envelope around what this returns.
+///
+/// - `human` scope, and the question's project must be in the token's allowlist.
+/// - The question must still be `open` — a spent or withdrawn one has nothing to
+///   answer.
+/// - Minting for an `approve` question requires the matching `expert:<tag>`
+///   scope: you can only delegate authority you hold.
+/// - Lifetime precedence, most specific first: an explicit `ttl_seconds` on this
+///   call, else the project's `answer_link_ttl_seconds`, else
+///   [`DEFAULT_ANSWER_TTL_SECONDS`]. The explicit value wins outright — someone
+///   who has looked at this one question and chosen a window knows more than the
+///   project setting does — and is bounded by [`MAX_ANSWER_TTL_SECONDS`]. The
+///   stored project value was bounded by the same rule when it was written
+///   (`normalize_answer_link_ttl`), so it needs no re-check here.
+///
+/// Returns the grant row plus the one-time `token`, the `#a=` board `path`, an
+/// absolute `url` when `TAKOMO_PUBLIC_URL` is set, the `ttl_seconds` actually
+/// applied and its `ttl_source`, and the [`ANSWER_LINK_WARNING`].
+pub(crate) fn mint_answer_link(
+    state: &AppState,
+    ctx: &AuthCtx,
+    question_id: &str,
+    ttl_seconds: Option<i64>,
+    actor: Option<String>,
+) -> ApiResult<Value> {
     ctx.require_scope("human")?;
     let q = state
         .store
-        .get_question(&id)?
-        .ok_or_else(|| ApiError::not_found("question", &id))?;
+        .get_question(question_id)?
+        .ok_or_else(|| ApiError::not_found("question", question_id))?;
     ctx.require_project(&q.project)?;
     if q.status != "open" {
         return Err(ApiError::conflict(
             "question.not_open",
             format!(
-                "Question '{id}' is '{}', not open — there is nothing to answer.",
+                "Question '{question_id}' is '{}', not open — there is nothing to answer.",
                 q.status
             ),
         ));
@@ -554,23 +629,14 @@ pub async fn create_link(
                 StatusCode::FORBIDDEN,
                 "question.approve_expertise",
                 format!(
-                    "Minting an answer link for this 'approve' question needs a matching domain expert scope ({}). You can only delegate authority you hold.",
+                    "Minting an answer link for this 'approve' question needs a matching domain expert scope ({}) — you can only delegate authority you hold.",
                     q.expertise.iter().map(|t| format!("expert:{t}")).collect::<Vec<_>>().join(", ")
                 ),
             ));
         }
     }
 
-    let body = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-    let obj = body_object(&body)?;
-    reject_unknown(obj, &ANSWER_LINK_FIELDS)?;
-    // Lifetime precedence, most specific first: an explicit `ttl_seconds` on
-    // this call, else the project's `answer_link_ttl_seconds`, else the built-in
-    // default. The explicit value wins outright — someone who has looked at this
-    // one question and chosen a window knows more than the project setting does.
-    // The stored project value was bounded by the same rule when it was written
-    // (`normalize_answer_link_ttl`), so it needs no re-check here.
-    let (ttl, ttl_source) = match get_i64(obj, "ttl_seconds")? {
+    let (ttl, ttl_source) = match ttl_seconds {
         Some(s) if s <= 0 => {
             return Err(ApiError::validation(
                 "answer_link.ttl",
@@ -590,12 +656,13 @@ pub async fn create_link(
         },
     };
     // Who the answer is attributed to; defaults to a link-scoped actor.
-    let actor = get_str(obj, "actor")?.unwrap_or_else(|| format!("human:link:{id}"));
+    let actor = actor.unwrap_or_else(|| format!("human:link:{question_id}"));
 
     let expires_at = now_ms() + ttl * 1000;
-    let (row, plaintext) = state
-        .store
-        .create_answer_grant(&id, &q.project, &actor, expires_at, &ctx.actor)?;
+    let (row, plaintext) =
+        state
+            .store
+            .create_answer_grant(question_id, &q.project, &actor, expires_at, &ctx.actor)?;
 
     let mut out = row.to_json();
     if let Value::Object(map) = &mut out {
@@ -627,12 +694,32 @@ pub async fn create_link(
         }
         map.insert(
             "warning".to_string(),
-            Value::String(
-                "This answer-link token is shown ONCE. Anyone with the link can answer this one question until it expires or is used (single-use). Share it only with the intended person."
-                    .to_string(),
-            ),
+            Value::String(ANSWER_LINK_WARNING.to_string()),
         );
     }
+    Ok(out)
+}
+
+/// POST /v1/questions/{id}/answer-link (human scope) — mint a scoped, expiring,
+/// single-use link an outside expert can use to answer this one question. All the
+/// policy is in [`mint_answer_link`]; this only rejects unknown fields and wraps
+/// the result in a `201`.
+pub async fn create_link(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    body: Option<Json<Value>>,
+) -> ApiResult<impl IntoResponse> {
+    let body = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &ANSWER_LINK_FIELDS)?;
+    let out = mint_answer_link(
+        &state,
+        &ctx,
+        &id,
+        get_i64(obj, "ttl_seconds")?,
+        get_str(obj, "actor")?,
+    )?;
     Ok((StatusCode::CREATED, Json(out)))
 }
 

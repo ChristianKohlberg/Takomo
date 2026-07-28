@@ -438,7 +438,8 @@ pub struct ReviseOptionsArgs {
 pub struct AnswerLinkArgs {
     /// Question id to mint an answer link for.
     pub id: String,
-    /// Link lifetime in seconds (default 3 days, max 30 days).
+    /// Link lifetime in seconds, max 30 days. Omit to take the project's
+    /// answer_link_ttl_seconds, and failing that the built-in 7 days.
     pub ttl_seconds: Option<i64>,
     /// Who a use of the link is attributed to (default human:link:<qid>).
     pub actor: Option<String>,
@@ -1010,10 +1011,7 @@ impl TakomoMcp {
     fn do_ask(&self, auth: &AuthCtx, a: AskArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         let ticket = load_visible(&self.state, auth, &a.id)?;
-        let expires_at = match a.expires_in_seconds {
-            Some(s) if s > 0 => Some(now_ms() + s * 1000),
-            _ => None,
-        };
+        let expires_at = crate::api::questions::ask_expires_at(a.expires_in_seconds);
         let on_timeout = match a.on_timeout.as_deref() {
             Some(raw) => Some(crate::store::TimeoutAction::parse(raw)?),
             None => None,
@@ -1041,32 +1039,14 @@ impl TakomoMcp {
         let (question, updated) = self.state.store.ask_question(&req, &auth.actor)?;
         self.state.wake();
         crate::notify::question_asked(&self.state, &question);
-        let mut note = if question.mode == "advisory" {
-            format!(
-                "Advisory question recorded on '{}' — it does not change the ticket's state or your lease. It's routed to the inbox for a human; keep working or end your run as you see fit.",
-                updated.id
-            )
-        } else {
-            format!(
-                "Parked '{}' in '{}' and released your lease. End your run; resume once every open question on it is answered (the answers land on this ticket).",
-                updated.id, updated.state
-            )
-        };
-        // Soft nudges: if the project expects a specific human-facing language or
-        // sets a house style, remind the agent — the question it just wrote is
-        // still fixable (re-ask), unlike one already sitting in someone's inbox.
-        if let Ok(Some(p)) = self.state.store.get_project(&question.project) {
-            if let Some(lang) = p.question_language.filter(|l| !l.trim().is_empty()) {
-                note.push_str(&format!(
-                    " This project expects the question (and any options) written in {lang} — re-ask in {lang} if this one wasn't.",
-                ));
-            }
-            if let Some(style) = p.style_guide.filter(|s| !s.trim().is_empty()) {
-                note.push_str(&format!(
-                    " This project's style guide for what you write: {style}"
-                ));
-            }
-        }
+        // Shared with `POST /v1/questions` — including the project's language and
+        // style nudge, which the two surfaces used to word separately.
+        let note = crate::api::questions::ask_note(
+            &self.state,
+            &question,
+            &updated,
+            crate::api::questions::AskSurface::Mcp,
+        );
         let hints = crate::store::question_quality_hints(&question);
         Ok(json!({
             "ok": true,
@@ -1233,68 +1213,21 @@ impl TakomoMcp {
         }))
     }
 
+    /// Mint an answer link. The policy — the `human` scope, the `open` check, the
+    /// `approve` -> `expert:<tag>` delegation gate, the TTL precedence and bounds,
+    /// and the response body down to the shown-once warning — is
+    /// [`crate::api::questions::mint_answer_link`], shared with
+    /// `POST /v1/questions/{id}/answer-link`. A credential handed to someone
+    /// outside the org must not carry different guarantees per transport.
     fn do_answer_link(&self, auth: &AuthCtx, a: AnswerLinkArgs) -> ApiResult<Value> {
-        auth.require_scope("human")?;
-        let q = self
-            .state
-            .store
-            .get_question(&a.id)?
-            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
-        auth.require_project(&q.project)?;
-        if q.status != "open" {
-            return Err(ApiError::conflict(
-                "question.not_open",
-                format!("Question '{}' is '{}', not open.", a.id, q.status),
-            ));
-        }
-        if q.kind == "approve" {
-            let has_expert = q
-                .expertise
-                .iter()
-                .any(|t| auth.scopes.contains(&format!("expert:{t}")));
-            if !has_expert {
-                return Err(ApiError::new(
-                    axum::http::StatusCode::FORBIDDEN,
-                    "question.approve_expertise",
-                    "Minting an answer link for an 'approve' question needs the matching expert:<tag> scope — you can only delegate authority you hold.",
-                ));
-            }
-        }
-        let ttl = match a.ttl_seconds {
-            None => crate::store::DEFAULT_ANSWER_TTL_SECONDS,
-            Some(s) if s <= 0 || s > crate::store::MAX_ANSWER_TTL_SECONDS => {
-                return Err(ApiError::validation(
-                    "answer_link.ttl",
-                    format!(
-                        "ttl_seconds must be between 1 and {} (30 days).",
-                        crate::store::MAX_ANSWER_TTL_SECONDS
-                    ),
-                ))
-            }
-            Some(s) => s,
-        };
-        let actor = a.actor.unwrap_or_else(|| format!("human:link:{}", a.id));
-        let expires_at = now_ms() + ttl * 1000;
-        let (row, plaintext) = self.state.store.create_answer_grant(
+        let link = crate::api::questions::mint_answer_link(
+            &self.state,
+            auth,
             &a.id,
-            &q.project,
-            &actor,
-            expires_at,
-            &auth.actor,
+            a.ttl_seconds,
+            a.actor,
         )?;
-        let mut out = row.to_json();
-        out["token"] = json!(plaintext);
-        out["path"] = json!(format!("/board#a={plaintext}"));
-        if let Ok(base) = std::env::var("TAKOMO_PUBLIC_URL") {
-            if !base.trim().is_empty() {
-                out["url"] = json!(format!(
-                    "{}/board#a={plaintext}",
-                    base.trim_end_matches('/')
-                ));
-            }
-        }
-        out["note"] = json!("Single-use, expiring link. Share it only with the intended person; the token is shown once.");
-        Ok(json!({ "ok": true, "answer_link": out }))
+        Ok(json!({ "ok": true, "answer_link": link }))
     }
 
     fn do_claim(&self, auth: &AuthCtx, id: &str, ttl: Option<i64>) -> ApiResult<Value> {
