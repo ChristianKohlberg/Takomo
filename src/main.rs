@@ -138,6 +138,30 @@ enum ProjectCommand {
         #[arg(long)]
         clear: bool,
     },
+    /// Show or set this project's lease policy: the lease a claim gets by
+    /// default, and the ceiling an explicit ttl_seconds is checked against.
+    ///
+    /// With no flags, prints the values in force. The two are stored (and
+    /// validated) as a pair, so a flag you omit keeps its stored value rather
+    /// than being cleared.
+    ClaimTtl {
+        /// Project id.
+        id: String,
+        /// Lease for a claim that names no ttl_seconds: 30m, 1h, 900s, or a
+        /// plain second count. Omit to keep the stored value.
+        #[arg(long, value_name = "TTL")]
+        default: Option<String>,
+        /// Ceiling an explicit ttl_seconds is checked against — same forms, no
+        /// upper bound. Omit to keep the stored value.
+        #[arg(long, value_name = "TTL")]
+        max: Option<String>,
+        /// Clear the project's default lease, falling back to the built-in.
+        #[arg(long)]
+        clear_default: bool,
+        /// Clear the project's ceiling, falling back to the built-in.
+        #[arg(long)]
+        clear_max: bool,
+    },
     /// List projects.
     List,
 }
@@ -426,6 +450,46 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             }
             Ok(())
         }
+        ProjectCommand::ClaimTtl {
+            id,
+            default,
+            max,
+            clear_default,
+            clear_max,
+        } => {
+            // Reading is not a write, so it needs no confirming flag.
+            let project = store
+                .get_project(&id)
+                .map_err(|e| e.into_message())?
+                .ok_or_else(|| format!("no project '{id}'"))?;
+            if default.is_none() && max.is_none() && !clear_default && !clear_max {
+                print_claim_ttls(&id, "lease policy", &project);
+                return Ok(());
+            }
+            let (ttl, max_ttl) = resolve_claim_ttls(
+                default.as_deref(),
+                clear_default,
+                max.as_deref(),
+                clear_max,
+                (project.claim_ttl_seconds, project.max_claim_ttl_seconds),
+            )?;
+            // The store's message is the shared contract text and names the JSON
+            // fields (`claim_ttl_seconds`, "send null"). Translate that to the
+            // flags the reader actually typed rather than reimplementing the
+            // validation here.
+            let project = store
+                .set_claim_ttls(&id, ttl, max_ttl, "cli:admin")
+                .map_err(|e| {
+                    format!(
+                        "{}\nhint: on the CLI claim_ttl_seconds is --default and \
+                         max_claim_ttl_seconds is --max; where the API takes null, pass \
+                         --clear-default / --clear-max.",
+                        e.into_message()
+                    )
+                })?;
+            print_claim_ttls(&id, "lease policy now", &project);
+            Ok(())
+        }
         ProjectCommand::List => {
             let projects = store.list_projects().map_err(|e| e.into_message())?;
             if projects.is_empty() {
@@ -469,6 +533,92 @@ fn parse_ttl_seconds(raw: &str) -> Result<i64, String> {
     };
     let n: i64 = num.parse().map_err(|_| bad())?;
     n.checked_mul(mult).ok_or_else(bad)
+}
+
+/// Resolve what one `project claim-ttl` write should store, from the flags plus
+/// the `(default, max)` pair already in the row.
+///
+/// The store writes both columns in one UPDATE (they are validated as a pair by
+/// `normalize_claim_ttls`), so an **omitted flag must re-send the stored value**
+/// — otherwise setting one half would silently clear the other. Same rule as
+/// `PUT /v1/projects/{project}/claim-ttl`, where an absent field means "leave as
+/// it is" and an explicit null clears; here `--clear-default` / `--clear-max`
+/// are that null.
+///
+/// Kept separate from the command arm so this rule is unit-testable.
+fn resolve_claim_ttls(
+    default: Option<&str>,
+    clear_default: bool,
+    max: Option<&str>,
+    clear_max: bool,
+    stored: (Option<i64>, Option<i64>),
+) -> Result<(Option<i64>, Option<i64>), String> {
+    let resolve = |raw: Option<&str>,
+                   clear: bool,
+                   stored: Option<i64>,
+                   set_flag: &str,
+                   clear_flag: &str,
+                   built_in: i64|
+     -> Result<Option<i64>, String> {
+        if clear {
+            if raw.is_some() {
+                return Err(format!(
+                    "{set_flag} and {clear_flag} conflict: pass {set_flag} <ttl> to set this \
+                     value, or {clear_flag} alone to drop the project setting and fall back to \
+                     the built-in {built_in}s."
+                ));
+            }
+            return Ok(None);
+        }
+        match raw {
+            // Absent means "leave as it is": this writes both columns at once,
+            // so the stored value has to be re-sent, not dropped.
+            None => Ok(stored),
+            Some(raw) => Ok(Some(parse_ttl_seconds(raw)?)),
+        }
+    };
+    let ttl = resolve(
+        default,
+        clear_default,
+        stored.0,
+        "--default",
+        "--clear-default",
+        takomo::store::DEFAULT_TTL_SECONDS,
+    )?;
+    let max_ttl = resolve(
+        max,
+        clear_max,
+        stored.1,
+        "--max",
+        "--clear-max",
+        takomo::store::MAX_TTL_SECONDS,
+    )?;
+    Ok((ttl, max_ttl))
+}
+
+/// Print a project's lease policy as the numbers actually **in force** — an
+/// operator wants the seconds a claim will get, not "unset", so an unset column
+/// prints the built-in it falls back to and says so.
+fn print_claim_ttls(id: &str, label: &str, project: &takomo::store::Project) {
+    let show = |v: Option<i64>, built_in: i64| match v {
+        Some(s) => format!("{s}s (project setting)"),
+        None => format!("{built_in}s (built-in default; this project sets none)"),
+    };
+    println!("project '{id}' {label}:");
+    println!(
+        "  default lease: {} — what a claim that names no ttl_seconds gets",
+        show(
+            project.claim_ttl_seconds,
+            takomo::store::DEFAULT_TTL_SECONDS
+        )
+    );
+    println!(
+        "  maximum lease: {} — the ceiling an explicit ttl_seconds is checked against",
+        show(
+            project.max_claim_ttl_seconds,
+            takomo::store::MAX_TTL_SECONDS
+        )
+    );
 }
 
 /// Parse `90d`, `12h`, `30m`, or an RFC 3339 timestamp into unix ms.
@@ -521,5 +671,66 @@ fn run_seed(db: &str, preset: &str) -> Result<(), String> {
         other => Err(format!(
             "unknown preset '{other}'. Use 'dev' (demo content) or 'empty' (schema only)."
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_claim_ttls;
+
+    /// The trap this command has to avoid: `set_claim_ttls` writes both columns
+    /// in one UPDATE, so setting or clearing one half must re-send the other
+    /// half's stored value instead of nulling it.
+    #[test]
+    fn omitted_flag_keeps_the_stored_value() {
+        let stored = (Some(1800), Some(7200));
+        assert_eq!(
+            resolve_claim_ttls(Some("30m"), false, None, false, stored),
+            Ok((Some(1800), Some(7200)))
+        );
+        assert_eq!(
+            resolve_claim_ttls(None, false, Some("4h"), false, stored),
+            Ok((Some(1800), Some(14_400)))
+        );
+        // Clearing one half leaves the other exactly as it was.
+        assert_eq!(
+            resolve_claim_ttls(None, true, None, false, stored),
+            Ok((None, Some(7200)))
+        );
+        assert_eq!(
+            resolve_claim_ttls(None, false, None, true, stored),
+            Ok((Some(1800), None))
+        );
+    }
+
+    #[test]
+    fn both_flags_are_parsed_as_durations() {
+        assert_eq!(
+            resolve_claim_ttls(Some("20m"), false, Some("2h"), false, (None, None)),
+            Ok((Some(1200), Some(7200)))
+        );
+        assert_eq!(
+            resolve_claim_ttls(Some("900"), false, None, true, (None, Some(7200))),
+            Ok((Some(900), None))
+        );
+    }
+
+    #[test]
+    fn a_bad_duration_names_the_accepted_forms() {
+        let err = resolve_claim_ttls(Some("half an hour"), false, None, false, (None, None))
+            .expect_err("a non-duration must be refused");
+        assert!(err.contains("invalid ttl"), "{err}");
+        assert!(err.contains("3600s"), "{err}");
+    }
+
+    #[test]
+    fn setting_and_clearing_the_same_half_is_refused() {
+        let err = resolve_claim_ttls(Some("30m"), true, None, false, (None, None))
+            .expect_err("--default with --clear-default is ambiguous");
+        assert!(err.contains("--default"), "{err}");
+        assert!(err.contains("--clear-default"), "{err}");
+        let err = resolve_claim_ttls(None, false, Some("2h"), true, (None, None))
+            .expect_err("--max with --clear-max is ambiguous");
+        assert!(err.contains("--clear-max"), "{err}");
     }
 }
