@@ -696,3 +696,175 @@ async fn read_tools_are_all_real_advertised_tools() {
         );
     }
 }
+
+/// Move a freshly created ticket to `ready`, the state real work is claimed in.
+/// The test workflow starts tickets in `brief`, which is not claimable, and it is
+/// `ready` -> `implementing` that is claim-gated — so this is the state that shows
+/// whether a renewed lease still authorises work.
+async fn claimable(app: &TestApp, title: &str) -> String {
+    let id = app.create_ticket(title).await;
+    for to in ["spec", "ready"] {
+        app.tool_ok(
+            &app.admin,
+            "takomo_transition",
+            json!({ "id": id, "to": to }),
+        )
+        .await;
+    }
+    id
+}
+
+/// An MCP-only agent must be able to keep a lease alive (takomo-m3yl).
+///
+/// Before this, `POST /v1/tickets/{id}/heartbeat` existed but had no MCP tool and
+/// no MCP claim path took `ttl_seconds` — so an agent on that transport got 900
+/// seconds, could not extend them, and could not ask for more up front. Long work
+/// then lost its claim, fencing correctly refused its writes, and the only way
+/// forward was back through a claimable state, giving up the ticket's place in the
+/// queue. Both levers are asserted here because either one alone still leaves the
+/// agent unable to hold work it is actively doing.
+#[tokio::test]
+async fn mcp_can_hold_a_lease_it_is_working_on() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let list = app.ok_call(&app.admin, "tools/list", json!({})).await;
+    let names: Vec<&str> = list["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"takomo_heartbeat"),
+        "the heartbeat REST route needs an MCP tool, or one transport cannot renew: {names:?}"
+    );
+
+    let id = claimable(&app, "hold this lease").await;
+
+    // Claiming with an explicit ttl must actually shorten the lease: a tool that
+    // accepted `ttl_seconds` and dropped it would pass a smoke test but leave the
+    // agent on the 900s default it was trying to change.
+    let short = app
+        .tool_ok(
+            &app.admin,
+            "takomo_claim",
+            json!({ "id": id, "ttl_seconds": 5 }),
+        )
+        .await;
+    let short_expiry = short["lease"]["expires_at"]
+        .as_str()
+        .expect("lease carries expires_at")
+        .to_string();
+    let fence = short["lease"]["fence"].as_i64().expect("fence");
+    // Bound it against the wall clock, not just against the next lease. A tool
+    // that accepted `ttl_seconds` and dropped it would hand back the 900s default,
+    // and every "later than the previous one" comparison would still pass.
+    let short_secs = (chrono::DateTime::parse_from_rfc3339(&short_expiry)
+        .expect("expires_at is RFC3339")
+        .timestamp()
+        - chrono::Utc::now().timestamp())
+    .max(0);
+    assert!(
+        short_secs <= 60,
+        "ttl_seconds=5 must actually shorten the lease, but it expires in {short_secs}s          — the 900s default was used and the argument was dropped"
+    );
+
+    // …and heartbeating must push it out. Compared against the 5s lease above, so
+    // this asserts renewal, not merely that a second call succeeds.
+    let beat = app
+        .tool_ok(
+            &app.admin,
+            "takomo_heartbeat",
+            json!({ "id": id, "ttl_seconds": 900 }),
+        )
+        .await;
+    let beat_expiry = beat["lease"]["expires_at"]
+        .as_str()
+        .expect("renewed lease carries expires_at")
+        .to_string();
+    assert!(
+        beat_expiry > short_expiry,
+        "heartbeat must extend the lease: {short_expiry} -> {beat_expiry}"
+    );
+    assert_eq!(
+        beat["lease"]["fence"].as_i64(),
+        Some(fence),
+        "a beat renews the lease without bumping the fence — a new fence would \
+         invalidate the writes of the very worker that is holding on"
+    );
+
+    // The fence is resolved from the store, so the caller never has to track it;
+    // an explicit one still works, which is what a wrapper holding it in memory
+    // passes.
+    app.tool_ok(
+        &app.admin,
+        "takomo_heartbeat",
+        json!({ "id": id, "fence": fence }),
+    )
+    .await;
+
+    // Still the holder's, so claim-gated work proceeds.
+    let started = app
+        .tool_ok(&app.admin, "takomo_start", json!({ "id": id }))
+        .await;
+    assert_eq!(started["ticket"]["state"].as_str().unwrap(), "implementing");
+}
+
+/// Heartbeat's refusals have to teach, because each one means the agent is about
+/// to lose (or has already lost) work it thinks it holds.
+#[tokio::test]
+async fn mcp_heartbeat_refusals_say_what_to_do() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let id = claimable(&app, "never claimed").await;
+
+    // Never held it: distinct from "held it and lost it", and the remedy differs
+    // (claim first, versus stop writing).
+    let (payload, is_error) = app
+        .tool(&app.admin, "takomo_heartbeat", json!({ "id": id }))
+        .await;
+    assert!(is_error, "heartbeat without a lease must fail: {payload}");
+    assert_eq!(
+        payload["code"].as_str(),
+        Some("heartbeat.no_lease"),
+        "unclaimed heartbeat needs its own code, not a fence mismatch on a lease \
+         that was never this caller's: {payload}"
+    );
+    assert!(
+        payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("takomo_claim"),
+        "the message must name the MCP tool that fixes it: {payload}"
+    );
+
+    // Someone else's lease is not renewable by us, whatever fence we present.
+    app.tool_ok(&app.worker, "takomo_claim", json!({ "id": id }))
+        .await;
+    let (stolen, is_error) = app
+        .tool(&app.admin, "takomo_heartbeat", json!({ "id": id }))
+        .await;
+    assert!(
+        is_error,
+        "heartbeating another actor's lease must fail: {stolen}"
+    );
+
+    // An expired lease cannot be revived — that is the whole point of a lease, so
+    // the agent has to learn it from the error rather than from a silent success.
+    let other = claimable(&app, "expires immediately").await;
+    app.tool_ok(
+        &app.admin,
+        "takomo_claim",
+        json!({ "id": other, "ttl_seconds": 1 }),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let (expired, is_error) = app
+        .tool(&app.admin, "takomo_heartbeat", json!({ "id": other }))
+        .await;
+    assert!(
+        is_error,
+        "an expired lease must not be heartbeatable back to life: {expired}"
+    );
+}

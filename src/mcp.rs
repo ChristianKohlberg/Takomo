@@ -173,6 +173,26 @@ pub struct IdArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClaimArgs {
+    /// Ticket id.
+    pub id: String,
+    /// Lease lifetime in seconds (1-3600, default 900). Ask for what the work
+    /// will plausibly take; extend with `takomo_heartbeat` rather than guessing
+    /// high, since a lease you stop renewing is how a dead worker is detected.
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct HeartbeatArgs {
+    /// Ticket id.
+    pub id: String,
+    /// Override the fencing token (normally resolved automatically).
+    pub fence: Option<i64>,
+    /// New lease lifetime in seconds from now (1-3600, default 900).
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct NextArgs {
     /// Restrict to a project id.
     pub project: Option<String>,
@@ -182,6 +202,8 @@ pub struct NextArgs {
     pub label: Option<String>,
     /// Seconds to long-poll for work before giving up (0-60, default 0).
     pub wait: Option<i64>,
+    /// Lease lifetime in seconds for the ticket this claims (1-3600, default 900).
+    pub ttl_seconds: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -192,6 +214,10 @@ pub struct StartArgs {
     pub to: Option<String>,
     /// Override the fencing token (normally resolved automatically).
     pub fence: Option<i64>,
+    /// Lease lifetime in seconds, if this call is what takes the claim
+    /// (1-3600, default 900). Ignored when you already hold the lease — use
+    /// `takomo_heartbeat` to extend one you hold.
+    pub ttl_seconds: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -479,14 +505,30 @@ impl TakomoMcp {
 
     #[tool(
         description = "Claim a specific ticket by id, taking its lease. Later \
-        start/transition/done/release calls resolve the fencing token automatically."
+        start/transition/done/release calls resolve the fencing token automatically. \
+        The lease expires (default 900s, max 3600) — keep it with `takomo_heartbeat`."
     )]
     async fn takomo_claim(
         &self,
-        Parameters(a): Parameters<IdArgs>,
+        Parameters(a): Parameters<ClaimArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_claim(&require_auth(&ctx)?, &a.id))
+        respond(self.do_claim(&require_auth(&ctx)?, &a.id, a.ttl_seconds))
+    }
+
+    #[tool(
+        description = "Renew the lease you hold on a ticket, so long-running work does not \
+        lose its claim. Call it before `expires_at` (every lease response carries one); each \
+        beat sets a fresh lifetime from now. An already-expired lease cannot be revived — \
+        that is the point of leases, so you get a teaching 409 and must re-claim. Renewing \
+        emits no event: lease lifecycle stays observable through claimed/released/lease_expired."
+    )]
+    async fn takomo_heartbeat(
+        &self,
+        Parameters(a): Parameters<HeartbeatArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_heartbeat(&require_auth(&ctx)?, &a.id, a.fence, a.ttl_seconds))
     }
 
     #[tool(
@@ -1251,14 +1293,46 @@ impl TakomoMcp {
         Ok(json!({ "ok": true, "answer_link": out }))
     }
 
-    fn do_claim(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
+    fn do_claim(&self, auth: &AuthCtx, id: &str, ttl: Option<i64>) -> ApiResult<Value> {
         auth.require_scope("write")?;
         let ticket = load_visible(&self.state, auth, id)?;
-        let (_ticket, lease) = self.state.store.claim_ticket(id, &auth.actor, None)?;
+        let (_ticket, lease) = self.state.store.claim_ticket(id, &auth.actor, ttl)?;
         self.state.wake();
         let mut out = json!({ "ok": true, "lease": lease.to_json() });
         self.attach_conventions(&mut out, &ticket.project);
         Ok(out)
+    }
+
+    /// Renew a lease this caller holds. The fence is resolved the same way
+    /// `do_release` resolves it — holding the active claim *is* holding the
+    /// ticket's current `fence_seq` — so an MCP agent never has to track the
+    /// token by hand to keep its own claim alive.
+    fn do_heartbeat(
+        &self,
+        auth: &AuthCtx,
+        id: &str,
+        fence_override: Option<i64>,
+        ttl: Option<i64>,
+    ) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ticket = load_visible(&self.state, auth, id)?;
+        // Distinguish "never had it" from "had it, lost it": the store's own
+        // fence.stale covers the second, but it only sees a fence, so without
+        // this the first would arrive as a confusing mismatch on a lease that
+        // was never this caller's.
+        let fence = resolve_fence(&ticket, &auth.actor, fence_override).ok_or_else(|| {
+            ApiError::conflict(
+                "heartbeat.no_lease",
+                format!(
+                    "You do not hold an active lease on '{id}', so there is nothing to renew. \
+                     Claim it first with takomo_claim (or takomo_start), then heartbeat before \
+                     the `expires_at` that comes back. Pass an explicit fence to override."
+                ),
+            )
+        })?;
+        let lease = self.state.store.heartbeat(id, fence, &auth.actor, ttl)?;
+        self.state.wake();
+        Ok(json!({ "ok": true, "lease": lease.to_json() }))
     }
 
     async fn do_next(&self, auth: &AuthCtx, a: NextArgs) -> ApiResult<Value> {
@@ -1276,7 +1350,9 @@ impl TakomoMcp {
         let deadline = now_ms() + wait * 1000;
         loop {
             if let Some((ticket, lease)) =
-                self.state.store.ready_claim(&filter, &auth.actor, None)?
+                self.state
+                    .store
+                    .ready_claim(&filter, &auth.actor, a.ttl_seconds)?
             {
                 self.state.wake();
                 let project = ticket.project.clone();
@@ -1304,8 +1380,13 @@ impl TakomoMcp {
 
         let mut fence = resolve_fence(&ticket, &auth.actor, a.fence);
         // Claim if we do not already hold the lease and the state is claimable.
+        // `ttl_seconds` only applies on that path — a lease we already hold is
+        // extended by heartbeating it, not by starting again.
         if fence.is_none() && is_claimable(&wf, &ticket.state) {
-            let (_t, lease) = self.state.store.claim_ticket(&a.id, &auth.actor, None)?;
+            let (_t, lease) = self
+                .state
+                .store
+                .claim_ticket(&a.id, &auth.actor, a.ttl_seconds)?;
             fence = Some(lease.fence);
         }
 
@@ -1646,7 +1727,14 @@ impl ServerHandler for TakomoMcp {
                 "takomo: the central tracker for AI agent fleets. Typical work loop: \
                  `takomo_next` to claim the next ready ticket, `takomo_start` to move it \
                  in-progress, `takomo_comment`/`takomo_link` to record progress, then \
-                 `takomo_done` (or `takomo_block`/`takomo_cancel`). Before finishing a ticket, \
+                 `takomo_done` (or `takomo_block`/`takomo_cancel`). A claim is a LEASE and it \
+                 expires — 900s by default, and every claim/start/heartbeat response tells you \
+                 its `expires_at`. Work that will outlast it must either ask for a longer one \
+                 (`ttl_seconds`, max 3600) or renew with `takomo_heartbeat` before it lapses; \
+                 nothing beats for you. Let it lapse and the sweeper clears it, after which \
+                 fencing correctly refuses your writes and the only way forward is back through \
+                 a claimable state to re-claim — losing the work's place in the queue. Before \
+                 finishing a ticket, \
                  attach the commit that closes it: `takomo_link { key: \"commit\", value: \
                  \"<full sha or commit URL>\" }`. Without it, `done` is a claim nobody can \
                  check later; with it, any reader can verify the work — and derive which \

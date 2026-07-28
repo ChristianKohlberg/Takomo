@@ -1301,13 +1301,23 @@ paths:
         `takomo_next`, `takomo_start`, `takomo_transition`,
         `takomo_done`, `takomo_block`, `takomo_cancel`,
         `takomo_comment`, `takomo_link`, `takomo_dep`, `takomo_deps`,
-        `takomo_release`, `takomo_archive`, `takomo_projects`,
-        `takomo_workflow`, `takomo_roadmap`, `takomo_ask`,
+        `takomo_heartbeat`, `takomo_release`, `takomo_archive`,
+        `takomo_projects`, `takomo_workflow`, `takomo_roadmap`, `takomo_ask`,
         `takomo_answer`, `takomo_questions`, `takomo_withdraw`,
         `takomo_answer_link`, `takomo_whoami`. Claimed
         tickets track a fencing token that later transitions echo automatically;
         convenience verbs (start/done/block/cancel) resolve target states from
         the project workflow by category.
+
+        Leases: `takomo_claim`, `takomo_next` and `takomo_start` take
+        `ttl_seconds` (1-3600, default 900) and `takomo_heartbeat` renews a lease
+        the caller holds — the MCP equivalents of the `ttl_seconds` body field on
+        `POST /v1/tickets/{id}/claim`, `POST /v1/ready/claim`, and
+        `POST /v1/tickets/{id}/heartbeat`. Both transports resolve the fence the
+        same way (holding the active claim means the ticket's current
+        `fence_seq`), so an MCP caller does not have to track the token to renew
+        its own lease; an explicit `fence` still overrides. A lapsed lease cannot
+        be revived on either transport.
       requestBody:
         required: true
         description: A single JSON-RPC 2.0 request or notification (an MCP message).
