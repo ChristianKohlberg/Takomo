@@ -107,8 +107,11 @@ So before trusting a result, check out the exact commit somewhere clean:
 
 ```sh
 git worktree add --detach /tmp/verify <sha>
-cd /tmp/verify && cargo test --release && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-git worktree remove /tmp/verify
+# Private target dir, deliberately — a shared one makes this result untrustworthy
+# whenever another session is building. See "Share one target/" below.
+cd /tmp/verify && export CARGO_TARGET_DIR=/tmp/verify-target
+cargo test --release && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+git worktree remove /tmp/verify && rm -rf /tmp/verify-target
 ```
 
 A worktree is also the way to merge or rebase at all when the tree is dirty: `git merge` refuses if
@@ -150,6 +153,33 @@ keys them on a metadata hash that includes the workspace, so both sets coexist a
 first worktree after the second stays at 0 s. And concurrent builds do **not** meaningfully
 serialize: two builds of ~103 s each finished together in 95 s, the only contention being a brief
 `Blocking waiting for file lock on package cache`.
+
+**But the numbers above are all `cargo build`, and `cargo test` does not inherit them.** The
+integration-test binaries are *not* keyed on the workspace the way the lib units are — two worktrees
+off different commits, with different sources, produce the **same** path:
+
+```sh
+cd /tmp/wt-a && cargo test --release --test api --no-run   # deps/api-9832f7f87114d361
+cd /tmp/wt-b && cargo test --release --test api --no-run   # deps/api-9832f7f87114d361  ← same file
+```
+
+Run one at a time and this is harmless: cargo notices the source changed and rebuilds. Run them **at
+the same time** and whichever finishes last owns the file, so the other session executes a binary
+built from *someone else's* `tests/`. It does not error — it reports a plausible-looking result. What
+that looks like in practice: an integration-test count that changes between runs with no edit
+(111/112/115), or a failure naming a test that does not exist on your branch.
+
+So `CARGO_TARGET_DIR` is for **build** throughput. Any `cargo test` result you intend to trust —
+especially the clean-worktree verification above — must not share a target dir with a concurrently
+building session. Give that one run a private dir:
+
+```sh
+cd /tmp/verify && CARGO_TARGET_DIR=/tmp/verify-target cargo test --release
+```
+
+It costs a full cold build, which is the price of an answer that is about your branch. CI is the
+other way to settle it: it builds the branch alone in a clean environment, so a green CI run is
+trustworthy where a shared-dir local run is not.
 
 Do not commit this as `.cargo/config.toml` — the path is machine-specific and would break every
 other checkout. `RUSTC_WRAPPER=sccache` composes with it, but it caches codegen rather than the LTO
