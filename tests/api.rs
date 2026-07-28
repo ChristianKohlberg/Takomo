@@ -2170,6 +2170,477 @@ async fn sparse_field_projection_covers_every_ticket_field() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The error-code vocabulary (takomo-b6cg / takomo-a0wi).
+//
+// CLAUDE.md: "Errors are part of the contract — a stable machine `code`". They
+// were not. 133 distinct codes were minted at 274 sites as bare `&str` literals
+// and 104 of them appeared nowhere in spec/openapi.yaml, so no client could be
+// written against the documented set and a rename was grep-and-pray.
+//
+// The proof it was decaying rather than merely stale: `heartbeat.no_lease`
+// landed in src/mcp.rs in d350c26 and reached spec/openapi.yaml zero times,
+// green through both `route-test-pairing` and `openapi-current` — because those
+// check *file pairing* (did a tests/ file and the spec change alongside the
+// surface), never whether the codes themselves are covered.
+//
+// So: `x-error-codes` at the root of spec/openapi.yaml is the vocabulary, and
+// the two tests below are the wall.
+//
+// `every_emitted_error_code_is_documented_in_the_spec` compares the codes the
+// scan finds under src/ against that list, in both directions — a code emitted
+// and not listed is red, and so is a listed code nothing emits any more, which
+// is what keeps the list from filling with fiction after a rename.
+//
+// `the_error_code_scan_can_see_every_construction_site` guards the scan itself,
+// which is the part that matters. A gate that silently misses codes is worse
+// than no gate, because it licenses the belief that coverage is complete. It
+// fails on a new `ApiError` constructor the scan does not know how to read, on a
+// call site whose code argument is not a literal and is not accounted for below,
+// and on an error body built anywhere but src/error.rs.
+//
+// What the scan reads and what it cannot ---------------------------------
+//
+// It is a static scan of the `ApiError::*` call sites, not a registry of
+// constants that constructors must go through. A registry is sturdier — the
+// compiler would enforce it — but it means rewriting 274 literals across
+// src/api/, src/store/ and src/mcp.rs, and the value here is the gate, not the
+// refactor. The trade-off is worth stating plainly, because it decides what a
+// green run does and does not mean. Filed as takomo-ooxm.
+//
+// Green means: every code assembled from a string literal at an `ApiError`
+// constructor is documented. That is all 133 of today's codes.
+//
+// Green does NOT mean:
+//
+//   - a code assembled at runtime is covered. `ApiError::not_found` builds
+//     `notfound.{kind}` by `format!`, so the family is enumerated from the
+//     *kind* literal at each call site instead — pass a non-literal kind and the
+//     scan cannot see the code. That is not silent: the site lands in
+//     `CODES_THE_SCAN_CANNOT_READ` or the build fails.
+//   - errors from outside this crate are covered. axum's own 404/405 for an
+//     unrouted path and rmcp's JSON-RPC frame errors carry no takomo `code` and
+//     are not in the vocabulary.
+//   - the *status* a code rides on is checked. That lives per route in the
+//     spec's `responses`, and only the code names are compared here.
+//
+// It walks src/ on disk rather than `include_str!`-ing a fixed file list, so a
+// new module is scanned the day it is added instead of being a silent hole.
+// ---------------------------------------------------------------------------
+
+/// Where the `code` sits in an `ApiError` constructor's argument list.
+#[derive(Clone, Copy)]
+enum CodeArg {
+    /// Second argument: `ApiError::new(status, code, message)`.
+    AfterStatus,
+    /// First argument: `ApiError::validation(code, message)`.
+    First,
+    /// First argument is the *kind*, which the constructor formats into
+    /// `notfound.<kind>`.
+    FirstIsNotFoundKind,
+    /// No code argument — the constructor hard-codes this one.
+    Fixed(&'static str),
+    /// Delegates to another constructor, so it mints no code of its own.
+    Delegates,
+}
+
+/// Every associated function on `ApiError` that a caller can reach. The scan
+/// fails on any name not in here, so adding a constructor cannot quietly hide a
+/// family of codes: the build asks you to teach the scan where its code is.
+const ERROR_CTORS: [(&str, CodeArg); 7] = [
+    ("new", CodeArg::AfterStatus),
+    ("validation", CodeArg::First),
+    ("conflict", CodeArg::First),
+    ("bad_request", CodeArg::First),
+    ("not_found", CodeArg::FirstIsNotFoundKind),
+    ("internal", CodeArg::Fixed("internal")),
+    // The From<rusqlite::Error> impl, which calls ApiError::internal — already
+    // counted at that call site.
+    ("from", CodeArg::Delegates),
+];
+
+/// Call sites whose code argument is not a string literal, so the scan cannot
+/// read a code off them, with why that is fine. Keyed by file and by the
+/// argument's source text rather than a line number, so moving code around does
+/// not churn the table. A stale entry fails: the reason has to still be true.
+const CODES_THE_SCAN_CANNOT_READ: [(&str, &str, &str); 2] = [
+    (
+        "src/error.rs",
+        "&format!(\"notfound.{kind}\")",
+        "ApiError::not_found's own body. The notfound.* family is enumerated from \
+         the `kind` literal at each of its call sites instead, which is why \
+         not_found is itself scanned as a code constructor.",
+    ),
+    (
+        "src/error.rs",
+        "code",
+        "ApiError::validation / conflict / bad_request forward their caller's code \
+         to ApiError::new unchanged, so their call sites are where the scan reads it.",
+    ),
+];
+
+/// Codes deliberately kept out of `x-error-codes`, with the reason. Empty, and
+/// that is the finding rather than an oversight: every code the scan finds today
+/// reaches a client on the wire, so every one of them is contract. The table is
+/// here so the first deliberate exemption has an obvious home and a reason
+/// attached — and a stale entry fails too, so it cannot outlive its code.
+const CODES_OFF_THE_CONTRACT: [(&str, &str); 0] = [];
+
+/// One `ApiError` construction the scan resolved.
+struct CodeSite {
+    code: String,
+    /// `src/…:<line>`, for the failure message.
+    at: String,
+}
+
+/// A construction whose code argument the scan could not resolve to a literal.
+struct OpaqueSite {
+    file: String,
+    /// The argument's source text, whitespace-collapsed.
+    arg: String,
+    at: String,
+}
+
+struct ErrorCodeScan {
+    sites: Vec<CodeSite>,
+    opaque: Vec<OpaqueSite>,
+    /// Constructor names found that `ERROR_CTORS` does not describe.
+    unknown_ctors: Vec<String>,
+    files: usize,
+}
+
+impl ErrorCodeScan {
+    /// Codes to their first construction site, for a failure message that points
+    /// somewhere.
+    fn by_code(&self) -> std::collections::BTreeMap<&str, &str> {
+        let mut out = std::collections::BTreeMap::new();
+        for site in &self.sites {
+            out.entry(site.code.as_str()).or_insert(site.at.as_str());
+        }
+        out
+    }
+}
+
+/// Every `.rs` file under `src/`, walked rather than listed so a new module is
+/// scanned the day it lands.
+fn rust_sources() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![root.clone()];
+    let mut out = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let rel = path
+                    .strip_prefix(root.parent().expect("src has a parent"))
+                    .expect("under the manifest dir")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let text = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+                out.push((rel, text));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The source text of the argument list's first argument, and the rest after its
+/// comma. Tracks bracket depth and skips over string literals, so a comma inside
+/// a `format!` argument or a message does not end the argument early.
+fn split_first_arg(args: &str) -> Option<(&str, &str)> {
+    let bytes = args.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                if depth == 0 {
+                    // End of the argument list: a single-argument call.
+                    return Some((&args[..i], ""));
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => return Some((&args[..i], &args[i + 1..])),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The contents of a leading `"…"` literal, when the expression is exactly that
+/// and nothing else — no `&format!`, no concatenation, no constant. A code is
+/// only counted when it can be read off the source with certainty.
+fn plain_string_literal(expr: &str) -> Option<&str> {
+    let expr = expr.trim();
+    let inner = expr.strip_prefix('"')?.strip_suffix('"')?;
+    // A second unescaped quote would mean this is not one literal.
+    if inner.contains('"') || inner.contains('\\') {
+        return None;
+    }
+    // Interpolation or anything outside the code alphabet: not a fixed code.
+    inner
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        .then_some(inner)
+}
+
+/// Scan `src/` for `ApiError` constructions and the codes they mint.
+fn scan_error_codes() -> ErrorCodeScan {
+    let mut scan = ErrorCodeScan {
+        sites: Vec::new(),
+        opaque: Vec::new(),
+        unknown_ctors: Vec::new(),
+        files: 0,
+    };
+    for (file, text) in rust_sources() {
+        scan.files += 1;
+        let mut from = 0usize;
+        while let Some(hit) = text[from..].find("ApiError::") {
+            let start = from + hit;
+            let after = start + "ApiError::".len();
+            let name_len = text[after..]
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(0);
+            let name = &text[after..after + name_len];
+            from = after + name_len;
+            // Only a call constructs anything; `-> ApiError` and the like carry
+            // no parenthesis and mint nothing.
+            if !text[from..].starts_with('(') {
+                continue;
+            }
+            let line = text[..start].matches('\n').count() + 1;
+            let at = format!("{file}:{line}");
+            let Some((_, arg)) = ERROR_CTORS.iter().find(|(n, _)| *n == name) else {
+                scan.unknown_ctors.push(format!("ApiError::{name} at {at}"));
+                continue;
+            };
+            let args = &text[from + 1..];
+            let code_expr = match arg {
+                CodeArg::Fixed(code) => {
+                    scan.sites.push(CodeSite {
+                        code: (*code).to_string(),
+                        at,
+                    });
+                    continue;
+                }
+                CodeArg::Delegates => continue,
+                CodeArg::First | CodeArg::FirstIsNotFoundKind => {
+                    split_first_arg(args).map(|(first, _)| first)
+                }
+                CodeArg::AfterStatus => split_first_arg(args)
+                    .and_then(|(_, rest)| split_first_arg(rest).map(|(second, _)| second)),
+            };
+            let Some(code_expr) = code_expr else {
+                panic!(
+                    "the error-code scan could not find the code argument of \
+                     ApiError::{name} at {at} — its argument list does not parse. \
+                     Fix split_first_arg in tests/api.rs rather than leaving the \
+                     site unread."
+                );
+            };
+            match plain_string_literal(code_expr) {
+                Some(literal) => scan.sites.push(CodeSite {
+                    code: match arg {
+                        CodeArg::FirstIsNotFoundKind => format!("notfound.{literal}"),
+                        _ => literal.to_string(),
+                    },
+                    at,
+                }),
+                None => scan.opaque.push(OpaqueSite {
+                    file: file.clone(),
+                    arg: code_expr.split_whitespace().collect::<Vec<_>>().join(" "),
+                    at,
+                }),
+            }
+        }
+    }
+    scan
+}
+
+/// The keys of `x-error-codes` in the spec, i.e. the documented vocabulary.
+fn spec_error_codes() -> Vec<String> {
+    let spec: Value = serde_norway::from_str(include_str!("../spec/openapi.yaml"))
+        .expect("spec/openapi.yaml parses as YAML");
+    let documented = object_keys(&spec["x-error-codes"], "spec/openapi.yaml x-error-codes");
+    for code in &documented {
+        let description = spec["x-error-codes"][code].as_str().unwrap_or_default();
+        assert!(
+            description.len() > 20,
+            "`x-error-codes.{code}` in spec/openapi.yaml has no useful description \
+             ({description:?}). A code listed with nothing said about it documents \
+             nothing — say what is wrong and what the caller should do."
+        );
+    }
+    documented
+}
+
+/// The set of codes src/ emits and the set spec/openapi.yaml documents have to
+/// be the same set. Both directions matter: an undocumented code is a contract
+/// nobody can code against, and a documented code nothing emits is fiction that
+/// survived a rename.
+#[test]
+fn every_emitted_error_code_is_documented_in_the_spec() {
+    let scan = scan_error_codes();
+    let emitted = scan.by_code();
+    let documented: std::collections::BTreeSet<String> = spec_error_codes().into_iter().collect();
+    assert!(
+        documented.len() > 100,
+        "spec/openapi.yaml x-error-codes lists only {} codes — this guard is \
+         comparing almost nothing. Has the section moved?",
+        documented.len()
+    );
+    assert!(
+        emitted.len() > 100 && scan.sites.len() > 200,
+        "the scan found {} codes at {} sites across {} files under src/ — far too \
+         few, so it is checking almost nothing. Something about how errors are \
+         constructed changed and rust_sources/scan_error_codes did not keep up.",
+        emitted.len(),
+        scan.sites.len(),
+        scan.files
+    );
+
+    let exempt: std::collections::BTreeMap<&str, &str> =
+        CODES_OFF_THE_CONTRACT.iter().copied().collect();
+    for (code, reason) in &exempt {
+        assert!(
+            emitted.contains_key(code),
+            "CODES_OFF_THE_CONTRACT in tests/api.rs exempts `{code}` from the spec \
+             ({reason}), but nothing under src/ emits it any more. Drop the entry — \
+             a stale exemption is a hole held open for no reason."
+        );
+        assert!(
+            !documented.contains(*code),
+            "`{code}` is both exempt in CODES_OFF_THE_CONTRACT and documented in \
+             x-error-codes. Pick one: if it belongs in the contract, drop the \
+             exemption."
+        );
+    }
+
+    let missing: Vec<String> = emitted
+        .iter()
+        .filter(|(code, _)| !documented.contains(**code) && !exempt.contains_key(**code))
+        .map(|(code, at)| format!("{code} (first emitted at {at})"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these error codes are emitted under src/ but absent from `x-error-codes` \
+         in spec/openapi.yaml:\n  {}\n\nErrors are part of the contract: add each \
+         one to the vocabulary with what it means and what the caller should do. \
+         If a code deliberately stays undocumented, record it in \
+         CODES_OFF_THE_CONTRACT in tests/api.rs with the reason.",
+        missing.join("\n  ")
+    );
+
+    let stale: Vec<&str> = documented
+        .iter()
+        .map(String::as_str)
+        .filter(|code| !emitted.contains_key(code))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "`x-error-codes` in spec/openapi.yaml documents these codes, but nothing \
+         under src/ emits them:\n  {}\n\nEither the emitter was removed or renamed \
+         and the spec was not — clients are branching on a code they will never \
+         see. Delete the entry, or restore the code.",
+        stale.join("\n  ")
+    );
+}
+
+/// The gate above is only worth its green if the scan can see every place a code
+/// is minted. This is that check: it fails on a constructor the scan does not
+/// know, on a code argument it cannot read that is not accounted for, and on an
+/// error body assembled outside src/error.rs.
+#[test]
+fn the_error_code_scan_can_see_every_construction_site() {
+    let scan = scan_error_codes();
+    assert!(
+        scan.files > 20,
+        "the scan walked only {} files under src/ — the walk is broken",
+        scan.files
+    );
+    assert!(
+        scan.unknown_ctors.is_empty(),
+        "the error-code scan met `ApiError` constructors it does not know how to \
+         read:\n  {}\n\nEvery one mints a code, so an unknown constructor is a \
+         family of codes the spec gate cannot see. Add it to ERROR_CTORS in \
+         tests/api.rs saying where its code argument sits.",
+        scan.unknown_ctors.join("\n  ")
+    );
+
+    // Sites whose code is not a literal, keyed the way the table is.
+    let mut found: std::collections::BTreeMap<(&str, &str), Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for site in &scan.opaque {
+        found
+            .entry((site.file.as_str(), site.arg.as_str()))
+            .or_default()
+            .push(site.at.as_str());
+    }
+    let accounted: std::collections::BTreeSet<(&str, &str)> = CODES_THE_SCAN_CANNOT_READ
+        .iter()
+        .map(|(file, arg, _)| (*file, *arg))
+        .collect();
+
+    let unaccounted: Vec<String> = found
+        .iter()
+        .filter(|(key, _)| !accounted.contains(*key))
+        .map(|((file, arg), ats)| format!("{file}: code argument `{arg}` at {}", ats.join(", ")))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "these `ApiError` constructions build their code from something the scan \
+         cannot read, so the codes they can produce are invisible to \
+         every_emitted_error_code_is_documented_in_the_spec:\n  {}\n\nPass a string \
+         literal instead — or, if the code genuinely has to be assembled at \
+         runtime, add the site to CODES_THE_SCAN_CANNOT_READ in tests/api.rs with \
+         the reason and make sure every code it can produce is in x-error-codes.",
+        unaccounted.join("\n  ")
+    );
+
+    let stale: Vec<String> = CODES_THE_SCAN_CANNOT_READ
+        .iter()
+        .filter(|(file, arg, _)| !found.contains_key(&(*file, *arg)))
+        .map(|(file, arg, reason)| format!("{file}: `{arg}` — {reason}"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "CODES_THE_SCAN_CANNOT_READ in tests/api.rs excuses sites that no longer \
+         exist:\n  {}\n\nDrop the entries. An exemption that outlives its call site \
+         is a hole the next dynamic code slips through unnoticed.",
+        stale.join("\n  ")
+    );
+
+    // The scan reads `ApiError` call sites, which only covers the contract
+    // because `ApiError` is the sole author of an error body. Nail that down.
+    let builders: Vec<String> = rust_sources()
+        .into_iter()
+        .filter(|(_, text)| text.contains("ErrorBody {"))
+        .map(|(file, _)| file)
+        .collect();
+    assert_eq!(
+        builders,
+        ["src/error.rs"],
+        "an `ErrorBody` is built outside src/error.rs. The error-code scan reads \
+         `ApiError` constructor call sites, so a body assembled directly carries a \
+         code no gate can see. Route it through an ApiError constructor."
+    );
+}
+
 #[tokio::test]
 async fn patch_rejects_state_and_unknown_fields() {
     let app = TestApp::spawn().await;

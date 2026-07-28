@@ -2773,7 +2773,14 @@ components:
       type: object
       required: [code, message]
       properties:
-        code: { type: string, description: "stable machine code, e.g. conflict.version, claim.held, fence.stale (superseded lease), fence.invalid (fence never issued — a client bug)" }
+        code:
+          type: string
+          description: |
+            stable machine code, e.g. conflict.version, claim.held, fence.stale
+            (superseded lease), fence.invalid (fence never issued — a client bug).
+            `x-error-codes` at the root of this document lists every code the
+            server can emit, with what each means; it is kept complete by a test,
+            not by hand. Branch on the code, never on the message.
         message: { type: string, description: written for LLM readers — states what is wrong AND what to do }
         remedy: { type: string, description: 'the exact next call to make, when one exists' }
         current_version: { type: integer }
@@ -2806,3 +2813,189 @@ components:
             reentry_states: { type: array, items: { type: string } }
             guard: { type: string }
             offending_tickets: { type: array, items: { type: string } }
+
+# ---------------------------------------------------------------------------
+# The error-code vocabulary (takomo-b6cg).
+#
+# Every `code` an error body can carry, with what it means. `ApiError`
+# (src/error.rs) is the only thing in the tree that builds an error body, so this
+# is the whole set — for REST, for MCP (which serialises the same body into its
+# tool result) and for the `resume.code` an answer response carries when the
+# ticket could not be resumed.
+#
+# It is gated, not aspirational. tests/api.rs
+# `every_emitted_error_code_is_documented_in_the_spec` scans the `ApiError`
+# constructor call sites under src/ and fails when the two sides disagree in
+# either direction: a code emitted but not listed here, and a code listed here
+# that nothing emits any more. `the_error_code_scan_can_see_every_construction_
+# site` is the other half — it fails if a code is minted somewhere that scan
+# cannot read, so the coverage above cannot quietly become partial.
+#
+# Codes are stable. Renaming one is a breaking change to the contract, not a
+# refactor: clients branch on them. Read the families left to right —
+# `validation.` a rejected input, `notfound.` a missing entity, `claim.`/`fence.`
+# lease trouble, `transition.` an illegal or ungated state move, `question.`
+# ask-a-human, `auth.`/`share.`/`answer.` the three token kinds.
+#
+# The HTTP status a code rides on is documented per route, under that route's
+# `responses`. It is deliberately not restated here: a second copy would be one
+# nothing checks.
+# ---------------------------------------------------------------------------
+x-error-codes:
+  # -- bearer tokens (tk_): authentication, scopes, project allowlist, budget --
+  auth.missing: "no Authorization header. Every /v1 and /mcp call needs `Bearer tk_...`; only /healthz is open."
+  auth.invalid: "the bearer token is not recognised, was revoked, or has expired. Mint a fresh one with `takomo token create`."
+  auth.scope: "the token authenticates but does not carry the scope this operation requires. The message names the missing scope and the ones the token holds."
+  auth.project: "the token is restricted to a project allowlist that does not cover the project addressed."
+  rate.limited: "the token's sliding-window write budget is spent. Reads are not charged and keep working; `Retry-After` says how long to wait."
+
+  # -- share tokens (tks_): read-only, /v1/shares/self only -------------------
+  share.missing: "no share token. A shared link carries it in the URL fragment (#s=...), which browsers never send — the page reads it and sends it as the bearer."
+  share.invalid: "the share token is not recognised. The link is mistyped, or the share was revoked."
+  share.expired: "the share existed but its window has closed. Ask the owner for a fresh link."
+  share.rate_limited: "one link has made more requests in the last minute than viewing a board takes, so it is being throttled. The budget is per link and shared by everyone holding it."
+  share.kind: "`kind` on share creation must be `project` (a whole project) or `epic` (a ticket plus its descendant subtree)."
+  share.ttl: "`ttl_seconds` on share creation must be a positive integer no larger than the 30-day maximum."
+  share.kind_unrecognized: "the share's stored scope kind is neither `project` nor `subtree`, so it cannot be served. The share is refused rather than widened to a scope it may not cover."
+  share.not_owner: "only the share's creator, or an admin, may revoke it."
+
+  # -- answer grants (tka_): one question, one answer, then spent -------------
+  answer.missing: "no answer-link token. An answer link carries it in the URL fragment (#a=...)."
+  answer.invalid: "the answer-link token is not recognised. The link is mistyped, or the grant was revoked."
+  answer.expired: "the answer link existed but its window has closed. Ask for a fresh one."
+  answer_link.spent: "the grant is single-use and has already been spent. Nothing was recorded for this attempt; the answer already on the question stands."
+  answer_link.ttl: "`ttl_seconds` on answer-link creation must be a positive integer no larger than the 30-day maximum — the link is a credential handed outside the org."
+  answer_link.not_owner: "only the link's creator, or an admin, may revoke it."
+
+  # -- claims and leases ------------------------------------------------------
+  claim.held: "the ticket is already claimed by someone else, until the time the message states. Only the lease holder may mutate it: comment instead, pick different work, or wait for the lease to expire."
+  claim.none: "the ticket holds no claim and no lapsed one, so there is nothing to release or force-release."
+  claim.state: "the ticket's state is not claimable in this project's workflow. The message lists the claimable states and the route back to one."
+  claim.blocked: "the ticket has open blockers, so it never enters the ready queue. Finish or cancel the blockers first."
+  fence.required: "the ticket is claimed by you and this call mutates it, so it must echo the lease's fencing token. Send the `fence` from the claim or heartbeat response."
+  fence.stale: "the fence presented was superseded by a later claim, or the lease is simply gone. Stop writing — work in flight may duplicate another worker's. Re-claim if the work is still yours."
+  fence.invalid: "the fence presented is higher than any this ticket has reached, so it was never issued. A client bug: the value was fabricated, hand-incremented, or belongs to another ticket."
+  heartbeat.no_lease: "no active lease of yours on this ticket, so there is nothing to renew. Claim it first, then heartbeat before the `expires_at` you were given."
+  release.no_lease: "no active lease of yours on this ticket to release. Pass an explicit fence to release one anyway."
+
+  # -- optimistic concurrency, on whole-body replacement only -----------------
+  conflict.if_match_required: "replacing `body` needs `If-Match: \"<version>\"`, the value of the ticket's ETag. Field sets and `metadata_merge` never need it."
+  conflict.version: "the `If-Match` version is not the current one, so the body changed since you read it. Re-read the ticket, re-apply your edit to the fresh body, retry."
+
+  # -- workflow transitions ---------------------------------------------------
+  transition.illegal: "no transition from the ticket's state to the one requested exists in this project's workflow. `allowed_transitions` on the error lists the legal moves."
+  transition.unknown_state: "the target state requested does not exist in this project's workflow at all."
+  transition.claim_required: "the transition carries `requires: [claim]` and you hold no lease. `details.claimable_states` says where a lease may be taken; `details.reentry_states` is the route back when the current state is not one of them."
+  transition.scope: "the transition carries a `requires: [scope:<s>]` authorisation gate — human approval, typically — and the token lacks that scope. Not a workflow mistake."
+  transition.guard: "a `requires: [guard:<id>]` on the transition is unsatisfied. `details.guard` names it and `details.offending_tickets` the children or blockers in the way."
+  transition.requirements: "the transition's requirements are unmet and no more specific code applies."
+  transition.no_target: "an MCP convenience tool (`takomo_start`, `takomo_done`, …) found no legal transition into the state category it aims for. Pass an explicit `to`."
+  patch.state_not_patchable: "`state` is workflow-controlled and cannot be set by PATCH. Use POST /tickets/{id}/transition, which validates the move and reports the legal ones."
+
+  # -- ask-a-human ------------------------------------------------------------
+  question.not_open: "the question is not open, so there is nothing to answer — or nothing to answer again."
+  question.not_answered: "only an answered question can be reopened."
+  question.not_awaiting_reply: "the question is not waiting on an agent reply; it is the human's turn. Reply only after a human asks for more."
+  question.no_park: "a blocking question has to park its ticket, and the ticket's state has no self-service transition into a blocked one. Move it to a blocked state first, ask from an in-progress state, or use `mode=advisory`."
+  question.no_resume: "no transition out of the parked state can resume the ticket automatically: every exit is gated by a claim, a guard, or a scope this token lacks, or leads only to a terminal or blocked state. The answer is still recorded."
+  question.resume_claim: "the resume edge requires an active claim, which nobody holds while a question is open. Choose a `resume_to` that is not claim-gated, or claim the ticket and transition it normally."
+  question.resume_guard: "the resume edge is guarded. Satisfy the guard and transition explicitly; the recorded answer stays on the ticket."
+  question.answer_scope: "resuming into the chosen state needs a scope the answerer's token lacks. Have someone holding it answer, or pass a `resume_to` this token can reach."
+  question.approve_expertise: "an `approve` question names required `expertise`, so answering it — or minting an answer link for it — needs a matching `expert:<tag>` scope. A general `human` token is not sufficient; you can only delegate authority you hold."
+  question.reopen_archived: "the ticket is archived, so the answer is settled. Re-ask instead of reopening."
+  question.reopen_claimed: "a worker holds the ticket and is relying on the answer, so it cannot be reversed. Reopen only while the ticket is free."
+  question.reopen_moved: "the ticket has moved on since the answer resumed it, so the answer is already in use. Re-ask if you need a new decision."
+  question.reopen_no_park: "this project's workflow has no blocked state to re-park the ticket into. Move it by hand and re-ask."
+
+  # -- projects, workflows, tokens, tags --------------------------------------
+  project.id: "the project id is invalid. It becomes the ticket-id prefix, so it must match ^[a-z][a-z0-9-]{1,15}$."
+  project.exists: "a project with that id already exists."
+  project.active_claims: "the project has tickets under a live lease, and deleting it would yank work out from under a worker. Wait for the leases, or re-issue with `?force=true`."
+  project.claim_ttl: "a claim-TTL setting is not a positive number of seconds, or the default exceeds the maximum — which would clamp every claim, so no claim would get the default set. Send null to fall back to the built-in bounds."
+  project.answer_link_ttl: "`answer_link_ttl_seconds` must be a positive number of seconds no larger than the 30-day maximum, the same bound an explicit `ttl_seconds` carries."
+  project.style_guide_too_long: "the project style guide is over its character limit. It rides along on every work-loop response, so it holds the few conventions that change how an agent writes; anything longer belongs in a ticket or repo docs."
+  workflow.parse: "the workflow document does not match the expected shape. `name`, `initial`, `states` (id and category each) and `transitions` (from and to each) are required; see spec/workflow-format.md."
+  workflow.invalid: "the workflow parsed but is not a usable state machine — an unreachable state, a transition to a state that does not exist, no terminal state. The message lists every problem found."
+  token.actor: "`actor` must be non-empty and at most 200 characters. It is who the token acts as, and it lands in the event log."
+  token.scopes: "`scopes` is required and must be a non-empty array of strings, e.g. [\"read\", \"write\"]."
+  token.projects: "`projects` must be an array of project ids, or the string \"*\" for all of them — never an empty array."
+  token.rate_limit: "`rate_limit`, in writes per minute, must be a positive integer."
+  token.expires_seconds: "`expires_seconds` must be a positive integer number of seconds."
+  tag.exists: "that `kind:handle` is already registered in the project. PATCH the tag to change its label or meta."
+  tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
+
+  # -- missing entities. `notfound.<kind>` names the kind the handler looked ---
+  # -- for, so this family grows with the addressable kinds. -------------------
+  notfound.ticket: "no ticket with that id."
+  notfound.project: "no project with that id. GET /projects lists them."
+  notfound.question: "no question with that id."
+  notfound.token: "no token with that id."
+  notfound.tag: "no tag with that `kind:handle` in the project."
+  notfound.share: "no share with that id."
+  notfound.answer-link: "no answer-link grant with that id."
+
+  # -- rejected input. `validation.<field-or-concept>`: 400 when the request ---
+  # -- is malformed, 422 when it is well-formed but unacceptable. --------------
+  validation.json: "the request body is not valid JSON, or was sent without `Content-Type: application/json`."
+  validation.body_json: "the request body parsed, but is not a JSON object."
+  validation.unknown_field: "the body carries field names this endpoint does not accept. The message lists the unknown ones and the accepted set — a typo is refused, never silently dropped."
+  validation.field_required: "a required field is absent. The message names it."
+  validation.field_type: "a field is present with the wrong JSON type. The message names the field and the type expected."
+  validation.query: "a query parameter is missing, or is not the type expected."
+  validation.cursor: "the pagination cursor is not one this endpoint issued. Pass the exact `next_cursor` from the previous page."
+  validation.if_match: "the `If-Match` header is not a ticket version as returned in the ETag, e.g. `If-Match: \"7\"`."
+  validation.idempotency_key: "the `Idempotency-Key` header is over its 128-character limit."
+  validation.empty_patch: "the patch contains no changes. Send at least one settable field."
+  validation.no_changes: "the request asks for no change at all — an empty tag add and remove, or a tag patch with neither `label` nor `meta_merge`."
+  validation.title: "the title is empty, or over its length limit."
+  validation.body: "the body is over its byte limit."
+  validation.comment: "the comment body is empty, or over its byte limit."
+  validation.type: "the ticket type is not one of the known values."
+  validation.priority: "the priority is not one of the known values."
+  validation.label: "a label is empty, or over its length limit."
+  validation.state: "tickets are created in the workflow's initial state, and another was requested. Create the ticket, then transition it."
+  validation.project: "the project named does not exist."
+  validation.project_required: "this endpoint needs an explicit `project` query parameter."
+  validation.parent: "the parent ticket does not exist, or belongs to a different project — parent and child must share one."
+  validation.parent_cycle: "setting that parent would make the ticket tree cyclic."
+  validation.blocked_by: "a `blocked_by` entry names a ticket that does not exist."
+  validation.dep_cycle: "adding that dependency would create a cycle — the would-be blocker already depends on this ticket, directly or transitively."
+  validation.links: "`links` must be a JSON object of string values, with null to delete a key."
+  validation.metadata: "`metadata` must be a JSON object with namespaced keys, e.g. `myagent.run_id`."
+  validation.metadata_merge: "`metadata_merge` must be a JSON object (RFC 7386 merge-patch; null deletes a key)."
+  validation.metadata_size: "serialized `metadata` is over its cap. Trim keys by setting them to null via `metadata_merge`, or move bulk content into the body or a comment."
+  validation.include: "an `include=` value is not one this endpoint offers. The message lists the valid ones."
+  validation.include_archived: "`include_archived` must be true or false."
+  validation.archived: "the `archived` filter must be one of `only`, `all`, `active`."
+  validation.transitive: "`transitive` must be true or false."
+  validation.direction: "the dependency `direction` must be one of `blocked_by`, `blocks`, `both`."
+  validation.target: "a promotion needs a non-empty `target` — the stage the work reached, e.g. staging, production."
+  validation.promotion: "a promotion field is over its byte limit."
+  validation.ttl: "`ttl_seconds` on a claim is outside this project's bounds. An admin can change them with PUT /projects/{id}/claim-ttl."
+  validation.kind: "the question kind is not one of the four, or the operation asked for something that kind does not carry — only a `choose` question has options."
+  validation.mode: "the question mode must be `blocking`, which parks and resumes the ticket, or `advisory`, which is routed and recorded with no state change."
+  validation.urgency: "the urgency is not one of the known values."
+  validation.on_timeout: "`on_timeout` is not one of `recommended`, `escalate`, `cancel` — or is `cancel` on an advisory question, which gates nothing."
+  validation.options: "`options` must be an array of strings, or of {value, desc} objects each carrying a string `value`."
+  validation.option_notes: "option descriptions must pair 1:1 with the options, and each stay within its length limit."
+  validation.multi: "`multi` is only meaningful on a `choose` question."
+  validation.recommended: "the recommendation is not among the options."
+  validation.recommended_multi: "a `recommended_multi` entry is not among the options."
+  validation.recommended_note: "`recommended_note` must be a string, or null to clear it, within its length limit."
+  validation.confidence: "`confidence` must be an integer 1-4 — 1 tentative, 2 moderate, 3 strong, 4 very strong."
+  validation.expertise: "too many expertise tags, or one outside its length bounds."
+  validation.summary: "`summary` is over its length limit."
+  validation.answer: "the answer does not fit the question's kind: a boolean for confirm and approve, an option string (an array when `multi`) for choose, text for clarify."
+  validation.answer_required: "`answer` is required. A note goes inside it: {\"answer\": {\"value\": …, \"note\": \"…\"}}."
+  validation.resume_to: "the `resume_to` requested is not a legal next state from where the ticket is parked. The message lists the legal targets."
+  validation.message: "a follow-up message is empty, or over its byte limit."
+  validation.reason: "the reason is over its byte limit."
+  validation.tag_kind: "a tag kind must match ^[a-z][a-z0-9-]*$ within its length bound, e.g. person, component, team."
+  validation.tag_handle: "a tag handle must match ^[a-z0-9][a-z0-9._-]*$ within its length bound. The display name goes in `label`."
+  validation.tag_ref: "a tag reference must be `kind:handle`, e.g. `person:ada`. It names an entity in the project's tag registry."
+  validation.tag_label: "a tag label is over its length limit."
+  validation.tag_meta: "tag `meta`, or `meta_merge`, must be a JSON object."
+  validation.tag_meta_size: "serialized tag `meta` is over its cap."
+
+  # -- the catch-all ----------------------------------------------------------
+  internal: "an invariant failed server-side — a database error, a poisoned lock. The message is deliberately generic so SQL text and schema names never reach a client; the detail is in the server log. Nothing a caller can act on beyond retrying."
