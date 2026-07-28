@@ -209,11 +209,15 @@
   .uw-normal { color: var(--normal); font-weight: 600; }
   .uw-low { color: var(--low); font-weight: 600; }
 
-  /* ---- project settings modal (admin only) ----
+  /* ---- project settings modal ----
      A wide, scrollable sheet rather than a drawer: the style guide is a
      paragraph-sized field, and editing it beside the language setting reads as
      one "how this project writes" surface. Its scrim sits above the drawers so
-     opening it from anywhere is unambiguous. */
+     opening it from anywhere is unambiguous.
+
+     Writing the two settings is admin-only; READING them is not — GET
+     /v1/projects is `read` scope and already returns both — so the sheet opens
+     for any session token and goes read-only without `admin` (takomo-n0al). */
   .modal-scrim {
     position: fixed; inset: 0; background: var(--overlay); z-index: 70;
     display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -234,8 +238,16 @@
   .sheet > .sb { padding: 20px 26px; overflow-y: auto; flex: 1 1 auto; }
   .sheet > .sf { display: flex; align-items: center; gap: 12px; padding: 16px 26px; border-top: 1px solid var(--border-soft); background: var(--col-bg); }
   .sheet > .sf .grow { flex: 1 1 auto; }
-  .sheet > .sf button { height: 40px; padding: 0 18px; border-radius: 9px; font-weight: 660; }
+  /* `flex: 0 0 auto` so the footer message can never squeeze a button below its
+     own label. The footer is a row of [message][spacer][buttons], and until this
+     ticket every message it carried was two or three words; the read-only reason
+     is a whole sentence. */
+  .sheet > .sf button { height: 40px; padding: 0 18px; border-radius: 9px; font-weight: 660; flex: 0 0 auto; }
   .sheet > .sf button[disabled] { opacity: .5; cursor: not-allowed; }
+  /* A read-only sheet marks Save `aria-disabled`, not `disabled`, so it keeps
+     its place in the tab order and can still be pressed — it has to LOOK
+     unavailable without being inert. Same paint as [disabled]. */
+  .sheet > .sf button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
   .sheet > .sf .cancel { border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
   .sheet .fld { margin-bottom: 22px; }
   .sheet .fld:last-child { margin-bottom: 4px; }
@@ -247,6 +259,12 @@
   }
   .sheet .fld textarea { min-height: 190px; resize: vertical; line-height: 1.6; }
   .sheet .fld input[type=text]:focus, .sheet .fld textarea:focus { outline: 2px solid var(--sel-border); outline-offset: -1px; }
+  /* A read-only value is still meant to be read, selected and copied, so the
+     field keeps full text contrast and stays focusable — `readonly`, never
+     `disabled`. The dashed border is what says "not editable". */
+  .sheet .fld input[readonly], .sheet .fld textarea[readonly] {
+    border-style: dashed; background: transparent; cursor: default;
+  }
   .sheet .cnt { display: flex; align-items: baseline; gap: 8px; margin-top: 7px; font-size: 12px; color: var(--muted); }
   .sheet .cnt .n { font-family: var(--mono); }
   .sheet .cnt .n.warn { color: var(--high); }
@@ -254,9 +272,28 @@
   .sheet .msg { font-size: 13px; line-height: 1.5; }
   .sheet .msg.err { color: var(--crit); }
   .sheet .msg.ok { color: var(--ok); font-weight: 660; }
+  /* Same colour the inbox uses for "this token cannot answer": unavailable, not
+     broken. It is the accessible description of Save, so it must be legible. */
+  .sheet .msg.ro { color: var(--high); }
+  /* Pressing an aria-disabled Save has to acknowledge the press somehow. The
+     reason is already on screen an inch away, so re-stating it is enough —
+     blink it rather than adding a toast this SPA does not otherwise have. */
+  .sheet .msg.flash { animation: tkBlink .45s ease; }
+  @keyframes tkBlink { 0%, 100% { opacity: 1 } 30%, 70% { opacity: .2 } }
+  @media (prefers-reduced-motion: reduce) { .sheet .msg.flash { animation: none } }
   @media (max-width: 620px) {
     .modal-scrim { padding: 0; align-items: stretch; }
     .sheet { width: 100%; max-height: 100%; border-radius: 0; }
+    /* 390px minus 52px of footer padding leaves ~338px, which a sentence and two
+       buttons cannot share on one line. Wrap, and give the message the whole
+       first line so the buttons keep their full width on the second. */
+    .sheet > .sf { flex-wrap: wrap; }
+    .sheet > .sf .msg { flex: 1 1 100%; }
+    /* Finger targets, same 44px floor the header controls hold. Save is a real
+       target here even when it is aria-disabled — pressing it is how you get
+       the reason read back to you. */
+    .sheet > .sf button { height: 44px; min-width: 44px; }
+    .sheet > .sh .close { min-width: 44px; min-height: 44px; }
   }
 
   /* ---- detail panel ---- */
@@ -637,6 +674,8 @@
       setCancel:"Abbrechen",
       setLoading:"lädt…",
       setLoadErr:"Einstellungen konnten nicht geladen werden: ",
+      setReadOnly:"Nur lesbar — dieses Token hat keine 'admin'-Berechtigung. Ändern erfordert ein Admin-Token.",
+      setClose:"Schließen",
       taTicket:"Nach Ticket filtern (ID oder Titel)",
       taClear:"Filter löschen",
       taNoMatch:"Kein Treffer für „{q}“",
@@ -732,6 +771,8 @@
       setCancel:"Cancel",
       setLoading:"loading…",
       setLoadErr:"Could not load settings: ",
+      setReadOnly:"Read-only — this token has no 'admin' scope. Changing these settings needs an admin token.",
+      setClose:"Close",
       taTicket:"Filter by ticket (id or title)",
       taClear:"Clear filter",
       taNoMatch:"No match for “{q}”",
@@ -774,9 +815,13 @@
     tagRef: localStorage.getItem(LS_TAGREF) || "",   // "" = all of the kind; else "kind:handle"
     tagLabels: {},     // ref -> display label (from the registry, when available)
     expanded: {},      // collapse key -> true (a column/epic-group showing all cards)
-    // Project-settings modal (admin only). `orig` is what the store returned, so
-    // Save can send only what actually changed and Cancel needs no undo logic.
-    settings: null     // { open, loading, saving, err, saved, orig:{language,style}, language, style }
+    // Project-settings modal. `orig` is what the store returned, so Save can send
+    // only what actually changed and Cancel needs no undo logic.
+    settings: null,    // { loading, saving, err, saved, readOnly, orig:{language,style}, language, style }
+    // Whether the sheet opens read-only. Defaults to true: until /whoami has said
+    // otherwise, the safe claim is the one that never promises a write we cannot
+    // make.
+    settingsReadOnly: true
   };
   var STYLE_MAX = 2000; // must match store::MAX_STYLE_GUIDE_CHARS
 
@@ -1181,13 +1226,22 @@
     });
   }
 
-  // The settings sheet writes project config, so it is admin-only. Share sessions
-  // can't even reach /v1/projects (share tokens are confined to /v1/shares/self*),
-  // so the button stays hidden for them regardless of what /whoami reported.
+  // takomo-n0al: this button used to be hidden outright without `admin`, which
+  // is the one place in either SPA where a control disappeared on a scope rather
+  // than explaining itself — and a viewer who knew the sheet existed concluded
+  // it was broken. Only the two PUTs are admin-gated; GET /v1/projects is `read`
+  // scope and already returns question_language and style_guide, and both values
+  // are handed to every worker as style_hint/language_hint on the work loop. So
+  // showing the sheet discloses nothing new and costs no permission: any session
+  // token opens it, and without `admin` it opens read-only.
+  //
+  // Share sessions stay hidden, and that is not the same bug: a `tks_` token is
+  // confined to /v1/shares/self* and genuinely cannot load the sheet at all, so
+  // a button there would be an affordance we cannot honour.
   function syncSettingsBtn() {
-    var admin = !state.shareMode
-      && state.me && state.me.scopes && state.me.scopes.indexOf("admin") !== -1;
-    $("settings-btn").classList.toggle("hidden", !admin);
+    state.settingsReadOnly = !(state.me && state.me.scopes
+      && state.me.scopes.indexOf("admin") !== -1);
+    $("settings-btn").classList.toggle("hidden", !!state.shareMode);
   }
 
   function fullLoad() {
@@ -2481,14 +2535,18 @@
   activate($("lang-de"), function () { setLang("de"); });
   activate($("lang-en"), function () { setLang("en"); });
 
-  // ---- project settings sheet (admin) ----
-  // Edits the two per-project writing conventions the store hands to agents:
-  // `question_language` and `style_guide`. Each has its own endpoint, so Save
-  // sends only the field that actually changed — a no-op field is never PUT, and
-  // one failing endpoint can't silently discard the other's edit.
+  // ---- project settings sheet ----
+  // Shows, and for an `admin` token edits, the two per-project writing conventions
+  // the store hands to agents: `question_language` and `style_guide`. Each has its
+  // own endpoint, so Save sends only the field that actually changed — a no-op
+  // field is never PUT, and one failing endpoint can't silently discard the
+  // other's edit.
   function openSettings() {
     state.settings = {
       loading: true, saving: false, err: "", saved: false,
+      // Latched at open time, not read live: /whoami can never re-answer mid-sheet
+      // and turn a read-only sheet the viewer has been reading into an editable one.
+      readOnly: !!state.settingsReadOnly,
       orig: { language: "", style: "" }, language: "", style: ""
     };
     renderSettings();
@@ -2522,9 +2580,25 @@
     $("settings-btn").focus();
   }
 
+  // Acknowledge a press on the aria-disabled Save. The reason is already on
+  // screen next to the button, so re-stating it means drawing the eye back to
+  // it rather than raising a toast this SPA does not otherwise have.
+  function flashSettingsReason() {
+    var hint = $("set-hint");
+    if (!hint) return;
+    hint.classList.remove("flash");
+    void hint.offsetWidth; // restart the animation on a repeated press
+    hint.classList.add("flash");
+  }
+
   function saveSettings() {
     var s = state.settings;
     if (!s || s.saving) return;
+    // Save is aria-disabled, not `disabled`, so it can still be pressed. This is
+    // the same test syncFooter paints with, so the visual state and the actual
+    // refusal cannot drift apart: acknowledge the press by re-stating the reason,
+    // never attempt a PUT we already know the server will 403.
+    if (s.readOnly) { flashSettingsReason(); return; }
     var style = s.style.trim(), language = s.language.trim();
     if (style.length > STYLE_MAX) return; // Save is disabled; belt and braces
     var calls = [];
@@ -2598,7 +2672,8 @@
     titles.appendChild(sub);
     head.appendChild(titles);
     var x = el("button", "close", "×");
-    x.setAttribute("aria-label", L().setCancel);
+    // There is nothing to cancel in a sheet you cannot change: it closes.
+    x.setAttribute("aria-label", s.readOnly ? L().setClose : L().setCancel);
     x.addEventListener("click", closeSettings);
     head.appendChild(x);
     sheet.appendChild(head);
@@ -2617,7 +2692,16 @@
       f1.appendChild(el("div", "help", L().setLangHelp));
       var i1 = el("input"); i1.type = "text"; i1.id = "set-lang";
       i1.value = s.language; i1.placeholder = L().setLangPh;
-      i1.addEventListener("input", function () { s.language = i1.value; s.saved = false; syncFooter(); });
+      if (s.readOnly) {
+        // `readonly`, not `disabled`: the point of opening this sheet without
+        // `admin` is to READ the value — it stays focusable, selectable and
+        // copyable, and is announced as read-only rather than dropping out of
+        // the tab order the way a disabled field does.
+        i1.readOnly = true;
+        i1.setAttribute("aria-readonly", "true");
+      } else {
+        i1.addEventListener("input", function () { s.language = i1.value; s.saved = false; syncFooter(); });
+      }
       f1.appendChild(i1);
       body.appendChild(f1);
 
@@ -2629,51 +2713,82 @@
       var ta = el("textarea"); ta.id = "set-style";
       ta.value = s.style; ta.placeholder = L().setStylePh;
       ta.setAttribute("spellcheck", "true");
+      if (s.readOnly) { ta.readOnly = true; ta.setAttribute("aria-readonly", "true"); }
       f2.appendChild(ta);
-      var cnt = el("div", "cnt");
-      var n = el("span", "n");
-      cnt.appendChild(n);
-      cnt.appendChild(el("span", null, L().setChars));
-      f2.appendChild(cnt);
       body.appendChild(f2);
 
       // The counter is the only place the 2000-char cap is visible before Save,
-      // so it doubles as the reason Save goes disabled.
-      var updateCount = function () {
-        var len = ta.value.trim().length;
-        n.textContent = len + " / " + STYLE_MAX;
-        n.className = "n" + (len > STYLE_MAX ? " over" : len > STYLE_MAX * 0.9 ? " warn" : "");
-      };
-      ta.addEventListener("input", function () { s.style = ta.value; s.saved = false; updateCount(); syncFooter(); });
-      updateCount();
+      // so it doubles as the reason Save goes disabled. A read-only sheet has no
+      // Save and no way to reach the cap, so the counter would be a limit shown
+      // to someone who cannot exceed it — left out entirely.
+      if (!s.readOnly) {
+        var cnt = el("div", "cnt");
+        var n = el("span", "n");
+        cnt.appendChild(n);
+        cnt.appendChild(el("span", null, L().setChars));
+        f2.appendChild(cnt);
+        var updateCount = function () {
+          var len = ta.value.trim().length;
+          n.textContent = len + " / " + STYLE_MAX;
+          n.className = "n" + (len > STYLE_MAX ? " over" : len > STYLE_MAX * 0.9 ? " warn" : "");
+        };
+        ta.addEventListener("input", function () { s.style = ta.value; s.saved = false; updateCount(); syncFooter(); });
+        updateCount();
+      }
     }
     sheet.appendChild(body);
 
     // footer
     var foot = el("div", "sf");
     var status = el("div", "msg");
+    status.id = "set-hint";
     foot.appendChild(status);
     foot.appendChild(el("span", "grow"));
-    var cancel = el("button", "cancel", L().setCancel);
+    var cancel = el("button", "cancel", s.readOnly ? L().setClose : L().setCancel);
     cancel.addEventListener("click", closeSettings);
     var save = el("button", "primary", L().setSave);
+    // The footer message is Save's accessible description in every state — it is
+    // where the over-limit reason already lived, and where the read-only reason
+    // goes now, so a screen reader gets the same sentence a sighted reader does.
+    save.setAttribute("aria-describedby", "set-hint");
     save.addEventListener("click", saveSettings);
     foot.appendChild(cancel);
     foot.appendChild(save);
     sheet.appendChild(foot);
 
     function syncFooter() {
+      if (s.readOnly) {
+        // takomo-8iin's precedent, one surface over in /inbox: deliberately NOT
+        // the native `disabled` attribute, which drops the control out of the tab
+        // order and explains nothing — the same dead-control trap that produced
+        // this ticket. `aria-disabled` keeps Save focusable and announced as
+        // unavailable, and the reason beside it says which scope opens it.
+        save.textContent = L().setSave;
+        save.disabled = false;
+        save.setAttribute("aria-disabled", "true");
+        save.title = L().setReadOnly;
+        status.className = "msg" + (s.err ? " err" : " ro");
+        status.textContent = s.err || L().setReadOnly;
+        showStatus();
+        return;
+      }
       var over = s.style.trim().length > STYLE_MAX;
       var dirty = s.language.trim() !== s.orig.language.trim()
         || s.style.trim() !== s.orig.style.trim();
       save.textContent = s.saving ? L().setSaving : L().setSave;
       save.disabled = s.loading || s.saving || over || !dirty;
+      save.setAttribute("aria-disabled", save.disabled ? "true" : "false");
       status.className = "msg" + (s.err ? " err" : s.saved ? " ok" : "");
       status.textContent = s.err ? s.err
         : s.saved ? L().setSaved
         : over ? L().setOver
         : "";
+      showStatus();
     }
+    // On a phone the footer wraps and the message claims the whole first line, so
+    // an empty one would spend a row's gap saying nothing. Zero-width either way
+    // on desktop, where the spacer absorbs the difference.
+    function showStatus() { status.style.display = status.textContent ? "" : "none"; }
     syncFooter();
 
     scrim.appendChild(sheet);

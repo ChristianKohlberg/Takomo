@@ -74,6 +74,37 @@ single ticket.
 
 ### Fixed
 
+- **The Settings sheet was invisible to a non-admin token, with no hint it
+  existed.** `/board` hid `#settings-btn` outright unless the token carried
+  `admin` — the one place in either SPA where a control disappeared on a scope
+  rather than explaining itself. Every other `hidden` toggle in the two files is
+  content-driven. A `human` token, which is what a person pasting into `/board`
+  normally holds, saw no button, no disabled control and no explanation, so
+  anyone who knew the feature existed concluded it was broken.
+
+  Hiding it also cost more than it protected. Only the two writes are
+  admin-gated; `GET /v1/projects` is `read` scope and already returns
+  `question_language` and `style_guide`, and both values are pushed to every
+  worker as `style_hint`/`language_hint` on the work loop. So the sheet was
+  hiding values its viewer was already entitled to — and being handed anyway.
+
+  The sheet now opens for any session token and goes **read-only** without
+  `admin`: the values are shown, the fields are `readonly` (not `disabled`, so
+  they stay focusable, selectable and copyable — reading them is the point),
+  the character counter is dropped since there is no cap to hit, *Cancel*
+  becomes *Close*, and Save is marked `aria-disabled` with a visible reason
+  naming the missing `'admin'` scope, wired up as its accessible description.
+  Following `/inbox`'s precedent, Save is deliberately not natively `disabled`:
+  that drops a control out of the tab order and explains nothing, which is the
+  same dead-control trap that produced this report. Pressing it re-states the
+  reason instead of spending a request the server would refuse.
+
+  The write boundary is unchanged — `PUT …/style` and `PUT …/language` still
+  require `admin`, which is what a future per-project answer-link expiry will
+  want. Share sessions keep no button at all, and that is not the same bug: a
+  `tks_` token is confined to `/v1/shares/self*` and genuinely cannot load the
+  sheet. `/board` only; the desktop sheet renders pixel-for-pixel as before.
+
 - **A phone could open the ticket drawer and not get back out.** `/board`'s two
   drawers — the ticket detail and the ask-a-human queue — are full-bleed below
   480/520px, which is right for reading. But `#overlay`, the tap-to-close scrim,
