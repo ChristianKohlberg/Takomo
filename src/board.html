@@ -422,6 +422,11 @@
   .q-empty { color: var(--muted); text-align: center; padding: 40px 6px; }
   .q-readonly { font-size: 12.5px; color: var(--high); margin-bottom: 12px; }
   .q-err { color: var(--crit); font-size: 12px; margin-top: 6px; min-height: 14px; }
+  /* The answer-link page's question body. Same rendered markdown every internal
+     reader gets (mdNode), sized for a page whose whole content is one question —
+     larger and airier than the drawer's .q-body. Scoped to the answer card, so
+     it changes nothing the shared .md block does elsewhere. */
+  .answer-body { font-size: 14px; line-height: 1.65; margin: 0 0 20px; }
 
   /* ---- setup gate ---- */
   #gate { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 30; padding: 16px; }
@@ -2592,7 +2597,13 @@
     meta.appendChild(el("span", "mono", q.asked_by || (t && t.id) || "agent"));
     wrap.appendChild(meta);
 
-    if (q.body) { var body = el("div", null, q.body); body.style.whiteSpace = "pre-wrap"; body.style.fontSize = "14px"; body.style.lineHeight = "1.65"; body.style.color = "var(--ink2)"; body.style.margin = "0 0 20px"; wrap.appendChild(body); }
+    // The question body is markdown, rendered the same way every internal reader
+    // sees it (mdNode: DOM built node by node, links filtered by mdHref, so a
+    // `javascript:` target prints as its own source instead of becoming a link).
+    // This page is the most exposed surface there is — handed to someone outside
+    // the org, authenticated by a single-use tka_ grant — and it was the one
+    // surface still showing `## Frage` and `| Option |` as literal text.
+    if (q.body) wrap.appendChild(mdNode(q.body, "answer-body"));
     if (q.recommended != null && q.recommended !== "") {
       var rec = el("div"); rec.style.background = "var(--col-bg)"; rec.style.borderRadius = "10px"; rec.style.padding = "12px 14px"; rec.style.margin = "0 0 16px"; rec.style.fontSize = "13.5px"; rec.style.color = "var(--text)";
       rec.appendChild(el("span", null, (q.asked_by || "agent") + " " + L().recommends + " "));

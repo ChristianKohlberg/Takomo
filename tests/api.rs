@@ -366,6 +366,60 @@ fn spa_string_tables_agree_on_every_key() {
     }
 }
 
+/// The `#a=` answer-link page renders its question body as markdown, like every
+/// other surface — it was the one the SPA-wide markdown rendering missed, so an
+/// outside expert saw `## Frage` and `| Option | Risiko |` as literal source while
+/// every internal reader saw them rendered. That reader has the *least* context: a
+/// `tka_` grant shows one question and nothing else.
+///
+/// Asserted against the bytes the binary actually serves, and asserted on
+/// `renderAnswerPage` specifically rather than on the whole page, so a `mdNode`
+/// call elsewhere cannot stand in for this one. There is no JS test lane here; the
+/// rendered output itself is checked in a browser.
+#[tokio::test]
+async fn answer_link_page_renders_the_question_body_as_markdown() {
+    let app = TestApp::spawn().await;
+    let body = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let start = body
+        .find("function renderAnswerPage(")
+        .expect("/board defines renderAnswerPage — the #a= answer-link view");
+    // Up to the next top-level function, which is where this one ends.
+    let render = &body[start..];
+    let render = &render[..render[1..]
+        .find("\n  function ")
+        .map(|i| i + 1)
+        .unwrap_or(render.len())];
+    assert!(
+        render.contains("mdNode(q.body"),
+        "renderAnswerPage must render q.body through mdNode — the same DOM-built, \
+         scheme-filtered renderer /board and /inbox use. Found instead:\n{render}"
+    );
+    assert!(
+        !render.contains("pre-wrap"),
+        "renderAnswerPage still white-space-preserves the body somewhere, which is how \
+         it used to print markdown as literal source"
+    );
+    // mdNode builds every node itself; nothing on this page may take the innerHTML
+    // shortcut, because a question body is attacker-influenced and this page is
+    // handed to someone outside the org.
+    assert!(
+        !render.contains("innerHTML"),
+        "renderAnswerPage must not use innerHTML: the question body, its options and \
+         its notes are all attacker-influenced"
+    );
+    assert!(
+        body.contains(".answer-body {"),
+        "/board ships the .answer-body rule renderAnswerPage asks mdNode for"
+    );
+}
+
 #[tokio::test]
 async fn favicon_served_unauthenticated_as_svg() {
     let app = TestApp::spawn().await;
