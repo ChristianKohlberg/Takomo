@@ -12,6 +12,7 @@ cargo test --release                               # integration suite (spawns r
 cargo clippy --all-targets -- -D warnings          # lint, warnings-as-errors
 cargo fmt                                           # format (rustfmt.toml); CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh .handrail/*.sh   # shell lint (CI adds scripts/ and .handrail/adapters/)
+./scripts/lint-spa.sh                               # eslint over the inline <script> of both SPAs
 (cd clients/mcp && npm ci && npm run build)         # MCP typecheck
 ```
 

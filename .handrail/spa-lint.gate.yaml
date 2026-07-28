@@ -1,0 +1,20 @@
+id: spa-lint
+# Mechanical verdict over the ~5500 lines of JavaScript inside src/board.html and
+# src/inbox.html, which had no lint lane of any kind until takomo-rrjg — clippy
+# had the Rust, shellcheck the shell, Redocly the spec, and nothing at all the
+# SPAs. The ruleset is small and defect-only (no style), so a red here is always
+# something to fix, never something to argue with.
+#
+# Marked slow: unlike every other gate here it is not offline. It fetches a
+# pinned eslint through npx, which is a few seconds warm and rather longer cold.
+# With no network the script exits 2 — "cannot check", the same posture
+# openapi-sane.sh takes on a missing PyYAML — so being offline reports as
+# skipped rather than as a defect. CI has the network and is the wall.
+expectation: The JavaScript in the two single-file SPAs stays free of duplicate keys, undefined names, dead bindings and parse errors.
+desc: Runs a pinned eslint over the inline <script> of src/board.html and src/inbox.html, reporting at the real HTML line. Skips (exit 2) when eslint cannot be fetched.
+kind: verdict
+semantics: blocking
+cmd: bash scripts/lint-spa.sh
+paths: [src/board.html, src/inbox.html, scripts/lint-spa.sh, scripts/spa-eslint.config.mjs]
+slow: true
+order: 50
