@@ -2922,6 +2922,7 @@ x-error-codes:
   token.rate_limit: "`rate_limit`, in writes per minute, must be a positive integer."
   token.expires_seconds: "`expires_seconds` must be a positive integer number of seconds."
   tag.exists: "that `kind:handle` is already registered in the project. PATCH the tag to change its label or meta."
+  tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
 
   # -- missing entities. `notfound.<kind>` names the kind the handler looked ---
   # -- for, so this family grows with the addressable kinds. -------------------
