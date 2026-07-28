@@ -91,11 +91,13 @@ async function getTicket(id: string): Promise<any> {
   return client.request({ path: `/tickets/${encodeURIComponent(id)}` });
 }
 
-async function claimTicket(id: string): Promise<any> {
+async function claimTicket(id: string, ttlSeconds?: number): Promise<any> {
+  const body: Record<string, unknown> = {};
+  if (ttlSeconds !== undefined) body.ttl_seconds = ttlSeconds;
   const lease = await client.request<any>({
     method: "POST",
     path: `/tickets/${encodeURIComponent(id)}/claim`,
-    body: {},
+    body,
   });
   if (lease?.fence !== undefined) {
     rememberLease(id, { fence: lease.fence, holder: lease.holder, expiresAt: lease.expires_at });
@@ -268,11 +270,65 @@ server.registerTool(
     title: "Claim ticket",
     description:
       "Claim a specific ticket by id, taking its lease. The fencing token is remembered in memory so " +
-      "later start/transition/done/release calls include it automatically.",
-    inputSchema: { id: z.string().describe("Ticket id to claim.") },
+      "later start/transition/done/release calls include it automatically. The lease expires " +
+      "(default 900s, max 3600) — keep it with takomo_heartbeat.",
+    inputSchema: {
+      id: z.string().describe("Ticket id to claim."),
+      ttl_seconds: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Lease lifetime in seconds (1-3600, default 900)."),
+    },
   },
   tool(async (a) => {
-    const lease = await claimTicket(a.id);
+    const lease = await claimTicket(a.id, a.ttl_seconds);
+    return ok({ ok: true, lease });
+  })
+);
+
+server.registerTool(
+  "takomo_heartbeat",
+  {
+    title: "Renew a claim",
+    description:
+      "Renew the lease you hold on a ticket, so long-running work does not lose its claim. Echoes the " +
+      "remembered fencing token and refreshes what is remembered. Call it before the lease's expires_at; " +
+      "an already-expired lease cannot be revived and must be re-claimed.",
+    inputSchema: {
+      id: z.string().describe("Ticket id."),
+      fence: z.number().int().optional().describe("Override the remembered fencing token."),
+      ttl_seconds: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("New lease lifetime in seconds from now (1-3600, default 900)."),
+    },
+  },
+  tool(async (a) => {
+    const fence = resolveFence(a.id, a.fence);
+    if (fence === undefined) {
+      return fail({
+        ok: false,
+        message:
+          `No remembered lease for '${a.id}', so there is nothing to renew. Claim it first ` +
+          `(takomo_claim / takomo_next / takomo_start), or pass an explicit fence.`,
+      });
+    }
+    const body: Record<string, unknown> = { fence };
+    if (a.ttl_seconds !== undefined) body.ttl_seconds = a.ttl_seconds;
+    const lease = await client.request<any>({
+      method: "POST",
+      path: `/tickets/${encodeURIComponent(a.id)}/heartbeat`,
+      body,
+    });
+    // Re-remember: the fence is unchanged by a beat, but expires_at is not, and
+    // a stale expiry in memory is what makes an agent think it still has time.
+    if (lease?.fence !== undefined) {
+      rememberLease(a.id, { fence: lease.fence, holder: lease.holder, expiresAt: lease.expires_at });
+    }
     return ok({ ok: true, lease });
   })
 );
@@ -289,6 +345,12 @@ server.registerTool(
       type: z.string().optional().describe("Restrict to a ticket type."),
       priority: z.string().optional().describe("Restrict to a priority."),
       wait: z.number().int().nonnegative().optional().describe("Seconds to poll for work (client-side). Default 0 (no wait)."),
+      ttl_seconds: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Lease lifetime in seconds for the ticket this claims (1-3600, default 900)."),
     },
   },
   tool(async (a) => {
@@ -296,6 +358,7 @@ server.registerTool(
     if (a.project) body.project = a.project;
     if (a.type) body.type = a.type;
     if (a.priority) body.priority = a.priority;
+    if (a.ttl_seconds !== undefined) body.ttl_seconds = a.ttl_seconds;
 
     const deadline = Date.now() + (a.wait ? a.wait * 1000 : 0);
     const pollMs = 2000;
@@ -327,6 +390,12 @@ server.registerTool(
       id: z.string().describe("Ticket id."),
       to: z.string().optional().describe("Explicit target state (defaults to the workflow's in-progress state)."),
       fence: z.number().int().optional().describe("Override the remembered fencing token."),
+      ttl_seconds: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Lease lifetime in seconds, if this call is what takes the claim (1-3600, default 900)."),
     },
   },
   tool(async (a) => {
@@ -335,8 +404,10 @@ server.registerTool(
 
     let fence = resolveFence(a.id, a.fence);
     // Claim if we do not already hold a lease and the current state is claimable.
+    // `ttl_seconds` only applies on that path — a lease we already hold is
+    // extended by heartbeating it, not by starting again.
     if (fence === undefined && isClaimable(wf, ticket.state)) {
-      const lease = await claimTicket(a.id);
+      const lease = await claimTicket(a.id, a.ttl_seconds);
       fence = lease?.fence;
     }
 
