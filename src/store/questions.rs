@@ -228,12 +228,22 @@ fn get_question_row(conn: &Connection, id: &str) -> ApiResult<Question> {
         .ok_or_else(|| ApiError::not_found("question", id))
 }
 
-/// Validate + normalize a proposed answer against the question kind. Returns the
-/// canonical JSON stored as the answer.
-/// Validate an option set and its parallel descriptions. Shared by asking and
-/// revising so the two paths cannot drift — a revision must satisfy exactly the
-/// rules the original ask did.
-fn validate_options(options: &[String], option_notes: &[String]) -> ApiResult<()> {
+/// Validate an option set, its parallel descriptions, and the recommendation that
+/// points into it. Shared by asking and revising so the two paths cannot drift — a
+/// revision must satisfy exactly the rules the original ask did.
+///
+/// The recommendation belongs here rather than at each call site because that is the
+/// half that *had* drifted (takomo-a0nw): revise refused a recommendation naming an
+/// option that does not exist, ask accepted one. It matters beyond a cosmetic inbox
+/// glitch, because `on_timeout=recommended` stores `recommended` as the answer when
+/// the deadline passes — so a dangling recommendation is a question that expires into
+/// an answer which was never on offer, or into a sweeper failure.
+fn validate_options(
+    options: &[String],
+    option_notes: &[String],
+    recommended: &Value,
+    recommended_multi: &[String],
+) -> ApiResult<()> {
     if options.len() > MAX_OPTIONS {
         return Err(ApiError::validation(
             "validation.options",
@@ -264,6 +274,45 @@ fn validate_options(options: &[String], option_notes: &[String]) -> ApiResult<()
             return Err(ApiError::validation(
                 "validation.option_notes",
                 format!("each option description must be at most {MAX_OPTION_DESC} characters."),
+            ));
+        }
+    }
+
+    // A recommendation is only checkable against an option set. The kinds that carry
+    // none recommend something free-form instead — a `confirm` or `approve` recommends
+    // yes/no, a `clarify` a suggested wording — and there is nothing to compare those
+    // to, so they are left alone.
+    if options.is_empty() {
+        return Ok(());
+    }
+    if !recommended.is_null() {
+        let rec = recommended.as_str().ok_or_else(|| {
+            ApiError::validation(
+                "validation.recommended",
+                format!(
+                    "The recommendation must be one of the options as a string ({}), or null. A question with options is answered by naming one of them, so a recommendation of any other shape can never be the answer.",
+                    options.join(", ")
+                ),
+            )
+        })?;
+        if !options.iter().any(|o| o == rec) {
+            return Err(ApiError::validation(
+                "validation.recommended",
+                format!(
+                    "The recommendation '{rec}' is not one of the options ({}). With on_timeout=recommended it would be stored as the answer, so it has to be one of them: name an option, or pass null to ask without a recommendation.",
+                    options.join(", ")
+                ),
+            ));
+        }
+    }
+    for r in recommended_multi {
+        if !options.iter().any(|o| o == r) {
+            return Err(ApiError::validation(
+                "validation.recommended_multi",
+                format!(
+                    "recommended_multi contains '{r}', which is not one of the options ({}). Draw the recommended set from the options, or pass an empty list to clear it.",
+                    options.join(", ")
+                ),
             ));
         }
     }
@@ -928,15 +977,12 @@ impl Store {
                 "multi=true is only valid for a 'choose' question.",
             ));
         }
-        for r in &req.recommended_multi {
-            if !req.options.iter().any(|o| o == r) {
-                return Err(ApiError::validation(
-                    "validation.recommended_multi",
-                    format!("recommended_multi contains '{r}', which is not one of the options."),
-                ));
-            }
-        }
-        validate_options(&req.options, &req.option_notes)?;
+        validate_options(
+            &req.options,
+            &req.option_notes,
+            &req.recommended,
+            &req.recommended_multi,
+        )?;
         if let Some(c) = req.confidence {
             if !(1..=4).contains(&c) {
                 return Err(ApiError::validation(
@@ -1674,7 +1720,6 @@ impl Store {
                 "A 'choose' question needs at least 2 options — revise it to a real choice, or withdraw it if the choice went away.",
             ));
         }
-        validate_options(&req.options, &req.option_notes)?;
         if let Some(Some(note)) = &req.recommended_note {
             if note.len() > MAX_REC_NOTE {
                 return Err(ApiError::validation(
@@ -1713,36 +1758,25 @@ impl Store {
                 ));
             }
 
-            // The revision must leave the question coherent: a recommendation
-            // that points at a removed option is rejected, not quietly dropped,
-            // so the caller decides what it should now be.
+            // The revision must leave the question coherent: a recommendation that
+            // points at a removed option is rejected, not quietly dropped, so the
+            // caller decides what it should now be. The shape checks run here rather
+            // than before the transaction because the recommendation being validated
+            // may be the *stored* one — an omitted `recommended` keeps what is on the
+            // question — and that is only known once the row is read. They are a
+            // handful of string comparisons over at most MAX_OPTIONS entries, so this
+            // is not meaningful work to be doing under the write mutex.
             let effective_rec = req.recommended.clone().unwrap_or(q.recommended.clone());
-            if let Some(rec) = effective_rec.as_str() {
-                if !req.options.iter().any(|o| o == rec) {
-                    return Err(ApiError::validation(
-                        "validation.recommended",
-                        format!(
-                            "The recommendation '{rec}' is not among the revised options ({}). Pass a new `recommended`, or `null` to clear it.",
-                            req.options.join(", ")
-                        ),
-                    ));
-                }
-            }
             let effective_multi = req
                 .recommended_multi
                 .clone()
                 .unwrap_or(q.recommended_multi.clone());
-            for r in &effective_multi {
-                if !req.options.iter().any(|o| o == r) {
-                    return Err(ApiError::validation(
-                        "validation.recommended_multi",
-                        format!(
-                            "recommended_multi contains '{r}', which is not among the revised options ({}). Pass a new `recommended_multi`, or an empty list to clear it.",
-                            req.options.join(", ")
-                        ),
-                    ));
-                }
-            }
+            validate_options(
+                &req.options,
+                &req.option_notes,
+                &effective_rec,
+                &effective_multi,
+            )?;
 
             let before = q.options.clone();
             tx.execute(

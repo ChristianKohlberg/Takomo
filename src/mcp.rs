@@ -327,10 +327,13 @@ pub struct AskArgs {
     pub option_notes: Option<Vec<String>>,
     /// For kind=choose: allow selecting several options at once (multi-select).
     pub multi: Option<bool>,
-    /// For a multi choose: the recommended set of options.
+    /// For a multi choose: the recommended set of options. Every entry must be one
+    /// of `options`.
     pub recommended_multi: Option<Vec<String>>,
     /// Your recommended answer (a hint for the human; also applied on timeout if
-    /// on_timeout=recommended). For a single choose, the exact option string.
+    /// on_timeout=recommended). When the question has `options` it must be one of
+    /// them exactly — since a timeout stores it as the answer, a recommendation that
+    /// is not an option could never be one, and is refused.
     pub recommended: Option<String>,
     /// A short rationale for your recommendation ("why"), shown by the recommendation.
     pub recommended_note: Option<String>,

@@ -5627,6 +5627,149 @@ async fn question_choose_validates_options_and_mine_filters_by_expertise() {
     assert_eq!(answered["ticket"]["state"], "ready");
 }
 
+/// Asking checks the recommendation against the options, exactly as revising already
+/// did (takomo-a0nw). The two paths share `validate_options`, and the recommendation
+/// half had drifted out of it: `options: ["a","b"]` with `recommended: "c"` was
+/// accepted on the ask path and refused on the revise path.
+///
+/// It is not cosmetic. `on_timeout=recommended` stores `recommended` as the answer
+/// when the deadline passes, so a dangling recommendation is a question that expires
+/// into an answer that was never on offer — and the inbox meanwhile renders a
+/// recommendation pointing at nothing.
+///
+/// The rule is scoped to the kinds that carry options: a `confirm` recommends yes/no
+/// and a `clarify` a suggested wording, and neither has an option set to be a member
+/// of.
+#[tokio::test]
+async fn ask_validates_the_recommendation_against_the_options() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Recommend something real").await;
+    let fence = app.to_implementing(&id).await;
+
+    // The ticket's own repro: a recommendation naming an option that does not exist.
+    let (s, e) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "choose", "title": "Which one?",
+                "options": ["a", "b"], "recommended": "c", "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.recommended");
+    let msg = e["message"].as_str().unwrap();
+    assert!(msg.contains('c'), "must name the bad recommendation: {e}");
+    assert!(msg.contains("a, b"), "must list the real options: {e}");
+
+    // The same input with `on_timeout=recommended` — the combination that would
+    // otherwise expire into an answer that was never one of the choices.
+    let (s, e) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "choose", "title": "Which one?",
+                "options": ["a", "b"], "recommended": "c",
+                "expires_in_seconds": 3600, "on_timeout": "recommended", "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.recommended");
+
+    // A recommendation of a shape no answer could ever take is refused too: a
+    // question with options is answered by naming one of them.
+    let (s, e) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "choose", "title": "Which one?",
+                "options": ["a", "b"], "recommended": true, "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.recommended");
+
+    // recommended_multi is held to the same rule, from the same place.
+    let (s, e) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id, "kind": "choose", "title": "Which ones?",
+                "options": ["a", "b"], "multi": true,
+                "recommended_multi": ["a", "z"], "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.recommended_multi");
+    assert!(
+        e["message"].as_str().unwrap().contains('z'),
+        "must name the offending entry: {e}"
+    );
+
+    // Kinds that carry no options recommend something free-form, and are untouched:
+    // a `confirm` recommends yes/no…
+    let (_, ok) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id, "kind": "confirm", "title": "Proceed?",
+                "recommended": "yes", "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(ok["question"]["recommended"], "yes", "{ok}");
+
+    // …and a `clarify` a suggested wording. (Both land on the same ticket, which the
+    // blocking barrier allows; only the first parked it.)
+    let (_, ok) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id, "kind": "clarify", "title": "Which timezone?",
+                "recommended": "store UTC, render local", "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(
+        ok["question"]["recommended"], "store UTC, render local",
+        "{ok}"
+    );
+
+    // And a recommendation that does name an option is accepted, so the check is a
+    // membership test and not a blanket refusal.
+    let id2 = app.create_ticket("Recommend a real option").await;
+    let fence2 = app.to_implementing(&id2).await;
+    let (qid, ok) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id2, "kind": "choose", "title": "Which one?",
+                "options": ["a", "b"], "recommended": "b", "fence": fence2,
+            }),
+        )
+        .await;
+    assert_eq!(ok["question"]["recommended"], "b", "{ok}");
+
+    // The revise path refuses the identical shape with the identical code — the
+    // point of sharing the validator rather than writing a second one.
+    let (s, e) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({ "options": ["a", "b"], "recommended": "c" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.recommended");
+}
+
 #[tokio::test]
 async fn question_withdraw_closes_it_without_answering() {
     let app = TestApp::spawn().await;
