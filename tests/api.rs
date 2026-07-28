@@ -5337,6 +5337,204 @@ async fn question_answer_that_cannot_resume_says_so() {
     );
 }
 
+/// A workflow whose blocked state is `claimable`, so a worker can take a lease
+/// on a ticket while it is parked — the one shape where "who may move this
+/// ticket" is a live question at answer time.
+fn claimable_park_workflow(resume_requires: Value) -> Value {
+    json!({
+        "name": "leased-park",
+        "initial": "todo",
+        "states": [
+            { "id": "todo", "category": "todo", "claimable": true },
+            { "id": "doing", "category": "in_progress" },
+            // Claimable *and* blocked: a second worker can hold this ticket
+            // while a human decides.
+            { "id": "parked", "category": "blocked", "claimable": true },
+            { "id": "done", "category": "done", "terminal": true },
+        ],
+        "transitions": [
+            { "from": "todo", "to": "doing", "requires": ["claim"] },
+            { "from": "doing", "to": "parked" },
+            { "from": "parked", "to": "todo", "requires": resume_requires },
+            { "from": "parked", "to": "done", "requires": ["claim"] },
+        ],
+    })
+}
+
+/// Park a ticket in `claimable_park_workflow`'s `parked` state on a blocking
+/// question, then take a lease on it as the *second* worker. Returns
+/// (ticket id, question id, the second worker's fence).
+async fn park_then_lease_as_worker2(app: &TestApp, project: &str) -> (String, String, i64) {
+    let id = app.create_ticket_in(project, "Parked but leased").await;
+    let fence = app.claim(&id).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "doing", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->doing failed: {b}");
+    let (qid, asked) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Proceed?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(asked["ticket"]["state"], "parked", "ask must park: {asked}");
+    assert!(
+        asked["ticket"]["claim"].is_null(),
+        "parking must release the asker's lease: {asked}"
+    );
+
+    // A second worker picks the parked ticket up while the human is deciding.
+    let fence2 = app.claim_as(&app.worker2, &id).await;
+    (id, qid, fence2)
+}
+
+/// The resume now runs through `src/store/transition.rs` like any other state
+/// change, so the rule that decides *who* may move a claimed ticket applies to
+/// it too: only a `scope:human` edge is authoritative over someone else's lease
+/// (finding A). Here the workflow declares no human authority on the resume
+/// edge, so the answer must not yank the lease — the raw `UPDATE` this replaces
+/// moved the ticket and cleared the lease regardless of who held it, leaving the
+/// holder writing against a state it never left.
+///
+/// The decision is still recorded (discarding a human's answer would be worse)
+/// and the refusal travels back as `resume_blocked`.
+#[tokio::test]
+async fn question_answer_does_not_yank_a_live_lease_without_a_human_gate() {
+    let app = TestApp::spawn().await;
+    app.create_project_with("lp", claimable_park_workflow(json!([])))
+        .await;
+    let (id, qid, fence2) = park_then_lease_as_worker2(&app, "lp").await;
+
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
+    assert_eq!(s, StatusCode::OK, "the answer is still recorded: {ans}");
+    assert_eq!(ans["question"]["status"], "answered", "{ans}");
+    assert!(ans["question"]["resolved_to"].is_null(), "{ans}");
+    assert_eq!(
+        ans["ticket"]["state"], "parked",
+        "the resume must not move a ticket another worker holds: {ans}"
+    );
+    assert_eq!(
+        ans["ticket"]["claim"]["holder"], "agent:w2",
+        "the holder's lease must survive the answer: {ans}"
+    );
+    assert_eq!(ans["resume"]["resumed"], false, "{ans}");
+    assert_eq!(
+        ans["resume"]["code"], "claim.held",
+        "the transition machinery's own refusal is what the caller sees: {ans}"
+    );
+
+    // Nothing was written: no `transitioned` event claims the ticket moved.
+    let (_, evs) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=transitioned"),
+        )
+        .await;
+    assert!(
+        !evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["to"] == "todo"),
+        "the answer must leave no transition behind: {evs}"
+    );
+
+    // And the thread says the work is stranded, for whoever reads the ticket.
+    let (_, detail) = app
+        .get(&app.human, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let bodies: Vec<&str> = detail["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert!(
+        bodies.iter().any(|b| b.contains("NOT resumed")),
+        "the thread must say the ticket is still parked: {bodies:?}"
+    );
+
+    // Not a dead end: once the holder lets go, the recorded answer's ticket
+    // walks the same edge normally.
+    let (s, _) = app
+        .post(
+            &app.worker2,
+            &format!("/v1/tickets/{id}/release"),
+            json!({ "fence": fence2 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, moved) = app.transition(&app.human, &id, "todo").await;
+    assert_eq!(s, StatusCode::OK, "->todo failed: {moved}");
+    assert_eq!(moved["state"], "todo");
+}
+
+/// The mirror image, and why the rule above is the right one rather than merely
+/// the strict one: where the workflow *does* mark the resume edge `scope:human`,
+/// the answer is authoritative over a lease taken while the ticket was parked.
+/// It resumes, releases that lease, and says so in the event log with the same
+/// payloads a caller's transition emits — one shape for one logical event.
+#[tokio::test]
+async fn question_resume_through_the_human_gate_supersedes_a_lease_taken_while_parked() {
+    let app = TestApp::spawn().await;
+    app.create_project_with("lph", claimable_park_workflow(json!(["scope:human"])))
+        .await;
+    let (id, qid, _) = park_then_lease_as_worker2(&app, "lph").await;
+
+    let (s, ans) = app.answer(&app.human, &qid, json!("yes")).await;
+    assert_eq!(s, StatusCode::OK, "answer failed: {ans}");
+    assert_eq!(ans["question"]["resolved_to"], "todo", "{ans}");
+    assert_eq!(ans["ticket"]["state"], "todo", "{ans}");
+    assert_eq!(ans["resume"]["resumed"], true, "{ans}");
+    assert!(
+        ans["ticket"]["claim"].is_null(),
+        "the human gate supersedes the lease: {ans}"
+    );
+
+    // The event log carries the standard pair, attributed to the answerer.
+    let (_, trans) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=transitioned"),
+        )
+        .await;
+    let resumed = trans["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["payload"]["to"] == "todo")
+        .unwrap_or_else(|| panic!("a transitioned event for the resume: {trans}"))
+        .clone();
+    assert_eq!(resumed["actor"], "human:reviewer");
+    assert_eq!(
+        resumed["payload"]["auto_released"], true,
+        "the resume released the lease it superseded: {resumed}"
+    );
+    assert_eq!(
+        resumed["payload"]["reason"],
+        format!("resolved by human ({qid})")
+    );
+
+    let (_, rel) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=released"),
+        )
+        .await;
+    assert!(
+        rel["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["reason"] == "superseded by human transition"),
+        "the release reads the same as any other human-superseded lease: {rel}"
+    );
+}
+
 #[tokio::test]
 async fn question_advisory_on_epic_does_not_park() {
     let app = TestApp::spawn().await;

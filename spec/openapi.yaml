@@ -1593,6 +1593,17 @@ paths:
         ready queue. A human gate that exists but is not takeable is never
         routed around.
 
+        The resume is performed by the same transition machinery as
+        `POST /v1/tickets/{id}/transition`, with the answerer as the actor and
+        their scopes as the authority — so it can also be refused for the
+        ordinary transition reasons, and those codes appear in the `resume`
+        block. In particular, a lease someone took on the ticket while it was
+        parked (possible only where a workflow marks a blocked state
+        `claimable`) is superseded only by a `scope:human` resume edge; where the
+        workflow declares no human authority there, the answer is recorded but
+        the ticket stays parked with `resume.code: claim.held` rather than being
+        moved out from under the holder.
+
         An explicit `resume_to` is strict (a bad target errors). With no
         `resume_to`, the answer is recorded even if the ticket cannot be
         auto-resumed: `resolved_to` is then null and the `resume` block of the
@@ -2490,7 +2501,7 @@ components:
       properties:
         resumed: { type: boolean, description: Whether this answer moved the ticket }
         to: { type: [string, "null"], description: State the ticket was resumed into }
-        code: { type: string, description: "Machine-readable reason the ticket could not be resumed, e.g. question.no_resume" }
+        code: { type: string, description: "Machine-readable reason the ticket could not be resumed: a question code (e.g. question.no_resume) or, since the resume runs through the transition machinery, a transition one (e.g. claim.held)" }
         message: { type: string, description: "What is wrong, including every exit from the parked state and what each would take" }
         remedy: { type: string, description: The exact next call that gets the ticket moving again }
 
