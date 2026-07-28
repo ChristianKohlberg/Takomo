@@ -368,6 +368,25 @@
     body:not(.reading) .readpane { display: none; }
     body.reading .backbtn { display: inline-flex; }
     .popover, .drawer { width: 100%; }
+
+    /* Touch targets (takomo-rnv4). The ticket drawer here is built like
+       /board's — full width at this breakpoint, so .drawer-scrim ends up
+       entirely behind it — but unlike /board it has always shipped a reachable
+       exit: `back to question` in .df is pinned, full width and already 44px
+       tall. What was undersized is the ✕ beside the ticket id, and .backbtn,
+       which IS the navigation once the list pane is hidden. Both become 44px
+       on the short side; the ✕ grows into .dh's padding so the header row does
+       not move. It keeps role=button and tabindex from activate(), so it is
+       still reachable by keyboard. */
+    .drawer .dh .top .x {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 44px; min-height: 44px; font-size: 24px;
+      margin: -10px -10px -10px auto;
+    }
+    .backbtn, .ticketbtn { min-height: 44px; }
+    .langtoggle span { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
+    header .iconbtn { width: 44px; height: 44px; }
+    .nav a, .nav .navpill { min-height: 44px; display: inline-flex; align-items: center; }
   }
   @media (max-width: 620px) {
     header { gap: 8px; padding: 8px 12px; }
