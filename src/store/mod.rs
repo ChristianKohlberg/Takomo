@@ -260,6 +260,17 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // tickets.lapsed_claim_holder: who held the lease that most recently expired
+    // here, so the lapsed holder can resume it in place rather than walking the
+    // ticket back through the ready queue (takomo-jb5i). Additive and nullable;
+    // older ticket tables predate it, and NULL is exactly the right value for
+    // every existing row — "no lease lapsed here that nothing has superseded".
+    if !columns.iter().any(|c| c == "lapsed_claim_holder") {
+        conn.execute(
+            "ALTER TABLE tickets ADD COLUMN lapsed_claim_holder TEXT",
+            [],
+        )?;
+    }
     // Partial index to keep `archived=only` and the default `archived_at IS
     // NULL` filter cheap. Created after the column is guaranteed to exist.
     conn.execute(
@@ -422,6 +433,15 @@ CREATE TABLE IF NOT EXISTS tickets (
   links            TEXT NOT NULL DEFAULT '{}',
   claim_holder     TEXT,
   claim_expires_at INTEGER,
+  -- The actor whose lease on this ticket ended by *expiry*, kept so the lapsed
+  -- holder can resume it in place instead of walking the ticket back through the
+  -- ready queue (takomo-jb5i). Set when an expired claim is cleared; cleared
+  -- again by anything else that starts or ends a lease (a new claim, a voluntary
+  -- release, an admin force-release, a transition that auto-releases). So
+  -- non-NULL means exactly: "the last lease here lapsed, and nothing has taken,
+  -- released or revoked one since" — which is why it never coexists with an
+  -- active claim, and why `fence_seq` is still the lapse-time fence.
+  lapsed_claim_holder TEXT,
   fence_seq        INTEGER NOT NULL DEFAULT 0,
   version          INTEGER NOT NULL DEFAULT 1,
   created_by       TEXT NOT NULL,

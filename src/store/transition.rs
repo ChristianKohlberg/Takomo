@@ -201,7 +201,11 @@ pub(super) fn apply_transition(
     let mut t = get_ticket_required(tx, id)?;
     let wf = get_workflow(tx, &t.project)?;
     if clear_expired_claim(tx, &t, now)? {
-        t.claim_holder = None;
+        // Mirror exactly what the clear wrote, marker included: the holder moved
+        // to `lapsed_claim_holder`, and that is what tells the claim_required
+        // remedy below whether this caller may resume the lease in place rather
+        // than walk the ticket back through the ready queue.
+        t.lapsed_claim_holder = t.claim_holder.take();
         t.claim_expires_at = None;
     }
     let allowed = allowed_from(&wf, &t.state);
@@ -420,7 +424,16 @@ pub(super) fn apply_transition(
     }
 
     if !passed {
-        return Err(requirement_error(id, &t, to, &wf, edge_failures, allowed));
+        return Err(requirement_error(
+            id,
+            &t,
+            to,
+            &wf,
+            actor,
+            now,
+            edge_failures,
+            allowed,
+        ));
     }
 
     // Apply. A held claim is auto-released when the ticket is parked to
@@ -508,17 +521,28 @@ fn scope_error(
 /// The remedy has to name a call that actually works *from the current state*.
 /// Claiming only works in a state the workflow marks `claimable`, and the state
 /// a worker is stuck in when its lease expires mid-task is precisely one that is
-/// not (`in_progress`, `implementing`): a flat "POST /claim" remedy is answered
-/// by `claim.state` — "state X is not claimable" — and the two errors point at
-/// each other with no way out (takomo-jb5i). So when the ticket sits in a
-/// non-claimable state the remedy names the re-entry route instead: the edges
-/// out of here that land somewhere a lease can be taken, plus the warning that
-/// they pass back through the ready queue.
+/// not (`in_progress`, `implementing`): a flat "POST /claim" remedy used to be
+/// answered by `claim.state` — "state X is not claimable" — and the two errors
+/// pointed at each other with no way out (takomo-jb5i).
+///
+/// Three cases now, and each names a call the store will honour:
+///
+/// 1. The state is claimable — the plain claim, then retry echoing the new fence.
+/// 2. The state is not, but the caller is the holder whose own lease lapsed here
+///    and nobody has claimed since — the claim works anyway, as a resume in place
+///    ([`super::claims::may_resume_lapsed_lease`]). This is the common case behind
+///    the ticket: work that outlived its lease, no competing worker, and no reason
+///    to send it back through the ready queue.
+/// 3. Neither — the re-entry route: the edges out of here that land somewhere a
+///    lease can be taken, plus the warning that they pass through the ready queue
+///    where another worker may take the ticket.
 fn claim_required_error(
     id: &str,
     t: &Ticket,
     to: &str,
     wf: &Workflow,
+    actor: &str,
+    now: i64,
     allowed: Vec<AllowedTransition>,
 ) -> ApiError {
     let claimable_states: Vec<&str> = wf
@@ -539,7 +563,33 @@ fn claim_required_error(
         .remedy(format!(
             "POST /v1/tickets/{id}/claim, then POST /v1/tickets/{id}/transition with {{\"to\":\"{to}\",\"fence\":<the fence from the claim response>}}."
         ))
-        .details(json!({ "claimable_states": claimable_states }))
+        .details(json!({ "claimable_states": claimable_states, "resume_in_place": false }))
+        .current_state(t.state.clone())
+        .allowed_transitions(allowed);
+    }
+
+    // Case 2: the caller's own lease lapsed right here and nothing has taken the
+    // ticket since, so claiming works despite the state — as a resume in place,
+    // with no trip through the ready queue for anyone else to intercept.
+    let resumable = wf.state(&t.state).is_some_and(|s| {
+        super::claims::may_resume_lapsed_lease(t, actor, now, s.claimable, s.terminal, &s.category)
+    });
+    if resumable {
+        return ApiError::conflict(
+            "transition.claim_required",
+            format!(
+                "This transition requires an active claim on '{id}', and you do not hold one — your lease expired while the work ran (nothing heartbeats it for you). State '{}' is not claimable, but the lapsed lease was yours and nobody has claimed the ticket since, so you can take it back where it stands: claim it again and retry.",
+                t.state
+            ),
+        )
+        .remedy(format!(
+            "POST /v1/tickets/{id}/claim — it resumes your lapsed lease in place (the response carries a fresh `fence` and `\"resumed\": true`) — then POST /v1/tickets/{id}/transition with {{\"to\":\"{to}\",\"fence\":<the new fence>}}. The ticket does NOT go back to the ready queue, so nothing else can take it from under you. Heartbeat it (POST /v1/tickets/{id}/heartbeat) if the next stretch of work is long."
+        ))
+        .details(json!({
+            "claimable_states": claimable_states,
+            "resume_in_place": true,
+            "lapsed_holder": actor,
+        }))
         .current_state(t.state.clone())
         .allowed_transitions(allowed);
     }
@@ -553,8 +603,18 @@ fn claim_required_error(
         .collect();
     let reentry_states: Vec<&str> = reentry.iter().map(|a| a.to.as_str()).collect();
 
+    // Case 3. Whose lapsed lease (if any) sits here decides how much of this is
+    // the caller's business: "someone else's, and they may still resume it" is a
+    // different situation from "nobody holds anything".
+    let lapsed = t.lapsed_holder(now).filter(|h| *h != actor);
+    let whose = match lapsed {
+        Some(h) => format!(
+            " The lease that lapsed in this state was '{h}''s, and only '{h}' can resume it in place."
+        ),
+        None => String::new(),
+    };
     let stuck = format!(
-        "This transition requires an active claim on '{id}', and you do not hold one — most often the lease expired while the work ran (nothing heartbeats it for you). State '{}' is not claimable in project '{}', so POST /v1/tickets/{id}/claim would be refused with 'claim.state': a lease can only be taken in {}.",
+        "This transition requires an active claim on '{id}', and you do not hold one. State '{}' is not claimable in project '{}', so POST /v1/tickets/{id}/claim would be refused with 'claim.state': a lease can only be taken in {}.{whose}",
         t.state,
         t.project,
         if claimable_states.is_empty() {
@@ -590,7 +650,12 @@ fn claim_required_error(
 
     ApiError::conflict("transition.claim_required", message)
         .remedy(remedy)
-        .details(json!({ "claimable_states": claimable_states, "reentry_states": reentry_states }))
+        .details(json!({
+            "claimable_states": claimable_states,
+            "reentry_states": reentry_states,
+            "resume_in_place": false,
+            "lapsed_holder": lapsed,
+        }))
         .current_state(t.state.clone())
         .allowed_transitions(allowed)
 }
@@ -599,11 +664,14 @@ fn claim_required_error(
 /// Preference order: an edge failing only on claim/guard (the caller is
 /// authorized, just not set up) beats scope-failing edges; scope-only failures
 /// become a 403.
+#[allow(clippy::too_many_arguments)]
 fn requirement_error(
     id: &str,
     t: &Ticket,
     to: &str,
     wf: &Workflow,
+    actor: &str,
+    now: i64,
     edge_failures: Vec<Vec<ReqFailure>>,
     allowed: Vec<AllowedTransition>,
 ) -> ApiError {
@@ -621,7 +689,7 @@ fn requirement_error(
 
     // Claim first (most common agent mistake), then scope, then guard.
     if best.iter().any(|f| matches!(f, ReqFailure::NeedsClaim)) {
-        return claim_required_error(id, t, to, wf, allowed);
+        return claim_required_error(id, t, to, wf, actor, now, allowed);
     }
 
     let missing_scopes: Vec<String> = best

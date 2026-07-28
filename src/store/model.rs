@@ -33,6 +33,11 @@ pub struct Ticket {
     pub blocked_by: Vec<String>,
     pub claim_holder: Option<String>,
     pub claim_expires_at: Option<i64>,
+    /// The actor whose lease here ended by expiry, when nothing has claimed,
+    /// released or revoked one since. Read [`Ticket::lapsed_holder`] rather than
+    /// this field: between the expiry and the sweep the same fact is still
+    /// recorded as an expired `claim_holder`, and that method covers both.
+    pub lapsed_claim_holder: Option<String>,
     pub fence_seq: i64,
     pub version: i64,
     pub created_by: String,
@@ -49,6 +54,24 @@ impl Ticket {
         match (&self.claim_holder, self.claim_expires_at) {
             (Some(h), Some(exp)) if exp > now => Some((h.as_str(), exp)),
             _ => None,
+        }
+    }
+
+    /// Who the ticket's last lease belonged to, if it ended by **expiry** and
+    /// nothing has claimed, released or revoked one since. `None` means there is
+    /// nothing to resume: the ticket was never claimed, is claimed right now, or
+    /// its last lease ended some other way.
+    ///
+    /// Two sources for one fact, because expiry is noticed twice: until the sweep
+    /// (or the next write on the ticket) clears it, the lapsed lease is still
+    /// recorded in `claim_holder`/`claim_expires_at`; afterwards it lives in
+    /// `lapsed_claim_holder`. A caller that read only one of them would get a
+    /// different answer depending on whether a 250ms timer had fired.
+    pub fn lapsed_holder(&self, now: i64) -> Option<&str> {
+        match (&self.claim_holder, self.claim_expires_at) {
+            (Some(h), Some(exp)) if exp <= now => Some(h.as_str()),
+            (Some(_), _) => None, // an active claim: nothing has lapsed
+            (None, _) => self.lapsed_claim_holder.as_deref(),
         }
     }
 
@@ -251,16 +274,28 @@ pub struct Lease {
     pub holder: String,
     pub fence: i64,
     pub expires_at: i64,
+    /// True when this lease was **resumed in place** after the holder's previous
+    /// one expired — a claim taken in a state the workflow does not mark
+    /// claimable, which only the lapsed holder can do and only while nobody else
+    /// has claimed since (takomo-jb5i). Renewals and heartbeats leave it false;
+    /// they are not the event worth reporting.
+    pub resumed: bool,
 }
 
 impl Lease {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "ticket": self.ticket,
             "holder": self.holder,
             "fence": self.fence,
             "expires_at": iso(self.expires_at),
-        })
+        });
+        // Additive and only when true: a `"resumed": false` on every lease would
+        // read as a field worth checking, when the answer is almost always no.
+        if self.resumed {
+            out["resumed"] = Value::Bool(true);
+        }
+        out
     }
 }
 

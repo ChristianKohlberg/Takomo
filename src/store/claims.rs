@@ -184,18 +184,28 @@ fn ready_query(
 }
 
 /// Grant a lease inside a write tx: bump fence, set holder + expiry, emit.
+///
+/// `resumed` says this grant is a lapsed holder taking its own lease back in a
+/// non-claimable state (see [`Store::claim_ticket`]); it changes nothing about how
+/// the lease is written — same fence bump, same expiry, same holder lock — only
+/// what the event and the response say happened.
 fn grant_claim(
     conn: &Connection,
     ticket: &Ticket,
     actor: &str,
     ttl_seconds: i64,
     now: i64,
+    resumed: bool,
 ) -> ApiResult<Lease> {
     // If an expired claim is still recorded, clear it first (emits lease_expired).
     clear_expired_claim(conn, ticket, now)?;
     let expires = now + ttl_seconds * 1000;
+    // `lapsed_claim_holder = NULL`: a lease exists again, so there is no lapsed
+    // one to resume. Whoever wins this claim is the only actor the ticket answers
+    // to, which is what makes the marker's absence mean "nothing to resume"
+    // rather than "we forgot".
     conn.execute(
-        "UPDATE tickets SET fence_seq = fence_seq + 1, claim_holder = ?2, claim_expires_at = ?3, version = version + 1, updated_at = ?4 WHERE id = ?1",
+        "UPDATE tickets SET fence_seq = fence_seq + 1, claim_holder = ?2, claim_expires_at = ?3, lapsed_claim_holder = NULL, version = version + 1, updated_at = ?4 WHERE id = ?1",
         params![ticket.id, actor, expires, now],
     )?;
     let fence: i64 = conn.query_row(
@@ -203,13 +213,21 @@ fn grant_claim(
         params![ticket.id],
         |r| r.get(0),
     )?;
+    // Still a `claimed` event, not a kind of its own: this *is* a claim, and every
+    // consumer that tracks who holds what has to see it. The payload flag is what
+    // tells a supervisor counting lapses apart from fresh grants.
+    let mut payload = json!({ "fence": fence, "ttl_seconds": ttl_seconds });
+    if resumed {
+        payload["resumed_after_expiry"] = json!(true);
+        payload["state"] = json!(ticket.state);
+    }
     emit_event(
         conn,
         Some(&ticket.id),
         Some(&ticket.project),
         actor,
         "claimed",
-        json!({ "fence": fence, "ttl_seconds": ttl_seconds }),
+        payload,
         now,
     )?;
     Ok(Lease {
@@ -217,12 +235,91 @@ fn grant_claim(
         holder: actor.to_string(),
         fence,
         expires_at: expires,
+        resumed,
     })
+}
+
+/// What the project workflow says about the state a ticket sits in, as far as
+/// claiming is concerned. Read from the denormalized `workflow_states` table
+/// rather than the stored workflow document for the reason
+/// [`project_claim_ttls`] gives: this is the claim path, and parsing the whole
+/// state machine to learn three flags would put that cost on every claim.
+///
+/// A state the table does not know is treated as not claimable and not
+/// resumable — the fail-closed direction.
+struct StateFacts {
+    claimable: bool,
+    terminal: bool,
+    category: String,
+}
+
+fn state_facts(tx: &Connection, project: &str, state: &str) -> ApiResult<StateFacts> {
+    let row = tx
+        .query_row(
+            "SELECT claimable, terminal, category FROM workflow_states WHERE project = ?1 AND state = ?2",
+            params![project, state],
+            |r| {
+                Ok(StateFacts {
+                    claimable: r.get::<_, i64>(0)? != 0,
+                    terminal: r.get::<_, i64>(1)? != 0,
+                    category: r.get::<_, String>(2)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row.unwrap_or(StateFacts {
+        claimable: false,
+        terminal: false,
+        category: String::new(),
+    }))
+}
+
+/// **The** rule for resuming a lapsed lease in place, in one place, because both
+/// the claim path and the `transition.claim_required` remedy have to agree about
+/// it — an error that offers a call the store then refuses is the defect
+/// takomo-jb5i is about.
+///
+/// True when `actor` may take a lease on a ticket whose state the workflow does
+/// **not** mark claimable. Every clause is load-bearing:
+///
+/// - `!claimable` — where the state *is* claimable the ordinary rules already
+///   work, and they let anyone claim. This path exists only for the states where
+///   the ready queue cannot help.
+/// - `lapsed_holder(now) == Some(actor)` — the whole safety argument. The lease
+///   here ended by expiry, it was *this* actor's, and nothing has claimed,
+///   released or revoked one since (a new claim clears the marker and bumps the
+///   fence). So there is no second worker to diverge from: this is the same actor
+///   picking its own work back up, not a zombie racing a successor. Any other
+///   actor falls through to the ordinary `claim.state` refusal.
+/// - `!terminal` — a finished ticket has nothing to resume, and a lease on it
+///   would show up on the board as work in flight.
+/// - `category != "blocked"` — a parked ticket belongs to the ask-a-human
+///   machinery until the answer lands; taking a lease there would collide with the
+///   resume transition rather than unblock anything.
+pub(super) fn may_resume_lapsed_lease(
+    ticket: &Ticket,
+    actor: &str,
+    now: i64,
+    claimable: bool,
+    terminal: bool,
+    category: &str,
+) -> bool {
+    !claimable && !terminal && category != "blocked" && ticket.lapsed_holder(now) == Some(actor)
 }
 
 impl Store {
     /// Claim a specific ticket. Idempotent renewal when the caller already
     /// holds it.
+    ///
+    /// Two ways to succeed. The ordinary one: the state is claimable, the ticket
+    /// is unclaimed and unblocked. The narrow one, [`may_resume_lapsed_lease`]:
+    /// the caller is the holder whose own lease expired here, in a state the
+    /// workflow does not mark claimable, with nobody having claimed since — the
+    /// way out of the deadlock where `done` demands a claim and `claim` refuses
+    /// the state that `done` is being called from (takomo-jb5i). Fencing is
+    /// untouched by it: the fence still bumps, so the resumed lease supersedes
+    /// every echo of the old one, and an actor that is *not* the lapsed holder is
+    /// refused exactly as before.
     pub fn claim_ticket(
         &self,
         id: &str,
@@ -253,6 +350,7 @@ impl Store {
                         holder: actor.to_string(),
                         fence: t.fence_seq,
                         expires_at: new_expires,
+                        resumed: false,
                     };
                     let fresh = get_ticket_required(tx, id)?;
                     return Ok((fresh, lease));
@@ -267,15 +365,18 @@ impl Store {
                 .details(json!({ "holder": holder, "expires_at": iso(expires) })));
             }
 
-            // State must be claimable per the project workflow.
-            let claimable: bool = tx
-                .query_row(
-                    "SELECT claimable FROM workflow_states WHERE project = ?1 AND state = ?2",
-                    params![t.project, t.state],
-                    |r| r.get::<_, i64>(0).map(|v| v != 0),
-                )
-                .unwrap_or(false);
-            if !claimable {
+            // State must be claimable per the project workflow — or the caller
+            // must be the holder whose lease lapsed right here.
+            let facts = state_facts(tx, &t.project, &t.state)?;
+            let resumed = may_resume_lapsed_lease(
+                &t,
+                actor,
+                now,
+                facts.claimable,
+                facts.terminal,
+                &facts.category,
+            );
+            if !facts.claimable && !resumed {
                 let claimable_states: Vec<String> = {
                     let mut stmt = tx.prepare(
                         "SELECT state FROM workflow_states WHERE project = ?1 AND claimable = 1 ORDER BY state",
@@ -285,19 +386,35 @@ impl Store {
                         .collect::<Result<Vec<_>, _>>()?;
                     states
                 };
+                // Naming the lapsed holder is the difference between "not
+                // claimable" and "not claimable *by you*": an agent that has lost
+                // a race to a successor needs to know it lost, not retry.
+                let whose = match t.lapsed_holder(now) {
+                    Some(h) if h != actor => format!(
+                        " The lease that lapsed in this state belonged to '{h}', so only '{h}' can resume it in place; you cannot."
+                    ),
+                    _ => String::new(),
+                };
                 return Err(ApiError::conflict(
                     "claim.state",
                     format!(
-                        "Ticket '{id}' is in state '{}', which is not claimable. Claimable states in project '{}': {}. Move it with POST /v1/tickets/{id}/transition first, or pick ready work via POST /v1/ready/claim.",
+                        "Ticket '{id}' is in state '{}', which is not claimable. Claimable states in project '{}': {}. Move it with POST /v1/tickets/{id}/transition first, or pick ready work via POST /v1/ready/claim.{whose}",
                         t.state,
                         t.project,
                         claimable_states.join(", ")
                     ),
                 )
+                .details(json!({
+                    "claimable_states": claimable_states,
+                    "lapsed_holder": t.lapsed_holder(now),
+                }))
                 .current_state(t.state.clone()));
             }
 
-            // Must be unblocked (directly or via ancestors).
+            // Must be unblocked (directly or via ancestors). This applies to a
+            // resume too: a dependency that opened while the lease was lapsing is
+            // a real answer, and every guard on the transition the caller wants to
+            // make would stop it a moment later anyway.
             let blockers = open_blockers(tx, id)?;
             if !blockers.is_empty() {
                 return Err(ApiError::conflict(
@@ -310,7 +427,7 @@ impl Store {
                 .details(json!({ "open_blockers": blockers })));
             }
 
-            let lease = grant_claim(tx, &t, actor, ttl, now)?;
+            let lease = grant_claim(tx, &t, actor, ttl, now, resumed)?;
             let fresh = get_ticket_required(tx, id)?;
             Ok((fresh, lease))
         })
@@ -356,6 +473,7 @@ impl Store {
                         holder: actor.to_string(),
                         fence,
                         expires_at: expires,
+                        resumed: false,
                     })
                 }
             }
@@ -385,8 +503,12 @@ impl Store {
                     Err(fence_mismatch_error(id, fence, t.fence_seq))
                 }
                 Some((_, _)) => {
+                    // `lapsed_claim_holder = NULL` for completeness rather than
+                    // repair: the marker cannot be set while a lease is active.
+                    // Letting go on purpose is not a lapse, so nothing here may be
+                    // resumed afterwards.
                     tx.execute(
-                        "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                        "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
                         params![id, now],
                     )?;
                     emit_event(
@@ -422,6 +544,14 @@ impl Store {
     /// *not* bump the fence — a zombie echoing that fence would still be
     /// accepted. Refusing here would make the outcome depend on whether the TTL
     /// happened to elapse a moment before the admin's call.
+    ///
+    /// That holds after the sweep has cleared the claim row too: the lapsed holder
+    /// is then recorded as `lapsed_claim_holder`, and that is not nothing — it is
+    /// permission to resume the lease in place (takomo-jb5i). So a force lands on
+    /// it as well, and the operator's recovery path stays total: for every state in
+    /// which a worker could still take this ticket back, there is a call that stops
+    /// it. Only a ticket with neither an active claim nor a lapsed one is a
+    /// `claim.none`.
     pub fn force_release(
         &self,
         id: &str,
@@ -431,11 +561,15 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
-            let Some(holder) = t.claim_holder.clone() else {
+            let Some(holder) = t
+                .claim_holder
+                .clone()
+                .or_else(|| t.lapsed_claim_holder.clone())
+            else {
                 return Err(ApiError::conflict(
                     "claim.none",
                     format!(
-                        "Ticket '{id}' holds no claim, so there is nothing to force-release. It is already free for the next worker (if its state is claimable). A force-release is not idempotent bookkeeping — it reports what it displaced — so a second call on the same ticket lands here."
+                        "Ticket '{id}' holds no claim and no lapsed one, so there is nothing to force-release. It is already free for the next worker (if its state is claimable) and no earlier holder can resume it. A force-release is not idempotent bookkeeping — it reports what it displaced — so a second call on the same ticket lands here."
                     ),
                 )
                 .remedy(format!(
@@ -443,9 +577,18 @@ impl Store {
                 ))
                 .current_state(t.state.clone()));
             };
-            let lease_expired = t.claim_expires_at.is_some_and(|exp| exp <= now);
+            // True for both lapsed shapes: a claim row whose TTL has passed, and a
+            // claim already swept away leaving only `lapsed_claim_holder` — that
+            // one is by definition an expiry, which is the only thing that sets it.
+            let lease_expired =
+                t.claim_holder.is_none() || t.claim_expires_at.is_some_and(|exp| exp <= now);
+            // `lapsed_claim_holder = NULL` on purpose, and it matters: a force is
+            // an operator taking the ticket away, so the displaced holder must not
+            // be able to resume the lease in place afterwards (takomo-jb5i). The
+            // fence bump alone would not stop that — the resume path does not echo
+            // a fence — so the marker has to go too.
             tx.execute(
-                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, fence_seq = fence_seq + 1, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = NULL, fence_seq = fence_seq + 1, version = version + 1, updated_at = ?2 WHERE id = ?1",
                 params![id, now],
             )?;
             let fence: i64 = tx.query_row(
@@ -508,7 +651,9 @@ impl Store {
             // filter names none, so the lease bounds are only knowable once we
             // know which ticket we got.
             let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
-            let lease = grant_claim(tx, &t, actor, ttl, now)?;
+            // Never a resume: the ready queue only ever hands out tickets in
+            // claimable states, which is the one case the resume path excludes.
+            let lease = grant_claim(tx, &t, actor, ttl, now, false)?;
             let fresh = get_ticket_required(tx, &t.id)?;
             Ok(Some((fresh, lease)))
         })

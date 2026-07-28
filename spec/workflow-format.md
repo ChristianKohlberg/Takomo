@@ -65,6 +65,7 @@ guards:
 **States.**
 - `id` is free-form per project; `category` is one of the six fixed categories (`todo`, `in_progress`, `blocked`, `review`, `done`, `cancelled`) so generic tooling (boards, metrics, the ready queue) can reason about any project without knowing its state names.
 - `claimable: true` marks states whose tickets enter the ready queue (when unclaimed and unblocked). The queue is therefore workflow-driven; there is no separate "ready flag" on tickets.
+  - One exception to "a lease can only be taken in a claimable state", and it is about the *same* worker rather than a new one: an actor whose own lease **expired** in a non-claimable state may claim the ticket again where it stands, as long as nobody has claimed it since (`resumed: true` on the lease). Without it, work that outlived its lease could not be finished at all — the claim-gated exit demanded a lease and the claim was refused because the in-progress state is not claimable. It is not a hole in fencing: a resume bumps `fence_seq` like any claim, a *different* actor is still refused `claim.state`, `terminal` and `blocked`-category states are never resumable, and an admin `force-release` ends the right to resume. See `POST /tickets/{id}/claim` in openapi.yaml.
 - `terminal: true` states end the lifecycle; terminal tickets are excluded from blocking computations (a done blocker no longer blocks).
 
 **Transitions.**
