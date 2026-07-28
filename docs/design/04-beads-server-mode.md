@@ -1,5 +1,12 @@
 # Research: beads (bd) server mode as a central fleet service
 
+> **Frozen third-party research, verified 2026-07-18 — and it expires itself.** The paragraph below already
+> warns that anything older than ~March 2026 about beads server mode is likely stale; by the same standard this
+> file is now stale too. It is kept as the evidence behind rejecting Dolt in
+> [05-build-architecture.md](05-build-architecture.md), not as current information about beads. It makes no
+> claim about Takomo's own architecture; for that read the **Architecture** section of
+> [CLAUDE.md](../../CLAUDE.md).
+
 Verified 2026-07-18 against gastownhall/beads (moved from steveyegge/beads; 25.4k stars). Current release v1.1.0 (2026-07-04); docs re-aligned to v1.1.0 on 2026-07-17. Anything older than ~March 2026 about beads server mode is likely stale (heavy churn 0.56→0.60→1.x).
 
 ## 1. Server mode mechanics

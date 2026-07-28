@@ -1,5 +1,17 @@
 # Design brief: takomo `/board` and `/inbox`
 
+> **Historical prompt artifact — written against an HTML snapshot that no longer exists.** This was a one-shot
+> brief to seed a design project, not a description of the surfaces as they are. The redesign it asked for has
+> since landed, so its "existing state" claims are the *old* state. Its framing of the problem (one system, two
+> mental models; chip soup; triage ergonomics) is why the file is kept.
+>
+> Its **"Existing visual language" section was corrected in place** rather than annotated, because the palette
+> it listed would have driven a regression — see the note there. Everywhere else the original prose stands, with
+> **Shipped:** notes where the code has moved past it.
+>
+> If you are briefing design work today, re-derive the current state from `src/board.html` and `src/inbox.html`
+> and from the **Architecture** section of [CLAUDE.md](../../CLAUDE.md); do not copy facts out of this file.
+
 Seed this into a Claude Design project (paste as the first message / project brief),
 then attach the current `src/board.html` and `src/inbox.html` as the "current state"
 so it designs *forward* from what exists, not greenfield.
@@ -23,7 +35,22 @@ agent), `archived`. A card opens a **detail drawer**: body, comments, dependenci
 A **share mode** (`#s=<token>`) renders a read-only, scope-bounded view. Recently gained a
 lightweight **"Ask a human" drawer + unread badge**.
 
+> **Shipped:** `/board` is no longer read-only. It answers questions from its ask-a-human drawer, and it
+> PUTs per-project settings from a settings sheet (those two PUTs are the admin-gated part; the sheet itself
+> opens read-only for any token). Only *share mode* is read-only. Two other details in the paragraph above
+> have moved: priority no longer drives a left-border color — it is a 4-bar rank glyph on the card plus a
+> colored word in the drawer — and the board carries full DE/EN string tables. Live updates poll
+> `GET /v1/events?since=<cursor>`; the SSE stream is not used, because the browser `EventSource` API cannot
+> set an `Authorization` header.
+
 ## Surface 2 — `/inbox` (new; the main design target)
+
+> **Shipped:** "new" dates this section. `/inbox` is now the board's equal in weight — the two files are
+> within a hundred lines of each other — and it carries DE/EN string tables, deep-linkable and bookmarkable
+> `#q=<id>&folder=…&project=…&ticket=…` URLs, and follow-up threads on a question. The three-pane shape, the
+> four folders and the kind-adaptive answer controls described below all landed; the "first-cut"
+> characterisation at the bottom of this file no longer applies.
+
 An **email-style triage surface** for the ask-a-human board. A stuck agent raises a
 **question** tied to a ticket; a human answers, which unblocks the work. Three panes:
 - **Folder rail:** status folders with counts — Open / Answered / Withdrawn / Expired. A
@@ -44,11 +71,27 @@ Plus `title`, `body`, `options[]`, `recommended` (agent's suggested answer), `ex
 (`#a=<token>`) an outside expert opens from a link — just the one question + answer control.
 
 ## Existing visual language (match it — the surfaces must feel like one product)
-CSS custom-property tokens, Jira/Trello-adjacent. Light: `--bg #f4f5f7`, `--panel #fff`,
-`--text #172b4d`, `--muted #6b778c`, `--border #dfe1e6`, `--accent #0052cc`;
-priority/urgency: `--crit #de350b`, `--high #ff8b00`, `--normal #0065ff`, `--low #6b778c`;
-chips `--chip-bg #dfe1e6` / `--chip-text #42526e`. Dark variants exist for all. Keep this
-token system; evolve layout / typography / hierarchy, not the palette identity.
+
+> **Corrected, not annotated.** The hex values that stood here described a Jira/Trello-adjacent palette
+> that no longer appears anywhere in `src/`, and the section told the reader to "keep this token system" — so
+> following it would have reverted a redesign that has since landed. The replacement below describes what is
+> actually in the tree. It is deliberately not a value list: read the tokens from the code.
+
+The mechanism is unchanged — CSS custom properties in a `:root` block, light default plus a
+`prefers-color-scheme: dark` override, every value present in both themes. The palette is the
+self-described **Aquarelle** one, shared by both surfaces: a cool paper-grey ground, white panels, a
+deep-blue `--accent` for primary and critical emphasis, a warm earth `--crit` for error/reject/bug, a
+green `--ok`, and a blue urgency ramp descending to grey (`--high` → `--normal` → `--low`).
+
+The **authority is the `:root` block at the top of `src/board.html`**, mirrored in `src/inbox.html` (the
+inbox carries a few extra tokens of its own). Read it there; do not copy values out of this file. The
+still-valid instruction is the one this section ended on: evolve layout, typography and hierarchy, not the
+palette identity.
+
+Also load-bearing, and stated in the code's own comment: **each attribute is encoded exactly once.**
+Priority is a rank glyph on a card and a single colored word in the drawer, identifiers are monospace, and
+the card that matters is a tinted field — deliberately *not* a colored left border (see the note under
+Surface 1).
 
 ## The design challenges (what "good" must solve)
 1. **One system, two mental models.** Board is *spatial* (kanban); inbox is *sequential*

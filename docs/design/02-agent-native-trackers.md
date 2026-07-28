@@ -1,5 +1,11 @@
 # Research: task trackers built for AI coding agents (mid-2026 survey)
 
+> **Frozen third-party survey, mid-2026.** Input to the adopt-vs-build decision in
+> [00-synthesis.md](00-synthesis.md), deliberately not maintained: it describes other people's projects as they
+> stood then, and this is the fastest-moving corner of the field — star counts, storage backends and whole
+> projects have changed since. Re-verify anything you intend to act on. It makes no claim about Takomo's own
+> architecture; for that read the **Architecture** section of [CLAUDE.md](../../CLAUDE.md).
+
 Requirement lens: one central hosted source of truth + basic auth + hierarchical epics + arbitrary metadata + real state machine, writable concurrently by parallel orchestrators on different machines.
 
 ## 1. beads (bd) — steveyegge/beads → now gastownhall/beads

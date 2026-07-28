@@ -30,7 +30,7 @@ The integration tests start real server instances against temporary SQLite DBs, 
 | `spec/` | The OpenAPI contract, the workflow format, and the auth model. |
 | `workflows/` | Shipped workflow definitions, and the canonical source for them: `factory-default.yaml` (embedded by `src/workflow.rs`, what the server gives a project created without one) and `simple.yaml` (what the CLI's `takomo init` applies). Copies elsewhere are pinned to these by unit tests. |
 | `scripts/` | Dev-loop helpers, e.g. the backlot `auth.token` hook. |
-| `docs/design/` | The adopt-vs-build evaluation and architecture notes. |
+| `docs/design/` | **Historical** design records from July 2026 (adopt-vs-build evaluation, third-party surveys, the original build plan) — the reasoning behind the design, not a description of the current code. Every file carries a banner saying so; do not verify behaviour against them. |
 
 ## A running instance for manual testing — backlot
 

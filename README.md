@@ -147,7 +147,7 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 - [spec/workflow-format.md](spec/workflow-format.md) — the per-project state-machine format.
 - [spec/auth.md](spec/auth.md) — tokens, scopes, and the auth model.
 - [clients/cli/README.md](clients/cli/README.md) · [clients/mcp/README.md](clients/mcp/README.md) · [plugins/takomo/README.md](plugins/takomo/README.md) — the client surfaces.
-- [docs/design/](docs/design/) — the adopt-vs-build evaluation, architecture, and DX-gap notes.
+- [docs/design/](docs/design/) — **historical** design records from July 2026: the adopt-vs-build evaluation, the third-party surveys behind it, and the build plan. Kept as the reasoning behind the shape of this thing; deliberately not kept in sync, so read the docs above for what Takomo does today.
 
 ## License
 
