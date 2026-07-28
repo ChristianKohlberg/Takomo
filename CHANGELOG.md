@@ -74,6 +74,24 @@ single ticket.
 
 ### Fixed
 
+- **`/board` is usable on a phone.** The board had no responsive design at all:
+  its only non-colour media query styled the Settings modal. On a 390px screen
+  the header wrapped into five to seven rows — 200–260px of *pinned* chrome,
+  about a third of the display — and behind it eight fixed 270px columns formed
+  a ~2,270px strip you scrolled sideways with no snap and no idea where you
+  were. Below 760px (the width `/inbox` already changes shape at) the columns
+  now stack into **one vertical scroll**: the same states in the same workflow
+  order, cards priority-sorted within each exactly as before, and an empty state
+  collapsed to its heading line so all eight stay visible at a glance. Nothing
+  scrolls sideways. The header collapses with it — `Refresh`, `Sign out`,
+  `Settings` and `Ask a human` become glyph buttons that keep their names as
+  `aria-label`s, and every filter moves behind one `Filters` control — taking
+  the resting header from ~200–260px to **105px**, two deliberate rows. The
+  ticket and tag-value typeaheads go full width inside that panel, so their
+  popups track the control instead of hanging off it; a wide phone or a small
+  tablet fits two cards abreast. The desktop board is pixel-for-pixel unchanged:
+  the reveal is CSS-only, so no new code runs above 760px.
+
 - **`/inbox` presentation: a stable undo button, a readable queue, one banner
   fewer.** Three faults reported from real use, all in the reading surface.
   The **undo snackbar** rebuilt its whole subtree once a second so that one

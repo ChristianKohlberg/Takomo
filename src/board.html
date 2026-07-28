@@ -83,6 +83,17 @@
     text-align: center; margin-left: 6px; line-height: 17px;
   }
   .badge.zero { display: none; }
+  /* Every header action carries both a word and a glyph, and exactly one of
+     them is ever visible: the word on a desktop, the glyph on a phone. The
+     button's accessible name comes from an aria-label set in applyChrome, so
+     hiding the word never costs a screen reader anything. */
+  header .ico { display: none; font-size: 15px; line-height: 1; }
+  /* The filter cluster. On a desktop `display: contents` dissolves it — its
+     children lay out in the header's flex row exactly as the loose controls
+     did before, same order, same gap, same everything. Only the phone
+     stylesheet turns it back into a real box (a panel behind one control). */
+  #filters { display: contents; }
+  .filtbtn { display: none; }
 
   .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .langtoggle span { font-size: 12px; font-weight: 680; padding: 5px 10px; cursor: pointer; color: var(--muted); }
@@ -336,6 +347,77 @@
   #gate button { width: 100%; margin-top: 18px; height: 46px; }
   #gate .err { color: var(--crit); font-size: 13px; margin-top: 12px; min-height: 18px; }
   .hidden { display: none !important; }
+
+  /* ---- phone layout ---------------------------------------------------
+     The answered design (takomo-vqeh): the columns become sections down ONE
+     vertical scroll — same workflow order, same priority sort inside each,
+     empty states collapsed to their heading line. No sideways scrolling, no
+     swiping, no state picker. The board is read-only, so a column is a way of
+     laying information out, not a workspace; stacking loses nothing you could
+     have acted on.
+
+     Companion work the answer called for: the header collapses to icon
+     buttons with every filter behind one control, because at 390px the
+     wrapped header alone was ~200-260px of pinned chrome — a third of the
+     screen — before you reached a card.
+
+     Two rules this block keeps to. (1) CSS does the revealing: the script
+     never measures the viewport, so a desktop reader runs exactly the code it
+     ran before and sees exactly the pixels it saw before. (2) 760px is
+     /inbox's breakpoint, reused deliberately so the two surfaces change shape
+     at the same width rather than inventing a second idiom. */
+  @media (max-width: 760px) {
+    header { gap: 8px; row-gap: 6px; padding: 8px 12px; min-height: 0; }
+    .brand span { display: none; }               /* the mark alone; the tab already says takomo */
+    .nav a, .nav span.navpill { padding: 7px 10px; }
+    header .lbl { display: none; }
+    header .ico { display: inline-block; }
+    header button.ghost, header .iconbtn { min-height: 38px; padding: 7px 10px; }
+    .langtoggle span { padding: 9px 10px; }
+    /* The spacer becomes a zero-height full-width break, so the header is two
+       deliberate rows — navigation on the first, actions on the second — and
+       not whatever the wrap happens to produce for a given locale. */
+    header .grow { flex: 0 0 100%; height: 0; }
+    #inbox-btn { margin-left: auto; }
+    .share-banner, .share-exp { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Filters behind one control. Closed by default, so the resting header is
+       navigation plus actions and nothing else. */
+    .filtbtn { display: inline-flex; align-items: center; gap: 6px; }
+    #filters, header .archtoggle { display: none; }
+    body.filters-open #filters {
+      display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; order: 10;
+      padding: 10px; border: 1px solid var(--border-soft); border-radius: 10px;
+      background: var(--col-bg);
+    }
+    body.filters-open header .archtoggle { display: inline-flex; flex: 1 1 100%; order: 11; padding: 0 2px; }
+    /* One control per line: a 150-220px cap is what made these unreadable on a
+       phone in the first place. */
+    #filters > select, #filters > .ta, #filters > .grouptoggle { flex: 1 1 100%; max-width: none; }
+    header #filters select { max-width: none; width: 100%; }
+    #filters .ta input, #filters .ta.narrow input { width: 100%; }
+    /* The typeahead popup hangs off a control that is now full width, so it
+       tracks that width instead of its own fixed 190/420px. */
+    .ta-pop { max-width: 100%; }
+    .ta-list { max-height: 40vh; }
+
+    /* The board itself: columns stacked into one scroll. */
+    #board {
+      flex-direction: column; align-items: stretch; gap: 16px;
+      padding: 14px 12px 32px; overflow-x: hidden; min-height: 0;
+    }
+    /* `flex: 0 0 270px` is a WIDTH in a row and a HEIGHT in a column — it has
+       to go, or every section would be 270px tall. */
+    .column { flex: 0 0 auto; width: 100%; max-width: none; gap: 8px; }
+    .column h2 { justify-content: space-between; padding: 0 2px 6px; border-bottom: 1px solid var(--border-soft); }
+    .column.empty { gap: 0; }
+    .column.empty h2 { opacity: .6; border-bottom-color: transparent; }
+    .column.empty .cards { display: none; }      /* an empty state is one line, nothing more */
+    /* A wide phone or a small tablet fits two cards abreast; 390px fits
+       exactly one, which is today's column order read top to bottom. */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); align-items: start; }
+    .cards > .subhd, .cards > .morebtn, .cards > .empty-col { grid-column: 1 / -1; }
+  }
 </style>
 </head>
 <body>
@@ -359,21 +441,24 @@
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
   <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a></nav>
-  <select id="projsel" title="project"></select>
-  <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
-  <div id="tickfilter" class="ta hidden"></div>
-  <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
-  <div id="tagvalfilter" class="ta narrow hidden"></div>
-  <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
+  <button class="ghost filtbtn" id="filters-btn" aria-expanded="false" aria-controls="filters"><span id="filters-label">Filters</span><span class="ico" aria-hidden="true">▾</span></button>
+  <div id="filters">
+    <select id="projsel" title="project"></select>
+    <select id="epicsel" class="epicsel hidden" title="filter by epic"></select>
+    <div id="tickfilter" class="ta hidden"></div>
+    <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
+    <div id="tagvalfilter" class="ta narrow hidden"></div>
+    <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
+  </div>
   <span class="share-banner" id="share-scope"></span>
   <span class="grow"></span>
   <span class="status share-exp" id="share-exp"></span>
   <label class="archtoggle"><input type="checkbox" id="showarch"> <span id="arch-label">archived</span></label>
-  <button class="iconbtn ghost" id="inbox-btn"><span id="askhuman-label">Ask a human</span><span class="badge zero" id="inbox-count">0</span></button>
+  <button class="iconbtn ghost" id="inbox-btn"><span class="lbl" id="askhuman-label">Ask a human</span><span class="ico" aria-hidden="true">?</span><span class="badge zero" id="inbox-count">0</span></button>
   <div class="langtoggle"><span id="lang-de">DE</span><span id="lang-en">EN</span></div>
-  <button class="ghost hidden" id="settings-btn"><span id="settings-label">Settings</span></button>
-  <button class="ghost" id="refresh"><span id="refresh-label">Refresh</span></button>
-  <button class="ghost" id="signout"><span id="signout-label">Sign out</span></button>
+  <button class="ghost hidden" id="settings-btn"><span class="lbl" id="settings-label">Settings</span><span class="ico" aria-hidden="true">⚙</span></button>
+  <button class="ghost" id="refresh"><span class="lbl" id="refresh-label">Refresh</span><span class="ico" aria-hidden="true">↻</span></button>
+  <button class="ghost" id="signout"><span class="lbl" id="signout-label">Sign out</span><span class="ico" aria-hidden="true">⎋</span></button>
 </header>
 
 <div id="board"></div>
@@ -509,6 +594,7 @@
       taCount:"{n} Treffer",
       taCount1:"1 Treffer",
       taTagValue:"Nach Tag-Wert filtern (Handle oder Name)",
+      filters:"Filter",
     },
     en: {
       board:"Board",
@@ -599,6 +685,7 @@
       taCount:"{n} matches",
       taCount1:"1 match",
       taTagValue:"Filter by tag value (handle or name)",
+      filters:"Filters",
     },
   };
   var initialLang = (localStorage.getItem(LS_LANG) || ((navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en"));
@@ -908,6 +995,16 @@
   $("g-token").addEventListener("change", function () {
     state.token = $("g-token").value.trim();
     if (state.token) { localStorage.setItem(LS_TOKEN, state.token); loadProjectList(); }
+  });
+
+  // Phone header: one control reveals the whole filter cluster. The button is
+  // in the DOM on every viewport and CSS alone decides whether it is visible,
+  // so a desktop reader can never reach this handler — the same CSS-only
+  // reveal /inbox drives its list/read panes with.
+  $("filters-btn").addEventListener("click", function () {
+    var open = !document.body.classList.contains("filters-open");
+    document.body.classList.toggle("filters-open", open);
+    $("filters-btn").setAttribute("aria-expanded", open ? "true" : "false");
   });
 
   $("signout").addEventListener("click", function () {
@@ -1588,7 +1685,10 @@
     colOrder.forEach(function (sid) {
       var items = (byState[sid] || []).slice().sort(bySort);
       var isDone = catOf[sid] === "done";
-      var col = el("div", "column" + (isDone ? " done" : ""));
+      // `empty` is a fact about the data, not about the viewport — the phone
+      // stylesheet is what decides to collapse such a section to its heading
+      // line, and the desktop stylesheet ignores the class entirely.
+      var col = el("div", "column" + (isDone ? " done" : "") + (items.length === 0 ? " empty" : ""));
       var h = el("h2");
       h.appendChild(el("span", null, sid));
       h.appendChild(el("span", "count", String(items.length)));
@@ -2280,6 +2380,14 @@
     var gl = $("group-label"); if (gl) gl.textContent = L().groupEpic;
     $("refresh-label").textContent = L().refresh; $("signout-label").textContent = L().signout;
     $("settings-label").textContent = L().settings; $("settings-btn").title = L().setTitle;
+    $("filters-label").textContent = L().filters;
+    // On a phone these buttons show a glyph instead of their word, so the name
+    // has to live on the button itself or it disappears for a screen reader.
+    $("inbox-btn").setAttribute("aria-label", L().askHuman);
+    $("refresh").setAttribute("aria-label", L().refresh);
+    $("signout").setAttribute("aria-label", L().signout);
+    $("settings-btn").setAttribute("aria-label", L().settings);
+    $("filters-btn").setAttribute("aria-label", L().filters);
     var fi = document.querySelector("#inbox .full"); if (fi) fi.textContent = L().fullInbox;
     $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
     document.documentElement.lang = state.lang;
