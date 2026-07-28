@@ -17,19 +17,33 @@ ad-hoc port nothing else can find.
 ```sh
 backlot status                     # existing envs — check before spinning anything up
 BACKLOT_HOLDER_PID=$$ backlot up   # build, seed, serve, wait for /healthz, print URL + port
-backlot token --role human         # bearer token for /board and /inbox
+backlot up --ttl 900               # …but from an agent, use this instead — see below
+backlot token --role human         # bearer token for /board and /inbox  (prints JSON)
 backlot ctx                        # URLs/ports as one blob
 backlot run api                    # integration suite with a work-vs-env-vs-infra verdict
 backlot release                    # return the env to the pool, warm
 ```
 
-`BACKLOT_HOLDER_PID=$$` frees the lease when the shell exits. Roles map onto scopes via
+**`BACKLOT_HOLDER_PID=$$` only works from an interactive shell.** It frees the lease when *that*
+shell exits, which is right for a human at a terminal and useless for an agent: an agent harness
+runs each command in a fresh shell, so the holder is dead the instant `backlot up` returns and the
+lease is released before the next command. Agents should use `backlot up --ttl <secs>` and call
+`backlot release` explicitly. `backlot token` prints JSON (`{"token":…,"role":…}`), not a bare
+string — parse it.
+
+Roles map onto scopes via
 `scripts/backlot-token.sh`: `agent` → `read,write`; `human` → `+human`; `admin` → `+admin`;
 `expert` → `+expert:domain:billing,expert:domain:product` (the scope the seeded `approve`
 question gates on — a plain `human` token is refused there by design). A session lease seeds the
 `dev` preset: a `demo` project with ten tickets across every workflow state plus claims, a
 dependency, an epic, and questions of all four kinds — which is what makes `/board` and `/inbox`
 worth looking at. A `backlot run` lease defaults to `empty`.
+
+If a session lease comes up with **no `demo` project**, the preset is not broken — check the lease
+first. A lease whose holder process is gone (`backlot status` → `holderAlive: false`, which is what
+`BACKLOT_HOLDER_PID=$$` produces from an agent) is reclaimable while you are still using it, and the
+next bind can take the env out from under you; a `backlot run` bind then seeds it `empty`. Hold the
+lease with `--ttl` and the store stays yours.
 
 ## Build, test, lint
 
@@ -107,6 +121,26 @@ because the repo **squash-merges** PRs — the original commits never become anc
 commit. Decide whether work has landed by comparing content (`git diff main <branch>`, or the trees),
 never by ancestry.
 
+### Share one `target/` across worktrees
+
+A worktree gets its own empty `target/`, so a fresh one pays a full cold release build — with LTO
+and 240-odd dependencies that is minutes, and the dependency half of it is identical work every
+time. Point every checkout at one directory instead:
+
+```sh
+export CARGO_TARGET_DIR="$HOME/.cache/takomo-target"   # any path outside the worktrees
+```
+
+Cargo takes a file lock on the target directory, so concurrent builds **queue rather than corrupt** —
+correct, but it does mean two agents building at once serialize. Fingerprints are content-keyed, so
+switching branches re-runs only what actually differs; the dependency graph is built once and reused
+by every worktree from then on. Do not commit this as `.cargo/config.toml`: the path is
+machine-specific, and a committed absolute path breaks everyone else's checkout.
+
+If build concurrency ever matters more than the disk, `RUSTC_WRAPPER=sccache` composes with this and
+caches per-crate output instead of serializing — but it helps codegen, not the LTO link, so the win
+on `--release` is smaller than it looks. Measure before adopting it.
+
 ## Architecture
 
 **One binary, four surfaces** (`src/server.rs` assembles them):
@@ -166,6 +200,11 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
 
 ## Conventions that bite
 
+- **There is no changelog. Do not add one.** The release notes are the squashed commit subjects and
+  the tickets they name; `git log --oneline` and `takomo show <id>` are the record. A `CHANGELOG.md`
+  was removed deliberately: every change appended to the top of the same `[Unreleased]` section, so
+  it conflicted on essentially every rebase while duplicating what the commit already said. If you
+  want a release note, write a good commit subject.
 - Every new/changed HTTP route ships with an integration test **and** an `spec/openapi.yaml`
   update. The spec is the contract and it drifts silently.
 - `spec/openapi.yaml` must stay a *valid* OpenAPI **3.1** document, not merely parseable YAML.
