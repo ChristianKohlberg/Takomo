@@ -55,9 +55,20 @@ pub(crate) fn spend_grant(conn: &Connection, id: &str, now: i64) -> ApiResult<bo
     Ok(n > 0)
 }
 
-/// Default answer-link lifetime when the caller omits `ttl_seconds`: 72 hours.
-pub const DEFAULT_ANSWER_TTL_SECONDS: i64 = 3 * 86_400;
-/// Hard cap on answer-link lifetime: 30 days.
+/// Answer-link lifetime when neither the mint call nor the project sets one:
+/// 7 days. An outside expert is asked once and answers on their own schedule,
+/// so a link that dies over a weekend costs a second round of chasing; the
+/// grant is single-use and scoped to one question, so the exposure a longer
+/// window buys is that one question rather than a standing credential.
+///
+/// Precedence when minting: an explicit `ttl_seconds` on the request beats the
+/// project's `answer_link_ttl_seconds`, which beats this.
+pub const DEFAULT_ANSWER_TTL_SECONDS: i64 = 7 * 86_400;
+/// Hard cap on answer-link lifetime: 30 days. Deliberately the same number as
+/// [`crate::store::MAX_SHARE_TTL_SECONDS`] — it answers the same question ("how
+/// long may a link handed to someone outside the org stay alive"), and it bounds
+/// an explicit `ttl_seconds` and a project default identically, so the setting
+/// can never express a lifetime a per-call `--ttl` would be refused.
 pub const MAX_ANSWER_TTL_SECONDS: i64 = 30 * 86_400;
 
 const GRANT_COLS: &str =

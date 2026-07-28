@@ -11,8 +11,9 @@ Naming things, and proving them. Tickets can carry **tags** from a per-project
 registry, so a project names the people, components and teams it cares about
 instead of encoding them in free text. `done` can be made **checkable** — a
 project can require the closing commit as a link. Projects can declare the
-**house style** agents write in, and both web surfaces can be narrowed to a
-single ticket.
+**house style** agents write in — and how long an **answer link** handed to an
+outside expert stays valid — and both web surfaces can be narrowed to a single
+ticket.
 
 ### Added
 
@@ -54,6 +55,26 @@ single ticket.
   off list responses, which are per ticket where the conventions are per project.
   Also on `takomo_workflow` as `style_guide`. Advisory, never enforced. Editable,
   with the question language, from a project-settings sheet on `/board`.
+
+- **Answer links last a week, and a project can set its own.** The link you hand
+  an outside expert to answer exactly one question now lives **7 days** by
+  default instead of 3 — long enough to survive a weekend, since the expert
+  answers on their own schedule and chasing them again costs more than the
+  exposure of one single-use, one-question grant. Projects can set their own
+  default: `PUT /v1/projects/{project}/answer-link-ttl` (admin),
+  `answer_link_ttl_seconds` at project creation, `takomo project answer-ttl demo
+  14d`, or a lifetime picker on the `/board` Settings sheet beside the
+  question-language and style-guide fields. Precedence is most-specific-first: an
+  explicit `--ttl` on the mint call, then the project default, then the built-in
+  week — and the mint response now reports both the lifetime applied
+  (`ttl_seconds`) and where it came from (`ttl_source`). Bounded at 30 days, the
+  same cap share links carry and exactly the bound an explicit `--ttl` already
+  had: an answer link is a credential handed outside the org, so no setting can
+  turn it into a standing one. Unlike the other two project settings this one is
+  enforced rather than advisory, so writing it needs `admin` — a non-admin sees it
+  read-only on the sheet, like the rest. `takomo answer-link --ttl` and `takomo
+  project answer-ttl` take the same `7d` / `24h` / `90m` / `3600s` durations
+  `takomo share --ttl` does.
 
 - **Filter the queue and the board by one ticket.** Both surfaces could already
   be narrowed by epic or expertise, but neither answered "what is still open on

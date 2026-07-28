@@ -1561,11 +1561,15 @@ impl TakomoMcp {
         let p = self.state.store.get_project(project)?;
         let lang = p.as_ref().and_then(|p| p.question_language.clone());
         let style = p.as_ref().and_then(|p| p.style_guide.clone());
+        // null = the project sets no default, so an answer link minted for one
+        // of its questions lives for the built-in DEFAULT_ANSWER_TTL_SECONDS.
+        let link_ttl = p.as_ref().and_then(|p| p.answer_link_ttl_seconds);
         Ok(json!({
             "ok": true,
             "workflow": wf,
             "question_language": lang,
             "style_guide": style,
+            "answer_link_ttl_seconds": link_ttl,
         }))
     }
 

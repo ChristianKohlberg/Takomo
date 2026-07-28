@@ -453,6 +453,51 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { description: The style guide exceeds 2000 characters }
 
+  /projects/{project}/answer-link-ttl:
+    put:
+      tags: [workflow]
+      summary: Set the project's default answer-link lifetime (admin scope)
+      description: |
+        How long an answer link minted for one of this project's questions
+        (`POST /questions/{id}/answer-link`) stays valid, in seconds.
+
+        Unlike the language and style settings this one is **enforced**, not
+        advisory: an answer link is a bearer credential handed to someone outside
+        the org, so its lifetime is not a preference a worker token gets to
+        change — hence `admin`, and hence a hard maximum.
+
+        Precedence when minting, most specific first: an explicit `ttl_seconds`
+        on the mint call, then this project setting, then the built-in default of
+        604800 seconds (7 days). Send `{"ttl_seconds": null}` to clear the
+        project default and fall back to that built-in.
+
+        Bounds are exactly those of an explicit `ttl_seconds`: a positive integer
+        no larger than 2592000 (30 days, the same cap share links carry). Outside
+        them is a `422 project.answer_link_ttl`.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_seconds]
+              properties:
+                ttl_seconds:
+                  type: [integer, "null"]
+                  minimum: 1
+                  maximum: 2592000
+                  description: 'seconds an answer link stays valid; null clears the project default (falls back to 7 days)'
+      responses:
+        "200":
+          description: The updated project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { description: The lifetime is not a positive integer of at most 2592000 seconds }
+
   /tickets:
     post:
       tags: [tickets]
@@ -1537,6 +1582,12 @@ paths:
         scoped, expiring, single-use `tka_` token (shown once) plus the
         `#a=<token>` board path. The holder can read and answer ONLY this
         question, via `/v1/answer/self`, and nothing else.
+
+        Lifetime precedence, most specific first: an explicit `ttl_seconds` here,
+        then the question's project `answer_link_ttl_seconds` (see
+        `PUT /projects/{project}/answer-link-ttl`), then the built-in default of
+        604800 seconds (7 days). The response echoes the lifetime applied as
+        `ttl_seconds` and where it came from as `ttl_source`.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1546,7 +1597,11 @@ paths:
             schema:
               type: object
               properties:
-                ttl_seconds: { type: integer, description: 'Link lifetime (default 3 days, max 30 days)' }
+                ttl_seconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 2592000
+                  description: 'Link lifetime in seconds. Omit to use the project default and then the built-in 7 days; max 30 days.'
                 actor: { type: string, description: 'Who the answer is attributed to (default human:link:<qid>)' }
       responses:
         "201":
@@ -1561,6 +1616,11 @@ paths:
                       token: { type: string, description: 'tka_… — shown once' }
                       path: { type: string, description: '/board#a=<token>' }
                       url: { type: string, description: 'Full URL when TAKOMO_PUBLIC_URL is set' }
+                      ttl_seconds: { type: integer, description: 'The lifetime actually applied, in seconds' }
+                      ttl_source:
+                        type: string
+                        enum: [explicit, project, default]
+                        description: 'Where that lifetime came from: this request, the project setting, or the built-in default'
         "403":
           description: Token lacks `human` (or the `expert:<tag>` an approve link needs).
           content:
@@ -1949,6 +2009,11 @@ components:
         workflow: { type: string, description: workflow name in effect }
         question_language: { type: [string, "null"], description: 'Human-facing language agents should phrase ask-a-human questions in (e.g. "German"); null = no preference' }
         style_guide: { type: [string, "null"], description: "House style for the text agents write on this project — ticket titles/bodies, comments, and human-facing questions; null = no preference" }
+        answer_link_ttl_seconds:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 2592000
+          description: "Default lifetime of an answer link minted for one of this project's questions; null = unset, so minting falls back to the built-in 604800 seconds (7 days)"
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -1960,6 +2025,11 @@ components:
         workflow: { $ref: "#/components/schemas/Workflow" }
         question_language: { type: string, description: 'Optional: the human-facing question language for the project' }
         style_guide: { type: string, description: "Optional: the project's house style for agent-written text (max 2000 characters)" }
+        answer_link_ttl_seconds:
+          type: integer
+          minimum: 1
+          maximum: 2592000
+          description: "Optional: the project's default answer-link lifetime in seconds (max 2592000; omit to use the built-in 7 days)"
 
     Tag:
       type: object

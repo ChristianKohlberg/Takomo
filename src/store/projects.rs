@@ -1,5 +1,6 @@
 //! Projects and workflow management.
 
+use super::answer_grants::MAX_ANSWER_TTL_SECONDS;
 use super::helpers::{emit_event, get_workflow, sync_workflow_states};
 use super::model::Project;
 use super::Store;
@@ -7,6 +8,12 @@ use crate::error::{ApiError, ApiResult};
 use crate::ids::now_ms;
 use crate::workflow::Workflow;
 use rusqlite::{params, Connection, OptionalExtension};
+
+/// The columns every `Project` read selects, in the order `row_to_project`
+/// expects. One literal so a new setting cannot be added to one query and
+/// forgotten in the other.
+const PROJECT_COLS: &str =
+    "id, name, workflow_json, question_language, style_guide, answer_link_ttl_seconds, created_at";
 
 /// Cap on a project's style guide. It is attached to work-loop responses an
 /// agent reads constantly, so it has to stay a glanceable convention rather
@@ -54,10 +61,78 @@ impl Conventions {
     }
 }
 
+/// Validate a project's answer-link default lifetime: `None` (or a cleared
+/// setting) means "unset — fall back to [`DEFAULT_ANSWER_TTL_SECONDS`]".
+///
+/// Bounded by exactly the rule that bounds an explicit `ttl_seconds` on a mint
+/// call — a positive integer no larger than [`MAX_ANSWER_TTL_SECONDS`] — so the
+/// project default can never express a lifetime a per-call `--ttl` would be
+/// refused, and there is one number to remember instead of two. The cap is the
+/// point: an answer link is a credential handed to someone outside the org, and
+/// an unbounded default would make it a standing one.
+///
+/// [`DEFAULT_ANSWER_TTL_SECONDS`]: super::DEFAULT_ANSWER_TTL_SECONDS
+pub fn normalize_answer_link_ttl(secs: Option<i64>) -> ApiResult<Option<i64>> {
+    let Some(s) = secs else { return Ok(None) };
+    if s <= 0 || s > MAX_ANSWER_TTL_SECONDS {
+        return Err(ApiError::validation(
+            "project.answer_link_ttl",
+            format!(
+                "answer_link_ttl_seconds is {s}; it must be a positive number of seconds no larger than {MAX_ANSWER_TTL_SECONDS} (30 days). That is the same bound an explicit ttl_seconds on POST /v1/questions/{{id}}/answer-link carries, because an answer link is a credential handed outside the org. Send null to clear the default and fall back to 7 days."
+            ),
+        )
+        .details(serde_json::json!({
+            "answer_link_ttl_seconds": s,
+            "max_seconds": MAX_ANSWER_TTL_SECONDS,
+        })));
+    }
+    Ok(Some(s))
+}
+
 /// Treat a stored blank as unset: a guide cleared to whitespace must read as
 /// "no preference", not as an empty hint an agent has to interpret.
 fn nonblank(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
+}
+
+/// One project row as [`PROJECT_COLS`] selects it, before the workflow JSON is
+/// parsed.
+type ProjectRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    i64,
+);
+
+fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+    ))
+}
+
+fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
+    let (id, name, wf_raw, question_language, style_guide, answer_link_ttl_seconds, created_at) =
+        row;
+    let workflow = serde_json::from_str(&wf_raw)
+        .map_err(|e| ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}")))?;
+    Ok(Project {
+        id,
+        name,
+        workflow,
+        question_language,
+        style_guide,
+        answer_link_ttl_seconds,
+        created_at,
+    })
 }
 
 /// Which questions belong to a project, as a reusable SQL predicate over `?1`.
@@ -167,6 +242,7 @@ impl Store {
                 workflow: wf,
                 question_language: None,
                 style_guide: None,
+                answer_link_ttl_seconds: None,
                 created_at: now,
             })
         })
@@ -174,33 +250,12 @@ impl Store {
 
     pub fn list_projects(&self) -> ApiResult<Vec<Project>> {
         self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, workflow_json, question_language, style_guide, created_at FROM projects ORDER BY id",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, i64>(5)?,
-                ))
-            })?;
+            let mut stmt =
+                conn.prepare(&format!("SELECT {PROJECT_COLS} FROM projects ORDER BY id"))?;
+            let rows = stmt.query_map([], project_row)?;
             let mut out = Vec::new();
             for row in rows {
-                let (id, name, wf_raw, question_language, style_guide, created_at) = row?;
-                let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
-                    ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
-                })?;
-                out.push(Project {
-                    id,
-                    name,
-                    workflow,
-                    question_language,
-                    style_guide,
-                    created_at,
-                });
+                out.push(hydrate_project(row?)?);
             }
             Ok(out)
         })
@@ -210,35 +265,14 @@ impl Store {
         self.with_conn(|conn| {
             let row = conn
                 .query_row(
-                    "SELECT id, name, workflow_json, question_language, style_guide, created_at FROM projects WHERE id = ?1",
+                    &format!("SELECT {PROJECT_COLS} FROM projects WHERE id = ?1"),
                     params![id],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                            r.get::<_, Option<String>>(4)?,
-                            r.get::<_, i64>(5)?,
-                        ))
-                    },
+                    project_row,
                 )
                 .optional()?;
             match row {
                 None => Ok(None),
-                Some((id, name, wf_raw, question_language, style_guide, created_at)) => {
-                    let workflow = serde_json::from_str(&wf_raw).map_err(|e| {
-                        ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}"))
-                    })?;
-                    Ok(Some(Project {
-                        id,
-                        name,
-                        workflow,
-                        question_language,
-                        style_guide,
-                        created_at,
-                    }))
-                }
+                Some(row) => Ok(Some(hydrate_project(row)?)),
             }
         })
     }
@@ -346,6 +380,74 @@ impl Store {
                 actor,
                 "project_updated",
                 serde_json::json!({ "style_guide": style }),
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_project(id)?
+            .ok_or_else(|| ApiError::not_found("project", id))
+    }
+
+    /// A project's default answer-link lifetime in seconds, or `None` when the
+    /// project sets none (the caller then uses
+    /// [`DEFAULT_ANSWER_TTL_SECONDS`](super::DEFAULT_ANSWER_TTL_SECONDS)).
+    ///
+    /// Deliberately not `get_project`, for the same reason as
+    /// [`Store::project_conventions`]: minting a link would otherwise
+    /// deserialize the whole stored workflow document to read one integer.
+    ///
+    /// An unknown project yields `None` rather than an error — the mint path has
+    /// already resolved and authorized the question's project, so a missing row
+    /// here can only mean it was deleted underneath us, and falling back to the
+    /// built-in default is the safe answer.
+    pub fn answer_link_ttl(&self, project: &str) -> ApiResult<Option<i64>> {
+        self.with_conn(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT answer_link_ttl_seconds FROM projects WHERE id = ?1",
+                    params![project],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()?;
+            Ok(row.flatten())
+        })
+    }
+
+    /// Set (or clear, with None) how long an answer link minted for one of this
+    /// project's questions stays valid.
+    ///
+    /// Unlike the language and style settings this one is *enforced*: it decides
+    /// the lifetime of a bearer credential handed to someone outside the org, so
+    /// it is validated against [`normalize_answer_link_ttl`] before it is stored
+    /// and again nowhere else — a value in the column is always mintable.
+    pub fn set_answer_link_ttl(
+        &self,
+        id: &str,
+        ttl_seconds: Option<i64>,
+        actor: &str,
+    ) -> ApiResult<Project> {
+        let ttl = normalize_answer_link_ttl(ttl_seconds)?;
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let exists: Option<String> = tx
+                .query_row("SELECT id FROM projects WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if exists.is_none() {
+                return Err(ApiError::not_found("project", id));
+            }
+            tx.execute(
+                "UPDATE projects SET answer_link_ttl_seconds = ?2 WHERE id = ?1",
+                params![id, ttl],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "project_updated",
+                serde_json::json!({ "answer_link_ttl_seconds": ttl }),
                 now,
             )?;
             Ok(())

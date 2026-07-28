@@ -35,7 +35,14 @@ pub async fn create(
     let obj = body_object(&body)?;
     reject_unknown(
         obj,
-        &["id", "name", "workflow", "question_language", "style_guide"],
+        &[
+            "id",
+            "name",
+            "workflow",
+            "question_language",
+            "style_guide",
+            "answer_link_ttl_seconds",
+        ],
     )?;
     let id = require_str(obj, "id")?;
     let name = require_str(obj, "name")?;
@@ -48,6 +55,10 @@ pub async fn create(
     // than a created-but-unconfigured project.
     let style =
         crate::store::normalize_style_guide(super::get_str(obj, "style_guide")?.as_deref())?;
+    // Same reason: an out-of-range answer-link default is a 422 before the row
+    // exists, not a project created with the setting silently dropped.
+    let link_ttl =
+        crate::store::normalize_answer_link_ttl(super::get_i64(obj, "answer_link_ttl_seconds")?)?;
     let mut project = state
         .store
         .create_project(&id, &name, workflow, &ctx.actor)?;
@@ -60,6 +71,12 @@ pub async fn create(
     // Optional per-project style guide for agent-written text, set at creation.
     if let Some(style) = style {
         project = state.store.set_style_guide(&id, Some(&style), &ctx.actor)?;
+    }
+    // Optional per-project answer-link default lifetime, set at creation.
+    if let Some(ttl) = link_ttl {
+        project = state
+            .store
+            .set_answer_link_ttl(&id, Some(ttl), &ctx.actor)?;
     }
     state.wake();
     Ok((StatusCode::CREATED, Json(project.to_json())))
@@ -135,6 +152,46 @@ pub async fn put_style(
     let project = state
         .store
         .set_style_guide(&project, style.as_deref(), &ctx.actor)?;
+    state.wake();
+    Ok(Json(project.to_json()))
+}
+
+/// PUT /v1/projects/{project}/answer-link-ttl (admin) — set how long an answer
+/// link minted for one of this project's questions stays valid. Body:
+/// `{"ttl_seconds": 604800}`, or `{"ttl_seconds": null}` to clear the default
+/// and fall back to the built-in 7 days.
+///
+/// Admin-only, like the other two project settings and for a sharper reason: an
+/// answer link is a bearer credential handed to someone outside the org, so how
+/// long it lives is not a preference a worker token gets to change.
+pub async fn put_answer_link_ttl(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["ttl_seconds"])?;
+    // Present-and-null clears it; an integer sets it; absent is an error, so a
+    // typo'd field name can never silently reset the project to the default.
+    let ttl = match obj.get("ttl_seconds") {
+        None => {
+            return Err(ApiError::bad_request(
+                "validation.field_required",
+                "Field 'ttl_seconds' is required (a positive number of seconds up to 2592000, or null to clear the project default and fall back to 7 days).",
+            ))
+        }
+        Some(Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or_else(|| {
+            ApiError::bad_request(
+                "validation.field_type",
+                "Field 'ttl_seconds' must be an integer number of seconds or null.",
+            )
+        })?),
+    };
+    let project = state.store.set_answer_link_ttl(&project, ttl, &ctx.actor)?;
     state.wake();
     Ok(Json(project.to_json()))
 }

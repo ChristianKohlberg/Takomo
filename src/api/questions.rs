@@ -564,8 +564,13 @@ pub async fn create_link(
     let body = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
     let obj = body_object(&body)?;
     reject_unknown(obj, &ANSWER_LINK_FIELDS)?;
-    let ttl = match get_i64(obj, "ttl_seconds")? {
-        None => DEFAULT_ANSWER_TTL_SECONDS,
+    // Lifetime precedence, most specific first: an explicit `ttl_seconds` on
+    // this call, else the project's `answer_link_ttl_seconds`, else the built-in
+    // default. The explicit value wins outright — someone who has looked at this
+    // one question and chosen a window knows more than the project setting does.
+    // The stored project value was bounded by the same rule when it was written
+    // (`normalize_answer_link_ttl`), so it needs no re-check here.
+    let (ttl, ttl_source) = match get_i64(obj, "ttl_seconds")? {
         Some(s) if s <= 0 => {
             return Err(ApiError::validation(
                 "answer_link.ttl",
@@ -578,7 +583,11 @@ pub async fn create_link(
                 format!("Field 'ttl_seconds' exceeds the maximum of {MAX_ANSWER_TTL_SECONDS} seconds (30 days)."),
             ))
         }
-        Some(s) => s,
+        Some(s) => (s, "explicit"),
+        None => match state.store.answer_link_ttl(&q.project)? {
+            Some(s) => (s, "project"),
+            None => (DEFAULT_ANSWER_TTL_SECONDS, "default"),
+        },
     };
     // Who the answer is attributed to; defaults to a link-scoped actor.
     let actor = get_str(obj, "actor")?.unwrap_or_else(|| format!("human:link:{id}"));
@@ -594,6 +603,16 @@ pub async fn create_link(
         map.insert(
             "path".to_string(),
             Value::String(format!("/board#a={plaintext}")),
+        );
+        // The lifetime actually applied, and where it came from ("explicit" |
+        // "project" | "default"). `expires_at` alone cannot tell an operator
+        // whether a link is short because they asked for that or because the
+        // project says so — which is the only way to notice a project default
+        // nobody meant to set.
+        map.insert("ttl_seconds".to_string(), Value::from(ttl));
+        map.insert(
+            "ttl_source".to_string(),
+            Value::String(ttl_source.to_string()),
         );
         if let Ok(base) = std::env::var("TAKOMO_PUBLIC_URL") {
             if !base.trim().is_empty() {

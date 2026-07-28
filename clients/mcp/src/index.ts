@@ -847,7 +847,7 @@ server.registerTool(
       "expiring tka_ token and a /board#a=<token> path — share it with the person.",
     inputSchema: {
       id: z.string().describe("Question id to mint an answer link for."),
-      ttl_seconds: z.number().int().positive().optional().describe("Link lifetime (default 3 days, max 30 days)."),
+      ttl_seconds: z.number().int().positive().optional().describe("Link lifetime in seconds; wins over the project default. Omit to use the project's answer_link_ttl_seconds, and then the built-in 7 days. Max 30 days."),
       actor: z.string().optional().describe("Who a use of the link is attributed to (default human:link:<qid>)."),
     },
   },
