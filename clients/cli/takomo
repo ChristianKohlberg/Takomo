@@ -391,6 +391,24 @@ resolve_project() {
 # urlencode a single query value
 urlenc() { python3 -c 'import sys,urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$1"; }
 
+# Parse a link lifetime — 24h, 7d, 90m, 3600s, or a plain second count — into
+# seconds. One parser behind every --ttl the CLI takes (share, answer-link,
+# project answer-ttl), so a duration reads the same wherever it is typed.
+# `die` exits the command substitution's subshell, so call sites need `|| exit 1`.
+ttl_to_seconds() {
+  local raw=${1:-} mult=1 num=${1:-}
+  case "$raw" in
+    *d) mult=86400; num=${raw%d} ;;
+    *h) mult=3600;  num=${raw%h} ;;
+    *m) mult=60;    num=${raw%m} ;;
+    *s) mult=1;     num=${raw%s} ;;
+  esac
+  case "$num" in
+    ''|*[!0-9]*) die "invalid ttl '$raw': use 24h, 7d, 90m, 3600s, or a plain second count" ;;
+  esac
+  echo $(( num * mult ))
+}
+
 # Print the project's writing conventions carried by a work-loop response — the
 # `style_hint` / `language_hint` the store attaches to new/show/claim/next/start.
 # The CLI never dumps raw JSON, so without this the hints would arrive on the
@@ -1494,7 +1512,7 @@ cmd_answer_link() {
     api DELETE "/v1/answer-links/$(urlenc "$gid")" >/dev/null
     echo "revoked answer link $gid"; return
   fi
-  local qid=${1:-}; [ -n "$qid" ] || die "answer-link: usage: takomo answer-link QID [--ttl SECS] [--actor NAME]  |  takomo answer-link revoke GRANT-ID"; shift
+  local qid=${1:-}; [ -n "$qid" ] || die "answer-link: usage: takomo answer-link QID [--ttl 7d] [--actor NAME]  |  takomo answer-link revoke GRANT-ID"; shift
   local ttl="" actor=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1503,6 +1521,9 @@ cmd_answer_link() {
       *) die "answer-link: unknown flag $1" ;;
     esac
   done
+  # Omitting --ttl is not "no lifetime": the store falls back to the project's
+  # `answer_link_ttl_seconds`, and to 7 days when the project sets none.
+  [ -z "$ttl" ] || { ttl=$(ttl_to_seconds "$ttl") || exit 1; }
   local data; data=$(TS_TTL="$ttl" TS_ACTOR="$actor" python3 <<'PY'
 import json, os
 d = {}
@@ -1626,13 +1647,14 @@ cmd_token_revoke() {
 # --- project administration (admin scope) ------------------------------------
 
 cmd_project() {
-  local sub=${1:-}; [ -n "$sub" ] || die "project: usage: takomo project rm|style|language ..."
+  local sub=${1:-}; [ -n "$sub" ] || die "project: usage: takomo project rm|style|language|answer-ttl ..."
   shift
   case "$sub" in
     rm|remove|delete) cmd_project_rm "$@" ;;
     style) cmd_project_style "$@" ;;
     language|lang) cmd_project_language "$@" ;;
-    *) die "project: unknown subcommand '$sub' (rm, style, language)" ;;
+    answer-ttl) cmd_project_answer_ttl "$@" ;;
+    *) die "project: unknown subcommand '$sub' (rm, style, language, answer-ttl)" ;;
   esac
 }
 
@@ -1720,6 +1742,48 @@ cmd_project_language() {
   fi
   api PUT "/v1/projects/$(urlenc "$id")/language" "$data" >/dev/null
   if [ -n "$clear" ]; then echo "cleared the question language for $id"; else echo "set the question language for $id to $lang"; fi
+}
+
+# takomo project answer-ttl PROJECT [7d | --clear] — how long an answer link
+# minted for one of this project's questions stays valid. With no value, prints
+# the current setting. Unlike style/language this one is ENFORCED: it decides how
+# long a credential handed to someone outside the org lives. Max 30d; --clear
+# falls back to the built-in default of 7 days.
+cmd_project_answer_ttl() {
+  local id="" ttl="" clear=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --clear) clear=1; shift ;;
+      -*) die "project answer-ttl: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; else ttl=$1; fi; shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "project answer-ttl: PROJECT is required"
+  [ -z "$clear" ] || [ -z "$ttl" ] || die "project answer-ttl: --clear takes no value"
+
+  if [ -z "$clear" ] && [ -z "$ttl" ]; then
+    local cur; cur=$(project_field "$id" answer_link_ttl_seconds) || exit 1
+    if [ -n "$cur" ]; then
+      echo "$cur"
+    else
+      echo "(no answer-link lifetime set for $id; the built-in default of 7 days applies)"
+    fi
+    return 0
+  fi
+
+  local data
+  if [ -n "$clear" ]; then
+    data='{"ttl_seconds":null}'
+  else
+    local secs; secs=$(ttl_to_seconds "$ttl") || exit 1
+    data=$(TS_T="$secs" python3 -c 'import json,os; print(json.dumps({"ttl_seconds":int(os.environ["TS_T"])}))')
+  fi
+  api PUT "/v1/projects/$(urlenc "$id")/answer-link-ttl" "$data" >/dev/null
+  if [ -n "$clear" ]; then
+    echo "cleared the answer-link lifetime for $id (falls back to 7 days)"
+  else
+    echo "set the answer-link lifetime for $id to ${secs}s"
+  fi
 }
 
 # takomo project rm ID [--force] — cascade-delete a project and ALL of its tickets,
@@ -2024,18 +2088,13 @@ cmd_share_create() {
     kind="project"; ref="$project"
   fi
   local data
+  [ -z "$ttl" ] || { ttl=$(ttl_to_seconds "$ttl") || exit 1; }
   data=$(TS_KIND="$kind" TS_REF="$ref" TS_TTL="$ttl" python3 <<'PY'
 import json, os
 d = {"kind": os.environ["TS_KIND"], "ref": os.environ["TS_REF"]}
 ttl = os.environ.get("TS_TTL", "").strip()
 if ttl:
-    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
-    if ttl[-1] in units and ttl[:-1].isdigit():
-        d["ttl_seconds"] = int(ttl[:-1]) * units[ttl[-1]]
-    elif ttl.isdigit():
-        d["ttl_seconds"] = int(ttl)
-    else:
-        raise SystemExit(f"invalid --ttl '{ttl}': use 24h, 7d, 90m, 3600s, or a plain second count")
+    d["ttl_seconds"] = int(ttl)
 print(json.dumps(d))
 PY
 )
@@ -2588,7 +2647,12 @@ Project administration (admin scope):
          `style_hint` on the work loop. With no value, prints the current guide.
   takomo project language ID [LANG | --clear]
          the human-facing language ask-a-human questions belong in (e.g. German).
-         With no value, prints the current setting. Both settings are advisory.
+         With no value, prints the current setting. Both of the above are advisory.
+  takomo project answer-ttl ID [7d | --clear]
+         how long an answer link minted for one of this project's questions stays
+         valid (24h, 7d, 90m, 3600s, or plain seconds; max 30d). ENFORCED, not
+         advisory — it is the lifetime of a credential handed outside the org.
+         With no value, prints the current setting; --clear falls back to 7 days.
 
 Finding & creating work:
   takomo new [--project P] [--type task|bug|epic|spike] [--priority critical|high|normal|low]
@@ -2640,9 +2704,12 @@ Ask a human (block on a human decision, then resume):
   takomo reopen QID          (human scope) take back an answered question while
          its answer isn't yet in use (re-parks the ticket)
   takomo withdraw QID [REASON]
-  takomo answer-link QID [--ttl SECS] [--actor NAME]
+  takomo answer-link QID [--ttl 7d] [--actor NAME]
          mint a scoped, expiring, single-use link so an OUTSIDE expert can
-         answer just this one question without holding a token
+         answer just this one question without holding a token.
+         --ttl accepts 24h, 7d, 90m, 3600s or plain seconds (max 30d) and wins
+         over the project default; omit it to use `project answer-ttl`, which
+         itself falls back to 7 days.
   takomo answer-link revoke GRANT-ID
 
 Annotating:

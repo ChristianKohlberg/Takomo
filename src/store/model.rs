@@ -275,6 +275,12 @@ pub struct Project {
     /// and human-facing questions (e.g. "Keep it to two sentences; no
     /// marketing voice"). Free-form and advisory. None = no preference.
     pub style_guide: Option<String>,
+    /// Default lifetime, in seconds, of an answer link minted for one of this
+    /// project's questions. None = unset, and minting falls back to
+    /// [`crate::store::DEFAULT_ANSWER_TTL_SECONDS`]. Unlike the two settings
+    /// above, this one is enforced rather than advisory: it decides how long a
+    /// credential handed to someone outside the org stays live.
+    pub answer_link_ttl_seconds: Option<i64>,
     pub created_at: i64,
 }
 
@@ -286,6 +292,7 @@ impl Project {
             "workflow": self.workflow.name,
             "question_language": self.question_language,
             "style_guide": self.style_guide,
+            "answer_link_ttl_seconds": self.answer_link_ttl_seconds,
             "created_at": iso(self.created_at),
         })
     }

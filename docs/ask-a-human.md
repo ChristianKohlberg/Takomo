@@ -183,14 +183,31 @@ token that authorizes exactly one write — answering that one question — and
 nothing else.
 
 ```sh
-takomo answer-link q-9f3ka2xz --actor human:counsel@firm --ttl 172800
+takomo answer-link q-9f3ka2xz --actor human:counsel@firm --ttl 14d
 # → prints a  https://<host>/board#a=<token>  link (shown once)
 ```
 
 You send them the link; they open it, see just that one question, and click an
-answer. No login, no token to manage, no access to anything else. It expires
-(default 3 days, max 30) and is spent after one answer. Revoke early with
+answer. No login, no token to manage, no access to anything else. It expires and
+is spent after one answer. Revoke early with
 `takomo answer-link revoke <grant-id>`.
+
+**How long it lives.** Most specific wins: an explicit `--ttl` on the mint call,
+then the project's own default, then the built-in **7 days**. The project default
+is an admin setting — it is on the `/board` Settings sheet, and on the CLI:
+
+```sh
+takomo project answer-ttl demo 14d       # this project's links last a fortnight
+takomo project answer-ttl demo           # print the current setting
+takomo project answer-ttl demo --clear   # back to the built-in 7 days
+```
+
+The cap is **30 days** — the same one share links carry — and it bounds the
+project default and an explicit `--ttl` identically: an answer link is a
+credential handed to someone outside the org, so it is never allowed to become a
+standing one. The mint response reports the lifetime applied as `ttl_seconds` and
+which of the three levels it came from as `ttl_source` (`explicit` / `project` /
+`default`).
 
 Spending is atomic: the link is marked used in the **same transaction** that
 records the answer. If the link is submitted more than once at once — two tabs,

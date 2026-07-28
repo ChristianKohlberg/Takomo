@@ -126,6 +126,18 @@ enum ProjectCommand {
         #[arg(long)]
         clear: bool,
     },
+    /// Set (or clear) how long an answer link for this project's questions lives.
+    AnswerTtl {
+        /// Project id.
+        id: String,
+        /// The lifetime: 7d, 24h, 90m, 3600s, or a plain second count (max 30d).
+        /// Omit to print the current setting; pass --clear to fall back to the
+        /// built-in default.
+        ttl: Option<String>,
+        /// Clear the project default instead of setting it.
+        #[arg(long)]
+        clear: bool,
+    },
     /// List projects.
     List,
 }
@@ -378,6 +390,42 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             }
             Ok(())
         }
+        ProjectCommand::AnswerTtl { id, ttl, clear } => {
+            if clear && ttl.is_some() {
+                return Err("--clear takes no value".to_string());
+            }
+            if ttl.is_none() && !clear {
+                // Reading is not a write, so it does not need --clear to be safe.
+                let project = store
+                    .get_project(&id)
+                    .map_err(|e| e.into_message())?
+                    .ok_or_else(|| format!("no project '{id}'"))?;
+                match project.answer_link_ttl_seconds {
+                    Some(s) => println!("project '{id}' answer-link lifetime: {s}s"),
+                    None => println!(
+                        "project '{id}' sets no answer-link lifetime (built-in default: {}s)",
+                        takomo::store::DEFAULT_ANSWER_TTL_SECONDS
+                    ),
+                }
+                return Ok(());
+            }
+            let secs = match ttl {
+                None => None,
+                Some(raw) => Some(parse_ttl_seconds(&raw)?),
+            };
+            let project = store
+                .set_answer_link_ttl(&id, secs, "cli:admin")
+                .map_err(|e| e.into_message())?;
+            match project.answer_link_ttl_seconds {
+                Some(s) => println!("project '{}' answer-link lifetime set to {s}s", project.id),
+                None => println!(
+                    "project '{}' answer-link lifetime cleared (built-in default: {}s)",
+                    project.id,
+                    takomo::store::DEFAULT_ANSWER_TTL_SECONDS
+                ),
+            }
+            Ok(())
+        }
         ProjectCommand::List => {
             let projects = store.list_projects().map_err(|e| e.into_message())?;
             if projects.is_empty() {
@@ -399,6 +447,28 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Parse a lifetime — `7d`, `24h`, `90m`, `3600s`, or a plain second count —
+/// into seconds. The same forms `takomo share --ttl` and `takomo answer-link
+/// --ttl` accept, so a duration reads the same wherever it is typed.
+fn parse_ttl_seconds(raw: &str) -> Result<i64, String> {
+    let raw = raw.trim();
+    let bad = || format!("invalid ttl '{raw}': use 7d, 24h, 90m, 3600s, or a plain second count");
+    let (num, mult) = match raw.strip_suffix(['d', 'h', 'm', 's']) {
+        Some(n) => (
+            n,
+            match raw.chars().last() {
+                Some('d') => 86_400,
+                Some('h') => 3_600,
+                Some('m') => 60,
+                _ => 1,
+            },
+        ),
+        None => (raw, 1),
+    };
+    let n: i64 = num.parse().map_err(|_| bad())?;
+    n.checked_mul(mult).ok_or_else(bad)
 }
 
 /// Parse `90d`, `12h`, `30m`, or an RFC 3339 timestamp into unix ms.

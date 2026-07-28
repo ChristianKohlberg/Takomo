@@ -4429,6 +4429,254 @@ async fn answer_link_revoke_kills_it() {
     assert_eq!(s, StatusCode::GONE);
 }
 
+/// The lifetime a grant was actually minted with, read back off the stored row
+/// rather than off the response that claimed it — `expires_at - created_at` is
+/// what the outside expert's link really honours. Both timestamps come from
+/// separate `now_ms()` calls one statement apart, so a millisecond of slack.
+async fn mint_answer_link(app: &TestApp, qid: &str, body: Value) -> Value {
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            body,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    link
+}
+
+fn granted_ttl_seconds(app: &TestApp, grant_id: &str) -> i64 {
+    let row = app
+        .open_store()
+        .get_answer_grant(grant_id)
+        .expect("read grant")
+        .unwrap_or_else(|| panic!("grant {grant_id} not stored"));
+    let ms = row.expires_at - row.created_at;
+    // Round to the nearest second; the two clock reads cannot drift further.
+    (ms + 500) / 1000
+}
+
+/// A link minted with nothing configured anywhere lives for a week — the
+/// captain's ask, and the value an outside expert's link falls back to.
+#[tokio::test]
+async fn answer_link_defaults_to_one_week() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Default link lifetime").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
+        )
+        .await;
+
+    // The seeded project sets no default, so this is the built-in one.
+    assert!(
+        app.project(&app.worker, "tp").await["answer_link_ttl_seconds"].is_null(),
+        "the fixture project must not carry a default, or this asserts nothing"
+    );
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    assert_eq!(link["ttl_seconds"], 604_800, "{link}");
+    assert_eq!(link["ttl_source"], "default", "{link}");
+    assert_eq!(
+        granted_ttl_seconds(&app, link["id"].as_str().unwrap()),
+        604_800,
+        "the stored grant must expire a week out, not just say so"
+    );
+}
+
+/// Precedence: an explicit `ttl_seconds` beats the project default, which beats
+/// the built-in. All three checked against the stored expiry, so a change that
+/// echoes the right number while minting the wrong one still fails.
+#[tokio::test]
+async fn answer_link_ttl_prefers_explicit_over_project_over_default() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Link lifetime precedence").await;
+    let fence = app.to_implementing(&id).await;
+
+    // 1. Nothing set anywhere: the built-in week.
+    let (q1, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "One?", "fence": fence }),
+        )
+        .await;
+    let link = mint_answer_link(&app, &q1, json!({})).await;
+    assert_eq!(link["ttl_source"], "default");
+    assert_eq!(
+        granted_ttl_seconds(&app, link["id"].as_str().unwrap()),
+        604_800
+    );
+
+    // 2. The project sets a default: a link with no explicit ttl takes it.
+    let (s, updated) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/answer-link-ttl",
+            json!({ "ttl_seconds": 86_400 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{updated}");
+    assert_eq!(updated["answer_link_ttl_seconds"], 86_400);
+    let link = mint_answer_link(&app, &q1, json!({})).await;
+    assert_eq!(link["ttl_source"], "project", "{link}");
+    assert_eq!(link["ttl_seconds"], 86_400);
+    assert_eq!(
+        granted_ttl_seconds(&app, link["id"].as_str().unwrap()),
+        86_400,
+        "the project default must reach the stored expiry"
+    );
+
+    // 3. An explicit ttl on the call still wins over the project default —
+    //    whoever looked at this one question knows more than the setting does.
+    let link = mint_answer_link(&app, &q1, json!({ "ttl_seconds": 3_600 })).await;
+    assert_eq!(link["ttl_source"], "explicit", "{link}");
+    assert_eq!(link["ttl_seconds"], 3_600);
+    assert_eq!(
+        granted_ttl_seconds(&app, link["id"].as_str().unwrap()),
+        3_600,
+        "an explicit --ttl must not be overwritten by the project default"
+    );
+
+    // 4. Clearing the project default falls back to the built-in week again.
+    let (s, cleared) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/answer-link-ttl",
+            json!({ "ttl_seconds": Value::Null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{cleared}");
+    assert!(cleared["answer_link_ttl_seconds"].is_null(), "{cleared}");
+    let link = mint_answer_link(&app, &q1, json!({})).await;
+    assert_eq!(link["ttl_source"], "default", "{link}");
+    assert_eq!(
+        granted_ttl_seconds(&app, link["id"].as_str().unwrap()),
+        604_800
+    );
+}
+
+/// The setting is bounded exactly like an explicit `ttl_seconds`, and writing it
+/// needs `admin` — a grant that never expires is a standing credential handed to
+/// someone outside the org. Reading it does NOT need admin: the /board Settings
+/// sheet shows it read-only to any session token.
+#[tokio::test]
+async fn project_answer_link_ttl_is_bounded_and_admin_only() {
+    let app = TestApp::spawn().await;
+
+    // Zero and negative are refused with a teaching 422...
+    for bad in [0, -1] {
+        let (s, err) = app
+            .put(
+                &app.admin,
+                "/v1/projects/tp/answer-link-ttl",
+                json!({ "ttl_seconds": bad }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        assert_eq!(err["code"], "project.answer_link_ttl", "{err}");
+    }
+
+    // ...and so is anything past the 30-day cap the share links already carry.
+    let (s, err) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/answer-link-ttl",
+            json!({ "ttl_seconds": 2_592_001 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.answer_link_ttl", "{err}");
+    assert_eq!(err["details"]["max_seconds"], 2_592_000, "{err}");
+    assert!(
+        err["message"].as_str().unwrap().contains("2592000"),
+        "the message must name the bound it enforces: {err}"
+    );
+    // Exactly the cap is fine — the bound is inclusive.
+    let (s, ok) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/answer-link-ttl",
+            json!({ "ttl_seconds": 2_592_000 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+
+    // Omitting the field is an error, not a silent reset to the default.
+    let (s, err) = app
+        .put(&app.admin, "/v1/projects/tp/answer-link-ttl", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{err}");
+    assert_eq!(
+        app.project(&app.admin, "tp").await["answer_link_ttl_seconds"],
+        2_592_000,
+        "a refused write must leave the setting alone"
+    );
+
+    // A non-admin can READ the setting — that is what makes the Settings sheet
+    // worth opening without admin — but cannot write it.
+    assert_eq!(
+        app.project(&app.human, "tp").await["answer_link_ttl_seconds"],
+        2_592_000,
+        "a human token must see the setting to render it read-only"
+    );
+    for token in [&app.human, &app.worker] {
+        let (s, _) = app
+            .put(
+                token,
+                "/v1/projects/tp/answer-link-ttl",
+                json!({ "ttl_seconds": 60 }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        app.project(&app.admin, "tp").await["answer_link_ttl_seconds"],
+        2_592_000,
+        "a forbidden write must not have landed"
+    );
+}
+
+/// Creating a project with an out-of-range default is a clean 422 before the
+/// insert, not a project created with the setting quietly dropped.
+#[tokio::test]
+async fn project_create_rejects_out_of_range_answer_link_ttl() {
+    let app = TestApp::spawn().await;
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "ttlp", "name": "TTL", "answer_link_ttl_seconds": 2_592_001 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.answer_link_ttl", "{err}");
+    let (s, list) = app.get(&app.admin, "/v1/projects").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        !list.as_array().unwrap().iter().any(|p| p["id"] == "ttlp"),
+        "a rejected create must leave nothing behind: {list}"
+    );
+
+    // A legal one is stored, and a link minted on that project takes it.
+    let (s, made) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "ttlp", "name": "TTL", "answer_link_ttl_seconds": 1_209_600 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    assert_eq!(made["answer_link_ttl_seconds"], 1_209_600);
+}
+
 #[tokio::test]
 async fn question_recommended_timeout_requires_a_real_window() {
     let app = TestApp::spawn().await;

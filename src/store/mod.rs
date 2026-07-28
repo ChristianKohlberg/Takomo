@@ -22,7 +22,10 @@ pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
-pub use projects::{normalize_style_guide, Conventions, DeletedCounts, MAX_STYLE_GUIDE_CHARS};
+pub use projects::{
+    normalize_answer_link_ttl, normalize_style_guide, Conventions, DeletedCounts,
+    MAX_STYLE_GUIDE_CHARS,
+};
 pub use questions::{
     question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
     ReviseOptionsRequest, TimeoutAction, MAX_QUESTIONS_PAGE, QUESTION_KINDS,
@@ -340,17 +343,32 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "style_guide") {
         conn.execute("ALTER TABLE projects ADD COLUMN style_guide TEXT", [])?;
     }
+    // projects.answer_link_ttl_seconds: this project's default lifetime for an
+    // answer link (nullable = unset, so minting uses DEFAULT_ANSWER_TTL_SECONDS).
+    // Additive, and deliberately NOT backfilled with the built-in default: a row
+    // that says nothing keeps tracking the default if it ever moves again, while
+    // a backfilled row would freeze today's number into every existing project.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "answer_link_ttl_seconds") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN answer_link_ttl_seconds INTEGER",
+            [],
+        )?;
+    }
     Ok(())
 }
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
-  id                TEXT PRIMARY KEY,
-  name              TEXT NOT NULL,
-  workflow_json     TEXT NOT NULL,
-  question_language TEXT,
-  style_guide       TEXT,
-  created_at        INTEGER NOT NULL
+  id                      TEXT PRIMARY KEY,
+  name                    TEXT NOT NULL,
+  workflow_json           TEXT NOT NULL,
+  question_language       TEXT,
+  style_guide             TEXT,
+  -- Default lifetime, in seconds, of an answer link minted for one of this
+  -- project's questions. NULL = unset; minting then falls back to the built-in
+  -- DEFAULT_ANSWER_TTL_SECONDS. Bounded exactly like an explicit `ttl_seconds`.
+  answer_link_ttl_seconds INTEGER,
+  created_at              INTEGER NOT NULL
 );
 
 -- Denormalized view of each project's workflow states so queue/blocking

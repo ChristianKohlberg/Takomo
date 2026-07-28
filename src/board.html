@@ -215,9 +215,9 @@
      one "how this project writes" surface. Its scrim sits above the drawers so
      opening it from anywhere is unambiguous.
 
-     Writing the two settings is admin-only; READING them is not — GET
-     /v1/projects is `read` scope and already returns both — so the sheet opens
-     for any session token and goes read-only without `admin` (takomo-n0al). */
+     Writing the settings is admin-only; READING them is not — GET /v1/projects
+     is `read` scope and already returns all of them — so the sheet opens for any
+     session token and goes read-only without `admin` (takomo-n0al). */
   .modal-scrim {
     position: fixed; inset: 0; background: var(--overlay); z-index: 70;
     display: flex; align-items: center; justify-content: center; padding: 24px;
@@ -253,12 +253,12 @@
   .sheet .fld:last-child { margin-bottom: 4px; }
   .sheet .fld label { display: block; font-size: 13px; font-weight: 680; margin-bottom: 4px; }
   .sheet .fld .help { font-size: 12.5px; color: var(--muted); line-height: 1.55; margin-bottom: 9px; }
-  .sheet .fld input[type=text], .sheet .fld textarea {
+  .sheet .fld input[type=text], .sheet .fld textarea, .sheet .fld select {
     width: 100%; background: var(--col-bg); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 12px; color: var(--text); font: inherit;
   }
   .sheet .fld textarea { min-height: 190px; resize: vertical; line-height: 1.6; }
-  .sheet .fld input[type=text]:focus, .sheet .fld textarea:focus { outline: 2px solid var(--sel-border); outline-offset: -1px; }
+  .sheet .fld input[type=text]:focus, .sheet .fld textarea:focus, .sheet .fld select:focus { outline: 2px solid var(--sel-border); outline-offset: -1px; }
   /* A read-only value is still meant to be read, selected and copied, so the
      field keeps full text contrast and stays focusable — `readonly`, never
      `disabled`. The dashed border is what says "not editable". */
@@ -294,6 +294,9 @@
        the reason read back to you. */
     .sheet > .sf button { height: 44px; min-width: 44px; }
     .sheet > .sh .close { min-width: 44px; min-height: 44px; }
+    /* The lifetime select is the sheet's only tap-to-open control, so it holds
+       the same 44px floor as every other finger target on a phone. */
+    .sheet .fld select { min-height: 44px; }
   }
 
   /* ---- detail panel ---- */
@@ -659,13 +662,22 @@
       refLabel:"Ref ",
       settings:"Einstellungen",
       setTitle:"Projekt-Einstellungen",
-      setSub:"Wie dieses Projekt schreibt. Beides ist ein Hinweis an die Agenten — nichts wird erzwungen.",
+      setSub:"Wie dieses Projekt schreibt — und wie lange ein Antwort-Link gilt.",
       setLangLabel:"Sprache der Fragen",
       setLangHelp:"Die menschlich sichtbare Sprache, in der Agenten Fragen an Menschen stellen sollen (z. B. „German“). Leer lassen für keine Vorgabe.",
       setLangPh:"z. B. German",
       setStyleLabel:"Stil-Leitfaden",
       setStyleHelp:"Der Hausstil für Texte, die Agenten schreiben — Ticket-Titel und -Beschreibungen, Kommentare und Fragen. Agenten erhalten ihn bei jedem Arbeitsschritt, bevor sie schreiben.",
       setStylePh:"z. B. Maximal zwei Sätze. Klare Sprache, kein Marketing-Ton. Lieber eine Ja/Nein-Frage als eine offene.",
+      setTtlLabel:"Gültigkeit des Antwort-Links",
+      setTtlHelp:"Wie lange ein Antwort-Link gültig bleibt, den jemand außerhalb der Organisation für genau eine Frage erhält. Ein einzelner Link kann beim Erstellen davon abweichen. Anders als die beiden Felder oben wird dies erzwungen.",
+      setTtlDefault:"Standard (7 Tage)",
+      setTtl24h:"24 Stunden",
+      setTtl3d:"3 Tage",
+      setTtl7d:"7 Tage",
+      setTtl14d:"14 Tage",
+      setTtl30d:"30 Tage (Maximum)",
+      setTtlSecs:"Sekunden",
       setChars:"Zeichen",
       setOver:"über dem Limit",
       setSave:"Speichern",
@@ -756,13 +768,22 @@
       refLabel:"ref ",
       settings:"Settings",
       setTitle:"Project settings",
-      setSub:"How this project writes. Both are hints to the agents — neither is enforced.",
+      setSub:"How this project writes — and how long an answer link stays valid.",
       setLangLabel:"Question language",
       setLangHelp:"The human-facing language agents should phrase ask-a-human questions in (e.g. “German”). Leave empty for no preference.",
       setLangPh:"e.g. German",
       setStyleLabel:"Style guide",
       setStyleHelp:"The house style for text agents write — ticket titles and bodies, comments, and questions. Agents get it on every work-loop call, before they write.",
       setStylePh:"e.g. Two sentences max. Plain language, no marketing voice. Prefer a yes/no or a short choice over an open question.",
+      setTtlLabel:"Answer-link lifetime",
+      setTtlHelp:"How long a link handed to someone outside the org to answer exactly one question stays valid. An individual link can override this when it is minted. Unlike the two fields above, this one is enforced.",
+      setTtlDefault:"Default (7 days)",
+      setTtl24h:"24 hours",
+      setTtl3d:"3 days",
+      setTtl7d:"7 days",
+      setTtl14d:"14 days",
+      setTtl30d:"30 days (maximum)",
+      setTtlSecs:"seconds",
       setChars:"characters",
       setOver:"over the limit",
       setSave:"Save",
@@ -2536,18 +2557,22 @@
   activate($("lang-en"), function () { setLang("en"); });
 
   // ---- project settings sheet ----
-  // Shows, and for an `admin` token edits, the two per-project writing conventions
-  // the store hands to agents: `question_language` and `style_guide`. Each has its
-  // own endpoint, so Save sends only the field that actually changed — a no-op
-  // field is never PUT, and one failing endpoint can't silently discard the
-  // other's edit.
+  // Shows, and for an `admin` token edits, the per-project settings: the two
+  // writing conventions the store hands to agents (`question_language`,
+  // `style_guide`) and the enforced `answer_link_ttl_seconds` — how long a link
+  // handed to an outside expert stays valid. Each has its own endpoint, so Save
+  // sends only the fields that actually changed — a no-op field is never PUT,
+  // and one failing endpoint can't silently discard another's edit.
   function openSettings() {
     state.settings = {
       loading: true, saving: false, err: "", saved: false,
       // Latched at open time, not read live: /whoami can never re-answer mid-sheet
       // and turn a read-only sheet the viewer has been reading into an editable one.
       readOnly: !!state.settingsReadOnly,
-      orig: { language: "", style: "" }, language: "", style: ""
+      // `ttl` is "" for "unset — use the built-in default", otherwise a string
+      // of seconds. Kept as a string so it compares straight against the select's
+      // value and against `orig` without a null-vs-0 special case.
+      orig: { language: "", style: "", ttl: "" }, language: "", style: "", ttl: ""
     };
     renderSettings();
     // Re-read from the store rather than trusting the cached project list: this
@@ -2559,10 +2584,13 @@
       if (!state.settings) return; // closed while loading
       if (!p) throw new Error("project '" + state.project + "' not visible to this token");
       var lang = p.question_language || "", style = p.style_guide || "";
+      // null/absent = the project sets no default. Anything else is seconds.
+      var ttl = p.answer_link_ttl_seconds == null ? "" : String(p.answer_link_ttl_seconds);
       state.settings.loading = false;
-      state.settings.orig = { language: lang, style: style };
+      state.settings.orig = { language: lang, style: style, ttl: ttl };
       state.settings.language = lang;
       state.settings.style = style;
+      state.settings.ttl = ttl;
       state.settings.workflow = p.workflow || "";
       state.settings.name = p.name || "";
       renderSettings();
@@ -2610,6 +2638,10 @@
       calls.push(["/projects/" + encodeURIComponent(state.project) + "/style",
                   { style_guide: style === "" ? null : style }]);
     }
+    if (s.ttl !== s.orig.ttl) {
+      calls.push(["/projects/" + encodeURIComponent(state.project) + "/answer-link-ttl",
+                  { ttl_seconds: s.ttl === "" ? null : Number(s.ttl) }]);
+    }
     if (!calls.length) { closeSettings(); return; }
     s.saving = true; s.err = ""; s.saved = false;
     renderSettings();
@@ -2634,10 +2666,12 @@
       // store rather than from what we hoped we sent.
       state.settings.orig = {
         language: (p && p.question_language) || "",
-        style: (p && p.style_guide) || ""
+        style: (p && p.style_guide) || "",
+        ttl: (p && p.answer_link_ttl_seconds != null) ? String(p.answer_link_ttl_seconds) : ""
       };
       state.settings.language = state.settings.orig.language;
       state.settings.style = state.settings.orig.style;
+      state.settings.ttl = state.settings.orig.ttl;
       renderSettings();
     }).catch(function (e) {
       if (!state.settings) return;
@@ -2735,6 +2769,48 @@
         ta.addEventListener("input", function () { s.style = ta.value; s.saved = false; updateCount(); syncFooter(); });
         updateCount();
       }
+
+      // answer-link lifetime
+      //
+      // A fixed set of choices rather than a free-text duration: the value is
+      // bounded (positive, at most 30 days) and a text field would need a parser,
+      // an invalid-duration error state, and that error string in both locales —
+      // three things a select cannot produce, because it can only emit a value
+      // the server already accepts. The bounds become the list.
+      var f3 = el("div", "fld");
+      var l3 = el("label", null, L().setTtlLabel); l3.setAttribute("for", "set-ttl");
+      f3.appendChild(l3);
+      f3.appendChild(el("div", "help", L().setTtlHelp));
+      var choices = [["", L().setTtlDefault], ["86400", L().setTtl24h], ["259200", L().setTtl3d],
+                     ["604800", L().setTtl7d], ["1209600", L().setTtl14d], ["2592000", L().setTtl30d]];
+      // A value set through the API need not be one of the six. Show it rather
+      // than snapping the control to a neighbour — a sheet that silently rewrites
+      // a setting on open is worse than one that shows an odd number.
+      var known = choices.some(function (c) { return c[0] === s.ttl; });
+      if (!known) choices.push([s.ttl, s.ttl + " " + L().setTtlSecs]);
+      if (s.readOnly) {
+        // A <select> has no `readonly`, and `disabled` would drop it out of the
+        // tab order and explain nothing — the dead-control trap takomo-n0al
+        // fixed. So a read-only sheet renders the chosen lifetime as the same
+        // readonly text field the other two settings use: focusable, selectable,
+        // copyable, announced read-only.
+        var ro = el("input"); ro.type = "text"; ro.id = "set-ttl";
+        choices.forEach(function (c) { if (c[0] === s.ttl) ro.value = c[1]; });
+        ro.readOnly = true;
+        ro.setAttribute("aria-readonly", "true");
+        f3.appendChild(ro);
+      } else {
+        var sel = el("select"); sel.id = "set-ttl";
+        choices.forEach(function (c) {
+          var o = el("option", null, c[1]);
+          o.value = c[0];
+          if (c[0] === s.ttl) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.addEventListener("change", function () { s.ttl = sel.value; s.saved = false; syncFooter(); });
+        f3.appendChild(sel);
+      }
+      body.appendChild(f3);
     }
     sheet.appendChild(body);
 
@@ -2774,7 +2850,8 @@
       }
       var over = s.style.trim().length > STYLE_MAX;
       var dirty = s.language.trim() !== s.orig.language.trim()
-        || s.style.trim() !== s.orig.style.trim();
+        || s.style.trim() !== s.orig.style.trim()
+        || s.ttl !== s.orig.ttl;
       save.textContent = s.saving ? L().setSaving : L().setSave;
       save.disabled = s.loading || s.saving || over || !dirty;
       save.setAttribute("aria-disabled", save.disabled ? "true" : "false");
