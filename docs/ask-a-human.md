@@ -27,7 +27,13 @@ agent            takomo                         human
 Asking **parks and releases** — the agent does not hold a process open waiting.
 It ends its run; an orchestrator (or the agent itself later) picks the ticket
 back up once it is `ready` again. The answer is recorded on the ticket as a
-comment and on the question, so `takomo show <id>` carries the decision.
+comment and on the question, so `takomo show <id>` carries the decision. That
+comment names the question by **id** rather than repeating its title — `Human
+answered q-9f3ka2xz: yes / approved — <note>` — so it leads with what was
+decided, and `takomo questions --ticket <id>` (or `GET /v1/questions/{qid}`)
+gets the full question back when you come to the ticket cold. The other
+question endpoints that mirror onto the ticket — reopen, follow-up, reply,
+options revision — use the same shape.
 
 ## Raising a question
 

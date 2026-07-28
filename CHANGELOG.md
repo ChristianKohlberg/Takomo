@@ -256,6 +256,18 @@ single ticket.
   The *kind* picker stays a `<select>`: a project has a handful of kinds, they
   fit without truncating, and "any tag of this kind" is a useful filter in its
   own right, so there is nothing there to search.
+- **Question comments name the question by id instead of restating its title.**
+  Every comment a question mirrors onto its ticket used to open by quoting the
+  question title — `Human answered "OK to drop table billing_v1?": yes /
+  approved` — which is pure repetition in the one view where the title is
+  already on screen (the board drawer, the inbox), and it pushed the part
+  carrying new information to the right. The title was never a real archive
+  either: a ticket view lists only *open* questions, and a title alone never
+  carried the body, the options or the thread. So all five bodies now read
+  `… q-9f3ka2xz: …` — answer, reopen, human follow-up, agent reply and options
+  revision — and the id resolves to the whole question (`GET
+  /v1/questions/{id}`) for a reader coming back to the ticket months later. Not
+  a contract change: comment text is prose, no `/v1` field moved.
 - **`workflows/` is the one place a shipped workflow is defined.**
   `factory-default` moved out of a `serde_json::json!` literal in
   `src/workflow.rs` into `workflows/factory-default.yaml`, embedded with
