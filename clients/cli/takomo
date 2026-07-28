@@ -14,6 +14,14 @@
 #   TAKOMO_TOKEN    required. A read/write (and, for gated moves, human) token.
 #   TAKOMO_PROJECT  optional. Default project when --project is omitted.
 #   TAKOMO_ACTOR    optional. Your actor name; only needed for `ls --mine`.
+#   TAKOMO_RETRIES  optional. Extra attempts after a transient gateway failure
+#                   (502/503/504 or an unreachable host). Default 3; 0 disables.
+#   TAKOMO_RETRY_MAX_SECONDS
+#                   optional. Total budget for backoff waits. Default 20.
+#
+# Requests that are not safe to send twice (a comment would double-post, a token
+# mint would issue a second credential) are never replayed; they fail loudly
+# instead, telling you to check before re-running. See replay_class().
 #
 # Repo-local config: after `takomo init`, url/project/token are read from a
 # `.takomo/` directory (walking up from the cwd) so plain `takomo new`/`takomo ready`
@@ -76,70 +84,292 @@ fence_clear() { rm -f "$(fence_file "$1")" 2>/dev/null || true; }
 REQ_OUT=$(mktemp)
 trap 'rm -f "$REQ_OUT"' EXIT
 
-# api METHOD PATH [JSON_DATA] [EXTRA_HEADER]
-# Writes the raw body to $REQ_OUT and echoes the HTTP status code on stdout.
-# On any >=400 it prints the store's teaching error (code/message/remedy/
-# allowed_transitions) to stderr and exits nonzero, so callers never have to
-# guard against error bodies.
-api() {
-  local method=$1 path=$2 data=${3:-} extra=${4:-} code
+# The command line as invoked, so an unconfirmed write can print exactly what
+# to re-run. Filled in by main().
+CMD_ARGV=()
+argv_str() {
+  local a out=$PROG
+  if [ ${#CMD_ARGV[@]} -gt 0 ]; then
+    for a in "${CMD_ARGV[@]}"; do
+      case "$a" in
+        ""|*[!A-Za-z0-9_/.:@=-]*) out="$out $(printf '%q' "$a")" ;;
+        *) out="$out $a" ;;
+      esac
+    done
+  fi
+  printf '%s' "$out"
+}
+
+# --- retry -------------------------------------------------------------------
+# The failure this guards against: a proxy in front of the store answers 502 for
+# a few seconds while /healthz stays green and the store itself is healthy. One
+# request per command means the `comment` carrying a ticket's only proof of
+# verification, or the `link --commit` closing the loop on a merged change, is
+# dropped on the floor — and because the 502 body is a fat HTML page from the
+# proxy, the failure does not even look like an error.
+#
+#   TAKOMO_RETRIES            extra attempts after the first (default 3; 0 disables)
+#   TAKOMO_RETRY_MAX_SECONDS  wall-clock budget for all backoff waits (default 20)
+#
+# Waits are exponential with full jitter over the top half of each window
+# (~0.2-0.4s, 0.4-0.8s, 0.8-1.6s, …, capped at 8s) so a fleet that all hit the
+# same blip does not come back in lockstep and finish off a struggling server.
+RETRY_BASE_MS=400
+RETRY_CAP_MS=8000
+
+# HTTP statuses that mean "the infrastructure between you and the store failed",
+# not "the store rejected your request". A 500 is deliberately absent: it comes
+# from takomo itself, which means the request arrived and the transaction rolled
+# back, and repeating it just delays a real error.
+is_transient_status() { case "$1" in 502|503|504) return 0 ;; *) return 1 ;; esac; }
+
+# curl exit codes that prove the request never left the machine: 5 (proxy host
+# unresolved), 6 (host unresolved), 7 (connect failed). Nothing can have been
+# applied, so these are replayable for *every* verb — even the ones an
+# ambiguous 502 must never replay.
+curl_never_sent() { case "$1" in 5|6|7) return 0 ;; *) return 1 ;; esac; }
+
+# replay_class METHOD PATH [EXTRA_HEADER] -> "safe" | "unsafe"
+#
+# A 502 is ambiguous: the request may have reached the store and been applied,
+# or it may never have arrived. "safe" means strictly that sending it twice
+# leaves the store exactly where sending it once does, so replaying an ambiguous
+# failure cannot double anything. Every entry below was checked against the
+# store's actual behaviour, not assumed.
+#
+# safe:
+#   GET                            reads
+#   PUT /v1/projects/*             whole-value replace (workflow, style, language)
+#   PATCH /v1/tickets/*            links, tags_add/tags_remove, labels, parent are
+#                                  all set-to-value, not accumulate. A `body`
+#                                  patch is the exception — it needs If-Match and
+#                                  a replay would 409 on the bumped version — so
+#                                  any If-Match request is excluded below.
+#   POST /v1/tickets               `takomo new` sends an Idempotency-Key and the
+#                                  store returns the original ticket (200, not a
+#                                  twin 201) for a repeat.
+#   POST .../claim                 same actor re-claiming is an idempotent lease
+#                                  renewal: same fence back, 200. (Only a
+#                                  *different* holder gets 409.)
+#   POST .../archive, .../unarchive  no-op when already in that state.
+#   POST .../deps                  INSERT OR IGNORE; re-adding an edge is a no-op.
+#   POST /v1/questions             the store dedupes an identical still-open
+#                                  question (ticket+asker+mode+kind+title) and
+#                                  returns the first one instead of filing a
+#                                  second. `takomo ask` always sends a title, so
+#                                  the dedup key is fully determined here.
+#   DELETE .../deps, /v1/shares/*, /v1/answer-links/*
+#                                  the store treats a repeat as success.
+#
+# unsafe — never replayed automatically; these fail loudly instead:
+#   POST .../comments              appends unconditionally: would double-post the
+#                                  evidence a ticket is verified by.
+#   POST /v1/tokens, /v1/shares    would mint a second live credential whose
+#                                  one-time plaintext you never saw.
+#   POST /v1/ready/claim           would leak a lease on ticket A and hand you B.
+#   POST .../promote               append-only history; would duplicate the row.
+#   POST .../release               replay 409s `claim.none`.
+#   POST /v1/questions/*/…         answer/withdraw/reopen/reply/options replay
+#                                  into a 409 or a duplicate thread message.
+#   DELETE /v1/tokens/*, /v1/projects/*
+#                                  a replay 404s, which reads as "wrong id"
+#                                  rather than "the first one landed".
+#   POST .../transition            replay 409s `transition.illegal` (X -> X is
+#                                  not an edge). Recovered instead by asking the
+#                                  store what happened — see confirm_transition.
+replay_class() {
+  local method=$1 path=$2 extra=${3:-}
+  # A conditional write is never replayable: the first attempt moved the version
+  # the second one is matching against.
+  case "$extra" in If-Match:*) echo unsafe; return ;; esac
+  case "$method" in
+    GET|HEAD) echo safe; return ;;
+    PUT) case "$path" in /v1/projects/*) echo safe; return ;; esac ;;
+    PATCH) case "$path" in /v1/tickets/*) echo safe; return ;; esac ;;
+    DELETE)
+      case "$path" in
+        /v1/tickets/*/deps*|/v1/shares/*|/v1/answer-links/*) echo safe; return ;;
+      esac
+      ;;
+    POST)
+      case "$path" in
+        /v1/tickets) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
+        /v1/questions) echo safe; return ;;
+        /v1/tickets/*/claim|/v1/tickets/*/archive|/v1/tickets/*/unarchive|/v1/tickets/*/deps)
+          echo safe; return ;;
+      esac
+      ;;
+  esac
+  echo unsafe
+}
+
+# Outcome of the last http_request. Globals rather than stdout because api()
+# needs the failure kind as well as the status, and a $(…) subshell would throw
+# it away.
+REQ_CODE=000
+REQ_ATTEMPTS=0
+REQ_FAIL=""   # "" ok | transient (5xx/mid-flight) | unreachable (never sent) | refused (unsafe to replay)
+
+# http_request METHOD PATH DATA EXTRA REPLAY_CLASS
+# One request with bounded, jittered retry. The body lands in $REQ_OUT and the
+# HTTP status in $REQ_CODE ("000" when curl itself failed). Never exits.
+http_request() {
+  local method=$1 path=$2 data=${3:-} extra=${4:-} replay=${5:-unsafe}
   local -a args=(-sS -o "$REQ_OUT" -w '%{http_code}' -X "$method"
     "$TAKOMO_URL$path" -H "Authorization: Bearer $TAKOMO_TOKEN")
   [ -n "$extra" ] && args+=(-H "$extra")
   if [ -n "$data" ]; then
     args+=(-H "Content-Type: application/json" --data-binary "$data")
   fi
-  code=$(curl "${args[@]}") || die "request failed (network/curl error)"
-  if [ "$code" -ge 400 ]; then
-    python3 - "$REQ_OUT" "$code" >&2 <<'PY'
-import json, sys
-tmp, code = sys.argv[1], sys.argv[2]
+
+  local max=${TAKOMO_RETRIES:-3} budget=${TAKOMO_RETRY_MAX_SECONDS:-20}
+  local start now rc kind window wait_ms secs seen shift_by
+  start=$(date +%s)
+  REQ_ATTEMPTS=0
+  REQ_FAIL=""
+  while :; do
+    REQ_ATTEMPTS=$((REQ_ATTEMPTS + 1))
+    rc=0
+    REQ_CODE=$(curl "${args[@]}") || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      is_transient_status "$REQ_CODE" || { REQ_FAIL=""; return 0; }
+      kind=transient
+      seen="HTTP $REQ_CODE"
+    else
+      REQ_CODE=000
+      if curl_never_sent "$rc"; then kind=unreachable; else kind=transient; fi
+      seen="unreachable (curl exit $rc)"
+    fi
+    REQ_FAIL=$kind
+    # An ambiguous failure — a 5xx, or a transport error after the bytes went
+    # out — must not be replayed for a write that is not safe to repeat.
+    if [ "$kind" != unreachable ] && [ "$replay" != safe ]; then
+      REQ_FAIL=refused
+      return 0
+    fi
+    [ "$REQ_ATTEMPTS" -gt "$max" ] && return 0
+    shift_by=$((REQ_ATTEMPTS - 1)); [ "$shift_by" -gt 16 ] && shift_by=16
+    window=$((RETRY_BASE_MS << shift_by))
+    [ "$window" -gt "$RETRY_CAP_MS" ] && window=$RETRY_CAP_MS
+    wait_ms=$((window / 2 + RANDOM % (window / 2 + 1)))
+    now=$(date +%s)
+    [ $(((now - start) * 1000 + wait_ms)) -gt $((budget * 1000)) ] && return 0
+    secs=$(printf '%d.%03d' $((wait_ms / 1000)) $((wait_ms % 1000)))
+    warn "$method $path -> $seen; retrying in ${secs}s (attempt $((REQ_ATTEMPTS + 1))/$((max + 1)))"
+    sleep "$secs"
+  done
+}
+
+# Render whatever is in $REQ_OUT as an error. A takomo error is JSON and gets
+# its teaching fields printed; anything else (a proxy's HTML 502 page, a WAF
+# interstitial) is *summarised*, never dumped — dumping it is what buried the
+# failure in a screenful of base64 font data.
+render_http_error() {
+  local code=$1 indent=${2:-}
+  python3 - "$REQ_OUT" "$code" "$indent" >&2 <<'PY'
+import json, re, sys
+tmp, code, ind = sys.argv[1], sys.argv[2], sys.argv[3]
+raw = open(tmp, "rb").read()
 try:
-    d = json.load(open(tmp))
+    d = json.loads(raw)
+    if not isinstance(d, dict):
+        raise ValueError
 except Exception:
-    print(f"HTTP {code}: {open(tmp).read()[:800]}"); sys.exit(1)
-print(f"HTTP {code}  [{d.get('code','?')}]")
-if d.get('message'): print(d['message'])
-if d.get('remedy'):  print("remedy: " + d['remedy'])
-if d.get('current_state'): print("current state: " + d['current_state'])
+    d = None
+if d is None:
+    text = raw.decode("utf-8", "replace")
+    m = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
+    gist = m.group(1) if m else re.sub(r"(?s)<[^>]+>", " ", re.sub(
+        r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text))
+    gist = " ".join(gist.split())[:100] or "(empty body)"
+    print(f"{ind}HTTP {code} — not a takomo error: {len(raw)} bytes of non-JSON "
+          f"from something in front of the store")
+    print(f'{ind}gateway said: "{gist}"')
+    sys.exit()
+print(f"{ind}HTTP {code}  [{d.get('code','?')}]")
+if d.get('message'): print(ind + d['message'])
+if d.get('remedy'):  print(ind + "remedy: " + d['remedy'])
+if d.get('current_state'): print(ind + "current state: " + d['current_state'])
 for t in d.get('allowed_transitions', []):
     req = (" (requires " + ", ".join(t['requires']) + ")") if t.get('requires') else ""
-    print(f"  allowed -> {t['to']}{req}")
+    print(f"{ind}  allowed -> {t['to']}{req}")
 PY
+}
+
+# Abort on a transient failure the retries could not get past. Loud on purpose:
+# every line is prefixed, nothing goes to stdout, and the last line — the one
+# that survives `2>&1 | tail -1` — says what to do next.
+die_transient() {
+  local method=$1 path=$2 gave_up
+  echo "$PROG: ===== REQUEST FAILED — THIS IS NOT A TAKOMO ERROR =====" >&2
+  if [ "$REQ_CODE" = "000" ]; then
+    echo "$PROG: could not reach the store at $TAKOMO_URL" >&2
+  else
+    render_http_error "$REQ_CODE" "$PROG: "
+  fi
+  echo "$PROG: request was: $method $path" >&2
+  gave_up="gave up after $REQ_ATTEMPTS attempt(s)"
+  [ "$REQ_FAIL" = refused ] && gave_up="$gave_up — not retried, because repeating this request could apply it twice"
+  echo "$PROG: $gave_up" >&2
+  case "$method:$REQ_FAIL" in
+    GET:*|HEAD:*)
+      echo "$PROG: >>> Nothing was read. Re-run: $(argv_str)" >&2 ;;
+    *:unreachable)
+      # The connection was never established, so the store cannot have seen it.
+      echo "$PROG: THE WRITE DID NOT HAPPEN — the store was never reached." >&2
+      echo "$PROG: >>> Safe to re-run as-is: $(argv_str)" >&2 ;;
+    *)
+      echo "$PROG: THE WRITE WAS NOT CONFIRMED — it may have been applied, or not." >&2
+      echo "$PROG: >>> Check whether it landed BEFORE re-running: $(argv_str)" >&2 ;;
+  esac
+  exit 1
+}
+
+# api METHOD PATH [JSON_DATA] [EXTRA_HEADER] [CONFIRM_FN]
+# Writes the raw body to $REQ_OUT and echoes the HTTP status code on stdout.
+# On any >=400 it prints the store's teaching error (code/message/remedy/
+# allowed_transitions) to stderr and exits nonzero, so callers never have to
+# guard against error bodies. Transient gateway failures are retried per
+# replay_class; what survives that is fatal and unmistakable.
+#
+# CONFIRM_FN, when given, rescues a write that is unsafe to replay blind: after
+# an ambiguous failure it is called to ask the store what actually happened. It
+# must exit 0 ("already applied — $REQ_OUT now holds an equivalent response"),
+# 10 ("not applied — replaying is safe"), or anything else ("cannot tell").
+api() {
+  local method=$1 path=$2 data=${3:-} extra=${4:-} confirm=${5:-} cls rc
+  cls=$(replay_class "$method" "$path" "$extra")
+  http_request "$method" "$path" "$data" "$extra" "$cls"
+  if [ -n "$REQ_FAIL" ] && [ -n "$confirm" ]; then
+    warn "$method $path did not complete; asking the store whether it landed"
+    rc=0; "$confirm" || rc=$?
+    case "$rc" in
+      0)  REQ_FAIL=""; echo 200; return 0 ;;
+      10) http_request "$method" "$path" "$data" "$extra" safe ;;
+    esac
+  fi
+  [ -n "$REQ_FAIL" ] && die_transient "$method" "$path"
+  if [ "$REQ_CODE" -ge 400 ]; then
+    render_http_error "$REQ_CODE"
     exit 1
   fi
-  echo "$code"
+  echo "$REQ_CODE"
 }
 
 # Like api(), but never exits on an error status — returns the HTTP code on
 # stdout (or "000" on a curl failure) and leaves the body in $REQ_OUT. Used by
 # the importer's best-effort relation/state passes, where one item failing must
-# not abort the whole run.
+# not abort the whole run. Retries on the same terms as api().
 api_try() {
-  local method=$1 path=$2 data=${3:-} extra=${4:-} code
-  local -a args=(-sS -o "$REQ_OUT" -w '%{http_code}' -X "$method"
-    "$TAKOMO_URL$path" -H "Authorization: Bearer $TAKOMO_TOKEN")
-  [ -n "$extra" ] && args+=(-H "$extra")
-  if [ -n "$data" ]; then
-    args+=(-H "Content-Type: application/json" --data-binary "$data")
-  fi
-  code=$(curl "${args[@]}") || { echo "000"; return 0; }
-  echo "$code"
+  local method=$1 path=$2 data=${3:-} extra=${4:-} cls
+  cls=$(replay_class "$method" "$path" "$extra")
+  http_request "$method" "$path" "$data" "$extra" "$cls"
+  echo "$REQ_CODE"
 }
 
 # Print the store's teaching message from the last $REQ_OUT body to stderr,
 # indented, for the importer's soft failures.
-print_api_error() {
-  python3 - "$REQ_OUT" >&2 <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    print("    " + open(sys.argv[1]).read()[:300]); sys.exit()
-if d.get('message'):
-    print("    " + d['message'][:400])
-PY
-}
+print_api_error() { render_http_error "${1:-?}" "    "; }
 
 require_env() {
   load_takomo_config
@@ -211,7 +441,10 @@ cmd_new() {
   done
   [ -n "$title" ] || die "new: TITLE is required"
   project=$(resolve_project "$project")
-  local idem; idem="takomo-cli-$(date +%s)-$RANDOM"
+  # One key per invocation, so a retry inside this command replays the original
+  # ticket instead of creating a twin. $$ keeps two agents that fire in the same
+  # second from colliding on $RANDOM.
+  local idem; idem="takomo-cli-$(date +%s)-$$-$RANDOM"
   local data
   data=$(TS_PROJECT="$project" TS_TYPE="$type" TS_TITLE="$title" TS_BODY="$body" \
     TS_PRIORITY="$priority" TS_PARENT="$parent" \
@@ -446,6 +679,31 @@ PY
   print_conventions
 }
 
+# Consulted by api() when a transition failed ambiguously. A blind replay is no
+# use here: the store has no X -> X edge, so a repeat 409s `transition.illegal`
+# whether or not the first attempt landed. Ask it what happened instead.
+#   already at the target -> 0, with the ticket left in $REQ_OUT (same shape the
+#                            transition itself returns, so the caller reads on)
+#   still elsewhere       -> 10, replaying is safe and is exactly what was asked
+#   cannot tell           -> 1, and api() fails loudly
+CONFIRM_TICKET=""
+CONFIRM_TARGET=""
+confirm_transition() {
+  local state
+  http_request GET "/v1/tickets/$(urlenc "$CONFIRM_TICKET")" "" "" safe
+  if [ -n "$REQ_FAIL" ] || [ "$REQ_CODE" != 200 ]; then
+    warn "could not re-read $CONFIRM_TICKET to find out"
+    return 1
+  fi
+  state=$(ticket_field state)
+  if [ "$state" = "$CONFIRM_TARGET" ]; then
+    warn "it did land — $CONFIRM_TICKET is already '$CONFIRM_TARGET'"
+    return 0
+  fi
+  warn "it did not land — $CONFIRM_TICKET is still '$state'; replaying the move"
+  return 10
+}
+
 # transition ID TO_STATE — auto-echoes the stored fence; clears it on terminal.
 do_transition() {
   local id=$1 to=$2 reason=${3:-} fence
@@ -458,7 +716,8 @@ if os.environ.get("TS_FENCE",""): d["fence"] = int(os.environ["TS_FENCE"])
 print(json.dumps(d))
 PY
 )
-  api POST "/v1/tickets/$(urlenc "$id")/transition" "$data" >/dev/null
+  CONFIRM_TICKET=$id; CONFIRM_TARGET=$to
+  api POST "/v1/tickets/$(urlenc "$id")/transition" "$data" "" confirm_transition >/dev/null
   local newstate; newstate=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$REQ_OUT")
   case "$newstate" in done|cancelled) fence_clear "$id" ;; esac
   # If the server auto-released the claim on this move, drop the local fence too.
@@ -1618,23 +1877,19 @@ import json, os
 print(json.dumps({"id": os.environ["TS_P"], "name": os.environ["TS_P"], "workflow": json.loads(os.environ["TS_WF"])}))
 PY
 )
+  # Creating a project is a no-op the second time round (it 409s), so this one
+  # is safe to replay through the ordinary retry path.
   local code
-  code=$(curl -sS -o "$REQ_OUT" -w '%{http_code}' -X POST "$TAKOMO_URL/v1/projects" \
-    -H "Authorization: Bearer $TAKOMO_TOKEN" -H "Content-Type: application/json" --data-binary "$created") \
-    || die "init: request failed reaching $TAKOMO_URL"
+  http_request POST /v1/projects "$created" "" safe
+  code=$REQ_CODE
+  [ -n "$REQ_FAIL" ] && die_transient POST /v1/projects
   if [ "$code" = "201" ]; then
     echo "  created project + applied '$workflow' workflow"
   elif [ "$code" = "409" ]; then
     echo "  project exists; updating workflow to '$workflow'"
     api PUT "/v1/projects/$(urlenc "$project")/workflow" "$wf_body" >/dev/null
   else
-    python3 - "$REQ_OUT" "$code" >&2 <<'PY'
-import json, sys
-try: d = json.load(open(sys.argv[1]))
-except Exception: print(f"HTTP {sys.argv[2]}: {open(sys.argv[1]).read()[:400]}"); sys.exit(1)
-print(f"HTTP {sys.argv[2]}  [{d.get('code','?')}] {d.get('message','')}")
-if d.get('remedy'): print('remedy: ' + d['remedy'])
-PY
+    render_http_error "$code"
     die "init: could not create project (HTTP $code)"
   fi
 
@@ -1966,7 +2221,7 @@ cmd_import() {
     case "$code" in
       201) created=$((created + 1)) ;;
       200) skipped=$((skipped + 1)) ;;
-      *) failed=$((failed + 1)); echo "  ! create failed for origin '$origin' (HTTP $code)" >&2; print_api_error; continue ;;
+      *) failed=$((failed + 1)); echo "  ! create failed for origin '$origin' (HTTP $code)" >&2; print_api_error "$code"; continue ;;
     esac
     local nid; nid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$REQ_OUT")
     printf '%s\t%s\n' "$origin" "$nid" >> "$map"
@@ -2302,6 +2557,15 @@ Environment (or run `takomo init` to write repo-local .takomo/ config):
   TAKOMO_TOKEN    bearer token                          (required)
   TAKOMO_PROJECT  default project when --project omitted (optional)
   TAKOMO_ACTOR    your actor name, for `ls --mine`       (optional)
+  TAKOMO_RETRIES  retries on a 502/503/504 or an unreachable host (default 3)
+  TAKOMO_RETRY_MAX_SECONDS
+                  total budget for the backoff waits     (default 20)
+
+A gateway blip in front of the store is retried with exponential backoff, but
+only for requests that are safe to send twice. A write that would double if it
+were replayed — a comment, a token or share mint, `next`, `promote` — is never
+retried automatically: it fails with a loud "THE WRITE WAS NOT CONFIRMED", and
+you should check with `takomo show ID` before re-running it.
 
 Onboarding & identity:
   takomo init [PROJECT] [--workflow simple|FILE] [--url URL] [--actor NAME]
@@ -2440,6 +2704,7 @@ EOF
 }
 
 main() {
+  CMD_ARGV=("$@")
   local cmd=${1:-help}
   if [ $# -gt 0 ]; then shift; fi
   case "$cmd" in
