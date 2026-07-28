@@ -42,6 +42,8 @@ pub async fn create(
             "question_language",
             "style_guide",
             "answer_link_ttl_seconds",
+            "claim_ttl_seconds",
+            "max_claim_ttl_seconds",
         ],
     )?;
     let id = require_str(obj, "id")?;
@@ -59,6 +61,12 @@ pub async fn create(
     // exists, not a project created with the setting silently dropped.
     let link_ttl =
         crate::store::normalize_answer_link_ttl(super::get_i64(obj, "answer_link_ttl_seconds")?)?;
+    // Same reason again, and as a pair: a lease default above its ceiling is a
+    // 422 before the row exists, not a project whose every claim is clamped.
+    let (claim_ttl, max_claim_ttl) = crate::store::normalize_claim_ttls(
+        super::get_i64(obj, "claim_ttl_seconds")?,
+        super::get_i64(obj, "max_claim_ttl_seconds")?,
+    )?;
     let mut project = state
         .store
         .create_project(&id, &name, workflow, &ctx.actor)?;
@@ -77,6 +85,12 @@ pub async fn create(
         project = state
             .store
             .set_answer_link_ttl(&id, Some(ttl), &ctx.actor)?;
+    }
+    // Optional per-project lease policy, set at creation.
+    if claim_ttl.is_some() || max_claim_ttl.is_some() {
+        project = state
+            .store
+            .set_claim_ttls(&id, claim_ttl, max_claim_ttl, &ctx.actor)?;
     }
     state.wake();
     Ok((StatusCode::CREATED, Json(project.to_json())))
@@ -192,6 +206,66 @@ pub async fn put_answer_link_ttl(
         })?),
     };
     let project = state.store.set_answer_link_ttl(&project, ttl, &ctx.actor)?;
+    state.wake();
+    Ok(Json(project.to_json()))
+}
+
+/// PUT /v1/projects/{project}/claim-ttl (admin) — set this project's lease
+/// policy. Body: `{"ttl_seconds": 1800, "max_ttl_seconds": 7200}`, either one
+/// null to clear it and fall back to the built-in (900 / 3600).
+///
+/// One endpoint for both because they are validated as a pair: a default above
+/// the ceiling would be silently clamped on every claim. Two endpoints would
+/// force an ordering (raise the cap first, or the default is refused) and let a
+/// half-applied change through when the second call failed.
+///
+/// Not to be confused with `/answer-link-ttl`: that bounds a credential handed to
+/// someone outside the org, this bounds how long a worker may hold a ticket.
+pub async fn put_claim_ttl(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["ttl_seconds", "max_ttl_seconds"])?;
+    // At least one field must be present, so a typo'd name cannot silently reset
+    // the whole policy to the built-in. Each present-and-null clears that half.
+    if !obj.contains_key("ttl_seconds") && !obj.contains_key("max_ttl_seconds") {
+        return Err(ApiError::bad_request(
+            "validation.field_required",
+            "Send 'ttl_seconds' (the default lease a claim gets) and/or 'max_ttl_seconds' (the \
+             ceiling an explicit ttl_seconds is checked against) — a positive number of seconds, \
+             or null to clear that one and fall back to the built-in (900 default, 3600 max). \
+             Both are omitted here, and this endpoint replaces both, so it would be a no-op.",
+        ));
+    }
+    // Absent means "leave as it is", which is only knowable by reading the
+    // current row: this endpoint writes both columns in one UPDATE, so an absent
+    // field must be re-sent as its stored value rather than as NULL.
+    let current = state
+        .store
+        .get_project(&project)?
+        .ok_or_else(|| ApiError::not_found("project", &project))?;
+    let field = |name: &str, stored: Option<i64>| -> ApiResult<Option<i64>> {
+        match obj.get(name) {
+            None => Ok(stored),
+            Some(Value::Null) => Ok(None),
+            Some(v) => Ok(Some(v.as_i64().ok_or_else(|| {
+                ApiError::bad_request(
+                    "validation.field_type",
+                    format!("Field '{name}' must be an integer number of seconds or null."),
+                )
+            })?)),
+        }
+    };
+    let ttl = field("ttl_seconds", current.claim_ttl_seconds)?;
+    let max_ttl = field("max_ttl_seconds", current.max_claim_ttl_seconds)?;
+    let project = state
+        .store
+        .set_claim_ttls(&project, ttl, max_ttl, &ctx.actor)?;
     state.wake();
     Ok(Json(project.to_json()))
 }

@@ -88,6 +88,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             put(crate::api::projects::put_answer_link_ttl),
         )
         .route(
+            "/v1/projects/{project}/claim-ttl",
+            put(crate::api::projects::put_claim_ttl),
+        )
+        .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
         )

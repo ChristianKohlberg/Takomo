@@ -23,8 +23,8 @@ pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
 pub use projects::{
-    normalize_answer_link_ttl, normalize_style_guide, Conventions, DeletedCounts,
-    MAX_STYLE_GUIDE_CHARS,
+    normalize_answer_link_ttl, normalize_claim_ttls, normalize_style_guide, Conventions,
+    DeletedCounts, MAX_STYLE_GUIDE_CHARS,
 };
 pub use questions::{
     question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
@@ -354,6 +354,24 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // projects.claim_ttl_seconds / max_claim_ttl_seconds: this project's lease
+    // policy (nullable = unset, so claiming uses DEFAULT_TTL_SECONDS and the cap
+    // is MAX_TTL_SECONDS). A *different* setting from answer_link_ttl_seconds
+    // above, which is about a credential handed outside the org; these two are
+    // about how long a worker may hold a ticket. Same not-backfilled reasoning as
+    // that column: silence keeps tracking the built-in default.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "claim_ttl_seconds") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN claim_ttl_seconds INTEGER",
+            [],
+        )?;
+    }
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "max_claim_ttl_seconds") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN max_claim_ttl_seconds INTEGER",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -368,6 +386,13 @@ CREATE TABLE IF NOT EXISTS projects (
   -- project's questions. NULL = unset; minting then falls back to the built-in
   -- DEFAULT_ANSWER_TTL_SECONDS. Bounded exactly like an explicit `ttl_seconds`.
   answer_link_ttl_seconds INTEGER,
+  -- This project's lease policy, both NULL = unset (DEFAULT_TTL_SECONDS /
+  -- MAX_TTL_SECONDS). `claim_ttl_seconds` is what a claim that names no
+  -- ttl_seconds gets; `max_claim_ttl_seconds` is the ceiling an explicit one is
+  -- checked against. Unrelated to answer_link_ttl_seconds above — that bounds a
+  -- credential, these bound how long work may be held.
+  claim_ttl_seconds       INTEGER,
+  max_claim_ttl_seconds   INTEGER,
   created_at              INTEGER NOT NULL
 );
 

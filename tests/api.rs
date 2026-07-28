@@ -6340,3 +6340,228 @@ async fn tag_validation_and_scope() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
     assert_eq!(e["code"], "auth.scope");
 }
+
+/// A project's lease policy is configurable, and the numbers it sets are the ones
+/// claims actually get (takomo-2ztv).
+///
+/// Both halves matter and fail independently: a setting the claim path ignores is
+/// worse than no setting, because the board would show a policy the fleet is not
+/// following.
+#[tokio::test]
+async fn project_claim_ttl_settings_drive_real_leases() {
+    let app = TestApp::spawn().await;
+
+    // Unset: the built-ins. Pinned so a change to either constant has to be a
+    // deliberate edit here rather than a silent shift in every deployment.
+    let p = app.project(&app.admin, "tp").await;
+    assert!(p["claim_ttl_seconds"].is_null(), "{p}");
+    assert!(p["max_claim_ttl_seconds"].is_null(), "{p}");
+    let id = app.create_ticket("lease policy").await;
+    app.transition(&app.admin, &id, "spec").await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    assert_lease_seconds(&lease, 900, "nothing configured falls back to the built-in");
+
+    // Raise both. The ceiling is above the built-in 3600 on purpose — that a
+    // project can exceed it is the point of the ticket.
+    let (s, updated) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 7_200, "max_ttl_seconds": 21_600 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{updated}");
+    assert_eq!(updated["claim_ttl_seconds"], 7_200);
+    assert_eq!(updated["max_claim_ttl_seconds"], 21_600);
+
+    // The project's default now reaches a real lease…
+    let other = app.create_ticket("lease policy 2").await;
+    app.transition(&app.admin, &other, "spec").await;
+    let (_, lease) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{other}/claim"),
+            json!({}),
+        )
+        .await;
+    assert_lease_seconds(
+        &lease,
+        7_200,
+        "a claim naming no ttl_seconds takes the project default",
+    );
+
+    // …and an explicit request above the OLD built-in maximum is now allowed,
+    // which is the whole point: 4 hours would have been a 422 before this.
+    let third = app.create_ticket("lease policy 3").await;
+    app.transition(&app.admin, &third, "spec").await;
+    let (s, lease) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{third}/claim"),
+            json!({ "ttl_seconds": 14_400 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    assert_lease_seconds(
+        &lease,
+        14_400,
+        "4h is allowed once the project raises its ceiling",
+    );
+
+    // Over the project's own ceiling is still a refusal, and it teaches with the
+    // project's numbers rather than the built-in ones.
+    let (s, err) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{third}/heartbeat"),
+            json!({ "fence": lease["fence"], "ttl_seconds": 21_601 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "validation.ttl", "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("21600"),
+        "the refusal must name the project's ceiling, not the built-in 3600: {err}"
+    );
+
+    // Cleared, both fall back to the built-ins again — not to the last value set.
+    let (s, cleared) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": null, "max_ttl_seconds": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{cleared}");
+    assert!(cleared["claim_ttl_seconds"].is_null(), "{cleared}");
+    let fourth = app.create_ticket("lease policy 4").await;
+    app.transition(&app.admin, &fourth, "spec").await;
+    let (_, lease) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{fourth}/claim"),
+            json!({}),
+        )
+        .await;
+    assert_lease_seconds(
+        &lease,
+        900,
+        "cleared settings fall back to the built-in, not the last value",
+    );
+}
+
+/// The lease pair is validated together, admin-only, and refuses the combination
+/// that would silently do nothing.
+#[tokio::test]
+async fn project_claim_ttl_is_validated_as_a_pair_and_admin_only() {
+    let app = TestApp::spawn().await;
+
+    // A default above the ceiling that would apply is the trap worth catching: it
+    // would be clamped on every claim, so the project would be configured to a
+    // number no claim ever gets.
+    let (s, err) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 7_200 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.claim_ttl", "{err}");
+    assert_eq!(
+        err["details"]["effective_max_seconds"], 3_600,
+        "the error must name the ceiling that would actually apply: {err}"
+    );
+    // …and the same pair in one request is fine, which is why they share an
+    // endpoint.
+    let (s, ok) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 7_200, "max_ttl_seconds": 7_200 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+
+    // Omitting a field leaves it alone rather than clearing it — this endpoint
+    // writes both columns, so "absent" must not mean NULL.
+    let (s, kept) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 1_800 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{kept}");
+    assert_eq!(kept["claim_ttl_seconds"], 1_800);
+    assert_eq!(
+        kept["max_claim_ttl_seconds"], 7_200,
+        "an omitted max must be preserved, not reset to the built-in: {kept}"
+    );
+
+    // Neither field is a 400, so a typo'd name cannot silently reset the policy.
+    let (s, err) = app
+        .put(&app.admin, "/v1/projects/tp/claim-ttl", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{err}");
+
+    // Non-positive is refused.
+    let (s, err) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.claim_ttl", "{err}");
+
+    // Lease policy decides how long work can be held, so it is admin, not write.
+    let (s, err) = app
+        .put(
+            &app.worker,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": 600 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+
+    // No upper bound on the ceiling — the captain's explicit call in takomo-2ztv.
+    // Asserted rather than left implicit, because the obvious "safety" patch is to
+    // add one, and that would silently break a deployment relying on this.
+    let (s, big) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/claim-ttl",
+            json!({ "ttl_seconds": null, "max_ttl_seconds": 604_800 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "a week-long ceiling is allowed: {big}");
+    assert_eq!(big["max_claim_ttl_seconds"], 604_800);
+}
+
+/// Assert a lease is good for about `want` seconds, from its `expires_at`.
+///
+/// Tolerant by one second in each direction, deliberately: the lease was granted
+/// a few milliseconds before this reads the clock, so the remaining time is just
+/// under the configured whole number and which way it truncates depends on where
+/// in the current second the request landed. A tolerance is the difference between
+/// pinning the setting and pinning the scheduler.
+fn assert_lease_seconds(lease: &Value, want: i64, what: &str) {
+    let expires = chrono::DateTime::parse_from_rfc3339(
+        lease["expires_at"].as_str().expect("lease has expires_at"),
+    )
+    .expect("expires_at is RFC3339")
+    .timestamp();
+    let got = expires - chrono::Utc::now().timestamp();
+    assert!(
+        (got - want).abs() <= 1,
+        "{what}: lease should run ~{want}s but runs {got}s ({lease})"
+    );
+}
