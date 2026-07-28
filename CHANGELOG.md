@@ -74,6 +74,32 @@ single ticket.
 
 ### Fixed
 
+- **`/board` now shows when a question came back with a question.** A human can
+  bounce a question back to the asking agent for more research instead of
+  answering it; the question stays open and the ticket stays parked, but the
+  ball is with the agent. The board reduced every open question on a ticket to
+  `{count, blocking, advisory}` and threw `awaiting` away, so a bounced-back
+  question was indistinguishable from one waiting on a decision: same
+  `blocking` badge, same needs-a-human tint, and a drawer callout that promised
+  "Answering resumes this ticket" when there was nothing to answer yet.
+
+  A ticket whose open questions are *all* awaiting the agent now reads
+  **in conversation** (DE *im Gespräch*) — a `⤺ in conversation` badge, a
+  dashed card edge, and no attention tint — and its detail callout reads
+  "In conversation — N question(s) with the agent / A human asked for more
+  research. The agent owes the next reply." with a *Read the thread in the
+  Inbox* link instead of *Answer in Inbox*. A pending decision still wins: a
+  ticket carrying both a live thread and a question it is a human's turn on
+  keeps reading `blocking`, because that is the reader's next action. In the
+  board's question drawer the same question loses the needs-a-decision
+  highlight and gains the same label.
+
+  The term is deliberately the one the inbox's planned *In conversation* folder
+  uses, and the partition is the same single field (`Question.awaiting`), so
+  both surfaces can name and split the state identically. The "Ask a human"
+  count is unchanged for now — it stays a plain open count until the inbox has
+  a folder to move these into.
+
 - **The `.handrail/` norm detectors can now see a committed branch.**
   `route-test-pairing` and `openapi-current` computed their changed set with
   `git diff --name-only HEAD`, which reports only *uncommitted* work — so on a

@@ -173,6 +173,11 @@
   .card.tint .cid { color: var(--muted); font-weight: 600; }
   .card .qflag { font-size: 12px; font-weight: 600; color: var(--accent2); white-space: nowrap; }
   .card .qflag.blocking { color: var(--accent); font-weight: 700; }
+  /* In conversation: the ball is with the agent, so the card is a different
+     shape in the column (dashed edge) without borrowing the attention tint
+     that means "a human has to decide this". */
+  .card .qflag.conv { color: var(--muted); font-weight: 650; }
+  .card.conv { border-style: dashed; border-color: var(--sel-border); }
   .card .ctitle { font-size: 13.5px; font-weight: 650; line-height: 1.4; margin-bottom: 10px; word-break: break-word; color: var(--text); }
   .card.tint .ctitle { font-weight: 700; }
   .card.done .ctitle { font-weight: 550; color: var(--muted); margin-bottom: 0; }
@@ -275,6 +280,7 @@
   #detail .kv .mono { font-family: var(--mono); color: var(--text); }
   .callout { background: var(--chip-bg); border-radius: 11px; padding: 14px 16px; }
   .callout .ct { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+  .callout.conv .ct { color: var(--ink2); }
   .callout .cs { font-size: 13px; color: var(--ink2); line-height: 1.5; margin-bottom: 11px; }
   .callout a.answer-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 680; color: #fff; background: var(--accent); padding: 8px 14px; border-radius: 8px; text-decoration: none; }
   .comment { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; margin-bottom: 10px; }
@@ -322,6 +328,8 @@
   .mine-toggle { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
   .q-item { border: 1px solid var(--border-soft); border-radius: 10px; padding: 13px 14px; margin-bottom: 12px; }
   .q-item.blocking { background: var(--sel); border-color: var(--sel-border); }
+  .q-item.conv { border-style: dashed; border-color: var(--sel-border); }
+  .q-item .q-rec .convtag { font-weight: 700; color: var(--ink2); }
   .q-item .q-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
   .q-item .q-title { font-weight: 680; margin: 4px 0; word-break: break-word; }
   .q-item .q-meta { font-family: var(--mono); font-size: 12.5px; color: var(--muted); margin-bottom: 6px; overflow-wrap: anywhere; }
@@ -542,6 +550,10 @@
       advisory:"beratend",
       awaiting:"wartet auf ",
       awaitingSub:" — ein Mensch hat um mehr Kontext gebeten. Voller Verlauf in der Inbox.",
+      inConversation:"im Gespräch",
+      inConvN:"Im Gespräch — {n} Frage(n) beim Agenten",
+      inConvSub:"Ein Mensch hat um mehr Recherche gebeten. Der nächste Beitrag liegt beim Agenten.",
+      readThread:"Verlauf in der Inbox lesen →",
       state:"Status",
       claimedBy:"beansprucht von",
       unclaimed:"frei",
@@ -633,6 +645,10 @@
       advisory:"advisory",
       awaiting:"awaiting ",
       awaitingSub:" — a human asked for more info. Full thread in the inbox.",
+      inConversation:"in conversation",
+      inConvN:"In conversation — {n} question(s) with the agent",
+      inConvSub:"A human asked for more research. The agent owes the next reply.",
+      readThread:"Read the thread in the Inbox →",
       state:"state",
       claimedBy:"claimed by",
       unclaimed:"unclaimed",
@@ -1719,10 +1735,14 @@
   function cardEl(t, isDone) {
     var prio = t.priority || "low";
     var qi = state.openQByTicket[t.id];
+    // Every open question on this ticket is waiting on the *agent*: the thread
+    // is live, but nothing here is anyone's decision to make.
+    var convOnly = !!(qi && qi.conv && !qi.blocking && !qi.advisory);
     var tint = !isDone && (prio === "critical" || (qi && qi.blocking));
     var cls = "card"
       + (t.type === "bug" ? " bug" : "")
       + (tint ? " tint" : "")
+      + (convOnly && !isDone ? " conv" : "")
       + (isDone ? " done" : "")
       + (t.archived_at ? " archived" : "");
     var c = el("div", cls);
@@ -1731,8 +1751,14 @@
     var top = el("div", "ctop");
     top.appendChild(el("span", "cid", t.id + (t.type ? " · " + t.type : "")));
     if (qi && qi.count) {
-      var flagTxt = qi.blocking ? L().blocking : (qi.advisory ? L().advisory : (qi.count > 1 ? L().questionsN.replace("{n}", qi.count) : L().question1));
-      top.appendChild(el("span", "qflag" + (qi.blocking ? " blocking" : ""), flagTxt));
+      // A pending decision outranks a live thread: if anything on this ticket
+      // is a human's turn, that is what the card has to say. "in conversation"
+      // is reserved for the case where it is nobody's turn but the agent's.
+      var flagTxt = qi.blocking ? L().blocking
+        : qi.advisory ? L().advisory
+        : convOnly ? "⤺ " + L().inConversation
+        : (qi.count > 1 ? L().questionsN.replace("{n}", qi.count) : L().question1);
+      top.appendChild(el("span", "qflag" + (qi.blocking ? " blocking" : (convOnly ? " conv" : "")), flagTxt));
     } else if (t.archived_at) {
       top.appendChild(el("span", "arch-tag", "archived"));
     }
@@ -1835,8 +1861,14 @@
       // "Answer in Inbox".
       var map = {};
       items.forEach(function (q) {
-        var m = map[q.ticket] || (map[q.ticket] = { count: 0, blocking: false, advisory: false });
+        var m = map[q.ticket] || (map[q.ticket] = { count: 0, blocking: false, advisory: false, conv: 0 });
         m.count++;
+        // Whose turn it is, not just the mode. A question a human bounced back
+        // for more research (`awaiting == "agent"`) is still open and still
+        // parks the ticket, but the ball is with the agent — counting it as
+        // blocking would make the card shout for a decision nobody can take
+        // yet. Same partition the inbox's "in conversation" folder uses.
+        if (q.awaiting === "agent") { m.conv++; return; }
         if (q.mode && q.mode !== "blocking") m.advisory = true; else m.blocking = true;
       });
       state.openQByTicket = map;
@@ -1880,7 +1912,10 @@
 
   function qItemEl(q) {
     var blocking = !(q.mode && q.mode !== "blocking");
-    var item = el("div", "q-item" + (blocking ? " blocking" : ""));
+    // The needs-a-decision highlight is for questions it is a human's turn on;
+    // one in conversation gets its own quieter treatment instead.
+    var conv = q.awaiting === "agent";
+    var item = el("div", "q-item" + (blocking && !conv ? " blocking" : "") + (conv ? " conv" : ""));
     var urg = q.urgency || "normal";
     var head = el("div", "q-head");
     head.appendChild(el("span", "uw uw-" + urg, cap(urg)));
@@ -1889,8 +1924,10 @@
     item.appendChild(el("div", "q-title", q.title || "(untitled question)"));
     // one monospace identity line: agent · kind · ticket
     item.appendChild(el("div", "q-meta", [q.asked_by || "—", q.kind, q.ticket].join(" · ")));
-    if (q.awaiting === "agent") {
-      var aw = el("div", "q-rec", "⤺ " + L().awaiting + (q.asked_by || "agent") + L().awaitingSub);
+    if (conv) {
+      var aw = el("div", "q-rec");
+      aw.appendChild(el("span", "convtag", "⤺ " + L().inConversation));
+      aw.appendChild(document.createTextNode(" · " + L().awaiting + (q.asked_by || "agent") + L().awaitingSub));
       item.appendChild(aw);
     }
     if (q.body) item.appendChild(mdNode(q.body, "q-body"));
@@ -1962,11 +1999,15 @@
     // "Blocked — answer in inbox" callout when this ticket has open questions.
     var qi = state.openQByTicket[t.id];
     if (qi && qi.count) {
+      // "Blocked … answering resumes this ticket" is a lie when the human has
+      // already bounced every open question back — there is nothing to answer
+      // until the agent reports back, and the reader's job here is to read.
+      var convOnly = !!(qi.conv && !qi.blocking && !qi.advisory);
       var sco = el("section");
-      var callout = el("div", "callout");
-      callout.appendChild(el("div", "ct", L().blockedN.replace("{n}", qi.count)));
-      callout.appendChild(el("div", "cs", qi.blocking ? L().answeringResumes : L().decisionRouted));
-      var a = el("a", "answer-btn", L().answerInInbox); a.href = "/inbox";
+      var callout = el("div", "callout" + (convOnly ? " conv" : ""));
+      callout.appendChild(el("div", "ct", convOnly ? L().inConvN.replace("{n}", qi.conv) : L().blockedN.replace("{n}", qi.count)));
+      callout.appendChild(el("div", "cs", convOnly ? L().inConvSub : (qi.blocking ? L().answeringResumes : L().decisionRouted)));
+      var a = el("a", "answer-btn", convOnly ? L().readThread : L().answerInInbox); a.href = "/inbox";
       callout.appendChild(a);
       sco.appendChild(callout);
       b.appendChild(sco);
