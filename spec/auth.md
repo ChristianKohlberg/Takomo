@@ -26,7 +26,7 @@ Naming convention: `human:alice`, `orch:main`, `agent:runner-1`, `svc:github-web
 | `write`   | create/patch/comment/deps/claim/heartbeat/release/transition/archive/unarchive (subject to workflow `requires`) |
 | `human`   | satisfies `scope:human` transition requirements (approval gates) |
 | `autoland`| satisfies `scope:autoland` (or other custom scopes a workflow names — scopes beyond the four reserved ones are free-form strings matched literally) |
-| `admin`   | projects (create **and delete**), workflow upload, token management |
+| `admin`   | projects (create **and delete**), workflow upload, token management, force-releasing a claim (`POST /v1/tickets/{id}/force-release` — takes a ticket from a holder that is gone, bumping the fence so the displaced worker's next write 409s) |
 
 Typical grants: workers get `read,write` on their project; orchestrators get `read,write` plus `autoland` where yolo applies; humans get `read,write,human`; the webhook service gets `write` on one project.
 

@@ -21,6 +21,36 @@ use serde_json::json;
 pub const DEFAULT_TTL_SECONDS: i64 = 900;
 pub const MAX_TTL_SECONDS: i64 = 3600;
 
+/// What an admin force-release displaced, so the response and the audit event
+/// can both name it. `previous_fence` is what the ousted holder is still
+/// carrying; `fence` is the bumped value that makes its next write bounce.
+#[derive(Debug, Clone)]
+pub struct ForcedRelease {
+    pub ticket: String,
+    pub project: String,
+    pub previous_holder: String,
+    pub previous_fence: i64,
+    pub fence: i64,
+    /// True when the lease had already lapsed by the time the force landed —
+    /// the claim row was still there, so the force still fenced the holder off.
+    pub lease_expired: bool,
+    pub reason: Option<String>,
+}
+
+impl ForcedRelease {
+    pub fn to_json(&self) -> serde_json::Value {
+        json!({
+            "ticket": self.ticket,
+            "project": self.project,
+            "previous_holder": self.previous_holder,
+            "previous_fence": self.previous_fence,
+            "fence": self.fence,
+            "lease_expired": self.lease_expired,
+            "reason": self.reason,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ReadyFilter {
     pub project: Option<String>,
@@ -371,6 +401,88 @@ impl Store {
                     Ok(())
                 }
             }
+        })
+    }
+
+    /// Admin force-release: drop whatever claim the ticket carries without
+    /// asking who holds it or what fence they have. The recovery path for a
+    /// worker that is gone, since [`Store::release`] answers only to the holder
+    /// and the sweeper frees a lease exactly when it expires and not a moment
+    /// sooner — and `max_claim_ttl_seconds` is a per-project setting with no
+    /// ceiling, so "when it expires" can be arbitrarily far away (takomo-cjel).
+    ///
+    /// **Bumps `fence_seq`.** That is the whole point: the displaced worker,
+    /// which may still be alive and mid-write, now carries a stale fence and its
+    /// next mutating call gets a teaching 409 instead of winning. A force that
+    /// left the fence alone would hand the ticket to a new claimant while the
+    /// old one kept writing to it.
+    ///
+    /// An already-lapsed lease is force-released too, rather than refused: the
+    /// holder is still recorded on the row and — because natural expiry does
+    /// *not* bump the fence — a zombie echoing that fence would still be
+    /// accepted. Refusing here would make the outcome depend on whether the TTL
+    /// happened to elapse a moment before the admin's call.
+    pub fn force_release(
+        &self,
+        id: &str,
+        actor: &str,
+        reason: Option<&str>,
+    ) -> ApiResult<ForcedRelease> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let t = get_ticket_required(tx, id)?;
+            let Some(holder) = t.claim_holder.clone() else {
+                return Err(ApiError::conflict(
+                    "claim.none",
+                    format!(
+                        "Ticket '{id}' holds no claim, so there is nothing to force-release. It is already free for the next worker (if its state is claimable). A force-release is not idempotent bookkeeping — it reports what it displaced — so a second call on the same ticket lands here."
+                    ),
+                )
+                .remedy(format!(
+                    "Nothing to do. Confirm with GET /v1/tickets/{id} (a `claim` of null means unclaimed) and check GET /v1/events?ticket={id} for the released / lease_expired / lease_revoked event that already freed it."
+                ))
+                .current_state(t.state.clone()));
+            };
+            let lease_expired = t.claim_expires_at.is_some_and(|exp| exp <= now);
+            tx.execute(
+                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, fence_seq = fence_seq + 1, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )?;
+            let fence: i64 = tx.query_row(
+                "SELECT fence_seq FROM tickets WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            // Its own kind, not `released` with a flag: `kind` is the only
+            // server-side event filter (GET /v1/events?kind=), so an audit
+            // consumer asking "what has an admin forcibly taken?" needs one —
+            // and a `released` event whose actor is not the holder would read to
+            // every existing consumer as the holder letting go voluntarily.
+            emit_event(
+                tx,
+                Some(id),
+                Some(&t.project),
+                actor,
+                "lease_revoked",
+                json!({
+                    "holder": holder,
+                    "fence": t.fence_seq,
+                    "new_fence": fence,
+                    "lease_expired": lease_expired,
+                    "expires_at": t.claim_expires_at.map(iso),
+                    "reason": reason,
+                }),
+                now,
+            )?;
+            Ok(ForcedRelease {
+                ticket: id.to_string(),
+                project: t.project.clone(),
+                previous_holder: holder,
+                previous_fence: t.fence_seq,
+                fence,
+                lease_expired,
+                reason: reason.map(str::to_string),
+            })
         })
     }
 

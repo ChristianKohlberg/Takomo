@@ -19,7 +19,7 @@ mod tokens;
 mod transition;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
-pub use claims::{ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
+pub use claims::{ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
 pub use projects::{
