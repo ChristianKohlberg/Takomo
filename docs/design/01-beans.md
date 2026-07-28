@@ -1,5 +1,10 @@
 # Research: hmans/beans
 
+> **Frozen third-party research, July 2026.** A snapshot of somebody else's project taken while deciding
+> adopt-vs-build (the decision is in [00-synthesis.md](00-synthesis.md)); it says nothing about Takomo's own
+> architecture and is not maintained. beans has moved on since — re-verify against the repo before relying on
+> any detail here. For Takomo itself read the **Architecture** section of [CLAUDE.md](../../CLAUDE.md).
+
 Repo: https://github.com/hmans/beans — "A CLI-based, flat-file issue tracker for humans and robots."
 
 ## 1. What beans is

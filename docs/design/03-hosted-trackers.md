@@ -1,5 +1,11 @@
 # Research: general hosted / self-hostable issue trackers as an agent task store
 
+> **Frozen third-party research, July 2026.** Input to the adopt-vs-build decision in
+> [00-synthesis.md](00-synthesis.md) and not maintained: pricing, free-tier caps, API limits and paywall lines
+> for SaaS products drift constantly, so treat every number here as "as of July 2026" and re-check before
+> acting. It makes no claim about Takomo's own architecture; for that read the **Architecture** section of
+> [CLAUDE.md](../../CLAUDE.md).
+
 Evaluated July 2026 against: HTTP-reachable central store, simple token auth, epic→task→subtask hierarchy, rich metadata for agent context, a real configurable/enforced status state machine, agent-ergonomic API (MCP a plus), lightweight footprint.
 
 ## 1. GitHub Issues

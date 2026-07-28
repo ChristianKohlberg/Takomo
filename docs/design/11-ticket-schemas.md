@@ -1,5 +1,14 @@
 # Ticket schemas — enforce a per-type "definition of done" for ticket bodies (2026-07-25)
 
+> **Historical proposal, dated 2026-07-25 — unimplemented, and not a description of anything in the tree.**
+> Nothing here exists: `schema_mode`, `.takomo/schemas/`, `schema.incomplete` and `takomo schema *` appear
+> nowhere in `src/`, `spec/` or `clients/`. It is legibly a proposal (it still carries its own "Open decisions"),
+> and its premise check still holds — the store does accept an empty body and queue it. Read it as a design
+> option that is open, not as a feature. Two cross-references in it have gone stale; see the notes below.
+>
+> For what the store actually enforces read the **Architecture** section of [CLAUDE.md](../../CLAUDE.md) and
+> [spec/workflow-format.md](../../spec/workflow-format.md).
+
 ## The problem
 
 Agents create tickets for other agents. A good ticket is picked up and resolved in minutes; a
@@ -55,6 +64,12 @@ gate (see [../../spec/workflow-format.md](../../spec/workflow-format.md)) and on
 
 `todo → in_progress`, `done`, etc. stay untouched.
 
+> **Stale reference:** `draft` and `todo` exist only in `workflows/simple.yaml`, the no-ceremony workflow the
+> shell CLI's `takomo init` applies. The **built-in default** is `workflows/factory-default.yaml`, which has
+> neither state; its analogue of "scratch → claimable by someone else" is the `spec → ready` edge, already
+> gated on a `human`-scoped token. Any implementation has to name the enforced edge per workflow rather than
+> hardcoding `draft → todo`.
+
 ## Schema format (the local file, source of truth)
 
 One file per type under `.takomo/schemas/<type>.md` in the consuming repo. Frontmatter is the
@@ -100,6 +115,10 @@ Per-project `schema_mode`:
 
 New projects default to `warn`; flipping to `enforce` is a conscious call. Same posture as the
 admin-token relaxation in [10-dx-gaps.md](10-dx-gaps.md) #2 — a deliberate, reversible tightening.
+
+> **Stale reference:** that relaxation is no longer pending — admin-scoped token minting over HTTP shipped,
+> and the conscious call is written up as "Deliberate posture shift (bounded relaxation)" in
+> [../../spec/auth.md](../../spec/auth.md). The analogy still stands; the precedent is now a live one.
 
 ## Failure response
 

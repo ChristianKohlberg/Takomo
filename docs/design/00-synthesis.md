@@ -1,5 +1,12 @@
 # Synthesis: adopt vs. build (July 2026)
 
+> **Historical decision record, July 2026 — the question below was settled by building.** The scorecard is a
+> frozen survey of third-party products as they stood then; the recommendation at the bottom is not live advice.
+> Option C was taken, in Rust, and Takomo is the result you are reading the docs of. Kept because the reasoning
+> is the answer to "why not just use beads / GitHub Issues / Redmine", which is a question that keeps coming up.
+>
+> For what was built read the **Architecture** section of [CLAUDE.md](../../CLAUDE.md).
+
 Requirements: hosted central sync store · basic/token auth · epics → tasks (→ subtasks) · free-form metadata for agent context · proper state machine · not fancy, agent-ergonomic.
 
 Detail reports: [01-beans.md](01-beans.md) · [02-agent-native-trackers.md](02-agent-native-trackers.md) · [03-hosted-trackers.md](03-hosted-trackers.md)
@@ -39,5 +46,16 @@ Redmine: one small container, token auth, unlimited hierarchy via trackers (Epic
 The gap is real and the ecosystem keeps converging on it without a mature winner. The spec is small: single binary (Go or TS) + SQLite/Postgres, bearer-token auth, epics→tasks→subtasks, JSONB metadata, **configurable state machine with enforced transitions + atomic claim/lease**, REST + MCP + thin CLI, SSE for wakes. Borrow beans' ergonomics (prime prompt, exact-match body edits, --json), beads' claiming and dependency-ready queue, agent-kanban's enforced transition ops. Publishable — nothing mature occupies this slot.
 **Fit: 5/5 by construction. Cost: it's a project to own; interim solution needed while building.**
 
+> **Shipped:** Option C, in **Rust** — the language was still "Go or TS" here and is settled in
+> [05-build-architecture.md](05-build-architecture.md) under "Stack decision". Almost all of the spec above
+> landed as written (single binary, SQLite, bearer tokens, hierarchy, JSON metadata, configurable enforced
+> state machine, atomic claim/lease, REST + MCP + CLI, SSE). Two departures: MCP is hosted in-process rather
+> than being a thin adapter, and Postgres remains the someday-backend behind the `Store` surface.
+
 ### Recommendation
 Pragmatic path: **start on Option A (GitHub Issues) this week** — zero setup, agents already authenticated, hierarchy + fields are good enough, and the transition-enforcement layer you write for it (a small shared client) is exactly the API contract for **Option C** if/when the build is justified. Choose B instead of A only if store-side enforcement or self-hosting is non-negotiable from day one.
+
+> **Superseded — do not read this as advice.** The interim-then-maybe-build path was not taken: Option C was
+> built directly, and store-side enforcement (the deciding condition named in the last sentence) is exactly
+> what it is for. The paragraph is left standing because it records what looked pragmatic before the build,
+> not because it recommends anything now.
