@@ -117,6 +117,35 @@ single ticket.
   not resolve exits 3 (red) instead of silently degrading to "no changes". CI's
   shellcheck job now covers `.handrail/*.sh`, which it did not before.
 
+- **`↵` on a focused control in `/inbox` no longer answers a question you never
+  read.** The global "answer the selected question" shortcut claimed Enter for
+  the whole document and `preventDefault()`ed it. On a focused control that did
+  not merely swallow the activation: it submitted an answer for whatever the
+  *list* had selected, which after the post-answer auto-advance is the **next**
+  open question. So pressing `↵` on the undo snackbar's focused Undo button —
+  the most obvious recovery key, on the one control whose whole job is to take
+  the last action back — recorded a second irreversible decision on an unrelated
+  ticket, using the asking agent's `recommended` value (which arms the primary
+  with no clicks at all), left the answer it was meant to cancel standing, and
+  advanced the selection again so the next `↵` did it to the question after
+  that. The same swallow reached every focusable control on the surface: the
+  language toggles, and the question rows, where Tab+`↵` selected a row and
+  answered it in one keystroke. Scoped by control kind rather than by
+  special-casing Undo, so buttons added later are safe by construction; `j`/`k`
+  and `↵` with focus on the document are unchanged.
+
+- **`/inbox` says when an answered question left its ticket parked.** A blocking
+  answer is meant to move the ticket back into the ready queue; when it cannot,
+  the answer is still recorded and the ticket is left out of the queue, where no
+  agent will pick it up. The inbox rendered nothing for that, so a stranded
+  question looked exactly like a resumed one. The reading pane now carries a
+  "ticket not resumed" block under the decision and the list row a `ticket
+  stalled` chip, with the reason: the server's verdict on that answer (from the
+  answer response, or from the `question_answered` event when the answer was
+  given elsewhere), or — when another blocking question on the ticket is still
+  open, so no resume was attempted — the barrier. Presentation only; the server
+  has reported all of this since the resume fix.
+
 - **The CLI no longer drops a write on a ten-second gateway blip.** `takomo`
   issued exactly one request per command, so a transient `502` from a proxy in
   front of the store — `/healthz` green throughout — failed the command
