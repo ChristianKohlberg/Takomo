@@ -141,11 +141,11 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     );
 
     // ---- half 2: the control that reads them ----
-    // The two surfaces mount different controls: /board's ticket filter is a
-    // typeahead (takomo-fo1j), /inbox still uses the native <select>.
+    // Both surfaces now mount a typeahead — /board's since takomo-fo1j, /inbox's
+    // since takomo-4io8 — over the same two fields asserted above.
     for (path, control, wiring) in [
         ("/board", "id=\"tickfilter\"", "inSubtree("),
-        ("/inbox", "id=\"ticksel\"", "visible()"),
+        ("/inbox", "id=\"tickpick\"", "visible()"),
     ] {
         let body = app
             .request(Method::GET, path)
@@ -172,35 +172,90 @@ async fn ticket_filter_contract_on_board_and_inbox() {
         );
     }
 
-    // The board's typeahead has to stay keyboard-operable: the <select> it
-    // replaced was, for free. No JS test lane exists here, so this asserts the
-    // markers whose absence means the control has silently become mouse-only —
-    // the ARIA combobox wiring and the key handling that drives it.
-    let board = app
-        .request(Method::GET, "/board")
+    // Each typeahead has to stay keyboard-operable: the <select> it replaced was,
+    // for free. No JS test lane exists here, so this asserts the markers whose
+    // absence means the control has silently become mouse-only — the ARIA
+    // combobox wiring and the key handling that drives it. Both pages carry their
+    // own copy of the factory (takomo-ftix tracks the extraction), so both are
+    // checked rather than trusting one to speak for the other.
+    for path in ["/board", "/inbox"] {
+        let body = app
+            .request(Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        for marker in [
+            "role\", \"combobox\"",  // the input announces itself as a combobox
+            "aria-expanded",         // …and whether its popup is open
+            "aria-activedescendant", // …and which option the arrow keys are on
+            "role\", \"listbox\"",   // the popup is a real listbox
+            "role\", \"option\"",    // with real options
+            "\"ArrowDown\"",         // arrow keys move the active option
+            "\"Enter\"",             // Enter commits it
+            "\"Escape\"",            // Escape dismisses the popup
+            "ta-clear",              // and the selection is clearable
+        ] {
+            assert!(
+                body.contains(marker),
+                "{path}'s ticket typeahead must keep '{marker}' — without it the control \
+                 is no longer fully keyboard-operable, which the <select> it replaced was"
+            );
+        }
+    }
+}
+
+/// `/inbox`'s ticket filter searches ticket *titles*, not just ids (takomo-4io8).
+///
+/// The titles are the whole point of the control — an id-only list is what the
+/// <select> already offered — and they arrive on a request the page makes for
+/// another reason entirely (the tag map). So this pins both halves: the sparse
+/// projection actually returns `title`, and the page asks for it.
+#[tokio::test]
+async fn inbox_ticket_filter_has_titles_to_search() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Sweep expired leases").await;
+
+    // The projection the inbox uses: one request carrying tags *and* titles.
+    let (_, list) = app
+        .get(&app.admin, "/v1/tickets?project=tp&fields=id,title,tags")
+        .await;
+    let t = list["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|t| t["id"] == json!(id))
+        .expect("ticket is listed");
+    assert_eq!(
+        t["title"],
+        json!("Sweep expired leases"),
+        "`fields=id,title,tags` must return the title the filter searches: {list}"
+    );
+    assert!(
+        t.get("body").is_none(),
+        "…and stay sparse — the filter needs three fields, not the whole ticket: {list}"
+    );
+
+    let body = app
+        .request(Method::GET, "/inbox")
         .send()
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    for marker in [
-        "role\", \"combobox\"",  // the input announces itself as a combobox
-        "aria-expanded",         // …and whether its popup is open
-        "aria-activedescendant", // …and which option the arrow keys are on
-        "role\", \"listbox\"",   // the popup is a real listbox
-        "role\", \"option\"",    // with real options
-        "\"ArrowDown\"",         // arrow keys move the active option
-        "\"Enter\"",             // Enter commits it
-        "\"Escape\"",            // Escape dismisses the popup
-        "ta-clear",              // and the selection is clearable
-    ] {
-        assert!(
-            board.contains(marker),
-            "/board's ticket typeahead must keep '{marker}' — without it the control \
-             is no longer fully keyboard-operable, which the <select> it replaced was"
-        );
-    }
+    assert!(
+        body.contains("fields=id,title,tags"),
+        "/inbox must request `title` on the ticket fetch it already makes, or the \
+         filter has nothing but ids to match on"
+    );
+    assert_eq!(
+        body.matches("taTicket:").count(),
+        2,
+        "/inbox needs `taTicket` in both the DE and EN string tables"
+    );
 }
 
 /// `/board`'s tag-value filter is the *same* typeahead as its ticket filter
