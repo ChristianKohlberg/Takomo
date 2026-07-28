@@ -1706,8 +1706,8 @@ paths:
                   items: { type: string }
                   description: 'Alternative to {value,desc}: per-option descriptions parallel to `options` (same length).'
                 multi: { type: boolean, description: 'For kind=choose, allow selecting several options (multi-select)' }
-                recommended_multi: { type: array, items: { type: string }, description: 'For a multi choose, the recommended set of options' }
-                recommended: { description: The agent's suggested answer (any JSON); for a single choose the exact option string }
+                recommended_multi: { type: array, items: { type: string }, description: 'For a multi choose, the recommended set of options; every entry must be one of `options`' }
+                recommended: { description: "The agent's suggested answer. For a question with `options` it must be one of them exactly (a string) or null — `on_timeout=recommended` stores it as the answer, so a recommendation that is not an option could never be one. For a kind that carries no options (confirm/approve/clarify) it is free-form JSON." }
                 recommended_note: { type: string, description: A short rationale for the recommendation ("why") }
                 confidence: { type: integer, minimum: 1, maximum: 4, description: How strong the recommendation is (1 tentative … 4 very strong) }
                 summary: { type: string, description: One-line summary for the inbox list preview }
@@ -1742,8 +1742,11 @@ paths:
         "422":
           description: |
             Invalid value: bad kind/urgency/on_timeout, choose with < 2 options,
-            an `approve` question with no expertise tag, or `on_timeout=recommended`
-            with a window under the required minimum.
+            an `approve` question with no expertise tag, `on_timeout=recommended`
+            with a window under the required minimum, or a `recommended` /
+            `recommended_multi` that is not among `options`
+            (`validation.recommended`, `validation.recommended_multi`) — the same
+            rule POST /v1/questions/{id}/options enforces on a revision.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
