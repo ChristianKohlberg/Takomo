@@ -736,20 +736,15 @@ async fn fence_goes_stale_after_expiry_and_reclaim() {
     assert_eq!(body["code"], "claim.held");
 }
 
-#[tokio::test]
-async fn claim_required_after_lease_expiry_names_an_escapable_route() {
-    // takomo-jb5i: closing a ticket whose lease expired mid-work used to point
-    // the caller straight back into `claim.state`. `implementing` is not
-    // claimable, so "POST /claim" is refused from exactly the state the error is
-    // raised in, and the two errors point at each other with no way out. The
-    // remedy must name the re-entry route instead — and it must actually work.
-    let app = TestApp::spawn().await;
-    let id = app.create_ticket("Close after the lease expired").await;
-    app.to_ready(&id).await;
-
-    // Claim with a one-second lease, start work, and let the work outlive it
-    // (the test sweeper runs every 250ms, so the claim is really cleared).
-    let fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
+/// Drive `id` to `implementing` on a one-second lease and let the lease lapse:
+/// the exact position takomo-jb5i is about, reached the way an agent reaches it.
+/// Returns the fence of the lease that expired.
+///
+/// The sleep is 1600ms against a 250ms sweeper, so the claim row is really gone
+/// by the time this returns — the state a lapsed holder is normally found in.
+async fn lapse_mid_implementation(app: &TestApp, id: &str) -> i64 {
+    app.to_ready(id).await;
+    let fence = app.claim_ttl(&app.worker, id, Some(1)).await;
     let (s, b) = app
         .post(
             &app.worker,
@@ -759,8 +754,26 @@ async fn claim_required_after_lease_expiry_names_an_escapable_route() {
         .await;
     assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
     tokio::time::sleep(Duration::from_millis(1600)).await;
+    fence
+}
 
-    // Closing now fails for want of a claim.
+#[tokio::test]
+async fn lapsed_holder_resumes_the_lease_in_place_instead_of_deadlocking() {
+    // takomo-jb5i, the substance behind the error wording: an agent whose lease
+    // expired while the work ran could not finish the ticket at all. `done` (here
+    // `review`) requires a claim, and `claim` was refused because `implementing`
+    // is not claimable — the two errors pointed at each other, and the only escape
+    // walked the ticket backwards through the ready queue, where another worker
+    // could take it.
+    //
+    // The claim is now honoured in a non-claimable state when — and only when —
+    // the caller is the holder whose own lease lapsed there and nobody has claimed
+    // since. Fencing is untouched: the resume bumps the fence like any claim.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Close after the lease expired").await;
+    let old_fence = lapse_mid_implementation(&app, &id).await;
+
+    // The deadlock's first half is unchanged: no lease, no claim-gated move.
     let (s, err) = app
         .post(
             &app.worker,
@@ -771,27 +784,136 @@ async fn claim_required_after_lease_expiry_names_an_escapable_route() {
     assert_eq!(s, StatusCode::CONFLICT, "expected a claim complaint: {err}");
     assert_eq!(err["code"], "transition.claim_required");
 
-    // The claim the old remedy named really is refused from here...
-    let (s, refused) = app
+    // But the remedy now leads with the claim, and says why that works here.
+    let remedy = err["remedy"].as_str().expect("remedy");
+    assert!(
+        remedy.starts_with(&format!("POST /v1/tickets/{id}/claim")),
+        "the remedy must lead with the call that now works: {remedy}"
+    );
+    assert!(
+        remedy.contains("resumed") && remedy.contains("does NOT go back to the ready queue"),
+        "the remedy must say it is a resume in place: {remedy}"
+    );
+    assert_eq!(
+        err["details"]["resume_in_place"],
+        json!(true),
+        "machine readers get the same verdict: {err}"
+    );
+
+    // And it is honoured: a claim in a state the workflow does not mark claimable.
+    let (s, lease) = app
         .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "the resume must be granted: {lease}");
+    assert_eq!(
+        lease["resumed"],
+        json!(true),
+        "flagged as a resume: {lease}"
+    );
+    let new_fence = lease["fence"].as_i64().expect("fence");
+    assert!(
+        new_fence > old_fence,
+        "a resume is still a claim, so the fence moves: {lease}"
+    );
+
+    // The transition the agent came to make now goes through.
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "review", "fence": new_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->review failed: {b}");
+    assert_eq!(b["state"], "review");
+
+    // The old fence is dead all the same — the resume superseded it.
+    let (s, stale) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/heartbeat"),
+            json!({ "fence": old_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "stale fence must bounce: {stale}");
+    assert_eq!(stale["code"], "fence.stale");
+
+    // The log tells the story, and the ticket never re-entered the ready queue —
+    // the cost the old remedy warned about is simply not paid.
+    let (_, ev) = app
+        .get(&app.admin, &format!("/v1/events?since=0&ticket={id}"))
+        .await;
+    let events = ev["events"].as_array().expect("events");
+    let claimed: Vec<&Value> = events.iter().filter(|e| e["kind"] == "claimed").collect();
+    assert_eq!(claimed.len(), 2, "the original claim and the resume: {ev}");
+    assert_eq!(
+        claimed[1]["payload"]["resumed_after_expiry"],
+        json!(true),
+        "a supervisor can count resumes: {ev}"
+    );
+    // Exactly one entry into `ready`: the spec approval during setup. A second one
+    // would be the trip back through the queue the old remedy had to prescribe.
+    let into_ready = events
+        .iter()
+        .filter(|e| e["kind"] == "transitioned" && e["payload"]["to"] == "ready")
+        .count();
+    assert_eq!(
+        into_ready, 1,
+        "the ticket must not have gone back through the queue: {ev}"
+    );
+}
+
+#[tokio::test]
+async fn a_lapsed_lease_is_resumable_only_by_its_own_holder() {
+    // The other half of the safety argument, and the reason fencing is not
+    // weakened: the resume is granted on the strength of *who* lost the lease. A
+    // second worker gets exactly the old refusals — `claim.state` on the claim, and
+    // the re-entry route on the transition — plus the name of the actor whose
+    // lapsed lease it is, so it stops retrying.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Not yours to resume").await;
+    lapse_mid_implementation(&app, &id).await;
+
+    let (s, refused) = app
+        .post(&app.worker2, &format!("/v1/tickets/{id}/claim"), json!({}))
         .await;
     assert_eq!(
         s,
         StatusCode::CONFLICT,
-        "claim should be refused: {refused}"
+        "an interloper must not resume: {refused}"
     );
     assert_eq!(refused["code"], "claim.state");
+    assert_eq!(refused["details"]["lapsed_holder"], "agent:w1");
+    assert!(
+        refused["message"]
+            .as_str()
+            .expect("message")
+            .contains("agent:w1"),
+        "say whose lease it was: {refused}"
+    );
 
-    // ...so the error must say so and point somewhere else.
+    // Its transition attempt gets the re-entry route — the takomo-jb5i remedy
+    // still applies to everyone who is not the lapsed holder.
+    let (s, err) = app
+        .post(
+            &app.worker2,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "review" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "expected a claim complaint: {err}");
+    assert_eq!(err["code"], "transition.claim_required");
+    assert_eq!(err["details"]["resume_in_place"], json!(false));
+    assert_eq!(err["details"]["lapsed_holder"], "agent:w1");
     let message = err["message"].as_str().expect("message");
     let remedy = err["remedy"].as_str().expect("remedy");
     assert!(
         message.contains("not claimable") && message.contains("claim.state"),
-        "the message must warn that claiming is refused from here: {message}"
+        "the message must warn that claiming is refused for this caller: {message}"
     );
     assert!(
         !remedy.starts_with(&format!("POST /v1/tickets/{id}/claim")),
-        "the remedy must not lead with the call that is refused: {remedy}"
+        "the remedy must not lead with a call that is refused: {remedy}"
     );
     assert!(
         remedy.contains("\"to\":\"ready\""),
@@ -804,20 +926,121 @@ async fn claim_required_after_lease_expiry_names_an_escapable_route() {
     );
     assert_eq!(err["details"]["claimable_states"], json!(["spec", "ready"]));
 
-    // Walking the remedy actually closes the ticket.
-    let (s, b) = app.transition(&app.worker, &id, "ready").await;
+    // And walking it still works: whoever really is starting over goes through the
+    // queue, which is exactly the trip the lapsed holder no longer has to make.
+    let (s, b) = app.transition(&app.worker2, &id, "ready").await;
     assert_eq!(s, StatusCode::OK, "re-entry to ready failed: {b}");
-    let fence = app.claim_as(&app.worker, &id).await;
+    let fence = app.claim_as(&app.worker2, &id).await;
     for to in ["implementing", "review"] {
         let (s, b) = app
             .post(
-                &app.worker,
+                &app.worker2,
                 &format!("/v1/tickets/{id}/transition"),
                 json!({ "to": to, "fence": fence }),
             )
             .await;
         assert_eq!(s, StatusCode::OK, "->{to} failed: {b}");
     }
+
+    // Now that someone else has claimed it, the original holder's resume is gone
+    // for good — even once the ticket is unclaimed again. The successor's claim
+    // bumped the fence and took the marker with it, and letting go on purpose is
+    // not a lapse, so there is nothing left for the first worker to resume.
+    let (s, released) = app
+        .post(
+            &app.worker2,
+            &format!("/v1/tickets/{id}/release"),
+            json!({ "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "release failed: {released}");
+    let (s, gone) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "a superseded holder never resumes: {gone}"
+    );
+    assert_eq!(gone["code"], "claim.state");
+    assert_eq!(gone["details"]["lapsed_holder"], Value::Null);
+}
+
+#[tokio::test]
+async fn lapsed_lease_resumes_before_the_sweeper_notices() {
+    // Expiry is noticed twice — lazily by the next write on the ticket, and by the
+    // sweeper — so the evidence a resume rests on lives in two places: the still
+    // recorded expired claim, and the marker left once it is cleared. With no
+    // sweeper running only the first exists, and the resume has to work anyway;
+    // otherwise the outcome would depend on whether a 250ms timer had fired.
+    let app = TestApp::spawn_without_sweeper().await;
+    let id = app.create_ticket("Resume before the sweep").await;
+    app.to_ready(&id).await;
+    let fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "implementing", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->implementing failed: {b}");
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "resume with the claim still on the row: {lease}"
+    );
+    assert_eq!(lease["resumed"], json!(true));
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "review", "fence": lease["fence"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->review failed: {b}");
+}
+
+#[tokio::test]
+async fn lapsed_holder_closes_on_the_simple_workflow() {
+    // Where the bug was actually met. `simple` is what `takomo init` applies, so it
+    // is the workflow most installs run: `in_progress` is not claimable and
+    // `in_progress -> done` requires a claim, which is the deadlock in its purest
+    // form — the ticket is finished and nothing can say so.
+    let app = TestApp::spawn().await;
+    app.create_project_with("sw", common::simple_workflow())
+        .await;
+    let id = app.create_ticket_in("sw", "Ship it").await;
+
+    let fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "in_progress", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->in_progress failed: {b}");
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "resume on `simple`: {lease}");
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "done", "fence": lease["fence"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->done failed: {b}");
+    assert_eq!(b["state"], "done");
 }
 
 #[tokio::test]
@@ -1423,7 +1646,7 @@ async fn write_rate_limit_returns_429_with_retry_after() {
 // ---------------------------------------------------------------------------
 
 /// Columns of `tickets` that deliberately never appear in the ticket JSON.
-const COLUMNS_OFF_THE_WIRE: [(&str, &str); 3] = [
+const COLUMNS_OFF_THE_WIRE: [(&str, &str); 4] = [
     (
         "claim_holder",
         "folded into the `claim` object by Ticket::to_json",
@@ -1431,6 +1654,10 @@ const COLUMNS_OFF_THE_WIRE: [(&str, &str); 3] = [
     (
         "claim_expires_at",
         "folded into the `claim` object by Ticket::to_json",
+    ),
+    (
+        "lapsed_claim_holder",
+        "an internal continuity marker for lease re-entry; next to `claim: null` a stale holder would read as a live claim, and the same fact is already on the wire as the lease_expired event's holder",
     ),
     (
         "fence_seq",
@@ -2347,6 +2574,57 @@ async fn force_release_also_fences_off_an_expired_holder() {
         .await;
     assert_eq!(s, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], "fence.stale");
+}
+
+/// A lapsed lease stays force-releasable after the sweeper has cleared the claim
+/// row, because what is left is not nothing: it is the lapsed holder's permission
+/// to resume the lease in place (takomo-jb5i). If the force stopped at
+/// `claim.none` there, an operator reassigning an in-flight ticket would have no
+/// way to stop the previous worker from simply taking it back.
+#[tokio::test]
+async fn force_release_ends_a_lapsed_holders_right_to_resume() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Reassigned out from under a lapse").await;
+    let stale_fence = lapse_mid_implementation(&app, &id).await;
+
+    let (s, forced) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({ "reason": "reassigning the work" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "a swept-away lapse is still force-releasable: {forced}"
+    );
+    assert_eq!(forced["previous_holder"], json!("agent:w1"));
+    assert_eq!(forced["lease_expired"], json!(true), "{forced}");
+    assert_eq!(forced["fence"], json!(stale_fence + 1));
+
+    // The point of the call: the resume is gone.
+    let (s, refused) = app
+        .post(&app.worker, &format!("/v1/tickets/{id}/claim"), json!({}))
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "the displaced holder must not resume: {refused}"
+    );
+    assert_eq!(refused["code"], "claim.state");
+    assert_eq!(refused["details"]["lapsed_holder"], Value::Null);
+
+    // And with nothing left to displace it is a `claim.none` like any other.
+    let (s, none) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{none}");
+    assert_eq!(none["code"], "claim.none");
 }
 
 #[tokio::test]

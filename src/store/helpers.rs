@@ -11,7 +11,8 @@ use serde_json::Value;
 pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.body, t.state, \
     COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS state_category, \
     t.priority, t.labels, t.tags, t.metadata, t.links, t.claim_holder, t.claim_expires_at, \
-    t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, t.archived_at";
+    t.lapsed_claim_holder, t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, \
+    t.archived_at";
 
 pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
     let labels_raw: String = row.get("labels")?;
@@ -35,6 +36,7 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         blocked_by: Vec::new(), // filled by load_blocked_by
         claim_holder: row.get("claim_holder")?,
         claim_expires_at: row.get("claim_expires_at")?,
+        lapsed_claim_holder: row.get("lapsed_claim_holder")?,
         fence_seq: row.get("fence_seq")?,
         version: row.get("version")?,
         created_by: row.get("created_by")?,
@@ -108,16 +110,24 @@ pub fn emit_event(
 /// Lazily expire a stale claim on `ticket`: clear it and emit `lease_expired`.
 /// Returns true if an expired claim was cleared. Must run inside a write tx.
 ///
+/// The holder is not forgotten — it moves to `lapsed_claim_holder`, which is what
+/// lets that same actor resume the lease in place afterwards
+/// ([`Store::claim_ticket`]); expiry deliberately does **not** bump `fence_seq`,
+/// so the ticket's fence is still the lapse-time fence and a later claim by
+/// anyone is what ends the continuity.
+///
 /// Note: when the surrounding operation ultimately fails, the transaction —
 /// including this clear and its event — rolls back; the periodic sweep then
 /// owns the expiry. Readers never see the stale claim as active either way
-/// because `active_claim(now)` and the ready query treat it as unclaimed.
+/// because `active_claim(now)` and the ready query treat it as unclaimed, and
+/// `Ticket::lapsed_holder` reads the still-recorded expired claim as the same
+/// evidence the cleared column would carry.
 pub fn clear_expired_claim(conn: &Connection, ticket: &Ticket, now: i64) -> ApiResult<bool> {
     if let (Some(holder), Some(exp)) = (&ticket.claim_holder, ticket.claim_expires_at) {
         if exp <= now {
             conn.execute(
-                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
-                params![ticket.id, now],
+                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = ?3, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                params![ticket.id, now, holder],
             )?;
             emit_event(
                 conn,
@@ -224,8 +234,17 @@ pub fn lease_expired_error(id: &str) -> ApiError {
 /// Enforce the fencing rules shared by every mutating call:
 /// - actively claimed by someone else -> 409 claim.held
 /// - actively claimed by the caller  -> fence required and must match
-/// - unclaimed but a fence was sent  -> must match the last issued fence
-///   (a zombie echoing an old fence bounces even after release/expiry)
+/// - unclaimed but a fence was sent  -> must match the *current* fence
+///
+/// The last rule is what bounces a zombie whose lease has been superseded, and it
+/// is worth being precise about what "superseded" means: only a **new claim**
+/// (including an admin force-release) bumps `fence_seq`. Release and natural
+/// expiry leave it alone, so an echo of the fence from a lease that merely lapsed
+/// still matches, and the write is accepted. That is deliberate — nobody else has
+/// taken the ticket, so there is no divergent writer to fence off — and it is the
+/// same evidence [`Store::claim_ticket`] uses to let a lapsed holder resume
+/// (takomo-jb5i). The moment anyone else claims, every one of those echoes turns
+/// into a `fence.stale` 409.
 pub fn check_fence_for_write(
     ticket: &Ticket,
     actor: &str,

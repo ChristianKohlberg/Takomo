@@ -956,6 +956,24 @@ paths:
         the lease with the fencing token all subsequent mutating calls must echo,
         plus the project's `style_hint` / `language_hint` (see ConventionHints)
         when it sets them.
+
+        **Resuming a lapsed lease.** One narrow exception to "a claimable state":
+        the caller may claim a ticket in a state the workflow does **not** mark
+        claimable when it is the holder whose own lease expired there and nobody
+        has claimed since. Without it, an agent whose work outlived its lease
+        could not finish the ticket at all — `done` requires a claim, and the
+        claim was refused because the in-progress state is not claimable, so the
+        two errors pointed at each other and the only escape was to walk the
+        ticket backwards into the ready queue, where another worker could take it.
+        The response carries `resumed: true`.
+
+        Nothing about fencing is relaxed. The resume bumps `fence_seq` like any
+        claim, so every echo of the old lease's fence now 409s; a **different**
+        actor is refused `claim.state` exactly as before (the message names whose
+        lapsed lease it is); a state that is terminal or `blocked`-category is
+        never resumable; and an admin `force-release` clears the right to resume
+        along with the claim. What makes it safe is that a new claim by anyone
+        else — the only thing that creates a competing writer — ends it.
       parameters: [ { $ref: "#/components/parameters/id" } ]
       requestBody:
         content:
@@ -974,7 +992,11 @@ paths:
                   - $ref: "#/components/schemas/Lease"
                   - $ref: "#/components/schemas/ConventionHints"
         "409":
-          description: Already claimed by another holder, blocked, or state not claimable
+          description: |
+            Already claimed by another holder (`claim.held`), blocked
+            (`claim.blocked`), or the state is not claimable and this caller is not
+            the holder whose lease lapsed there (`claim.state` — `details`
+            carries `claimable_states` and `lapsed_holder`).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1058,6 +1080,12 @@ paths:
         holder is still recorded on the row, and natural expiry does *not* bump
         the fence, so a zombie echoing that fence would still be accepted.
         `lease_expired: true` in the response says that is what happened.
+
+        That holds once the sweeper has cleared the claim row as well, where all
+        that remains is the lapsed holder's right to **resume** the lease in place
+        (see `POST /tickets/{id}/claim`). Forcing it is how an operator takes an
+        in-flight ticket away for good; a ticket with neither an active claim nor a
+        lapsed one is the only `claim.none`.
 
         Emits `lease_revoked` — its own event kind, not `released` with a flag,
         because `kind` is the only server-side event filter
@@ -2554,6 +2582,12 @@ components:
         holder: { type: string }
         fence: { type: integer, description: echo in every mutating call while claimed }
         expires_at: { type: string, format: date-time }
+        resumed:
+          type: boolean
+          description: >-
+            Present and true only when this claim resumed the holder's own lapsed
+            lease in a state the workflow does not mark claimable. Absent on an
+            ordinary claim, a renewal, and every heartbeat.
 
     AnswerGrant:
       type: object
