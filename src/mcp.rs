@@ -712,7 +712,9 @@ impl TakomoMcp {
 
     #[tool(
         description = "Show a project's workflow definition (states, categories, and legal \
-        transitions). Useful for self-correcting illegal moves."
+        transitions), plus its conventions and its lease policy — `claim_ttl_seconds` (what a \
+        claim gets by default) and `max_claim_ttl_seconds` (the most you may ask for). Useful for \
+        self-correcting illegal moves, and for deciding how often to heartbeat."
     )]
     async fn takomo_workflow(
         &self,
@@ -1645,12 +1647,27 @@ impl TakomoMcp {
         // null = the project sets no default, so an answer link minted for one
         // of its questions lives for the built-in DEFAULT_ANSWER_TTL_SECONDS.
         let link_ttl = p.as_ref().and_then(|p| p.answer_link_ttl_seconds);
+        // The project's lease policy, resolved rather than raw: an agent needs to
+        // know how long it may hold a ticket and how long it may ask for, and
+        // "null, go read the built-in constant" is not something it can act on.
+        // A different setting from answer_link_ttl_seconds above — that bounds a
+        // credential handed outside the org; these bound holding work.
+        let claim_ttl = p
+            .as_ref()
+            .and_then(|p| p.claim_ttl_seconds)
+            .unwrap_or(crate::store::DEFAULT_TTL_SECONDS);
+        let max_claim_ttl = p
+            .as_ref()
+            .and_then(|p| p.max_claim_ttl_seconds)
+            .unwrap_or(crate::store::MAX_TTL_SECONDS);
         Ok(json!({
             "ok": true,
             "workflow": wf,
             "question_language": lang,
             "style_guide": style,
             "answer_link_ttl_seconds": link_ttl,
+            "claim_ttl_seconds": claim_ttl,
+            "max_claim_ttl_seconds": max_claim_ttl,
         }))
     }
 

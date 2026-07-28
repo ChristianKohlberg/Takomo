@@ -13,7 +13,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// expects. One literal so a new setting cannot be added to one query and
 /// forgotten in the other.
 const PROJECT_COLS: &str =
-    "id, name, workflow_json, question_language, style_guide, answer_link_ttl_seconds, created_at";
+    "id, name, workflow_json, question_language, style_guide, answer_link_ttl_seconds, \
+     claim_ttl_seconds, max_claim_ttl_seconds, created_at";
 
 /// Cap on a project's style guide. It is attached to work-loop responses an
 /// agent reads constantly, so it has to stay a glanceable convention rather
@@ -89,6 +90,81 @@ pub fn normalize_answer_link_ttl(secs: Option<i64>) -> ApiResult<Option<i64>> {
     Ok(Some(s))
 }
 
+/// Validate a project's lease policy — the pair `(claim_ttl_seconds,
+/// max_claim_ttl_seconds)`, each `None` meaning "unset, fall back to the
+/// built-in" ([`DEFAULT_TTL_SECONDS`] / [`MAX_TTL_SECONDS`]).
+///
+/// Validated as a pair on purpose. They are not independent: a default above the
+/// ceiling would be silently clamped on every claim, so the project would be
+/// configured to something it never gets. Catching that here is the difference
+/// between a 422 that names both numbers and a lease policy that quietly does
+/// something else. Two separate endpoints could not check it without an ordering
+/// trap (raise the cap first, or the default is refused), which is why there is
+/// one endpoint taking both.
+///
+/// **No upper bound on the ceiling** (takomo-2ztv, decided deliberately). A
+/// deployment may set whatever its fleet needs. What that costs is worth keeping
+/// in view: this number *is* the ready queue's recovery time, because the sweeper
+/// frees only expired leases — so a crashed worker parks its ticket for exactly
+/// this long, and an absurd value parks it effectively forever. `i64` seconds is
+/// the only limit.
+///
+/// [`DEFAULT_TTL_SECONDS`]: super::DEFAULT_TTL_SECONDS
+/// [`MAX_TTL_SECONDS`]: super::MAX_TTL_SECONDS
+pub fn normalize_claim_ttls(
+    default_secs: Option<i64>,
+    max_secs: Option<i64>,
+) -> ApiResult<(Option<i64>, Option<i64>)> {
+    for (label, v) in [
+        ("claim_ttl_seconds", default_secs),
+        ("max_claim_ttl_seconds", max_secs),
+    ] {
+        if let Some(s) = v {
+            if s <= 0 {
+                return Err(ApiError::validation(
+                    "project.claim_ttl",
+                    format!(
+                        "{label} is {s}; it must be a positive number of seconds. Send null to \
+                         clear it and fall back to the built-in ({} default, {} max).",
+                        super::DEFAULT_TTL_SECONDS,
+                        super::MAX_TTL_SECONDS
+                    ),
+                )
+                .details(serde_json::json!({ label: s })));
+            }
+        }
+    }
+    // Compare each against whichever ceiling will actually apply — the project's
+    // own if it sets one, else the built-in. Otherwise a project could set a
+    // 7200s default while leaving the cap unset, and every claim would silently
+    // come back with 3600.
+    let effective_max = max_secs.unwrap_or(super::MAX_TTL_SECONDS);
+    if let Some(d) = default_secs {
+        if d > effective_max {
+            return Err(ApiError::validation(
+                "project.claim_ttl",
+                format!(
+                    "claim_ttl_seconds is {d}, above the {effective_max}s ceiling that would \
+                     apply{}, so every claim would be clamped and no claim would ever get the \
+                     default you set. Raise max_claim_ttl_seconds in the same request, or lower \
+                     the default.",
+                    if max_secs.is_some() {
+                        " (max_claim_ttl_seconds)"
+                    } else {
+                        " (the built-in maximum, since max_claim_ttl_seconds is unset)"
+                    }
+                ),
+            )
+            .details(serde_json::json!({
+                "claim_ttl_seconds": d,
+                "max_claim_ttl_seconds": max_secs,
+                "effective_max_seconds": effective_max,
+            })));
+        }
+    }
+    Ok((default_secs, max_secs))
+}
+
 /// Treat a stored blank as unset: a guide cleared to whitespace must read as
 /// "no preference", not as an empty hint an agent has to interpret.
 fn nonblank(v: Option<String>) -> Option<String> {
@@ -104,6 +180,8 @@ type ProjectRow = (
     Option<String>,
     Option<String>,
     Option<i64>,
+    Option<i64>,
+    Option<i64>,
     i64,
 );
 
@@ -116,12 +194,23 @@ fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
         r.get(4)?,
         r.get(5)?,
         r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
     ))
 }
 
 fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
-    let (id, name, wf_raw, question_language, style_guide, answer_link_ttl_seconds, created_at) =
-        row;
+    let (
+        id,
+        name,
+        wf_raw,
+        question_language,
+        style_guide,
+        answer_link_ttl_seconds,
+        claim_ttl_seconds,
+        max_claim_ttl_seconds,
+        created_at,
+    ) = row;
     let workflow = serde_json::from_str(&wf_raw)
         .map_err(|e| ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}")))?;
     Ok(Project {
@@ -131,6 +220,8 @@ fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
         question_language,
         style_guide,
         answer_link_ttl_seconds,
+        claim_ttl_seconds,
+        max_claim_ttl_seconds,
         created_at,
     })
 }
@@ -243,6 +334,8 @@ impl Store {
                 question_language: None,
                 style_guide: None,
                 answer_link_ttl_seconds: None,
+                claim_ttl_seconds: None,
+                max_claim_ttl_seconds: None,
                 created_at: now,
             })
         })
@@ -448,6 +541,51 @@ impl Store {
                 actor,
                 "project_updated",
                 serde_json::json!({ "answer_link_ttl_seconds": ttl }),
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_project(id)?
+            .ok_or_else(|| ApiError::not_found("project", id))
+    }
+
+    /// Set (or clear, with None) this project's lease policy: the default lease a
+    /// claim gets, and the ceiling an explicit `ttl_seconds` is checked against.
+    ///
+    /// Both in one call because [`normalize_claim_ttls`] validates them as a pair
+    /// — see there for why splitting them would create an ordering trap.
+    pub fn set_claim_ttls(
+        &self,
+        id: &str,
+        default_secs: Option<i64>,
+        max_secs: Option<i64>,
+        actor: &str,
+    ) -> ApiResult<Project> {
+        let (default_ttl, max_ttl) = normalize_claim_ttls(default_secs, max_secs)?;
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let exists: Option<String> = tx
+                .query_row("SELECT id FROM projects WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if exists.is_none() {
+                return Err(ApiError::not_found("project", id));
+            }
+            tx.execute(
+                "UPDATE projects SET claim_ttl_seconds = ?2, max_claim_ttl_seconds = ?3 WHERE id = ?1",
+                params![id, default_ttl, max_ttl],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "project_updated",
+                serde_json::json!({
+                    "claim_ttl_seconds": default_ttl,
+                    "max_claim_ttl_seconds": max_ttl,
+                }),
                 now,
             )?;
             Ok(())

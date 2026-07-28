@@ -15,7 +15,7 @@ use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 pub const DEFAULT_TTL_SECONDS: i64 = 900;
@@ -31,13 +31,56 @@ pub struct ReadyFilter {
     pub allowed_projects: Option<Vec<String>>,
 }
 
-pub fn clamp_ttl(ttl_seconds: Option<i64>) -> ApiResult<i64> {
-    let ttl = ttl_seconds.unwrap_or(DEFAULT_TTL_SECONDS);
-    if !(1..=MAX_TTL_SECONDS).contains(&ttl) {
+/// Read a project's lease policy inside an open transaction: `(default, max)`,
+/// each falling back to the built-in when the project sets nothing.
+///
+/// A direct two-column read rather than `get_project`, for the same reason
+/// `Store::answer_link_ttl` avoids it — this runs on the claim path, and
+/// deserializing the whole stored workflow document to learn two integers would
+/// put that cost on every claim and every heartbeat. A missing row falls back to
+/// the built-ins: the caller has already resolved and authorized the ticket, so
+/// absence here can only mean the project was deleted underneath us.
+fn project_claim_ttls(tx: &Connection, project: &str) -> ApiResult<(i64, i64)> {
+    let row = tx
+        .query_row(
+            "SELECT claim_ttl_seconds, max_claim_ttl_seconds FROM projects WHERE id = ?1",
+            params![project],
+            |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()?;
+    let (d, m) = row.unwrap_or((None, None));
+    Ok((
+        d.unwrap_or(DEFAULT_TTL_SECONDS),
+        m.unwrap_or(MAX_TTL_SECONDS),
+    ))
+}
+
+/// Resolve the lease length for a claim or heartbeat on a ticket in `project`:
+/// an explicit `ttl_seconds` if given, else the project's default, bounded by the
+/// project's maximum. Both bounds are per-project settings (takomo-2ztv) that fall
+/// back to [`DEFAULT_TTL_SECONDS`] / [`MAX_TTL_SECONDS`].
+///
+/// Over the maximum is a 422, not a silent clamp — a caller that asked for four
+/// hours and received one would otherwise heartbeat on the wrong schedule and
+/// lose the lease it thought it had.
+pub fn clamp_ttl_for(tx: &Connection, project: &str, ttl_seconds: Option<i64>) -> ApiResult<i64> {
+    let (default_ttl, max_ttl) = project_claim_ttls(tx, project)?;
+    let ttl = ttl_seconds.unwrap_or(default_ttl);
+    if !(1..=max_ttl).contains(&ttl) {
         return Err(ApiError::validation(
             "validation.ttl",
-            format!("ttl_seconds must be between 1 and {MAX_TTL_SECONDS} (default {DEFAULT_TTL_SECONDS})."),
-        ));
+            format!(
+                "ttl_seconds must be between 1 and {max_ttl} (this project's default is \
+                 {default_ttl}). The bounds are per-project settings — an admin can change them \
+                 with PUT /v1/projects/{project}/claim-ttl."
+            ),
+        )
+        .details(json!({
+            "ttl_seconds": ttl,
+            "project": project,
+            "default_seconds": default_ttl,
+            "max_seconds": max_ttl,
+        })));
     }
     Ok(ttl)
 }
@@ -156,10 +199,12 @@ impl Store {
         actor: &str,
         ttl_seconds: Option<i64>,
     ) -> ApiResult<(Ticket, Lease)> {
-        let ttl = clamp_ttl(ttl_seconds)?;
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            // Resolved inside the transaction, because the bounds are the
+            // *project's* now and only the ticket names its project.
+            let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
 
             if let Some((holder, expires)) = t.active_claim(now) {
                 if holder == actor {
@@ -249,10 +294,10 @@ impl Store {
         actor: &str,
         ttl_seconds: Option<i64>,
     ) -> ApiResult<Lease> {
-        let ttl = clamp_ttl(ttl_seconds)?;
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
             // An expired lease cannot be heartbeated back to life.
             if clear_expired_claim(tx, &t, now)? {
                 return Err(lease_expired_error(id));
@@ -341,13 +386,16 @@ impl Store {
         actor: &str,
         ttl_seconds: Option<i64>,
     ) -> ApiResult<Option<(Ticket, Lease)>> {
-        let ttl = clamp_ttl(ttl_seconds)?;
         let now = now_ms();
         self.with_tx(|tx| {
             let candidates = ready_query(tx, filter, now, 1)?;
             let Some(t) = candidates.into_iter().next() else {
                 return Ok(None);
             };
+            // After the pick, not before: the queue can span projects when the
+            // filter names none, so the lease bounds are only knowable once we
+            // know which ticket we got.
+            let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
             let lease = grant_claim(tx, &t, actor, ttl, now)?;
             let fresh = get_ticket_required(tx, &t.id)?;
             Ok(Some((fresh, lease)))

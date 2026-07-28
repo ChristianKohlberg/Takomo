@@ -453,6 +453,71 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { description: The style guide exceeds 2000 characters }
 
+  /projects/{project}/claim-ttl:
+    put:
+      tags: [workflow]
+      summary: Set the project's lease policy — default and maximum claim lifetime (admin scope)
+      description: |
+        How long a worker may hold a ticket in this project. Two settings, one
+        endpoint:
+
+        - `ttl_seconds` — the lease a claim gets when it names no `ttl_seconds` of
+          its own. Built-in fallback 900 seconds.
+        - `max_ttl_seconds` — the ceiling an explicit `ttl_seconds` on
+          `POST /tickets/{id}/claim`, `POST /ready/claim` or
+          `POST /tickets/{id}/heartbeat` is checked against. Built-in fallback
+          3600 seconds. Deliberately **unbounded above**: a deployment may set
+          whatever its fleet needs.
+
+        Not to be confused with `/projects/{project}/answer-link-ttl`. That bounds
+        the lifetime of a credential handed to someone outside the org; this
+        bounds how long work may be held.
+
+        Both are sent together because they are validated as a pair — a default
+        above the ceiling would be silently clamped on every claim, so no claim
+        would ever get the configured default. That combination is a
+        `422 project.claim_ttl` naming both numbers. Either field may be omitted
+        to leave it as it is, or sent as `null` to clear it and fall back to the
+        built-in; sending neither is a `400`, so a typo'd field name cannot
+        silently reset the policy.
+
+        Raising the maximum trades recovery latency for fewer heartbeats. The
+        sweeper frees only *expired* leases, so this value is how long a crashed
+        worker parks its ticket before it returns to the ready queue. Note there
+        is no admin force-release: `POST /tickets/{id}/release` requires the
+        holder's identity and a matching fence.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                ttl_seconds:
+                  type: [integer, "null"]
+                  minimum: 1
+                  description: 'default lease a claim gets, in seconds; null clears the setting (falls back to 900)'
+                max_ttl_seconds:
+                  type: [integer, "null"]
+                  minimum: 1
+                  description: 'ceiling an explicit ttl_seconds may request, in seconds; null clears the setting (falls back to 3600). No upper bound.'
+      responses:
+        "200":
+          description: The updated project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400":
+          description: Neither field was sent, or one was neither an integer nor null.
+        "422":
+          description: |
+            `project.claim_ttl` — a non-positive value, or a default above the
+            ceiling that would apply. `details` carries both numbers and the
+            effective maximum.
+        "404": { description: Unknown project. }
+
   /projects/{project}/answer-link-ttl:
     put:
       tags: [workflow]
@@ -2024,6 +2089,25 @@ components:
           minimum: 1
           maximum: 2592000
           description: "Default lifetime of an answer link minted for one of this project's questions; null = unset, so minting falls back to the built-in 604800 seconds (7 days)"
+        claim_ttl_seconds:
+          type: [integer, "null"]
+          minimum: 1
+          description: |
+            The lease a claim on one of this project's tickets gets when it names
+            no ttl_seconds; null = unset, so claiming falls back to the built-in
+            900 seconds. A different setting from answer_link_ttl_seconds above —
+            that bounds a credential handed outside the org, this bounds how long
+            a worker may hold a ticket.
+        max_claim_ttl_seconds:
+          type: [integer, "null"]
+          minimum: 1
+          description: |
+            The ceiling an explicit ttl_seconds on a claim or heartbeat is checked
+            against; null = unset, so the built-in 3600 seconds applies. There is
+            deliberately no upper bound: a deployment may set whatever its fleet
+            needs. Note this value is also the ready queue's recovery time — only
+            expired leases are swept, so a crashed worker parks its ticket for
+            exactly this long.
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -2040,6 +2124,14 @@ components:
           minimum: 1
           maximum: 2592000
           description: "Optional: the project's default answer-link lifetime in seconds (max 2592000; omit to use the built-in 7 days)"
+        claim_ttl_seconds:
+          type: integer
+          minimum: 1
+          description: "Optional: the default lease a claim gets, in seconds (omit to use the built-in 900). Must not exceed max_claim_ttl_seconds, or the built-in 3600 when that is omitted."
+        max_claim_ttl_seconds:
+          type: integer
+          minimum: 1
+          description: "Optional: the ceiling an explicit ttl_seconds may ask for, in seconds (omit to use the built-in 3600). No upper bound."
 
     Tag:
       type: object

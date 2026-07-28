@@ -281,6 +281,20 @@ pub struct Project {
     /// above, this one is enforced rather than advisory: it decides how long a
     /// credential handed to someone outside the org stays live.
     pub answer_link_ttl_seconds: Option<i64>,
+    /// The lease a claim on one of this project's tickets gets when it names no
+    /// `ttl_seconds`. None = unset, falling back to
+    /// [`crate::store::DEFAULT_TTL_SECONDS`]. Enforced, like the setting above —
+    /// but about something else entirely: how long a worker may hold a ticket,
+    /// not how long a credential handed outside the org stays live.
+    pub claim_ttl_seconds: Option<i64>,
+    /// The ceiling an explicit `ttl_seconds` on a claim/heartbeat is checked
+    /// against. None = unset, falling back to [`crate::store::MAX_TTL_SECONDS`].
+    ///
+    /// Deliberately unbounded above (takomo-2ztv): a deployment may set whatever
+    /// its fleet needs. The cost is that this value *is* the ready queue's
+    /// recovery time — the sweeper frees only expired leases, so a crashed worker
+    /// parks its ticket for exactly this long.
+    pub max_claim_ttl_seconds: Option<i64>,
     pub created_at: i64,
 }
 
@@ -293,6 +307,8 @@ impl Project {
             "question_language": self.question_language,
             "style_guide": self.style_guide,
             "answer_link_ttl_seconds": self.answer_link_ttl_seconds,
+            "claim_ttl_seconds": self.claim_ttl_seconds,
+            "max_claim_ttl_seconds": self.max_claim_ttl_seconds,
             "created_at": iso(self.created_at),
         })
     }

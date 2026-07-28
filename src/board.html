@@ -702,7 +702,7 @@
       refLabel:"Ref ",
       settings:"Einstellungen",
       setTitle:"Projekt-Einstellungen",
-      setSub:"Wie dieses Projekt schreibt — und wie lange ein Antwort-Link gilt.",
+      setSub:"Wie dieses Projekt schreibt, wie lange ein Antwort-Link gilt und wie lange ein Agent ein Ticket hält.",
       setLangLabel:"Sprache der Fragen",
       setLangHelp:"Die menschlich sichtbare Sprache, in der Agenten Fragen an Menschen stellen sollen (z. B. „German“). Leer lassen für keine Vorgabe.",
       setLangPh:"z. B. German",
@@ -718,6 +718,20 @@
       setTtl14d:"14 Tage",
       setTtl30d:"30 Tage (Maximum)",
       setTtlSecs:"Sekunden",
+      setClaimTtlLabel:"Standard-Laufzeit eines Claims",
+      setClaimTtlHelp:"Wie lange ein Agent ein Ticket standardmäßig hält, wenn er beim Claim keine eigene Laufzeit angibt. Läuft sie ab, gibt der Sweeper das Ticket zurück in die Warteschlange — auch wenn noch daran gearbeitet wird. Agenten verlängern mit takomo_heartbeat.",
+      setClaimTtlDefault:"Standard (15 Minuten)",
+      setMaxClaimTtlLabel:"Maximale Laufzeit eines Claims",
+      setMaxClaimTtlHelp:"Die Obergrenze, die ein Agent beim Claim anfordern darf. Das ist zugleich die Zeit, die ein abgestürzter Agent ein Ticket blockiert, denn nur abgelaufene Claims werden freigegeben — höher heißt weniger Heartbeats, aber langsamere Erholung.",
+      setMaxClaimTtlDefault:"Standard (1 Stunde)",
+      setDur5m:"5 Minuten",
+      setDur15m:"15 Minuten",
+      setDur30m:"30 Minuten",
+      setDur1h:"1 Stunde",
+      setDur2h:"2 Stunden",
+      setDur4h:"4 Stunden",
+      setDur8h:"8 Stunden",
+      setDur24h:"24 Stunden",
       setChars:"Zeichen",
       setOver:"über dem Limit",
       setSave:"Speichern",
@@ -808,7 +822,7 @@
       refLabel:"ref ",
       settings:"Settings",
       setTitle:"Project settings",
-      setSub:"How this project writes — and how long an answer link stays valid.",
+      setSub:"How this project writes, how long an answer link stays valid, and how long an agent holds a ticket.",
       setLangLabel:"Question language",
       setLangHelp:"The human-facing language agents should phrase ask-a-human questions in (e.g. “German”). Leave empty for no preference.",
       setLangPh:"e.g. German",
@@ -824,6 +838,20 @@
       setTtl14d:"14 days",
       setTtl30d:"30 days (maximum)",
       setTtlSecs:"seconds",
+      setClaimTtlLabel:"Default claim lifetime",
+      setClaimTtlHelp:"How long an agent holds a ticket when it asks for no lifetime of its own. When it lapses the sweeper returns the ticket to the queue, even if work is still going — agents extend it with takomo_heartbeat.",
+      setClaimTtlDefault:"Default (15 minutes)",
+      setMaxClaimTtlLabel:"Maximum claim lifetime",
+      setMaxClaimTtlHelp:"The ceiling an agent may ask for when claiming. It is also how long a crashed agent blocks a ticket, since only expired claims are released — higher means fewer heartbeats but slower recovery.",
+      setMaxClaimTtlDefault:"Default (1 hour)",
+      setDur5m:"5 minutes",
+      setDur15m:"15 minutes",
+      setDur30m:"30 minutes",
+      setDur1h:"1 hour",
+      setDur2h:"2 hours",
+      setDur4h:"4 hours",
+      setDur8h:"8 hours",
+      setDur24h:"24 hours",
       setChars:"characters",
       setOver:"over the limit",
       setSave:"Save",
@@ -2605,7 +2633,8 @@
       // `ttl` is "" for "unset — use the built-in default", otherwise a string
       // of seconds. Kept as a string so it compares straight against the select's
       // value and against `orig` without a null-vs-0 special case.
-      orig: { language: "", style: "", ttl: "" }, language: "", style: "", ttl: ""
+      orig: { language: "", style: "", ttl: "", claimTtl: "", maxClaimTtl: "" },
+      language: "", style: "", ttl: "", claimTtl: "", maxClaimTtl: ""
     };
     renderSettings();
     // Re-read from the store rather than trusting the cached project list: this
@@ -2619,11 +2648,18 @@
       var lang = p.question_language || "", style = p.style_guide || "";
       // null/absent = the project sets no default. Anything else is seconds.
       var ttl = p.answer_link_ttl_seconds == null ? "" : String(p.answer_link_ttl_seconds);
+      // The lease policy, a separate pair of settings from the answer-link
+      // lifetime above: how long a worker may hold a ticket, not how long a
+      // credential handed outside the org stays valid.
+      var claimTtl = p.claim_ttl_seconds == null ? "" : String(p.claim_ttl_seconds);
+      var maxClaimTtl = p.max_claim_ttl_seconds == null ? "" : String(p.max_claim_ttl_seconds);
       state.settings.loading = false;
-      state.settings.orig = { language: lang, style: style, ttl: ttl };
+      state.settings.orig = { language: lang, style: style, ttl: ttl, claimTtl: claimTtl, maxClaimTtl: maxClaimTtl };
       state.settings.language = lang;
       state.settings.style = style;
       state.settings.ttl = ttl;
+      state.settings.claimTtl = claimTtl;
+      state.settings.maxClaimTtl = maxClaimTtl;
       state.settings.workflow = p.workflow || "";
       state.settings.name = p.name || "";
       renderSettings();
@@ -2675,6 +2711,14 @@
       calls.push(["/projects/" + encodeURIComponent(state.project) + "/answer-link-ttl",
                   { ttl_seconds: s.ttl === "" ? null : Number(s.ttl) }]);
     }
+    // The lease pair goes in ONE call even when only one half changed: the
+    // endpoint validates them together, and sending half of an invalid pair would
+    // get a 422 naming a number the admin never touched.
+    if (s.claimTtl !== s.orig.claimTtl || s.maxClaimTtl !== s.orig.maxClaimTtl) {
+      calls.push(["/projects/" + encodeURIComponent(state.project) + "/claim-ttl",
+                  { ttl_seconds: s.claimTtl === "" ? null : Number(s.claimTtl),
+                    max_ttl_seconds: s.maxClaimTtl === "" ? null : Number(s.maxClaimTtl) }]);
+    }
     if (!calls.length) { closeSettings(); return; }
     s.saving = true; s.err = ""; s.saved = false;
     renderSettings();
@@ -2700,11 +2744,15 @@
       state.settings.orig = {
         language: (p && p.question_language) || "",
         style: (p && p.style_guide) || "",
-        ttl: (p && p.answer_link_ttl_seconds != null) ? String(p.answer_link_ttl_seconds) : ""
+        ttl: (p && p.answer_link_ttl_seconds != null) ? String(p.answer_link_ttl_seconds) : "",
+        claimTtl: (p && p.claim_ttl_seconds != null) ? String(p.claim_ttl_seconds) : "",
+        maxClaimTtl: (p && p.max_claim_ttl_seconds != null) ? String(p.max_claim_ttl_seconds) : ""
       };
       state.settings.language = state.settings.orig.language;
       state.settings.style = state.settings.orig.style;
       state.settings.ttl = state.settings.orig.ttl;
+      state.settings.claimTtl = state.settings.orig.claimTtl;
+      state.settings.maxClaimTtl = state.settings.orig.maxClaimTtl;
       renderSettings();
     }).catch(function (e) {
       if (!state.settings) return;
@@ -2844,6 +2892,56 @@
         f3.appendChild(sel);
       }
       body.appendChild(f3);
+
+      // Lease policy: how long a worker may hold a ticket.
+      //
+      // Two fields, one endpoint — the server validates them as a pair, because a
+      // default above the ceiling would be silently clamped on every claim. The
+      // sheet does NOT re-implement that rule: an invalid pair comes back as the
+      // store's 422, which names both numbers, and lands in the footer like any
+      // other save error. One place owns the rule.
+      //
+      // Selects, for the reason the answer-link field is one — except that this
+      // ceiling is deliberately unbounded per project (takomo-2ztv), so the list
+      // cannot be the bounds. It is a list of *common* values plus the same
+      // escape hatch that field uses: an unlisted stored value is shown as itself
+      // rather than snapped to a neighbour.
+      [
+        ["claimTtl", "set-claim-ttl", L().setClaimTtlLabel, L().setClaimTtlHelp, L().setClaimTtlDefault,
+         [["300", L().setDur5m], ["900", L().setDur15m], ["1800", L().setDur30m],
+          ["3600", L().setDur1h], ["7200", L().setDur2h], ["14400", L().setDur4h]]],
+        ["maxClaimTtl", "set-max-claim-ttl", L().setMaxClaimTtlLabel, L().setMaxClaimTtlHelp, L().setMaxClaimTtlDefault,
+         [["1800", L().setDur30m], ["3600", L().setDur1h], ["7200", L().setDur2h],
+          ["14400", L().setDur4h], ["28800", L().setDur8h], ["86400", L().setDur24h]]]
+      ].forEach(function (spec) {
+        var key = spec[0], domId = spec[1], labelText = spec[2], helpText = spec[3];
+        var defaultText = spec[4], durations = spec[5];
+        var fld = el("div", "fld");
+        var lbl = el("label", null, labelText); lbl.setAttribute("for", domId);
+        fld.appendChild(lbl);
+        fld.appendChild(el("div", "help", helpText));
+        var opts = [["", defaultText]].concat(durations);
+        var listed = opts.some(function (c) { return c[0] === s[key]; });
+        if (!listed) opts.push([s[key], s[key] + " " + L().setTtlSecs]);
+        if (s.readOnly) {
+          var roIn = el("input"); roIn.type = "text"; roIn.id = domId;
+          opts.forEach(function (c) { if (c[0] === s[key]) roIn.value = c[1]; });
+          roIn.readOnly = true;
+          roIn.setAttribute("aria-readonly", "true");
+          fld.appendChild(roIn);
+        } else {
+          var pick = el("select"); pick.id = domId;
+          opts.forEach(function (c) {
+            var o = el("option", null, c[1]);
+            o.value = c[0];
+            if (c[0] === s[key]) o.selected = true;
+            pick.appendChild(o);
+          });
+          pick.addEventListener("change", function () { s[key] = pick.value; s.saved = false; syncFooter(); });
+          fld.appendChild(pick);
+        }
+        body.appendChild(fld);
+      });
     }
     sheet.appendChild(body);
 
@@ -2882,9 +2980,14 @@
         return;
       }
       var over = s.style.trim().length > STYLE_MAX;
+      // Every editable field belongs in this list. Save is a real `disabled`
+      // button when nothing is dirty, so a field missing here is not a cosmetic
+      // bug: its edits cannot be saved at all, and the click reports nothing.
       var dirty = s.language.trim() !== s.orig.language.trim()
         || s.style.trim() !== s.orig.style.trim()
-        || s.ttl !== s.orig.ttl;
+        || s.ttl !== s.orig.ttl
+        || s.claimTtl !== s.orig.claimTtl
+        || s.maxClaimTtl !== s.orig.maxClaimTtl;
       save.textContent = s.saving ? L().setSaving : L().setSave;
       save.disabled = s.loading || s.saving || over || !dirty;
       save.setAttribute("aria-disabled", save.disabled ? "true" : "false");
