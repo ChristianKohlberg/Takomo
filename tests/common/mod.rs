@@ -273,6 +273,27 @@ impl TestApp {
         tx.commit().expect("commit bulk tickets");
     }
 
+    /// Write a raw `kind` into a `shares` row, bypassing the typed store path.
+    /// The API can only ever store `project`/`subtree` (`ShareKind::as_str`), so
+    /// this is the only way to produce the row a future code path — or a
+    /// hand-edited database — could leave behind: one whose scope kind the store
+    /// cannot interpret. Used to prove that read fails **closed**.
+    pub fn force_share_kind(&self, share_id: &str, kind: &str) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(Duration::from_secs(5))
+            .expect("busy timeout");
+        let n = conn
+            .execute(
+                "UPDATE shares SET kind = ?2 WHERE id = ?1",
+                rusqlite::params![share_id, kind],
+            )
+            .expect("force share kind");
+        assert_eq!(
+            n, 1,
+            "force_share_kind should touch exactly one row ({share_id})"
+        );
+    }
+
     /// Repoint `id`'s parent straight in the database, bypassing validation.
     pub fn force_parent(&self, id: &str, parent: &str) {
         let conn = rusqlite::Connection::open(self.db_path()).expect("open db");

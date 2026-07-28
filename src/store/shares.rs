@@ -13,8 +13,10 @@
 use super::helpers::{load_blocked_by, row_to_ticket, TICKET_COLS};
 use super::model::{ShareRow, Ticket};
 use super::Store;
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, share_id, share_token_plaintext, token_hash};
+use axum::http::StatusCode;
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::{params, OptionalExtension, Row};
 
 /// Default share lifetime when the caller omits `ttl_seconds`: 24 hours.
@@ -32,6 +34,9 @@ pub enum ShareKind {
 }
 
 impl ShareKind {
+    /// The canonical stored/echoed spelling — the ONLY thing ever written to the
+    /// `shares.kind` column, and the only thing [`ShareKind::from_stored`] reads
+    /// back.
     pub fn as_str(&self) -> &'static str {
         match self {
             ShareKind::Project => "project",
@@ -39,16 +44,91 @@ impl ShareKind {
         }
     }
 
-    /// Parse the POST body `kind`. `epic` is the caller-facing spelling for a
-    /// subtree share (an epic is the common subtree root); `subtree` is accepted
-    /// as its explicit synonym.
-    pub fn parse(raw: &str) -> Option<ShareKind> {
+    /// Parse the `kind` field of a `POST /v1/shares` body — the *request*
+    /// vocabulary, which is deliberately wider than the stored one: `epic` is the
+    /// caller-facing spelling for a subtree share (an epic is the common subtree
+    /// root) and `subtree` is accepted as its explicit synonym. Both normalize to
+    /// [`ShareKind::Subtree`], so `epic` never reaches the database.
+    ///
+    /// Named apart from [`ShareKind::from_stored`] on purpose: mixing the two
+    /// vocabularies up is exactly how a subtree share would turn into a
+    /// whole-project one.
+    pub fn parse_request(raw: &str) -> Option<ShareKind> {
         match raw {
             "project" => Some(ShareKind::Project),
             "epic" | "subtree" => Some(ShareKind::Subtree),
             _ => None,
         }
     }
+
+    /// Read a `shares.kind` column value back. Strictly the inverse of
+    /// [`ShareKind::as_str`]: request-only synonyms such as `epic` are **not**
+    /// accepted here, and anything unrecognised is `None` so the read fails
+    /// closed rather than resolving to a scope the share may not cover.
+    fn from_stored(raw: &str) -> Option<ShareKind> {
+        match raw {
+            "project" => Some(ShareKind::Project),
+            "subtree" => Some(ShareKind::Subtree),
+            _ => None,
+        }
+    }
+}
+
+/// A `shares.kind` value that is not a [`ShareKind`]. Carried as the source of a
+/// `rusqlite` conversion failure so a row that cannot be interpreted produces an
+/// error instead of a `ShareRow` — there is deliberately no fallback variant to
+/// resolve to, because every candidate fallback is a *wider* scope than the
+/// share was minted for.
+#[derive(Debug)]
+struct UnknownShareKind(String);
+
+impl std::fmt::Display for UnknownShareKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "share scope kind '{}' is not 'project' or 'subtree'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownShareKind {}
+
+/// The column type *is* the enum: `row.get("kind")` yields a `ShareKind` or
+/// fails. That is what keeps the scope decision out of `&str` comparisons, where
+/// an unmatched string silently means "the other branch".
+impl FromSql for ShareKind {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let raw = value.as_str()?;
+        ShareKind::from_stored(raw)
+            .ok_or_else(|| FromSqlError::Other(Box::new(UnknownShareKind(raw.to_string()))))
+    }
+}
+
+/// Map a `shares` row read failure. Everything but an uninterpretable `kind`
+/// takes the generic database-error mapping (opaque 500, detail logged); that one
+/// case gets its own teaching error, because it is the one an operator can act
+/// on — and because "this share is refused" must not look like a transient blip.
+fn share_read_err(e: rusqlite::Error) -> ApiError {
+    if let rusqlite::Error::FromSqlConversionFailure(_, _, src) = &e {
+        if let Some(bad) = src.downcast_ref::<UnknownShareKind>() {
+            eprintln!("share read refused: {bad}");
+            return ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "share.kind_unrecognized",
+                "This share's stored scope kind is neither 'project' nor 'subtree', so it cannot \
+                 be served: the share is refused rather than widened to a scope it may not cover. \
+                 Nothing is readable through this link until it is replaced.",
+            )
+            .remedy(
+                "Such a share cannot be repaired over HTTP — every endpoint that reads it, \
+                 including revoke, refuses it. Correct or delete the row in the store (shell \
+                 access is the root of trust here), then mint a replacement with \
+                 POST /v1/shares {kind: \"project\"|\"epic\", ref}.",
+            );
+        }
+    }
+    ApiError::from(e)
 }
 
 const SHARE_COLS: &str =
@@ -93,7 +173,7 @@ impl Store {
         })?;
         let row = ShareRow {
             id,
-            kind: kind.as_str().to_string(),
+            kind,
             ref_id: ref_id.to_string(),
             project: project.to_string(),
             expires_at,
@@ -115,7 +195,8 @@ impl Store {
                     params![hash],
                     row_to_share,
                 )
-                .optional()?;
+                .optional()
+                .map_err(share_read_err)?;
             Ok(row)
         })
     }
@@ -134,7 +215,7 @@ impl Store {
                 Some(c) => stmt.query_map(params![c], row_to_share)?.collect(),
                 None => stmt.query_map([], row_to_share)?.collect(),
             };
-            Ok(rows?)
+            rows.map_err(share_read_err)
         })
     }
 
@@ -147,7 +228,8 @@ impl Store {
                     params![id],
                     row_to_share,
                 )
-                .optional()?;
+                .optional()
+                .map_err(share_read_err)?;
             Ok(row)
         })
     }
@@ -163,28 +245,32 @@ impl Store {
         })
     }
 
-    /// The tickets in a share's scope. For a project share (`kind` = "project"):
-    /// every ticket in `project`. For a subtree share (`kind` = "subtree"): the
-    /// `ref_id` root ticket plus every recursive descendant (via `parent`).
-    /// Archived tickets are excluded unless `include_archived` is set. Each
-    /// ticket carries its `blocked_by` edges.
+    /// The tickets in a share's scope. For [`ShareKind::Project`]: every ticket in
+    /// `project`. For [`ShareKind::Subtree`]: the `ref_id` root ticket plus every
+    /// recursive descendant (via `parent`). Archived tickets are excluded unless
+    /// `include_archived` is set. Each ticket carries its `blocked_by` edges.
+    ///
+    /// `kind` is the enum, not a string, so the scope is chosen by an exhaustive
+    /// `match`: there is no "everything else" arm that a mis-spelled kind could
+    /// fall into, and a third variant would fail to compile here rather than
+    /// quietly inherit the widest query.
     pub fn share_tickets(
         &self,
-        kind: &str,
+        kind: ShareKind,
         ref_id: &str,
         project: &str,
         include_archived: bool,
     ) -> ApiResult<Vec<Ticket>> {
-        let is_subtree = kind == "subtree";
         self.with_conn(|conn| {
             let archived_clause = if include_archived {
                 ""
             } else {
                 " AND t.archived_at IS NULL"
             };
-            let sql = if is_subtree {
-                format!(
-                    r#"
+            let (sql, bind) = match kind {
+                ShareKind::Subtree => (
+                    format!(
+                        r#"
                     WITH RECURSIVE sub(id) AS (
                         SELECT ?1
                         UNION
@@ -194,14 +280,17 @@ impl Store {
                     WHERE 1=1{archived_clause}
                     ORDER BY t.created_at ASC, t.rowid ASC
                     "#
-                )
-            } else {
-                format!(
-                    "SELECT {TICKET_COLS} FROM tickets t WHERE t.project = ?1{archived_clause} \
-                     ORDER BY t.created_at ASC, t.rowid ASC"
-                )
+                    ),
+                    ref_id,
+                ),
+                ShareKind::Project => (
+                    format!(
+                        "SELECT {TICKET_COLS} FROM tickets t WHERE t.project = ?1{archived_clause} \
+                         ORDER BY t.created_at ASC, t.rowid ASC"
+                    ),
+                    project,
+                ),
             };
-            let bind = if is_subtree { ref_id } else { project };
             let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt
                 .query_map(params![bind], row_to_ticket)?
@@ -216,15 +305,18 @@ impl Store {
     /// True when `ticket_id` is inside the share's scope. A project share covers
     /// every ticket whose project matches; a subtree share covers the root and
     /// its recursive descendants. Used to bound the per-ticket detail endpoint.
+    ///
+    /// Takes the enum for the same reason [`Store::share_tickets`] does: the
+    /// membership test must be the share's own scope, never a default one.
     pub fn ticket_in_share_scope(
         &self,
-        kind: &str,
+        kind: ShareKind,
         ref_id: &str,
         project: &str,
         ticket_id: &str,
     ) -> ApiResult<bool> {
-        self.with_conn(|conn| {
-            if kind == "subtree" {
+        self.with_conn(|conn| match kind {
+            ShareKind::Subtree => {
                 let found: Option<i64> = conn
                     .query_row(
                         r#"
@@ -240,7 +332,8 @@ impl Store {
                     )
                     .optional()?;
                 Ok(found.is_some())
-            } else {
+            }
+            ShareKind::Project => {
                 let found: Option<i64> = conn
                     .query_row(
                         "SELECT 1 FROM tickets WHERE id = ?1 AND project = ?2 LIMIT 1",

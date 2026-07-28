@@ -1272,6 +1272,14 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: |
+            `share.kind_unrecognized` — the share's stored scope kind is neither
+            `project` nor `subtree`, so it cannot be resolved to a scope. The
+            share is refused rather than widened; nothing is readable through it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /shares/self/tickets:
     get:
@@ -1299,6 +1307,14 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: |
+            `share.kind_unrecognized` — the share's stored scope kind is neither
+            `project` nor `subtree`. No tickets are returned: an unresolvable
+            scope fails closed, never back to the whole project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /shares/self/tickets/{id}:
     get:
@@ -1321,6 +1337,14 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "410":
           description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: |
+            `share.kind_unrecognized` — the share's stored scope kind is neither
+            `project` nor `subtree`, so membership in its scope cannot be decided.
+            The ticket is withheld rather than assumed in scope.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
