@@ -12,10 +12,30 @@ use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, tag_id};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 const MAX_LABEL: usize = 200;
 const MAX_KIND: usize = 32;
 const MAX_HANDLE: usize = 64;
+
+/// How many `kind:handle` references one ticket may carry — and the ceiling on
+/// any single `tags` / `tags_add` / `tags_remove` array a caller sends.
+///
+/// The cap is what makes tagging *bounded* work (takomo-xrp8). Every reference in
+/// a write costs a statement, and a not-yet-registered one costs an event too,
+/// inside the single `IMMEDIATE` transaction that holds the process-wide write
+/// mutex — the mutex whose single-writer serialization *is* the exactly-one-claimant
+/// guarantee for the ready queue. Uncapped, one `PATCH /v1/tickets/{id}` carrying
+/// 10k tags stalls every claim, transition and heartbeat in the process for its
+/// duration, and the per-token write budget does not help because that is one write.
+///
+/// 50 is far more than tagging is for: a tag names a person, a component or a team,
+/// so a ticket has an owner, the components it touches and a team — a handful, ten
+/// at the outside. It sits between `MAX_EXPERTISE` (10) and `MAX_PROMOTION_TARGET`
+/// (100), and 50 chips is already past what `/board` renders legibly in a ticket's
+/// Tags section. Anything free-form belongs in `labels` or the body, which do not
+/// pay a per-entry statement.
+pub const MAX_TICKET_TAGS: usize = 50;
 
 #[derive(Debug, Clone, Default)]
 pub struct TagCreate {
@@ -97,6 +117,49 @@ pub fn normalize_tag_ref(raw: &str) -> ApiResult<String> {
     Ok(format!("{kind}:{handle}"))
 }
 
+/// Refuse a tag set larger than [`MAX_TICKET_TAGS`]. `field` names the request
+/// field the count came from, so the caller knows which array to trim; for the set
+/// a patch would *leave behind* that is `tags`, because the cap is per ticket.
+pub(crate) fn check_tag_count(field: &str, count: usize) -> ApiResult<()> {
+    if count <= MAX_TICKET_TAGS {
+        return Ok(());
+    }
+    Err(ApiError::validation(
+        "tag.too_many",
+        format!(
+            "{count} tag references is over the cap of {MAX_TICKET_TAGS} per ticket ('{field}'). Each reference costs a statement inside the transaction that serializes every claim and transition in the store, so the list has to be bounded. A tag names a person, component or team — put anything free-form in 'labels' or the ticket body instead."
+        ),
+    )
+    .remedy(format!(
+        "Send at most {MAX_TICKET_TAGS} references. Use 'tags_add'/'tags_remove' to change a few without resending the set, or 'tags' to replace it outright."
+    ))
+    .details(json!({
+        "field": field,
+        "count": count,
+        "max": MAX_TICKET_TAGS,
+    })))
+}
+
+/// Normalize a caller-supplied set of `kind:handle` references: refuse an over-cap
+/// array before doing any per-entry work, then validate each entry and drop exact
+/// duplicates, preserving order.
+///
+/// The dedupe is a `HashSet` rather than a scan of what has been kept so far: at
+/// the cap the difference is nothing, but the quadratic version made the cost of a
+/// large array grow faster than the array itself, inside the write transaction.
+pub(crate) fn normalize_tag_set(refs: &[String], field: &str) -> ApiResult<Vec<String>> {
+    check_tag_count(field, refs.len())?;
+    let mut seen: HashSet<String> = HashSet::with_capacity(refs.len());
+    let mut out: Vec<String> = Vec::with_capacity(refs.len());
+    for r in refs {
+        let norm = normalize_tag_ref(r)?;
+        if seen.insert(norm.clone()) {
+            out.push(norm);
+        }
+    }
+    Ok(out)
+}
+
 fn validate_label(label: &str) -> ApiResult<()> {
     if label.len() > MAX_LABEL {
         return Err(ApiError::validation(
@@ -146,6 +209,12 @@ const TAG_COLS: &str = "id, project, kind, handle, label, meta, created_by, crea
 /// missing. This is the lazy-create behind tagging a ticket: a not-yet-declared
 /// handle just works, and can be enriched (label/meta) later. Runs inside the
 /// caller's write transaction. `refs` must already be normalized.
+///
+/// This loop is the reason tag writes are capped: it runs with the process-wide
+/// write mutex held, so its length is time every other writer in the store spends
+/// waiting. [`MAX_TICKET_TAGS`] is re-checked here rather than trusted from the
+/// call sites — this is the function whose cost is unbounded, so this is where the
+/// bound belongs (takomo-xrp8).
 pub(crate) fn ensure_tags_exist(
     conn: &Connection,
     project: &str,
@@ -153,24 +222,29 @@ pub(crate) fn ensure_tags_exist(
     actor: &str,
     now: i64,
 ) -> ApiResult<()> {
+    check_tag_count("tags", refs.len())?;
+    if refs.is_empty() {
+        return Ok(());
+    }
+    // One statement per reference rather than a SELECT and then an INSERT, compiled
+    // once rather than once per reference. `ON CONFLICT (project, kind, handle) DO
+    // NOTHING` names that UNIQUE index specifically, so an already-registered handle
+    // is a no-op while any other constraint failure still errors — and the affected
+    // row count then says whether a stub was actually created, which is exactly when
+    // an event is due. It is also the check-then-write collapsed into one atomic
+    // statement, so there is no window between them to reason about.
+    let mut insert = conn.prepare(
+        "INSERT INTO tags (id, project, kind, handle, label, meta, created_by, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, ?7, ?7) \
+         ON CONFLICT (project, kind, handle) DO NOTHING",
+    )?;
     for r in refs {
         let (kind, handle) = r.split_once(':').expect("normalized ref has a colon");
-        let exists: Option<String> = conn
-            .query_row(
-                "SELECT id FROM tags WHERE project = ?1 AND kind = ?2 AND handle = ?3",
-                params![project, kind, handle],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_some() {
+        let created =
+            insert.execute(params![tag_id(), project, kind, handle, handle, actor, now])?;
+        if created == 0 {
             continue;
         }
-        let id = tag_id();
-        conn.execute(
-            "INSERT INTO tags (id, project, kind, handle, label, meta, created_by, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, ?7, ?7)",
-            params![id, project, kind, handle, handle, actor, now],
-        )?;
         emit_event(
             conn,
             None,

@@ -7859,6 +7859,136 @@ async fn tag_validation_and_scope() {
     assert_eq!(e["code"], "auth.scope");
 }
 
+/// A ticket's tag set is bounded (takomo-xrp8). Every reference in a tag write costs
+/// a statement inside the single `IMMEDIATE` transaction that holds the process-wide
+/// write mutex — the mutex that makes the ready queue hand a ticket to exactly one
+/// claimant — so an uncapped `tags` array is a caller-triggered stall of every claim,
+/// transition and heartbeat in the store, bought with one request that the per-token
+/// write budget counts as one write.
+///
+/// The cap has to hold on every array that reaches that loop, and on the set a patch
+/// would leave behind — a small `tags_add` on an already-full ticket is over the cap
+/// too. The refusal names the limit, because a caller that cannot see it can only
+/// guess.
+#[tokio::test]
+async fn ticket_tags_are_capped_per_request_and_per_ticket() {
+    let app = TestApp::spawn().await;
+    let refs = |n: usize| -> Vec<String> { (0..n).map(|i| format!("component:c{i}")).collect() };
+
+    // Over the cap on create: refused, with the limit and the offending count in
+    // `details` so the caller can trim without a second request.
+    let (s, e) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "too many tags", "tags": refs(51) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "tag.too_many");
+    assert_eq!(e["details"]["max"], 50, "{e}");
+    assert_eq!(e["details"]["count"], 51, "{e}");
+    assert_eq!(e["details"]["field"], "tags", "{e}");
+    assert!(
+        e["message"].as_str().unwrap().contains("50"),
+        "the message must name the limit: {e}"
+    );
+    assert!(e["remedy"].is_string(), "{e}");
+
+    // Exactly at the cap is allowed — the boundary is inclusive — and 50 lazily
+    // registered stubs mean exactly 50 `tag_created` events, so the log matches the
+    // registry it describes.
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "at the cap", "tags": refs(50) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    assert_eq!(t["tags"].as_array().unwrap().len(), 50, "{t}");
+    let id = t["id"].as_str().unwrap().to_string();
+    let (_, ev) = app
+        .get(&app.admin, "/v1/events?since=0&project=tp&kind=tag_created")
+        .await;
+    assert_eq!(ev["events"].as_array().unwrap().len(), 50, "{ev}");
+
+    // Re-sending the same set registers nothing new, so it logs nothing new: the
+    // lazy-create is one idempotent statement per reference, not a read followed by
+    // a write that could double-log.
+    let (s, same) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags": refs(50) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{same}");
+    let (_, ev2) = app
+        .get(&app.admin, "/v1/events?since=0&project=tp&kind=tag_created")
+        .await;
+    assert_eq!(
+        ev2["events"].as_array().unwrap().len(),
+        50,
+        "an already-registered handle must not emit a second tag_created: {ev2}"
+    );
+
+    // A patch may not grow the set past the cap, even with a one-element `tags_add`:
+    // what is measured is the set the ticket would end up carrying.
+    let (s, e) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags_add": ["person:ada"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "tag.too_many");
+    assert_eq!(e["details"]["count"], 51, "{e}");
+
+    // …but swapping one reference for another at the cap is fine, for the same
+    // reason: the result is 50 either way.
+    let (s, swapped) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags_add": ["person:ada"], "tags_remove": ["component:c0"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{swapped}");
+    assert_eq!(swapped["tags"].as_array().unwrap().len(), 50, "{swapped}");
+
+    // Every array is capped, not just the one that lands. A huge `tags_remove` never
+    // reaches the registry loop, but it is still normalized reference by reference
+    // inside the write transaction.
+    for field in ["tags", "tags_add", "tags_remove"] {
+        let mut body = serde_json::Map::new();
+        body.insert(field.to_string(), json!(refs(51)));
+        let (s, e) = app
+            .patch(
+                &app.admin,
+                &format!("/v1/tickets/{id}"),
+                Value::Object(body),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {e}");
+        assert_eq!(e["code"], "tag.too_many", "{field}: {e}");
+        assert_eq!(e["details"]["field"], field, "{field}: {e}");
+    }
+
+    // The count is of references sent, before the duplicate drop: bounding the work
+    // means bounding the array the write path walks, not only its distinct entries.
+    let (s, e) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags": vec!["person:ada"; 51] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "tag.too_many", "{e}");
+}
+
 /// A project's lease policy is configurable, and the numbers it sets are the ones
 /// claims actually get (takomo-2ztv).
 ///
