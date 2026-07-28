@@ -34,9 +34,20 @@ fn row_to_promotion(r: &rusqlite::Row) -> rusqlite::Result<Promotion> {
     })
 }
 
-#[derive(Debug, Clone, Default)]
+/// The store-side shape of a ticket create.
+///
+/// `Serialize` is derived for exactly one reason: it makes the field names
+/// enumerable at runtime, so the field-list guard in `tests/api.rs`
+/// (`ticket_request_field_lists_match_their_structs_and_the_spec`) can prove
+/// this struct, `api::tickets::CREATE_FIELDS` and the OpenAPI `TicketCreate`
+/// schema still name the same fields. Nothing in the server ever serializes it
+/// — a create request is hand-parsed from `serde_json::Value` so bad input gets
+/// a teaching error — and nothing deserializes into it either, so the guard adds
+/// no way for a typo to slip past `reject_unknown_fields`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TicketCreate {
     pub project: String,
+    #[serde(rename = "type")]
     pub ty: Option<String>,
     pub parent: Option<String>,
     pub title: String,
@@ -51,7 +62,11 @@ pub struct TicketCreate {
     pub state: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+/// The store-side shape of a ticket patch. `Serialize` is derived for the same
+/// single reason as on [`TicketCreate`]: it lets the guard test enumerate these
+/// field names and compare them against `api::tickets::PATCH_FIELDS` and the
+/// OpenAPI `TicketPatch` schema.
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TicketPatch {
     pub title: Option<String>,
     pub body: Option<String>,

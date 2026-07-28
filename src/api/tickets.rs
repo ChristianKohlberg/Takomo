@@ -16,7 +16,13 @@ use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-const CREATE_FIELDS: [&str; 11] = [
+/// Every field `POST /v1/tickets` accepts. Anything else is a teaching 400
+/// (`reject_unknown_fields`), so a field the store understands but this list
+/// omits is unreachable over HTTP. `pub` so the field-list guard in
+/// `tests/api.rs` can check it against `store::TicketCreate` and the OpenAPI
+/// `TicketCreate` schema — see the comment above those tests for the six lists
+/// one ticket field lives in.
+pub const CREATE_FIELDS: [&str; 11] = [
     "project",
     "type",
     "parent",
@@ -29,7 +35,10 @@ const CREATE_FIELDS: [&str; 11] = [
     "blocked_by",
     "state",
 ];
-const PATCH_FIELDS: [&str; 13] = [
+/// Every field `PATCH /v1/tickets/{id}` accepts. `state` is deliberately absent
+/// (it is workflow-controlled; see the teaching 409 in [`patch_one`]). `pub` for
+/// the same guard as [`CREATE_FIELDS`].
+pub const PATCH_FIELDS: [&str; 13] = [
     "title",
     "body",
     "priority",
