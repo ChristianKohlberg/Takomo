@@ -38,6 +38,18 @@ fn scope_vec(list: &[&str]) -> Vec<String> {
 
 impl TestApp {
     pub async fn spawn() -> TestApp {
+        TestApp::spawn_with_sweep(Some(Duration::from_millis(250))).await
+    }
+
+    /// An app with **no** lease sweeper, so a lapsed lease stays recorded on the
+    /// ticket instead of being cleared within a tick. The only way to observe
+    /// the expired-but-still-recorded claim deterministically — with the sweeper
+    /// running, whether a call sees that row is a race against a 250ms timer.
+    pub async fn spawn_without_sweeper() -> TestApp {
+        TestApp::spawn_with_sweep(None).await
+    }
+
+    async fn spawn_with_sweep(sweep: Option<Duration>) -> TestApp {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path().join("test.db")).expect("open store");
         store
@@ -81,7 +93,9 @@ impl TestApp {
             .unwrap();
 
         let state = AppState::new(store);
-        spawn_sweeper(state.clone(), Duration::from_millis(250));
+        if let Some(interval) = sweep {
+            spawn_sweeper(state.clone(), interval);
+        }
         let router = build_router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

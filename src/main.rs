@@ -42,6 +42,11 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Operate on a single ticket's claim (recovery, not day-to-day work).
+    Ticket {
+        #[command(subcommand)]
+        command: TicketCommand,
+    },
     /// Populate a database with demo content, for a local instance you can
     /// actually look at (see the `backlot.yml` datastore presets).
     Seed {
@@ -80,6 +85,27 @@ enum TokenCommand {
     List,
     /// Revoke a token by its id (see `token list`).
     Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum TicketCommand {
+    /// Drop a ticket's claim whatever its state, bumping the fence so the
+    /// displaced worker's next write is refused.
+    ///
+    /// Here as well as over HTTP (`POST /v1/tickets/{id}/force-release`,
+    /// admin scope) because this is the command you need when the reason the
+    /// ticket is stuck is that the server is wedged, or when the admin token
+    /// itself is what got lost — shell access is the root of trust.
+    ForceRelease {
+        /// Ticket id.
+        id: String,
+        /// Why it was forced; recorded on the `lease_revoked` event.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Actor recorded as having forced it.
+        #[arg(long, default_value = "cli:admin")]
+        actor: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -177,6 +203,7 @@ fn main() {
             .block_on(takomo::server::serve(&bind, &cli.db, sweep_seconds)),
         Command::Token { command } => run_token(&cli.db, command),
         Command::Project { command } => run_project(&cli.db, command),
+        Command::Ticket { command } => run_ticket(&cli.db, command),
         Command::Seed { preset } => run_seed(&cli.db, &preset),
     };
     if let Err(msg) = result {
@@ -299,6 +326,30 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                     "no active token with id '{id}' (see: takomo token list)"
                 ))
             }
+        }
+    }
+}
+
+fn run_ticket(db: &str, command: TicketCommand) -> Result<(), String> {
+    let store = open_store(db)?;
+    match command {
+        TicketCommand::ForceRelease { id, reason, actor } => {
+            let forced = store
+                .force_release(&id, &actor, reason.as_deref())
+                .map_err(|e| e.into_message())?;
+            println!(
+                "force-released {} from '{}'{}; fence {} -> {} (the old holder's next write now 409s)",
+                forced.ticket,
+                forced.previous_holder,
+                if forced.lease_expired {
+                    " (its lease had already expired)"
+                } else {
+                    ""
+                },
+                forced.previous_fence,
+                forced.fence,
+            );
+            Ok(())
         }
     }
 }

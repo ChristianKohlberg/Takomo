@@ -483,9 +483,10 @@ paths:
 
         Raising the maximum trades recovery latency for fewer heartbeats. The
         sweeper frees only *expired* leases, so this value is how long a crashed
-        worker parks its ticket before it returns to the ready queue. Note there
-        is no admin force-release: `POST /tickets/{id}/release` requires the
-        holder's identity and a matching fence.
+        worker parks its ticket before it returns to the ready queue on its own —
+        `POST /tickets/{id}/release` cannot shorten that, since it requires the
+        holder's identity and a matching fence. To reclaim it sooner, an admin
+        forces it: `POST /tickets/{id}/force-release`.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       requestBody:
         required: true
@@ -1027,6 +1028,89 @@ paths:
       responses:
         "204": { description: Released }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /tickets/{id}/force-release:
+    post:
+      tags: [claims]
+      summary: Drop a ticket's claim regardless of who holds it (admin scope)
+      description: |
+        The recovery path for a ticket held by a worker that is gone.
+        `POST /tickets/{id}/release` answers only to the holder — it wants that
+        actor's identity and a matching `fence` — and the sweeper frees a lease
+        exactly when it expires, not a moment sooner. Since
+        `max_ttl_seconds` (`PUT /projects/{project}/claim-ttl`) has no upper
+        bound, "when it expires" can be arbitrarily far away, so without this
+        route a crashed worker parks its ticket with direct database access as
+        the only way out.
+
+        A **separate route rather than a `force` flag** on `/release`: a flag is
+        one typo away from an ordinary worker turning its own release into a
+        force. This path needs the `admin` scope, and no `fence` is accepted —
+        the caller is displacing a holder whose fence it has no way to know.
+
+        **The fence is bumped.** That is the point: the displaced worker may
+        still be alive and mid-write, and after the force its `fence` is stale,
+        so its next mutating call gets a `409 fence.stale` instead of winning a
+        ticket someone else now holds. The response returns both the fence the
+        old holder is carrying (`previous_fence`) and the new one (`fence`).
+
+        An already-lapsed lease is force-released too rather than refused: the
+        holder is still recorded on the row, and natural expiry does *not* bump
+        the fence, so a zombie echoing that fence would still be accepted.
+        `lease_expired: true` in the response says that is what happened.
+
+        Emits `lease_revoked` — its own event kind, not `released` with a flag,
+        because `kind` is the only server-side event filter
+        (`GET /events?kind=lease_revoked`) and a `released` event whose actor is
+        not the holder would read as the holder letting go voluntarily. The
+        event carries the ousted `holder`, both fences, `lease_expired`, and the
+        `reason`, attributed to the admin actor that forced it.
+
+        Also reachable as `takomo ticket force-release <id>` against the
+        database file — the command you need when the reason the ticket is stuck
+        is that the server itself is wedged, or when the admin token is what got
+        lost.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: 'why the claim was taken; recorded on the lease_revoked event and echoed back'
+      responses:
+        "200":
+          description: Released; the claim is gone and the fence has advanced.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ticket, project, previous_holder, previous_fence, fence, lease_expired]
+                properties:
+                  ticket: { type: string }
+                  project: { type: string }
+                  previous_holder: { type: string, description: 'the actor that was displaced' }
+                  previous_fence: { type: integer, description: 'the fence that actor is still carrying; now stale' }
+                  fence: { type: integer, description: 'the bumped fence — one greater than previous_fence' }
+                  lease_expired: { type: boolean, description: 'true when the lease had already lapsed; the claim row was still there and the holder is now fenced off regardless' }
+                  reason: { type: [string, "null"] }
+        "403":
+          description: '`auth.scope` — the token does not carry `admin`.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { description: Unknown ticket. }
+        "409":
+          description: |
+            `claim.none` — the ticket holds no claim, so there was nothing to
+            displace. Not idempotent bookkeeping: a second force-release on the
+            same ticket lands here.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /ready:
     get:
@@ -2546,7 +2630,7 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, question_reopened, ticket_promoted]
+          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, lease_revoked, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, question_reopened, ticket_promoted]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 

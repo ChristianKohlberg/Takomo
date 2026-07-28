@@ -89,6 +89,34 @@ pub async fn release(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Admin force-release — a route of its own rather than a `force` flag on
+/// `/release`, so an ordinary worker's typo can never become a force: reaching
+/// it at all takes the `admin` scope AND the distinct path.
+pub async fn force_release(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    body: Option<Json<Value>>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    load_visible(&state, &ctx, &id)?;
+    // No `fence` is accepted, let alone required — the caller is displacing a
+    // holder whose fence it has no way to know.
+    let reason = match &body {
+        None => None,
+        Some(Json(v)) => {
+            let obj = body_object(v)?;
+            reject_unknown(obj, &["reason"])?;
+            get_str(obj, "reason")?
+        }
+    };
+    let forced = state
+        .store
+        .force_release(&id, &ctx.actor, reason.as_deref())?;
+    state.wake();
+    Ok(Json(forced.to_json()))
+}
+
 pub async fn ready_peek(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

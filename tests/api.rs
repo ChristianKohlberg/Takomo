@@ -2011,6 +2011,290 @@ async fn stale_fence_bounces_even_on_unclaimed_ticket() {
     assert_eq!(s, StatusCode::OK);
 }
 
+// takomo-cjel: admin force-release. `POST /release` answers only to the holder
+// and the sweeper frees a lease exactly when it expires, so before this route a
+// ticket held by a crashed worker had no API recovery at all — and since
+// `max_claim_ttl_seconds` has no ceiling, "when it expires" is however long the
+// project says.
+#[tokio::test]
+async fn admin_force_release_ousts_the_holder_and_bumps_the_fence() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Held by a worker that is gone").await;
+    app.to_ready(&id).await;
+    let stale_fence = app.claim(&id).await;
+
+    let (s, forced) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({ "reason": "agent:w1 crashed; 4h lease" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "force-release failed: {forced}");
+    assert_eq!(forced["ticket"], json!(id));
+    assert_eq!(forced["project"], json!("tp"));
+    assert_eq!(forced["previous_holder"], json!("agent:w1"));
+    assert_eq!(forced["previous_fence"], json!(stale_fence));
+    assert_eq!(
+        forced["fence"],
+        json!(stale_fence + 1),
+        "the fence must advance, or the displaced worker keeps writing: {forced}"
+    );
+    assert_eq!(forced["lease_expired"], json!(false));
+    assert_eq!(forced["reason"], json!("agent:w1 crashed; 4h lease"));
+
+    // The claim is gone.
+    let (_, ticket) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(
+        ticket["claim"],
+        Value::Null,
+        "claim must be cleared: {ticket}"
+    );
+
+    // The whole point: the displaced worker may still be alive, and every route
+    // it could write through now refuses its fence.
+    let (s, body) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/heartbeat"),
+            json!({ "fence": stale_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "fence.stale");
+
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "zombie write", "fence": stale_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "fence.stale");
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{id}/transition"),
+            json!({ "to": "implementing", "fence": stale_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "fence.stale");
+
+    // And the ticket is genuinely recoverable: someone else can claim it.
+    let new_fence = app.claim_as(&app.worker2, &id).await;
+    assert!(
+        new_fence > forced["fence"].as_i64().unwrap(),
+        "reclaim must advance the fence again"
+    );
+
+    // The audit trail is its own event kind, attributed to the admin, naming
+    // both fences and the reason — not a `released` event that would read as the
+    // holder letting go voluntarily.
+    let (_, revoked) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=lease_revoked"),
+        )
+        .await;
+    let events = revoked["events"].as_array().expect("events array");
+    assert_eq!(
+        events.len(),
+        1,
+        "one lease_revoked event expected: {revoked}"
+    );
+    let e = &events[0];
+    assert_eq!(e["actor"], json!("human:admin"));
+    assert_eq!(e["payload"]["holder"], json!("agent:w1"));
+    assert_eq!(e["payload"]["fence"], json!(stale_fence));
+    assert_eq!(e["payload"]["new_fence"], json!(stale_fence + 1));
+    assert_eq!(e["payload"]["lease_expired"], json!(false));
+    assert_eq!(e["payload"]["reason"], json!("agent:w1 crashed; 4h lease"));
+
+    let (_, released) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=released"),
+        )
+        .await;
+    assert!(
+        released["events"]
+            .as_array()
+            .expect("events array")
+            .is_empty(),
+        "a forced release must not masquerade as a voluntary `released`: {released}"
+    );
+}
+
+/// A separate route rather than a `force` flag on `/release`, so no ordinary
+/// worker's typo can become a force: the `admin` scope AND the distinct path.
+#[tokio::test]
+async fn force_release_is_admin_only_and_accepts_no_fence() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Not yours to take").await;
+    app.to_ready(&id).await;
+    let fence = app.claim(&id).await;
+
+    for (who, token) in [("the holder", &app.worker), ("a human", &app.human)] {
+        let (s, body) = app
+            .post(token, &format!("/v1/tickets/{id}/force-release"), json!({}))
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{who} must be refused: {body}");
+        assert_eq!(body["code"], "auth.scope");
+    }
+
+    // …and the refusal left the lease exactly where it was.
+    let (_, ticket) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(ticket["claim"]["holder"], json!("agent:w1"), "{ticket}");
+
+    // No `fence` field exists to get wrong — the caller is displacing a holder
+    // whose fence it has no way to know.
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({ "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "validation.unknown_field");
+
+    // A bodiless POST is fine: `reason` is optional.
+    let (s, forced) = app
+        .json(app.authed(
+            Method::POST,
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+        ))
+        .await;
+    assert_eq!(s, StatusCode::OK, "a reasonless force-release: {forced}");
+    assert_eq!(forced["reason"], Value::Null);
+    assert_eq!(forced["previous_fence"], json!(fence));
+}
+
+#[tokio::test]
+async fn force_release_without_a_claim_teaches_instead_of_lying() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Nothing to take").await;
+    app.to_ready(&id).await;
+
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "claim.none");
+    assert!(
+        body["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+        "errors carry a remedy: {body}"
+    );
+    assert_eq!(body["current_state"], json!("ready"));
+
+    // Not idempotent bookkeeping: it reports what it displaced, so the second
+    // call on the same ticket lands in the same 409.
+    app.claim(&id).await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "claim.none");
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/tickets/tp-nope/force-release", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "notfound.ticket");
+}
+
+/// An already-lapsed lease is force-released too rather than refused. The holder
+/// is still recorded on the row, and natural expiry does *not* bump the fence,
+/// so a zombie echoing that fence is still accepted until something does. Were
+/// this a 409, the outcome would depend on whether the TTL happened to elapse a
+/// moment before the admin's call.
+#[tokio::test]
+async fn force_release_also_fences_off_an_expired_holder() {
+    // No sweeper: otherwise whether the lapsed claim is still on the row when
+    // the force lands is a race against a 250ms timer.
+    let app = TestApp::spawn_without_sweeper().await;
+    let id = app
+        .create_ticket("Lease lapsed, holder still recorded")
+        .await;
+    app.to_ready(&id).await;
+    let stale_fence = app.claim_ttl(&app.worker, &id, Some(1)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    let (s, forced) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{id}/force-release"),
+            json!({ "reason": "reclaiming a lapsed lease" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "force-release failed: {forced}");
+    assert_eq!(forced["previous_holder"], json!("agent:w1"));
+    assert_eq!(forced["lease_expired"], json!(true), "{forced}");
+    assert_eq!(forced["fence"], json!(stale_fence + 1));
+
+    // One event, not two: the force does not also log a `lease_expired`.
+    let (_, expired) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=lease_expired"),
+        )
+        .await;
+    assert!(
+        expired["events"]
+            .as_array()
+            .expect("events array")
+            .is_empty(),
+        "the force is the event, not a synthetic expiry too: {expired}"
+    );
+    let (_, revoked) = app
+        .get(
+            &app.admin,
+            &format!("/v1/events?since=0&ticket={id}&kind=lease_revoked"),
+        )
+        .await;
+    assert_eq!(
+        revoked["events"].as_array().expect("events array").len(),
+        1,
+        "{revoked}"
+    );
+    assert_eq!(
+        revoked["events"][0]["payload"]["lease_expired"],
+        json!(true)
+    );
+
+    // The fence bump is what closes the door on the ousted worker; expiry alone
+    // would have left its fence current.
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "title": "zombie write", "fence": stale_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "fence.stale");
+}
+
 #[tokio::test]
 async fn deps_respect_claims_and_fences() {
     let app = TestApp::spawn().await;

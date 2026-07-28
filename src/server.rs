@@ -139,6 +139,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/tickets/{id}/release",
             post(crate::api::claims::release),
         )
+        .route(
+            "/v1/tickets/{id}/force-release",
+            post(crate::api::claims::force_release),
+        )
         .route("/v1/ready", get(crate::api::claims::ready_peek))
         .route("/v1/ready/claim", post(crate::api::claims::ready_claim))
         .route(
