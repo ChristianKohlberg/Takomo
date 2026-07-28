@@ -2,12 +2,18 @@
 //! is a teaching error: stable code, LLM-legible message, exact remedy, and
 //! the full list of allowed transitions from the current state.
 //!
-//! "The only way" is literal: `apply_transition` holds the single
-//! `UPDATE tickets SET state` in the codebase, and every other module reaches
-//! ticket state through it — including ask-a-human, which parks a ticket on a
+//! "The only way" is close to literal: every module reaches ticket state
+//! through `apply_transition` — including ask-a-human, which parks a ticket on a
 //! blocking question and resumes it on the answer (`store::questions`). What
 //! differs between those callers is captured in [`MoveKind`], not in a second
 //! code path, so no caller can quietly skip a workflow's approval gate.
+//!
+//! There is exactly one other `UPDATE tickets SET state` in the codebase —
+//! `store::questions::override_state`, the administrative reversal behind
+//! reopening an answered question, for which the workflow has no edge. Its doc
+//! comment enumerates every check it therefore skips and what gates it instead.
+//! `grep -rn "SET state" src/` should return those two and nothing else; a third
+//! is a bug.
 
 use super::helpers::{
     clear_expired_claim, emit_event, get_ticket_required, get_workflow, stale_fence_error,
