@@ -76,7 +76,7 @@ A **share** mints a second, distinct kind of bearer token (`tks_`-prefixed, hash
 | `GET /v1/shares`                 | normal token, `read` scope | list share metadata (admin sees all; else only the caller's own). Never the token or hash. |
 | `DELETE /v1/shares/{id}`         | normal token, `write` scope | revoke (creator or admin). |
 | `GET /v1/shares/self`            | **share token** | the share's scope + the project workflow (to render columns). |
-| `GET /v1/shares/self/tickets`    | **share token** | the tickets in scope, read-only (`?include_archived=true` to include archived). |
+| `GET /v1/shares/self/tickets`    | **share token** | one page of the tickets in scope, read-only (`?include_archived=true` to include archived; `?limit=` ≤200, `?cursor=`). |
 | `GET /v1/shares/self/tickets/{id}` | **share token** | one in-scope ticket + comments/deps, for the detail panel. |
 
 **Two scopes.** `kind:project` covers every ticket in a project. `kind:epic` covers a root ticket plus its FULL recursive descendant subtree (walked via `parent`, the same recursive-CTE the roadmap uses — any ticket can be the root; `epic` is just the common case). The stored/echoed kind for the subtree case is `subtree`.
@@ -86,6 +86,15 @@ A **share** mints a second, distinct kind of bearer token (`tks_`-prefixed, hash
 **Distinct auth path.** A share token is validated only against the `shares` table and reaches ONLY the `/v1/shares/self*` endpoints. It is **read-only** and **cannot**: read arbitrary projects, hit any normal endpoint, or write anything — a share token on `GET /v1/tickets` (or any write) is rejected `401`. Conversely a normal `tk_` token is not accepted on the `self*` endpoints.
 
 **Expiry / revocation.** Every share has a hard `expires_at` (default 24h, cap 30d). An expired or revoked share token returns **`410 Gone`** on every `self*` endpoint, which the board turns into a friendly "this shared link has expired" page.
+
+**Bounded work per request, and a budget per link.** Both halves matter, because either alone leaves the hole open: a cap on one response does not stop a script repeating it, and a rate limit does not stop one request from scanning a 100k-ticket project.
+
+- `GET /v1/shares/self/tickets` returns a **page** — `limit` defaults to and is clamped at 200, `cursor` continues — and never truncates silently: `next_cursor` is non-null exactly when more remain, and such a page carries a `warning` naming the next call. Before this it returned the whole project with no `LIMIT` (takomo-vlpm).
+- Every request on the `self*` routes is charged to a **per-share sliding window of 120 requests/minute**, shared by all viewers of that link. Over it is `429 share.rate_limited` with `Retry-After`; the link keeps working (takomo-fgca).
+
+**Reads are charged here, deliberately unlike the `tk_` path**, where `GET` is free. The budgets answer different questions. A `tk_` token is a named actor, individually revocable, and what it can do wrong at scale is a runaway *write* loop. A `tks_` share is a bearer capability *built* to be pasted into a chat or an email, with no per-viewer identity, and reading is the only thing it can do — so charging only writes would leave it with no budget at all. Per link rather than per viewer for the same reason the tradeoff below is stated the way it is: the link is the identity, and revoking it is the lever an operator actually has.
+
+An unrecognized share token is not charged (there is no share to charge it to); what bounds it is the work it causes, which is one indexed lookup by token hash before the `401`.
 
 **Fragment token, deliberately.** The mint returns `path = /board#s=<token>` — the token rides in the URL **fragment**, which browsers never send to the server, so it stays out of access logs and `Referer` headers. The board reads it from `location.hash`, never puts it in a query string, and never persists it.
 
@@ -98,5 +107,7 @@ The server binds localhost/tailnet and terminates plain HTTP; TLS is the deploym
 ## Rate limiting
 
 Per-token sliding-window write budget (default 120 writes/min). Exceeding returns 429 with `Retry-After`. Purpose is not capacity (SQLite laughs at this load) but containing runaway agent loops; a 429 storm from one token is an anomaly worth surfacing in events (`kind: rate_limited` reserved for v1.1).
+
+Share tokens have their own window — 120 **requests**/min per link, `429 share.rate_limited` — because a read-only bearer capability designed to be pasted around has a different risk profile from a named actor's token. See "Share tokens" above for why reads are charged there and not here. Answer grants (`tka_`) need no window: single-use bounds them.
 
 **Only writes are charged, on both surfaces.** On REST that is the HTTP method: `GET`/`HEAD` are free, everything else debits. On MCP the method says nothing — every frame is `POST /mcp` — so the budget is debited per tool call, by name: the read-only tools (`takomo_show`, `takomo_list`, `takomo_ready`, `takomo_deps`, `takomo_questions`, `takomo_projects`, `takomo_workflow`, `takomo_roadmap`, `takomo_whoami`) are free, and so are `initialize`, `tools/list` and an unknown tool name; every other tool debits one write. A tool added later is charged until it is explicitly declared a read. An MCP write that exhausts the budget comes back as a tool-level error carrying the same `rate.limited` code, message, remedy and `status: 429` — the transport reports MCP failures in the result body, not the HTTP status.

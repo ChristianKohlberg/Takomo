@@ -1340,6 +1340,12 @@ paths:
         Authenticated by the SHARE token (not a normal `tk_` token). Returns the
         share's scope and the project workflow, enough for the board to render
         the columns. An expired or revoked share returns `410 Gone`.
+
+        Every request on the `/shares/self*` routes is charged to this share's
+        per-link sliding window of 120 requests/minute, shared by every viewer
+        holding the link. Unlike the `tk_` budget, **reads are charged** — a share is
+        a read-only bearer capability meant to be pasted around, so reads are the
+        whole of what it can do. See spec/auth.md.
       responses:
         "200":
           description: OK
@@ -1353,6 +1359,13 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "410":
           description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: |
+            `share.rate_limited` — this link exceeded 120 requests/minute. Carries
+            `Retry-After`; the link itself still works.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1372,22 +1385,56 @@ paths:
       security:
         - shareBearer: []
       description: |
-        Authenticated by the SHARE token. Returns the tickets in scope (project:
-        all in the project; epic/subtree: the root plus recursive descendants),
-        read-only. Archived tickets are excluded unless `include_archived=true`.
+        Authenticated by the SHARE token. Returns **one page** of the tickets in
+        scope (project: all in the project; epic/subtree: the root plus recursive
+        descendants), oldest first, read-only. Archived tickets are excluded unless
+        `include_archived=true`.
+
+        **Paged, and bounded whatever the caller asks for.** This used to return the
+        entire scope with no `LIMIT`, which behind a credential designed to be
+        pasted around meant an arbitrarily large scan anyone holding the link could
+        trigger repeatedly. `limit` defaults to 200 and is clamped to 200; `cursor`
+        takes the previous page's `next_cursor`.
+
+        **It never truncates silently.** `next_cursor` is non-null exactly when more
+        tickets remain, and a page that leaves rows behind also carries a `warning`
+        naming the call that fetches the rest. Keep paging while `next_cursor` is
+        set, carrying `include_archived` along.
+
+        Requests on this path are charged to the share's own per-link budget — see
+        the `429` below and spec/auth.md.
       parameters:
         - { name: include_archived, in: query, schema: { type: boolean, default: false }, description: include archived tickets }
+        - { name: limit, in: query, schema: { type: integer, default: 200, minimum: 1, maximum: 200 }, description: 'page size; values above the maximum are clamped, not refused' }
+        - { name: cursor, in: query, schema: { type: string }, description: the previous page's next_cursor }
       responses:
         "200":
-          description: OK
+          description: One page of the share's scope.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+                  next_cursor:
+                    type: [string, "null"]
+                    description: pass as `cursor` for the next page; null when this is the last one
+                  warning:
+                    type: string
+                    description: >-
+                      Present only when tickets remain beyond this page, spelling out
+                      the next call. A partial view of a shared board must never look
+                      complete.
         "410":
           description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: |
+            `share.rate_limited` — this link has exceeded its budget of 120
+            requests/minute (see spec/auth.md). Carries `Retry-After`. The budget is
+            per link and shared by every viewer holding it.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1421,6 +1468,13 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "410":
           description: The shared link has expired or been revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: |
+            `share.rate_limited` — this link exceeded 120 requests/minute, counted
+            across all `/shares/self*` routes together. Carries `Retry-After`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

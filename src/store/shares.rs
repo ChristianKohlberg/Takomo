@@ -24,6 +24,19 @@ pub const DEFAULT_SHARE_TTL_SECONDS: i64 = 86_400;
 /// Hard cap on share lifetime: 30 days.
 pub const MAX_SHARE_TTL_SECONDS: i64 = 30 * 86_400;
 
+/// How many tickets one `GET /v1/shares/self/tickets` returns, and the ceiling an
+/// explicit `limit` may ask for. One number for both, matching the `limit=200` the
+/// board already uses to page `/v1/tickets`: the scope of a share is not something
+/// the viewer chose, so there is no reason to hand out a smaller default page and
+/// make every client page twice.
+///
+/// The point is that the query is **bounded at all** (takomo-fgca / takomo-vlpm).
+/// A share link is designed to be pasted around, so an unbounded full-project scan
+/// behind it is work an unauthenticated-in-practice reader can trigger at will. A
+/// page never truncates silently: the response carries `next_cursor` and, when
+/// there is more, a `warning` naming the exact call that fetches it.
+pub const SHARE_TICKETS_PAGE: i64 = 200;
+
 /// The kind of scope a share grants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareKind {
@@ -245,10 +258,24 @@ impl Store {
         })
     }
 
-    /// The tickets in a share's scope. For [`ShareKind::Project`]: every ticket in
+    /// One page of the tickets in a share's scope, oldest first, as
+    /// `(tickets, next_cursor)`. For [`ShareKind::Project`]: every ticket in
     /// `project`. For [`ShareKind::Subtree`]: the `ref_id` root ticket plus every
     /// recursive descendant (via `parent`). Archived tickets are excluded unless
     /// `include_archived` is set. Each ticket carries its `blocked_by` edges.
+    ///
+    /// **Bounded**, which is the whole point of the signature (takomo-fgca /
+    /// takomo-vlpm): this used to return the entire project with no `LIMIT`, and it
+    /// runs behind a credential built to be pasted into a chat. `limit` is the
+    /// caller's page size (the route clamps it to [`SHARE_TICKETS_PAGE`]) and
+    /// `next_cursor` is `Some` exactly when more rows exist, so the route can say so
+    /// instead of truncating quietly.
+    ///
+    /// Paged on `rowid`, and ordered by it too — a cursor needs a total order over
+    /// a single column, and rowid *is* the insertion order that `created_at`
+    /// approximates. `LIMIT + 1` rows are read to learn whether a next page exists
+    /// without a second `COUNT(*)` over the same scan, exactly as
+    /// [`Store::list_tickets`] does.
     ///
     /// `kind` is the enum, not a string, so the scope is chosen by an exhaustive
     /// `match`: there is no "everything else" arm that a mis-spelled kind could
@@ -260,13 +287,20 @@ impl Store {
         ref_id: &str,
         project: &str,
         include_archived: bool,
-    ) -> ApiResult<Vec<Ticket>> {
+        cursor: Option<i64>,
+        limit: i64,
+    ) -> ApiResult<(Vec<Ticket>, Option<String>)> {
         self.with_conn(|conn| {
             let archived_clause = if include_archived {
                 ""
             } else {
                 " AND t.archived_at IS NULL"
             };
+            // `?2` is the cursor: rows strictly after it, or all rows when the
+            // caller is on the first page. Bound as a parameter rather than spliced
+            // into the SQL so the statement text (and SQLite's plan cache entry) is
+            // the same for every page.
+            let after = cursor.unwrap_or(0);
             let (sql, bind) = match kind {
                 ShareKind::Subtree => (
                     format!(
@@ -276,29 +310,41 @@ impl Store {
                         UNION
                         SELECT t.id FROM tickets t JOIN sub ON t.parent = sub.id
                     )
-                    SELECT {TICKET_COLS} FROM tickets t JOIN sub ON t.id = sub.id
-                    WHERE 1=1{archived_clause}
-                    ORDER BY t.created_at ASC, t.rowid ASC
+                    SELECT {TICKET_COLS}, t.rowid AS rid FROM tickets t JOIN sub ON t.id = sub.id
+                    WHERE t.rowid > ?2{archived_clause}
+                    ORDER BY t.rowid ASC LIMIT ?3
                     "#
                     ),
                     ref_id,
                 ),
                 ShareKind::Project => (
                     format!(
-                        "SELECT {TICKET_COLS} FROM tickets t WHERE t.project = ?1{archived_clause} \
-                         ORDER BY t.created_at ASC, t.rowid ASC"
+                        "SELECT {TICKET_COLS}, t.rowid AS rid FROM tickets t \
+                         WHERE t.project = ?1 AND t.rowid > ?2{archived_clause} \
+                         ORDER BY t.rowid ASC LIMIT ?3"
                     ),
                     project,
                 ),
             };
             let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt
-                .query_map(params![bind], row_to_ticket)?
+            let mut rows: Vec<(Ticket, i64)> = stmt
+                .query_map(params![bind, after, limit + 1], |r| {
+                    Ok((row_to_ticket(r)?, r.get::<_, i64>("rid")?))
+                })?
                 .collect::<Result<Vec<_>, _>>()?;
-            for t in &mut rows {
-                load_blocked_by(conn, t)?;
+            let has_more = rows.len() as i64 > limit;
+            rows.truncate(limit as usize);
+            let next_cursor = if has_more {
+                rows.last().map(|(_, rid)| rid.to_string())
+            } else {
+                None
+            };
+            let mut tickets = Vec::with_capacity(rows.len());
+            for (mut t, _) in rows {
+                load_blocked_by(conn, &mut t)?;
+                tickets.push(t);
             }
-            Ok(rows)
+            Ok((tickets, next_cursor))
         })
     }
 

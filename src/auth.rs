@@ -9,8 +9,8 @@ use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct AuthCtx {
@@ -200,23 +200,43 @@ async fn authenticate(
     Ok(next.run(request).await)
 }
 
+/// Charge one event to a per-minute sliding window, or report how long the caller
+/// must wait. `Ok(())` means it was charged; `Err(secs)` means the window is full
+/// and nothing was charged.
+///
+/// One implementation, two very different budgets on top of it (`tk_` writes and
+/// `tks_` requests), because the window arithmetic is the part that is easy to get
+/// subtly wrong — an off-by-one in the eviction loop turns a limiter into a
+/// throttle nobody notices.
+fn debit_window(
+    windows: &Mutex<HashMap<String, VecDeque<i64>>>,
+    key: &str,
+    limit: i64,
+    now: i64,
+) -> Result<(), i64> {
+    let mut windows = windows.lock().expect("rate lock");
+    let window = windows.entry(key.to_string()).or_default();
+    let cutoff = now - 60_000;
+    while window.front().is_some_and(|t| *t <= cutoff) {
+        window.pop_front();
+    }
+    if window.len() as i64 >= limit {
+        // `unwrap_or(now)` covers a limit of 0, where the window is empty and
+        // everything is refused: retry a full window later.
+        let oldest = window.front().copied().unwrap_or(now);
+        return Err(((oldest + 60_000 - now) / 1000).max(1));
+    }
+    window.push_back(now);
+    Ok(())
+}
+
 /// Charge one write to this token's sliding-window budget, or reject with the
 /// teaching 429. Both surfaces call this, so a write costs exactly the same
 /// whether it arrives as `POST /v1/tickets/{id}/comments` or as the
 /// `takomo_comment` MCP tool — and a read costs nothing on either.
 pub fn debit_write_budget(state: &AppState, ctx: &AuthCtx) -> ApiResult<()> {
     let now = now_ms();
-    let mut windows = state.rate.lock().expect("rate lock");
-    let window = windows.entry(ctx.token_id.clone()).or_default();
-    let cutoff = now - 60_000;
-    while window.front().is_some_and(|t| *t <= cutoff) {
-        window.pop_front();
-    }
-    if window.len() as i64 >= ctx.rate_limit {
-        // `unwrap_or(now)` covers a rate_limit of 0, where the window is empty
-        // and every write is refused: retry a full window later.
-        let oldest = window.front().copied().unwrap_or(now);
-        let retry_after_secs = ((oldest + 60_000 - now) / 1000).max(1);
+    if let Err(retry_after_secs) = debit_window(&state.rate, &ctx.token_id, ctx.rate_limit, now) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate.limited",
@@ -230,7 +250,6 @@ pub fn debit_write_budget(state: &AppState, ctx: &AuthCtx) -> ApiResult<()> {
         ))
         .header("Retry-After", retry_after_secs.to_string()));
     }
-    window.push_back(now);
     Ok(())
 }
 
@@ -258,11 +277,36 @@ pub struct ShareCtx {
     pub expires_at: i64,
 }
 
+/// Requests per minute one share link may make, across all `/v1/shares/self*`
+/// routes and every viewer holding it.
+///
+/// **Reads are charged here, and that is not an inconsistency with the `tk_` path
+/// where reads are free.** The two budgets exist for different reasons. A `tk_`
+/// token is a named actor, individually revocable, and the risk it carries is a
+/// runaway agent loop writing; its reads are cheap and its holder is accountable. A
+/// `tks_` share is a bearer capability *designed to be pasted around* — into a
+/// chat, a ticket, an email — with no per-viewer identity, and it can only read. So
+/// reads are the entire attack surface it has, and leaving them free left the share
+/// path with no budget at all (takomo-fgca).
+///
+/// 120/minute is deliberately the same order as a token's default write budget: far
+/// more than a board full of humans needs (a share view is two requests, plus one
+/// per ticket opened, and the page does not poll in share mode), and a hard ceiling
+/// of two requests a second for a link being hammered. It is a per-link budget, not
+/// per viewer, because the link *is* the identity — and revoking it is the
+/// mitigation an operator actually has.
+pub const SHARE_REQUESTS_PER_MINUTE: i64 = 120;
+
 /// Distinct auth path for share tokens. It resolves the bearer token against the
 /// `shares` table only — a normal `tk_` token is not there and is rejected, and
 /// this middleware guards ONLY the `/v1/shares/self*` routes, so a share token
 /// can never reach a normal endpoint. Expired or revoked shares return 410 Gone
 /// so the board can show a clear "this link has expired" page.
+///
+/// Every request through here is charged to the share's own sliding window
+/// ([`SHARE_REQUESTS_PER_MINUTE`]). Charged **after** the share resolves, so the
+/// budget is keyed by share id: an unrecognized token has no key to charge and is
+/// bounded instead by what it costs, which is one indexed lookup by token hash.
 pub async fn share_auth_middleware(
     State(state): State<Arc<AppState>>,
     mut request: Request,
@@ -299,6 +343,24 @@ pub async fn share_auth_middleware(
     }
     if share.expires_at <= now {
         return Err(share_gone("this shared link has expired"));
+    }
+
+    if let Err(retry_after_secs) =
+        debit_window(&state.share_rate, &share.id, SHARE_REQUESTS_PER_MINUTE, now)
+    {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "share.rate_limited",
+            format!(
+                "This shared link has made more than {SHARE_REQUESTS_PER_MINUTE} requests in the last minute, which is more than viewing a board takes, so it is being throttled. The link still works — wait {retry_after_secs}s and reload. The budget is per link and shared by everyone holding it, so a link being polled by a script slows it down for every reader."
+            ),
+        )
+        // A viewer holds no token and no scope: there is nothing for them to
+        // raise, so the remedy is the only two things they can actually do.
+        .remedy(format!(
+            "Wait {retry_after_secs}s, then reload. If a script or a dashboard is polling this link, stop it or ask for a normal read-only token instead; if the link may have leaked, have its owner revoke it (DELETE /v1/shares/{{id}}) and mint a replacement."
+        ))
+        .header("Retry-After", retry_after_secs.to_string()));
     }
 
     let ctx = ShareCtx {

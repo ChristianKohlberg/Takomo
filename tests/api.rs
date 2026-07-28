@@ -4302,6 +4302,183 @@ async fn share_excludes_archived_by_default() {
     assert!(ids.contains(&gone.as_str()), "archived included on request");
 }
 
+/// Mint a project share over `tp` and return its token.
+async fn tp_share(app: &TestApp) -> String {
+    let (s, share) = app
+        .post(
+            &app.admin,
+            "/v1/shares",
+            json!({ "kind": "project", "ref": "tp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "create share: {share}");
+    share["token"].as_str().expect("share token").to_string()
+}
+
+/// takomo-vlpm / takomo-fgca, the store half: `share_tickets` was an unbounded
+/// full-project scan, and a share link is a credential designed to be pasted
+/// around — so one request could be made to walk the whole project, repeatedly.
+///
+/// It is a page now, and the page is the interesting part twice over: it is
+/// *bounded* whatever the caller asks for, and it never truncates silently. A
+/// viewer shown 200 of 250 tickets with nothing saying so would be worse than a
+/// slow board.
+#[tokio::test]
+async fn share_tickets_are_paged_and_bounded() {
+    let app = TestApp::spawn().await;
+    let named = app.create_ticket("A ticket with a name").await;
+    // 250 more, so the scope is larger than one page whatever the caller asks for.
+    app.seed_bulk_tickets(250);
+    let token = tp_share(&app).await;
+
+    // No `limit`: the default page, not the whole project.
+    let (s, page) = app.get(&token, "/v1/shares/self/tickets").await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    let first: Vec<String> = page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|t| t["id"].as_str().expect("id").to_string())
+        .collect();
+    assert_eq!(first.len(), 200, "one page, not 251 tickets");
+    assert!(
+        first.contains(&named),
+        "the page starts at the oldest ticket: {}",
+        first[0]
+    );
+
+    // And it says so — in a cursor for a client and in words for a human.
+    let cursor = page["next_cursor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a truncated page must carry next_cursor: {page}"))
+        .to_string();
+    let warning = page["warning"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a truncated page must say so: {page}"));
+    assert!(
+        warning.contains("not the whole share") && warning.contains(&format!("cursor={cursor}")),
+        "the warning must name the call that fetches the rest: {warning}"
+    );
+
+    // An over-large `limit` is clamped to the same ceiling rather than honoured.
+    let (s, greedy) = app
+        .get(&token, "/v1/shares/self/tickets?limit=100000")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{greedy}");
+    assert_eq!(
+        greedy["items"].as_array().expect("items").len(),
+        200,
+        "the page ceiling is not negotiable: {greedy}"
+    );
+
+    // Paging through reaches every ticket exactly once and then stops cleanly.
+    let mut seen = first.clone();
+    let mut next = Some(cursor);
+    while let Some(c) = next {
+        let (s, page) = app
+            .get(&token, &format!("/v1/shares/self/tickets?cursor={c}"))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{page}");
+        for t in page["items"].as_array().expect("items") {
+            seen.push(t["id"].as_str().expect("id").to_string());
+        }
+        next = page["next_cursor"].as_str().map(str::to_string);
+        if next.is_none() {
+            assert!(
+                page.get("warning").is_none(),
+                "the last page must not warn about more: {page}"
+            );
+        }
+    }
+    assert_eq!(seen.len(), 251, "every ticket in scope, once");
+    let unique: std::collections::HashSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 251, "no ticket served twice across pages");
+
+    // A cursor that is not a cursor is a teaching 400, not an empty board.
+    let (s, bad) = app
+        .get(&token, "/v1/shares/self/tickets?cursor=not-a-number")
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    assert_eq!(bad["code"], "validation.cursor");
+}
+
+/// takomo-fgca, the auth half: nothing rate-limited the share path at all. The
+/// `tk_` budget charges writes only — right for a named, revocable actor whose risk
+/// is a runaway write loop — but a `tks_` link is a read-only bearer capability
+/// meant to be pasted around, so reads are its entire attack surface and it had no
+/// budget of any kind.
+///
+/// The budget is per link, which is also what makes it the right control: the link
+/// is the identity, and revoking it is the mitigation an operator has.
+#[tokio::test]
+async fn share_requests_are_rate_limited_per_link() {
+    let app = TestApp::spawn().await;
+    let _ = app.create_ticket("t").await;
+    let hammered = tp_share(&app).await;
+    let bystander = tp_share(&app).await;
+
+    // 120 requests/minute is the budget; the 121st inside the window is refused.
+    let mut refused = None;
+    for i in 0..130 {
+        let resp = app
+            .authed(Method::GET, &hammered, "/v1/shares/self")
+            .send()
+            .await
+            .expect("request");
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            refused = Some((i, resp));
+            break;
+        }
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "request {i} should have been served"
+        );
+    }
+    let (at, resp) = refused.expect("the share path must be rate limited at all");
+    assert_eq!(at, 120, "the budget is 120 requests in the window");
+
+    let retry_after: i64 = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("a 429 must carry Retry-After: {:?}", resp.headers()));
+    assert!(
+        (1..=60).contains(&retry_after),
+        "Retry-After must be inside the window: {retry_after}"
+    );
+    let body: Value = resp.json().await.expect("json body");
+    assert_eq!(body["code"], "share.rate_limited");
+    assert!(
+        body["message"]
+            .as_str()
+            .expect("message")
+            .contains("still works"),
+        "a viewer must be told the link is throttled, not broken: {body}"
+    );
+    assert!(
+        body["remedy"]
+            .as_str()
+            .is_some_and(|r| r.contains("revoke")),
+        "the remedy names what the owner can do about a leaked link: {body}"
+    );
+
+    // The tickets route is charged from the same window: the throttle is on the
+    // link, not on one endpoint.
+    let (s, also) = app.get(&hammered, "/v1/shares/self/tickets").await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{also}");
+
+    // A different link is untouched — one leaked share must not take the others
+    // down with it, which a single global counter would have done.
+    let (s, fine) = app.get(&bystander, "/v1/shares/self").await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the budget is per share, not per server: {fine}"
+    );
+}
+
 // Share creation validates the referent and enforces write scope + project scope.
 #[tokio::test]
 async fn share_creation_validates_ref_and_authority() {
