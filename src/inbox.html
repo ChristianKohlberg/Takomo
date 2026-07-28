@@ -145,6 +145,7 @@
   .qrow .qm .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted2); }
   .qrow .qm .who .mono { font-family: var(--mono); color: var(--muted); }
   .qrow .qm .advchip { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent2) 13%, transparent); color: var(--accent2); font-size: 10.5px; letter-spacing: .02em; }
+  .qrow .qm .stallchip { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); font-size: 10.5px; letter-spacing: .02em; font-weight: 650; }
   .qrow .qm .age { flex: 0 0 auto; font-size: 12px; color: var(--low); }
   .listempty { padding: 60px 30px; text-align: center; color: var(--muted); }
   .listempty .t { font-size: 17px; font-weight: 700; color: var(--text); margin: 10px 0 6px; }
@@ -218,6 +219,18 @@
      paragraph spacing on top of that. */
   .decision .v p { margin: 0; line-height: 1.3; }
   .decision .sub { margin-top: 12px; font-size: 12px; color: var(--muted); }
+
+  /* An answered question whose ticket did NOT resume. Warn, not error: nothing
+     was lost — the decision is recorded — but the work has stopped and only a
+     person can restart it. Sits under the green decision block on purpose, so
+     the two outcomes read as the two separate facts they are. */
+  .stall { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--panel)); background: color-mix(in srgb, var(--warn) 9%, var(--panel)); border-radius: 12px; padding: 16px 20px; max-width: 600px; margin-top: 14px; }
+  .stall .h { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--warn); margin-bottom: 8px; }
+  .stall .h .warn { width: 18px; height: 18px; border-radius: 50%; background: var(--warn); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; }
+  .stall .v { font-size: 14px; color: var(--text); line-height: 1.5; }
+  .stall .v .mono { font-family: var(--mono); font-size: 13px; }
+  .stall .why { margin-top: 8px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .stall .open { display: inline-block; margin-top: 10px; font-size: 12px; font-weight: 600; color: var(--accent2); cursor: pointer; }
 
   /* answer area */
   .answer { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-soft); max-width: 600px; }
@@ -453,6 +466,14 @@
       undo:"Rückgängig",
       decision:"Entscheidung",
       answeredBy:"beantwortet von dir",
+      stallTag:"Ticket steht",
+      stallTitle:"Ticket nicht fortgesetzt",
+      stallLead1:"Die Antwort ist gespeichert, aber ",
+      stallLead2:" hat sich nicht bewegt: Es bleibt blockiert und außerhalb der Warteschlange, also nimmt es kein Agent auf.",
+      stallNoExit:"Kein Übergang aus dem blockierten Zustand ließ sich automatisch nehmen — jeder verlangt einen Claim, einen Guard oder ein Recht, das dieses Token nicht hat.",
+      stallRefused:"Der Server konnte den Übergang nicht ausführen. Das Ticket nennt den genauen Grund.",
+      stallBarrier:"Auf diesem Ticket ist noch eine blockierende Frage offen. Es wird erst fortgesetzt, wenn die letzte beantwortet ist.",
+      stallUnknown:"Warum, steht im Ticket-Verlauf.",
       closed:"Diese Frage ist geschlossen.",
       reopen:"Wieder öffnen",
       reopened:"Frage wieder geöffnet.",
@@ -556,6 +577,14 @@
       undo:"Undo",
       decision:"Decision",
       answeredBy:"answered by you",
+      stallTag:"ticket stalled",
+      stallTitle:"Ticket not resumed",
+      stallLead1:"The answer is recorded, but ",
+      stallLead2:" did not move: it is still blocked and out of the ready queue, so no agent will pick it up.",
+      stallNoExit:"No transition out of the blocked state could be taken automatically — every one needs a claim, a guard, or a scope this token lacks.",
+      stallRefused:"The server could not carry the resume. The ticket records the exact reason.",
+      stallBarrier:"Another blocking question on this ticket is still open. It resumes once the last one is answered.",
+      stallUnknown:"The ticket thread records why.",
       closed:"This question is closed.",
       reopen:"Reopen",
       reopened:"Question reopened.",
@@ -655,6 +684,11 @@
                       // Independent per question — each keeps its own countdown and its own Undo.
     landedId: null,   // qid just answered — briefly tints its row + the Answered folder
     linkModal: null,  // { url, expires_at, actor } for the answer-link modal
+    resume: {},       // qid -> { code } for an answer the server could NOT resume the ticket with.
+                      // The question row itself only records the absence (`resolved_to: null`), so
+                      // the WHY is picked up where it is stated: the answer response's `resume`
+                      // block, and the `question_answered` event's `resume_blocked`. Absent after
+                      // a reload — see notResumedNote, which states the fact regardless.
   };
   function t() { return STR[state.lang]; }
 
@@ -1089,6 +1123,15 @@
     if (state.project) q += "&project=" + encodeURIComponent(state.project);
     api(q).then(function (res) {
       if ((res.events || []).length === 0) return;
+      // Read the batch for stranded answers BEFORE the busy check: an answer given
+      // elsewhere (another tab, an answer link, MCP) states its resume failure only
+      // on the event, and the busy path returns without consuming the batch — so it
+      // would otherwise be picked up only when the same events come round again.
+      // Recording is idempotent, so seeing them twice is harmless.
+      (res.events || []).forEach(function (ev) {
+        var p = ev && ev.payload;
+        if (ev && ev.kind === "question_answered" && p && p.resume_blocked) noteResume(p.question, { resumed: false, code: p.resume_blocked });
+      });
       var busy = state.answering || Object.keys(state.pending).length > 0 || state.composeOpen || state.withdrawOpen ||
         (document.activeElement && $("read").contains(document.activeElement));
       // Leave the cursor where it is while busy. Rebuilding the list under a
@@ -1341,6 +1384,9 @@
     who.appendChild(el("span", "mono", q.asked_by || "—"));
     meta.appendChild(who);
     if (q.mode === "advisory") meta.appendChild(el("span", "advchip", t().advTag));
+    // In the Answered folder a stranded question is otherwise indistinguishable
+    // from one that resumed its ticket, which is how it went unnoticed.
+    if (notResumed(q)) meta.appendChild(el("span", "stallchip", t().stallTag));
     meta.appendChild(el("span", "age", fmtAge(q.created_at)));
     row.appendChild(meta);
     activate(row, function () { selectQ(q.id); });
@@ -1359,6 +1405,70 @@
     if (v === true) return q.kind === "approve" ? "Approved" : "Confirmed";
     if (v === false) return q.kind === "approve" ? "Rejected" : "Declined";
     return typeof v === "string" ? v : JSON.stringify(v);
+  }
+
+  // ---- an answer that did not resume its ticket ----
+  //
+  // A blocking answer is supposed to move the ticket out of its blocked state and
+  // back into the ready queue. When it cannot, the answer is still RECORDED —
+  // discarding a human's decision would be worse — and the ticket is left parked,
+  // out of the queue, where no agent will pick it up. That is not a detail: the
+  // work stops until a person moves it by hand. The inbox used to render nothing
+  // at all for it, so a stranded question looked exactly like a resumed one
+  // (takomo-miq3).
+  //
+  // The question row carries only the absence (`resolved_to: null`), so the WHY is
+  // taken from wherever it is stated — see `state.resume`. Precedence:
+  //   1. the server's own verdict on THIS answer (response / event), when we have it;
+  //   2. the barrier — another blocking question on the same ticket is still open,
+  //      so the server never attempted a resume. Derived from the loaded queue, so
+  //      it survives a reload, and it is the reason a reader can act on directly.
+  //   3. neither: state the fact and point at the ticket, whose thread carries the
+  //      server's full explanation (it writes a system comment for exactly this).
+  // 1 and 2 cannot both apply to the same answer: a standing barrier is why the
+  // server did not try, so there is no verdict to have.
+  function noteResume(qid, resume) {
+    if (!qid || !resume) return;
+    if (resume.resumed === false && resume.code) state.resume[qid] = { code: resume.code };
+    else delete state.resume[qid];
+  }
+  // True for an answered blocking question whose ticket did not move. Advisory
+  // questions never resume anything, so a null `resolved_to` is their normal
+  // outcome and must not be flagged.
+  function notResumed(q) {
+    return q && q.status === "answered" && q.mode !== "advisory" && !q.resolved_to;
+  }
+  function otherOpenBlocking(q) {
+    return state.questions.some(function (o) {
+      return o.ticket === q.ticket && o.id !== q.id && o.status === "open" && o.mode !== "advisory";
+    });
+  }
+  // Deliberately NOT the server's own `message`: it names every exit out of the
+  // parked state with what each one would take, which is written for the agent
+  // that will make the next API call. In a queue view that is a wall of workflow
+  // detail between a reader and the one thing they need — that this ticket has
+  // stopped. The fact, one reason, and a pointer to the ticket (where the server's
+  // full text is waiting as a comment) is the whole of it.
+  function notResumedWhy(q) {
+    var r = state.resume[q.id];
+    if (r && r.code === "question.no_resume") return t().stallNoExit;
+    if (r && r.code) return t().stallRefused;
+    if (otherOpenBlocking(q)) return t().stallBarrier;
+    return t().stallUnknown;
+  }
+  function notResumedNote(q) {
+    var box = el("div", "stall");
+    var h = el("div", "h"); h.appendChild(el("span", "warn", "!")); h.appendChild(document.createTextNode(t().stallTitle)); box.appendChild(h);
+    var lead = el("div", "v");
+    lead.appendChild(document.createTextNode(t().stallLead1));
+    lead.appendChild(el("span", "mono", q.ticket));
+    lead.appendChild(document.createTextNode(t().stallLead2));
+    box.appendChild(lead);
+    box.appendChild(el("div", "why", notResumedWhy(q)));
+    var open = el("div", "open", t().openTicket);
+    activate(open, function () { state.ticketOpen = false; state.drawerOpen = true; ensureTicket(q.ticket); render(); });
+    box.appendChild(open);
+    return box;
   }
 
   var lastReadQid = null; // preserve scroll position across in-place re-renders
@@ -1423,6 +1533,10 @@
       if (q.resolved_to) sub += " · → " + q.resolved_to;
       dec.appendChild(el("div", "sub", sub));
       body.appendChild(dec);
+      // The decision landed; the ticket may not have. Its own block, below the
+      // decision rather than folded into it, because they are two facts and the
+      // second one is the one that needs a person.
+      if (notResumed(q)) body.appendChild(notResumedNote(q));
     } else if (state.me && !state.me.canAnswer) {
       var ro = el("div", "gatenote", t().readonly); ro.style.marginTop = "20px"; body.appendChild(ro);
     } else {
@@ -2027,7 +2141,7 @@
   function emitAnswer(q, value) {
     var payload = answerType(q) === "binary" ? value : value; // string values; API coerces yes/no
     api("/questions/" + encodeURIComponent(q.id) + "/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answer: payload }) })
-      .then(function () { fetchAll(); })
+      .then(function (res) { noteResume(q.id, res && res.resume); fetchAll(); })
       .catch(function (e) { toast((e && e.message ? e.message : "error") + (e && e.status === 403 ? " (human scope)" : ""), "error"); fetchAll(); });
   }
   // Rather than a floating success toast, the answer confirms itself in the data:
