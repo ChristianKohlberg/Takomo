@@ -2202,10 +2202,42 @@
   }
 
   // ---- keyboard ----
+  // ↵ on a focused control belongs to that control. The shortcut below claims ↵
+  // document-wide and preventDefault()s it, which did not merely swallow the
+  // activation — it submitted an answer for whatever the LIST had selected, and
+  // after the post-answer auto-advance that is the NEXT open question. So ↵ on
+  // the snackbar's focused Undo answered a different, unread question (with its
+  // agent's recommendation, which arms the button without a single click) and
+  // left the answer it was meant to take back standing — then advanced again, so
+  // the next ↵ did it to the question after that (takomo-rxxi).
+  //
+  // Scoped by control kind rather than by special-casing Undo: the same swallow
+  // reached every focusable control on this surface — the reopen and follow-up
+  // buttons, the language toggles, and the list rows, where Tab+↵ selected a row
+  // and instantly answered it — and would reach every button added later.
+  // `j`/`k` stay live throughout: a control does nothing with a letter key.
+  function ownsEnter(node) {
+    if (!node || node === document.body || node === document.documentElement) return false;
+    var tag = (node.tagName || "").toUpperCase();
+    if (tag === "A") return node.hasAttribute("href"); // a bare <a> is not focusable
+    if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "SUMMARY") return true;
+    if (node.isContentEditable) return true;
+    // `activate()` is how this file turns a non-<button> into a control: it stamps
+    // a role AND tabindex="0" and binds ↵ itself. Testing for that pair rather
+    // than for a list of role names keeps this true for whatever role a future
+    // `activate()` call passes.
+    return node.hasAttribute("role") && node.hasAttribute("tabindex");
+  }
   document.addEventListener("keydown", function (e) {
     if ($("gate") && !$("gate").classList.contains("hidden")) return;
     if (e.key === "Escape") { if (state.linkModal) { state.linkModal = null; render(); return; } if (state.withdrawOpen) { state.withdrawOpen = false; render(); return; } if (state.drawerOpen) { state.drawerOpen = false; render(); return; } if (state.ticketOpen) { state.ticketOpen = false; render(); return; } }
     var tag = (e.target && e.target.tagName) || ""; if (tag === "INPUT" || tag === "TEXTAREA") return;
+    // `e.target`, not `document.activeElement`: the control's own ↵ handler runs
+    // first (this listener is on `document`, so it sees the event last), and a
+    // list row's handler re-renders the list — which detaches the focused row and
+    // resets `activeElement` to <body> before we get here. `e.target` still names
+    // the element the key was pressed on.
+    if (e.key === "Enter" && ownsEnter(e.target)) return;
     var list = inFolder(); if (!list.length) return;
     var idx = list.findIndex(function (q) { return q.id === state.selectedId; });
     if (e.key === "j") { idx = Math.min(list.length - 1, idx < 0 ? 0 : idx + 1); selectQ(list[idx].id); e.preventDefault(); }
