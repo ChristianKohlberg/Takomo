@@ -1374,6 +1374,14 @@ paths:
         convenience verbs (start/done/block/cancel) resolve target states from
         the project workflow by category.
 
+        Links: `takomo_link` writes only the key it names and lets the store
+        merge it, exactly like `PATCH /v1/tickets/{id}` with
+        `links: {"<key>": "<value>"}` — a concurrent writer's other keys survive,
+        and `value: null` (or omitted) deletes the key, deleting one that is not
+        set being a no-op. It does not read-modify-write the whole `links`
+        object, which would resurrect a key deleted between its read and its
+        write.
+
         Leases: `takomo_claim`, `takomo_next` and `takomo_start` take
         `ttl_seconds` (1-3600, default 900) and `takomo_heartbeat` renews a lease
         the caller holds — the MCP equivalents of the `ttl_seconds` body field on

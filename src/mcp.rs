@@ -262,8 +262,8 @@ pub struct LinkArgs {
     pub id: String,
     /// Link name, e.g. 'pr', 'branch', 'design'.
     pub key: String,
-    /// Link value (URL or ref).
-    pub value: String,
+    /// Link value (URL or ref). `null` deletes the key.
+    pub value: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -615,11 +615,13 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Attach or update a named link on a ticket (e.g. key='pr'). Existing \
-        links are merged, not replaced. Use key='commit' with the FULL commit SHA (or its \
-        commit URL) for the work that closes the ticket — that is the proof a later reader \
-        checks instead of trusting the status, and what release/deploy answers are derived \
-        from. Short SHAs are ambiguous; don't use them."
+        description = "Attach, update, or delete a named link on a ticket (e.g. key='pr'). \
+        Only the key you name is written: the ticket's other links are left alone, so two \
+        agents attaching different keys never clobber each other. Pass value=null to delete \
+        the key (deleting one that is not set is a no-op, not an error). Use key='commit' \
+        with the FULL commit SHA (or its commit URL) for the work that closes the ticket — \
+        that is the proof a later reader checks instead of trusting the status, and what \
+        release/deploy answers are derived from. Short SHAs are ambiguous; don't use them."
     )]
     async fn takomo_link(
         &self,
@@ -1509,10 +1511,14 @@ impl TakomoMcp {
     fn do_link(&self, auth: &AuthCtx, a: LinkArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         let ticket = load_visible(&self.state, auth, &a.id)?;
-        let mut links = ticket.links.as_object().cloned().unwrap_or_default();
-        links.insert(a.key, Value::String(a.value));
+        // Send only the one key being set (or `null` to delete it). The store
+        // merges links per key inside the transaction, so pre-merging the
+        // ticket's other links here — read outside that transaction — would
+        // resurrect any key a concurrent writer deleted in between.
+        let mut one = serde_json::Map::new();
+        one.insert(a.key, json!(a.value));
         let patch = TicketPatch {
-            links: Some(Value::Object(links)),
+            links: Some(Value::Object(one)),
             fence: resolve_fence(&ticket, &auth.actor, None),
             ..Default::default()
         };
