@@ -6,12 +6,14 @@
 //! (`auth::share_auth_middleware`): a share token can reach ONLY those, is
 //! read-only, and is bounded to its scope. See spec/auth.md.
 
-use super::{body_object, first, get_i64, query_pairs, require_str, ApiJson};
+use super::{body_object, first, get_i64, parse_i64_param, query_pairs, require_str, ApiJson};
 use crate::auth::{AuthCtx, ShareCtx};
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use crate::server::AppState;
-use crate::store::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
+use crate::store::{
+    ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS, SHARE_TICKETS_PAGE,
+};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -187,8 +189,16 @@ pub async fn self_meta(
     })))
 }
 
-/// GET /v1/shares/self/tickets — the tickets in the share's scope (read-only).
-/// Archived tickets are excluded unless `?include_archived=true`.
+/// GET /v1/shares/self/tickets — one page of the tickets in the share's scope
+/// (read-only), oldest first. Archived tickets are excluded unless
+/// `?include_archived=true`. `?limit=` (1..=SHARE_TICKETS_PAGE) and `?cursor=`
+/// page it.
+///
+/// Paged rather than whole-scope because a share token is a credential designed to
+/// be pasted around, and an unbounded full-project scan behind one is work anyone
+/// holding the link can trigger repeatedly (takomo-fgca / takomo-vlpm). Truncation
+/// is never silent: `next_cursor` is the machine answer and, when there is more, a
+/// `warning` spells out the next call in words.
 pub async fn self_tickets(
     State(state): State<Arc<AppState>>,
     Extension(share): Extension<ShareCtx>,
@@ -205,13 +215,45 @@ pub async fn self_tickets(
             ))
         }
     };
-    let tickets =
-        state
-            .store
-            .share_tickets(share.kind, &share.ref_id, &share.project, include_archived)?;
+    let limit = parse_i64_param(&pairs, "limit")?
+        .unwrap_or(SHARE_TICKETS_PAGE)
+        .clamp(1, SHARE_TICKETS_PAGE);
+    let cursor = match first(&pairs, "cursor") {
+        None => None,
+        Some(c) => Some(c.parse::<i64>().map_err(|_| {
+            ApiError::bad_request(
+                "validation.cursor",
+                "Invalid cursor; pass the exact next_cursor value from the previous page.",
+            )
+        })?),
+    };
+    let (tickets, next_cursor) = state.store.share_tickets(
+        share.kind,
+        &share.ref_id,
+        &share.project,
+        include_archived,
+        cursor,
+        limit,
+    )?;
     let now = now_ms();
     let items: Vec<Value> = tickets.iter().map(|t| t.to_json(now)).collect();
-    Ok(Json(json!({ "items": items })))
+    let mut out = json!({ "items": items, "next_cursor": next_cursor });
+    if let Some(c) = &next_cursor {
+        // A page that leaves rows behind says so in words as well as in
+        // `next_cursor` — a viewer must never be shown a partial board that looks
+        // complete.
+        out["warning"] = Value::String(format!(
+            "This is a page of {} ticket(s), not the whole share: more remain. Fetch the next page with GET /v1/shares/self/tickets?cursor={c} (add &include_archived=true to keep including archived tickets) and repeat while next_cursor is set.",
+            items_len(&out)
+        ));
+    }
+    Ok(Json(out))
+}
+
+/// How many items the response actually carries — read back off the built JSON so
+/// the number in the warning can never disagree with the array beside it.
+fn items_len(out: &Value) -> usize {
+    out["items"].as_array().map(Vec::len).unwrap_or(0)
 }
 
 /// GET /v1/shares/self/tickets/{id} — one in-scope ticket with comments and

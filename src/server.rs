@@ -18,6 +18,12 @@ pub struct AppState {
     pub notify: Notify,
     /// token id -> unix-ms timestamps of writes in the sliding window.
     pub rate: Mutex<HashMap<String, VecDeque<i64>>>,
+    /// share id -> unix-ms timestamps of *requests* in the sliding window. A
+    /// separate map from `rate`, not a shared one keyed by credential, because the
+    /// two count different things: writes for a `tk_` token, every request for a
+    /// read-only `tks_` share link (see `auth::SHARE_REQUESTS_PER_MINUTE`). One map
+    /// would make "how much has this credential spent" ambiguous.
+    pub share_rate: Mutex<HashMap<String, VecDeque<i64>>>,
     /// token id -> last time last_used_at was persisted.
     pub last_touch: Mutex<HashMap<String, i64>>,
 }
@@ -28,6 +34,7 @@ impl AppState {
             store,
             notify: Notify::new(),
             rate: Mutex::new(HashMap::new()),
+            share_rate: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
         })
     }

@@ -30,7 +30,7 @@ pub use questions::{
     question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
     ReviseOptionsRequest, TimeoutAction, MAX_QUESTIONS_PAGE, QUESTION_KINDS,
 };
-pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS};
+pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS, SHARE_TICKETS_PAGE};
 pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, TagPatch};
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
