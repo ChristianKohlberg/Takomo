@@ -80,9 +80,11 @@ jobs:
       # .handrail/*.sh was outside this list until takomo-u2k4: the gate scripts
       # are the repo's own norm detectors, and a syntax slip in one of them
       # degrades to a silent skip rather than a visible failure. -x follows the
-      # `source=` directive into .handrail/hr-changed.sh.
+      # `source=` directive into .handrail/hr-changed.sh. scripts/ is globbed
+      # rather than listed file by file, so the next script added there is
+      # covered by existing, rather than by remembering.
       - name: ShellCheck
-        run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh .handrail/*.sh .handrail/adapters/*.sh
+        run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*.sh .handrail/adapters/*.sh
 
   copies:
     name: Duplicated files stay in sync
@@ -143,6 +145,29 @@ jobs:
 
       - name: Loads in Ruby (Psych — stricter on flow scalars)
         run: ruby -ryaml -e 'YAML.load_file("spec/openapi.yaml"); puts "ok - Psych accepts it too"'
+
+  spa:
+    name: SPA JavaScript lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # src/board.html and src/inbox.html carry ~5500 lines of hand-written
+      # JavaScript between them, and until takomo-rrjg no job in this file looked
+      # at a single line of it. board.html had declared `ticketFilter` twice in
+      # the same object literal for several refactors: legal JavaScript, last one
+      # wins, nothing to see at runtime. Agents kept hand-rolling the same
+      # `new Function(...)` parse check per ticket instead; eslint subsumes it,
+      # since a parse error is an eslint error, and unlike a parse check it also
+      # catches the duplicate key that started this.
+      #
+      # No setup-node: Node and npx are preinstalled on the runner, the same
+      # assumption the `spec` job's Redocly step already makes. eslint is pinned
+      # in scripts/lint-spa.sh and nothing is committed under node_modules — the
+      # SPAs stay dependency-free in the sense that matters, which is what the
+      # browser downloads.
+      - name: ESLint (inline <script> of both SPAs)
+        run: ./scripts/lint-spa.sh
 
   mcp:
     name: MCP typecheck

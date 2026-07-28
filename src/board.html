@@ -871,7 +871,6 @@
     epicFilter: localStorage.getItem(LS_EPIC) || "", // "" = all epics
     ticketFilter: localStorage.getItem(LS_TICKET) || "", // "" = all tickets; else that ticket + its subtree
     groupByEpic: localStorage.getItem(LS_GROUP) === "1",
-    ticketFilter: localStorage.getItem(LS_TICKET) || "", // "" = all tickets; else that ticket + its subtree
     tagKind: localStorage.getItem(LS_TAGKIND) || "", // "" = all kinds
     tagRef: localStorage.getItem(LS_TAGREF) || "",   // "" = all of the kind; else "kind:handle"
     tagLabels: {},     // ref -> display label (from the registry, when available)
@@ -2316,17 +2315,9 @@
   // A shared link carries its token in the URL FRAGMENT (#s=<token>), which the
   // browser never sends to the server (kept out of logs/referrers). In share
   // mode the board skips the token gate and project picker entirely and talks
-  // only to the read-only, scope-bounded /v1/shares/self* endpoints.
-  function parseShareToken() {
-    var h = window.location.hash || "";
-    if (h.charAt(0) === "#") h = h.slice(1);
-    var out = "";
-    h.split("&").forEach(function (part) {
-      var i = part.indexOf("=");
-      if (i > 0 && part.slice(0, i) === "s") out = decodeURIComponent(part.slice(i + 1));
-    });
-    return out;
-  }
+  // only to the read-only, scope-bounded /v1/shares/self* endpoints. The token
+  // is read at startup by parseHashKey("s"), the generalisation of this
+  // section's original parseShareToken().
 
   // Like api(), but for the share endpoints: carries the share token and maps an
   // expired/revoked share (410) to a friendly terminal error.

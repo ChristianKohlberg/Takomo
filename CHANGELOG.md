@@ -259,6 +259,40 @@ ticket.
   not resolve exits 3 (red) instead of silently degrading to "no changes". CI's
   shellcheck job now covers `.handrail/*.sh`, which it did not before.
 
+- **`/board` declared `ticketFilter` twice in one object literal, and nothing in
+  the repo could have noticed.** Both declarations had identical initialisers so
+  JavaScript kept the last and the board behaved correctly — which is the
+  problem: it survived several refactors because it is legal code that no
+  runtime complains about. The duplicate is gone, and so is a dead
+  `parseShareToken()` left behind when answer-link mode generalised it into
+  `parseHashKey(key)`.
+
+  The reason both survived is that `src/board.html` and `src/inbox.html` hold
+  about 5500 lines of hand-written JavaScript that **no gate in this repo read a
+  single line of**: clippy had the Rust, shellcheck the shell, Redocly the spec,
+  and one test checked exactly one property of the two SPAs (DE/EN string-table
+  parity). `scripts/lint-spa.sh` now extracts the single inline `<script>` from
+  each page and runs a pinned eslint over it, in CI and as a `.handrail` gate.
+  Findings are reported at the HTML file's own path and line number, so
+  `src/board.html:874` is somewhere you can go.
+
+  The ruleset is small and deliberately defect-only — duplicate keys, undefined
+  names, dead bindings, unreachable code, parse errors — with no style rules at
+  all, because a preset that also has opinions about this hand-written ES5 would
+  bury the real findings until someone switched the job off. On the existing code
+  it found exactly two things, both of them the ones fixed above, and nothing
+  else; no suppressions were needed. This also retires the `new Function(...)`
+  parse check agents had been hand-rolling per ticket: a parse error is an eslint
+  error, so the lane subsumes it — and unlike a parse check it catches the
+  duplicate key, which parses perfectly.
+
+  Nothing is added to the pages themselves. The SPAs remain dependency-free
+  single files; eslint is fetched per run by pinned `npx`, exactly as the spec
+  job already fetches `@redocly/cli`, and no `node_modules` is committed. Run
+  offline the script exits 2 — "cannot check", the posture `openapi-sane.sh`
+  already takes on a missing PyYAML — rather than reporting a defect. CI's
+  shellcheck job now globs `scripts/*.sh` instead of naming one file.
+
 - **`↵` on a focused control in `/inbox` no longer answers a question you never
   read.** The global "answer the selected question" shortcut claimed Enter for
   the whole document and `preventDefault()`ed it. On a focused control that did

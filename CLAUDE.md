@@ -41,9 +41,19 @@ cargo test --release --test api <substring> -- --nocapture
 cargo test --release --lib <substring>                    # ONE unit test
 cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
-shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/backlot-token.sh .handrail/*.sh .handrail/adapters/*.sh
+shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*.sh .handrail/adapters/*.sh
+./scripts/lint-spa.sh                                     # eslint over the SPAs' inline <script>
 (cd clients/mcp && npm ci && npm run build)               # MCP typecheck
 ```
+
+`scripts/lint-spa.sh` is the only thing in the repo that reads the ~5500 lines of JavaScript inside
+`src/board.html` and `src/inbox.html`. It extracts the single inline `<script>` from each and runs a
+pinned eslint over it with a small, defect-only ruleset (`scripts/spa-eslint.config.mjs`) — duplicate
+keys, undefined names, dead bindings, parse errors; no style rules, so a red is always real.
+Findings are reported at the HTML file's own path and line. Nothing is added to the pages
+themselves: the SPAs stay dependency-free in the sense that matters, which is what the browser
+downloads. Offline the script exits 2 (skipped, not failed) because it cannot fetch eslint; CI has
+the network and is the wall.
 
 The weight is in `tests/` (`api.rs`, `mcp.rs`): `TestApp::spawn()` opens a temp SQLite DB, mints
 four tokens (`admin`/`human`/`worker`/`worker2`), and serves on an ephemeral port, so tests drive
