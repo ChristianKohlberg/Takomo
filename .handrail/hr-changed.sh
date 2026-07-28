@@ -18,6 +18,10 @@
 # so a branch-level run is a superset of the pre-commit run — never a different
 # verdict on the same content.
 #
+# A file whose only difference from the base is whitespace does not count as
+# changed on either side of a detector — see hr_drop_whitespace_only below for
+# what that buys and, just as importantly, what it does not.
+#
 # Exit codes seen by the caller: 3 = broken invocation (handrail reads any
 # non-0/2 as red). A typo'd HR_BASE must never quietly degrade to "no changes".
 
@@ -71,9 +75,61 @@ hr_changed() {
   read -r -a specs <<<"${1:-}"
   [ "${#specs[@]}" -eq 0 ] && specs=(".")
   {
-    if [ -n "$HR_BASE_REV" ]; then git diff --name-only "$HR_BASE_REV" -- "${specs[@]}"; fi
+    if [ -n "$HR_BASE_REV" ]; then
+      # core.quotePath=false: emit paths raw. The default C-style quoting of
+      # non-ASCII names would produce a string that does not name the file when
+      # it is fed back to git in the whitespace filter below.
+      git -c core.quotePath=false diff --name-only "$HR_BASE_REV" -- "${specs[@]}" |
+        hr_drop_whitespace_only
+    fi
     git ls-files --others --exclude-standard -- "${specs[@]}"
   } | sort -u
+}
+
+# hr_drop_whitespace_only — filter a list of tracked paths on stdin, keeping
+# only those whose difference from the base is more than whitespace.
+#
+# WHY this filter exists, precisely. The detectors decide "was the companion
+# touched" from `git diff --name-only`, and that question is answered by the
+# blob hashes: reindenting a file, or adding a blank line, makes it "touched".
+# So a whitespace edit to spec/openapi.yaml used to satisfy "the spec is up to
+# date", and a whitespace edit under tests/ used to satisfy "ships with a test".
+# The realistic way that fires is not fraud, it is a stray reformat riding along
+# with unrelated work and turning the gate green without anyone recording
+# anything.
+#
+# What it does NOT do, and must not be sold as doing: this is still a
+# touched-ness test, not a correspondence test. It cannot tell whether the spec
+# change describes the route you changed, and a one-line comment or any other
+# non-whitespace edit still counts as a record. The check that actually compares
+# the router against the spec is a test in the suite, run by CI on every commit
+# (see the route-to-spec bijection ticket); a git-diff heuristic runs only when
+# someone changed something and can only ever approximate. This filter removes a
+# known false PASS; it does not turn the detector into a correspondence check.
+#
+# Note `--name-only` does not honour `-w` — it lists every file whose blob
+# differs, whatever the diff options — so each candidate is retested one at a
+# time with `--quiet`, which does. `-w` alone still reports an added blank line
+# as a change, hence `--ignore-blank-lines` as well.
+#
+# Safety property: this can only ever SHRINK the change set. A shrunk record
+# side turns a false OK into red; a shrunk surface side turns a red into an
+# explicit exit-2 SKIP. It can never turn a red into a pass, and it never lets
+# the gate report OK on a comparison it did not make.
+hr_drop_whitespace_only() {
+  local path
+  while IFS= read -r path; do
+    # exit 1 = there is a real (non-whitespace) difference; keep the file.
+    # exit 0 = whitespace-only; drop it. Anything else (a path git cannot diff)
+    # is kept, so an unexpected git failure can only over-report, never hide.
+    # ":(literal)" so a filename containing pathspec magic (*, ?, [, a leading
+    # ':') is matched as itself and cannot silently match nothing — a pathspec
+    # that matches nothing also exits 0, which would drop the file wrongly.
+    if git diff -w --ignore-blank-lines --quiet "$HR_BASE_REV" -- ":(literal)$path" 2>/dev/null; then
+      continue
+    fi
+    printf '%s\n' "$path"
+  done
 }
 
 # hr_skip <scope-pathspecs> — called when nothing in scope changed. Separates
@@ -89,8 +145,9 @@ hr_skip() {
   total="$(hr_changed "" | grep -c . || true)"
   if [ "$total" -eq 0 ]; then
     printf '%s: SKIP[no-changes-visible] — NOT a pass, nothing was evaluated.\n' "$HR_LABEL"
-    printf '  Compared the working tree against %s and found no difference at all,\n' "$HR_BASE_DESC"
-    printf '  so this gate never saw your change.\n'
+    printf '  Compared the working tree against %s and found no substantive\n' "$HR_BASE_DESC"
+    printf '  difference (whitespace-only edits do not count), so this gate never saw\n'
+    printf '  your change.\n'
     if [ -n "$HR_BASE_REV" ] && [ -z "${HR_BASE:-}" ]; then
       printf '  A committed branch looks exactly like this. Name the fork point to check it:\n'
       printf '      HR_BASE=origin/main handrail run %s\n' "$HR_LABEL"
