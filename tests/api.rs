@@ -578,10 +578,12 @@ async fn concurrent_ready_claims_are_exactly_once() {
 /// export: the first iteration claims, the rest are lease renewals — both are
 /// `with_tx` writes, which is exactly what used to queue.
 ///
-/// The assertion is a ratio (plus an absolute escape hatch), not a wall-clock
-/// budget: a loaded box inflates both numbers together, but only a store that
-/// serializes reads against writes makes a claim take a large *fraction of the
-/// export*.
+/// And the export is run `ROUNDS` times rather than once, because that is what
+/// makes the verdict robust (takomo-hcv7). Serialization is *systematic* — every
+/// export blocks a claim, so every round is bad — while a scheduling stall on a
+/// busy machine is *sporadic*, corrupting one round. Taking the median across
+/// rounds separates the two by construction. The reasoning behind each assertion,
+/// and the numbers both cases produce, are at the assertions themselves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn long_export_does_not_stall_claims_and_heartbeats() {
     let app = TestApp::spawn().await;
@@ -599,9 +601,11 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
     let (warm, _, _) = app.get_raw(&app.admin, "/v1/export").await;
     assert_eq!(warm, StatusCode::OK);
 
-    // What a claim/renewal costs with the store otherwise idle.
+    // What a claim/renewal costs with the store otherwise idle. This is the
+    // baseline the during-export samples are compared against, so take enough of
+    // them that its median is a median and not a coin flip.
     let mut idle: Vec<Duration> = Vec::new();
-    for _ in 0..20 {
+    for _ in 0..200 {
         let started = Instant::now();
         let (s, lease) = app
             .post(
@@ -615,6 +619,7 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
         idle.push(started.elapsed());
     }
     idle.sort();
+    let idle_median = idle[idle.len() / 2];
     let idle_worst = *idle.last().expect("idle samples");
 
     // What the export costs with nothing to contend with.
@@ -632,55 +637,143 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
         "the export ran in {solo_export:?} — too fast to prove anything; raise BULK"
     );
 
-    // Now the same export, sampled by claims for its whole duration.
-    let client = app.client.clone();
-    let url = app.url("/v1/export");
-    let admin = app.admin.clone();
-    let export = tokio::spawn(async move {
-        let resp = client
-            .get(url)
-            .bearer_auth(admin)
-            .send()
-            .await
-            .expect("export request");
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        (status, body.lines().count())
-    });
+    // Now the same export, sampled by claims for its whole duration — ROUNDS
+    // times, so the verdict rests on how the store behaves every time an export
+    // runs rather than on one window's luck.
+    const ROUNDS: usize = 5;
+    let mut round_worst: Vec<Duration> = Vec::new();
+    let mut round_throughput: Vec<u128> = Vec::new();
+    for round in 0..ROUNDS {
+        let client = app.client.clone();
+        let url = app.url("/v1/export");
+        let admin = app.admin.clone();
+        let export = tokio::spawn(async move {
+            let resp = client
+                .get(url)
+                .bearer_auth(admin)
+                .send()
+                .await
+                .expect("export request");
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            (status, body.lines().count())
+        });
 
-    let mut during: Vec<Duration> = Vec::new();
-    while !export.is_finished() {
-        let started = Instant::now();
-        let (s, lease) = app
-            .post(
-                &app.worker,
-                &format!("/v1/tickets/{target}/claim"),
-                json!({}),
-            )
-            .await;
-        assert_eq!(s, StatusCode::OK, "claim during export failed: {lease}");
-        during.push(started.elapsed());
+        let started_round = Instant::now();
+        let mut during: Vec<Duration> = Vec::new();
+        while !export.is_finished() {
+            let started = Instant::now();
+            let (s, lease) = app
+                .post(
+                    &app.worker,
+                    &format!("/v1/tickets/{target}/claim"),
+                    json!({}),
+                )
+                .await;
+            assert_eq!(s, StatusCode::OK, "claim during export failed: {lease}");
+            during.push(started.elapsed());
+        }
+        let wall = started_round.elapsed();
+        let (export_status, export_lines) = export.await.expect("join export task");
+        assert_eq!(export_status, StatusCode::OK);
+        assert!(
+            export_lines > BULK,
+            "the concurrent export must be complete"
+        );
+        assert!(
+            !during.is_empty(),
+            "round {round} took no claim samples during a {wall:?} export"
+        );
+
+        during.sort();
+        let worst = *during.last().expect("samples during the export");
+        let median = during[during.len() / 2];
+        // The share of the export's wall time that went into claims costing what a
+        // claim typically costs *in this same round*. Deliberately self-contained:
+        // comparing against the idle baseline instead makes the number depend on
+        // how loaded the machine was during a different phase of the test, which is
+        // how the statistic this replaces became flaky in the first place. When
+        // writers run freely the loop is saturated and this is ~100%; when the
+        // export holds the lock, the wall time goes somewhere that is not claims
+        // and it collapses.
+        let productive = (during.len() as u128) * median.as_nanos() * 100 / wall.as_nanos().max(1);
+        eprintln!(
+            "round {round}: export {wall:?} | {} claims, median {median:?}, worst \
+             {worst:?}, {productive}% of the wall in typical claims",
+            during.len(),
+        );
+        round_worst.push(worst);
+        round_throughput.push(productive);
     }
-    let (export_status, export_lines) = export.await.expect("join export task");
-    assert_eq!(export_status, StatusCode::OK);
-    assert!(
-        export_lines > BULK,
-        "the concurrent export must be complete"
-    );
 
-    during.sort();
-    let worst = *during.last().expect("samples during the export");
+    round_worst.sort();
+    round_throughput.sort();
+    let typical_worst = round_worst[ROUNDS / 2];
+    let typical_productive = round_throughput[ROUNDS / 2];
     eprintln!(
-        "export {solo_export:?} | idle claim worst {idle_worst:?} | \
-         {} claims during the export, median {:?}, worst {worst:?}",
-        during.len(),
-        during[during.len() / 2],
+        "export {solo_export:?} solo | idle claim median {idle_median:?} worst \
+         {idle_worst:?} | across {ROUNDS} rounds: typical worst claim \
+         {typical_worst:?}, typically {typical_productive}% of the export's wall \
+         time spent in typical-cost claims"
     );
 
+    // ---------------------------------------------------------------------
+    // takomo-hcv7. The old assertion was
+    //
+    //     worst * 4 < solo_export || worst < Duration::from_millis(25)
+    //
+    // over a single export. It guaranteed: no one claim took more than a quarter
+    // of a solo export, unless it came in under 25ms outright. That is the right
+    // *property* — the signal really does live in the tail, because a store that
+    // serializes gives the export one lock hold and exactly one claim eats it —
+    // but `worst` over one window is the wrong *statistic*. A scheduling stall on
+    // a busy machine forges a single large sample with the same shape as the
+    // signal: the CI red on PR #87 was a 79.9ms sample against a 128ms export,
+    // 62% of it, which is indistinguishable from genuine serialization. No
+    // threshold on one sample can tell those apart, and the 25ms floor was too
+    // tight to rescue it. It failed twice on 2026-07-28 with three orders of
+    // magnitude of real headroom, once in CI on a PR touching no read path, and
+    // blocked a merge.
+    //
+    // What separates them is not magnitude but *repetition*. Serialization is
+    // systematic: every export blocks a claim, so every round is bad. A stall is
+    // sporadic: it corrupts one round. So keep the assertion and take the median
+    // of the per-round worst instead of one window's worst. Measured here:
+    //
+    //                              typical worst   throughput   verdict
+    //   read connections (today)         ~0.6ms          ~95%   pass
+    //   with_conn on the writer          ~98ms           ~21%   FAIL
+    //
+    // and a single 80ms stall in one of five rounds leaves the median at ~0.6ms.
+    //
+    // The second assertion is the same property seen from the other side — how
+    // much of the export's wall time writers actually got — and it is here because
+    // the first one's statistic is a tail: this one holds even if serialization is
+    // spread thinly enough that no single claim stands out.
+    //
+    // Note what does *not* work for that, since it is the obvious thing to reach
+    // for: the median claim during the export against the median claim with the
+    // store idle. Measured with reads on the writer, those are 191µs and 187µs —
+    // indistinguishable — because only one claim per export ever waits. Nor does
+    // comparing the claim count against what the idle baseline predicts: that
+    // number depends on how loaded the machine was during a *different* phase of
+    // the test, and it reds under load for the same reason the old assertion did
+    // (measured: 7 of 8 loaded runs pass, one at 37%). Hence a tail statistic and
+    // a within-round one.
+    // ---------------------------------------------------------------------
     assert!(
-        worst * 4 < solo_export || worst < Duration::from_millis(25),
-        "the worst claim during the export took {worst:?} out of an export that runs in \
-         {solo_export:?} alone (idle worst: {idle_worst:?}) — reads are serializing writers again"
+        typical_worst * 4 < solo_export,
+        "across {ROUNDS} rounds the typical worst claim during an export was \
+         {typical_worst:?}, out of an export that runs in {solo_export:?} alone \
+         (idle worst: {idle_worst:?}) — reads are serializing writers again. \
+         Per-round worsts: {round_worst:?}"
+    );
+    assert!(
+        typical_productive > 50,
+        "across {ROUNDS} rounds only {typical_productive}% of an export's wall time \
+         went into claims costing what a claim typically costs in that same round — \
+         the rest went somewhere writers could not run, i.e. reads are serializing \
+         them again. Per-round: {round_throughput:?}"
     );
 }
 
