@@ -63,14 +63,16 @@
      background is (selected, active, hover) and fades back to it cleanly. */
   @keyframes tkLand { 0%, 55% { box-shadow: inset 0 0 0 200px var(--ok-tint); } 100% { box-shadow: inset 0 0 0 200px var(--ok-tint-0); } }
   @keyframes tkLandOut { 0%, 55% { opacity: 1; } 100% { opacity: 0; } }
-  .qrow.landed, .folder.landed { animation: tkLand 1.9s ease forwards; }
+  /* `.chip` is the phone filter bar's folder control — the same "it landed"
+     cue, on whichever of the two is on screen. */
+  .qrow.landed, .folder.landed, .chip.landed { animation: tkLand 1.9s ease forwards; }
   .landed .landtick { color: var(--ok); font-weight: 700; animation: tkLandOut 1.9s ease forwards; }
   .qrow.landed .qt .landtick { margin-right: 6px; }
-  .folder.landed .n .landtick { margin-left: 5px; }
+  .folder.landed .n .landtick, .chip.landed .n .landtick { margin-left: 5px; }
   @media (prefers-reduced-motion: reduce) {
     .readscroll.outgoing, .readscroll.advance { animation: none; }
     .donecue { animation: tkFade .2s ease forwards; }
-    .qrow.landed, .folder.landed { animation: none; box-shadow: inset 0 0 0 200px var(--ok-tint); }
+    .qrow.landed, .folder.landed, .chip.landed { animation: none; box-shadow: inset 0 0 0 200px var(--ok-tint); }
     .landed .landtick { animation: none; }
   }
 
@@ -120,6 +122,15 @@
   .rail .scope .tags { display: flex; flex-wrap: wrap; gap: 8px; }
   .rail .scope .tag { font-family: var(--mono); font-size: 11px; color: var(--accent2); }
   .rail .spacer { flex: 1 1 auto; }
+
+  /* Phone filter bar (takomo-b84g). The rail carries two things a phone still
+     needs — the folders and the tag filter — and the one-pane layout used to
+     drop both. This element relocates them. `display: none` here is what keeps
+     the desktop untouched: a display:none grid child is not laid out and does
+     not take a cell, so `main` still has exactly three boxes in three columns,
+     and the node is out of the tab order too. The phone stylesheet is the only
+     place it becomes real. */
+  .fbar { display: none; }
 
   /* ---- list ---- */
   .listpane { border-right: 1px solid var(--border-soft); background: var(--panel); overflow-y: auto; }
@@ -362,12 +373,71 @@
   .backbtn { display: none; align-items: center; gap: 4px; white-space: nowrap; font: inherit; font-size: 12px; font-weight: 650; color: var(--accent2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--panel); cursor: pointer; }
   .backbtn:hover { border-color: var(--sel-border); color: var(--accent); }
   @media (max-width: 760px) {
-    main { grid-template-columns: 1fr; }
+    /* Two rows now, not one: the filter bar on top, then whichever pane the
+       one-pane mechanism is showing. Both panes are pinned to row 2 because
+       exactly one of them is ever displayed, so they share the cell rather
+       than stacking into a third row. `minmax(0, 1fr)` — not `1fr` — is what
+       lets the pane scroll instead of growing `main` past the viewport. */
+    main { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .listpane, .readpane { grid-row: 2; }
     .rail { display: none; }
     body.reading .listpane { display: none; }
     body:not(.reading) .readpane { display: none; }
     body.reading .backbtn { display: inline-flex; }
     .popover, .drawer { width: 100%; }
+
+    /* ---- the relocated rail (takomo-b84g) ----
+       Folders and the tag filter get different treatments on purpose.
+
+       Folders are a chip strip, always on screen. They are navigation, not a
+       filter, and their counts are the inbox's headline signal — "how much is
+       waiting for me" should not be behind a disclosure. The strip scrolls
+       sideways, so it takes a fifth folder (takomo-un7z's `in conversation`)
+       or a tenth without any layout assuming a number.
+
+       The tag filter is a disclosure, matching /board's `Filters ▾`
+       (takomo-vqeh): its option set is unbounded and two-stage, so it cannot
+       be a strip, and it is used rarely enough that it should cost no vertical
+       space when it is not. Same `body.filters-open` idiom as /board, so the
+       two surfaces reveal a filter panel the same way. */
+    .fbar {
+      display: flex; flex-direction: column; gap: 8px; min-width: 0;
+      padding: 8px 12px; background: var(--col-bg);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    body.reading .fbar { display: none; }   /* reading is one pane, list chrome included */
+    /* The tag control sits OUTSIDE the scroller, pinned to the right. Inside it,
+       an active filter scrolls away with the folders and a short list loses its
+       visible cause — which is the whole reason the closed state carries a
+       label at all. Pinned, the two never compete for the same pixels. */
+    .fbar .fbrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    /* Hidden scrollbar, not hidden overflow: the affordance is the next chip
+       clipped at the edge, which is what a phone reader already knows. */
+    .fbar .chips { flex: 1 1 auto; min-width: 0; display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+    .fbar .chips::-webkit-scrollbar { display: none; }
+    .fbar .chip {
+      flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px;
+      min-height: 44px; padding: 0 14px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--ink2);
+      font: inherit; font-size: 13.5px; font-weight: 650; white-space: nowrap; cursor: pointer;
+    }
+    .fbar .chip .n { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .fbar .chip.active { background: var(--chip-bg); border-color: var(--sel-border); color: var(--accent); }
+    .fbar .chip.active .n { color: var(--accent); }
+    /* A tag filter that is on has to be visible while the panel is closed, or a
+       short list has no visible cause. A long tag label truncates rather than
+       squeezing the folders out — the panel below spells it out in full. */
+    .fbar .chip.on { border-color: var(--accent); color: var(--accent); }
+    .fbar .tagtoggle { max-width: 45%; }
+    .fbar .tagtoggle .lbl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .fbar .chip .ico { font-size: 11px; color: var(--muted); }
+    .fbar .tagpanel { display: none; }
+    body.filters-open .fbar .tagpanel { display: flex; flex-direction: column; gap: 8px; }
+    .fbar .tagfilter {
+      width: 100%; min-height: 44px; padding: 0 11px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+      color: var(--ink2); font: inherit; font-size: 14px; cursor: pointer;
+    }
 
     /* Touch targets (takomo-rnv4). The ticket drawer here is built like
        /board's — full width at this breakpoint, so .drawer-scrim ends up
@@ -424,6 +494,7 @@
 </header>
 
 <main class="hidden" id="app">
+  <div class="fbar" id="fbar"></div>
   <nav class="rail" id="rail"></nav>
   <section class="listpane" id="list"></section>
   <section class="readpane" id="read"></section>
@@ -1234,7 +1305,7 @@
   }
 
   // ---- render ----
-  function render() { renderTicketPick(); renderRail(); renderList(); renderReading(); renderSnackbar(); renderModal(); syncHash(false); }
+  function render() { renderTicketPick(); renderRail(); renderFilterBar(); renderList(); renderReading(); renderSnackbar(); renderModal(); syncHash(false); }
 
   // The ticket dropdown is built from the tickets that actually carry questions
   // (across every folder, so switching folders never makes an option vanish) —
@@ -1258,6 +1329,14 @@
     wrap.classList.toggle("hidden", ids.length === 0);
   }
 
+  // Switching folder, from either the rail (desktop) or the phone chip strip.
+  // One function, so a new folder needs nothing but a FOLDERS entry.
+  function selectFolder(f) {
+    state.folder = f; state.drawerOpen = false;
+    var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null;
+    render();
+  }
+
   function renderRail() {
     var rail = $("rail"); rail.innerHTML = "";
     rail.appendChild(el("h3", null, t().folders));
@@ -1269,7 +1348,7 @@
       var n = el("span", "n", String(c[f] || 0));
       if (lands) n.appendChild(el("span", "landtick", "✓"));
       row.appendChild(n);
-      activate(row, function () { state.folder = f; state.drawerOpen = false; var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null; render(); });
+      activate(row, function () { selectFolder(f); });
       rail.appendChild(row);
     });
     renderTagFilter(rail);
@@ -1283,11 +1362,23 @@
     }
   }
 
-  // Tag filter in the rail: a kind dropdown, then (once a kind is chosen) a
+  // The tag filter itself: a kind dropdown, then (once a kind is chosen) a
   // value dropdown within that kind. Options come from the tags actually on the
-  // tickets that have questions, so it never lists an empty kind. Hidden when
-  // no question's ticket carries a tag.
-  function renderTagFilter(rail) {
+  // tickets that have questions, so it never lists an empty kind, and a stale
+  // selection is pruned here. Returns [] when no question's ticket carries a
+  // tag — both callers read that as "there is nothing to filter by".
+  //
+  // Deliberately a pair of native <select>s rather than /board's makeTypeahead.
+  // That control exists because ticketTagRefs() spans every ticket in the
+  // project, which really can run to hundreds; inboxTagRefs() spans only the
+  // tickets that currently carry a question, which is the size of the inbox. On
+  // a phone a <select> also opens the platform's own full-screen picker — bigger
+  // targets and type-to-jump for free — so porting ~240 lines of combobox and
+  // its stylesheet across would buy a worse control for a smaller list.
+  //
+  // Built fresh on each render, so both the rail and the phone bar can hold a
+  // live copy; they share state, and CSS decides which one is on screen.
+  function tagSelectNodes() {
     var refs = inboxTagRefs();
     var kinds = [];
     refs.forEach(function (r) { var k = refKind(r); if (kinds.indexOf(k) === -1) kinds.push(k); });
@@ -1296,9 +1387,7 @@
       state.tagKind = ""; state.tagRef = "";
       localStorage.setItem(LS_TAGKIND, ""); localStorage.setItem(LS_TAGREF, "");
     }
-    if (kinds.length === 0) return;
-    var box = el("div", "scope");
-    box.appendChild(el("h3", null, t().tagsHdr));
+    if (kinds.length === 0) return [];
     var ksel = el("select", "tagfilter");
     var kAll = el("option"); kAll.value = ""; kAll.textContent = t().allTags; ksel.appendChild(kAll);
     kinds.forEach(function (k) { var o = el("option"); o.value = k; o.textContent = k; ksel.appendChild(o); });
@@ -1309,7 +1398,7 @@
       var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null;
       render();
     });
-    box.appendChild(ksel);
+    var out = [ksel];
     if (state.tagKind) {
       var vals = refs.filter(function (r) { return refKind(r) === state.tagKind; })
         .sort(function (a, b) { return refHandle(a).localeCompare(refHandle(b)); });
@@ -1323,9 +1412,107 @@
         var fi = inFolder()[0]; state.selectedId = fi ? fi.id : null;
         render();
       });
-      box.appendChild(vsel);
+      out.push(vsel);
     }
+    return out;
+  }
+
+  function renderTagFilter(rail) {
+    var sels = tagSelectNodes();
+    if (sels.length === 0) return;
+    var box = el("div", "scope");
+    box.appendChild(el("h3", null, t().tagsHdr));
+    sels.forEach(function (s) { box.appendChild(s); });
     rail.appendChild(box);
+  }
+
+  // What the tag chip says when a filter is on: the value if one is picked,
+  // otherwise the kind. Never the bare word "Tags" — a filtered list has to
+  // name its own cause. The bare handle, not refLabelText's "Label (handle)":
+  // the chip is pinned beside a strip that has to keep scrolling, so it buys
+  // its width from the folders. The panel one tap below spells the value out.
+  function tagChipLabel() {
+    if (state.tagRef) return refHandle(state.tagRef);
+    if (state.tagKind) return state.tagKind;
+    return t().tagsHdr;
+  }
+
+  // The phone filter bar. It exists in the DOM on every viewport and CSS alone
+  // decides whether it is visible — the same CSS-only reveal the list/read
+  // panes use, so a desktop reader runs this code and sees no pixel of it.
+  //
+  // fbarKey is what the strip's scroll position is keyed on: folder *and*
+  // locale, because switching to DE widens every chip and can push the active
+  // one off the edge just as surely as switching folder does.
+  var fbarKey = null;
+  function renderFilterBar() {
+    var bar = $("fbar"); if (!bar) return;
+    var prev = bar.querySelector(".chips"), keep = prev ? prev.scrollLeft : 0;
+    bar.innerHTML = "";
+
+    var row = el("div", "fbrow");
+    var strip = el("div", "chips");
+    row.appendChild(strip);
+    bar.appendChild(row);
+    strip.setAttribute("role", "group");
+    strip.setAttribute("aria-label", t().folders);
+    var c = counts(), activeChip = null;
+    FOLDERS.forEach(function (f) {
+      var on = state.folder === f, lands = state.landedId != null && f === "answered";
+      var chip = el("button", "chip" + (on ? " active" : "") + (lands ? " landed" : ""));
+      chip.type = "button";
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+      chip.appendChild(el("span", null, t()[f]));
+      var n = el("span", "n", String(c[f] || 0));
+      if (lands) n.appendChild(el("span", "landtick", "✓"));
+      chip.appendChild(n);
+      chip.addEventListener("click", function () { selectFolder(f); });
+      if (on) activeChip = chip;
+      strip.appendChild(chip);
+    });
+
+    var sels = tagSelectNodes();
+    if (sels.length) {
+      var open = document.body.classList.contains("filters-open");
+      var tbtn = el("button", "chip tagtoggle" + (state.tagKind ? " on" : ""));
+      tbtn.type = "button";
+      tbtn.id = "fbar-tagbtn";
+      tbtn.setAttribute("aria-controls", "fbar-tags");
+      tbtn.setAttribute("aria-expanded", open ? "true" : "false");
+      tbtn.appendChild(el("span", "lbl", tagChipLabel()));
+      var ico = el("span", "ico", "▾"); ico.setAttribute("aria-hidden", "true");
+      tbtn.appendChild(ico);
+      tbtn.addEventListener("click", function () {
+        var now = !document.body.classList.contains("filters-open");
+        document.body.classList.toggle("filters-open", now);
+        tbtn.setAttribute("aria-expanded", now ? "true" : "false");
+      });
+      row.appendChild(tbtn);
+      var panel = el("div", "tagpanel");
+      panel.id = "fbar-tags";
+      sels.forEach(function (s) { panel.appendChild(s); });
+      bar.appendChild(panel);
+    } else {
+      // Nothing to filter by — the panel would be empty, so it must not be open.
+      document.body.classList.remove("filters-open");
+    }
+
+    // The strip is rebuilt on every render (polling included), so its scroll
+    // position has to be carried over or a folder off the right edge would jump
+    // back under the reader's thumb. When the folder or the locale changed, the
+    // active chip is brought into view instead — which is the case that matters
+    // for a bookmarked #folder=expired, or the fifth folder in the list.
+    strip.scrollLeft = keep;
+    var key = state.folder + "\u0000" + state.lang;
+    if (fbarKey !== key && activeChip) {
+      // Rects, not offsetLeft: offsetLeft is measured from the offset parent,
+      // which is not the strip, and the difference is exactly the padding the
+      // bar sits in. A negative scrollLeft is clamped to 0 by the browser.
+      var cr = activeChip.getBoundingClientRect(), sr = strip.getBoundingClientRect();
+      if (cr.left < sr.left) strip.scrollLeft += cr.left - sr.left - 8;
+      else if (cr.right > sr.right) strip.scrollLeft += cr.right - sr.right + 8;
+    }
+    fbarKey = key;
   }
 
   function barsNode(color, level, big) {

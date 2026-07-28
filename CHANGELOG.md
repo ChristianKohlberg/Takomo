@@ -95,6 +95,38 @@ ticket.
 
 ### Fixed
 
+- **At phone width `/inbox` dropped its filter rail, so three of its four
+  folders and the tag filter were not merely awkward but absent.** The one-pane
+  phone layout collapsed `main` to a single column and set `.rail { display:
+  none }`. The rail is where the folders (open / answered / withdrawn /
+  expired) and the tag filter live, so a phone reader was locked to the default
+  *open* folder with no way to reach an answered, withdrawn or expired question
+  and no way to filter by tag at all. Everything else at that breakpoint
+  degrades gracefully — the panes collapse to one, a back button appears,
+  popovers go full width; this one silently removed function.
+
+  The rail's two jobs are now relocated, and deliberately not by the same
+  mechanism. **Folders become a chip strip** above the list, always on screen:
+  they are navigation rather than a filter, and their counts are the inbox's
+  headline signal, which should not sit behind a disclosure. The strip scrolls
+  sideways, so it takes a fifth folder — or a tenth — without any layout
+  assuming a number, and the active chip is scrolled into view when the folder
+  or the locale changes (German chips run half again as wide as English ones).
+  **The tag filter becomes a disclosure**, matching `/board`'s `Filters ▾` and
+  reusing its `body.filters-open` idiom: its option set is unbounded and
+  two-stage, so it cannot be a strip, and it costs no vertical space until it
+  is opened. Its control is pinned beside the scroller rather than inside it,
+  so an active filter is always visible and a short list always shows its
+  cause. Chips and both selects are at least 44px on the short side, matching
+  the touch minimum the rest of the phone layout already keeps.
+
+  The desktop rail is untouched, and so is the `body.reading` one-pane
+  mechanism: the bar is `display: none` outside the phone breakpoint, which
+  keeps it out of the grid and out of the tab order, and it hides again while a
+  question is being read. `/inbox` renders pixel-for-pixel identically at 1440,
+  1200, 900 and 761 (0 of 1,296,000 pixels differ at 1440). No new UI strings,
+  so both locale tables are unchanged.
+
 - **The Settings sheet was invisible to a non-admin token, with no hint it
   existed.** `/board` hid `#settings-btn` outright unless the token carried
   `admin` — the one place in either SPA where a control disappeared on a scope
