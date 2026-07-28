@@ -2498,7 +2498,8 @@ components:
         tags:
           type: array
           items: { type: string }
-          description: 'canonical `kind:handle` references into the project tag registry (e.g. person:ada); reference metadata only'
+          maxItems: 50
+          description: 'canonical `kind:handle` references into the project tag registry (e.g. person:ada); reference metadata only, at most 50 per ticket'
         metadata:
           type: object
           description: freeform JSON; keys namespaced "<actor-or-tool>.<key>"; 64 KiB cap
@@ -2536,7 +2537,8 @@ components:
         tags:
           type: array
           items: { type: string }
-          description: '`kind:handle` tag references to attach; unknown handles are registered on the fly'
+          maxItems: 50
+          description: '`kind:handle` tag references to attach; unknown handles are registered on the fly. At most 50 per ticket — each reference is a statement inside the write transaction — else 422 `tag.too_many`'
         metadata: { type: object }
         blocked_by: { type: array, items: { type: string } }
         state: { type: string, description: "optional; must be a legal initial state, defaults to workflow initial" }
@@ -2598,9 +2600,9 @@ components:
         labels: { type: array, items: { type: string } }
         labels_add: { type: array, items: { type: string } }
         labels_remove: { type: array, items: { type: string } }
-        tags: { type: array, items: { type: string }, description: 'whole-set replace of `kind:handle` tag references' }
-        tags_add: { type: array, items: { type: string }, description: 'tag references to add (commutative)' }
-        tags_remove: { type: array, items: { type: string }, description: 'tag references to remove (commutative)' }
+        tags: { type: array, items: { type: string }, maxItems: 50, description: 'whole-set replace of `kind:handle` tag references. At most 50 per array, and the resulting set is capped at 50 too, else 422 `tag.too_many` with the count and limit in `details`' }
+        tags_add: { type: array, items: { type: string }, maxItems: 50, description: 'tag references to add (commutative); refused when the resulting set would exceed 50' }
+        tags_remove: { type: array, items: { type: string }, maxItems: 50, description: 'tag references to remove (commutative)' }
         parent: { type: [string, "null"] }
         links: { type: object, description: "per-key merge: string value sets a key, null deletes it, untouched keys survive" }
         metadata_merge: { type: object, description: RFC 7386 merge-patch; null deletes a key }

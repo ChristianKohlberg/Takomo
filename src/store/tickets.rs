@@ -9,7 +9,7 @@ use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
     TICKET_TYPES,
 };
-use super::tags::{ensure_tags_exist, normalize_tag_ref};
+use super::tags::{check_tag_count, ensure_tags_exist, normalize_tag_set};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{comment_id, now_ms, promotion_id, sha256_hex, ticket_suffix};
@@ -236,19 +236,6 @@ fn validate_labels(labels: &[String]) -> ApiResult<()> {
     Ok(())
 }
 
-/// Normalize a set of `kind:handle` tag references: validate each and drop
-/// exact duplicates, preserving order.
-fn normalize_tags(refs: &[String]) -> ApiResult<Vec<String>> {
-    let mut out: Vec<String> = Vec::with_capacity(refs.len());
-    for r in refs {
-        let norm = normalize_tag_ref(r)?;
-        if !out.contains(&norm) {
-            out.push(norm);
-        }
-    }
-    Ok(out)
-}
-
 fn validate_metadata_size(metadata: &Value) -> ApiResult<()> {
     let size = serde_json::to_string(metadata)
         .map(|s| s.len())
@@ -455,7 +442,7 @@ impl Store {
         let priority = req.priority.clone().unwrap_or_else(|| "normal".to_string());
         validate_priority(&priority)?;
         validate_labels(&req.labels)?;
-        let tags = normalize_tags(&req.tags)?;
+        let tags = normalize_tag_set(&req.tags, "tags")?;
         let metadata = req.metadata.clone().unwrap_or_else(|| json!({}));
         if !metadata.is_object() {
             return Err(ApiError::validation(
@@ -849,18 +836,29 @@ impl Store {
             }
 
             if patch.tags.is_some() || !patch.tags_add.is_empty() || !patch.tags_remove.is_empty() {
+                // A supplied set is normalized and capped; the stored set is taken
+                // as-is, because it is already canonical (nothing reaches the column
+                // except through `normalize_tag_set`) and re-validating it would be
+                // work inside the transaction for no answer. A row that predates the
+                // cap is therefore still patchable — but only by a patch that brings
+                // it back under the cap, which `tags` (whole-set replace) always can.
                 let base = match &patch.tags {
-                    Some(set) => set.clone(),
+                    Some(set) => normalize_tag_set(set, "tags")?,
                     None => t.tags.clone(),
                 };
-                let mut tags = normalize_tags(&base)?;
-                for r in &normalize_tags(&patch.tags_add)? {
-                    if !tags.contains(r) {
-                        tags.push(r.clone());
+                let add = normalize_tag_set(&patch.tags_add, "tags_add")?;
+                let remove: std::collections::HashSet<String> =
+                    normalize_tag_set(&patch.tags_remove, "tags_remove")?
+                        .into_iter()
+                        .collect();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut tags: Vec<String> = Vec::with_capacity(base.len() + add.len());
+                for r in base.into_iter().chain(add) {
+                    if !remove.contains(&r) && seen.insert(r.clone()) {
+                        tags.push(r);
                     }
                 }
-                let remove = normalize_tags(&patch.tags_remove)?;
-                tags.retain(|r| !remove.contains(r));
+                check_tag_count("tags", tags.len())?;
                 ensure_tags_exist(tx, &t.project, &tags, actor, now)?;
                 tx.execute(
                     "UPDATE tickets SET tags = ?2 WHERE id = ?1",
