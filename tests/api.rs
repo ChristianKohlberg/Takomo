@@ -3567,16 +3567,27 @@ async fn question_ask_parks_ticket_and_answer_resumes_it() {
     assert_eq!(answered["question"]["resolved_to"], "ready");
     assert_eq!(answered["ticket"]["state"], "ready");
 
-    // The exchange is recorded as a comment the resuming agent can read.
+    // The exchange is recorded as a comment the resuming agent can read. It
+    // leads with the decision and names the question by id — restating the
+    // question TITLE would only repeat what the reader already has above it.
     let (s, detail) = app
         .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
         .await;
     assert_eq!(s, StatusCode::OK);
     let comments = detail["comments"].as_array().unwrap();
+    let answer_comment = comments
+        .iter()
+        .find(|c| c["author"] == "human:reviewer")
+        .and_then(|c| c["body"].as_str())
+        .unwrap_or_else(|| panic!("answer should leave a comment: {detail}"));
+    assert_eq!(
+        answer_comment,
+        format!("Human answered {qid}: yes / approved — confirmed with data team"),
+        "answer comment shape changed"
+    );
     assert!(
-        comments.iter().any(|c| c["author"] == "human:reviewer"
-            && c["body"].as_str().unwrap().contains("Human answered")),
-        "answer should leave a comment: {detail}"
+        !answer_comment.contains("OK to drop table billing_v1?"),
+        "the comment must not restate the question title: {answer_comment}"
     );
 
     // Answering again is rejected — the question is closed.
@@ -3669,6 +3680,40 @@ async fn question_followup_loop_bounces_to_agent_and_back_before_answering() {
 
     let (_, detail2) = app.get(&app.human, &format!("/v1/questions/{qid}")).await;
     assert_eq!(detail2["thread"].as_array().unwrap().len(), 2);
+
+    // Both turns are mirrored onto the ticket, and both name the question by id
+    // rather than restating its title — the title is repetition wherever the
+    // question is on screen, and the id resolves to the whole question wherever
+    // it is not.
+    let (_, mirror) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let bodies: Vec<&str> = mirror["comments"]
+        .as_array()
+        .expect("comments")
+        .iter()
+        .filter_map(|c| c["body"].as_str())
+        .collect();
+    assert!(
+        bodies.iter().any(|b| *b
+            == format!(
+                "Human asked agent:w1 for more before answering {qid}: What's the row count and lock time on prod?"
+            )),
+        "follow-up comment shape changed: {bodies:?}"
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|b| *b
+                == format!("agent:w1 replied on {qid}: 40k rows, ~2s lock, fully reversible.")),
+        "reply comment shape changed: {bodies:?}"
+    );
+    assert!(
+        !bodies
+            .iter()
+            .any(|b| b.contains("Run the additive migration on prod now?")),
+        "no mirrored comment may restate the question title: {bodies:?}"
+    );
 
     // Now the human answers; the ticket resumes.
     let (s, answered) = app.answer(&app.human, &qid, json!("yes")).await;
@@ -3792,11 +3837,19 @@ async fn question_options_can_be_revised_while_open() {
             let b = c["body"].as_str().unwrap_or("");
             // The comment carries the before/after sets and the stated reason, so
             // a human who read the old options can see exactly what moved.
-            b.contains("revised the options")
+            b.contains(&format!("revised the options on {qid}"))
                 && b.contains("LRU, LFU, FIFO")
                 && b.contains("FIFO thrashes on our access pattern")
         }),
         "expected a revision comment naming the change: {comments:?}"
+    );
+    // The question is named by id; its title is not restated.
+    assert!(
+        !comments.iter().any(|c| c["body"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Which eviction policy?")),
+        "revision comments must not restate the question title: {comments:?}"
     );
 
     // A human holding the ORIGINAL option list cannot land a stale pick.
@@ -3936,6 +3989,29 @@ async fn question_reopen_takes_back_answer_until_the_ticket_is_in_use() {
     assert_eq!(re["question"]["status"], "open");
     assert_eq!(re["question"]["answer"], serde_json::Value::Null);
     assert_eq!(re["ticket"]["state"], "needs-decision", "ticket re-parked");
+
+    // The reopen note on the ticket names the question by id, like every other
+    // question-driven comment, instead of restating its title.
+    let (_, reopened_ticket) = app
+        .get(&app.human, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let reopen_bodies: Vec<&str> = reopened_ticket["comments"]
+        .as_array()
+        .expect("comments")
+        .iter()
+        .filter_map(|c| c["body"].as_str())
+        .collect();
+    assert!(
+        reopen_bodies
+            .iter()
+            .any(|b| *b
+                == format!("human:reviewer reopened {qid} — parked again pending a new answer.")),
+        "reopen comment shape changed: {reopen_bodies:?}"
+    );
+    assert!(
+        !reopen_bodies.iter().any(|b| b.contains("Run it?")),
+        "question-driven comments must not restate the question title: {reopen_bodies:?}"
+    );
 
     // A read-only/write token without human scope can't reopen.
     let (s, _) = app
@@ -5489,7 +5565,7 @@ async fn concurrent_answers_on_one_link_spend_it_exactly_once() {
         .filter(|c| {
             c["body"]
                 .as_str()
-                .is_some_and(|b| b.starts_with("Human answered"))
+                .is_some_and(|b| b.starts_with(&format!("Human answered {qid}: ")))
         })
         .count();
     assert_eq!(mirrored, 1, "exactly one mirrored answer comment: {ticket}");

@@ -1229,7 +1229,11 @@ impl Store {
             // sees it on `takomo_show`, and emit the question_answered event.
             let summary = answer_summary(&q.kind, &normalized);
             let comment = crate::ids::comment_id();
-            let comment_body = format!("Human answered \"{}\": {summary}", q.title);
+            // Name the question by id, not by restating its title: in the view
+            // where the question is present the title is pure repetition, and
+            // where it is absent (the ticket thread, `takomo show`) a title was
+            // never the whole context anyway — the id resolves to all of it.
+            let comment_body = format!("Human answered {id}: {summary}");
             tx.execute(
                 "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![comment, t.id, actor, comment_body, now],
@@ -1380,10 +1384,8 @@ impl Store {
             // from the prior cycle can answer the reopened question.
             super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
             let comment = crate::ids::comment_id();
-            let comment_body = format!(
-                "{actor} reopened \"{}\" — parked again pending a new answer.",
-                q.title
-            );
+            let comment_body =
+                format!("{actor} reopened {id} — parked again pending a new answer.");
             tx.execute(
                 "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![comment, t.id, actor, comment_body, now],
@@ -1519,11 +1521,11 @@ impl Store {
             let comment = crate::ids::comment_id();
             let comment_body = if role == "human" {
                 format!(
-                    "Human asked {} for more before answering \"{}\": {trimmed}",
-                    q.asked_by, q.title
+                    "Human asked {} for more before answering {id}: {trimmed}",
+                    q.asked_by
                 )
             } else {
-                format!("{actor} replied on \"{}\": {trimmed}", q.title)
+                format!("{actor} replied on {id}: {trimmed}")
             };
             tx.execute(
                 "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1659,8 +1661,7 @@ impl Store {
             // already read the old options can see they moved.
             let comment = crate::ids::comment_id();
             let mut comment_body = format!(
-                "{actor} revised the options on \"{}\": [{}] → [{}]",
-                q.title,
+                "{actor} revised the options on {id}: [{}] → [{}]",
                 before.join(", "),
                 req.options.join(", ")
             );

@@ -1478,7 +1478,15 @@ paths:
         auto-resumed: `resolved_to` is then null and the `resume` block of the
         response carries a `code`, a `message` and a `remedy` saying why the
         ticket is still parked and what to call next. That case also posts a
-        comment on the ticket.
+        second comment on the ticket.
+
+        The answer is mirrored onto the ticket as a comment so the resuming
+        agent sees the decision in its normal work loop. The comment names the
+        question by **id**, not by restating its title (`Human answered
+        q-9f3ka2xz: yes / approved — <note>`); the id resolves to the full
+        question via `GET /v1/questions/{id}`. The other question endpoints that
+        mirror onto the ticket — `reopen`, `followup`, `reply`, `options` — use
+        the same shape. Comment prose is not a contract: do not parse it.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
