@@ -74,6 +74,39 @@ single ticket.
 
 ### Fixed
 
+- **The CLI no longer drops a write on a ten-second gateway blip.** `takomo`
+  issued exactly one request per command, so a transient `502` from a proxy in
+  front of the store — `/healthz` green throughout — failed the command
+  outright. It failed *quietly*, too: the 502 body is a full HTML error page, so
+  a command piped through `tail -1` showed a line of base64 font data and
+  nothing that read as an error. A `comment` carrying a ticket's only proof of
+  verification, or a `link --commit` closing the loop on a merged change, went
+  missing with no sign.
+
+  Requests are now retried with bounded exponential backoff and jitter
+  (`TAKOMO_RETRIES`, default 3; `TAKOMO_RETRY_MAX_SECONDS`, default 20) — but
+  only where a replay is provably harmless, decided per endpoint against what
+  the store actually does: reads, `PUT`s, set-to-value `PATCH`es (`link`,
+  `tag`), the Idempotency-Key'd ticket create, `claim` (an idempotent lease
+  renewal), `archive`/`unarchive`, `dep`, and `ask` (the store dedupes an
+  identical still-open question). A failure that provably never left the
+  machine — DNS or connect refused — is retried for *every* verb, since nothing
+  can have been applied.
+
+  Writes that would double if replayed are never retried: `comment`, `next`,
+  `promote`, `token create`, `share create`, and the question verbs. They now
+  fail unmistakably instead — a banner, the request that failed, and, as the
+  last line so it survives `2>&1 | tail -1`, either `THE WRITE DID NOT HAPPEN`
+  with the exact command to re-run, or `THE WRITE WAS NOT CONFIRMED` telling you
+  to check before you do. A non-JSON error body is now summarised
+  (`502 Bad Gateway`, 1448 bytes of non-JSON) instead of dumped.
+
+  `done` / `start` / `move` are rescued rather than refused: a transition cannot
+  be replayed blind (the store has no `X -> X` edge, so a repeat 409s whether or
+  not the first landed), so the CLI re-reads the ticket instead — already at the
+  target means it landed and the command succeeds; still elsewhere means the
+  replay is safe (takomo-6flc).
+
 - **`/inbox` presentation: a stable undo button, a readable queue, one banner
   fewer.** Three faults reported from real use, all in the reading surface.
   The **undo snackbar** rebuilt its whole subtree once a second so that one
