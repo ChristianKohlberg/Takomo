@@ -950,7 +950,14 @@
   // Kept identical between /board and /inbox: the same body has to read the same
   // on both surfaces, and two copies quietly drifting apart is how that stops
   // being true.
-  var MD_INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]*\]\([^)\s]+\))/g;
+  //
+  // The link alternative matches only the OPENING `[text](` — the target itself
+  // is scanned by hand in mdLinkTarget, because a regex cannot count nested
+  // parens. This used to end in `[^)\s]+\)`, which truncated every URL at its
+  // first `)`, so `.../Foo_(bar)` linked to `.../Foo_(bar` and shed the tail as
+  // stray text; and `[a](url "Title")` failed the class outright and rendered as
+  // raw source (takomo-2op4).
+  var MD_INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]*\]\()/g;
   var MD_HEADING = /^(#{1,6})\s+(.*)$/;
   var MD_RULE = /^(-{3,}|\*{3,}|_{3,})$/;
   var MD_OL = /^\d+[.)]\s+/;
@@ -961,6 +968,47 @@
   // Only http(s) and mailto survive. Anything else (javascript:, data:) renders
   // as its literal markdown, so a hostile link cannot hide behind link text.
   function mdHref(u) { return /^(https?:\/\/|mailto:)/i.test(u) ? u : null; }
+
+  // Scan a link target — everything after `](` — and return {url, title, end},
+  // `end` being just past the closing `)`; null when it is not a well-formed
+  // target, which makes the caller print the source verbatim. Hand-rolled with a
+  // depth counter rather than a regex: balanced parens are not a regular
+  // language, and the regexes that approximate them are exactly the ones that
+  // backtrack catastrophically on hostile input. This is one left-to-right pass
+  // that never rewinds, so its cost is linear in the target's length.
+  function mdLinkTarget(s, from) {
+    var n = s.length, i = from, depth = 0, url = "", ch;
+    while (i < n && (s.charAt(i) === " " || s.charAt(i) === "\t")) i++;
+    while (i < n) {
+      ch = s.charAt(i);
+      if (ch === "\n") return null;                    // a target never spans lines
+      if (ch === "\\" && (s.charAt(i + 1) === "(" || s.charAt(i + 1) === ")")) {
+        url += s.charAt(i + 1); i += 2; continue;      // \( and \) are literals
+      }
+      if (ch === "(") { depth++; url += ch; i++; continue; }
+      if (ch === ")") {
+        if (depth === 0) break;                        // the closing paren
+        depth--; url += ch; i++; continue;
+      }
+      if (ch === " " || ch === "\t") break;            // a title may follow
+      url += ch; i++;
+    }
+    if (depth !== 0) return null;                      // unbalanced, so not a link
+    while (i < n && (s.charAt(i) === " " || s.charAt(i) === "\t")) i++;
+    var title = "", q = s.charAt(i);
+    if (q === '"' || q === "'") {
+      i++;
+      while (i < n && s.charAt(i) !== q) {
+        if (s.charAt(i) === "\n") return null;
+        title += s.charAt(i); i++;
+      }
+      if (i >= n) return null;                         // unterminated title
+      i++;
+      while (i < n && (s.charAt(i) === " " || s.charAt(i) === "\t")) i++;
+    }
+    if (s.charAt(i) !== ")") return null;
+    return { url: url, title: title, end: i + 1 };
+  }
 
   function mdInline(parent, s) {
     s = String(s == null ? "" : s);
@@ -976,15 +1024,24 @@
       } else if (c0 === "*" || c0 === "_") {
         parent.appendChild(el("i", null, tok.slice(1, -1)));
       } else {
-        var cut = tok.indexOf("](");
-        var href = mdHref(tok.slice(cut + 2, -1));
+        // `tok` is `[text](`, so the target starts just past it. mdHref is still
+        // the only thing that decides a scheme is allowed — the wider scan feeds
+        // it more URLs, it does not let more of them through.
+        var tgt = mdLinkTarget(s, m.index + tok.length);
+        var href = tgt ? mdHref(tgt.url) : null;
+        // Where this construct's source ends. On a refused scheme we still skip
+        // the whole parsed target, so `[x](javascript:alert(1))` prints entire
+        // rather than having its tail rescanned for inline tokens.
+        var end = tgt ? tgt.end : m.index + tok.length;
         if (href) {
-          var a = el("a", null, tok.slice(1, cut));
+          var a = el("a", null, tok.slice(1, -2));
           a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+          if (tgt.title) a.title = tgt.title;          // an attribute value, never parsed as markup
           parent.appendChild(a);
         } else {
-          parent.appendChild(document.createTextNode(tok));
+          parent.appendChild(document.createTextNode(s.slice(m.index, end)));
         }
+        MD_INLINE.lastIndex = end;
       }
       last = MD_INLINE.lastIndex;
     }
