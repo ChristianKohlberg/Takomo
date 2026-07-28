@@ -374,6 +374,227 @@ async fn hosted_mcp_ask_and_answer_round_trip() {
     assert_eq!(answered["ticket"]["state"].as_str().unwrap(), "ready");
 }
 
+/// Park a ticket on an open question over MCP and hand back `(ticket, question)`.
+async fn mcp_parked_question(app: &TestApp, title: &str, q: Value) -> (String, String) {
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": title, "type": "task" }),
+        )
+        .await;
+    let id = created["ticket"]["id"].as_str().unwrap().to_string();
+    for to in ["spec", "ready"] {
+        app.tool_ok(
+            &app.admin,
+            "takomo_transition",
+            json!({ "id": id, "to": to }),
+        )
+        .await;
+    }
+    app.tool_ok(&app.worker, "takomo_claim", json!({ "id": id }))
+        .await;
+    app.tool_ok(&app.worker, "takomo_start", json!({ "id": id }))
+        .await;
+    let mut args = json!({ "id": id });
+    for (k, v) in q.as_object().unwrap() {
+        args[k] = v.clone();
+    }
+    let asked = app.tool_ok(&app.worker, "takomo_ask", args).await;
+    let qid = asked["question"]["id"].as_str().unwrap().to_string();
+    (id, qid)
+}
+
+/// An answer link is a bearer credential handed to someone outside the org, so
+/// `takomo_answer_link` must carry exactly the guarantees
+/// `POST /v1/questions/{id}/answer-link` does — same delegation gate, same
+/// lifetime precedence, same shown-once warning. It used to carry its own copy of
+/// that policy, and had already drifted: it ignored the project's
+/// `answer_link_ttl_seconds` entirely and reported neither the applied TTL nor
+/// where it came from.
+#[tokio::test]
+async fn mcp_answer_link_matches_the_rest_minting_policy() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let (_, qid) = mcp_parked_question(
+        &app,
+        "mcp answer link",
+        json!({ "kind": "confirm", "title": "Ship it?" }),
+    )
+    .await;
+
+    // No project default set: the built-in 7 days, reported as such.
+    let minted = app
+        .tool_ok(&app.admin, "takomo_answer_link", json!({ "id": qid }))
+        .await;
+    let link = &minted["answer_link"];
+    assert_eq!(link["ttl_seconds"], 604_800, "{link}");
+    assert_eq!(link["ttl_source"], "default", "{link}");
+    assert!(link["path"].as_str().unwrap().contains("#a="), "{link}");
+    assert!(
+        link["warning"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("shown ONCE"),
+        "the credential warning is the same one every mint carries: {link}"
+    );
+    // The grant is real: the outsider answers this one question with it.
+    let token = link["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("tka_"), "{token}");
+    let (s, answered) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+
+    // A project default now applies to MCP mints too — the drift this closes.
+    let (s, updated) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/answer-link-ttl",
+            json!({ "ttl_seconds": 86_400 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{updated}");
+    let (_, q2) = mcp_parked_question(
+        &app,
+        "mcp answer link 2",
+        json!({ "kind": "confirm", "title": "And this?" }),
+    )
+    .await;
+    let link = app
+        .tool_ok(&app.admin, "takomo_answer_link", json!({ "id": q2 }))
+        .await["answer_link"]
+        .clone();
+    assert_eq!(link["ttl_seconds"], 86_400, "{link}");
+    assert_eq!(link["ttl_source"], "project", "{link}");
+
+    // An explicit ttl still wins outright.
+    let link = app
+        .tool_ok(
+            &app.admin,
+            "takomo_answer_link",
+            json!({ "id": q2, "ttl_seconds": 3_600 }),
+        )
+        .await["answer_link"]
+        .clone();
+    assert_eq!(link["ttl_seconds"], 3_600, "{link}");
+    assert_eq!(link["ttl_source"], "explicit", "{link}");
+
+    // The two out-of-range cases are distinguished, not collapsed into one
+    // message: an agent that sent 0 and one that sent 60 days need different
+    // corrections.
+    let (err, is_err) = app
+        .tool(
+            &app.admin,
+            "takomo_answer_link",
+            json!({ "id": q2, "ttl_seconds": 0 }),
+        )
+        .await;
+    assert!(is_err, "{err}");
+    assert_eq!(err["code"], "answer_link.ttl", "{err}");
+    assert!(
+        err["message"].as_str().unwrap().contains("positive"),
+        "{err}"
+    );
+    let (err, is_err) = app
+        .tool(
+            &app.admin,
+            "takomo_answer_link",
+            json!({ "id": q2, "ttl_seconds": 2_592_001 }),
+        )
+        .await;
+    assert!(is_err, "{err}");
+    assert_eq!(err["code"], "answer_link.ttl", "{err}");
+    assert!(
+        err["message"].as_str().unwrap().contains("maximum"),
+        "{err}"
+    );
+
+    // A write-only worker cannot delegate at all.
+    let (err, is_err) = app
+        .tool(&app.worker, "takomo_answer_link", json!({ "id": q2 }))
+        .await;
+    assert!(is_err, "minting needs the human scope: {err}");
+    assert_eq!(err["code"], "auth.scope", "{err}");
+}
+
+/// You can only delegate authority you hold: minting for an `approve` question
+/// needs the matching `expert:<tag>` scope on **both** surfaces, and the refusal
+/// names the scope that would satisfy it.
+#[tokio::test]
+async fn mcp_answer_link_delegates_approve_only_with_expertise() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let (_, qid) = mcp_parked_question(
+        &app,
+        "mcp approve link",
+        json!({ "kind": "approve", "title": "OK legally?", "expertise": ["domain:legal"] }),
+    )
+    .await;
+
+    // A plain human — even an admin — holds no domain expertise here.
+    let (err, is_err) = app
+        .tool(&app.admin, "takomo_answer_link", json!({ "id": qid }))
+        .await;
+    assert!(is_err, "{err}");
+    assert_eq!(err["code"], "question.approve_expertise", "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("expert:domain:legal"),
+        "the refusal must name the scope that would satisfy it: {err}"
+    );
+
+    // The domain expert mints it, and the link satisfies the approve gate.
+    let counsel = app.mint(
+        "human:counsel",
+        &["read", "write", "human", "expert:domain:legal"],
+        None,
+    );
+    let link = app
+        .tool_ok(&counsel, "takomo_answer_link", json!({ "id": qid }))
+        .await["answer_link"]
+        .clone();
+    let token = link["token"].as_str().unwrap().to_string();
+    let (s, answered) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["ticket"]["state"], "ready", "{answered}");
+}
+
+/// A question that is no longer open has nothing to delegate.
+#[tokio::test]
+async fn mcp_answer_link_refuses_a_closed_question() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let (_, qid) = mcp_parked_question(
+        &app,
+        "mcp closed link",
+        json!({ "kind": "confirm", "title": "Ship it?" }),
+    )
+    .await;
+    app.tool_ok(
+        &app.admin,
+        "takomo_answer",
+        json!({ "id": qid, "answer": "yes" }),
+    )
+    .await;
+    let (err, is_err) = app
+        .tool(&app.admin, "takomo_answer_link", json!({ "id": qid }))
+        .await;
+    assert!(is_err, "{err}");
+    assert_eq!(err["code"], "question.not_open", "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("nothing to answer"),
+        "{err}"
+    );
+}
+
 #[tokio::test]
 async fn hosted_mcp_surfaces_project_language() {
     let app = TestApp::spawn().await;
@@ -437,6 +658,72 @@ async fn hosted_mcp_surfaces_project_language() {
         asked["note"].as_str().unwrap().contains("German"),
         "ask note: {asked}"
     );
+}
+
+/// The project-conventions nudge on an ask is agent-facing *instruction*, so REST
+/// and MCP must not word it differently — an agent would be told to follow a
+/// different house style depending on the transport it happened to use. Both
+/// notes now come from one function, and this pins the wording so a future edit
+/// to either surface cannot quietly reintroduce the split.
+#[tokio::test]
+async fn ask_conventions_nudge_is_identical_on_rest_and_mcp() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    for (path, body) in [
+        ("/v1/projects/tp/language", json!({ "language": "German" })),
+        (
+            "/v1/projects/tp/style",
+            json!({ "style_guide": "Two sentences max." }),
+        ),
+    ] {
+        let (s, out) = app.put(&app.admin, path, body).await;
+        assert_eq!(s, StatusCode::OK, "{out}");
+    }
+    const LANG: &str = " This project expects the question (and any options) written in German — re-ask in German if this one wasn't.";
+    const STYLE: &str = " This project's style guide for what you write: Two sentences max.";
+
+    // Ask the same question over both surfaces, on its own ticket each time, and
+    // compare the tail each one appends.
+    let id = app.create_ticket("nudge over rest").await;
+    let fence = app.to_implementing(&id).await;
+    let (_, rest) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Weiter?", "fence": fence }),
+        )
+        .await;
+    let rest_note = rest["note"].as_str().unwrap();
+
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "nudge over mcp", "type": "task" }),
+        )
+        .await;
+    let mcp_id = created["ticket"]["id"].as_str().unwrap().to_string();
+    for to in ["spec", "ready"] {
+        app.tool_ok(
+            &app.admin,
+            "takomo_transition",
+            json!({ "id": mcp_id, "to": to }),
+        )
+        .await;
+    }
+    app.tool_ok(&app.worker, "takomo_start", json!({ "id": mcp_id }))
+        .await;
+    let mcp = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({ "id": mcp_id, "kind": "confirm", "title": "Weiter?" }),
+        )
+        .await;
+    let mcp_note = mcp["note"].as_str().unwrap();
+
+    for note in [rest_note, mcp_note] {
+        assert!(note.ends_with(&format!("{LANG}{STYLE}")), "note: {note}");
+    }
 }
 
 #[tokio::test]

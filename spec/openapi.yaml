@@ -1790,6 +1790,9 @@ paths:
         `PUT /projects/{project}/answer-link-ttl`), then the built-in default of
         604800 seconds (7 days). The response echoes the lifetime applied as
         `ttl_seconds` and where it came from as `ttl_source`.
+
+        The MCP tool `takomo_answer_link` runs the same implementation, so every
+        rule above — the delegation gate included — holds identically there.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1823,6 +1826,7 @@ paths:
                         type: string
                         enum: [explicit, project, default]
                         description: 'Where that lifetime came from: this request, the project setting, or the built-in default'
+                      warning: { type: string, description: 'The token is shown once and anyone holding the link can answer this question' }
         "403":
           description: Token lacks `human` (or the `expert:<tag>` an approve link needs).
           content:
