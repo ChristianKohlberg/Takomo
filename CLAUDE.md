@@ -123,23 +123,37 @@ never by ancestry.
 
 ### Share one `target/` across worktrees
 
-A worktree gets its own empty `target/`, so a fresh one pays a full cold release build — with LTO
-and 240-odd dependencies that is minutes, and the dependency half of it is identical work every
-time. Point every checkout at one directory instead:
+A worktree gets its own empty `target/`, so a fresh one recompiles all 183 crates from scratch.
+Point every checkout at one directory instead:
 
 ```sh
 export CARGO_TARGET_DIR="$HOME/.cache/takomo-target"   # any path outside the worktrees
 ```
 
-Cargo takes a file lock on the target directory, so concurrent builds **queue rather than corrupt** —
-correct, but it does mean two agents building at once serialize. Fingerprints are content-keyed, so
-switching branches re-runs only what actually differs; the dependency graph is built once and reused
-by every worktree from then on. Do not commit this as `.cargo/config.toml`: the path is
-machine-specific, and a committed absolute path breaks everyone else's checkout.
+Measured on this repo (`cargo build --release`, two worktrees off the same commit), so you can judge
+whether it is worth it rather than taking the claim on faith:
 
-If build concurrency ever matters more than the disk, `RUSTC_WRAPPER=sccache` composes with this and
-caches per-crate output instead of serializing — but it helps codegen, not the LTO link, so the win
-on `--release` is smaller than it looks. Measure before adopting it.
+| | wall | crates compiled |
+|---|---|---|
+| fresh worktree, own `target/` (the default) | 168 s | 183 |
+| fresh worktree, shared dir, source differs | 103 s | **1** |
+| fresh worktree, shared dir, identical content | 1 s | 0 |
+| rebuilding the *other* worktree afterwards | 0 s | 0 |
+| two worktrees building at once, shared dir | 95 s for both | — |
+
+So it removes 182 of 183 crate compiles and about **40%** of the wall clock — worthwhile, but not
+transformative: what remains is `takomo` itself plus the LTO link, roughly 100 s, and that is paid on
+every build no matter what. The larger saving is disk, at ~1.2 GB of `target/` per worktree.
+
+Two worries that turn out not to apply. Worktrees do **not** evict each other's artifacts — cargo
+keys them on a metadata hash that includes the workspace, so both sets coexist and rebuilding the
+first worktree after the second stays at 0 s. And concurrent builds do **not** meaningfully
+serialize: two builds of ~103 s each finished together in 95 s, the only contention being a brief
+`Blocking waiting for file lock on package cache`.
+
+Do not commit this as `.cargo/config.toml` — the path is machine-specific and would break every
+other checkout. `RUSTC_WRAPPER=sccache` composes with it, but it caches codegen rather than the LTO
+link, which is exactly the part that dominates here; measure before adopting it.
 
 ## Architecture
 
