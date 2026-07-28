@@ -47,7 +47,7 @@ pub async fn create(
     }
 
     let kind_raw = require_str(obj, "kind")?;
-    let kind = ShareKind::parse(&kind_raw).ok_or_else(|| {
+    let kind = ShareKind::parse_request(&kind_raw).ok_or_else(|| {
         ApiError::validation(
             "share.kind",
             format!(
@@ -179,7 +179,7 @@ pub async fn self_meta(
         .get_project(&share.project)?
         .ok_or_else(|| ApiError::not_found("project", &share.project))?;
     Ok(Json(json!({
-        "kind": share.kind,
+        "kind": share.kind.as_str(),
         "ref": share.ref_id,
         "project": share.project,
         "expires_at": iso(share.expires_at),
@@ -208,7 +208,7 @@ pub async fn self_tickets(
     let tickets =
         state
             .store
-            .share_tickets(&share.kind, &share.ref_id, &share.project, include_archived)?;
+            .share_tickets(share.kind, &share.ref_id, &share.project, include_archived)?;
     let now = now_ms();
     let items: Vec<Value> = tickets.iter().map(|t| t.to_json(now)).collect();
     Ok(Json(json!({ "items": items })))
@@ -224,7 +224,7 @@ pub async fn self_ticket_detail(
 ) -> ApiResult<Json<Value>> {
     if !state
         .store
-        .ticket_in_share_scope(&share.kind, &share.ref_id, &share.project, &id)?
+        .ticket_in_share_scope(share.kind, &share.ref_id, &share.project, &id)?
     {
         return Err(ApiError::not_found("ticket", &id));
     }
@@ -243,12 +243,10 @@ pub async fn self_ticket_detail(
         // Only reveal a dependency's title/state when it is itself inside the
         // share's scope; otherwise expose just the bare id so an outside viewer
         // can't learn about tickets in other projects/subtrees via edges.
-        let in_scope = state.store.ticket_in_share_scope(
-            &share.kind,
-            &share.ref_id,
-            &share.project,
-            dep_id,
-        )?;
+        let in_scope =
+            state
+                .store
+                .ticket_in_share_scope(share.kind, &share.ref_id, &share.project, dep_id)?;
         match (in_scope, state.store.get_ticket(dep_id)?) {
             (true, Some(d)) => blocked_by_detail.push(json!({
                 "id": d.id, "title": d.title, "state": d.state,

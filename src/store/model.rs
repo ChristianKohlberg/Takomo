@@ -1,5 +1,6 @@
 //! Row models and wire (JSON) shapes.
 
+use super::shares::ShareKind;
 use crate::ids::iso;
 use serde_json::{json, Value};
 
@@ -317,9 +318,12 @@ impl Project {
 #[derive(Debug, Clone)]
 pub struct ShareRow {
     pub id: String,
-    /// "project" (all tickets in `project`) or "subtree" (`ref_id` root + its
-    /// full recursive descendant subtree).
-    pub kind: String,
+    /// The scope this share grants: [`ShareKind::Project`] (all tickets in
+    /// `project`) or [`ShareKind::Subtree`] (`ref_id` root + its full recursive
+    /// descendant subtree). Deliberately the enum and not a `String`: the scope
+    /// decision is made by matching on it, so there is no unrecognised spelling
+    /// that could fall through to the wider query.
+    pub kind: ShareKind,
     /// Project id (kind=project) or root ticket id (kind=subtree).
     pub ref_id: String,
     /// Denormalized project the share is scoped to.
@@ -335,7 +339,7 @@ impl ShareRow {
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
-            "kind": self.kind,
+            "kind": self.kind.as_str(),
             "ref": self.ref_id,
             "project": self.project,
             "expires_at": iso(self.expires_at),

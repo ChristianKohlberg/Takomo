@@ -4,6 +4,7 @@
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, token_hash};
 use crate::server::AppState;
+use crate::store::ShareKind;
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
@@ -246,8 +247,10 @@ fn invalid_token(why: &str) -> ApiError {
 #[derive(Debug, Clone)]
 pub struct ShareCtx {
     pub share_id: String,
-    /// "project" or "subtree".
-    pub kind: String,
+    /// The scope this share grants, carried as the enum all the way from the row
+    /// read to the store query — a share whose stored kind could not be
+    /// interpreted never gets a `ShareCtx` at all.
+    pub kind: ShareKind,
     /// Project id (project share) or root ticket id (subtree share).
     pub ref_id: String,
     /// Denormalized project the share is scoped to.

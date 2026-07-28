@@ -3330,6 +3330,80 @@ async fn share_epic_scopes_to_subtree_only() {
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+// A subtree share whose stored `kind` the store cannot interpret is refused
+// outright — it must NOT fall back to the whole project.
+//
+// This is the fail-open direction the store used to have: the scope was chosen by
+// `kind == "subtree"` on a `&str`, so anything else took the project-wide query.
+// `epic` is the realistic wrong value, being the caller-facing spelling that
+// `ShareKind::parse_request` accepts and normalizes away — one future code path
+// storing the request spelling verbatim would have turned a share of one epic
+// into a share of everything in the project, on a link designed to be pasted
+// around. Only `ShareKind::as_str` can write the column now and only its own
+// spellings read back, so the row below is unreachable through the API and has to
+// be forced in.
+#[tokio::test]
+async fn share_with_uninterpretable_kind_fails_closed_not_project_wide() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Epic root", "epic", None).await;
+    let child = app
+        .create_typed("child of the epic", "task", Some(&epic))
+        .await;
+    let outsider = app.create_typed("outside the subtree", "task", None).await;
+
+    let (s, share) = app
+        .post(
+            &app.admin,
+            "/v1/shares",
+            json!({ "kind": "epic", "ref": epic }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{share}");
+    let token = share["token"].as_str().unwrap().to_string();
+    let share_id = share["id"].as_str().unwrap().to_string();
+
+    // Baseline: the share is the subtree, and the outsider is already invisible.
+    let (s, list) = app.get(&token, "/v1/shares/self/tickets").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    let ids: Vec<String> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, vec![epic.clone(), child.clone()], "baseline subtree");
+
+    // Now the row a future caller-facing-spelling bug would leave behind.
+    app.force_share_kind(&share_id, "epic");
+
+    let (status, body) = app.get(&token, "/v1/shares/self/tickets").await;
+    assert!(
+        !body.to_string().contains(&outsider),
+        "a share whose kind cannot be interpreted must not widen to the whole project: {body}"
+    );
+    assert!(
+        !status.is_success(),
+        "an uninterpretable share kind must be refused, not served: {status} {body}"
+    );
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["code"], "share.kind_unrecognized");
+    assert!(
+        body["remedy"].as_str().is_some_and(|r| !r.is_empty()),
+        "the refusal teaches how to recover: {body}"
+    );
+
+    // The refusal happens on the share auth path, so every `self*` endpoint is
+    // closed — including the detail endpoint for a ticket inside the subtree.
+    let (s, body) = app.get(&token, "/v1/shares/self").await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "share.kind_unrecognized");
+    let (s, body) = app
+        .get(&token, &format!("/v1/shares/self/tickets/{child}"))
+        .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["code"], "share.kind_unrecognized");
+}
+
 // A share token is read-only and reaches ONLY the share endpoints: it is
 // rejected on every normal endpoint (read and write). A normal token is likewise
 // not accepted as a share token.
