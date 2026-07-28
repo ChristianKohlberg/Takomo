@@ -95,6 +95,34 @@ ticket.
 
 ### Fixed
 
+- **The `/board` header wrapped onto a second row at every desktop width, and a
+  third at 761px.** Measured at 1440, 1280 and 1024 it was two rows and 83.6px,
+  and at 761 three rows and 129.6px — identically in English and German. It did
+  not read as a two-row header anyone had designed: the first row was packed
+  edge to edge and the second carried *Refresh* and *Sign out* alone on an
+  otherwise empty strip, under a board whose whole job is showing columns of
+  cards.
+
+  The `Filters ▾` disclosure that shipped for phones now works at every width.
+  Closed, the header is **one row and 58px at 1440 and 1280**; open, the filter
+  controls reappear inline in the order and the row they always had, giving
+  back exactly the two rows and 83.6px the header has today. A phone still gets
+  the stacked panel — that layout needs one, a desktop does not — so this is a
+  reveal, not a second layout, and it adds no new UI and no new strings.
+
+  **The project picker deliberately stays outside the disclosure.** It is the
+  only place the board says *which project you are looking at*, which is context
+  rather than a filter, and context should not need a click. It costs 179px,
+  which is why 1024px keeps its second row: a chosen consequence, not something
+  left to fix. Hiding the picker would buy that row back and was the option
+  weighed and turned down.
+
+  Shorter labels or desktop glyphs were measured and rejected instead: they fix
+  English and leave German at two rows, and German is precisely the case this
+  was about. `/board` renders pixel-for-pixel identically at 390px — 0 of
+  329,160 pixels differ, in both locales, with the disclosure open and closed —
+  and every phone touch target still clears 44×44.
+
 - **At phone width `/inbox` dropped its filter rail, so three of its four
   folders and the tag filter were not merely awkward but absent.** The one-pane
   phone layout collapsed `main` to a single column and set `.rail { display:

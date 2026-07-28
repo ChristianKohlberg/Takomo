@@ -88,12 +88,52 @@
      button's accessible name comes from an aria-label set in applyChrome, so
      hiding the word never costs a screen reader anything. */
   header .ico { display: none; font-size: 15px; line-height: 1; }
-  /* The filter cluster. On a desktop `display: contents` dissolves it — its
-     children lay out in the header's flex row exactly as the loose controls
-     did before, same order, same gap, same everything. Only the phone
-     stylesheet turns it back into a real box (a panel behind one control). */
+  /* The filter cluster. `display: contents` dissolves it — its children lay
+     out in the header's flex row exactly as the loose controls did before,
+     same order, same gap, same everything. The phone stylesheet turns it back
+     into a real box (a panel behind one control); a desktop keeps it dissolved
+     and merely hides the children while the disclosure is closed. */
   #filters { display: contents; }
   .filtbtn { display: none; }
+
+  /* ---- the filter disclosure on a desktop (takomo-7u9t) ----
+     The header wrapped to two rows at 1440/1280/1024 and three at 761, the
+     same in both locales: one packed row plus a near-empty strip carrying
+     Refresh and Sign out alone. It read as a wrap accident rather than a
+     header anyone designed.
+
+     a4ee980 already built the one control that fixes it, and scoped it below
+     760px. This extends it upward. The phone needs a PANEL because a phone has
+     no room to put the controls back where they were; a desktop has, so the
+     open state here is simply the controls reappearing inline, in the same
+     order and the same row they have always occupied. That is why this is two
+     rules and not a second layout: scope the HIDING to the closed state
+     instead of scoping the panel to the phone.
+
+     Closed: 1 row, 58px at 1440 and 1280. Open: 2 rows, 83.6px — the height
+     and the row count the header has today. Not the identical pixels: the
+     disclosure button now sits in that row too and shifts what follows it.
+
+     The project picker stays out of the disclosure deliberately. It is the
+     only place the board says WHICH PROJECT you are looking at, which is
+     context rather than a filter, and context should not need a click. The
+     price is 179px, which is why 1024px keeps its second row: a chosen
+     consequence, not a defect. Hiding the picker would buy that row back and
+     is not a fix — it is the option that was weighed and turned down.
+
+     The chevron is the one thing that is not shared with the phone rule. Every
+     other header action hides its glyph on a desktop and shows its word, and
+     this button would too — leaving a ghost button reading "Filters" between
+     "Ask a human" and "Settings", indistinguishable from the controls that act
+     rather than reveal. So the ▾ stays on at every width: it is what says this
+     one opens. It is already in the DOM and already aria-hidden, so it costs
+     no string and nothing to a screen reader, which is told the same thing by
+     aria-expanded. */
+  @media (min-width: 761px) {
+    .filtbtn { display: inline-flex; align-items: center; gap: 6px; }
+    .filtbtn .ico { display: inline-block; }
+    body:not(.filters-open) #filters > *:not(#projsel) { display: none; }
+  }
 
   .langtoggle { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .langtoggle span { font-size: 12px; font-weight: 680; padding: 5px 10px; cursor: pointer; color: var(--muted); }
@@ -1117,10 +1157,12 @@
     if (state.token) { localStorage.setItem(LS_TOKEN, state.token); loadProjectList(); }
   });
 
-  // Phone header: one control reveals the whole filter cluster. The button is
-  // in the DOM on every viewport and CSS alone decides whether it is visible,
-  // so a desktop reader can never reach this handler — the same CSS-only
-  // reveal /inbox drives its list/read panes with.
+  // One control reveals the filter cluster, on every viewport since
+  // takomo-7u9t — a panel on a phone, the controls back inline on a desktop.
+  // Which of those you get is decided by CSS alone; this handler is the same
+  // on both and never measures the viewport, the same CSS-only reveal /inbox
+  // drives its list/read panes with. The button carries its own visible label
+  // plus aria-expanded, so it is reachable and named at every width.
   $("filters-btn").addEventListener("click", function () {
     var open = !document.body.classList.contains("filters-open");
     document.body.classList.toggle("filters-open", open);
