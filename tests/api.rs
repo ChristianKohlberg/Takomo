@@ -9182,3 +9182,108 @@ async fn approve_questions_cannot_be_relayed_even_with_the_scope() {
     );
     assert_eq!(ok["question"]["answered_by"], "human:cfo", "{ok}");
 }
+
+/// The shared SPA module reaches both served pages, inlined (takomo-ftix).
+///
+/// `src/spa-common.js` is one source for the markdown renderer that used to be
+/// two byte-identical copies with nothing comparing them — CI's "Duplicated files
+/// stay in sync" job only diffs the two `SKILL.md` files. Extracting it removes
+/// the drift, but introduces a new way to fail: a page served *without* the
+/// renderer. That failure is quiet — it only shows where an agent-written body
+/// happens to contain markdown — so it gets a test rather than trust.
+#[tokio::test]
+async fn both_spas_serve_the_shared_module_inlined() {
+    let app = TestApp::spawn().await;
+    let shared = include_str!("../src/spa-common.js");
+
+    // A handful of the module's own lines, taken from the file itself rather than
+    // retyped, so this cannot drift into asserting a stale copy of the renderer.
+    let sample: Vec<&str> = shared
+        .lines()
+        .filter(|l| {
+            l.contains("function mdNode(")
+                || l.contains("function mdHref(")
+                || l.contains("function mdLinkTarget(")
+        })
+        .collect();
+    assert_eq!(
+        sample.len(),
+        3,
+        "expected the three entry points in src/spa-common.js; the module changed \
+         shape and this test needs to change with it"
+    );
+
+    for path in ["/board", "/inbox"] {
+        let body = app
+            .request(Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        for line in &sample {
+            assert!(
+                body.contains(line.trim()),
+                "{path} is served without the shared renderer — `{}` is missing. \
+                 The page would look fine until a ticket body contained markdown.",
+                line.trim()
+            );
+        }
+        // The substitution must actually happen, not merely be attempted: an
+        // unreplaced marker means the page shipped the placeholder instead.
+        assert!(
+            !body.contains("<<SPA_COMMON>>"),
+            "{path} still carries the unsubstituted marker"
+        );
+        // Inlined, not fetched. A `<script src=...>` here would mean the page
+        // stopped being the one self-contained document CLAUDE.md and
+        // src/api/mod.rs both promise, and would need a new route and a CSP look.
+        assert!(
+            !body.contains("<script src"),
+            "{path} must inline the shared module, not fetch it — the pages are \
+             single self-contained documents by design"
+        );
+    }
+
+    // And the two pages must carry the SAME renderer. This is the property the
+    // extraction exists to make structural: before it, keeping these identical
+    // was a thing humans had to remember, and two PRs (#92, #95) relied on doing
+    // it by hand.
+    let board = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let inbox = app
+        .request(Method::GET, "/inbox")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let extract = |page: &str| -> String {
+        let start = page.find("var MD_INLINE").expect("renderer present");
+        page[start..]
+            .lines()
+            .take(
+                shared
+                    .lines()
+                    .filter(|l| l.contains("var MD_INLINE"))
+                    .count()
+                    + 190,
+            )
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        extract(&board),
+        extract(&inbox),
+        "the two pages serve different renderers, which is the exact drift this \
+         extraction removes"
+    );
+}

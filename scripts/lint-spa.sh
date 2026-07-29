@@ -31,8 +31,21 @@ CONFIG=scripts/spa-eslint.config.mjs
 if [ "$#" -gt 0 ]; then
   FILES=("$@")
 else
-  FILES=(src/board.html src/inbox.html)
+  FILES=(src/spa-common.js src/board.html src/inbox.html)
 fi
+
+# The shared module (takomo-ftix). It is inlined into both pages at build time,
+# so neither page contains its declarations any more — linting a page alone would
+# report `mdNode is not defined` and friends, which is noise, not a defect. So the
+# page lint gets this content appended for scope resolution.
+#
+# Appending, not splicing: the marker is each script's LAST line, so everything
+# above it keeps the line number it has in the HTML and findings stay clickable.
+# The trade is that a defect *inside* the shared code is reported against the
+# page's path at a line past its end — which is why the module is also linted as
+# a file in its own right, where the location is real. A real defect there shows
+# up twice; that is the acceptable direction to be wrong.
+SHARED=src/spa-common.js
 
 [ -f "$CONFIG" ] || { echo "lint-spa: missing $CONFIG"; exit 2; }
 
@@ -62,6 +75,16 @@ for file in "${FILES[@]}"; do
     continue
   fi
 
+  # A plain .js file is linted as itself — no extraction, real line numbers.
+  case "$file" in
+    *.js)
+      npx --yes "eslint@${ESLINT_VERSION}" \
+        --no-config-lookup --config "$CONFIG" --max-warnings 0 "$file" || status=1
+      checked=$((checked + 1))
+      continue
+      ;;
+  esac
+
   # Both SPAs hold exactly one <script> block, on a line of its own. Insist on
   # that rather than coping: if a second block appears, silently linting only
   # the first would leave the new code unchecked while the job stayed green,
@@ -89,6 +112,23 @@ for file in "${FILES[@]}"; do
   js="$tmp/$(basename "$file").js"
   awk -v n="$start" 'BEGIN { for (i = 0; i < n; i++) print "" }' > "$js"
   sed -n "$((start + 1)),$((end - 1))p" "$file" >> "$js"
+  # Splice the shared module in at the marker, which is the last statement INSIDE
+  # each page's IIFE — appending after the whole script would put it outside the
+  # closure, where `el` is not in scope. That is exactly how the runtime inlining
+  # works (src/api/mod.rs), so linting and serving assemble the page the same way.
+  #
+  # Line numbers above the marker are untouched, which is every line of
+  # page-specific code. Only the shared block's own lines shift, and it is linted
+  # separately as a file where its locations are real.
+  if [ -f "$SHARED" ]; then
+    awk -v shared="$SHARED" '
+      /<<SPA_COMMON>>/ { while ((getline line < shared) > 0) print line; next }
+      { print }
+    ' "$js" > "$js.spliced" && mv "$js.spliced" "$js"
+  else
+    echo "lint-spa: $SHARED is missing; the pages reference its functions and would lint as undefined."
+    status=1
+  fi
 
   # --max-warnings 0 is load-bearing, not tidiness. The ruleset emits only
   # errors, so nothing here should ever warn — but eslint reports "File ignored
