@@ -27,8 +27,17 @@ Naming convention: `human:alice`, `orch:main`, `agent:runner-1`, `svc:github-web
 | `human`   | satisfies `scope:human` transition requirements (approval gates) |
 | `autoland`| satisfies `scope:autoland` (or other custom scopes a workflow names — scopes beyond the four reserved ones are free-form strings matched literally) |
 | `admin`   | projects (create **and delete**), workflow upload, token management, force-releasing a claim (`POST /v1/tickets/{id}/force-release` — takes a ticket from a holder that is gone, bumping the fence so the displaced worker's next write 409s) |
+| `answer:relay` | record an answer a human made **out of band**, by sending `on_behalf_of` on `POST /v1/questions/{id}/answer`. Records the named human as `answered_by` and the caller as `relayed_by`. It is not `human`: it cannot answer as itself, cannot relay a question the same actor asked (`answer.relay_self`), and cannot touch an `approve` question at all (`answer.relay_approve`) |
 
-Typical grants: workers get `read,write` on their project; orchestrators get `read,write` plus `autoland` where yolo applies; humans get `read,write,human`; the webhook service gets `write` on one project.
+Typical grants: workers get `read,write` on their project; orchestrators get `read,write` plus `autoland` where yolo applies, and `answer:relay` if they are expected to write down decisions a human gives them in conversation; humans get `read,write,human`; the webhook service gets `write` on one project.
+
+### Why `answer:relay` is not just `human`
+
+Answering a question is the human authorization gate, so it stays gated. But that gate was also blocking something it was never meant to: **transcription**. A human reads a parked question, decides, and tells the orchestrating agent — which then cannot write the decision down, so the question stays open and the ticket stays parked over bookkeeping.
+
+`answer:relay` separates *deciding* from *recording it*. The audit trail keeps saying who decided (`answered_by`, and the `question_answered` event's actor), and gains `relayed_by` so a later reader can tell a relayed decision from a first-hand one. A relayed answer also performs the ticket's `scope:human` resume, on the named human's authority — the same way the timeout path enacts a recommendation with `human` implied. Recording a decision and then refusing to act on it would strand the ticket outside the ready queue while its question read as answered, which is worse than leaving it visibly blocked.
+
+What makes it safe to hand to an agent is that it cannot manufacture a decision: relaying your own question is refused, and an `approve` question — whose whole point is that answering it *from a token holding `expert:<tag>`* is the evidence a named expert exercised their authority — is never relayable, not even by a relay token that happens to hold the expertise. A relayed name is a claim about who decided; the expert scope is proof.
 
 Deleting a project (`DELETE /v1/projects/{id}`, admin scope) cascades to every ticket, comment, dep, and event under it, but does **not** touch tokens: a token scoped to a now-deleted project keeps existing and simply stops resolving against it. Revoke such tokens separately with `DELETE /v1/tokens/{id}` when you want them gone.
 

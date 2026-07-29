@@ -1780,6 +1780,36 @@ paths:
       summary: Answer a question (the human authorization gate) and resume the ticket
       description: |
         Requires the `human` scope. Records the reply and resumes the ticket.
+
+        **Relaying.** A caller that cannot answer may instead *record a decision a
+        human already made elsewhere*, by sending `on_behalf_of` with that
+        person's name. That path needs the `answer:relay` scope rather than
+        `human`, stores the named human as `answered_by`, and records the caller
+        as `relayed_by` on the `question_answered` event — so a relayed decision
+        stays distinguishable from a first-hand one. It exists because the
+        `human` gate is about *authority*, while the thing it also blocked was
+        *transcription*: an agent that has been told the decision could not write
+        it down, leaving the question open and the ticket parked over bookkeeping.
+
+        Three rules keep that safe, and they are enforced in the store rather than
+        the handler so no caller can route around them: an actor may not relay a
+        question it **asked itself** (`answer.relay_self`) — otherwise an agent
+        could request approval and grant it to itself; an **`approve` question is
+        never relayable** (`answer.relay_approve`), because being answered from a
+        token holding `expert:<tag>` is the *evidence* that a named expert
+        exercised their authority and a relayed name is only a claim about it;
+        and a token that already holds `human` is told to answer as itself
+        (`answer.relay_redundant`) rather than make `answered_by` a claim.
+
+        A relayed answer **does resume the ticket**, carrying the named human's
+        authority for the `scope:human` resume edge — the same reasoning the
+        timeout path already applies when the system enacts a recommendation.
+        Recording the decision without acting on it would be incoherent (naming
+        the decider already accepts the attribution, so withholding the resume
+        buys no safety against a forged name) and actively harmful: a parked
+        ticket is out of the ready queue, so an answered-but-unresumed question
+        leaves every inbox while no fleet picks the work up. The resume reason and
+        the `question_answered` event both name the relayer.
         `answer` may be a scalar (`true`, an option string, or clarification
         text) or `{ "value": ..., "note": ... }` (a top-level `note` sibling is
         rejected). An `approve` question additionally requires the answerer to
@@ -1831,6 +1861,13 @@ paths:
               properties:
                 answer: { description: "Scalar or { value, note }" }
                 resume_to: { type: string, description: Override the resume state }
+                on_behalf_of:
+                  type: string
+                  description: >-
+                    The human who actually made this decision. Present = this is a
+                    relay, which requires the `answer:relay` scope instead of
+                    `human`; absent = the caller is answering as itself. Must be
+                    non-empty.
       responses:
         "200":
           description: The answered question and resumed ticket.
@@ -2922,6 +2959,10 @@ x-error-codes:
   token.rate_limit: "`rate_limit`, in writes per minute, must be a positive integer."
   token.expires_seconds: "`expires_seconds` must be a positive integer number of seconds."
   tag.exists: "that `kind:handle` is already registered in the project. PATCH the tag to change its label or meta."
+  answer.relay_self: "the relaying actor is the one that ASKED this question, so it cannot also relay the answer. Relaying records a decision a human made; relaying your own question would let an agent request approval and grant it to itself. Have the human answer it, or relay from an actor that did not ask it."
+  answer.relay_approve: "an 'approve' question is never relayable. It is gated on an expert:<tag> scope precisely so the answer is evidence that a named expert exercised their authority, and a relayed name is a claim about who decided rather than proof of it. Answer it from a token holding the scope, or mint that person a single-use answer link."
+  answer.relay_redundant: "this token holds the 'human' scope, so it should answer as itself rather than relay — drop 'on_behalf_of'. Relaying exists for a caller that cannot answer, and a human relaying would make 'answered_by' a claim instead of a fact."
+  answer.relay_actor: "'on_behalf_of' must name the human who made the decision — it is what 'answered_by' records and what a later reader will hold someone to. Empty or whitespace would file the decision under nobody."
   tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
 
   # -- missing entities. `notfound.<kind>` names the kind the handler looked ---
