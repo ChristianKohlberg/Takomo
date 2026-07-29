@@ -61,8 +61,9 @@ shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*
 ```
 
 `scripts/lint-spa.sh` is the only thing in the repo that reads the ~5500 lines of JavaScript inside
-`src/board.html` and `src/inbox.html`. It extracts the single inline `<script>` from each and runs a
-pinned eslint over it with a small, defect-only ruleset (`scripts/spa-eslint.config.mjs`) — duplicate
+`src/board.html` and `src/inbox.html`. It extracts the single inline `<script>` from each, splices
+`src/spa-common.js` in at that page's `// <<SPA_COMMON>>` marker exactly as the server does, and runs
+a pinned eslint over the assembly with a small, defect-only ruleset (`scripts/spa-eslint.config.mjs`) — duplicate
 keys, undefined names, dead bindings, parse errors; no style rules, so a red is always real.
 Findings are reported at the HTML file's own path and line. Nothing is added to the pages
 themselves: the SPAs stay dependency-free in the sense that matters, which is what the browser
@@ -193,7 +194,7 @@ link, which is exactly the part that dominates here; measure before adopting it.
 |---|---|
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
-| `/board`, `/inbox` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` (`src/api/mod.rs`). |
+| `/board`, `/inbox` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` (`src/api/mod.rs`). `src/spa-common.js` — the shared markdown renderer — is inlined into both at the `// <<SPA_COMMON>>` marker, so each page stays ONE self-contained document: no second request, no new route. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the
@@ -263,6 +264,13 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   compiled into the binary. Confirm before concluding anything: `curl -s "$URL/board" | grep -c <id>`.
 - Both SPAs render via DOM construction (never `innerHTML` on user data) and carry full DE/EN
   `STR` tables — keep the two locales in key parity when adding UI strings.
+- Code both SPAs need goes in `src/spa-common.js`, not copy-pasted. It is inlined at the
+  `// <<SPA_COMMON>>` marker, which is the **last statement inside each page's IIFE** — appending
+  there keeps every page line number as it is in its own file, and putting it outside the IIFE would
+  take `el()` out of scope and break the renderer at runtime. The module may depend on `el()` and
+  nothing else: no `state`, no `L()`/`t()`, no `api()`. The `STR` tables stay per-page (takomo-2hk4:
+  four keys collide across the two files with *different* values), and so does the typeahead, which
+  genuinely differs between them.
 - The server refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`: it terminates plain
   HTTP and expects TLS in front.
 

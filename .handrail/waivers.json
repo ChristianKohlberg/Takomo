@@ -1,8 +1,8 @@
 {
   "openapi-current": {
-    "reason": "Internal concurrency change only: reads move to read-only companion connections and the scan-shaped handlers (export, metrics, roadmap, deps) move onto tokio's blocking pool. No route, parameter, status code or response body changes — every endpoint returns byte-for-byte what it did, so there is nothing for spec/openapi.yaml to record.",
-    "scopeHash": "87755606bbf7",
-    "at": "2026-07-27T21:29:30Z",
+    "reason": "takomo-ftix touches src/api/mod.rs only to change how the two SPA pages are assembled: src/spa-common.js is inlined at each page's marker instead of the renderer being copy-pasted into both HTML files. No route, request shape, response shape or error code changed, so there is nothing for spec/openapi.yaml to record — /board and /inbox are already documented as returning HTML, and the HTML's internal structure is not part of the API contract. The spec was verified unchanged and openapi-valid is green (55 paths). Behaviour is pinned instead by both_spas_serve_the_shared_module_inlined in tests/api.rs, which asserts the module reaches both served pages, that no unsubstituted marker survives, that neither page grew a <script src>, and that the two pages carry byte-identical renderers.",
+    "scopeHash": "3b792d1e2917",
+    "at": "2026-07-29T16:40:11Z",
     "by": "Christian Kohlberg"
   }
 }

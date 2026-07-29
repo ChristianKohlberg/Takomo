@@ -119,8 +119,46 @@ fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
 /// same-origin `/v1` API with a token the viewer supplies in the browser. The
 /// page itself is unauthenticated (all data fetches carry the Bearer token);
 /// serving static HTML leaks nothing the API does not already guard.
+/// The shared SPA code, inlined into both pages at the `// <<SPA_COMMON>>`
+/// marker (takomo-ftix). One source of truth for the markdown renderer that was
+/// two byte-identical copies, with nothing in CI comparing them.
+///
+/// Substituted once at first use rather than per request, and deliberately at
+/// runtime rather than in a `build.rs`: the pages are already `include_str!`'d
+/// here, so this keeps the whole assembly visible in the file that serves them
+/// instead of splitting it across a build script nobody reads.
+///
+/// The marker is each script's last line, so appending leaves every
+/// page-specific line number as it is in its own file — a stack trace still
+/// points somewhere you can go.
+const SPA_COMMON: &str = include_str!("../spa-common.js");
+
+/// Panics at first use if the marker is missing, which is the intended
+/// behaviour: a page served without the renderer would fail only where an
+/// agent-written body happens to contain markdown — a defect that reaches
+/// production and shows up as "links do not work sometimes". Failing on the
+/// first request to the page instead is loud, immediate and local.
+fn with_spa_common(page: &'static str, which: &str) -> String {
+    let marker = page
+        .lines()
+        .find(|l| l.contains("<<SPA_COMMON>>"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{which} has no `// <<SPA_COMMON>>` marker — the shared renderer \
+                 (src/spa-common.js) would not be in the served page. Restore the \
+                 marker as the last line of the page's script."
+            )
+        });
+    page.replace(marker, SPA_COMMON)
+}
+
+static BOARD_HTML: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| with_spa_common(include_str!("../board.html"), "board.html"));
+static INBOX_HTML: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| with_spa_common(include_str!("../inbox.html"), "inbox.html"));
+
 pub async fn board() -> impl axum::response::IntoResponse {
-    secure_html(include_str!("../board.html"))
+    secure_html(BOARD_HTML.as_str())
 }
 
 /// Ask-a-human inbox: a self-contained email-style page (folder rail, question
@@ -128,7 +166,7 @@ pub async fn board() -> impl axum::response::IntoResponse {
 /// unauthenticated static HTML; every data fetch carries the viewer's bearer
 /// token, so serving it leaks nothing the API does not already guard.
 pub async fn inbox() -> impl axum::response::IntoResponse {
-    secure_html(include_str!("../inbox.html"))
+    secure_html(INBOX_HTML.as_str())
 }
 
 /// The takomo mark ("tako" = octopus) as an SVG favicon, served at both

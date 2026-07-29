@@ -92,4 +92,31 @@ export default [
       // a different ticket, not a rule toggle here.
     },
   },
+  {
+    // src/spa-common.js (takomo-ftix) is inlined into both pages at build time,
+    // and depends on exactly one thing from its host: `el(tag, cls, text)`. When
+    // linted as a file in its own right that name is unresolvable, so declare it
+    // here rather than with a `/* global */` directive in the source — the
+    // directive would collide once the file is spliced into a page that declares
+    // `el` for real, and `reportUnusedDisableDirectives` would then flag it.
+    //
+    // Deliberately narrow: one name, one file. If this list grows, the module has
+    // grown a dependency on its host and stopped being shareable — which is the
+    // signal to push back, not to extend this array.
+    files: ["**/spa-common.js"],
+    languageOptions: { globals: { el: "readonly" } },
+    rules: {
+      // Off for this file ONLY, and nothing is lost. In isolation every entry
+      // point the module exists to provide is unused by definition — `mdNode`,
+      // `mdInline` and the rest are called by the host pages, never from here.
+      //
+      // Dead code inside the module is still caught, and caught better: the page
+      // lint splices this file in at the marker and lints the assembly, which is
+      // the only context it ever runs in. A helper in here that nothing calls is
+      // unused *there* too, and that run is the truthful one. So the standalone
+      // pass is for the checks that need no host — parse errors, undefined names,
+      // duplicate keys — and the spliced pass is for reachability.
+      "no-unused-vars": "off",
+    },
+  },
 ];
