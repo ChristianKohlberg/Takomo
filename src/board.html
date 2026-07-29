@@ -195,6 +195,54 @@
   .ta-list li.on { background: var(--sel); color: var(--accent); }
   .ta-note { padding: 7px 11px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border-soft); }
   .ta-note:empty { display: none; }
+  .ta-hint { padding: 6px 11px 7px; font-size: 11.5px; color: var(--low); border-top: 1px solid var(--border-soft); }
+  .ta-hint:empty { display: none; }
+
+  /* ---- the multi-select variant (takomo-cr7k) — the label filter ----
+     Same factory, one flag. Every rule below is scoped to `.ta.multi`, so the
+     two single-select callers keep the box they have today: a 190/150px input
+     with its own border and the clear button floating inside it.
+
+     Multi inverts that. The ROOT becomes the bordered field and the input goes
+     borderless inside it, sharing the box with the selected chips and wrapping
+     to a second line when they no longer fit. That is the token-input shape a
+     reader already knows from every tag editor, and it keeps the selection
+     itself on screen instead of hiding it behind a summary like "2 labels" —
+     which matters more here than for a single-select, because with OR semantics
+     what is selected IS what the board is showing. */
+  .ta.multi {
+    flex-wrap: wrap; gap: 4px; align-items: center; width: 220px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 3px 26px 3px 4px; background: var(--panel);
+  }
+  .ta.multi input, .ta.multi.has-value input {
+    flex: 1 1 62px; min-width: 62px; width: auto; padding: 3px 2px;
+    border: 0; background: transparent; font-weight: inherit;
+  }
+  .ta.multi.has-value { border-color: var(--sel-border); background: var(--sel); }
+  /* The field can be two lines tall; clear-all belongs on the first one, beside
+     where the typing happens, not floating in the middle of the stack. */
+  .ta.multi .ta-clear { top: 4px; transform: none; }
+  /* Which options are already chosen, for a reader who is not on a screen
+     reader — `aria-selected` already says it for one who is. Generated content,
+     so it costs no string in either locale. */
+  .ta.multi .ta-list li[aria-selected="true"]::after { content: "✓"; color: var(--accent2); margin-left: auto; padding-left: 8px; }
+  /* One box to re-render, but `display: contents` dissolves it so each chip is a
+     flex item of the field itself — the same trick #filters uses on the header.
+     Without it the whole selection would be one unbreakable item and could not
+     wrap between chips. */
+  .ta-chips { display: contents; }
+  .ta-chip {
+    display: inline-flex; align-items: center; gap: 2px; max-width: 100%;
+    background: var(--chip-bg); color: var(--chip-text);
+    border-radius: 6px; padding: 1px 1px 1px 7px; font-size: 12px; font-weight: 620;
+  }
+  .ta-chip .ctext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ta-chip .cx {
+    border: 0; background: transparent; color: inherit; cursor: pointer;
+    font-size: 13px; line-height: 1; padding: 3px 4px; border-radius: 5px;
+  }
+  .ta-chip .cx:hover { color: var(--crit); background: var(--hover); }
 
   .grouptoggle { font-size: 12.5px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
   .subhd { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px 0; margin-top: 2px; }
@@ -493,6 +541,15 @@
     #filters > select, #filters > .ta, #filters > .grouptoggle { flex: 1 1 100%; max-width: none; }
     header #filters select { max-width: none; width: 100%; }
     #filters .ta input, #filters .ta.narrow input { width: 100%; }
+    /* The multi-select field is the root, not the input, so it is the thing that
+       has to give up its fixed width here. Its input keeps `flex: 1 1 62px`, so
+       it fills whatever the chips leave and wraps to its own line when they
+       leave nothing. A chip's × grows to a finger target: 34px rather than 44,
+       because a chip is a 20px-tall object and three of them at 44px would be a
+       third of the filter panel. */
+    #filters .ta.multi { width: 100%; }
+    #filters .ta.multi input { width: auto; }
+    .ta-chip .cx { min-width: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; }
     /* The typeahead popup hangs off a control that is now full width, so it
        tracks that width instead of its own fixed 190/420px. */
     .ta-pop { max-width: 100%; }
@@ -579,6 +636,7 @@
     <div id="tickfilter" class="ta hidden"></div>
     <select id="tagkindsel" class="epicsel hidden" title="filter by tag kind"></select>
     <div id="tagvalfilter" class="ta narrow hidden"></div>
+    <div id="labelfilter" class="ta multi hidden"></div>
     <label class="grouptoggle hidden" id="group-wrap" title="Group cards by their epic"><input type="checkbox" id="groupepic"> <span id="group-label">by epic</span></label>
   </div>
   <span class="share-banner" id="share-scope"></span>
@@ -632,6 +690,7 @@
   var LS_GROUP = "takomo.board.groupepic";
   var LS_TAGKIND = "takomo.board.tagkind";
   var LS_TAGREF = "takomo.board.tagref";
+  var LS_LABELS = "takomo.board.labels";
   var COLLAPSE_LIMIT = 6; // cards shown per column/epic-group before "show more"
 
   // ---- i18n (shared vocabulary with /inbox) ----
@@ -754,6 +813,11 @@
       taCount:"{n} Treffer",
       taCount1:"1 Treffer",
       taTagValue:"Nach Tag-Wert filtern (Handle oder Name)",
+      taLabel:"Nach Labels filtern (mehrere möglich)",
+      allLabels:"Alle Labels",
+      taAddMore:"weiteres hinzufügen…",
+      taRemove:"„{v}“ entfernen",
+      taAnyOf:"Zeigt Tickets mit einem BELIEBIGEN der gewählten Labels — mehr wählen erweitert, grenzt nie ein.",
       filters:"Filter",
     },
     en: {
@@ -874,6 +938,11 @@
       taCount:"{n} matches",
       taCount1:"1 match",
       taTagValue:"Filter by tag value (handle or name)",
+      taLabel:"Filter by labels (more than one allowed)",
+      allLabels:"All labels",
+      taAddMore:"add another…",
+      taRemove:"Remove “{v}”",
+      taAnyOf:"Shows tickets carrying ANY of the selected labels — picking more broadens, never narrows.",
       filters:"Filters",
     },
   };
@@ -882,6 +951,21 @@
 
   // takomo mark (waveform) — inline so the surface stays dependency-free.
   var LOGO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11a6 6 0 0 1 12 0"/><circle cx="9.7" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.3" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><path d="M7 11.2c0 2.8-1.4 3.8-1.4 5.8"/><path d="M10 11.6c0 2.9-.5 4.3 0 6.2"/><path d="M14 11.6c0 2.9.5 4.3 0 6.2"/><path d="M17 11.2c0 2.8 1.4 3.8 1.4 5.8"/></svg>';
+
+  // The label filter is the one persisted filter that is a LIST, so it is stored
+  // as JSON rather than a bare string. Anything that is not an array of strings is
+  // treated as "no filter": a hand-edited or half-written entry must not throw
+  // during the state initializer, which runs before any error handling exists.
+  function readLabelFilter() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(LS_LABELS) || "[]");
+      if (!Array.isArray(raw)) return [];
+      return raw.filter(function (v) { return typeof v === "string" && v; });
+    } catch (_) { return []; }
+  }
+  function writeLabelFilter(vals) {
+    localStorage.setItem(LS_LABELS, JSON.stringify(vals || []));
+  }
 
   var state = {
     token: localStorage.getItem(LS_TOKEN) || "",
@@ -907,6 +991,7 @@
     tagKind: localStorage.getItem(LS_TAGKIND) || "", // "" = all kinds
     tagRef: localStorage.getItem(LS_TAGREF) || "",   // "" = all of the kind; else "kind:handle"
     tagLabels: {},     // ref -> display label (from the registry, when available)
+    labelFilter: readLabelFilter(), // [] = all labels; else match ANY of these (OR)
     expanded: {},      // collapse key -> true (a column/epic-group showing all cards)
     // Project-settings modal. `orig` is what the store returned, so Save can send
     // only what actually changed and Cancel needs no undo logic.
@@ -1520,11 +1605,23 @@
     var chk = $("groupepic"); if (chk) chk.checked = state.groupByEpic;
   }
 
-  // ---- typeahead: a dependency-free single-select combobox ----
+  // ---- typeahead: a dependency-free combobox, single- or multi-select ----
   //
   // Replaces a <select> whose option list has outgrown scanning. Same contract
   // as the <select> it stands in for — a value, "" meaning "no filter", and one
   // onChange — so the callers keep their existing state handling.
+  //
+  // `multi: true` (takomo-cr7k, the label filter) turns the same control into a
+  // multi-select: the selection becomes an ARRAY, onChange hands over a copy of
+  // it, choosing toggles instead of replacing and leaves the popup open, and the
+  // chosen values render as removable chips inside the field. It is one flag on
+  // one factory rather than a sibling implementation for a reason: everything an
+  // added control would have had to duplicate — the ARIA wiring, the key
+  // handling, the locale re-read, the never-innerHTML row builder — is exactly
+  // the part that must not fork, and takomo-ftix already tracks the fact that
+  // /board and /inbox each carry their own copy of this. Two of them per page
+  // would be worse, not better. Every `multi` branch below is additive, so a
+  // single-select caller runs the same statements it ran before the flag existed.
   //
   // Three things it is careful about:
   //  * Keyboard. A <select> is fully operable by keyboard for free; a typeahead
@@ -1548,12 +1645,17 @@
   // dragging in virtual scrolling.
   var TA_MAX_ROWS = 60;
 
-  // cfg: { id, label(), allLabel(), onChange(value) }. `id` is a placeholder
-  // element in the header that this fills in.
+  // cfg: { id, label(), allLabel(), onChange(value), multi?, hint?() }. `id` is a
+  // placeholder element in the header that this fills in. With `multi`, onChange
+  // receives an array and `hint()` (optional) is a standing line under the list —
+  // the place to say what selecting several of them MEANS, which a multi-select
+  // needs and a single-select does not.
   function makeTypeahead(cfg) {
     var root = $(cfg.id); if (!root) return null;
+    var multi = !!cfg.multi;
     var items = [];   // [{ value, display, lead, text, hay }] — hay is pre-lowercased
-    var value = "";   // current selection; "" = no filter
+    var value = "";   // single-select: current selection; "" = no filter
+    var values = [];  // multi-select: current selections, in the order they were picked
     var open = false;
     var query = "";   // typed since opening; "" = show everything
     var view = [];    // items currently listed
@@ -1585,25 +1687,82 @@
     note.setAttribute("role", "status");
     note.setAttribute("aria-live", "polite");
     pop.appendChild(list); pop.appendChild(note);
-    root.appendChild(label); root.appendChild(input); root.appendChild(clear); root.appendChild(pop);
+    // A multi-select says so — a listbox that does not is claiming one option can
+    // be chosen while the rows say two are. The hint is NOT a live region: it
+    // never changes, so announcing it on every keystroke would only be noise.
+    var hint = null;
+    if (multi) {
+      list.setAttribute("aria-multiselectable", "true");
+      hint = el("div", "ta-hint");
+      pop.appendChild(hint);
+    }
+    // Chips sit before the input, so Tab walks the selection in the order it
+    // reads and lands in the input last — and Shift+Tab out of the input hits the
+    // chip you most recently added.
+    var chips = multi ? el("div", "ta-chips") : null;
+    root.appendChild(label);
+    if (chips) root.appendChild(chips);
+    root.appendChild(input); root.appendChild(clear); root.appendChild(pop);
 
     function displayOf(v) {
       for (var i = 0; i < items.length; i++) if (items[i].value === v) return items[i].display;
       return v; // selection not in the current set yet — show the raw value rather than nothing
     }
+    function isSelected(v) {
+      return multi ? values.indexOf(v) !== -1 : v === value;
+    }
+    // The one place that knows a multi-select's field is a search box rather than
+    // a display of the selection: the chips show what is chosen, so the input is
+    // free to hold the query and is emptied — not refilled — when the popup closes.
     function syncText() {
       var name = cfg.label();
       label.textContent = name;
       list.setAttribute("aria-label", name);
+      var chosen = multi ? values.length > 0 : !!value;
       // The box is 190px, so a chosen ticket shows truncated. Its full text
       // belongs in the tooltip, or the selection is only half-legible.
-      input.title = value ? (name + ": " + displayOf(value)) : name;
-      input.placeholder = cfg.allLabel();
+      if (multi) {
+        input.title = values.length ? (name + ": " + values.map(displayOf).join(", ")) : name;
+        input.placeholder = values.length ? L().taAddMore : cfg.allLabel();
+      } else {
+        input.title = value ? (name + ": " + displayOf(value)) : name;
+        input.placeholder = cfg.allLabel();
+      }
       clear.setAttribute("aria-label", L().taClear);
       clear.title = L().taClear;
-      clear.classList.toggle("hidden", !value);
-      root.classList.toggle("has-value", !!value);
-      if (!open) input.value = value ? displayOf(value) : "";
+      clear.classList.toggle("hidden", !chosen);
+      root.classList.toggle("has-value", chosen);
+      if (hint) hint.textContent = cfg.hint ? cfg.hint() : "";
+      if (chips) renderChips();
+      if (!open) input.value = multi ? "" : (value ? displayOf(value) : "");
+    }
+
+    // The selection, as chips. Each carries a real <button>, so it is in the tab
+    // order and takes Enter/Space for free — a chip you can only remove with a
+    // mouse would put the selection out of a keyboard reader's reach, which is the
+    // whole reason this control is not a <select>.
+    function renderChips() {
+      chips.innerHTML = "";
+      values.forEach(function (v, i) {
+        var text = displayOf(v);
+        var chip = el("span", "ta-chip");
+        chip.appendChild(el("span", "ctext", text)); // textContent, never innerHTML: a label is user text
+        var x = el("button", "cx", "×");
+        x.type = "button";
+        x.title = L().taRemove.replace("{v}", text);
+        x.setAttribute("aria-label", x.title);
+        x.addEventListener("click", function () {
+          remove(v);
+          // Focus must not fall to <body> when the button under it disappears:
+          // land on the chip that took its place, or on the input if it was last.
+          var next = chips.children[Math.min(i, chips.children.length - 1)];
+          var btn = next ? next.querySelector(".cx") : null;
+          if (btn) btn.focus();
+          else { noAutoOpen = true; input.focus(); noAutoOpen = false; }
+        });
+        chip.appendChild(x);
+        chips.appendChild(chip);
+      });
     }
 
     // Every whitespace-separated token must appear somewhere in the haystack, so
@@ -1613,8 +1772,13 @@
     function compute() {
       var toks = query.toLowerCase().split(/\s+/).filter(function (s) { return s; });
       if (!toks.length) {
-        hasAll = true;
-        view = [{ value: "", display: "", lead: "", text: cfg.allLabel() }].concat(items);
+        // The synthetic "all" row is a single-select idea: it is how you say "no
+        // filter" when picking one value replaces the last. A multi-select has no
+        // use for it — every row toggles, and clearing everything is the × — and a
+        // row that selected nothing would be the one row in the list that does not
+        // behave like a row.
+        hasAll = !multi;
+        view = hasAll ? [{ value: "", display: "", lead: "", text: cfg.allLabel() }].concat(items) : items.slice();
         return;
       }
       hasAll = false;
@@ -1640,7 +1804,7 @@
         var li = el("li");
         li.id = cfg.id + "-o" + i;
         li.setAttribute("role", "option");
-        li.setAttribute("aria-selected", it.value === value ? "true" : "false");
+        li.setAttribute("aria-selected", isSelected(it.value) ? "true" : "false");
         if (it.lead) li.appendChild(el("span", "tlead", it.lead));
         if (it.text) li.appendChild(el("span", "ttext", it.text));
         // The two halves are separate spans held apart by a flex gap, which gives
@@ -1666,7 +1830,7 @@
       input.setAttribute("aria-expanded", "true");
       compute();
       active = -1;
-      for (var i = 0; i < view.length && i < TA_MAX_ROWS; i++) if (view[i].value === value) { active = i; break; }
+      for (var i = 0; i < view.length && i < TA_MAX_ROWS; i++) if (isSelected(view[i].value)) { active = i; break; }
       if (active === -1 && view.length) active = 0;
       renderList();
     }
@@ -1676,14 +1840,51 @@
       pop.classList.add("hidden");
       input.setAttribute("aria-expanded", "false");
       input.removeAttribute("aria-activedescendant");
-      input.value = value ? displayOf(value) : "";
+      input.value = multi ? "" : (value ? displayOf(value) : "");
     }
+    // Single-select: replace, then close — picking a value is the end of the
+    // interaction. Multi-select: toggle, and stay open with the query cleared, so
+    // "area, Enter, sev, Enter" adds two labels without reopening anything. Both
+    // report through the same onChange; multi hands over a copy, so a caller
+    // holding the array cannot mutate this control's state behind its back.
     function choose(v) {
+      if (multi) {
+        if (!v) return; // no synthetic "all" row here, so there is nothing to mean by ""
+        var at = values.indexOf(v);
+        if (at === -1) values.push(v); else values.splice(at, 1);
+        query = "";
+        input.value = "";
+        compute();
+        active = -1;
+        for (var i = 0; i < view.length && i < TA_MAX_ROWS; i++) if (view[i].value === v) { active = i; break; }
+        renderList();
+        syncText();
+        cfg.onChange(values.slice());
+        return;
+      }
       var changed = (v || "") !== value;
       value = v || "";
       closeList();
       syncText();
       if (changed) cfg.onChange(value);
+    }
+    // Multi-select only: drop one value, or all of them. Kept separate from
+    // choose() because removing is not toggling — a chip's × and Backspace must
+    // never be able to ADD a label back.
+    function remove(v) {
+      var at = values.indexOf(v);
+      if (at === -1) return;
+      values.splice(at, 1);
+      if (open) renderList(); // the row's aria-selected and its check mark follow
+      syncText();
+      cfg.onChange(values.slice());
+    }
+    function removeAll() {
+      if (!values.length) return;
+      values = [];
+      if (open) renderList();
+      syncText();
+      cfg.onChange(values.slice());
     }
 
     input.addEventListener("focus", function () {
@@ -1719,15 +1920,20 @@
         // Stop here: the document-level Escape handler closes the drawers, and
         // dismissing this popup should not also close what is behind it.
         if (open) { e.preventDefault(); e.stopPropagation(); closeList(); }
-        else if (value) { e.preventDefault(); e.stopPropagation(); choose(""); }
-      } else if ((k === "Backspace" || k === "Delete") && value && input.value === "") {
-        choose(""); // deleting the shown selection clears the filter
+        else if (multi && values.length) { e.preventDefault(); e.stopPropagation(); removeAll(); }
+        else if (!multi && value) { e.preventDefault(); e.stopPropagation(); choose(""); }
+      } else if ((k === "Backspace" || k === "Delete") && input.value === "") {
+        // Backspace on an empty box peels the last chip off — the idiom every
+        // token input has, and the fastest keyboard undo of a mis-pick. The chip
+        // buttons remain the way to remove any OTHER one.
+        if (multi) { if (values.length) { e.preventDefault(); remove(values[values.length - 1]); } }
+        else if (value) choose(""); // deleting the shown selection clears the filter
       } else if (k === "Tab") {
         closeList();
       }
     });
     clear.addEventListener("click", function () {
-      choose("");
+      if (multi) removeAll(); else choose("");
       // Keep focus reachable — the button hides itself once there is nothing to
       // clear, and focus must not fall back to <body> mid-keyboard-run.
       noAutoOpen = true; input.focus(); noAutoOpen = false;
@@ -1753,6 +1959,18 @@
         syncText();
       },
       setValue: function (v) { value = v || ""; syncText(); },
+      // The multi-select counterpart. A copy in, so a caller cannot mutate the
+      // control's selection behind its back, and pruned against what is on offer:
+      // a chip for a label no ticket carries any more is a filter the reader
+      // cannot see the cause of. Returns what survived, so the caller can persist
+      // the pruned set rather than the one it asked for.
+      setValues: function (next) {
+        var offered = {};
+        items.forEach(function (it) { offered[it.value] = true; });
+        values = (next || []).filter(function (v) { return offered[v]; });
+        syncText();
+        return values.slice();
+      },
       show: function (visible) {
         if (!visible) closeList();
         root.classList.toggle("hidden", !visible);
@@ -1844,6 +2062,64 @@
     }
   });
 
+  // The label filter — the one multi-select caller (takomo-cr7k). Labels are
+  // where this project keeps its routing (`area:*`, `severity:*`, `trap`,
+  // `regression`), and until now none of it was reachable from the board.
+  //
+  // OR, not AND: a ticket matches if it carries ANY selected label. That is the
+  // captain's call, and it is the opposite of `?label=a&label=b` on the server,
+  // which is documented AND — so this filter is deliberately client-side, over
+  // the tickets already in `state`, and not a refetch. `taAnyOf` says so in the
+  // popup, because a filter that can only widen is surprising otherwise.
+  var labelTA = makeTypeahead({
+    id: "labelfilter",
+    multi: true,
+    label: function () { return L().taLabel; },
+    allLabel: function () { return L().allLabels; },
+    hint: function () { return L().taAnyOf; },
+    onChange: function (vals) { setLabelFilter(vals); render(); }
+  });
+
+  function setLabelFilter(vals) {
+    state.labelFilter = (vals || []).slice();
+    writeLabelFilter(state.labelFilter);
+    // A different label set can hide the card a drawer is open on, and the epic
+    // groups collapse/expand per render — same reset the other filters do.
+    state.expanded = {};
+  }
+
+  // True when a ticket passes the label filter. Empty selection = no filter at
+  // all, which is why this is a separate predicate rather than an `indexOf`
+  // inline: `[].some(...)` is false, and "nothing selected" must mean "show
+  // everything", not "show nothing".
+  function matchesLabelFilter(t) {
+    if (!state.labelFilter.length) return true;
+    var have = t.labels || [];
+    return state.labelFilter.some(function (l) { return have.indexOf(l) !== -1; });
+  }
+
+  // Offer only labels actually in use on the tickets in hand — never a registry
+  // call, so this works in share mode too, exactly like `ticketTagRefs()`. A
+  // selection whose label has gone is dropped by `setValues` and the pruned set
+  // is what gets persisted, so a filter can never sit there matching nothing
+  // with no visible cause (the bug takomo-qs3y describes on the inbox).
+  function populateLabels() {
+    if (!labelTA) return;
+    var seen = {};
+    Object.keys(state.tickets).forEach(function (id) {
+      var t = state.tickets[id];
+      if (t.archived_at && !state.showArchived) return;
+      (t.labels || []).forEach(function (l) { if (l) seen[l] = true; });
+    });
+    var labels = Object.keys(seen).sort(function (a, b) { return a.localeCompare(b); });
+    labelTA.setItems(labels.map(function (l) {
+      return { value: l, display: l, lead: "", text: l, hay: l.toLowerCase() };
+    }));
+    var kept = labelTA.setValues(state.labelFilter);
+    if (kept.length !== state.labelFilter.length) setLabelFilter(kept);
+    labelTA.show(labels.length > 0);
+  }
+
   // Keep the tag kind dropdown and the value typeahead in sync with the tags in
   // play; prune stale selections; hide when there are none.
   function populateTagFilter() {
@@ -1904,6 +2180,7 @@
     populateEpics();
     populateTickets();
     populateTagFilter();
+    populateLabels();
     var states = state.workflow.states || [];
     var byState = {};
     var catOf = {};
@@ -1914,6 +2191,7 @@
       if (state.epicFilter && !inSubtree(t, state.epicFilter)) return; // epic filter
       if (state.ticketFilter && !inSubtree(t, state.ticketFilter)) return; // ticket filter (incl. subtasks)
       if (!matchesTagFilter(t)) return; // tag filter (kind / kind:handle)
+      if (!matchesLabelFilter(t)) return; // label filter (any of the selected — OR)
       if (!byState[t.state]) byState[t.state] = []; // unknown/legacy state -> its own column
       byState[t.state].push(t);
     });
