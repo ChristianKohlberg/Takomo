@@ -8941,3 +8941,244 @@ fn assert_lease_seconds(lease: &Value, want: i64, what: &str) {
         "{what}: lease should run ~{want}s but runs {got}s ({lease})"
     );
 }
+
+/// An agent can write down a decision a human already made, and cannot
+/// manufacture one (takomo-22xj).
+///
+/// The `human` gate on answering is about *authority*. What it was accidentally
+/// also blocking is *transcription*: a human reads a parked question, decides
+/// out of band, and the orchestrating agent could not record it — so the
+/// question stayed open and the ticket stayed blocked over bookkeeping. The
+/// relay path fixes that without handing an agent the authority itself, and this
+/// pins both halves, because either one alone is worthless.
+#[tokio::test]
+async fn an_agent_may_relay_a_human_decision_but_never_invent_one() {
+    let app = TestApp::spawn().await;
+    // read,write + the relay scope, and deliberately NOT `human`.
+    let relay = app.mint(
+        "agent:orchestrator",
+        &["read", "write", "answer:relay"],
+        None,
+    );
+
+    let id = app.create_ticket("relay a decision").await;
+    let fence = app.to_implementing(&id).await;
+    let (q1, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Ship it?", "fence": fence }),
+        )
+        .await;
+
+    // Without the scope at all, nothing changes: still the human gate.
+    let (s, err) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{q1}/answer"),
+            json!({ "answer": "yes", "on_behalf_of": "human:christian" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["code"], "auth.scope", "{err}");
+
+    // With it, the answer lands — attributed to the human who decided, not to
+    // the agent that typed it.
+    let (s, ok) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{q1}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a worker still cannot answer: {ok}"
+    );
+
+    let (s, ok) = app
+        .post(
+            &relay,
+            &format!("/v1/questions/{q1}/answer"),
+            json!({ "answer": "yes", "on_behalf_of": "human:christian" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "relay should be accepted: {ok}");
+    assert_eq!(
+        ok["question"]["answered_by"], "human:christian",
+        "the DECIDER owns the answer, not the relayer — this field is what a \
+         later reader holds someone to: {ok}"
+    );
+    // The ticket must actually MOVE. This is the point of the feature, and
+    // getting it wrong is worse than not shipping it: a parked ticket is out of
+    // the ready queue, so an answer that resolves the question without resuming
+    // the ticket leaves work that no fleet picks up and no inbox shows — the
+    // question now reads as answered. Silently stalled beats nothing, and
+    // visibly blocked beats both.
+    assert!(
+        ok["resume"]["resumed"].as_bool().unwrap_or(false),
+        "a relayed answer must resume the ticket, not just close the question — \
+         otherwise it strands work outside the ready queue with nothing surfacing \
+         it: {ok}"
+    );
+    let (_, fresh) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_ne!(
+        fresh["state_category"], "blocked",
+        "the ticket must be out of the blocked category after a relayed answer: {fresh}"
+    );
+
+    // …and the log says how it got there, so a relayed decision is
+    // distinguishable from a first-hand one.
+    let (_, evs) = app
+        .get(
+            &app.admin,
+            "/v1/events?since=0&limit=200&kind=question_answered",
+        )
+        .await;
+    let ev = evs["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|e| e["payload"]["question"] == json!(q1))
+        .expect("the answer event");
+    assert_eq!(
+        ev["actor"], "human:christian",
+        "the event's actor is who decided: {ev}"
+    );
+    assert_eq!(
+        ev["payload"]["relayed_by"], "agent:orchestrator",
+        "and the payload says who transcribed it: {ev}"
+    );
+
+    // The invariant that makes the scope safe to hand out: you cannot relay a
+    // question you asked yourself. Otherwise `answer:relay` is merely "an agent
+    // may answer" — ask for approval, grant it to yourself, resume the ticket.
+    // The relay token has to be the ASKER here, so it must hold the lease
+    // itself — claim and start as that actor rather than reusing the worker's
+    // fence, or the ask is refused for the wrong reason and the test proves
+    // nothing about relaying.
+    let id2 = app.create_ticket("self-relay must fail").await;
+    app.to_ready(&id2).await;
+    let (s, lease) = app
+        .post(&relay, &format!("/v1/tickets/{id2}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "relay token claims: {lease}");
+    let fence2 = lease["fence"].as_i64().expect("fence");
+    let (s, b) = app
+        .post(
+            &relay,
+            &format!("/v1/tickets/{id2}/transition"),
+            json!({ "to": "implementing", "fence": fence2 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "->implementing: {b}");
+    let (qid2, _) = app
+        .ask(
+            &relay,
+            json!({ "ticket": id2, "kind": "confirm", "title": "May I?", "fence": fence2 }),
+        )
+        .await;
+    let (s, err) = app
+        .post(
+            &relay,
+            &format!("/v1/questions/{qid2}/answer"),
+            json!({ "answer": "yes", "on_behalf_of": "human:christian" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
+    assert_eq!(err["code"], "answer.relay_self", "{err}");
+    assert!(
+        err["remedy"].as_str().unwrap_or_default().contains("human"),
+        "the refusal must name the way out: {err}"
+    );
+
+    // A token that CAN answer should answer, not claim to be relaying — else
+    // `answered_by` becomes a claim instead of a fact.
+    let id3 = app.create_ticket("human relaying is redundant").await;
+    let fence3 = app.to_implementing(&id3).await;
+    let (q3, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id3, "kind": "confirm", "title": "Fine?", "fence": fence3 }),
+        )
+        .await;
+    let (s, err) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{q3}/answer"),
+            json!({ "answer": "yes", "on_behalf_of": "human:someone-else" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{err}");
+    assert_eq!(err["code"], "answer.relay_redundant", "{err}");
+}
+
+/// An `approve` question is never relayable — its whole point is proof that a
+/// named expert exercised their authority, and a relayed name is a claim about
+/// who decided rather than evidence of it (takomo-22xj).
+#[tokio::test]
+async fn approve_questions_cannot_be_relayed_even_with_the_scope() {
+    let app = TestApp::spawn().await;
+    let relay = app.mint(
+        "agent:orchestrator",
+        &["read", "write", "answer:relay"],
+        None,
+    );
+    // Even a relay token that ALSO holds the expertise must not shortcut it:
+    // holding the scope is what answering an approve is supposed to demonstrate.
+    let relay_expert = app.mint(
+        "agent:orchestrator2",
+        &["read", "write", "answer:relay", "expert:domain:billing"],
+        None,
+    );
+
+    let id = app.create_ticket("approve is not relayable").await;
+    let fence = app.to_implementing(&id).await;
+    let (q, _) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id,
+                "kind": "approve",
+                "title": "Re-price 1,800 live subscriptions?",
+                "expertise": ["domain:billing"],
+                "fence": fence,
+            }),
+        )
+        .await;
+
+    for (token, who) in [
+        (&relay, "a plain relay token"),
+        (&relay_expert, "a relay token holding the expertise"),
+    ] {
+        let (s, err) = app
+            .post(
+                token,
+                &format!("/v1/questions/{q}/answer"),
+                json!({ "answer": "yes", "on_behalf_of": "human:christian" }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{who} must be refused: {err}");
+        assert_eq!(err["code"], "answer.relay_approve", "{who}: {err}");
+    }
+
+    // The direct expert path is untouched.
+    let expert = app.mint(
+        "human:cfo",
+        &["read", "write", "human", "expert:domain:billing"],
+        None,
+    );
+    let (s, ok) = app
+        .post(
+            &expert,
+            &format!("/v1/questions/{q}/answer"),
+            json!({ "answer": "yes" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the expert can still approve directly: {ok}"
+    );
+    assert_eq!(ok["question"]["answered_by"], "human:cfo", "{ok}");
+}

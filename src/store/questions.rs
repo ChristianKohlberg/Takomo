@@ -938,6 +938,35 @@ fn override_state(
     Ok(())
 }
 
+/// How an answer reached the store — the three are mutually exclusive, and
+/// saying so in the type keeps a caller from claiming to be both a spent
+/// answer-link and a relayed human decision.
+#[derive(Debug, Clone, Copy)]
+pub enum AnswerVia<'a> {
+    /// The caller answered as itself, holding the `human` scope.
+    Direct,
+    /// A single-use `tka_` answer link, spent in the same transaction.
+    Grant(&'a str),
+    /// An agent recording a decision a human made out of band (takomo-22xj);
+    /// the actor is the human, this is who transcribed it.
+    Relay(&'a str),
+}
+
+impl<'a> AnswerVia<'a> {
+    fn grant(self) -> Option<&'a str> {
+        match self {
+            AnswerVia::Grant(g) => Some(g),
+            _ => None,
+        }
+    }
+    fn relayed_by(self) -> Option<&'a str> {
+        match self {
+            AnswerVia::Relay(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
 impl Store {
     /// Raise a question: validate, park the ticket in a blocked state, release
     /// the asking agent's lease (block-and-resume), and record the question.
@@ -1226,7 +1255,47 @@ impl Store {
         answer: &Value,
         resume_to: Option<&str>,
     ) -> ApiResult<AnswerOutcome> {
-        self.answer_question_inner(id, actor, scopes, answer, resume_to, None)
+        self.answer_question_inner(id, actor, scopes, answer, resume_to, AnswerVia::Direct)
+    }
+
+    /// Record an answer a human made **out of band**, on their behalf
+    /// (takomo-22xj). `on_behalf_of` is who decided; `relayer` is the agent
+    /// writing it down. Both reach the event log, so a later reader can tell a
+    /// relayed decision from a first-hand one.
+    ///
+    /// This exists because the `human` gate on answering is about *authority*,
+    /// and the thing it was accidentally also blocking is *transcription*: a
+    /// captain reads a parked question, decides in chat, and the orchestrating
+    /// agent could not write the decision down. The question stayed open and the
+    /// ticket stayed blocked over bookkeeping.
+    ///
+    /// Two refusals keep the scope safe to hand to an agent, and they are here
+    /// rather than in the handler so no future caller can route around them:
+    ///
+    /// - **An actor may not relay a question it asked itself.** Without this,
+    ///   `answer:relay` is just "an agent may answer", wearing a name badge: ask
+    ///   a blocking question, relay your own approval, resume the ticket.
+    /// - **`approve` questions are never relayable.** Their whole point is that a
+    ///   *specific* person's authority was exercised, evidenced by an
+    ///   `expert:<tag>` scope on the token that answered. A relayed name is a
+    ///   claim about who decided, not proof of it, so it cannot stand in.
+    pub fn answer_question_relayed(
+        &self,
+        id: &str,
+        relayer: &str,
+        on_behalf_of: &str,
+        scopes: &HashSet<String>,
+        answer: &Value,
+        resume_to: Option<&str>,
+    ) -> ApiResult<AnswerOutcome> {
+        self.answer_question_inner(
+            id,
+            on_behalf_of,
+            scopes,
+            answer,
+            resume_to,
+            AnswerVia::Relay(relayer),
+        )
     }
 
     /// [`Store::answer_question`] on behalf of an answer-link grant (`tka_`),
@@ -1249,7 +1318,14 @@ impl Store {
         resume_to: Option<&str>,
         grant_id: &str,
     ) -> ApiResult<AnswerOutcome> {
-        self.answer_question_inner(id, actor, scopes, answer, resume_to, Some(grant_id))
+        self.answer_question_inner(
+            id,
+            actor,
+            scopes,
+            answer,
+            resume_to,
+            AnswerVia::Grant(grant_id),
+        )
     }
 
     fn answer_question_inner(
@@ -1259,8 +1335,10 @@ impl Store {
         scopes: &HashSet<String>,
         answer: &Value,
         resume_to: Option<&str>,
-        grant_id: Option<&str>,
+        via: AnswerVia<'_>,
     ) -> ApiResult<AnswerOutcome> {
+        let grant_id = via.grant();
+        let relayed_by = via.relayed_by();
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
@@ -1280,6 +1358,39 @@ impl Store {
                         q.status
                     ),
                 ));
+            }
+            // Relay refusals (takomo-22xj). Both live here, in the transaction
+            // that records the answer, so a handler cannot forget them.
+            if let Some(relayer) = relayed_by {
+                if q.asked_by == relayer {
+                    return Err(ApiError::new(
+                        axum::http::StatusCode::FORBIDDEN,
+                        "answer.relay_self",
+                        format!(
+                            "'{relayer}' asked question '{id}', so it cannot also relay the answer to it. Relaying records a decision a HUMAN made; relaying your own question would let an agent ask for approval and grant it to itself. Have the human answer it, or relay it from an actor that did not ask it."
+                        ),
+                    )
+                    .remedy(
+                        "Answer it as the human (a token with the 'human' scope), or relay from a different actor.",
+                    ));
+                }
+                if q.kind == "approve" {
+                    return Err(ApiError::new(
+                        axum::http::StatusCode::FORBIDDEN,
+                        "answer.relay_approve",
+                        format!(
+                            "Question '{id}' is an 'approve', which is never relayable: it is gated on an expert:<tag> scope precisely so the answer is PROOF that a named expert exercised their authority. A relayed name is a claim about who decided, not evidence of it. This must be answered directly from a token holding one of {}.",
+                            q.expertise
+                                .iter()
+                                .map(|t| format!("expert:{t}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    )
+                    .remedy(
+                        "Have the expert answer it directly, or mint them a single-use answer link (POST /v1/questions/{id}/answer-link).",
+                    ));
+                }
             }
             // `approve` has teeth: only a matching domain expert may answer it
             // (the `human` scope alone is enough for every other kind).
@@ -1338,7 +1449,38 @@ impl Store {
             // `resume_target`'s under the same two rules — strict for an
             // explicit target, `resume_blocked` for an automatic one.
             let mut resume_blocked: Option<ResumeBlocked> = None;
-            let reason = format!("resolved by human ({id})");
+            let reason = match relayed_by {
+                Some(r) => format!("resolved by human ({id}, relayed by {r})"),
+                None => format!("resolved by human ({id})"),
+            };
+            // A relayed answer carries the human's authority for the resume it
+            // implies. This is the same reasoning the timeout path already uses
+            // ("System applies the recommendation; 'human' scope is implied"):
+            // once the decision is established, the resume is its mechanical
+            // consequence, not a second decision.
+            //
+            // Refusing it would be incoherent and actively harmful. Incoherent,
+            // because recording `answered_by: <human>` already accepts the
+            // attribution, so withholding the resume buys no safety against a
+            // forged name — it only strands the ticket. Harmful, because a parked
+            // ticket is OUT of the ready queue while its question now reads as
+            // answered: it leaves every inbox and no fleet picks it up. Visibly
+            // blocked work beats silently stalled work.
+            //
+            // What actually bounds the risk is upstream and structural: you
+            // cannot relay a question you asked (`answer.relay_self`), and an
+            // `approve` — the only kind whose authority is a specific person's —
+            // is never relayable at all. So this cannot forge an expert gate, and
+            // every relayed resume names both the decider and the relayer.
+            let resume_scopes: HashSet<String> = match relayed_by {
+                Some(_) => scopes
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once("human".to_string()))
+                    .collect(),
+                None => scopes.clone(),
+            };
+            let scopes = &resume_scopes;
             let resolved_to = if !should_resume {
                 None
             } else if resume_to.is_some() {
@@ -1410,6 +1552,11 @@ impl Store {
                     "resolved_to": resolved_to,
                     "comment": comment,
                     "resume_blocked": resume_blocked.as_ref().map(|rb| rb.code.clone()),
+                    // Who transcribed it, when that is not who decided. The event's
+                    // actor stays the decider — that is the answer to "who chose
+                    // this" — and this says how it got written down. Absent on a
+                    // first-hand answer, so its presence is the whole signal.
+                    "relayed_by": relayed_by,
                 }),
                 now,
             )?;

@@ -366,6 +366,16 @@ pub struct AnswerArgs {
     /// Override the workflow state the ticket resumes into (defaults to the
     /// workflow's human-gated resume state).
     pub resume_to: Option<String>,
+    /// Who actually decided, when you are RELAYING a decision a human already
+    /// made elsewhere (e.g. they told you in chat) rather than answering
+    /// yourself. Requires the `answer:relay` scope, and records this name as
+    /// `answered_by` with you as `relayed_by`.
+    ///
+    /// Name the real person. Inventing one falsifies an audit trail someone will
+    /// later rely on to see who approved what. If no human has actually decided,
+    /// leave the question open — that is what it is for. You cannot relay a
+    /// question you asked yourself, and `approve` questions are never relayable.
+    pub on_behalf_of: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -767,7 +777,10 @@ impl TakomoMcp {
 
     #[tool(
         description = "Answer an open question (requires the human scope). Records the reply and \
-        performs the ticket's human-gated transition to resume it."
+        performs the ticket's human-gated transition to resume it. To write down a decision a human \
+        already made elsewhere, pass `on_behalf_of` with their name instead — that needs the \
+        `answer:relay` scope, records them as the decider and you as the relayer, and is refused for \
+        a question you asked yourself or for any `approve`."
     )]
     async fn takomo_answer(
         &self,
@@ -1061,7 +1074,24 @@ impl TakomoMcp {
     }
 
     fn do_answer(&self, auth: &AuthCtx, a: AnswerArgs) -> ApiResult<Value> {
-        auth.require_scope("human")?;
+        // Same fork as the REST handler: answering as yourself is the human
+        // gate; naming `on_behalf_of` is a relay and needs its own scope. The
+        // refusals that make relaying safe live in the store.
+        match &a.on_behalf_of {
+            None => auth.require_scope("human")?,
+            Some(_) => {
+                // Same order as REST: redundancy first, so a `human` caller is
+                // told to answer as itself rather than to fetch a scope it does
+                // not need.
+                if auth.scopes.contains("human") {
+                    return Err(ApiError::bad_request(
+                        "answer.relay_redundant",
+                        "This token holds the 'human' scope, so answer as yourself rather than relay: drop 'on_behalf_of'. Relaying exists for a caller that cannot answer, and a human relaying would make 'answered_by' a claim instead of a fact.",
+                    ));
+                }
+                auth.require_scope("answer:relay")?
+            }
+        }
         let q = self
             .state
             .store
@@ -1072,6 +1102,30 @@ impl TakomoMcp {
             Some(n) => json!({ "value": a.answer, "note": n }),
             None => json!({ "value": a.answer }),
         };
+        if let Some(decider) = a.on_behalf_of.as_deref().map(str::trim) {
+            if decider.is_empty() {
+                return Err(ApiError::validation(
+                    "answer.relay_actor",
+                    "'on_behalf_of' must name the human who made this decision — it is what 'answered_by' records. An empty value would file the decision under nobody.",
+                ));
+            }
+            let outcome = self.state.store.answer_question_relayed(
+                &a.id,
+                &auth.actor,
+                decider,
+                &auth.scopes,
+                &answer,
+                a.resume_to.as_deref(),
+            )?;
+            self.state.wake();
+            return Ok(json!({
+                "ok": true,
+                "question": outcome.question.to_json(),
+                "ticket": outcome.ticket.to_json(now_ms()),
+                "resume": outcome.resume_json(),
+                "relayed_by": auth.actor,
+            }));
+        }
         let outcome = self.state.store.answer_question(
             &a.id,
             &auth.actor,

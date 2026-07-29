@@ -361,17 +361,40 @@ pub async fn answer(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
-    // Answering is the human authorization gate — it performs the ticket's
-    // human-gated resume transition.
-    ctx.require_scope("human")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["answer", "resume_to", "on_behalf_of"])?;
+    // Two ways in, and the body picks which. Absent `on_behalf_of` is the
+    // original path: answering IS the human authorization gate, because it
+    // performs the ticket's human-gated resume transition. Present
+    // `on_behalf_of` is a relay (takomo-22xj) — recording a decision a human
+    // already made elsewhere — which needs its own scope and names the decider.
+    //
+    // Deliberately not interchangeable: a `human` token answers as itself and
+    // may not claim to be relaying, so `answered_by` is never a guess. The
+    // refusals that make relaying safe (no relaying your own question, no
+    // relaying an `approve`) live in the store, not here.
+    let on_behalf_of = get_str(obj, "on_behalf_of")?;
+    match &on_behalf_of {
+        None => ctx.require_scope("human")?,
+        Some(_) => {
+            // Redundancy before scope, deliberately: a caller that already holds
+            // `human` should be told to answer as itself, not sent to fetch a
+            // scope it does not need. The most actionable message wins.
+            if ctx.scopes.contains("human") {
+                return Err(ApiError::bad_request(
+                    "answer.relay_redundant",
+                    "This token holds the 'human' scope, so it should answer as itself rather than relay: drop 'on_behalf_of'. Relaying exists for a caller that cannot answer — recording a decision someone else made — and a human relaying would make 'answered_by' a claim instead of a fact.",
+                ));
+            }
+            ctx.require_scope("answer:relay")?;
+        }
+    }
     let q = state
         .store
         .get_question(&id)?
         .ok_or_else(|| ApiError::not_found("question", &id))?;
     ctx.require_project(&q.project)?;
 
-    let obj = body_object(&body)?;
-    reject_unknown(obj, &["answer", "resume_to"])?;
     let answer = obj
         .get("answer")
         .filter(|v| !v.is_null())
@@ -384,10 +407,32 @@ pub async fn answer(
         })?;
     let resume_to = get_str(obj, "resume_to")?;
 
-    let outcome =
-        state
-            .store
-            .answer_question(&id, &ctx.actor, &ctx.scopes, &answer, resume_to.as_deref())?;
+    let outcome = match &on_behalf_of {
+        None => state.store.answer_question(
+            &id,
+            &ctx.actor,
+            &ctx.scopes,
+            &answer,
+            resume_to.as_deref(),
+        )?,
+        Some(decider) => {
+            let decider = decider.trim();
+            if decider.is_empty() {
+                return Err(ApiError::validation(
+                    "answer.relay_actor",
+                    "'on_behalf_of' must name the human who made this decision — it is what 'answered_by' records and what a later reader will hold someone to. An empty value would file the decision under nobody.",
+                ));
+            }
+            state.store.answer_question_relayed(
+                &id,
+                &ctx.actor,
+                decider,
+                &ctx.scopes,
+                &answer,
+                resume_to.as_deref(),
+            )?
+        }
+    };
     state.wake();
     Ok(Json(json!({
         "question": outcome.question.to_json(),
