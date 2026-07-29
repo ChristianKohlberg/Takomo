@@ -283,16 +283,37 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
         body.contains("id=\"tagkindsel\""),
         "the tag *kind* stays a <select> — a handful of kinds needs no search"
     );
+    // The invariant is "one implementation, however many callers" — so pin the
+    // *definition* count, not the total occurrences. The old form asserted three
+    // occurrences, which was one definition plus the two callers of the day and
+    // therefore broke the moment a legitimate third mount point was added
+    // (takomo-cr7k's label filter). Counting definitions is strictly sharper
+    // about the thing the test exists to catch, a second copy of the factory.
     assert_eq!(
-        body.matches("makeTypeahead(").count(),
+        body.matches("function makeTypeahead(").count(),
+        1,
+        "there must be exactly ONE makeTypeahead: every filter that needs a \
+         combobox reuses it rather than growing a second implementation"
+    );
+    assert_eq!(
+        body.matches("makeTypeahead({").count(),
         3,
-        "one factory, two callers: the tag-value filter must reuse the ticket \
-         filter's control rather than growing a second implementation"
+        "the ticket, tag-value and label filters are all callers of that one \
+         factory — if this count changes, say which mount point changed and why"
+    );
+    assert!(
+        body.contains("id=\"labelfilter\""),
+        "/board mounts the multi-select label filter (takomo-cr7k)"
     );
     assert_eq!(
         body.matches("taTagValue:").count(),
         2,
         "/board needs `taTagValue` in both the DE and EN string tables"
+    );
+    assert_eq!(
+        body.matches("taLabel:").count(),
+        2,
+        "/board needs `taLabel` in both the DE and EN string tables"
     );
 }
 
