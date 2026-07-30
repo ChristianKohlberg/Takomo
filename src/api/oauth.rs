@@ -1076,9 +1076,9 @@ fn consent_page(
 {hidden}
 <h2>It is asking for</h2>
 <ul class="scopes">{scope_rows}</ul>
-<p class="muted small">This connection stays alive without asking you again: takomo always issues a refresh token, because a client that cannot refresh stops working an hour after you connect it. Ending it is <code>takomo token revoke</code> on the connection's own entry, or on the token you approve with below.</p>
+<p class="muted small">This connection stays alive without asking you again: takomo always issues a refresh token, because a client that cannot refresh stops working an hour after you connect it. Ending it is <code>takomo token revoke</code> on this connection's own entry, which stops this one and nothing else — or on the token you approve with below, which stops every connection approved with it.</p>
 <h2>Approve as</h2>
-<p class="muted">Paste a takomo token. The client does not receive it: takomo issues a <em>separate</em> token with the same actor, the scopes you leave checked above, the same project allowlist and the same write budget — plus an expiry, and its own entry in <code>takomo token list</code> so you can revoke just this connection.</p>
+<p class="muted">Paste a takomo token. The client does not receive it: takomo issues a <em>separate</em> token with the same actor, the scopes you leave checked above, the same project allowlist and the same write budget — plus an expiry, and its own entry in <code>takomo token list</code> so you can revoke just this connection, refresh token and all.</p>
 <p class="muted">The <code>admin</code> scope is never granted this way, whatever the token you paste carries.</p>
 <p><input type="password" name="token" placeholder="tk_..." size="44" autocomplete="off" spellcheck="false" autofocus></p>
 <p class="actions">

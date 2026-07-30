@@ -559,9 +559,12 @@ fn consent_not_revoked(tx: &Transaction, granted_by: &str) -> ApiResult<bool> {
     })
 }
 
-/// Revoke a whole refresh-token family and every access token it minted: the
-/// response to detected refresh-token reuse.
-fn revoke_refresh_family(tx: &Transaction, family: &str, now: i64) -> ApiResult<()> {
+/// Revoke a whole refresh-token family and every access token it minted.
+///
+/// The family *is* the connection — every credential descended from one consent —
+/// so this is the response to detected refresh-token reuse and equally the way
+/// [`Store::revoke_token`] ends a single connector without touching any other.
+pub(super) fn revoke_refresh_family(tx: &Transaction, family: &str, now: i64) -> ApiResult<()> {
     tx.execute(
         "UPDATE tokens SET revoked_at = ?2 WHERE revoked_at IS NULL AND id IN \
          (SELECT token_id FROM oauth_issued WHERE family = ?1)",

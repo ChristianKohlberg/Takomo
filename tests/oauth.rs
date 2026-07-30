@@ -191,6 +191,14 @@ impl TestApp {
         body
     }
 
+    /// The id `takomo token list` would show for this token — the handle an operator
+    /// revokes by.
+    async fn token_id_of(&self, token: &str) -> String {
+        let (status, who) = self.get(token, "/v1/whoami").await;
+        assert_eq!(status, StatusCode::OK, "whoami failed: {who}");
+        who["token_id"].as_str().expect("token_id").to_string()
+    }
+
     /// Is `token` accepted by the MCP surface? Uses `initialize`, the one frame a
     /// client sends before anything else, and which the middleware guards.
     async fn mcp_accepts(&self, token: &str) -> bool {
@@ -1261,6 +1269,135 @@ async fn an_expired_consenting_token_leaves_the_connector_running() {
     assert!(
         app.mcp_accepts(access).await,
         "and the token it minted must reach /mcp"
+    );
+}
+
+/// The fine-grained lever: revoking a connection's own token ends **that**
+/// connection and nothing else.
+///
+/// Marking the row alone would not end anything for long — the client answers the
+/// 401 by rotating and is back inside a round trip, on a fresh 30-day window — so
+/// revocation has to take the refresh family with it. And it must take only that
+/// family: two connectors approved by the same human are two connections, and being
+/// able to cut one is the whole reason to reach for this instead of revoking the
+/// token they were both approved with.
+#[tokio::test]
+async fn revoking_a_derived_token_ends_that_connection_and_no_other() {
+    let app = TestApp::spawn_with_oauth().await;
+    let first = app.full_flow(&app.human).await;
+    let second = app.full_flow(&app.human).await;
+
+    let doomed = first["access_token"].as_str().unwrap().to_string();
+    let doomed_refresh = first["refresh_token"].as_str().unwrap().to_string();
+    let spared = second["access_token"].as_str().unwrap().to_string();
+    let spared_refresh = second["refresh_token"].as_str().unwrap().to_string();
+
+    let doomed_id = app.token_id_of(&doomed).await;
+    let doomed_client = client_id_of(&app, &doomed_id);
+    let spared_client = client_id_of(&app, &app.token_id_of(&spared).await);
+    assert_ne!(
+        doomed_client, spared_client,
+        "the two flows must be two connections"
+    );
+
+    let (status, _) = app
+        .delete(&app.admin, &format!("/v1/tokens/{doomed_id}"))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        !app.mcp_accepts(&doomed).await,
+        "the revoked access token must stop reaching /mcp at once"
+    );
+    // The client's move on that 401 is to refresh. That must not hand it a
+    // replacement, or revocation costs the connector one round trip and nothing else.
+    let (status, refused) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &doomed_refresh),
+            ("client_id", &doomed_client),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a revoked connection must not be able to rotate back: {refused}"
+    );
+    assert_eq!(refused["error"], "invalid_grant");
+
+    // The other connection is untouched, credential and refresh alike.
+    assert!(
+        app.mcp_accepts(&spared).await,
+        "a second connection from the same human must keep working"
+    );
+    let (status, rotated) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &spared_refresh),
+            ("client_id", &spared_client),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "…and must still be able to rotate: {rotated}"
+    );
+}
+
+/// Which client a connection was issued to, read out of the ledger.
+///
+/// `full_flow` registers its own client and does not hand the id back, and the
+/// refresh grant is checked against it — so a test that wants an unambiguous
+/// refusal (this revocation, not a client mismatch) has to send the real one.
+fn client_id_of(app: &TestApp, token_id: &str) -> String {
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    conn.query_row(
+        "SELECT client_id FROM oauth_issued WHERE token_id = ?1",
+        rusqlite::params![token_id],
+        |row| row.get::<_, String>(0),
+    )
+    .expect("the ledger names the client this token was issued to")
+}
+
+/// …and an ordinary hand-minted token revokes exactly as it always did. This is a
+/// shared path, so the blast radius for a token that never came from OAuth has to
+/// stay at zero.
+#[tokio::test]
+async fn revoking_an_ordinary_token_leaves_oauth_connections_alone() {
+    let app = TestApp::spawn_with_oauth().await;
+    let issued = app.full_flow(&app.human).await;
+    let access = issued["access_token"].as_str().unwrap().to_string();
+    let refresh = issued["refresh_token"].as_str().unwrap().to_string();
+
+    let plain = app.mint("agent:disposable", &["read", "write"], None);
+    let plain_id = app.token_id_of(&plain).await;
+    let (status, _) = app
+        .delete(&app.admin, &format!("/v1/tokens/{plain_id}"))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _) = app.get(&plain, "/v1/whoami").await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the revoked token itself stops working"
+    );
+    assert!(
+        app.mcp_accepts(&access).await,
+        "an unrelated OAuth connection must not be caught up in it"
+    );
+    let client_id = client_id_of(&app, &app.token_id_of(&access).await);
+    let (status, rotated) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", &client_id),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "…nor its ability to rotate: {rotated}"
     );
 }
 

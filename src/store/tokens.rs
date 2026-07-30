@@ -123,13 +123,44 @@ impl Store {
     }
 
     /// Revoke by token id. Returns false if no such token.
+    ///
+    /// **If the token was issued by the OAuth flow, this ends that connection** —
+    /// not just the one credential. Marking the row alone would not: the client
+    /// holds a refresh token, so it answers the resulting 401 by rotating and is
+    /// back inside a round trip, with a fresh 30-day window. So the refresh family
+    /// goes too, and no rotation can mint a replacement.
+    ///
+    /// The `oauth_issued` ledger is the join, because an OAuth access token is
+    /// deliberately an ordinary `tokens` row — that is what keeps `crate::auth`
+    /// free of a second credential type — which leaves nothing on the row itself to
+    /// recognize. The ledger exists precisely to answer "which connection did this
+    /// token belong to".
+    ///
+    /// A token with no ledger row is by definition not OAuth-issued and nothing
+    /// changes for it. Worth stating because this is the one path behind both
+    /// `takomo token revoke` and `DELETE /v1/tokens/{id}`: an operator revoking a
+    /// hand-minted worker token must not have anything else happen.
     pub fn revoke_token(&self, id: &str) -> ApiResult<bool> {
+        let now = now_ms();
         self.with_tx(|tx| {
             let n = tx.execute(
                 "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
-                params![id, now_ms()],
+                params![id, now],
             )?;
-            Ok(n > 0)
+            if n == 0 {
+                return Ok(false);
+            }
+            let family: Option<String> = tx
+                .query_row(
+                    "SELECT family FROM oauth_issued WHERE token_id = ?1",
+                    params![id],
+                    |row| row.get("family"),
+                )
+                .optional()?;
+            if let Some(family) = family {
+                super::oauth::revoke_refresh_family(tx, &family, now)?;
+            }
+            Ok(true)
         })
     }
 

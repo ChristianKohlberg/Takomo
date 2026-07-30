@@ -46,13 +46,17 @@ Every hosted product runs the same flow, and from the person's side it is:
 
 The client never receives the token that was pasted. takomo issues it a *separate* one: same actor, a
 subset of the scopes (whatever is left checked), the same project allowlist, the same write budget,
-plus a one-hour expiry and its own entry in `takomo token list`. So you can revoke one connector
-without touching anything else:
+plus a one-hour expiry and its own entry in `takomo token list`. So you can end one connector without
+touching anything else:
 
 ```sh
 takomo --db /var/data/takomo.db token list          # find the OAuth-issued row (it has an expiry)
 curl -sS -X DELETE "$URL/v1/tokens/tok_xxxxxxxx" -H "Authorization: Bearer tk_admin..."
 ```
+
+That is a real cut, not a one-hour inconvenience: the connection's refresh token is revoked along
+with the credential, so the client cannot answer the 401 by rotating into a new one. Other
+connections, including others approved by the same person, keep working.
 
 Mint the token you will paste for exactly this purpose, rather than reusing an admin one:
 
@@ -65,9 +69,9 @@ takomo --db /var/data/takomo.db token create \
 the human's own access and every connection approved with it, in one move. Letting it **expire** does
 not: an expiry is bookkeeping, and a connected client is meant to stay connected, so a stale
 `--expires` flag does not become an outage months later. The flip side is worth knowing before you
-rely on it: a short-lived consent token does not time-box the connection it approved. The two levers
-that end one are revoking the consenting token (cascades to every connector) and revoking the
-connector's own row in `takomo token list` (that connection only).
+rely on it: a short-lived consent token does not time-box the connection it approved. Ending one is a
+revocation, and there are two to choose between — the connector's own row for that connection alone
+(above; reach for this one when a single client misbehaves), or the consenting token for all of them.
 
 `admin` is never granted through consent, whatever you paste — it is not offered on the page and not
 honoured if a client asks for it. A connector that needs to create projects or mint tokens is a

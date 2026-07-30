@@ -61,7 +61,7 @@ takomo token revoke <token-id>
 |--------------------------|-------|---------|
 | `POST /v1/tokens`        | admin | mint a token; body `{actor, scopes:[...], projects:[...]｜"*", expires_seconds?, rate_limit?}`. Returns the plaintext ONCE plus metadata; only the SHA-256 is stored. |
 | `GET /v1/tokens`         | admin | list token metadata (id, actor, scopes, projects, created_at, expires_at, revoked_at, last_used_at). **Never** the plaintext or hash. |
-| `DELETE /v1/tokens/{id}` | admin | revoke by token id. |
+| `DELETE /v1/tokens/{id}` | admin | revoke by token id. For an OAuth-issued token this also ends that connection — its refresh family goes too, so the client cannot rotate back (see below). |
 | `GET /v1/whoami`         | any valid token | echo the caller's own actor, scopes, and projects. |
 
 The `takomo token create｜ls｜revoke`, `takomo whoami`, and `takomo init` CLI verbs wrap these.
@@ -133,18 +133,23 @@ Unauthenticated is not an oversight: these are what a client uses *in order to* 
 What the client receives is a **derived** token: same `actor`, the checked scopes intersected with the ones that token actually carries, the same project allowlist, the same write budget — plus a one-hour expiry and its own row in `takomo token list`. So it is:
 
 - attributable — events and claims still name the human's actor, and `granted_by` records which token consented;
-- revocable on its own, with `DELETE /v1/tokens/{id}`, without touching the human's own token;
+- revocable on its own, with `DELETE /v1/tokens/{id}`, which ends that one connection and touches nothing else;
 - narrower than the credential that approved it, never wider.
 
 An omitted `scope` parameter means "act as me": the consent screen offers everything grantable, pre-checked, and the intersection with the pasted token happens on approval. A scope the human *unchecks* stays unchecked — including across a re-render after a bad token, which is the one place a form could quietly hand back what was declined. `offline_access` is the exception, and it is not a checkbox at all: it grants no authority, a refresh token is issued either way, and the only thing unchecking it could mean — a connection that dies an hour after it is made — is a trap rather than a capability. The page states it as a sentence instead.
 
 That is strictly better than the alternative on offer today, which is pasting a long-lived token into a client's own header field.
 
-**Revoking the consenting token ends every connector derived from it.** The consent snapshot is frozen so it cannot widen, but it is not independent: every exchange and every refresh re-checks the token recorded in `granted_by` and answers `invalid_grant` (`ConsentWithdrawn`) if it has been revoked or deleted. Outstanding *access* tokens are not revoked by this — they expire within the hour, and `DELETE /v1/tokens/{id}` on the derived row is the way to cut one immediately.
+**Two levers, and they differ only in blast radius.**
+
+- **Revoke the derived token** — `takomo token revoke <id>`, or `DELETE /v1/tokens/{id}` — to end **one** connection. The credential 401s immediately and the refresh family goes with it, so the client cannot answer that 401 by rotating back: nothing further can be issued for that connection, and no other connection is affected. This is the one to reach for when a single client misbehaves.
+- **Revoke the consenting token** to end **every** connection approved with it, plus the human's own access. Every exchange and every refresh re-checks the token recorded in `granted_by` and answers `invalid_grant` (`ConsentWithdrawn`) once it is revoked or deleted. Outstanding *access* tokens are not revoked by this one — they expire within the hour.
+
+Revoking the *family* rather than just the row is what makes the first lever real. A connector holds a refresh token and reacts to a 401 by rotating (Claude also rotates proactively, up to five minutes early), so marking one access token revoked would cost it a single round trip and hand it a fresh 30-day window. The `oauth_issued` ledger is what makes this possible at all: an OAuth access token is deliberately an ordinary `tk_` row, so there is nothing on the row itself to recognize, and the ledger is what says which connection it belonged to. A token with no ledger row is not OAuth-issued and revoking it does exactly what it always did.
 
 **A consenting token that merely expires does not**, deliberately. The asymmetry is the design: a revocation is an operator deciding something must stop, while an expiry is bookkeeping typed once and forgotten, and letting it kill a working connector would turn a stale `--expires` flag into an outage without adding anything revocation does not already give. A connected client is meant to stay connected — the 30-day refresh window slides on every use, and nothing here introduces a second clock that does not.
 
-The honest cost: **a short-lived consent token no longer bounds the connection it approved.** Approving with `--expires 7d` does not stop the connector in seven days. The two levers that do are revoking that token, which cascades, and revoking the connector's own row in `takomo token list`, which does not touch anything else.
+The honest cost: **a short-lived consent token no longer bounds the connection it approved.** Approving with `--expires 7d` does not stop the connector in seven days. Ending it is a revocation, on one of the two rows above.
 
 **`admin` is never granted this way.** It is not offered on the consent screen and not honoured if requested, whatever the pasted token carries — and the common case *is* an admin token, because it may be the only one the operator has. `admin` mints tokens, creates and deletes projects, and force-releases other workers' leases: administration, not work. Consent narrows; it never widens. Grantable scopes are `read`, `write`, `human`, plus `offline_access` (which only asks for a refresh token and maps to nothing).
 

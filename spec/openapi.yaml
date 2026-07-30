@@ -102,6 +102,14 @@ paths:
     delete:
       tags: [identity]
       summary: Revoke a token by its public id (admin scope)
+      description: |
+        For an ordinary token this marks the row revoked and nothing else.
+
+        For a token the OAuth flow issued it also **ends that connection**: the
+        refresh family it belongs to is revoked in the same transaction, so the
+        client cannot answer the resulting 401 by rotating back into a fresh
+        credential. Other connections — including others approved by the same human —
+        are untouched. See `spec/auth.md` for the two revocation levers.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string }, description: 'token id, e.g. "tok_a8f2k1x9"' }
       responses:
@@ -1986,18 +1994,20 @@ paths:
         `DELETE /v1/tokens/{id}`, and carries the consenting token's own write
         budget — there is no second credential type and no second auth path.
 
-        **Revoking the consenting token ends the connection.** Both grants re-check
-        the takomo token the human consented with and answer `invalid_grant` if it has
-        been revoked or deleted, so revoking a human's token also ends every connector
-        derived from it.
+        **Two revocation levers.** `DELETE /v1/tokens/{id}` on the **derived** token
+        ends that one connection: it 401s at once and its refresh family is revoked
+        with it, so the client cannot answer the 401 by rotating back, and no other
+        connection is touched. Reach for that one when a single client misbehaves.
+        `DELETE` on the **consenting** token ends every connection approved with it —
+        both grants re-check it and answer `invalid_grant` once it is revoked or
+        deleted — along with the human's own access.
 
         A consenting token that merely **expires** does not, deliberately: a
         revocation is a decision that has to cascade, an expiry is bookkeeping, and
         killing a working connector over a stale `--expires` flag would buy nothing
         revocation does not already give. The cost, stated plainly: a short-lived
-        consent token does not bound the connection it approved. The levers that do
-        are revoking it (cascades) and revoking the connector's own row in
-        `GET /v1/tokens`.
+        consent token does not bound the connection it approved — ending one is a
+        revocation, on either row.
 
         **Refresh tokens rotate on every use**, as OAuth 2.1 requires for public
         clients. The superseded *access* token is left to expire on its own, since

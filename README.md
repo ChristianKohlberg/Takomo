@@ -86,8 +86,9 @@ TAKOMO_PUBLIC_URL=https://<your-host>    # no path, no trailing slash
 
 Then add `https://<your-host>/mcp` as a custom connector and approve the consent screen by pasting a
 takomo token. The client never receives that token: it gets a separate, expiring one derived from it,
-narrowed to the scopes you leave checked, revocable on its own — and never carrying `admin`. Full
-per-product wiring in [docs/hosted-mcp-clients.md](docs/hosted-mcp-clients.md).
+narrowed to the scopes you leave checked — and never carrying `admin`. Revoking that derived token
+ends exactly that connection; revoking the one you pasted ends every connection approved with it.
+Full per-product wiring in [docs/hosted-mcp-clients.md](docs/hosted-mcp-clients.md).
 
 ## 3. Use it from the CLI
 
