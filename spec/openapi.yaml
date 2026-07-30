@@ -1800,7 +1800,15 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
         "429":
-          description: The global registration budget for this minute is spent.
+          description: |
+            The global registration budget for this minute is spent. Carries
+            `Retry-After`. That budget paces registration; what bounds the table is
+            the sweep — a registration that produces neither an authorization code
+            nor a refresh token within 24h is deleted (see spec/auth.md).
+          headers:
+            Retry-After:
+              description: seconds to wait before retrying
+              schema: { type: integer }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
@@ -1847,8 +1855,8 @@ paths:
           description: |
             Space-separated. Grantable values are `read`, `write`, `human`, plus
             `offline_access`. Unknown values are dropped rather than refused; the
-            token response echoes what was actually granted. Omitted means offer
-            everything grantable.
+            token response echoes what was actually granted. Omitted — or present but
+            empty, which is the same statement — means offer everything grantable.
         - { name: resource, in: query, required: false, schema: { type: string } }
       responses:
         "200":
@@ -1892,7 +1900,15 @@ paths:
 
         A credential the server will not accept re-renders the form with an
         explanation (200) rather than redirecting a failure the human could not act
-        on.
+        on. That re-render preserves the `grant_scope` values submitted, so a scope
+        the human unchecked stays unchecked; only the first `GET` pre-checks
+        everything requested.
+
+        Hidden fields the original request did not carry are absent rather than
+        empty, and an empty `scope` / `state` / `resource` is read as absent — a
+        present-but-empty parameter here is the form round trip inventing one, not the
+        client asking for nothing. Consequently `state` comes back on the redirect
+        only when the client sent one (RFC 6749 §4.1.2).
       security: []
       requestBody:
         required: true
@@ -1961,6 +1977,12 @@ paths:
         `DELETE /v1/tokens/{id}`, and carries the consenting token's own write
         budget — there is no second credential type and no second auth path.
 
+        **The consent it derives from has to still hold.** Both grants re-check the
+        takomo token the human consented with and answer `invalid_grant` if it is
+        revoked, expired or gone: revoking a human's token also ends every connector
+        derived from it. Consent with a long-lived token unless a hard cutoff is what
+        you want.
+
         **Refresh tokens rotate on every use**, as OAuth 2.1 requires for public
         clients. The superseded *access* token is left to expire on its own, since
         clients refresh proactively while requests may still be in flight on it.
@@ -2015,8 +2037,8 @@ paths:
           description: |
             `invalid_request`, `unsupported_grant_type`, or `invalid_grant`. The last
             covers every refused grant — unknown, expired, replayed, wrong client,
-            wrong redirect URI, failed PKCE — with the reason in
-            `error_description`.
+            wrong redirect URI, failed PKCE, consenting token no longer valid — with
+            the reason in `error_description`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
@@ -3467,7 +3489,7 @@ x-error-codes:
 # `invalid_request` here is not a takomo error code and never appears on /v1.
 x-oauth-errors:
   invalid_request: "a required parameter is missing or malformed — no grant_type, no client_id, a code without its code_verifier, a code_challenge_method other than S256. The description names which."
-  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, or a failed PKCE check. The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
+  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, a failed PKCE check, or a consenting takomo token that is no longer valid. The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
   invalid_client_metadata: "a registration named something this server does not implement — a token_endpoint_auth_method other than `none`, a grant or response type it does not support. Unrecognized metadata members are ignored rather than refused, so only what the description names is at issue."
   invalid_redirect_uri: "a registration's redirect_uris are absent, too many, or one is not an absolute https URI without a fragment (plain http is accepted only for loopback)."
   unsupported_response_type: "the authorization endpoint was asked for something other than `code`. Reported by redirect once the redirect target itself has been verified."

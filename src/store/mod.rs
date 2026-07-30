@@ -25,6 +25,7 @@ pub use events::EventFilter;
 pub use model::*;
 pub use oauth::{
     ACCESS_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, MAX_REDIRECT_URIS, REFRESH_TOKEN_TTL_SECONDS,
+    SPENT_CODE_RETENTION_SECONDS, UNUSED_CLIENT_RETENTION_SECONDS,
 };
 pub use projects::{
     normalize_answer_link_ttl, normalize_claim_ttls, normalize_style_guide, Conventions,
@@ -649,7 +650,9 @@ CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project);
 -- client_secret column. `redirect_uris` is a JSON array, matched literally: the
 -- exact-match check against it is the only thing standing between this endpoint
 -- and an open redirect, so it is stored in a form that cannot be split by a comma
--- inside a URI.
+-- inside a URI. Registration being unauthenticated by specification, a row that
+-- never produced a code or a refresh token is swept on age — that, not the rate
+-- limit, is what bounds this table.
 CREATE TABLE IF NOT EXISTS oauth_clients (
   client_id     TEXT PRIMARY KEY,
   client_name   TEXT NOT NULL DEFAULT '',
@@ -661,7 +664,8 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
 -- are the consent snapshot (see model::GrantedAccess) — the slice of authority
 -- the human handed this client, frozen so a later change to their own token can
 -- neither widen it nor resurrect it. `issued_family` records which refresh-token
--- family the code produced, so a replay can revoke everything it bought.
+-- family the code produced, so a replay can revoke everything it bought — which is
+-- why a spent row outlives its 60s expiry by an hour instead of being swept at once.
 CREATE TABLE IF NOT EXISTS oauth_codes (
   code_hash      TEXT PRIMARY KEY,
   client_id      TEXT NOT NULL REFERENCES oauth_clients(client_id),

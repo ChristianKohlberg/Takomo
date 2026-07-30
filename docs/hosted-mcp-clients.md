@@ -61,6 +61,12 @@ takomo --db /var/data/takomo.db token create \
   --actor human:you --scopes read,write,human --projects thc-sourcing --expires 90d
 ```
 
+That token is what the connection hangs from, in both directions: revoking it also ends every
+connector consented with it, and if it **expires** the connectors go with it — a refresh after that
+point answers `invalid_grant` and someone has to approve again. Which is a fine way to run a
+time-boxed connection, and a surprise if it was not the plan: pick the expiry accordingly, or leave
+it off.
+
 `admin` is never granted through consent, whatever you paste — it is not offered on the page and not
 honoured if a client asks for it. A connector that needs to create projects or mint tokens is a
 connector that should be holding a token directly instead.
@@ -136,4 +142,5 @@ when you want the fence-tracking convenience verbs.
 | The consent page says "Nothing would be granted" | The pasted token carries none of the checked scopes. Uncheck what it does not have, or use a different token. |
 | `invalid_grant` immediately after approving | The code is single-use and lives ~60s. A client retrying an exchange lands here; start a fresh authorization. |
 | Connector worked, then stopped, and `invalid_grant` mentions revocation | Refresh-token reuse was detected and the whole family was revoked. Reconnect. If you did not trigger it, treat the credential as compromised — it is already dead. |
+| Connector stopped, and `invalid_grant` says the credential that consented is no longer valid | The token pasted at the consent screen was revoked or has expired. Mint one that outlives the connection and approve again. |
 | `415` from `/oauth/token` | Something is sending JSON. The token endpoint takes `application/x-www-form-urlencoded` (RFC 6749 §4.1.3). |

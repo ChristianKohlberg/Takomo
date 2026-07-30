@@ -37,6 +37,26 @@ fn no_redirect() -> reqwest::Client {
         .expect("build client")
 }
 
+/// Every hidden field of a rendered consent page, in order.
+///
+/// The point of reading them out of the HTML rather than composing a POST by hand:
+/// what the form carries back is *part of the request*, so a test that invents the
+/// body cannot see a field the page emits wrongly (or emits at all when the client
+/// sent nothing). Both are how an omitted `scope` came to mean `read` alone.
+fn hidden_fields(html: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for chunk in html.split(r#"<input type="hidden" name=""#).skip(1) {
+        let Some((name, rest)) = chunk.split_once(r#"" value=""#) else {
+            continue;
+        };
+        let Some((value, _)) = rest.split_once(r#"">"#) else {
+            continue;
+        };
+        out.push((name.to_string(), value.replace("&amp;", "&")));
+    }
+    out
+}
+
 /// One query parameter out of a URL, without pulling in a URL parser.
 fn query_param(url: &str, key: &str) -> Option<String> {
     let (_, query) = url.split_once('?')?;
@@ -96,6 +116,30 @@ impl TestApp {
         for scope in scopes {
             fields.push(("grant_scope", scope));
         }
+        self.form("/oauth/authorize", &fields).await
+    }
+
+    /// GET a consent page and return its HTML.
+    async fn consent_html(&self, path: &str) -> String {
+        let resp = no_redirect()
+            .get(self.url(path))
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK, "consent page should render");
+        resp.text().await.unwrap_or_default()
+    }
+
+    /// Submit a rendered consent page, carrying back exactly the hidden fields it
+    /// emitted — the browser's behaviour, and the only way a test sees a field the
+    /// page should not have emitted at all.
+    async fn submit_consent(&self, page: &str, extra: &[(&str, &str)]) -> reqwest::Response {
+        let hidden = hidden_fields(page);
+        let mut fields: Vec<(&str, &str)> = hidden
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        fields.extend_from_slice(extra);
         self.form("/oauth/authorize", &fields).await
     }
 
@@ -388,6 +432,47 @@ async fn registration_validates_redirect_uris_and_ignores_unknown_metadata() {
     assert!(body.get("client_secret").is_none(), "public clients only");
 }
 
+/// The global registration budget refuses with a number to wait, not just prose: the
+/// caller here is a connector with no human watching it, so `Retry-After` is what
+/// makes the difference between one retry and a tight loop.
+#[tokio::test]
+async fn the_registration_budget_says_how_long_to_wait() {
+    let app = TestApp::spawn_with_oauth().await;
+    let mut refused = None;
+    // The window is global — there is no caller identity to key one by — so it is
+    // reached the same way a script pointed at the endpoint would reach it.
+    for _ in 0..40 {
+        let resp = app
+            .request(Method::POST, "/oauth/register")
+            .json(&json!({ "redirect_uris": [REDIRECT] }))
+            .send()
+            .await
+            .expect("request");
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            refused = Some(resp);
+            break;
+        }
+    }
+    let resp = refused.expect("the global registration budget must be reachable");
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .expect("every 429 in this codebase carries Retry-After");
+    let secs: i64 = retry_after.parse().expect("Retry-After is whole seconds");
+    assert!(
+        (1..=60).contains(&secs),
+        "Retry-After must fall inside the one-minute window: {secs}"
+    );
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["error"], "temporarily_unavailable");
+    assert!(
+        body["remedy"].as_str().unwrap_or("").contains(&retry_after),
+        "the remedy should name the same wait as the header: {body}"
+    );
+}
+
 /// Asking to be a confidential client is refused rather than silently downgraded:
 /// a client that believes it authenticates with a secret, and does not, has a
 /// security model that is wrong in a way it cannot detect.
@@ -586,6 +671,167 @@ async fn the_issued_token_inherits_the_project_allowlist() {
     assert_eq!(err["code"], "auth.project");
 }
 
+/// A flow that names no `scope` is asking to act as the human who approves it, so
+/// what they leave checked is what the client gets.
+///
+/// Driven through the page's own hidden fields, because the bug this covers was in
+/// the round trip rather than in either end of it: the form posted back `scope=`
+/// where the client had sent nothing, an empty value parsed as "asked for no
+/// scopes", and that narrowed to `read` alone — silently, after the human had
+/// checked everything on offer.
+#[tokio::test]
+async fn an_omitted_scope_offers_everything_and_grants_what_stays_checked() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Scopeless Client", &[REDIRECT]).await;
+
+    let page = app
+        .consent_html(&format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}\
+             &redirect_uri=https%3A%2F%2Fclient.example%2Fcallback\
+             &code_challenge={}&code_challenge_method=S256",
+            pkce_s256_challenge(VERIFIER)
+        ))
+        .await;
+    for scope in ["read", "write", "human", "offline_access"] {
+        assert!(
+            page.contains(&format!(r#"name="grant_scope" value="{scope}" checked"#)),
+            "an omitted scope must offer {scope}, pre-checked: {page}"
+        );
+    }
+    // What the client did not send must not travel back as an empty value.
+    let carried: Vec<String> = hidden_fields(&page).into_iter().map(|(k, _)| k).collect();
+    for absent in ["scope", "state", "resource"] {
+        assert!(
+            !carried.iter().any(|k| k == absent),
+            "the form must not carry an empty {absent}: {carried:?}"
+        );
+    }
+
+    let resp = app
+        .submit_consent(
+            &page,
+            &[
+                ("grant_scope", "read"),
+                ("grant_scope", "write"),
+                ("grant_scope", "human"),
+                ("token", app.human.as_str()),
+                ("action", "approve"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::FOUND, "consent should redirect");
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("Location header")
+        .to_string();
+    assert!(
+        query_param(&location, "state").is_none(),
+        "state must not be echoed to a client that never sent one (RFC 6749 §4.1.2): {location}"
+    );
+    let code = query_param(&location, "code").expect("code in redirect");
+
+    let (status, body) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "code exchange failed: {body}");
+    let echoed = body["scope"].as_str().expect("scope").to_string();
+    let access = body["access_token"].as_str().expect("access_token");
+    let (status, who) = app.get(access, "/v1/whoami").await;
+    assert_eq!(status, StatusCode::OK);
+    for scope in ["read", "write", "human"] {
+        assert!(
+            echoed.split(' ').any(|s| s == scope),
+            "the echoed scope must name {scope}: {echoed}"
+        );
+        assert!(
+            who["scopes"].as_array().unwrap().iter().any(|s| s == scope),
+            "the issued token must actually carry {scope}: {who}"
+        );
+    }
+}
+
+/// A scope the human unchecks stays unchecked, including when a failed submission
+/// sends the form back. Re-checking it would hand a client authority that had just
+/// been declined, on the one page whose whole purpose is narrowing.
+#[tokio::test]
+async fn a_failed_consent_re_render_keeps_what_the_human_unchecked() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+    let page = app.consent_html(&app.authorize_url(&client_id)).await;
+
+    // Uncheck `write`, then fail on a truncated token.
+    let resp = app
+        .submit_consent(
+            &page,
+            &[
+                ("grant_scope", "read"),
+                ("token", "tk_truncated"),
+                ("action", "approve"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let again = resp.text().await.unwrap_or_default();
+    assert!(again.contains("not recognized"), "{again}");
+    assert!(
+        again.contains(r#"name="grant_scope" value="read" checked"#),
+        "what was checked stays checked: {again}"
+    );
+    assert!(
+        again.contains(r#"name="grant_scope" value="write">"#),
+        "what the human unchecked must come back unchecked: {again}"
+    );
+
+    // Fix the token and approve. The declined scope must still not be granted.
+    let resp = app
+        .submit_consent(
+            &again,
+            &[
+                ("grant_scope", "read"),
+                ("token", app.human.as_str()),
+                ("action", "approve"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("Location header")
+        .to_string();
+    let code = query_param(&location, "code").expect("code in redirect");
+    let (status, body) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "exchange failed: {body}");
+    assert_eq!(body["scope"], "read");
+    let access = body["access_token"].as_str().unwrap();
+    let (_, who) = app.get(access, "/v1/whoami").await;
+    assert!(
+        !who["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "write"),
+        "a scope unchecked before an error must not be granted after it: {who}"
+    );
+}
+
 /// A code is single-use, and because a replay cannot be told apart from a stolen
 /// code racing the real client, it takes down what the code already bought.
 #[tokio::test]
@@ -619,6 +865,49 @@ async fn a_replayed_code_is_refused_and_revokes_what_it_bought() {
     assert!(
         !app.mcp_accepts(&access).await,
         "the token the replayed code bought must stop working"
+    );
+}
+
+/// …and it keeps taking it down after a sweep has run.
+///
+/// The replay defence lives entirely in the spent code's row, so how long that row
+/// is kept *is* how long the defence exists. Swept at expiry — which for a code is
+/// within the minute — a replayed code matches nothing, reports "no such grant"
+/// like a typo, and everything it bought keeps working. Sweeping explicitly rather
+/// than hoping the background tick lands late also takes the timing out of the test
+/// above, which was a race against it.
+#[tokio::test]
+async fn a_spent_code_outlives_the_sweep_so_a_late_replay_is_still_detected() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+    let code = app.authorization_code(&client_id, &app.human).await;
+    let exchange: Vec<(&str, &str)> = vec![
+        ("grant_type", "authorization_code"),
+        ("code", &code),
+        ("client_id", &client_id),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+
+    let (status, first) = app.token_call(&exchange).await;
+    assert_eq!(status, StatusCode::OK, "first exchange: {first}");
+    let access = first["access_token"].as_str().unwrap().to_string();
+
+    app.open_store().sweep_expired_oauth().expect("sweep");
+
+    let (status, replay) = app.token_call(&exchange).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(replay["error"], "invalid_grant");
+    assert!(
+        replay["error_description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already redeemed"),
+        "a swept-over replay must still be reported as a replay, not as an unknown grant: {replay}"
+    );
+    assert!(
+        !app.mcp_accepts(&access).await,
+        "the sweep must not cost the replay its revocation"
     );
 }
 
@@ -748,6 +1037,133 @@ async fn refresh_rotates_and_reuse_takes_down_the_family() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{after}");
     assert_eq!(after["error"], "invalid_grant");
+}
+
+/// Revoking the token a human consented with ends every connector derived from it.
+///
+/// The consent snapshot is frozen so it cannot widen, but it is a delegation, not an
+/// independent credential: without this check rotation would keep minting hour-long
+/// access tokens carrying a revoked token's authority, renewing its own 30-day
+/// window forever, and `takomo token revoke` on the human's token would do nothing
+/// an operator could observe.
+#[tokio::test]
+async fn revoking_the_consenting_token_ends_the_connector() {
+    let app = TestApp::spawn_with_oauth().await;
+    let consenting = app.mint("human:temporary", &["read", "write"], None);
+    let (status, who) = app.get(&consenting, "/v1/whoami").await;
+    assert_eq!(status, StatusCode::OK);
+    let parent = who["token_id"].as_str().expect("token_id").to_string();
+
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+    let refresh = {
+        let code = app.authorization_code(&client_id, &consenting).await;
+        let (status, body) = app
+            .token_call(&[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("client_id", &client_id),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ])
+            .await;
+        assert_eq!(status, StatusCode::OK, "exchange failed: {body}");
+        body["refresh_token"].as_str().unwrap().to_string()
+    };
+    // A code consented for but not yet redeemed, to check the same rule on the
+    // other credential-minting path.
+    let unredeemed = app.authorization_code(&client_id, &consenting).await;
+
+    let (status, _) = app
+        .delete(&app.admin, &format!("/v1/tokens/{parent}"))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "revoke the human's token");
+
+    let (status, refused) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", &client_id),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid_grant");
+    assert!(
+        refused["error_description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("consented"),
+        "the description must say which credential went away: {refused}"
+    );
+    assert!(
+        refused["remedy"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/oauth/authorize"),
+        "the remedy must point at approving again: {refused}"
+    );
+
+    let (status, refused) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &unredeemed),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a code consented with a since-revoked token must not mint anything: {refused}"
+    );
+    assert_eq!(refused["error"], "invalid_grant");
+}
+
+// ---------------------------------------------------------------------------
+// Retention
+
+/// Registration is unauthenticated by specification, so the rows it writes have to
+/// be reclaimable: one that produced neither a code nor a refresh token is a dead
+/// connection attempt. One that produced either is left alone however old it is,
+/// because its refresh token may still be a live connection.
+#[tokio::test]
+async fn an_unused_client_registration_is_swept_and_a_used_one_survives() {
+    let app = TestApp::spawn_with_oauth().await;
+    let unused = app.register_client("Never Used", &[REDIRECT]).await;
+    let used = app.register_client("Real Client", &[REDIRECT]).await;
+    let _code = app.authorization_code(&used, &app.human).await;
+
+    // Backdate both past the retention window — the alternative is waiting a day.
+    let stale =
+        takomo::ids::now_ms() - (takomo::store::UNUSED_CLIENT_RETENTION_SECONDS * 1000 + 60_000);
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    conn.execute(
+        "UPDATE oauth_clients SET created_at = ?1",
+        rusqlite::params![stale],
+    )
+    .expect("backdate");
+    drop(conn);
+
+    app.open_store().sweep_expired_oauth().expect("sweep");
+
+    // Observed the way a client would find out: by starting a flow.
+    let page = app.consent_html(&app.authorize_url(&used)).await;
+    assert!(
+        page.contains("Real Client"),
+        "a registration that has been used must survive: {page}"
+    );
+    let resp = no_redirect()
+        .get(app.url(&app.authorize_url(&unused)))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "an unused registration must be gone"
+    );
+    let body = resp.text().await.unwrap_or_default();
+    assert!(body.contains("No client is registered"), "{body}");
 }
 
 // ---------------------------------------------------------------------------

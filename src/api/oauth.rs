@@ -74,8 +74,14 @@ const OFFLINE_ACCESS: &str = "offline_access";
 /// "dynamic" means — so it is the one write endpoint here with no token to charge
 /// and no identity to key a budget by. The budget is therefore global and
 /// deliberately loose: a real deployment registers a handful of clients ever
-/// (Claude re-registers on each fresh connection, ChatGPT once), while a script
-/// pointed at it could otherwise insert rows until the disk fills.
+/// (Claude re-registers on each fresh connection, ChatGPT once).
+///
+/// What it does is *pace* registration, not bound it: 30/minute is still ~43k
+/// rows a day if something keeps asking. What keeps the table from growing
+/// without limit is the sweep — a registration that has produced no
+/// authorization code and no refresh token within
+/// `UNUSED_CLIENT_RETENTION_SECONDS` is deleted (see
+/// [`crate::store::Store::sweep_expired_oauth`]).
 const REGISTRATIONS_PER_MINUTE: i64 = 30;
 
 /// The key that global budget is charged to. A constant, because there is nothing
@@ -351,19 +357,25 @@ pub async fn register(
     if state.oauth.is_none() {
         return oauth_disabled();
     }
-    if crate::auth::debit_shared_window(
+    if let Err(retry_after_secs) = crate::auth::debit_shared_window(
         &state.oauth_register_rate,
         REGISTER_BUDGET_KEY,
         REGISTRATIONS_PER_MINUTE,
-    )
-    .is_err()
-    {
-        return oauth_error(
+    ) {
+        // `Retry-After` on every 429 is a house convention (see spec/auth.md), and
+        // the one place it matters most is here: this refusal reaches a connector
+        // that has no human watching it, so a number to wait for is the difference
+        // between one retry and a tight loop.
+        let mut resp = oauth_error(
             StatusCode::TOO_MANY_REQUESTS,
             "temporarily_unavailable",
-            "This server accepts a limited number of client registrations per minute and that budget is exhausted.",
-            "Wait a minute and retry the connection. If you are scripting registrations, register once and reuse the client_id.",
+            &format!("This server accepts a limited number of client registrations per minute and that budget is exhausted. It frees up in {retry_after_secs}s."),
+            &format!("Wait {retry_after_secs}s (see Retry-After) and retry the connection. If you are scripting registrations, register once and reuse the client_id."),
         );
+        if let Ok(value) = retry_after_secs.to_string().parse() {
+            resp.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return resp;
     }
 
     let obj = match body_object(&body) {
@@ -508,6 +520,22 @@ struct AuthzRequest {
     resource: Option<String>,
 }
 
+/// A request parameter, with an empty or whitespace-only value read as **absent**.
+///
+/// Which is what it is. A form round trip cannot express "this parameter was not
+/// sent": an HTML field with nothing in it arrives as `scope=`. Reading that as a
+/// present-but-empty value is what silently narrowed a no-`scope` flow to `read`
+/// alone, echoed `state=` back to a client that never sent one (RFC 6749 §4.1.2
+/// says `state` MUST NOT be included when it was absent from the request), and
+/// stored `resource=""`. So the whole authorization request goes through this,
+/// rather than each parameter defending itself.
+fn present(pairs: &[(String, String)], key: &str) -> Option<String> {
+    first(pairs, key)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
 /// `GET /oauth/authorize` — render the consent screen.
 pub async fn authorize_get(
     State(state): State<Arc<AppState>>,
@@ -522,7 +550,7 @@ pub async fn authorize_get(
         Err(resp) => return resp,
     };
     let requested = requested_scopes(req.scope.as_deref());
-    consent_page(&req, &client_name, &requested, None)
+    consent_page(&req, &client_name, &requested, None, None)
 }
 
 /// `POST /oauth/authorize` — the consent form's target.
@@ -566,6 +594,7 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
             &req,
             &client_name,
             &requested,
+            Some(&checked),
             Some("Paste a takomo token to approve with. It is the credential this connection will act as."),
         );
     }
@@ -582,6 +611,7 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
                 &req,
                 &client_name,
                 &requested,
+                Some(&checked),
                 Some("That token is not recognized by this server. Check for a truncated copy/paste, or mint a fresh one with: takomo token create."),
             )
         }
@@ -593,6 +623,7 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
             &req,
             &client_name,
             &requested,
+            Some(&checked),
             Some("That token is no longer valid — it has been revoked or has expired. Mint a fresh one with: takomo token create."),
         );
     }
@@ -609,6 +640,7 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
             &req,
             &client_name,
             &requested,
+            Some(&checked),
             Some("Nothing would be granted: none of the checked scopes are carried by that token (or none are checked). Pick a token with the scopes this client needs, or check at least one it has."),
         );
     }
@@ -673,8 +705,8 @@ async fn parse_authz_request(
     // An absent redirect_uri is allowed only when there is exactly one
     // registered, which is the one case where "which one" has no answer to get
     // wrong (RFC 6749 §3.1.2.3).
-    let redirect_uri = match first(pairs, "redirect_uri") {
-        Some(uri) if client.redirect_uris.iter().any(|r| r == uri) => uri.to_string(),
+    let redirect_uri = match present(pairs, "redirect_uri") {
+        Some(uri) if client.redirect_uris.contains(&uri) => uri,
         Some(_) => {
             return Err(authorize_page_error(
                 "The redirect_uri in this request is not one this client registered. takomo matches it literally — a differing scheme, host, port, path, or trailing slash is a different URI — so nothing is redirected anywhere.",
@@ -688,7 +720,7 @@ async fn parse_authz_request(
         }
     };
 
-    let state_param = first(pairs, "state").map(str::to_string);
+    let state_param = present(pairs, "state");
     let response_type = first(pairs, "response_type").unwrap_or("");
     if response_type != "code" {
         return Err(redirect_error(
@@ -723,8 +755,8 @@ async fn parse_authz_request(
             redirect_uri,
             code_challenge,
             state: state_param,
-            scope: first(pairs, "scope").map(str::to_string),
-            resource: first(pairs, "resource").map(str::to_string),
+            scope: present(pairs, "scope"),
+            resource: present(pairs, "resource"),
         },
         client.client_name,
     ))
@@ -743,18 +775,24 @@ async fn parse_authz_request(
 /// everything grantable, pre-checked, and the intersection with the pasted token's
 /// own scopes happens when it is approved.
 fn requested_scopes(scope: Option<&str>) -> Vec<String> {
-    let Some(raw) = scope else {
+    let asked: Vec<&str> = scope.unwrap_or_default().split_whitespace().collect();
+    // "Act as me" — no `scope` parameter, or one carrying nothing but whitespace,
+    // which is the same statement. Spelled out rather than left to fall through:
+    // the filter below produces an empty vec here, and every "is this set
+    // acceptable" test over an empty vec is vacuously true. That is exactly how an
+    // omitted `scope` came to mean `read` alone — the opposite of what it asks for.
+    if asked.is_empty() {
         return scopes_supported().iter().map(|s| s.to_string()).collect();
-    };
-    let asked: Vec<&str> = raw.split_whitespace().collect();
+    }
     let mut out: Vec<String> = scopes_supported()
         .iter()
         .filter(|s| asked.contains(s))
         .map(|s| s.to_string())
         .collect();
-    // Every credential this server issues can at least read; a request that named
-    // only scopes it does not offer would otherwise present an empty consent form.
-    if out.iter().all(|s| s == OFFLINE_ACCESS) {
+    // Every credential this server issues can at least read; a request naming only
+    // scopes it does not offer would otherwise present an empty consent form.
+    // `offline_access` does not count, because it grants nothing on its own.
+    if !out.iter().any(|s| GRANTABLE_SCOPES.contains(&s.as_str())) {
         out.insert(0, "read".to_string());
     }
     out
@@ -860,9 +898,11 @@ pub async fn token(State(state): State<Arc<AppState>>, body: String) -> Response
                 GrantRejection::ClientMismatch => "This grant was issued to a different client_id.",
                 GrantRejection::RedirectMismatch => "The redirect_uri does not match the one this authorization code was issued for. It must be byte-identical to the value sent to /oauth/authorize.",
                 GrantRejection::PkceMismatch => "The code_verifier does not match the code_challenge this authorization code was bound to (PKCE, RFC 7636).",
+                GrantRejection::ConsentWithdrawn => "The takomo credential this connection was consented with is no longer valid — it has been revoked, has expired, or no longer exists. A connection derived from it cannot outlive it, so nothing further can be issued: a human has to approve again.",
             },
             match why {
                 GrantRejection::Replayed => "Start a fresh authorization: send the user back through /oauth/authorize. If you did not initiate this exchange, treat the credential as compromised — it has been revoked here.",
+                GrantRejection::ConsentWithdrawn => "Send the user back through /oauth/authorize to approve again, with a takomo token that is still valid (mint one with: takomo token create).",
                 _ => "Start a fresh authorization at /oauth/authorize and exchange the new code once.",
             },
         ),
@@ -917,10 +957,17 @@ fn authorize_page_error(message: &str) -> Response {
 
 /// The consent screen: who is asking, for what, and a field for the credential
 /// that authorizes it.
+///
+/// `selected` is `None` on the first render, where everything requested is
+/// pre-checked, and `Some` on a re-render after a failed submission, where it is
+/// what the human actually left checked. Re-checking a box they deliberately
+/// cleared would hand a client a scope it had been declined, on a page whose whole
+/// purpose is narrowing.
 fn consent_page(
     req: &AuthzRequest,
     client_name: &str,
     requested: &[String],
+    selected: Option<&[String]>,
     error: Option<&str>,
 ) -> Response {
     let who = if client_name.trim().is_empty() {
@@ -951,9 +998,15 @@ fn consent_page(
             ),
             other => (other, "Requested by the client."),
         };
+        let checked = match selected {
+            None => " checked",
+            Some(list) if list.iter().any(|s| s == scope) => " checked",
+            Some(_) => "",
+        };
         scope_rows.push_str(&format!(
-            r#"<li><label><input type="checkbox" name="grant_scope" value="{v}" checked> <code>{v}</code> — {n}</label></li>"#,
+            r#"<li><label><input type="checkbox" name="grant_scope" value="{v}"{c}> <code>{v}</code> — {n}</label></li>"#,
             v = esc(label),
+            c = checked,
             n = esc(note),
         ));
     }
@@ -962,17 +1015,22 @@ fn consent_page(
         Some(msg) => format!(r#"<p class="err">{}</p>"#, esc(msg)),
         None => String::new(),
     };
+    // A field with nothing in it is omitted, not emitted empty: `value=""` would
+    // post back `scope=` / `state=` / `resource=` where the client sent nothing at
+    // all, and the POST is parsed by the same code as the original request — so an
+    // empty field is the round trip inventing a parameter. See [`present`].
     let hidden = [
-        ("client_id", req.client_id.as_str()),
-        ("redirect_uri", req.redirect_uri.as_str()),
-        ("code_challenge", req.code_challenge.as_str()),
-        ("code_challenge_method", "S256"),
-        ("response_type", "code"),
-        ("state", req.state.as_deref().unwrap_or("")),
-        ("scope", req.scope.as_deref().unwrap_or("")),
-        ("resource", req.resource.as_deref().unwrap_or("")),
+        ("client_id", Some(req.client_id.as_str())),
+        ("redirect_uri", Some(req.redirect_uri.as_str())),
+        ("code_challenge", Some(req.code_challenge.as_str())),
+        ("code_challenge_method", Some("S256")),
+        ("response_type", Some("code")),
+        ("state", req.state.as_deref()),
+        ("scope", req.scope.as_deref()),
+        ("resource", req.resource.as_deref()),
     ]
     .iter()
+    .filter_map(|(k, v)| v.map(|v| (k, v)))
     .map(|(k, v)| format!(r#"<input type="hidden" name="{}" value="{}">"#, k, esc(v)))
     .collect::<String>();
 

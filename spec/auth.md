@@ -136,19 +136,25 @@ What the client receives is a **derived** token: same `actor`, the checked scope
 - revocable on its own, with `DELETE /v1/tokens/{id}`, without touching the human's own token;
 - narrower than the credential that approved it, never wider.
 
+An omitted `scope` parameter means "act as me": the consent screen offers everything grantable, pre-checked, and the intersection with the pasted token happens on approval. A scope the human *unchecks* stays unchecked — including across a re-render after a bad token, which is the one place a form could quietly hand back what was declined.
+
 That is strictly better than the alternative on offer today, which is pasting a long-lived token into a client's own header field.
+
+**The delegation ends when its source does.** The consent snapshot is frozen so it cannot widen, but it is not independent: every exchange and every refresh re-checks the token recorded in `granted_by` and answers `invalid_grant` if it is revoked, expired, or gone. So revoking a human's token also kills every connector derived from it — and a consenting token that **expires** takes its connectors with it, on its own schedule. Consent with a long-lived or non-expiring token unless a hard cutoff is what you want. Outstanding *access* tokens are not revoked by this; they expire within the hour, and `DELETE /v1/tokens/{id}` on the derived row is the way to end a connection immediately.
 
 **`admin` is never granted this way.** It is not offered on the consent screen and not honoured if requested, whatever the pasted token carries — and the common case *is* an admin token, because it may be the only one the operator has. `admin` mints tokens, creates and deletes projects, and force-releases other workers' leases: administration, not work. Consent narrows; it never widens. Grantable scopes are `read`, `write`, `human`, plus `offline_access` (which only asks for a refresh token and maps to nothing).
 
 **PKCE is the client authentication.** Every client is public, `S256` is mandatory, and `plain` is refused. A wrong `code_verifier` is refused *without* consuming the code — otherwise observing a redirect would be enough to deny service to the real client.
 
-**Authorization codes are single-use, ~60s.** A replay revokes everything that code already bought, because a replay cannot be distinguished from a stolen code racing the legitimate client.
+**Authorization codes are single-use, ~60s.** A replay revokes everything that code already bought, because a replay cannot be distinguished from a stolen code racing the legitimate client. The spent row is therefore kept for an hour after redemption rather than swept at expiry: without it a replay matches nothing and reports "no such grant", which reads like a typo while the stolen credential keeps working.
 
 **Refresh tokens rotate on every use** (OAuth 2.1 requires it for public clients) and carry a *family* id. Presenting an already-rotated one is reuse: the whole family descended from that consent is revoked, access tokens included. The superseded **access** token is deliberately left to expire on its own — clients refresh proactively, while requests may still be in flight on it, so revoking it would fail those to buy at most an hour.
 
 **The open-redirect guard is the validation order.** `client_id` and `redirect_uri` are checked against the registration *first*; until both are known good, errors render as a page and nothing is redirected anywhere — not even an error. Redirect URIs are matched literally (a differing scheme, host, port, path or trailing slash is a different URI). Only afterwards are protocol errors reported the RFC 6749 way, by redirect.
 
-**Registration is rate-limited globally.** It is unauthenticated by specification, so there is no credential to charge and no caller identity to key a window by: one global sliding window of 30/minute. A real deployment registers a handful of clients ever.
+**Registration is rate-limited globally.** It is unauthenticated by specification, so there is no credential to charge and no caller identity to key a window by: one global sliding window of 30/minute, `429 temporarily_unavailable` with `Retry-After` over it. A real deployment registers a handful of clients ever.
+
+That budget *paces* an unauthenticated write; it does not bound the table, since 30/minute sustained is still tens of thousands of rows a day. What bounds it is the sweep: **a registration that has produced neither an authorization code nor a refresh token within 24h is deleted.** A client that has been used is never swept on age however long it sits idle, because its refresh token may still be a live connection. The cost of the policy is that a flow started from a >24h-old registration that never completed one finds its `client_id` gone and has to re-register — which is what hosted clients do on a fresh connection anyway.
 
 **Error bodies here are RFC 6749's, not takomo's.** `{"error", "error_description", "remedy"}` — an OAuth client parses `error` and nothing else, so takomo's `code` would be invisible to it. The vocabulary is listed under `x-oauth-errors` in `spec/openapi.yaml`, separately from `x-error-codes`, so the two namespaces are not mistaken for one.
 

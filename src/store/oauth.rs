@@ -52,6 +52,27 @@ pub const AUTH_CODE_TTL_SECONDS: i64 = 60;
 /// do not turn that list into thousands of dead rows.
 pub const ISSUED_TOKEN_RETENTION_SECONDS: i64 = 24 * 3600;
 
+/// How long a *spent* authorization code row is kept.
+///
+/// Not housekeeping slack: the row is what makes the replay defence reachable.
+/// Delete it promptly and a replayed code matches nothing, so the exchange answers
+/// `Unknown` — indistinguishable from a typo — instead of `Replayed`, and the
+/// credentials that code already bought are never revoked. A code's own expiry is
+/// [`AUTH_CODE_TTL_SECONDS`], which is far too short for that: it would leave the
+/// defence live for one sweep tick. One access-token lifetime, the same retention
+/// a rotated refresh row gets and for the same reason.
+pub const SPENT_CODE_RETENTION_SECONDS: i64 = ACCESS_TOKEN_TTL_SECONDS;
+
+/// How long a registration that has never been used is kept.
+///
+/// `POST /oauth/register` is unauthenticated by specification, so its rate limit
+/// paces the table's growth without bounding it — this is what bounds it. "Used"
+/// means it produced an authorization code or a refresh token; a client that did
+/// neither within a day is a dead connection attempt or a script's droppings. A
+/// client that *has* been used is never swept on age, however long it sits idle,
+/// because its refresh token may still be a live connection.
+pub const UNUSED_CLIENT_RETENTION_SECONDS: i64 = 24 * 3600;
+
 /// Ceiling on registered redirect URIs per client. A hosted product needs one
 /// (Claude uses `https://claude.ai/api/mcp/auth_callback`); a native one may
 /// register a couple of loopback forms. Five is generous and keeps an
@@ -289,6 +310,11 @@ impl Store {
             if !constant_time_eq(&pkce_s256_challenge(code_verifier), &challenge) {
                 return Ok(OauthExchange::Rejected(GrantRejection::PkceMismatch));
             }
+            // Checked last, after PKCE, so a caller who cannot prove it started the
+            // flow learns nothing about the consenting token's state.
+            if !consent_still_valid(tx, &grant.granted_by, now)? {
+                return Ok(OauthExchange::Rejected(GrantRejection::ConsentWithdrawn));
+            }
 
             let (issued, family) = mint_grant(tx, client_id, &grant, None, now)?;
             tx.execute(
@@ -346,6 +372,13 @@ impl Store {
             if row_client != client_id {
                 return Ok(OauthExchange::Rejected(GrantRejection::ClientMismatch));
             }
+            // Refused *without* retiring the presented token: this is not reuse and
+            // the client did nothing wrong, so leaving its credential intact costs
+            // nothing (it can mint nothing while the consent is invalid) and keeps
+            // the refusal re-readable if the operator restores the token.
+            if !consent_still_valid(tx, &grant.granted_by, now)? {
+                return Ok(OauthExchange::Rejected(GrantRejection::ConsentWithdrawn));
+            }
 
             // Retire the presented refresh token. The access token it minted is
             // deliberately left alone to expire on its own: a client refreshes
@@ -364,10 +397,11 @@ impl Store {
         })
     }
 
-    /// Drop OAuth state that can no longer be used: spent or expired
-    /// authorization codes, refresh tokens past expiry or long retired, and the
-    /// access tokens they minted once those are expired beyond
-    /// [`ISSUED_TOKEN_RETENTION_SECONDS`].
+    /// Drop OAuth state that can no longer be used: expired authorization codes
+    /// and spent ones past [`SPENT_CODE_RETENTION_SECONDS`], refresh tokens past
+    /// expiry or long retired, the access tokens they minted once those are expired
+    /// beyond [`ISSUED_TOKEN_RETENTION_SECONDS`], and registrations that were never
+    /// used at all (see [`UNUSED_CLIENT_RETENTION_SECONDS`]).
     ///
     /// Only ever deletes tokens it can prove it issued itself, via the
     /// `oauth_issued` ledger — a token minted by `takomo token create` has no
@@ -380,6 +414,8 @@ impl Store {
         // that rotated and immediately retried still gets `invalid_grant` (reuse
         // detected) rather than `Unknown`, which reads as "wrong server".
         let refresh_cutoff = now - ACCESS_TOKEN_TTL_SECONDS * 1000;
+        let code_cutoff = now - SPENT_CODE_RETENTION_SECONDS * 1000;
+        let client_cutoff = now - UNUSED_CLIENT_RETENTION_SECONDS * 1000;
         self.with_tx(|tx| {
             let mut n = 0usize;
             n += tx.execute(
@@ -391,15 +427,29 @@ impl Store {
                 "DELETE FROM oauth_issued WHERE token_id NOT IN (SELECT id FROM tokens)",
                 [],
             )?;
+            // Expiry retires an *unspent* code only. A spent one is kept on its own
+            // clock, because its expiry passes within the minute and the row is the
+            // replay defence — see `SPENT_CODE_RETENTION_SECONDS`.
             n += tx.execute(
-                "DELETE FROM oauth_codes WHERE expires_at < ?1 OR used_at IS NOT NULL AND used_at < ?1",
-                params![now],
+                "DELETE FROM oauth_codes WHERE (used_at IS NULL AND expires_at < ?1) \
+                 OR (used_at IS NOT NULL AND used_at < ?2)",
+                params![now, code_cutoff],
             )?;
             n += tx.execute(
                 "DELETE FROM oauth_refresh WHERE expires_at < ?1 \
                  OR (rotated_at IS NOT NULL AND rotated_at < ?2) \
                  OR (revoked_at IS NOT NULL AND revoked_at < ?2)",
                 params![now, refresh_cutoff],
+            )?;
+            // Last, so "was this client ever used" is asked of the swept state: a
+            // registration whose code and refresh rows are both gone has nothing
+            // outstanding, and the two NOT IN clauses are also what keeps this from
+            // deleting a row `oauth_codes.client_id` still references.
+            n += tx.execute(
+                "DELETE FROM oauth_clients WHERE created_at < ?1 \
+                 AND client_id NOT IN (SELECT client_id FROM oauth_codes) \
+                 AND client_id NOT IN (SELECT client_id FROM oauth_refresh)",
+                params![client_cutoff],
             )?;
             Ok(n)
         })
@@ -468,6 +518,38 @@ fn mint_grant(
         },
         family,
     ))
+}
+
+/// Can the credential that consented still authorize this connector?
+///
+/// The consent snapshot is deliberately a snapshot — it cannot widen when the
+/// human's token gains scopes — but a snapshot that outlives its source would make
+/// revocation a lie: rotation would keep minting hour-long access tokens with the
+/// revoked token's full authority, renewing its own 30-day window forever, and the
+/// only way to stop a connector would be to find the derived token. So every
+/// credential-minting path asks this first, and a `false` breaks the chain.
+///
+/// A missing row counts as invalid: an id with no token behind it is a token that
+/// was deleted, which is at least as final as one marked revoked.
+fn consent_still_valid(tx: &Transaction, granted_by: &str, now: i64) -> ApiResult<bool> {
+    let row = tx
+        .query_row(
+            "SELECT revoked_at, expires_at FROM tokens WHERE id = ?1",
+            params![granted_by],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>("revoked_at")?,
+                    row.get::<_, Option<i64>>("expires_at")?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(match row {
+        None => false,
+        Some((revoked_at, expires_at)) => {
+            revoked_at.is_none() && !expires_at.is_some_and(|exp| exp <= now)
+        }
+    })
 }
 
 /// Revoke a whole refresh-token family and every access token it minted: the
