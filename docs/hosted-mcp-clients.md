@@ -61,11 +61,13 @@ takomo --db /var/data/takomo.db token create \
   --actor human:you --scopes read,write,human --projects thc-sourcing --expires 90d
 ```
 
-That token is what the connection hangs from, in both directions: revoking it also ends every
-connector consented with it, and if it **expires** the connectors go with it — a refresh after that
-point answers `invalid_grant` and someone has to approve again. Which is a fine way to run a
-time-boxed connection, and a surprise if it was not the plan: pick the expiry accordingly, or leave
-it off.
+**Revoking that token also ends every connector consented with it** — one `takomo token revoke` cuts
+the human's own access and every connection approved with it, in one move. Letting it **expire** does
+not: an expiry is bookkeeping, and a connected client is meant to stay connected, so a stale
+`--expires` flag does not become an outage months later. The flip side is worth knowing before you
+rely on it: a short-lived consent token does not time-box the connection it approved. The two levers
+that end one are revoking the consenting token (cascades to every connector) and revoking the
+connector's own row in `takomo token list` (that connection only).
 
 `admin` is never granted through consent, whatever you paste — it is not offered on the page and not
 honoured if a client asks for it. A connector that needs to create projects or mint tokens is a
@@ -142,5 +144,5 @@ when you want the fence-tracking convenience verbs.
 | The consent page says "Nothing would be granted" | The pasted token carries none of the checked scopes. Uncheck what it does not have, or use a different token. |
 | `invalid_grant` immediately after approving | The code is single-use and lives ~60s. A client retrying an exchange lands here; start a fresh authorization. |
 | Connector worked, then stopped, and `invalid_grant` mentions revocation | Refresh-token reuse was detected and the whole family was revoked. Reconnect. If you did not trigger it, treat the credential as compromised — it is already dead. |
-| Connector stopped, and `invalid_grant` says the credential that consented is no longer valid | The token pasted at the consent screen was revoked or has expired. Mint one that outlives the connection and approve again. |
+| Connector stopped, and `invalid_grant` says the credential that consented was revoked | The token pasted at the consent screen has been revoked (or deleted), which ends every connector derived from it. Approve again with one that has not — and if you did not expect it, ask whoever revoked it first. An *expired* consenting token does not do this. |
 | `415` from `/oauth/token` | Something is sending JSON. The token endpoint takes `application/x-www-form-urlencoded` (RFC 6749 §4.1.3). |

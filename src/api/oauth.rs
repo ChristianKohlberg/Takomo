@@ -66,6 +66,9 @@ const GRANTABLE_SCOPES: &[&str] = &["read", "write", "human"];
 /// because a hosted client that cannot refresh silently stops working after an
 /// hour — so the scope is accepted, echoed back, and otherwise inert. Claude
 /// appends it automatically when it appears in `scopes_supported`.
+///
+/// Being inert is why the consent screen states it as a sentence rather than
+/// offering it as a checkbox: see [`consent_page`].
 const OFFLINE_ACCESS: &str = "offline_access";
 
 /// Registrations per minute, across all callers.
@@ -78,10 +81,9 @@ const OFFLINE_ACCESS: &str = "offline_access";
 ///
 /// What it does is *pace* registration, not bound it: 30/minute is still ~43k
 /// rows a day if something keeps asking. What keeps the table from growing
-/// without limit is the sweep — a registration that has produced no
-/// authorization code and no refresh token within
-/// `UNUSED_CLIENT_RETENTION_SECONDS` is deleted (see
-/// [`crate::store::Store::sweep_expired_oauth`]).
+/// without limit is the sweep — past `UNUSED_CLIENT_RETENTION_SECONDS`, a
+/// registration with no authorization code and no refresh token left referencing it
+/// is deleted (see [`crate::store::Store::sweep_expired_oauth`]).
 const REGISTRATIONS_PER_MINUTE: i64 = 30;
 
 /// The key that global budget is charged to. A constant, because there is nothing
@@ -529,9 +531,27 @@ struct AuthzRequest {
 /// says `state` MUST NOT be included when it was absent from the request), and
 /// stored `resource=""`. So the whole authorization request goes through this,
 /// rather than each parameter defending itself.
+///
+/// Surrounding whitespace goes with it, which is right for the three parameters
+/// this server *interprets* — a scope list is whitespace-delimited, a `resource`
+/// and a `redirect_uri` are compared against values that have none. It is wrong for
+/// `state`; see [`opaque`].
 fn present(pairs: &[(String, String)], key: &str) -> Option<String> {
     first(pairs, key)
         .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// The same absent-if-empty rule, without the trim: for a parameter this server
+/// only carries.
+///
+/// `state` is opaque client data that RFC 6749 §4.1.2 requires back exactly as
+/// received, and `query_pairs` decodes `+` as a space — so a client whose `state`
+/// ends in `+` sends a value ending in a space, and trimming it would echo back
+/// something it never sent, failing the strict comparison the parameter exists for.
+fn opaque(pairs: &[(String, String)], key: &str) -> Option<String> {
+    first(pairs, key)
         .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
@@ -645,8 +665,10 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
         );
     }
 
-    // `offline_access` rides along in the echoed scope string when the client
-    // asked for it; the refresh token itself is issued either way.
+    // `offline_access` rides along in the echoed scope string when the client asked
+    // for it, and deliberately does not consult `checked`: it is not offered as a
+    // checkbox, because the refresh token is issued either way. See
+    // [`OFFLINE_ACCESS`].
     let mut scope_out = granted.clone();
     if requested.iter().any(|s| s == OFFLINE_ACCESS) {
         scope_out.push(OFFLINE_ACCESS.to_string());
@@ -720,7 +742,7 @@ async fn parse_authz_request(
         }
     };
 
-    let state_param = present(pairs, "state");
+    let state_param = opaque(pairs, "state");
     let response_type = first(pairs, "response_type").unwrap_or("");
     if response_type != "code" {
         return Err(redirect_error(
@@ -898,11 +920,11 @@ pub async fn token(State(state): State<Arc<AppState>>, body: String) -> Response
                 GrantRejection::ClientMismatch => "This grant was issued to a different client_id.",
                 GrantRejection::RedirectMismatch => "The redirect_uri does not match the one this authorization code was issued for. It must be byte-identical to the value sent to /oauth/authorize.",
                 GrantRejection::PkceMismatch => "The code_verifier does not match the code_challenge this authorization code was bound to (PKCE, RFC 7636).",
-                GrantRejection::ConsentWithdrawn => "The takomo credential this connection was consented with is no longer valid — it has been revoked, has expired, or no longer exists. A connection derived from it cannot outlive it, so nothing further can be issued: a human has to approve again.",
+                GrantRejection::ConsentWithdrawn => "The takomo credential this connection was consented with has been revoked (or deleted), so this connection was revoked with it and nothing further can be issued: a human has to approve again. Note that this is revocation specifically — a consenting token that merely expired would not have stopped the connection.",
             },
             match why {
                 GrantRejection::Replayed => "Start a fresh authorization: send the user back through /oauth/authorize. If you did not initiate this exchange, treat the credential as compromised — it has been revoked here.",
-                GrantRejection::ConsentWithdrawn => "Send the user back through /oauth/authorize to approve again, with a takomo token that is still valid (mint one with: takomo token create).",
+                GrantRejection::ConsentWithdrawn => "Send the user back through /oauth/authorize to approve again, with a takomo token that has not been revoked (mint one with: takomo token create). If you did not expect this, the operator revoked that token deliberately — ask them before reconnecting.",
                 _ => "Start a fresh authorization at /oauth/authorize and exchange the new code once.",
             },
         ),
@@ -982,6 +1004,16 @@ fn consent_page(
 
     let mut scope_rows = String::new();
     for scope in requested {
+        // `offline_access` is stated, not offered. It grants no authority of its
+        // own — it asks for a refresh token, which this server issues either way —
+        // so a checkbox for it would be a control that changes nothing, and the one
+        // behaviour it appears to promise (unchecking it) would be a trap: a hosted
+        // client that cannot refresh silently stops working an hour after it
+        // connects. A non-choice presented as a choice is worse than a plain
+        // sentence saying what will happen.
+        if scope == OFFLINE_ACCESS {
+            continue;
+        }
         let (label, note) = match scope.as_str() {
             "read" => ("read", "See projects, tickets, comments and questions."),
             "write" => (
@@ -991,10 +1023,6 @@ fn consent_page(
             "human" => (
                 "human",
                 "Answer ask-a-human questions and drive human-gated transitions.",
-            ),
-            OFFLINE_ACCESS => (
-                "offline_access",
-                "Stay connected without asking you again, until the refresh token expires.",
             ),
             other => (other, "Requested by the client."),
         };
@@ -1048,6 +1076,7 @@ fn consent_page(
 {hidden}
 <h2>It is asking for</h2>
 <ul class="scopes">{scope_rows}</ul>
+<p class="muted small">This connection stays alive without asking you again: takomo always issues a refresh token, because a client that cannot refresh stops working an hour after you connect it. Ending it is <code>takomo token revoke</code> on the connection's own entry, or on the token you approve with below.</p>
 <h2>Approve as</h2>
 <p class="muted">Paste a takomo token. The client does not receive it: takomo issues a <em>separate</em> token with the same actor, the scopes you leave checked above, the same project allowlist and the same write budget — plus an expiry, and its own entry in <code>takomo token list</code> so you can revoke just this connection.</p>
 <p class="muted">The <code>admin</code> scope is never granted this way, whatever the token you paste carries.</p>

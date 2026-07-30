@@ -62,7 +62,11 @@ fn query_param(url: &str, key: &str) -> Option<String> {
     let (_, query) = url.split_once('?')?;
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
-        (k == key).then(|| v.replace("%2D", "-").replace("%2E", "."))
+        (k == key).then(|| {
+            v.replace("%2D", "-")
+                .replace("%2E", ".")
+                .replace("%20", " ")
+        })
     })
 }
 
@@ -692,12 +696,23 @@ async fn an_omitted_scope_offers_everything_and_grants_what_stays_checked() {
             pkce_s256_challenge(VERIFIER)
         ))
         .await;
-    for scope in ["read", "write", "human", "offline_access"] {
+    for scope in ["read", "write", "human"] {
         assert!(
             page.contains(&format!(r#"name="grant_scope" value="{scope}" checked"#)),
             "an omitted scope must offer {scope}, pre-checked: {page}"
         );
     }
+    // `offline_access` is stated, not offered: it grants nothing, the refresh token
+    // is issued either way, and the only thing a checkbox could do here is make the
+    // connection die within the hour.
+    assert!(
+        !page.contains(r#"value="offline_access""#),
+        "offline_access must not be a checkbox: {page}"
+    );
+    assert!(
+        page.contains("always issues a refresh token"),
+        "…and the page must say what happens instead: {page}"
+    );
     // What the client did not send must not travel back as an empty value.
     let carried: Vec<String> = hidden_fields(&page).into_iter().map(|(k, _)| k).collect();
     for absent in ["scope", "state", "resource"] {
@@ -756,6 +771,68 @@ async fn an_omitted_scope_offers_everything_and_grants_what_stays_checked() {
             "the issued token must actually carry {scope}: {who}"
         );
     }
+    // Echoed even though no checkbox for it was ever submitted, because the client
+    // asked for it and got what it asked for: a refresh token.
+    assert!(
+        echoed.split(' ').any(|s| s == "offline_access"),
+        "offline_access must still be echoed on the granted scope: {echoed}"
+    );
+    assert!(
+        body["refresh_token"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty()),
+        "…because one was issued: {body}"
+    );
+}
+
+/// `state` is opaque: RFC 6749 §4.1.2 wants it back exactly as received, and it
+/// survives a trip through the consent form as hidden field. Pinned with a trailing
+/// `+` — which arrives as a space, since a form body decodes `+` that way — because
+/// trimming it here would echo a value the client never sent and fail the strict
+/// comparison the parameter exists for.
+#[tokio::test]
+async fn an_opaque_state_survives_the_consent_round_trip_untouched() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+
+    let page = app
+        .consent_html(&format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}\
+             &redirect_uri=https%3A%2F%2Fclient.example%2Fcallback\
+             &code_challenge={}&code_challenge_method=S256&scope=read&state=abc+",
+            pkce_s256_challenge(VERIFIER)
+        ))
+        .await;
+    assert!(
+        hidden_fields(&page)
+            .iter()
+            .any(|(k, v)| k == "state" && v == "abc "),
+        "the form must carry the state as received: {:?}",
+        hidden_fields(&page)
+    );
+
+    let resp = app
+        .submit_consent(
+            &page,
+            &[
+                ("grant_scope", "read"),
+                ("token", app.human.as_str()),
+                ("action", "approve"),
+            ],
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("Location header")
+        .to_string();
+    assert_eq!(
+        query_param(&location, "state").as_deref(),
+        Some("abc "),
+        "the trailing space must come back: {location}"
+    );
 }
 
 /// A scope the human unchecks stays unchecked, including when a failed submission
@@ -1119,13 +1196,81 @@ async fn revoking_the_consenting_token_ends_the_connector() {
     assert_eq!(refused["error"], "invalid_grant");
 }
 
+/// …and a consenting token that merely EXPIRES does not, which is the deliberate
+/// asymmetry.
+///
+/// A revocation is an operator deciding a connection must stop; an expiry is
+/// bookkeeping typed once, months earlier. Cascading on expiry would turn a stale
+/// `--expires` flag into an outage inside someone's chat client and would bound the
+/// connection by a clock that, unlike the refresh window, does not slide.
+#[tokio::test]
+async fn an_expired_consenting_token_leaves_the_connector_running() {
+    let app = TestApp::spawn_with_oauth().await;
+    let store = app.open_store();
+    let (parent, consenting) = store
+        .create_token(
+            "human:seasonal",
+            &["read".to_string(), "write".to_string()],
+            None,
+            10_000,
+            Some(takomo::ids::now_ms() + 60_000),
+        )
+        .expect("mint an expiring token");
+
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+    let code = app.authorization_code(&client_id, &consenting).await;
+    let (status, first) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "exchange failed: {first}");
+    let refresh = first["refresh_token"].as_str().unwrap().to_string();
+
+    // Push that token past its expiry, touching nothing else — the derived access
+    // token has an expiry of its own and must keep its.
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    conn.execute(
+        "UPDATE tokens SET expires_at = ?1 WHERE id = ?2",
+        rusqlite::params![takomo::ids::now_ms() - 60_000, parent.id],
+    )
+    .expect("backdate the expiry");
+    drop(conn);
+
+    // The consenting token itself is finished…
+    let (status, _) = app.get(&consenting, "/v1/whoami").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the parent has expired");
+    // …and the connection it approved keeps working.
+    let (status, second) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", &client_id),
+        ])
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an expiry must not end a working connector: {second}"
+    );
+    let access = second["access_token"].as_str().expect("access_token");
+    assert!(
+        app.mcp_accepts(access).await,
+        "and the token it minted must reach /mcp"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Retention
 
 /// Registration is unauthenticated by specification, so the rows it writes have to
-/// be reclaimable: one that produced neither a code nor a refresh token is a dead
-/// connection attempt. One that produced either is left alone however old it is,
-/// because its refresh token may still be a live connection.
+/// be reclaimable: one with neither a code nor a refresh token referencing it is a
+/// dead connection attempt. One that still holds either survives, which is what
+/// protects a connector in use — its refresh token may be a live connection.
 #[tokio::test]
 async fn an_unused_client_registration_is_swept_and_a_used_one_survives() {
     let app = TestApp::spawn_with_oauth().await;

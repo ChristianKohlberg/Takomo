@@ -565,12 +565,13 @@ impl OauthClient {
 /// from it must not silently widen if the consenting token is later given more
 /// scopes.
 ///
-/// A snapshot must not outlive its source either, or revocation would be a lie —
+/// A snapshot must not survive revocation either, or revocation would be a lie —
 /// so `granted_by` is not only a breadcrumb for tracing a connector's authority
 /// back to the human who granted it. Every path that mints a credential from this
-/// snapshot re-checks that token first, and refuses if it is gone, revoked or
-/// expired (`GrantRejection::ConsentWithdrawn`). Consent is a delegation, and it
-/// ends when what it was delegated from ends.
+/// snapshot re-checks that token first, and refuses if it has been revoked or
+/// deleted (`GrantRejection::ConsentWithdrawn`). A consenting token that merely
+/// *expires* is deliberately not treated that way: a revocation is a decision, an
+/// expiry is bookkeeping, and a connected client is meant to stay connected.
 #[derive(Debug, Clone)]
 pub struct GrantedAccess {
     pub actor: String,
@@ -617,8 +618,9 @@ pub enum GrantRejection {
     RedirectMismatch,
     /// The PKCE `code_verifier` does not hash to the recorded challenge.
     PkceMismatch,
-    /// The token the human consented with is gone, revoked or expired, so the
-    /// snapshot it authorized can mint nothing further — see [`GrantedAccess`].
+    /// The token the human consented with has been revoked or deleted, so the
+    /// snapshot it authorized can mint nothing further. An *expired* consenting
+    /// token does not land here — see [`GrantedAccess`].
     ConsentWithdrawn,
 }
 

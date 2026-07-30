@@ -1803,8 +1803,8 @@ paths:
           description: |
             The global registration budget for this minute is spent. Carries
             `Retry-After`. That budget paces registration; what bounds the table is
-            the sweep — a registration that produces neither an authorization code
-            nor a refresh token within 24h is deleted (see spec/auth.md).
+            the sweep — past 24h, a registration with no authorization code and no
+            refresh token left referencing it is deleted (see spec/auth.md).
           headers:
             Retry-After:
               description: seconds to wait before retrying
@@ -1833,7 +1833,11 @@ paths:
         target.
 
         The `admin` scope is never offered and never granted, whatever the token
-        pasted into the form carries.
+        pasted into the form carries. `offline_access` is not offered either, for the
+        opposite reason: it grants nothing, a refresh token is issued regardless, and
+        a checkbox whose only effect would be a connection that dies within the hour
+        is a trap rather than a choice — so the page states it in a sentence and
+        emits no checkbox for it.
       security: []
       parameters:
         - { name: response_type, in: query, required: true, schema: { type: string, const: code } }
@@ -1908,7 +1912,9 @@ paths:
         empty, and an empty `scope` / `state` / `resource` is read as absent — a
         present-but-empty parameter here is the form round trip inventing one, not the
         client asking for nothing. Consequently `state` comes back on the redirect
-        only when the client sent one (RFC 6749 §4.1.2).
+        only when the client sent one (RFC 6749 §4.1.2), and otherwise byte-for-byte
+        as received: it is opaque, so unlike the parameters this server interprets it
+        is never trimmed.
       security: []
       requestBody:
         required: true
@@ -1932,7 +1938,10 @@ paths:
                 grant_scope:
                   type: array
                   items: { type: string }
-                  description: repeated; the scopes left checked on the form
+                  description: |
+                    repeated; the scopes left checked on the form. `offline_access` is
+                    never among them — it is not rendered as a checkbox — and is
+                    echoed on the granted scope whenever the client requested it.
                 action: { type: string, enum: [approve, deny] }
       responses:
         "302":
@@ -1977,11 +1986,18 @@ paths:
         `DELETE /v1/tokens/{id}`, and carries the consenting token's own write
         budget — there is no second credential type and no second auth path.
 
-        **The consent it derives from has to still hold.** Both grants re-check the
-        takomo token the human consented with and answer `invalid_grant` if it is
-        revoked, expired or gone: revoking a human's token also ends every connector
-        derived from it. Consent with a long-lived token unless a hard cutoff is what
-        you want.
+        **Revoking the consenting token ends the connection.** Both grants re-check
+        the takomo token the human consented with and answer `invalid_grant` if it has
+        been revoked or deleted, so revoking a human's token also ends every connector
+        derived from it.
+
+        A consenting token that merely **expires** does not, deliberately: a
+        revocation is a decision that has to cascade, an expiry is bookkeeping, and
+        killing a working connector over a stale `--expires` flag would buy nothing
+        revocation does not already give. The cost, stated plainly: a short-lived
+        consent token does not bound the connection it approved. The levers that do
+        are revoking it (cascades) and revoking the connector's own row in
+        `GET /v1/tokens`.
 
         **Refresh tokens rotate on every use**, as OAuth 2.1 requires for public
         clients. The superseded *access* token is left to expire on its own, since
@@ -2037,8 +2053,8 @@ paths:
           description: |
             `invalid_request`, `unsupported_grant_type`, or `invalid_grant`. The last
             covers every refused grant — unknown, expired, replayed, wrong client,
-            wrong redirect URI, failed PKCE, consenting token no longer valid — with
-            the reason in `error_description`.
+            wrong redirect URI, failed PKCE, consenting token revoked — with the
+            reason in `error_description`.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
@@ -3489,7 +3505,7 @@ x-error-codes:
 # `invalid_request` here is not a takomo error code and never appears on /v1.
 x-oauth-errors:
   invalid_request: "a required parameter is missing or malformed — no grant_type, no client_id, a code without its code_verifier, a code_challenge_method other than S256. The description names which."
-  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, a failed PKCE check, or a consenting takomo token that is no longer valid. The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
+  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, a failed PKCE check, or a consenting takomo token that has been revoked (an expired one does not end a connection — see spec/auth.md). The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
   invalid_client_metadata: "a registration named something this server does not implement — a token_endpoint_auth_method other than `none`, a grant or response type it does not support. Unrecognized metadata members are ignored rather than refused, so only what the description names is at issue."
   invalid_redirect_uri: "a registration's redirect_uris are absent, too many, or one is not an absolute https URI without a fragment (plain http is accepted only for loopback)."
   unsupported_response_type: "the authorization endpoint was asked for something other than `code`. Reported by redirect once the redirect target itself has been verified."

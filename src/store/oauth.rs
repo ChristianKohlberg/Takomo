@@ -67,10 +67,15 @@ pub const SPENT_CODE_RETENTION_SECONDS: i64 = ACCESS_TOKEN_TTL_SECONDS;
 ///
 /// `POST /oauth/register` is unauthenticated by specification, so its rate limit
 /// paces the table's growth without bounding it — this is what bounds it. "Used"
-/// means it produced an authorization code or a refresh token; a client that did
-/// neither within a day is a dead connection attempt or a script's droppings. A
-/// client that *has* been used is never swept on age, however long it sits idle,
-/// because its refresh token may still be a live connection.
+/// means an `oauth_codes` or `oauth_refresh` row still references it; a client with
+/// neither, a day after registering, is a dead connection attempt or a script's
+/// droppings.
+///
+/// So a client is protected for exactly as long as it holds a live credential. A
+/// connector in use keeps a rotating refresh token and never becomes sweepable; one
+/// idle past [`REFRESH_TOKEN_TTL_SECONDS`] loses that row to the same sweep and its
+/// registration goes on a later tick — which is correct, because that connection is
+/// already dead and a hosted client registers again when it reconnects.
 pub const UNUSED_CLIENT_RETENTION_SECONDS: i64 = 24 * 3600;
 
 /// Ceiling on registered redirect URIs per client. A hosted product needs one
@@ -312,7 +317,7 @@ impl Store {
             }
             // Checked last, after PKCE, so a caller who cannot prove it started the
             // flow learns nothing about the consenting token's state.
-            if !consent_still_valid(tx, &grant.granted_by, now)? {
+            if !consent_not_revoked(tx, &grant.granted_by)? {
                 return Ok(OauthExchange::Rejected(GrantRejection::ConsentWithdrawn));
             }
 
@@ -374,9 +379,9 @@ impl Store {
             }
             // Refused *without* retiring the presented token: this is not reuse and
             // the client did nothing wrong, so leaving its credential intact costs
-            // nothing (it can mint nothing while the consent is invalid) and keeps
+            // nothing (it can mint nothing while the consent is revoked) and keeps
             // the refusal re-readable if the operator restores the token.
-            if !consent_still_valid(tx, &grant.granted_by, now)? {
+            if !consent_not_revoked(tx, &grant.granted_by)? {
                 return Ok(OauthExchange::Rejected(GrantRejection::ConsentWithdrawn));
             }
 
@@ -520,35 +525,37 @@ fn mint_grant(
     ))
 }
 
-/// Can the credential that consented still authorize this connector?
+/// Has the credential that consented been *revoked*?
 ///
 /// The consent snapshot is deliberately a snapshot — it cannot widen when the
-/// human's token gains scopes — but a snapshot that outlives its source would make
+/// human's token gains scopes — but a snapshot that survived revocation would make
 /// revocation a lie: rotation would keep minting hour-long access tokens with the
 /// revoked token's full authority, renewing its own 30-day window forever, and the
-/// only way to stop a connector would be to find the derived token. So every
+/// only way to stop a connector would be to hunt down the derived token. So every
 /// credential-minting path asks this first, and a `false` breaks the chain.
 ///
-/// A missing row counts as invalid: an id with no token behind it is a token that
-/// was deleted, which is at least as final as one marked revoked.
-fn consent_still_valid(tx: &Transaction, granted_by: &str, now: i64) -> ApiResult<bool> {
-    let row = tx
+/// **Revocation only, deliberately not expiry.** The asymmetry is the point. A
+/// revocation is an operator saying "this must stop", so it has to cascade. An
+/// expiry is routine bookkeeping — a `--expires 90d` typed once, months ago — and
+/// letting it kill a working connector would turn a forgotten flag into an outage
+/// while adding nothing revocation does not already provide. A connected client is
+/// meant to stay connected: the 30-day refresh window slides on every use, and this
+/// check must not introduce a second clock that does not.
+///
+/// A missing row counts as revoked: an id with no token behind it is one that was
+/// deleted, which is at least as final as one marked revoked, and there is nothing
+/// left to check the delegation against.
+fn consent_not_revoked(tx: &Transaction, granted_by: &str) -> ApiResult<bool> {
+    let revoked_at = tx
         .query_row(
-            "SELECT revoked_at, expires_at FROM tokens WHERE id = ?1",
+            "SELECT revoked_at FROM tokens WHERE id = ?1",
             params![granted_by],
-            |row| {
-                Ok((
-                    row.get::<_, Option<i64>>("revoked_at")?,
-                    row.get::<_, Option<i64>>("expires_at")?,
-                ))
-            },
+            |row| row.get::<_, Option<i64>>("revoked_at"),
         )
         .optional()?;
-    Ok(match row {
+    Ok(match revoked_at {
         None => false,
-        Some((revoked_at, expires_at)) => {
-            revoked_at.is_none() && !expires_at.is_some_and(|exp| exp <= now)
-        }
+        Some(revoked_at) => revoked_at.is_none(),
     })
 }
 
