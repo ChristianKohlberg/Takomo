@@ -1,6 +1,8 @@
 # Token scheme
 
-Basic authentication done properly-but-simply: bearer tokens, scoped, hashed at rest, minted by CLI. No users, no OAuth, no sessions in v1.
+Basic authentication done properly-but-simply: bearer tokens, scoped, hashed at rest, minted by CLI. No users and no sessions — the token *is* the identity.
+
+There is now an OAuth 2.1 authorization server in front of `/mcp` (see [OAuth for hosted MCP clients](#oauth-21-for-hosted-mcp-clients) below), which is off unless an operator sets `TAKOMO_PUBLIC_URL`. It does not add a credential type or an identity model: what it issues is an ordinary `tk_` token with an expiry, derived from one a human already holds. Everything in this document about scopes, project allowlists, budgets and revocation applies to it unchanged.
 
 ## Token format
 
@@ -109,9 +111,54 @@ An unrecognized share token is not charged (there is no share to charge it to); 
 
 **Tradeoff (accepted).** A share link is a bearer capability: **anyone with the link can view the scoped board, read-only, until it expires.** There is no per-viewer identity or audit. That is the point (frictionless read-only sharing), and it is bounded by: read-only, a single project/subtree scope, a mandatory expiry (≤30d), and one-command revocation. Prefer short TTLs and revoke when done; never mint a share over a project whose mere ticket titles/bodies are sensitive.
 
+## OAuth 2.1, for hosted MCP clients
+
+**The problem it solves.** A *local* MCP client can send `Authorization: Bearer tk_...`. A *hosted* one — claude.ai, ChatGPT developer mode, the Gemini app — can only be handed a URL, and expects to negotiate a credential over OAuth. Without an authorization server the only ways to connect them are both bad: an authless proxy makes the URL the password on a store that accepts writes, and a token in a query string leaks through logs and proxies (and the MCP authorization spec prohibits it outright).
+
+**Off by default.** The endpoints exist only when `TAKOMO_PUBLIC_URL` names the public origin the server is reached at (`https://takomo.example.com` — no path, no trailing slash; plain `http` is accepted only on loopback). Unset, they answer `404 temporarily_unavailable` naming the variable, and `/mcp` sends no `WWW-Authenticate` header. The value is validated at startup, not on first use, because a client compares the issuer and the resource identifier byte-for-byte against what it fetched and what the user typed — a stray path is not cosmetic, it is a connection that fails inside someone else's product.
+
+| method & path | auth | purpose |
+|---|---|---|
+| `GET /.well-known/oauth-protected-resource` | **none** | RFC 9728 metadata: the resource is `<base>/mcp`, the authorization server is `<base>`. Also served at the `/mcp`-suffixed path a client probes. |
+| `GET /.well-known/oauth-authorization-server` | **none** | RFC 8414 metadata. Advertises `S256` (required by the MCP spec so a client can check PKCE support up front) and `token_endpoint_auth_methods_supported: ["none"]`. |
+| `POST /oauth/register` | **none** | RFC 7591 dynamic client registration. Public clients only — no `client_secret` is ever issued. |
+| `GET /oauth/authorize` | **none** | the consent page (HTML, for a human in a browser). |
+| `POST /oauth/authorize` | the token pasted into the form | submit consent; issues an authorization code by redirect. |
+| `POST /oauth/token` | PKCE | `authorization_code` and `refresh_token` grants, `application/x-www-form-urlencoded`. |
+
+Unauthenticated is not an oversight: these are what a client uses *in order to* obtain a credential. Before they existed these paths fell through to the `/v1` middleware and answered `401`, which is precisely the dead end a hosted client cannot get past.
+
+**Consent without user accounts.** takomo has tokens, not users, and `client_credentials` is deliberately not offered — every credential here has to represent a specific human's decision. So the consent screen authenticates the human with **a takomo token they already hold**: they paste one, see which client is asking and for what, uncheck anything they do not want to hand over, and approve.
+
+What the client receives is a **derived** token: same `actor`, the checked scopes intersected with the ones that token actually carries, the same project allowlist, the same write budget — plus a one-hour expiry and its own row in `takomo token list`. So it is:
+
+- attributable — events and claims still name the human's actor, and `granted_by` records which token consented;
+- revocable on its own, with `DELETE /v1/tokens/{id}`, without touching the human's own token;
+- narrower than the credential that approved it, never wider.
+
+That is strictly better than the alternative on offer today, which is pasting a long-lived token into a client's own header field.
+
+**`admin` is never granted this way.** It is not offered on the consent screen and not honoured if requested, whatever the pasted token carries — and the common case *is* an admin token, because it may be the only one the operator has. `admin` mints tokens, creates and deletes projects, and force-releases other workers' leases: administration, not work. Consent narrows; it never widens. Grantable scopes are `read`, `write`, `human`, plus `offline_access` (which only asks for a refresh token and maps to nothing).
+
+**PKCE is the client authentication.** Every client is public, `S256` is mandatory, and `plain` is refused. A wrong `code_verifier` is refused *without* consuming the code — otherwise observing a redirect would be enough to deny service to the real client.
+
+**Authorization codes are single-use, ~60s.** A replay revokes everything that code already bought, because a replay cannot be distinguished from a stolen code racing the legitimate client.
+
+**Refresh tokens rotate on every use** (OAuth 2.1 requires it for public clients) and carry a *family* id. Presenting an already-rotated one is reuse: the whole family descended from that consent is revoked, access tokens included. The superseded **access** token is deliberately left to expire on its own — clients refresh proactively, while requests may still be in flight on it, so revoking it would fail those to buy at most an hour.
+
+**The open-redirect guard is the validation order.** `client_id` and `redirect_uri` are checked against the registration *first*; until both are known good, errors render as a page and nothing is redirected anywhere — not even an error. Redirect URIs are matched literally (a differing scheme, host, port, path or trailing slash is a different URI). Only afterwards are protocol errors reported the RFC 6749 way, by redirect.
+
+**Registration is rate-limited globally.** It is unauthenticated by specification, so there is no credential to charge and no caller identity to key a window by: one global sliding window of 30/minute. A real deployment registers a handful of clients ever.
+
+**Error bodies here are RFC 6749's, not takomo's.** `{"error", "error_description", "remedy"}` — an OAuth client parses `error` and nothing else, so takomo's `code` would be invisible to it. The vocabulary is listed under `x-oauth-errors` in `spec/openapi.yaml`, separately from `x-error-codes`, so the two namespaces are not mistaken for one.
+
+For the per-product wiring (claude.ai, ChatGPT, Gemini), see [docs/hosted-mcp-clients.md](../docs/hosted-mcp-clients.md).
+
 ## Transport
 
 The server binds localhost/tailnet and terminates plain HTTP; TLS is the deployment's job (Tailscale, reverse proxy, or platform TLS). The server refuses to bind non-loopback interfaces unless `TAKOMO_ALLOW_PUBLIC_BIND=1`, as a footgun guard.
+
+OAuth raises the stakes on that: an issuer advertised over plain `http` would publish an authorization server whose tokens travel in clear text, so `TAKOMO_PUBLIC_URL` refuses a non-loopback `http` origin outright.
 
 ## Rate limiting
 

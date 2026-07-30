@@ -13,6 +13,7 @@
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde_json::{json, Value};
 use std::time::Duration;
+use takomo::api::oauth::OauthConfig;
 use takomo::server::{build_router, spawn_sweeper, AppState};
 use takomo::store::Store;
 
@@ -38,7 +39,7 @@ fn scope_vec(list: &[&str]) -> Vec<String> {
 
 impl TestApp {
     pub async fn spawn() -> TestApp {
-        TestApp::spawn_with_sweep(Some(Duration::from_millis(250))).await
+        TestApp::spawn_with(Some(Duration::from_millis(250)), false).await
     }
 
     /// An app with **no** lease sweeper, so a lapsed lease stays recorded on the
@@ -46,10 +47,22 @@ impl TestApp {
     /// the expired-but-still-recorded claim deterministically — with the sweeper
     /// running, whether a call sees that row is a race against a 250ms timer.
     pub async fn spawn_without_sweeper() -> TestApp {
-        TestApp::spawn_with_sweep(None).await
+        TestApp::spawn_with(None, false).await
     }
 
-    async fn spawn_with_sweep(sweep: Option<Duration>) -> TestApp {
+    /// An app whose OAuth authorization server is configured, its issuer set to
+    /// the loopback origin it actually ends up listening on.
+    ///
+    /// Which is why this variant binds the listener *before* building the state: a
+    /// real client compares the issuer and the `resource` identifier byte for byte
+    /// against what it fetched and what the user typed, so a test that invented
+    /// them would pass while the deployment failed. The ephemeral port is only
+    /// knowable after the bind.
+    pub async fn spawn_with_oauth() -> TestApp {
+        TestApp::spawn_with(Some(Duration::from_millis(250)), true).await
+    }
+
+    async fn spawn_with(sweep: Option<Duration>, oauth: bool) -> TestApp {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path().join("test.db")).expect("open store");
         store
@@ -92,19 +105,26 @@ impl TestApp {
             )
             .unwrap();
 
-        let state = AppState::new(store);
+        // Bound first so the OAuth issuer can be the real origin; see
+        // `spawn_with_oauth`.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let oauth = oauth.then(|| {
+            OauthConfig::from_public_url(&base).expect("a loopback origin is a valid public URL")
+        });
+
+        let state = AppState::new_with_oauth(store, oauth);
         if let Some(interval) = sweep {
             spawn_sweeper(state.clone(), interval);
         }
         let router = build_router(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
 
         TestApp {
-            base: format!("http://{addr}"),
+            base,
             admin,
             human,
             worker,

@@ -188,12 +188,13 @@ link, which is exactly the part that dominates here; measure before adopting it.
 
 ## Architecture
 
-**One binary, four surfaces** (`src/server.rs` assembles them):
+**One binary, five surfaces** (`src/server.rs` assembles them):
 
 | Surface | Notes |
 |---|---|
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
+| OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set. |
 | `/board`, `/inbox` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` (`src/api/mod.rs`). `src/spa-common.js` — the shared markdown renderer — is inlined into both at the `// <<SPA_COMMON>>` marker, so each page stays ONE self-contained document: no second request, no new route. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
@@ -212,6 +213,18 @@ reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 - `tks_` share → `share_auth_middleware` → **only** `/v1/shares/self*`, read-only.
 - `tka_` answer grant → `answer_auth_middleware` → **only** `/v1/answer/self`: read and answer
   exactly one question, then it's spent. This is what an outside expert gets.
+
+**OAuth adds a fifth *route group*, deliberately not a fifth credential type.** `/oauth/*` and the
+two `.well-known` documents sit OUTSIDE every middleware — they are what a client reads *in order to*
+obtain a credential, so requiring one makes the flow unstartable (before they existed these paths
+fell through to the `/v1` middleware and answered 401, which is exactly the dead end a hosted client
+cannot get past). What the token endpoint issues is an ordinary `tk_` row with an expiry, derived from
+the token a human pasted into the consent screen: same actor, a **subset** of its scopes, its project
+allowlist, its write budget. So `src/auth.rs` needs no new branch, and revocation, listing and rate
+limiting all work by the machinery that already existed. Two rules worth knowing before touching it:
+`admin` is never grantable through consent (`GRANTABLE_SCOPES`), and the `client_id`/`redirect_uri`
+checks come first so an error is never redirected to an unvalidated URI. `spec/auth.md` has the
+design, `docs/hosted-mcp-clients.md` the per-product wiring.
 
 **Concurrency is the load-bearing design.** `Store::with_tx` runs every mutation as one SQLite
 `IMMEDIATE` transaction behind a process-wide `Mutex<Connection>`; that single-writer
@@ -259,7 +272,12 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
 - **Errors are part of the contract** (`src/error.rs`): a stable machine `code`, a `message`
   written for an LLM reader saying what is wrong *and* what to do, plus a `remedy` and, for
   transitions, `allowed_transitions` so the caller sees the legal moves without a second request.
-  Never fail silently.
+  Never fail silently. **The one exception is `/oauth/*`**, which emits RFC 6749's
+  `{error, error_description}` because an OAuth client parses `error` and would never see a `code` —
+  the vocabulary lives under `x-oauth-errors` in `spec/openapi.yaml`, kept separate from
+  `x-error-codes` so the two namespaces are not mistaken for one. Registration is likewise the one
+  mutating handler that does **not** `reject_unknown`: RFC 7591 requires unrecognized client metadata
+  to be ignored, and refusing it would refuse every real client.
 - Editing `src/board.html` / `src/inbox.html` only takes effect after a rebuild, since they are
   compiled into the binary. Confirm before concluding anything: `curl -s "$URL/board" | grep -c <id>`.
 - Both SPAs render via DOM construction (never `innerHTML` on user data) and carry full DE/EN
@@ -275,4 +293,5 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   HTTP and expects TLS in front.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/promotions.md`, `docs/hosting.md`.
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/promotions.md`, `docs/hosting.md`,
+`docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

@@ -39,6 +39,64 @@ fn row_to_token(row: &Row) -> rusqlite::Result<TokenRow> {
 const TOKEN_COLS: &str =
     "id, actor, scopes, projects, rate_limit, created_at, expires_at, revoked_at, last_used_at";
 
+/// Insert one token row inside an existing transaction. Returns (row, plaintext).
+///
+/// Split out of [`Store::create_token`] so a caller that must mint a token as
+/// part of a *larger* atomic step can do so without a nested transaction. The
+/// OAuth code exchange (`super::oauth`) is that caller: marking the
+/// authorization code spent and minting the access token it paid for have to
+/// commit together, or a crash in between leaves a burnt code with no token —
+/// unrecoverable for the client, since a code is single-use by design.
+pub(super) fn insert_token(
+    tx: &rusqlite::Transaction,
+    actor: &str,
+    scopes: &[String],
+    projects: Option<&[String]>,
+    rate_limit: i64,
+    expires_at: Option<i64>,
+) -> ApiResult<(TokenRow, String)> {
+    if actor.trim().is_empty() {
+        return Err(ApiError::validation(
+            "token.actor",
+            "actor must be non-empty",
+        ));
+    }
+    if scopes.is_empty() {
+        return Err(ApiError::validation(
+            "token.scopes",
+            "at least one scope is required",
+        ));
+    }
+    let plaintext = token_plaintext();
+    let hash = token_hash(&plaintext);
+    let id = token_id();
+    let now = now_ms();
+    let scopes_raw = scopes.join(",");
+    let projects_raw = match projects {
+        None => "*".to_string(),
+        Some(list) => list.join(","),
+    };
+    tx.execute(
+        "INSERT INTO tokens (id, hash, actor, scopes, projects, rate_limit, created_at, expires_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, hash, actor, scopes_raw, projects_raw, rate_limit, now, expires_at],
+    )?;
+    Ok((
+        TokenRow {
+            id,
+            actor: actor.to_string(),
+            scopes: scopes.to_vec(),
+            projects: projects.map(|p| p.to_vec()),
+            rate_limit,
+            created_at: now,
+            expires_at,
+            revoked_at: None,
+            last_used_at: None,
+        },
+        plaintext,
+    ))
+}
+
 impl Store {
     /// Mint a token. Returns (row, plaintext) — the plaintext is shown once.
     pub fn create_token(
@@ -49,47 +107,7 @@ impl Store {
         rate_limit: i64,
         expires_at: Option<i64>,
     ) -> ApiResult<(TokenRow, String)> {
-        if actor.trim().is_empty() {
-            return Err(ApiError::validation(
-                "token.actor",
-                "actor must be non-empty",
-            ));
-        }
-        if scopes.is_empty() {
-            return Err(ApiError::validation(
-                "token.scopes",
-                "at least one scope is required",
-            ));
-        }
-        let plaintext = token_plaintext();
-        let hash = token_hash(&plaintext);
-        let id = token_id();
-        let now = now_ms();
-        let scopes_raw = scopes.join(",");
-        let projects_raw = match projects {
-            None => "*".to_string(),
-            Some(list) => list.join(","),
-        };
-        self.with_tx(|tx| {
-            tx.execute(
-                "INSERT INTO tokens (id, hash, actor, scopes, projects, rate_limit, created_at, expires_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id, hash, actor, scopes_raw, projects_raw, rate_limit, now, expires_at],
-            )?;
-            Ok(())
-        })?;
-        let row = TokenRow {
-            id,
-            actor: actor.to_string(),
-            scopes: scopes.to_vec(),
-            projects: projects.map(|p| p.to_vec()),
-            rate_limit,
-            created_at: now,
-            expires_at,
-            revoked_at: None,
-            last_used_at: None,
-        };
-        Ok((row, plaintext))
+        self.with_tx(|tx| insert_token(tx, actor, scopes, projects, rate_limit, expires_at))
     }
 
     pub fn list_tokens(&self) -> ApiResult<Vec<TokenRow>> {

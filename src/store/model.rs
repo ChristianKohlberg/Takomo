@@ -525,3 +525,99 @@ impl TokenRow {
         })
     }
 }
+
+// ---------------------------------------------------------------------------
+// OAuth 2.1 authorization server (src/store/oauth.rs, src/api/oauth.rs).
+
+/// An OAuth client, registered dynamically (RFC 7591) by whichever hosted
+/// product is connecting. Always a **public** client: no `client_secret` column,
+/// because a client that cannot keep a secret gains nothing from being issued
+/// one, and PKCE is what actually binds a code to its requester.
+#[derive(Debug, Clone)]
+pub struct OauthClient {
+    pub client_id: String,
+    pub client_name: String,
+    /// Exact-match allowlist. A redirect target that is not literally one of
+    /// these is refused, which is the whole defense against an open redirect.
+    pub redirect_uris: Vec<String>,
+    pub created_at: i64,
+}
+
+impl OauthClient {
+    /// RFC 7591 §3.2.1 client information response.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "client_id": self.client_id,
+            "client_id_issued_at": self.created_at / 1000,
+            "client_name": self.client_name,
+            "redirect_uris": self.redirect_uris,
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        })
+    }
+}
+
+/// The slice of one takomo token's authority that a human consented to hand a
+/// client, snapshotted at consent time.
+///
+/// Snapshotted rather than looked up later on purpose: the access token minted
+/// from it must not silently widen if the consenting token is later given more
+/// scopes, and must not be reconstructible at all once that token is revoked.
+/// `granted_by` records which token consented, so an operator can trace a
+/// connector's authority back to the human who granted it.
+#[derive(Debug, Clone)]
+pub struct GrantedAccess {
+    pub actor: String,
+    pub scopes: Vec<String>,
+    /// None = all projects (`*`), same convention as [`TokenRow`].
+    pub projects: Option<Vec<String>>,
+    pub rate_limit: i64,
+    /// The OAuth scope string exactly as granted (space separated). Echoed back
+    /// on the token response, because it may be *narrower* than what the client
+    /// asked for — the human can uncheck scopes on the consent screen.
+    pub scope: String,
+    /// Token id of the credential the human consented with.
+    pub granted_by: String,
+}
+
+/// What the token endpoint hands back on a successful exchange.
+#[derive(Debug, Clone)]
+pub struct OauthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    pub scope: String,
+}
+
+/// Why an authorization code or refresh token was refused.
+///
+/// A store-layer enum rather than an `ApiError`, because the OAuth endpoints are
+/// the one place in this codebase that cannot use takomo's own error shape: a
+/// client parses RFC 6749's `error` field and nothing else. The mapping to that
+/// vocabulary happens at the HTTP edge (`crate::api::oauth`), so the store stays
+/// free of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantRejection {
+    /// No such code or refresh token.
+    Unknown,
+    /// Past its expiry.
+    Expired,
+    /// Already spent (a code) or already rotated (a refresh token). For a refresh
+    /// token this also revokes its whole family — see `store::oauth`.
+    Replayed,
+    /// Presented by a different client than the one it was issued to.
+    ClientMismatch,
+    /// `redirect_uri` does not match the one the code was bound to.
+    RedirectMismatch,
+    /// The PKCE `code_verifier` does not hash to the recorded challenge.
+    PkceMismatch,
+}
+
+/// The outcome of a token-endpoint grant: either credentials, or a refusal the
+/// edge turns into an RFC 6749 error body.
+#[derive(Debug, Clone)]
+pub enum OauthExchange {
+    Issued(OauthTokens),
+    Rejected(GrantRejection),
+}

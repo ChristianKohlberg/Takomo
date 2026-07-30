@@ -76,6 +76,19 @@ after checking that file is gitignored (Takomo's own is).
 
 The agent then gets native `takomo_new / ready / next / start / done / comment / link / dep / roadmap / …` tools. See [plugins/takomo/README.md](plugins/takomo/README.md) and [clients/mcp/README.md](clients/mcp/README.md).
 
+**Hosted clients (claude.ai, ChatGPT, the Gemini app)** can only be handed a *URL* — there is nowhere
+to put a bearer token — so they connect over OAuth instead. Set `TAKOMO_PUBLIC_URL` to your public
+origin and takomo runs the authorization server itself:
+
+```sh
+TAKOMO_PUBLIC_URL=https://<your-host>    # no path, no trailing slash
+```
+
+Then add `https://<your-host>/mcp` as a custom connector and approve the consent screen by pasting a
+takomo token. The client never receives that token: it gets a separate, expiring one derived from it,
+narrowed to the scopes you leave checked, revocable on its own — and never carrying `admin`. Full
+per-product wiring in [docs/hosted-mcp-clients.md](docs/hosted-mcp-clients.md).
+
 ## 3. Use it from the CLI
 
 `takomo` is a self-contained `bash` + `curl` + `python3` script — for humans, and for agents/harnesses without MCP. One line:

@@ -76,6 +76,67 @@ pub fn share_token_plaintext() -> String {
     format!("tks_{}", random_chars(BASE62, 32))
 }
 
+/// OAuth client id, e.g. "oc_a8f2k1x9q7z3n4m6". Public, not a secret: takomo
+/// registers OAuth clients as *public* clients (no `client_secret`), because a
+/// hosted MCP client cannot keep one and PKCE is what actually binds the code to
+/// the requester.
+pub fn oauth_client_id() -> String {
+    format!("oc_{}", random_chars(BASE36, 16))
+}
+
+/// OAuth authorization code: `tkc_` + 32 base62 chars (~190 bits). Single-use and
+/// short-lived; hashed at rest like every other credential here.
+pub fn oauth_code_plaintext() -> String {
+    format!("tkc_{}", random_chars(BASE62, 32))
+}
+
+/// OAuth refresh token: `tkr_` + 32 base62 chars (~190 bits).
+pub fn oauth_refresh_plaintext() -> String {
+    format!("tkr_{}", random_chars(BASE62, 32))
+}
+
+/// Refresh-token *family* id, e.g. "of_a8f2k1x9q7z3". Every refresh token minted
+/// from one consent shares it, which is what makes rotation-reuse detection
+/// possible: presenting an already-rotated token revokes the whole family rather
+/// than just the one row (OAuth 2.1 for public clients).
+pub fn oauth_family_id() -> String {
+    format!("of_{}", random_chars(BASE36, 12))
+}
+
+/// base64url without padding (RFC 4648 §5) — the encoding PKCE code challenges
+/// use. Hand-rolled rather than pulling in a base64 crate: it is a dozen lines
+/// for the one alphabet needed here, and [`pkce_s256_challenge`] below is pinned
+/// against RFC 7636's own test vector, so a mistake in it cannot go unnoticed.
+pub fn base64url_nopad(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        // Pack the chunk into a 24-bit big-endian accumulator; a short final
+        // chunk leaves the missing bytes as zero bits, and emitting only
+        // `chunk.len() + 1` characters is precisely what "no padding" means.
+        let mut acc = 0u32;
+        for (i, b) in chunk.iter().enumerate() {
+            acc |= (*b as u32) << (16 - 8 * i);
+        }
+        for i in 0..=chunk.len() {
+            let idx = ((acc >> (18 - 6 * i)) & 0x3f) as usize;
+            out.push(ALPHABET[idx] as char);
+        }
+    }
+    out
+}
+
+/// The PKCE `S256` code challenge for a verifier: base64url(SHA-256(verifier)),
+/// unpadded (RFC 7636 §4.2). This is the check that binds an authorization code
+/// to whoever started the flow, and it is the *only* client authentication a
+/// public client has — so it is compared, never trusted.
+pub fn pkce_s256_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    base64url_nopad(&hasher.finalize())
+}
+
 /// SHA-256 hex of a token plaintext (the at-rest form).
 pub fn token_hash(plaintext: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -106,4 +167,46 @@ pub fn iso(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .unwrap_or_default()
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Unit tests, unusually for this crate (the weight lives in `tests/`, because
+/// almost everything here is reachable only through HTTP). These two functions
+/// are the exception: pure, HTTP-free, and load-bearing for PKCE, where a subtly
+/// wrong encoder would not fail loudly — it would make every authorization code
+/// exchange fail with `invalid_grant` and no hint as to why. Pinning them against
+/// the RFCs' own vectors is cheaper than debugging that from a client's error log.
+#[cfg(test)]
+mod encoding_tests {
+    use super::{base64url_nopad, pkce_s256_challenge};
+
+    /// RFC 4648 §10 test vectors, minus the padding. The three cases per group of
+    /// three input bytes are what an off-by-one in the tail loop gets wrong.
+    #[test]
+    fn base64url_matches_rfc4648_vectors() {
+        assert_eq!(base64url_nopad(b""), "");
+        assert_eq!(base64url_nopad(b"f"), "Zg");
+        assert_eq!(base64url_nopad(b"fo"), "Zm8");
+        assert_eq!(base64url_nopad(b"foo"), "Zm9v");
+        assert_eq!(base64url_nopad(b"foob"), "Zm9vYg");
+        assert_eq!(base64url_nopad(b"fooba"), "Zm9vYmE");
+        assert_eq!(base64url_nopad(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// The URL-safe alphabet is the whole point of base64**url**: byte 0xfb
+    /// encodes to `-` and 0xff to `_`, where standard base64 would emit `+`
+    /// and `/` and break inside a query string.
+    #[test]
+    fn base64url_uses_the_url_safe_alphabet() {
+        assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
+        assert!(!base64url_nopad(&[0xff; 32]).contains(['+', '/', '=']));
+    }
+
+    /// RFC 7636 appendix B's worked example, verifier to challenge.
+    #[test]
+    fn pkce_challenge_matches_rfc7636_vector() {
+        assert_eq!(
+            pkce_s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
 }

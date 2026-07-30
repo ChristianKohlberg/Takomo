@@ -26,16 +26,40 @@ pub struct AppState {
     pub share_rate: Mutex<HashMap<String, VecDeque<i64>>>,
     /// token id -> last time last_used_at was persisted.
     pub last_touch: Mutex<HashMap<String, i64>>,
+    /// One global window for `POST /oauth/register`. A third map rather than a
+    /// key in `rate`, for the same reason `share_rate` is separate: it counts a
+    /// different thing (registrations by nobody in particular, since dynamic
+    /// registration is unauthenticated by specification), and merging it would
+    /// make "what has this credential spent" unanswerable.
+    pub oauth_register_rate: Mutex<HashMap<String, VecDeque<i64>>>,
+    /// The OAuth authorization server's identity, from `TAKOMO_PUBLIC_URL`.
+    /// `None` disables the OAuth endpoints and the `WWW-Authenticate` challenge
+    /// on `/mcp` — a server that cannot state its own issuer identity cannot run
+    /// the flow, and half-running it produces connection failures with no
+    /// diagnostics on the client side.
+    pub oauth: Option<crate::api::oauth::OauthConfig>,
 }
 
 impl AppState {
     pub fn new(store: Store) -> Arc<Self> {
+        AppState::new_with_oauth(store, None)
+    }
+
+    /// [`AppState::new`] with an OAuth authorization server configured. Separate
+    /// constructor rather than a field assignment because `new` hands back an
+    /// `Arc` that is immediately shared.
+    pub fn new_with_oauth(
+        store: Store,
+        oauth: Option<crate::api::oauth::OauthConfig>,
+    ) -> Arc<Self> {
         Arc::new(AppState {
             store,
             notify: Notify::new(),
             rate: Mutex::new(HashMap::new()),
             share_rate: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
+            oauth_register_rate: Mutex::new(HashMap::new()),
+            oauth,
         })
     }
 
@@ -242,12 +266,45 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // internal store directly (see crate::mcp).
     let mcp = crate::mcp::mcp_router(state.clone());
 
+    // The OAuth authorization server. Mounted at the top level, i.e. OUTSIDE
+    // every bearer middleware, and that is not incidental: discovery is what a
+    // client reads *in order to* obtain a credential, so requiring one would make
+    // the flow unstartable. (These paths previously fell through to the `/v1`
+    // middleware's fallback and answered 401, which is exactly the dead end a
+    // hosted client cannot get past.)
+    //
+    // Each handler reports its own "not configured" state instead of the route
+    // being absent, so an operator who set TAKOMO_PUBLIC_URL wrong gets a
+    // sentence explaining it rather than a bare 404.
+    let oauth = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(crate::api::oauth::protected_resource_metadata),
+        )
+        // The suffixed form, which a client probes when the protected resource
+        // lives at a path rather than at the origin (RFC 9728 §3.1).
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(crate::api::oauth::protected_resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(crate::api::oauth::authorization_server_metadata),
+        )
+        .route("/oauth/register", post(crate::api::oauth::register))
+        .route(
+            "/oauth/authorize",
+            get(crate::api::oauth::authorize_get).post(crate::api::oauth::authorize_post),
+        )
+        .route("/oauth/token", post(crate::api::oauth::token));
+
     Router::new()
         .route("/healthz", get(crate::api::healthz))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/favicon.svg", get(crate::api::favicon))
         .route("/favicon.ico", get(crate::api::favicon))
+        .merge(oauth)
         .merge(authed)
         .merge(share_authed)
         .merge(answer_authed)
@@ -273,6 +330,13 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
                 Ok(n) if n > 0 => woke = true,
                 Ok(_) => {}
                 Err(e) => eprintln!("question sweep failed: {}", e.body.message),
+            }
+            // Spent authorization codes, retired refresh tokens, and OAuth-issued
+            // access tokens long past expiry. Deliberately does NOT set `woke`:
+            // nothing long-polls on OAuth state, and waking every poller for a
+            // routine garbage collection would be pure churn.
+            if let Err(e) = state.store.sweep_expired_oauth() {
+                eprintln!("oauth sweep failed: {}", e.body.message);
             }
             if woke {
                 state.wake();
@@ -302,14 +366,32 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         .parse()
         .map_err(|e| format!("invalid bind address '{bind}': {e}"))?;
     check_bind_guard(&addr)?;
+    // Validated here, at startup, so a malformed public URL is a refusal to boot
+    // rather than a connector that fails to attach for reasons only visible in
+    // another vendor's logs.
+    let oauth = match std::env::var("TAKOMO_PUBLIC_URL") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            Some(crate::api::oauth::OauthConfig::from_public_url(&raw)?)
+        }
+        _ => None,
+    };
     let store = Store::open(db_path).map_err(|e| e.into_message())?;
-    let state = AppState::new(store);
+    let state = AppState::new_with_oauth(store, oauth);
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
+    let oauth_line = match state.oauth.as_ref() {
+        Some(cfg) => format!(
+            "OAuth issuer {} (resource {})",
+            cfg.issuer(),
+            cfg.resource()
+        ),
+        None => "OAuth off (set TAKOMO_PUBLIC_URL to let hosted MCP clients connect)".to_string(),
+    };
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("cannot bind {addr}: {e}"))?;
     println!("takomo v{VERSION} listening on http://{addr} (db: {db_path})");
+    println!("  {oauth_line}");
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("server error: {e}"))

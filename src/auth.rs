@@ -141,6 +141,18 @@ async fn authenticate(
     next: Next,
     surface: Surface,
 ) -> Result<Response, ApiError> {
+    // On the MCP surface a 401 is the start of a handshake, not just a refusal:
+    // it is where a hosted client (claude.ai, ChatGPT, the Gemini app) learns that
+    // this resource is OAuth-protected and where to find the authorization server.
+    // The header goes on every 401 from this surface, because a client that gets a
+    // bare 401 has nothing to discover from and reports an unexplained failure.
+    // REST is left out deliberately: the advertised `resource` identifier is the
+    // MCP endpoint, so pointing /v1 at it would name the wrong resource.
+    let challenge = |err: ApiError| match (surface, state.oauth.as_ref()) {
+        (Surface::Mcp, Some(cfg)) => err.header("WWW-Authenticate", cfg.www_authenticate()),
+        _ => err,
+    };
+
     let header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -148,24 +160,32 @@ async fn authenticate(
         .unwrap_or("");
     let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
     if token.is_empty() {
-        return Err(ApiError::new(
+        let mut message = String::from(
+            "Missing bearer token. Send 'Authorization: Bearer tk_...' on every request; only /healthz is open. Tokens are minted on the server with: takomo token create.",
+        );
+        if surface == Surface::Mcp && state.oauth.is_some() {
+            message.push_str(
+                " This endpoint also accepts an OAuth-issued token: see the WWW-Authenticate header on this response for where to start the flow, which is what a hosted client (claude.ai, ChatGPT, the Gemini app) does automatically.",
+            );
+        }
+        return Err(challenge(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "auth.missing",
-            "Missing bearer token. Send 'Authorization: Bearer tk_...' on every request; only /healthz is open. Tokens are minted on the server with: takomo token create.",
-        ));
+            message,
+        )));
     }
 
     let row = state
         .store
         .lookup_token(&token_hash(token))?
-        .ok_or_else(|| invalid_token("unknown token"))?;
+        .ok_or_else(|| challenge(invalid_token("unknown token")))?;
     let now = now_ms();
     if row.revoked_at.is_some() {
-        return Err(invalid_token("the token has been revoked"));
+        return Err(challenge(invalid_token("the token has been revoked")));
     }
     if let Some(exp) = row.expires_at {
         if exp <= now {
-            return Err(invalid_token("the token has expired"));
+            return Err(challenge(invalid_token("the token has expired")));
         }
     }
 
@@ -228,6 +248,23 @@ fn debit_window(
     }
     window.push_back(now);
     Ok(())
+}
+
+/// Charge one event to a sliding window that is **not** keyed by a credential.
+///
+/// The one caller is dynamic client registration (`POST /oauth/register`), which
+/// RFC 7591 requires to be unauthenticated: there is no token to charge and no
+/// caller identity to key by, so the budget is global. Exposed here rather than
+/// reimplemented there so all three budgets in this codebase share the one
+/// window implementation whose arithmetic is easy to get subtly wrong.
+///
+/// `Err(secs)` is how long the caller must wait; nothing was charged.
+pub fn debit_shared_window(
+    windows: &Mutex<HashMap<String, VecDeque<i64>>>,
+    key: &str,
+    limit: i64,
+) -> Result<(), i64> {
+    debit_window(windows, key, limit, now_ms())
 }
 
 /// Charge one write to this token's sliding-window budget, or reject with the

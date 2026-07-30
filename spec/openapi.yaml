@@ -33,6 +33,7 @@ tags:
   - { name: identity }
   - { name: shares }
   - { name: tags }
+  - { name: oauth }
 
 paths:
   /whoami:
@@ -1622,10 +1623,408 @@ paths:
         "202":
           description: Accepted — returned for a JSON-RPC notification (no id).
         "401":
-          description: Missing, invalid, or share (`tks_`) token.
+          description: |
+            Missing, invalid, or share (`tks_`) token.
+
+            When the server is configured with a public base URL
+            (`TAKOMO_PUBLIC_URL`), this response also carries
+            `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`.
+            That header is how a hosted client discovers the OAuth authorization
+            server; see the `/oauth/*` paths below.
+          headers:
+            WWW-Authenticate:
+              description: |
+                RFC 9728 challenge pointing at this resource's protected-resource
+                metadata. Present only when OAuth is configured.
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------------
+  # OAuth 2.1 authorization server. Root paths, NOT part of the frozen /v1
+  # surface, and the one family of endpoints in this contract whose error bodies
+  # are RFC 6749's rather than takomo's Error schema — an OAuth client parses
+  # `error` and nothing else. See `x-oauth-errors` at the root of this document.
+  #
+  # All six are unauthenticated by design: they are what a client uses in order to
+  # obtain a credential. Consent is authenticated in-band, by the human pasting a
+  # takomo token into the consent form.
+
+  /.well-known/oauth-protected-resource:
+    servers:
+      - url: /
+    get:
+      tags: [oauth]
+      summary: Protected-resource metadata (RFC 9728)
+      description: |
+        Names the protected resource (`<base>/mcp`) and the authorization server
+        that guards it. Also served at
+        `/.well-known/oauth-protected-resource/mcp`, the suffixed form a client
+        probes when the resource lives at a path.
+
+        `resource` must equal the URL the user types into their client, byte for
+        byte — Claude compares the two — which is why the server refuses to guess
+        it and takes `TAKOMO_PUBLIC_URL` instead.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resource: { type: string, examples: ["https://takomo.example.com/mcp"] }
+                  authorization_servers: { type: array, items: { type: string } }
+                  scopes_supported: { type: array, items: { type: string } }
+                  bearer_methods_supported: { type: array, items: { type: string } }
+                  resource_name: { type: string }
+        "404":
+          description: |
+            No OAuth authorization server is configured on this instance
+            (`TAKOMO_PUBLIC_URL` unset). The body names the variable to set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+
+  /.well-known/oauth-authorization-server:
+    servers:
+      - url: /
+    get:
+      tags: [oauth]
+      summary: Authorization-server metadata (RFC 8414)
+      description: |
+        Advertises `code_challenge_methods_supported: ["S256"]`, which the MCP
+        authorization spec requires so a client can verify PKCE support before
+        starting a flow, and `token_endpoint_auth_methods_supported: ["none"]`,
+        because every client here is a public client.
+
+        `client_id_metadata_document_supported` is deliberately absent: CIMD is not
+        implemented, and advertising it would stop a capable client from falling
+        back to dynamic registration.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issuer: { type: string }
+                  authorization_endpoint: { type: string }
+                  token_endpoint: { type: string }
+                  registration_endpoint: { type: string }
+                  scopes_supported: { type: array, items: { type: string } }
+                  response_types_supported: { type: array, items: { type: string } }
+                  response_modes_supported: { type: array, items: { type: string } }
+                  grant_types_supported: { type: array, items: { type: string } }
+                  token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
+                  code_challenge_methods_supported: { type: array, items: { type: string } }
+        "404":
+          description: OAuth is not configured on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+
+  /oauth/register:
+    servers:
+      - url: /
+    post:
+      tags: [oauth]
+      summary: Dynamic client registration (RFC 7591)
+      description: |
+        Registers a public client. Unauthenticated, as the RFC requires, and
+        therefore rate-limited by a single global sliding window rather than per
+        caller — there is no caller identity to key one by.
+
+        Unrecognized metadata members are IGNORED rather than rejected (RFC 7591
+        §2). This is the one mutating endpoint in this contract that does not
+        return `validation.unknown_field`: real clients send `client_uri`,
+        `logo_uri`, `software_id` and more, and refusing those would refuse every
+        one of them.
+
+        No `client_secret` is ever issued. PKCE is the client authentication at the
+        token endpoint.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                redirect_uris:
+                  type: array
+                  minItems: 1
+                  maxItems: 5
+                  items: { type: string }
+                  description: |
+                    Absolute https URIs with no fragment. Plain http is accepted
+                    only for loopback hosts (RFC 8252 native clients). Matched
+                    literally at the authorization endpoint — a differing scheme
+                    host port path or trailing slash is a different URI — which is
+                    what prevents an open redirect.
+                client_name:
+                  type: string
+                  description: shown on the consent screen; truncated to 200 characters
+                token_endpoint_auth_method:
+                  type: string
+                  const: none
+                  description: optional; any other value is refused rather than silently downgraded
+      responses:
+        "201":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client_id: { type: string, examples: ["oc_a8f2k1x9q7z3n4m6"] }
+                  client_id_issued_at: { type: integer, description: seconds since the epoch }
+                  client_name: { type: string }
+                  redirect_uris: { type: array, items: { type: string } }
+                  grant_types: { type: array, items: { type: string } }
+                  response_types: { type: array, items: { type: string } }
+                  token_endpoint_auth_method: { type: string, const: none }
+        "400":
+          description: "`invalid_redirect_uri` or `invalid_client_metadata`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+        "404":
+          description: OAuth is not configured on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+        "429":
+          description: The global registration budget for this minute is spent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+
+  /oauth/authorize:
+    servers:
+      - url: /
+    get:
+      tags: [oauth]
+      summary: Consent screen (authorization endpoint, authorization code + PKCE)
+      description: |
+        Returns an HTML consent page, not JSON: the response is for a human in a
+        browser. It states which client is asking, offers the requested scopes as
+        checkboxes the human can narrow, and takes a takomo token as the credential
+        that authorizes the grant.
+
+        **Validation order is load-bearing.** `client_id` and `redirect_uri` are
+        checked first, against the client's registration; until both are known
+        good, errors are rendered as a page and nothing is redirected anywhere.
+        Only afterwards are protocol errors reported the RFC 6749 §4.1.2.1 way, by
+        redirecting `error` and `error_description` (with `state`) to the verified
+        target.
+
+        The `admin` scope is never offered and never granted, whatever the token
+        pasted into the form carries.
+      security: []
+      parameters:
+        - { name: response_type, in: query, required: true, schema: { type: string, const: code } }
+        - { name: client_id, in: query, required: true, schema: { type: string } }
+        - name: redirect_uri
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Must match one the client registered. May be omitted only when the
+            client registered exactly one.
+        - { name: code_challenge, in: query, required: true, schema: { type: string } }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, const: S256 } }
+        - { name: state, in: query, required: false, schema: { type: string } }
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Space-separated. Grantable values are `read`, `write`, `human`, plus
+            `offline_access`. Unknown values are dropped rather than refused; the
+            token response echoes what was actually granted. Omitted means offer
+            everything grantable.
+        - { name: resource, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: The consent page (`text/html`).
+          content:
+            text/html:
+              schema: { type: string }
+        "302":
+          description: |
+            A protocol error, redirected to the verified `redirect_uri` as `error`
+            / `error_description` / `state`.
+          headers:
+            Location:
+              schema: { type: string }
+        "400":
+          description: |
+            An HTML page. Reached when `client_id` is unknown or `redirect_uri` is
+            not registered — the two cases where there is no verified target to
+            redirect to, so nothing is sent onward.
+          content:
+            text/html:
+              schema: { type: string }
+        "404":
+          description: OAuth is not configured on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+    post:
+      tags: [oauth]
+      summary: Submit consent
+      description: |
+        The consent form's own target, `application/x-www-form-urlencoded`. Carries
+        the authorization request back as hidden fields, plus `token` (the takomo
+        credential approving it), the `grant_scope` values left checked, and
+        `action` = `approve` or `deny`.
+
+        On approval the issued authorization code is bound to a snapshot of that
+        token's authority: same actor, the checked scopes intersected with the ones
+        it holds, its project allowlist, its write budget. Consent narrows; it never
+        widens.
+
+        A credential the server will not accept re-renders the form with an
+        explanation (200) rather than redirecting a failure the human could not act
+        on.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id, code_challenge, action]
+              properties:
+                client_id: { type: string }
+                redirect_uri: { type: string }
+                code_challenge: { type: string }
+                code_challenge_method: { type: string, const: S256 }
+                response_type: { type: string, const: code }
+                state: { type: string }
+                scope: { type: string }
+                resource: { type: string }
+                token:
+                  type: string
+                  description: a takomo bearer token the human holds
+                grant_scope:
+                  type: array
+                  items: { type: string }
+                  description: repeated; the scopes left checked on the form
+                action: { type: string, enum: [approve, deny] }
+      responses:
+        "302":
+          description: |
+            Approved (`code` and `state` on the registered `redirect_uri`) or denied
+            (`error=access_denied`).
+          headers:
+            Location:
+              schema: { type: string }
+        "200":
+          description: |
+            The consent page again, carrying an explanation — the pasted token was
+            absent, unrecognized, revoked, expired, or carries none of the checked
+            scopes.
+          content:
+            text/html:
+              schema: { type: string }
+        "400":
+          description: An HTML page — unknown client or unregistered redirect URI.
+          content:
+            text/html:
+              schema: { type: string }
+        "404":
+          description: OAuth is not configured on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+
+  /oauth/token:
+    servers:
+      - url: /
+    post:
+      tags: [oauth]
+      summary: Token endpoint — authorization_code and refresh_token grants
+      description: |
+        Takes `application/x-www-form-urlencoded` (RFC 6749 §4.1.3). Worth stating
+        because it is a common failure: a JSON-only body parser answers 415 here and
+        the client reports an unexplained connection failure.
+
+        **What an access token is:** an ordinary `tk_` takomo token with an expiry
+        (one hour). It appears in `GET /v1/tokens`, is revocable with
+        `DELETE /v1/tokens/{id}`, and carries the consenting token's own write
+        budget — there is no second credential type and no second auth path.
+
+        **Refresh tokens rotate on every use**, as OAuth 2.1 requires for public
+        clients. The superseded *access* token is left to expire on its own, since
+        clients refresh proactively while requests may still be in flight on it.
+        Presenting an already-rotated refresh token is treated as reuse: the whole
+        family descended from that consent is revoked, access tokens included.
+
+        `client_credentials` is not offered. Every credential here represents a
+        specific human's consent; for a non-interactive agent, mint a token directly
+        with `takomo token create`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type: { type: string, enum: [authorization_code, refresh_token] }
+                client_id: { type: string }
+                code:
+                  type: string
+                  description: authorization_code grant
+                code_verifier:
+                  type: string
+                  description: authorization_code grant; PKCE (RFC 7636)
+                redirect_uri:
+                  type: string
+                  description: authorization_code grant; must match the value sent to /oauth/authorize
+                refresh_token:
+                  type: string
+                  description: refresh_token grant
+      responses:
+        "200":
+          description: "Credentials issued. `Cache-Control: no-store`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string, examples: ["tk_R7xK2mQ4vBnL8sTfWzYp1c"] }
+                  token_type: { type: string, const: Bearer }
+                  expires_in: { type: integer, examples: [3600] }
+                  refresh_token: { type: string, examples: ["tkr_9Fj2qHs..."] }
+                  scope:
+                    type: string
+                    description: |
+                      What was actually granted. May be narrower than requested —
+                      the human can uncheck scopes on the consent screen — which RFC
+                      6749 §5.1 requires to be echoed.
+        "400":
+          description: |
+            `invalid_request`, `unsupported_grant_type`, or `invalid_grant`. The last
+            covers every refused grant — unknown, expired, replayed, wrong client,
+            wrong redirect URI, failed PKCE — with the reason in
+            `error_description`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
+        "404":
+          description: OAuth is not configured on this instance.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OauthError" }
 
   /questions:
     get:
@@ -2823,6 +3222,26 @@ components:
         current_version: { type: integer }
         details: { type: object }
 
+    OauthError:
+      type: object
+      description: |
+        The error body of the `/oauth/*` endpoints and the two `.well-known`
+        documents — RFC 6749 §5.2's shape, NOT takomo's `Error` schema above.
+
+        This is the contract's one deliberate inconsistency, and it is forced: an
+        OAuth client parses `error` and nothing else, so a `code` field would be
+        invisible to it. `remedy` is takomo's addition; RFC 6749 permits extra
+        members and clients ignore them, which keeps the teaching-error habit for
+        the human who ends up reading this in a log.
+
+        `x-oauth-errors` at the root of this document lists the values `error` can
+        take.
+      required: [error, error_description]
+      properties:
+        error: { type: string, examples: [invalid_grant] }
+        error_description: { type: string, description: 'what is wrong, in prose' }
+        remedy: { type: string, description: 'the next thing to do, when there is one' }
+
     TransitionError:
       allOf:
         - $ref: "#/components/schemas/Error"
@@ -3040,3 +3459,18 @@ x-error-codes:
 
   # -- the catch-all ----------------------------------------------------------
   internal: "an invariant failed server-side — a database error, a poisoned lock. The message is deliberately generic so SQL text and schema names never reach a client; the detail is in the server log. Nothing a caller can act on beyond retrying."
+
+# The `/oauth/*` and `.well-known` endpoints speak a DIFFERENT error vocabulary:
+# RFC 6749's, in an `error` field, because that is the only one an OAuth client
+# reads (see the OauthError schema). Listed separately rather than merged into
+# `x-error-codes` above precisely so the two are not mistaken for one namespace —
+# `invalid_request` here is not a takomo error code and never appears on /v1.
+x-oauth-errors:
+  invalid_request: "a required parameter is missing or malformed — no grant_type, no client_id, a code without its code_verifier, a code_challenge_method other than S256. The description names which."
+  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, or a failed PKCE check. The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
+  invalid_client_metadata: "a registration named something this server does not implement — a token_endpoint_auth_method other than `none`, a grant or response type it does not support. Unrecognized metadata members are ignored rather than refused, so only what the description names is at issue."
+  invalid_redirect_uri: "a registration's redirect_uris are absent, too many, or one is not an absolute https URI without a fragment (plain http is accepted only for loopback)."
+  unsupported_response_type: "the authorization endpoint was asked for something other than `code`. Reported by redirect once the redirect target itself has been verified."
+  unsupported_grant_type: "the token endpoint was asked for a grant this server does not implement. `client_credentials` in particular is not offered: every credential here represents a human's consent. For a non-interactive agent, mint a token with `takomo token create`."
+  access_denied: "the human at the consent screen declined. A normal outcome of the flow, not a failure."
+  temporarily_unavailable: "either no OAuth authorization server is configured on this instance (`TAKOMO_PUBLIC_URL` unset — the remedy names it), or the global registration budget for this minute is spent."

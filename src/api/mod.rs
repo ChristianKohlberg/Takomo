@@ -5,6 +5,7 @@ pub mod claims;
 pub mod events;
 pub mod export;
 pub mod metrics;
+pub mod oauth;
 pub mod projects;
 pub mod questions;
 pub mod shares;
