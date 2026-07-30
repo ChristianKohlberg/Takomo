@@ -2063,8 +2063,10 @@ paths:
           description: |
             `invalid_request`, `unsupported_grant_type`, or `invalid_grant`. The last
             covers every refused grant — unknown, expired, replayed, wrong client,
-            wrong redirect URI, failed PKCE, consenting token revoked — with the
-            reason in `error_description`.
+            wrong redirect URI, failed PKCE, this connection revoked, consenting token
+            revoked — with the reason in `error_description`. A revoked connection is
+            worded apart from a replay on purpose: one is an operator ending it, the
+            other may be a stolen credential.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
@@ -3515,7 +3517,7 @@ x-error-codes:
 # `invalid_request` here is not a takomo error code and never appears on /v1.
 x-oauth-errors:
   invalid_request: "a required parameter is missing or malformed — no grant_type, no client_id, a code without its code_verifier, a code_challenge_method other than S256. The description names which."
-  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, a failed PKCE check, or a consenting takomo token that has been revoked (an expired one does not end a connection — see spec/auth.md). The description distinguishes them. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
+  invalid_grant: "the authorization code or refresh token was refused. RFC 6749 puts every reason under this one value: unknown, expired, already redeemed, issued to another client, a redirect_uri that does not match, a failed PKCE check, a connection whose credentials were revoked at the server, or a consenting takomo token that has been revoked (an expired one does not end a connection — see spec/auth.md). The description distinguishes them, and the last two are deliberately worded apart from a replay: a revoked connection is an administrative act, not a credential that may have been stolen. A *replay* additionally revokes everything that credential produced, because a replay cannot be told apart from a stolen credential racing the real client."
   invalid_client_metadata: "a registration named something this server does not implement — a token_endpoint_auth_method other than `none`, a grant or response type it does not support. Unrecognized metadata members are ignored rather than refused, so only what the description names is at issue."
   invalid_redirect_uri: "a registration's redirect_uris are absent, too many, or one is not an absolute https URI without a fragment (plain http is accepted only for loopback)."
   unsupported_response_type: "the authorization endpoint was asked for something other than `code`. Reported by redirect once the redirect target itself has been verified."

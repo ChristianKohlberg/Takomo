@@ -367,9 +367,24 @@ impl Store {
                 return Ok(OauthExchange::Rejected(GrantRejection::Unknown));
             };
 
-            if rotated_at.is_some() || revoked_at.is_some() {
+            // Rotated first, and the order carries meaning. A row can hold both
+            // stamps — a family revoked after this row had already rotated — and
+            // presenting such a token really is reuse, so `rotated_at` wins.
+            //
+            // Revoked but never rotated is the other story entirely: nobody
+            // presented this credential twice, it was taken away. That is now a
+            // routine path (`Store::revoke_token` on a derived token, or a sibling's
+            // reuse detection revoking the family), and reporting it as detected
+            // theft would send an operator who just ended a connector deliberately
+            // into an incident response over their own action.
+            if rotated_at.is_some() {
                 revoke_refresh_family(tx, &family, now)?;
                 return Ok(OauthExchange::Rejected(GrantRejection::Replayed));
+            }
+            if revoked_at.is_some() {
+                // No family revoke: it is already revoked, and this is a path a
+                // client will retry.
+                return Ok(OauthExchange::Rejected(GrantRejection::ConnectionRevoked));
             }
             if expires_at <= now {
                 return Ok(OauthExchange::Rejected(GrantRejection::Expired));

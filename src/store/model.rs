@@ -611,6 +611,10 @@ pub enum GrantRejection {
     Expired,
     /// Already spent (a code) or already rotated (a refresh token). For a refresh
     /// token this also revokes its whole family — see `store::oauth`.
+    ///
+    /// Reuse, in other words, which is why it is kept distinct from
+    /// [`GrantRejection::ConnectionRevoked`]: one says a credential may have been
+    /// stolen, the other says it was taken away.
     Replayed,
     /// Presented by a different client than the one it was issued to.
     ClientMismatch,
@@ -622,6 +626,11 @@ pub enum GrantRejection {
     /// snapshot it authorized can mint nothing further. An *expired* consenting
     /// token does not land here — see [`GrantedAccess`].
     ConsentWithdrawn,
+    /// This refresh token was revoked without ever having been rotated: the
+    /// connection was ended at the server, by `Store::revoke_token` on its derived
+    /// token or by reuse detected on a sibling in the same family. Nobody presented
+    /// it twice, so it must not be reported as reuse.
+    ConnectionRevoked,
 }
 
 /// The outcome of a token-endpoint grant: either credentials, or a refusal the

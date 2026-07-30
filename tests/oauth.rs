@@ -1109,10 +1109,21 @@ async fn refresh_rotates_and_reuse_takes_down_the_family() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(reuse["error"], "invalid_grant");
+    // Reported *as* reuse — this is the one path where a credential may have been
+    // stolen, and it must not be worded like the administrative revocations below.
+    assert!(
+        reuse["error_description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("already redeemed"),
+        "presenting a rotated token is reuse and must say so: {reuse}"
+    );
     assert!(!app.mcp_accepts(&access1).await, "family revoked");
     assert!(!app.mcp_accepts(&access2).await, "family revoked");
 
-    // And the successor is dead too, so the thief cannot refresh onward.
+    // And the successor is dead too, so the thief cannot refresh onward. It was
+    // never rotated, though — it was taken down with the family — so the refusal is
+    // the ended-connection one, not a second theft claim.
     let (status, after) = app
         .token_call(&[
             ("grant_type", "refresh_token"),
@@ -1122,6 +1133,18 @@ async fn refresh_rotates_and_reuse_takes_down_the_family() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{after}");
     assert_eq!(after["error"], "invalid_grant");
+    let after_desc = after["error_description"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        after_desc.contains("ended at the takomo server"),
+        "a never-rotated credential must not be reported as redeemed twice: {after}"
+    );
+    assert!(
+        !after_desc.contains("already redeemed"),
+        "the two refusals must not be swapped: {after}"
+    );
 }
 
 /// Revoking the token a human consented with ends every connector derived from it.
@@ -1324,6 +1347,28 @@ async fn revoking_a_derived_token_ends_that_connection_and_no_other() {
         "a revoked connection must not be able to rotate back: {refused}"
     );
     assert_eq!(refused["error"], "invalid_grant");
+    // And it must say what happened. Reporting a deliberate revocation as detected
+    // reuse sends whoever reads the client's log into an incident response over an
+    // operator's own action.
+    let desc = refused["error_description"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        desc.contains("ended at the takomo server"),
+        "the refusal must name the revocation: {refused}"
+    );
+    assert!(
+        !desc.contains("already redeemed") && !desc.contains("compromised"),
+        "…and must not read as credential theft: {refused}"
+    );
+    assert!(
+        refused["remedy"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/oauth/authorize"),
+        "the remedy must say reconnecting works: {refused}"
+    );
 
     // The other connection is untouched, credential and refresh alike.
     assert!(

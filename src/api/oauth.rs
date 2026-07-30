@@ -921,10 +921,12 @@ pub async fn token(State(state): State<Arc<AppState>>, body: String) -> Response
                 GrantRejection::RedirectMismatch => "The redirect_uri does not match the one this authorization code was issued for. It must be byte-identical to the value sent to /oauth/authorize.",
                 GrantRejection::PkceMismatch => "The code_verifier does not match the code_challenge this authorization code was bound to (PKCE, RFC 7636).",
                 GrantRejection::ConsentWithdrawn => "The takomo credential this connection was consented with has been revoked (or deleted), so this connection was revoked with it and nothing further can be issued: a human has to approve again. Note that this is revocation specifically — a consenting token that merely expired would not have stopped the connection.",
+                GrantRejection::ConnectionRevoked => "This connection has been ended at the takomo server: its credentials were revoked, so this refresh token is no longer valid and nothing further can be issued for it. Either an operator revoked this connection's token, or reuse was detected on another credential of the same connection and everything in it was revoked together. Nothing here says this refresh token was itself misused.",
             },
             match why {
                 GrantRejection::Replayed => "Start a fresh authorization: send the user back through /oauth/authorize. If you did not initiate this exchange, treat the credential as compromised — it has been revoked here.",
                 GrantRejection::ConsentWithdrawn => "Send the user back through /oauth/authorize to approve again, with a takomo token that has not been revoked (mint one with: takomo token create). If you did not expect this, the operator revoked that token deliberately — ask them before reconnecting.",
+                GrantRejection::ConnectionRevoked => "Reconnecting through /oauth/authorize works — a fresh consent issues a new connection. But someone revoked this one on purpose, so find out why before doing that.",
                 _ => "Start a fresh authorization at /oauth/authorize and exchange the new code once.",
             },
         ),
