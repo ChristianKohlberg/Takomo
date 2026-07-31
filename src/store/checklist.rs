@@ -1493,8 +1493,16 @@ impl Store {
                 .ok_or_else(|| ApiError::not_found("case", id))?;
             drop(stmt);
             let mut stmt = conn.prepare(
+                // Newest first, tiebroken on rowid — i.e. insertion order.
+                //
+                // NOT on `id`: a verdict id is `cv-` plus eight RANDOM base36
+                // characters, so tiebreaking on it was a coin flip rather than an
+                // order. Two verdicts recorded in the same millisecond — which is
+                // exactly what an agent pass followed by a human pass does — came
+                // back in either order, so "newest first" was only true about half
+                // the time.
                 "SELECT id, case_id, actor_kind, actor, verdict, note, release, at
-                 FROM case_verdicts WHERE case_id = ?1 ORDER BY at DESC, id DESC",
+                 FROM case_verdicts WHERE case_id = ?1 ORDER BY at DESC, rowid DESC",
             )?;
             let history = stmt
                 .query_map(params![id], |r| {
