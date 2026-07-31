@@ -1315,3 +1315,491 @@ async fn mcp_link_deletes_with_null_and_leaves_other_keys_alone() {
         json!({ "design": "https://example.test/doc", "pr": "https://example.test/pr/2" })
     );
 }
+
+// ---------------------------------------------------------------------------
+// Initiatives over MCP: the surface an agent actually uses to open an idea and
+// feed it over time.
+
+/// The whole loop an agent runs: open an initiative, append a note, append a
+/// colleague's feedback, attach a document, then read back what accumulated.
+#[tokio::test]
+async fn initiative_accumulates_inputs_over_mcp() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({
+                "project": "tp",
+                "title": "Name the thing",
+                "summary": "Every project needs a good name.",
+                "labels": ["naming"],
+                "tags": ["person:ada"],
+            }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("ini-"), "unexpected id shape: {id}");
+    assert_eq!(created["initiative"]["status"], "open");
+    assert_eq!(created["initiative"]["rollup"]["entries"], 0);
+    assert_eq!(created["initiative"]["rollup"]["megabytes"], 0.0);
+
+    // A research finding from an agent.
+    let appended = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({
+                "id": id,
+                "kind": "research",
+                "source": "agent:w1",
+                "source_uri": "https://example.test/trademark-search",
+                "title": "Trademark landscape",
+                "text": "No conflicting marks in class 42.",
+            }),
+        )
+        .await;
+    assert_eq!(appended["entry"]["kind"], "research");
+    assert_eq!(appended["entry"]["source"], "agent:w1");
+    assert_eq!(appended["entry"]["has_content"], false);
+    // The append response already reports what the collection now weighs, so an
+    // agent never has to follow up with a read to know.
+    assert_eq!(appended["initiative"]["rollup"]["entries"], 1);
+    assert_eq!(
+        appended["initiative"]["rollup"]["chars"],
+        "No conflicting marks in class 42.".chars().count()
+    );
+
+    // A colleague's feedback, written earlier and pasted in now: two different
+    // timestamps, both correct.
+    let feedback = app
+        .tool_ok(
+            &app.human,
+            "takomo_initiative_append",
+            json!({
+                "id": id,
+                "kind": "feedback",
+                "source": "person:ada",
+                "text": "Prefer something pronounceable in German.",
+                "origin_at": "2026-07-01T09:00:00Z",
+            }),
+        )
+        .await;
+    assert_eq!(feedback["entry"]["origin_at"], "2026-07-01T09:00:00.000Z");
+    assert_eq!(feedback["entry"]["author"], "human:reviewer");
+    assert_ne!(
+        feedback["entry"]["origin_at"], feedback["entry"]["created_at"],
+        "when it was written and when it landed are separate facts"
+    );
+
+    // An attached document.
+    let doc = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({
+                "id": id,
+                "kind": "document",
+                "source": "person:ada",
+                "text": "Full search report.",
+                // "hello takomo"
+                "content_base64": "aGVsbG8gdGFrb21v",
+                "mime": "text/plain",
+                "filename": "report.txt",
+            }),
+        )
+        .await;
+    assert_eq!(doc["entry"]["has_content"], true);
+    assert_eq!(doc["entry"]["content_bytes"], 12);
+    let rollup = &doc["initiative"]["rollup"];
+    assert_eq!(rollup["entries"], 3);
+    assert_eq!(rollup["attachments"], 1);
+    assert_eq!(rollup["attachment_bytes"], 12);
+
+    // takomo_initiative_show returns the rollup plus the entries, newest first.
+    let shown = app
+        .tool_ok(&app.worker, "takomo_initiative_show", json!({ "id": id }))
+        .await;
+    let entries = shown["initiative"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0]["kind"], "document");
+    assert_eq!(entries[2]["kind"], "research");
+    assert_eq!(shown["initiative"]["rollup"]["entries"], 3);
+
+    // And the bytes come back over the REST content route, byte for byte.
+    let entry_id = entries[0]["id"].as_str().unwrap();
+    let resp = app
+        .authed(
+            Method::GET,
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries/{entry_id}/content"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello takomo");
+}
+
+/// The list tool, and the fact that `person:ada` on an initiative means the same
+/// thing it means on a ticket — it registers in the project's tag registry.
+#[tokio::test]
+async fn initiative_list_filters_and_shares_the_tag_registry() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    for (title, status) in [("Naming", "open"), ("Pricing", "parked")] {
+        app.tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": title, "status": status, "tags": ["person:ada"] }),
+        )
+        .await;
+    }
+
+    let listed = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_list",
+            json!({ "project": "tp", "status": "open" }),
+        )
+        .await;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"][0]["title"], "Naming");
+
+    let by_tag = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_list",
+            json!({ "project": "tp", "tag": "person:ada" }),
+        )
+        .await;
+    assert_eq!(by_tag["items"].as_array().unwrap().len(), 2);
+
+    // Tagging lazily registered the handle, exactly as it does from a ticket.
+    let (status, registry) = app
+        .get(&app.worker, "/v1/projects/tp/tags?kind=person")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(registry["items"][0]["ref"], "person:ada");
+}
+
+/// Status is a label an owner moves, not a workflow: nothing gates the order, and
+/// `distilled` is how an initiative records that it became tickets.
+#[tokio::test]
+async fn initiative_update_edits_the_description_only() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Name the thing" }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+
+    let updated = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_update",
+            json!({
+                "id": id,
+                "status": "distilled",
+                "summary": "Became takomo-9xyz.",
+                "metadata_merge": { "distilled_into": ["tp-1a2b"] },
+            }),
+        )
+        .await;
+    assert_eq!(updated["initiative"]["status"], "distilled");
+    assert_eq!(updated["initiative"]["summary"], "Became takomo-9xyz.");
+    assert_eq!(
+        updated["initiative"]["metadata"]["distilled_into"][0],
+        "tp-1a2b"
+    );
+    assert_eq!(updated["initiative"]["version"], 2);
+
+    // A patch with nothing in it is a teaching refusal, not a silent no-op that
+    // bumps the version.
+    let (body, is_error) = app
+        .tool(&app.worker, "takomo_initiative_update", json!({ "id": id }))
+        .await;
+    assert!(is_error);
+    assert_eq!(body["code"], "validation.no_changes");
+
+    // A parked initiative is still appendable — parking is not closing.
+    app.tool_ok(
+        &app.worker,
+        "takomo_initiative_update",
+        json!({ "id": id, "status": "parked" }),
+    )
+    .await;
+    app.tool_ok(
+        &app.worker,
+        "takomo_initiative_append",
+        json!({ "id": id, "kind": "note", "source": "agent:w1", "text": "One more thought." }),
+    )
+    .await;
+}
+
+/// Every refusal an agent can walk into on the append path, and each has to say
+/// what to do instead.
+#[tokio::test]
+async fn initiative_append_refuses_bad_input_with_guidance() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Name the thing" }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+
+    let cases: Vec<(&str, Value)> = vec![
+        // Neither text nor an attachment: provenance for nothing.
+        (
+            "validation.entry_empty",
+            json!({ "id": id, "kind": "note", "source": "agent:w1" }),
+        ),
+        // Provenance is the point of an entry, so it is required.
+        (
+            "validation.entry_source",
+            json!({ "id": id, "kind": "note", "source": "  ", "text": "x" }),
+        ),
+        // A free-form kind is still a slug.
+        (
+            "validation.entry_kind",
+            json!({ "id": id, "kind": "Research Notes", "source": "agent:w1", "text": "x" }),
+        ),
+        // A mangled upload must never become silently truncated bytes.
+        (
+            "validation.entry_content_base64",
+            json!({
+                "id": id, "kind": "document", "source": "agent:w1",
+                "content_base64": "not base64!!", "mime": "text/plain",
+            }),
+        ),
+        // Bytes nobody can label are bytes nobody can use.
+        (
+            "validation.entry_attachment_unlabeled",
+            json!({
+                "id": id, "kind": "document", "source": "agent:w1",
+                "content_base64": "aGk=",
+            }),
+        ),
+        // The media type is served back in a header, so it is restricted to one.
+        (
+            "validation.entry_mime",
+            json!({
+                "id": id, "kind": "document", "source": "agent:w1",
+                "content_base64": "aGk=", "mime": "text/plain; charset=\"x\"\r\nX-Evil: 1",
+            }),
+        ),
+        // A wrong provenance date is worse than a missing one.
+        (
+            "validation.origin_at",
+            json!({
+                "id": id, "kind": "note", "source": "agent:w1", "text": "x",
+                "origin_at": "last tuesday",
+            }),
+        ),
+    ];
+    for (code, args) in cases {
+        let (body, is_error) = app
+            .tool(&app.worker, "takomo_initiative_append", args.clone())
+            .await;
+        assert!(is_error, "{code} should have been refused: {body}");
+        assert_eq!(body["code"], code, "wrong code for {args}: {body}");
+        assert!(
+            body["message"].as_str().unwrap_or_default().len() > 40,
+            "a refusal must teach, not just reject: {body}"
+        );
+    }
+
+    // An unknown initiative is a 404 even for a well-formed entry.
+    let (body, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({ "id": "ini-nope", "kind": "note", "source": "agent:w1", "text": "x" }),
+        )
+        .await;
+    assert!(is_error);
+    assert_eq!(body["status"], 404);
+}
+
+/// The attachment cap is what keeps a document upload from stalling every claim
+/// and transition in the store, so it is enforced on the decoded bytes.
+#[tokio::test]
+async fn initiative_attachment_cap_is_enforced_on_decoded_bytes() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Big ideas" }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+
+    let oversized = vec![b'x'; 1_048_577];
+    let encoded = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(&oversized)
+    };
+    let (body, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({
+                "id": id, "kind": "document", "source": "agent:w1",
+                "content_base64": encoded, "filename": "huge.bin",
+            }),
+        )
+        .await;
+    assert!(is_error);
+    assert_eq!(body["code"], "initiative.attachment_too_large");
+    assert_eq!(body["details"]["bytes"], 1_048_577);
+    assert_eq!(body["details"]["max_bytes"], 1_048_576);
+    assert!(
+        body["remedy"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("source_uri"),
+        "the remedy should point at referencing the document instead: {body}"
+    );
+
+    // One byte under the cap lands.
+    let ok = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(vec![b'x'; 1_048_576])
+    };
+    let landed = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({
+                "id": id, "kind": "document", "source": "agent:w1",
+                "content_base64": ok, "filename": "exactly-the-cap.bin",
+            }),
+        )
+        .await;
+    assert_eq!(landed["entry"]["content_bytes"], 1_048_576);
+    assert_eq!(landed["initiative"]["rollup"]["megabytes"], 1.0);
+}
+
+/// Initiative writes are writes: they need the `write` scope, they debit the
+/// per-token write budget, and they are bounded by the project allowlist. The two
+/// read tools are free, like every other read on this surface.
+#[tokio::test]
+async fn initiative_tools_respect_scopes_projects_and_the_write_budget() {
+    let app = TestApp::spawn().await;
+    let reader = app.mint("agent:reader", &["read"], None);
+    let outsider = app.mint("agent:elsewhere", &["read", "write"], Some(&["other"]));
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Name the thing" }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+
+    // read-only token: reads work, writes do not.
+    app.tool_ok(&reader, "takomo_initiative_show", json!({ "id": id }))
+        .await;
+    let (body, is_error) = app
+        .tool(
+            &reader,
+            "takomo_initiative_append",
+            json!({ "id": id, "kind": "note", "source": "x", "text": "y" }),
+        )
+        .await;
+    assert!(is_error);
+    assert_eq!(body["status"], 403);
+
+    // A token scoped to another project cannot reach this initiative by id, on
+    // either the read or the write tool.
+    for tool in ["takomo_initiative_show", "takomo_initiative_append"] {
+        let (body, is_error) = app
+            .tool(
+                &outsider,
+                tool,
+                json!({ "id": id, "kind": "note", "source": "x", "text": "y" }),
+            )
+            .await;
+        assert!(is_error, "{tool} should be refused: {body}");
+        assert_eq!(body["status"], 403, "{tool}: {body}");
+    }
+    // …nor create one there.
+    let (body, is_error) = app
+        .tool(
+            &outsider,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Sneaky" }),
+        )
+        .await;
+    assert!(is_error);
+    assert_eq!(body["status"], 403);
+
+    // The write tools are declared writes, so they are metered. A budget of one
+    // write buys exactly one append; the read tools stay free afterwards.
+    let thrifty = app.mint_limited("agent:thrifty", &["read", "write"], None, 1);
+    app.tool_ok(
+        &thrifty,
+        "takomo_initiative_append",
+        json!({ "id": id, "kind": "note", "source": "agent:thrifty", "text": "first" }),
+    )
+    .await;
+    let (body, is_error) = app
+        .tool(
+            &thrifty,
+            "takomo_initiative_append",
+            json!({ "id": id, "kind": "note", "source": "agent:thrifty", "text": "second" }),
+        )
+        .await;
+    assert!(is_error);
+    assert_eq!(
+        body["status"], 429,
+        "a second write should be refused: {body}"
+    );
+    app.tool_ok(&thrifty, "takomo_initiative_list", json!({}))
+        .await;
+}
+
+/// The five initiative tools must be discoverable, and the two read tools must be
+/// declared reads — an unlisted name is charged as a write, which is the safe
+/// direction but wrong for a read.
+#[tokio::test]
+async fn initiative_tools_are_discoverable_and_classified() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let listed = app.ok_call(&app.worker, "tools/list", json!({})).await;
+    let names: Vec<&str> = listed["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "takomo_initiative_new",
+        "takomo_initiative_append",
+        "takomo_initiative_update",
+        "takomo_initiative_list",
+        "takomo_initiative_show",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "{expected} missing from {names:?}"
+        );
+    }
+    assert!(takomo::mcp::READ_TOOLS.contains(&"takomo_initiative_list"));
+    assert!(takomo::mcp::READ_TOOLS.contains(&"takomo_initiative_show"));
+    assert!(!takomo::mcp::READ_TOOLS.contains(&"takomo_initiative_append"));
+}

@@ -449,6 +449,152 @@ impl Promotion {
     }
 }
 
+/// The derived size/shape of an initiative: how much has accumulated on it. Not
+/// stored anywhere — recomputed from `initiative_entries` on every read, so it
+/// cannot disagree with the entries it describes.
+#[derive(Debug, Clone, Default)]
+pub struct InitiativeRollup {
+    /// Number of entries.
+    pub entries: i64,
+    /// Entries that carry attachment bytes (`content_bytes > 0`).
+    pub attachments: i64,
+    /// Characters of entry text, summed. This is the "how long is this thing"
+    /// number a human means — it counts characters, not UTF-8 bytes.
+    pub chars: i64,
+    /// Total bytes stored: entry text (UTF-8) plus attachment content.
+    pub bytes: i64,
+    /// Of which attachment content, so a caller can tell a wall of text from a
+    /// pile of PDFs without fetching either.
+    pub attachment_bytes: i64,
+    /// When the most recent entry landed, or None on an initiative with none.
+    pub last_entry_at: Option<i64>,
+}
+
+impl InitiativeRollup {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "entries": self.entries,
+            "attachments": self.attachments,
+            "chars": self.chars,
+            "bytes": self.bytes,
+            "attachment_bytes": self.attachment_bytes,
+            // Precomputed rather than left to the caller, because every surface
+            // wants it and each would round differently. Two decimals is enough
+            // to distinguish a note from a document and never implies more
+            // precision than a size in megabytes deserves.
+            "megabytes": (self.bytes as f64 / (1024.0 * 1024.0) * 100.0).round() / 100.0,
+            "last_entry_at": self.last_entry_at.map(iso),
+        })
+    }
+}
+
+/// An initiative: an idea being nurtured, with a collection of research inputs
+/// appended to it over time. See `store/initiatives.rs`.
+#[derive(Debug, Clone)]
+pub struct Initiative {
+    pub id: String,
+    pub project: String,
+    /// Quick title — what the idea is called.
+    pub title: String,
+    /// A very short description. Deliberately capped well below a ticket body:
+    /// the long form belongs in an entry, where it carries provenance.
+    pub summary: String,
+    /// open | parked | distilled. A plain lifecycle label, not a workflow state.
+    pub status: String,
+    pub labels: Vec<String>,
+    /// Canonical `kind:handle` tag references, same registry as tickets.
+    pub tags: Vec<String>,
+    pub metadata: Value,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+    /// Derived counts over this initiative's entries.
+    pub rollup: InitiativeRollup,
+}
+
+impl Initiative {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "title": self.title,
+            "summary": self.summary,
+            "status": self.status,
+            "labels": self.labels,
+            "tags": self.tags,
+            "metadata": self.metadata,
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "version": self.version,
+            "rollup": self.rollup.to_json(),
+        })
+    }
+}
+
+/// One appended contribution to an initiative. Append-only; never edited.
+///
+/// Carries text, an attachment, or both. The bytes of an attachment are NOT on
+/// this struct — `content_bytes` reports the size and the bytes are fetched
+/// separately by id, so listing a hundred entries never loads a hundred
+/// documents.
+#[derive(Debug, Clone)]
+pub struct InitiativeEntry {
+    pub id: String,
+    pub initiative: String,
+    pub project: String,
+    /// Free-form slug naming the sort of input: `note`, `research`, `feedback`,
+    /// `transcript`, `document`, … A new kind is just a new string.
+    pub kind: String,
+    pub title: Option<String>,
+    pub text: String,
+    pub mime: Option<String>,
+    pub filename: Option<String>,
+    pub chars: i64,
+    pub text_bytes: i64,
+    pub content_bytes: i64,
+    /// Where this input came from — an agent, a person, a conversation.
+    pub source: String,
+    pub source_uri: Option<String>,
+    /// When the content originated, as opposed to `created_at` when it landed.
+    pub origin_at: Option<i64>,
+    pub meta: Value,
+    /// The actor that appended it.
+    pub author: String,
+    pub created_at: i64,
+}
+
+impl InitiativeEntry {
+    /// Whether this entry carries attachment bytes to fetch.
+    pub fn has_content(&self) -> bool {
+        self.content_bytes > 0
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "initiative": self.initiative,
+            "project": self.project,
+            "kind": self.kind,
+            "title": self.title,
+            "text": self.text,
+            "has_content": self.has_content(),
+            "mime": self.mime,
+            "filename": self.filename,
+            "chars": self.chars,
+            "bytes": self.text_bytes + self.content_bytes,
+            "content_bytes": self.content_bytes,
+            "source": self.source,
+            "source_uri": self.source_uri,
+            "origin_at": self.origin_at.map(iso),
+            "meta": self.meta,
+            "author": self.author,
+            "created_at": iso(self.created_at),
+        })
+    }
+}
+
 /// A project-scoped tag: a named entity of some `kind` (e.g. `person`,
 /// `component`, `team`) that tickets can be tagged with by its `handle`. The
 /// registry is deliberately generic — a new kind is just a new `kind` string,

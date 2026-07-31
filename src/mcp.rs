@@ -92,6 +92,8 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
     "takomo_deps",
+    "takomo_initiative_list",
+    "takomo_initiative_show",
     "takomo_list",
     "takomo_projects",
     "takomo_questions",
@@ -458,6 +460,113 @@ pub struct AnswerLinkArgs {
     pub actor: Option<String>,
 }
 
+// ---- initiative tool argument schemas ---------------------------------------
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InitiativeNewArgs {
+    /// Project id the initiative belongs to.
+    pub project: String,
+    /// Quick title — the name the idea goes by.
+    pub title: String,
+    /// A very short description: what the idea is, in a sentence or two. The long
+    /// form belongs in an entry, where it carries provenance.
+    pub summary: Option<String>,
+    /// Lifecycle label: open (being fed) | parked (set aside) | distilled (its
+    /// substance became tickets). Defaults to open.
+    pub status: Option<String>,
+    /// Free-form labels.
+    pub labels: Option<Vec<String>>,
+    /// Tag references, each `kind:handle` (e.g. `person:ada`,
+    /// `component:billing`) — the same project registry tickets use. Unknown
+    /// handles are registered on the fly.
+    pub tags: Option<Vec<String>>,
+    /// Free-form JSON object for anything structured this initiative carries.
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InitiativeUpdateArgs {
+    /// Initiative id (`ini-…`).
+    pub id: String,
+    /// New title. Omit to keep.
+    pub title: Option<String>,
+    /// New short description. Omit to keep.
+    pub summary: Option<String>,
+    /// New lifecycle label: open | parked | distilled. Omit to keep.
+    pub status: Option<String>,
+    /// Replace the labels outright. Omit to keep.
+    pub labels: Option<Vec<String>>,
+    /// Replace the tag references outright. Omit to keep.
+    pub tags: Option<Vec<String>>,
+    /// Merge into `metadata` (RFC 7386: a null value removes that key).
+    pub metadata_merge: Option<Value>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InitiativeAppendArgs {
+    /// Initiative id (`ini-…`) to append to.
+    pub id: String,
+    /// What sort of input this is — a free-form slug matching
+    /// `^[a-z][a-z0-9-]*$`. Conventional: `note`, `research`, `feedback`,
+    /// `transcript`, `document`, `decision`. The vocabulary is open.
+    pub kind: String,
+    /// Where this input came from, and REQUIRED — an agent id, a person, a
+    /// conversation (`agent:w1`, `person:ada`, `claude:chat`). Without it the
+    /// collection is text nobody can attribute.
+    pub source: String,
+    /// Optional short heading for this entry.
+    pub title: Option<String>,
+    /// The markdown content. Give this, an attachment, or both.
+    pub text: Option<String>,
+    /// A link to where the input lives (the conversation, the doc, the PR).
+    pub source_uri: Option<String>,
+    /// When the content ORIGINATED, RFC 3339 (e.g. `2026-07-01T09:00:00Z`) —
+    /// as opposed to when it landed here, which is recorded automatically. Set
+    /// it when appending something written earlier.
+    pub origin_at: Option<String>,
+    /// An attached document, base64-encoded (standard alphabet, padded). Capped
+    /// at 1 MiB decoded; host anything larger elsewhere and put its URL in
+    /// `source_uri`.
+    pub content_base64: Option<String>,
+    /// The attachment's media type as bare `type/subtype`, e.g.
+    /// `application/pdf`. Required unless `filename` is given.
+    pub mime: Option<String>,
+    /// The attachment's filename. Required unless `mime` is given.
+    pub filename: Option<String>,
+    /// Free-form JSON object for anything structured about this entry.
+    pub meta: Option<Value>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InitiativeListArgs {
+    /// Filter by project id.
+    pub project: Option<String>,
+    /// Filter by lifecycle label: open | parked | distilled.
+    pub status: Option<String>,
+    /// Text search over title and summary (every whitespace-separated term must
+    /// match).
+    pub q: Option<String>,
+    /// Filter by a single label.
+    pub label: Option<String>,
+    /// Filter by an exact tag reference, `kind:handle`.
+    pub tag: Option<String>,
+    /// Page size, 1-200 (default 50).
+    pub limit: Option<i64>,
+    /// Opaque cursor from a previous page's `next_cursor`.
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InitiativeShowArgs {
+    /// Initiative id (`ini-…`).
+    pub id: String,
+    /// How many entries to return, newest first: 1-200 (default 50). The rollup
+    /// always describes the whole collection, not just this page.
+    pub limit: Option<i64>,
+    /// Opaque cursor from a previous page's `next_cursor`.
+    pub cursor: Option<String>,
+}
+
 // ---- tools ------------------------------------------------------------------
 
 #[tool_router]
@@ -465,7 +574,11 @@ impl TakomoMcp {
     pub fn new(state: Arc<AppState>) -> Self {
         Self {
             state,
-            tool_router: Self::tool_router(),
+            // Two routers, merged. The initiative tools sit in their own
+            // `#[tool_router]` block because they are a genuinely separate
+            // surface — no claims, no fences, no workflow — and keeping them
+            // out of the work-loop block keeps each block readable.
+            tool_router: Self::tool_router() + Self::initiative_router(),
         }
     }
 
@@ -898,7 +1011,233 @@ impl TakomoMcp {
     }
 }
 
+// ---- initiative tools -------------------------------------------------------
+
+#[tool_router(router = initiative_router)]
+impl TakomoMcp {
+    #[tool(
+        description = "Create an initiative: a durable home for an idea that is not yet work — a \
+        product idea, a direction, what came out of a good conversation. Unlike a ticket it has \
+        no workflow and is never claimed; it is nurtured by appending research inputs over time \
+        with takomo_initiative_append."
+    )]
+    async fn takomo_initiative_new(
+        &self,
+        Parameters(a): Parameters<InitiativeNewArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_initiative_new(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Append one contribution to an initiative: a note, a research finding, a \
+        colleague's feedback, a transcript, or an attached document (base64, up to 1 MiB). \
+        Append-only — the accumulated record IS the initiative. `source` is required: it records \
+        where the input came from, so a later reader can weigh it."
+    )]
+    async fn takomo_initiative_append(
+        &self,
+        Parameters(a): Parameters<InitiativeAppendArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_initiative_append(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Update an initiative's own description: title, summary, status \
+        (open|parked|distilled), labels, tags, metadata. Entries are append-only and are not \
+        editable from here."
+    )]
+    async fn takomo_initiative_update(
+        &self,
+        Parameters(a): Parameters<InitiativeUpdateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_initiative_update(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "List initiatives with optional filters. Each carries a rollup of what has \
+        accumulated on it: entries, attachments, characters, bytes/megabytes."
+    )]
+    async fn takomo_initiative_list(
+        &self,
+        Parameters(a): Parameters<InitiativeListArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_initiative_list(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Fetch one initiative with its rollup and a page of entries, newest first. \
+        Entry text is included; attachment bytes are not — fetch those from \
+        GET /v1/initiatives/{id}/entries/{entry}/content."
+    )]
+    async fn takomo_initiative_show(
+        &self,
+        Parameters(a): Parameters<InitiativeShowArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_initiative_show(&require_auth(&ctx)?, a))
+    }
+}
+
 // ---- tool implementations (call the internal store directly) ----------------
+
+impl TakomoMcp {
+    fn do_initiative_new(&self, auth: &AuthCtx, a: InitiativeNewArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        auth.require_project(&a.project)?;
+        let req = crate::store::InitiativeCreate {
+            title: a.title,
+            summary: a.summary,
+            status: a.status,
+            labels: a.labels.unwrap_or_default(),
+            tags: a.tags.unwrap_or_default(),
+            metadata: a.metadata,
+        };
+        let ini = self
+            .state
+            .store
+            .create_initiative(&a.project, &req, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "initiative": ini.to_json(),
+            "note": format!(
+                "Feed it with takomo_initiative_append {{ id: \"{}\", kind: \"research\", source: \"…\", text: \"…\" }}. Every entry records where it came from, so the collection stays weighable later.",
+                ini.id
+            ),
+        }))
+    }
+
+    fn do_initiative_append(&self, auth: &AuthCtx, a: InitiativeAppendArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        // Project scope is checked against the initiative's own project, so a
+        // token restricted to other projects cannot append here — the id alone
+        // never grants access.
+        let ini = self
+            .state
+            .store
+            .get_initiative(&a.id)?
+            .ok_or_else(|| ApiError::not_found("initiative", &a.id))?;
+        auth.require_project(&ini.project)?;
+        let content = match &a.content_base64 {
+            None => None,
+            Some(encoded) => Some(decode_attachment(encoded)?),
+        };
+        let origin_at = match &a.origin_at {
+            None => None,
+            Some(raw) => Some(parse_rfc3339_ms(raw)?),
+        };
+        let req = crate::store::EntryCreate {
+            kind: a.kind,
+            title: a.title,
+            text: a.text.unwrap_or_default(),
+            content,
+            mime: a.mime,
+            filename: a.filename,
+            source: a.source,
+            source_uri: a.source_uri,
+            origin_at,
+            meta: a.meta,
+        };
+        let (entry, updated) =
+            self.state
+                .store
+                .append_initiative_entry(&a.id, &req, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "entry": entry.to_json(),
+            "initiative": updated.to_json(),
+        }))
+    }
+
+    fn do_initiative_update(&self, auth: &AuthCtx, a: InitiativeUpdateArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let ini = self
+            .state
+            .store
+            .get_initiative(&a.id)?
+            .ok_or_else(|| ApiError::not_found("initiative", &a.id))?;
+        auth.require_project(&ini.project)?;
+        let patch = crate::store::InitiativePatch {
+            title: a.title,
+            summary: a.summary,
+            status: a.status,
+            labels: a.labels,
+            tags: a.tags,
+            metadata_merge: a.metadata_merge,
+        };
+        if patch.is_empty() {
+            return Err(ApiError::bad_request(
+                "validation.no_changes",
+                "The update contains no changes. Provide at least one of title, summary, status, labels, tags, metadata_merge.",
+            ));
+        }
+        let updated = self
+            .state
+            .store
+            .patch_initiative(&a.id, &patch, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({ "ok": true, "initiative": updated.to_json() }))
+    }
+
+    fn do_initiative_list(&self, auth: &AuthCtx, a: InitiativeListArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        if let Some(p) = &a.project {
+            auth.require_project(p)?;
+        }
+        let filter = crate::store::InitiativeListFilter {
+            project: a.project,
+            allowed_projects: auth.allowed_projects_vec(),
+            status: a.status,
+            q: a.q,
+            tag: a.tag,
+            label: a.label,
+        };
+        let limit = a
+            .limit
+            .unwrap_or(50)
+            .clamp(1, crate::store::MAX_INITIATIVES_PAGE);
+        let cursor = parse_cursor(a.cursor.as_deref())?;
+        let (items, next_cursor) = self.state.store.list_initiatives(&filter, cursor, limit)?;
+        Ok(json!({
+            "ok": true,
+            "items": items.iter().map(|i| i.to_json()).collect::<Vec<_>>(),
+            "next_cursor": next_cursor,
+        }))
+    }
+
+    fn do_initiative_show(&self, auth: &AuthCtx, a: InitiativeShowArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let ini = self
+            .state
+            .store
+            .get_initiative(&a.id)?
+            .ok_or_else(|| ApiError::not_found("initiative", &a.id))?;
+        auth.require_project(&ini.project)?;
+        let limit = a
+            .limit
+            .unwrap_or(50)
+            .clamp(1, crate::store::MAX_ENTRIES_PAGE);
+        let cursor = parse_cursor(a.cursor.as_deref())?;
+        let (entries, next_cursor) = self
+            .state
+            .store
+            .list_initiative_entries(&a.id, cursor, limit)?;
+        let mut out = ini.to_json();
+        if let Value::Object(m) = &mut out {
+            m.insert(
+                "entries".to_string(),
+                json!(entries.iter().map(|e| e.to_json()).collect::<Vec<_>>()),
+            );
+            m.insert("next_cursor".to_string(), json!(next_cursor));
+        }
+        Ok(json!({ "ok": true, "initiative": out }))
+    }
+}
 
 impl TakomoMcp {
     fn do_new(&self, auth: &AuthCtx, a: NewArgs) -> ApiResult<Value> {
@@ -1764,7 +2103,15 @@ impl ServerHandler for TakomoMcp {
                  on the same tools, `style_guide` on takomo_workflow), write ticket titles, \
                  bodies, comments, and questions the way it says. Illegal \
                  transitions return the workflow's allowed_transitions so you can self-correct; \
-                 call `takomo_workflow` to see a project's full state machine."
+                 call `takomo_workflow` to see a project's full state machine. Not everything \
+                 worth keeping is work: when a conversation produces an IDEA rather than a task \
+                 — a product direction, an initiative to nurture — open it with \
+                 `takomo_initiative_new` and feed it over time with \
+                 `takomo_initiative_append`, one entry per input (a note, a research finding, a \
+                 colleague's feedback, an attached document). Every entry records its `source`, \
+                 so a later reader can weigh where each piece came from. An initiative has no \
+                 workflow and is never claimed; when its substance becomes tickets, set its \
+                 status to `distilled`."
                     .to_string(),
             )
     }
@@ -1809,6 +2156,59 @@ fn respond(result: ApiResult<Value>) -> Result<CallToolResult, McpError> {
                 &Value::Object(obj),
             ))]))
         }
+    }
+}
+
+/// Decode a base64 attachment from the wire.
+///
+/// Strict (`STANDARD`, padded, no trailing garbage) on purpose: a truncated or
+/// mangled upload has to be a validation error the caller can see, never bytes
+/// silently stored short. The decoded length is what the store's caps are checked
+/// against — the encoding is 4/3 larger and bounding that instead would let a
+/// caller past the real limit.
+fn decode_attachment(encoded: &str) -> ApiResult<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|e| {
+            ApiError::validation(
+                "validation.entry_content_base64",
+                format!(
+                    "'content_base64' is not valid base64 ({e}). Use the standard alphabet with padding — the whole document, in one string."
+                ),
+            )
+        })
+}
+
+/// Parse an RFC 3339 timestamp to unix milliseconds.
+///
+/// Only used for `origin_at`, where the caller is stating when something was
+/// written. An unparseable value is refused rather than dropped: a wrong
+/// provenance date is worse than a missing one.
+fn parse_rfc3339_ms(raw: &str) -> ApiResult<i64> {
+    chrono::DateTime::parse_from_rfc3339(raw.trim())
+        .map(|dt| dt.timestamp_millis())
+        .map_err(|e| {
+            ApiError::validation(
+                "validation.origin_at",
+                format!(
+                    "'origin_at' must be an RFC 3339 timestamp such as '2026-07-01T09:00:00Z' ({e}). Omit it when the input originated now — that is already recorded."
+                ),
+            )
+        })
+}
+
+/// Parse an opaque list cursor, matching the REST handlers' contract exactly: it
+/// is the previous page's `next_cursor`, verbatim, or nothing.
+fn parse_cursor(raw: Option<&str>) -> ApiResult<Option<i64>> {
+    match raw {
+        None => Ok(None),
+        Some(c) => Ok(Some(c.trim().parse::<i64>().map_err(|_| {
+            ApiError::bad_request(
+                "validation.cursor",
+                "Invalid cursor; pass the exact next_cursor value from the previous page.",
+            )
+        })?)),
     }
 }
 

@@ -250,6 +250,14 @@ answering resumes it through the workflow's human-gated edge — but only once *
 blocking question on the ticket is answered (a barrier). An `advisory` question records a routed
 decision and never touches ticket state.
 
+**Initiatives** (`src/store/initiatives.rs`) are the one thing here that is *not* work: an idea
+being nurtured — a product direction, the residue of a good conversation — fed by appending
+entries over time, each recording where it came from. No workflow, no claim, no lease, no ready
+queue; `status` is a label, not a state machine. Written over MCP (`takomo_initiative_*`) because
+an agent in a conversation is what produces one; `/v1/initiatives*` is read-only, for the UI.
+Entries are the only place in the store that holds binary blobs, which is why they are the only
+thing with byte caps — an unbounded upload would hold the write mutex every claim waits on.
+
 **Event log + long polling:** `emit_event` writes inside the same transaction as its mutation, so
 the log cannot drift from state. `AppState::notify` is woken after every commit and long-pollers
 (ready/claim, `events?wait=`, SSE) re-check. Note `/board` and `/inbox` poll
@@ -293,5 +301,5 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   HTTP and expects TLS in front.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/promotions.md`, `docs/hosting.md`,
-`docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/initiatives.md`, `docs/promotions.md`,
+`docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).
