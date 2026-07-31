@@ -46,12 +46,24 @@ Every hosted product runs the same flow, and from the person's side it is:
 
 The client never receives the token that was pasted. takomo issues it a *separate* one: same actor, a
 subset of the scopes (whatever is left checked), the same project allowlist, the same write budget,
-plus a one-hour expiry and its own entry in `takomo token list`, tagged with the client it belongs to.
-So you can end one connector without touching anything else:
+plus a one-hour expiry and its own entry in the token listing, tagged with the client it belongs to.
+So you can end one connector without touching anything else.
+
+There are two ways to list and revoke, and which one you have depends on how the instance is hosted.
+Over HTTP, with an admin token — the path to use on a PaaS like Render, where there is no convenient
+shell:
 
 ```sh
-takomo --db /var/data/takomo.db token list    # a CONNECTION column appears; find the client's row
-curl -sS -X DELETE "$URL/v1/tokens/tok_xxxxxxxx" -H "Authorization: Bearer tk_admin..."
+export TAKOMO_URL=https://takomo.example.com TAKOMO_TOKEN=tk_admin...
+takomo token ls                 # a CONNECTION column appears; find the client's row
+takomo token revoke tok_xxxxxxxx
+```
+
+Or on the box itself, against the database file:
+
+```sh
+takomo --db /var/data/takomo.db token list    # same CONNECTION column
+takomo --db /var/data/takomo.db token revoke tok_xxxxxxxx
 ```
 
 **Identify the row by its CONNECTION, not by its expiry.** The column names the client the row
@@ -59,6 +71,9 @@ belongs to (`Claude`, `ChatGPT`, …, or the `client_id` for a client that regis
 `GET /v1/tokens` carries the same thing as `oauth_client`. An expiry does not identify anything — the
 consent token below is minted with `--expires 90d` — and two connectors approved by the same person
 are otherwise identical rows: same actor, same scopes, same projects.
+
+The column is present only when some row *is* a connection, so on an instance with no connectors the
+listing looks exactly as it always did.
 
 Getting it wrong is not recoverable, so it is worth the second look. Revoking the derived row ends
 that one connection; revoking the token you approved with ends **every** connection approved with it,
@@ -74,6 +89,8 @@ Mint the token you will paste for exactly this purpose, rather than reusing an a
 takomo --db /var/data/takomo.db token create \
   --actor human:you --scopes read,write,human --projects thc-sourcing --expires 90d
 ```
+
+Same flags on `takomo token create` if you are working over HTTP rather than on the box.
 
 **Revoking that token also ends every connector consented with it** — one `takomo token revoke` cuts
 the human's own access and every connection approved with it, in one move. Letting it **expire** does
