@@ -9287,3 +9287,321 @@ async fn both_spas_serve_the_shared_module_inlined() {
          extraction removes"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Initiatives — the read surface. Initiatives are written over MCP (see
+// tests/mcp.rs); these tests build fixtures straight in the store and then drive
+// the four REST routes a UI reads them through.
+
+/// Create an initiative with a text entry and an attachment entry, returning
+/// (initiative id, text entry id, attachment entry id).
+fn seed_initiative(store: &takomo::store::Store) -> (String, String, String) {
+    let ini = store
+        .create_initiative(
+            "tp",
+            &takomo::store::InitiativeCreate {
+                title: "Name the thing".to_string(),
+                summary: Some("Every project needs a good name.".to_string()),
+                labels: vec!["naming".to_string()],
+                tags: vec!["person:ada".to_string()],
+                ..Default::default()
+            },
+            "human:admin",
+        )
+        .expect("create initiative");
+    let (note, _) = store
+        .append_initiative_entry(
+            &ini.id,
+            &takomo::store::EntryCreate {
+                kind: "note".to_string(),
+                text: "Shortlist: takomo, kombu, nori.".to_string(),
+                source: "claude:chat".to_string(),
+                ..Default::default()
+            },
+            "agent:w1",
+        )
+        .expect("append note");
+    let (doc, _) = store
+        .append_initiative_entry(
+            &ini.id,
+            &takomo::store::EntryCreate {
+                kind: "document".to_string(),
+                text: "Trademark search results.".to_string(),
+                content: Some(b"%PDF-1.7 fake".to_vec()),
+                mime: Some("application/pdf".to_string()),
+                filename: Some("trademarks.pdf".to_string()),
+                source: "person:ada".to_string(),
+                ..Default::default()
+            },
+            "human:reviewer",
+        )
+        .expect("append document");
+    (ini.id, note.id, doc.id)
+}
+
+/// The rollup is the feature: a caller must be able to see how much has piled up
+/// on an initiative without reading any of it. It is derived, never stored, so
+/// these numbers have to add up to exactly what the entries hold.
+#[tokio::test]
+async fn initiative_list_and_detail_report_a_derived_rollup() {
+    let app = TestApp::spawn().await;
+    let (id, _, _) = seed_initiative(&app.open_store());
+
+    let (status, body) = app.get(&app.worker, "/v1/initiatives?project=tp").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    let listed = &body["items"][0];
+    assert_eq!(listed["id"], id);
+    assert_eq!(listed["title"], "Name the thing");
+    assert_eq!(listed["status"], "open");
+    assert_eq!(listed["tags"][0], "person:ada");
+
+    // Two entries, one of them an attachment.
+    let rollup = &listed["rollup"];
+    assert_eq!(rollup["entries"], 2);
+    assert_eq!(rollup["attachments"], 1);
+    let text_chars = "Shortlist: takomo, kombu, nori.".chars().count() as i64
+        + "Trademark search results.".chars().count() as i64;
+    assert_eq!(rollup["chars"], text_chars);
+    assert_eq!(rollup["attachment_bytes"], 13);
+    assert_eq!(rollup["bytes"], text_chars + 13);
+    assert!(
+        rollup["last_entry_at"].is_string(),
+        "an initiative with entries reports when the last one landed: {rollup}"
+    );
+
+    // The detail route agrees with the list — same derivation, one code path.
+    let (status, detail) = app.get(&app.worker, &format!("/v1/initiatives/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["rollup"], *rollup);
+}
+
+/// Entries carry their provenance, and listing them never drags attachment bytes
+/// along — `has_content` is how a reader learns there are any.
+#[tokio::test]
+async fn initiative_entries_list_carries_provenance_but_not_bytes() {
+    let app = TestApp::spawn().await;
+    let (id, note_id, doc_id) = seed_initiative(&app.open_store());
+
+    let (status, body) = app
+        .get(&app.worker, &format!("/v1/initiatives/{id}/entries"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    // Newest first.
+    assert_eq!(items[0]["id"], doc_id);
+    assert_eq!(items[1]["id"], note_id);
+
+    let doc = &items[0];
+    assert_eq!(doc["kind"], "document");
+    assert_eq!(doc["source"], "person:ada");
+    assert_eq!(doc["author"], "human:reviewer");
+    assert_eq!(doc["has_content"], true);
+    assert_eq!(doc["content_bytes"], 13);
+    assert_eq!(doc["filename"], "trademarks.pdf");
+    assert!(
+        doc.get("content").is_none(),
+        "the entry list must never carry attachment bytes: {doc}"
+    );
+
+    let note = &items[1];
+    assert_eq!(note["source"], "claude:chat");
+    assert_eq!(note["has_content"], false);
+    assert_eq!(note["content_bytes"], 0);
+
+    // The collection's rollup rides along, so a UI rendering the entry list does
+    // not need a second request to head its page.
+    assert_eq!(body["rollup"]["entries"], 2);
+}
+
+/// The attachment route is the only non-JSON endpoint in the API. It must serve
+/// the stored bytes under the entry's own media type, as a download rather than
+/// something a browser will render.
+#[tokio::test]
+async fn initiative_attachment_downloads_with_its_own_type() {
+    let app = TestApp::spawn().await;
+    let (id, note_id, doc_id) = seed_initiative(&app.open_store());
+
+    let resp = app
+        .authed(
+            Method::GET,
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries/{doc_id}/content"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let headers = resp.headers().clone();
+    assert_eq!(headers["content-type"], "application/pdf");
+    assert_eq!(
+        headers["content-disposition"], "attachment; filename=\"trademarks.pdf\"",
+        "agent-supplied bytes are served as a download, never inline"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"%PDF-1.7 fake");
+
+    // A text-only entry has no bytes to fetch, and says so rather than serving an
+    // empty body that reads like a corrupt download.
+    let (status, body) = app
+        .get(
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries/{note_id}/content"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("text-only")
+            || body["remedy"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("text-only"),
+        "the refusal should say the entry is text-only: {body}"
+    );
+}
+
+/// An entry id from one initiative must not be readable through another's path.
+/// The pair is the address, not the entry id alone.
+#[tokio::test]
+async fn initiative_entry_is_scoped_to_its_initiative() {
+    let app = TestApp::spawn().await;
+    let store = app.open_store();
+    let (_, _, doc_id) = seed_initiative(&store);
+    let other = store
+        .create_initiative(
+            "tp",
+            &takomo::store::InitiativeCreate {
+                title: "Something else".to_string(),
+                ..Default::default()
+            },
+            "human:admin",
+        )
+        .unwrap();
+
+    let (status, _) = app
+        .get(
+            &app.worker,
+            &format!("/v1/initiatives/{}/entries/{doc_id}/content", other.id),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an entry must not be reachable through a different initiative's path"
+    );
+}
+
+/// A token restricted to other projects cannot read an initiative just by naming
+/// its id — the project check runs against the initiative's own project.
+#[tokio::test]
+async fn initiative_reads_respect_the_project_allowlist() {
+    let app = TestApp::spawn().await;
+    let (id, _, doc_id) = seed_initiative(&app.open_store());
+    let outsider = app.mint("agent:elsewhere", &["read", "write"], Some(&["other"]));
+
+    for path in [
+        format!("/v1/initiatives/{id}"),
+        format!("/v1/initiatives/{id}/entries"),
+        format!("/v1/initiatives/{id}/entries/{doc_id}/content"),
+    ] {
+        let (status, _) = app.get(&outsider, &path).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path} must be refused to a token scoped to another project"
+        );
+    }
+
+    // And the list simply does not include it.
+    let (status, body) = app.get(&outsider, "/v1/initiatives").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        0,
+        "the list must be bounded by the token's project allowlist: {body}"
+    );
+}
+
+/// Filters and paging, since a UI depends on both.
+#[tokio::test]
+async fn initiative_list_filters_and_pages() {
+    let app = TestApp::spawn().await;
+    let store = app.open_store();
+    for (title, status, label) in [
+        ("Naming the product", "open", "naming"),
+        ("Pricing experiments", "parked", "pricing"),
+        ("Onboarding rewrite", "open", "onboarding"),
+    ] {
+        store
+            .create_initiative(
+                "tp",
+                &takomo::store::InitiativeCreate {
+                    title: title.to_string(),
+                    status: Some(status.to_string()),
+                    labels: vec![label.to_string()],
+                    ..Default::default()
+                },
+                "human:admin",
+            )
+            .unwrap();
+    }
+
+    let (_, body) = app.get(&app.worker, "/v1/initiatives?status=open").await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+
+    let (_, body) = app.get(&app.worker, "/v1/initiatives?label=pricing").await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["title"], "Pricing experiments");
+
+    // Tokenized search: every term must match, against title or summary.
+    let (_, body) = app
+        .get(&app.worker, "/v1/initiatives?q=naming%20product")
+        .await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    let (_, body) = app
+        .get(&app.worker, "/v1/initiatives?q=naming%20pricing")
+        .await;
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        0,
+        "terms are ANDed, not ORed: {body}"
+    );
+
+    // Paging walks the whole set exactly once.
+    let (_, page1) = app.get(&app.worker, "/v1/initiatives?limit=2").await;
+    assert_eq!(page1["items"].as_array().unwrap().len(), 2);
+    let cursor = page1["next_cursor"].as_str().expect("a second page exists");
+    let (_, page2) = app
+        .get(
+            &app.worker,
+            &format!("/v1/initiatives?limit=2&cursor={cursor}"),
+        )
+        .await;
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+    assert!(page2["next_cursor"].is_null());
+}
+
+/// An initiative that does not exist is a 404, not an empty document — and a
+/// garbage cursor is a teaching 400 rather than a silently empty page.
+#[tokio::test]
+async fn initiative_reads_refuse_bad_input_clearly() {
+    let app = TestApp::spawn().await;
+    let (id, _, _) = seed_initiative(&app.open_store());
+
+    let (status, body) = app.get(&app.worker, "/v1/initiatives/ini-nope").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "notfound.initiative");
+
+    let (status, body) = app
+        .get(
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries?cursor=abc"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation.cursor");
+}

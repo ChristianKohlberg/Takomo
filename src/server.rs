@@ -213,6 +213,21 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/answer-links/{id}",
             axum::routing::delete(crate::api::questions::revoke_link),
         )
+        // Initiatives are read here and written over MCP (see crate::mcp) — the
+        // thing that produces one is an agent in a conversation, not a form.
+        .route("/v1/initiatives", get(crate::api::initiatives::list))
+        .route(
+            "/v1/initiatives/{id}",
+            get(crate::api::initiatives::get_one),
+        )
+        .route(
+            "/v1/initiatives/{id}/entries",
+            get(crate::api::initiatives::list_entries),
+        )
+        .route(
+            "/v1/initiatives/{id}/entries/{entry}/content",
+            get(crate::api::initiatives::entry_content),
+        )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))

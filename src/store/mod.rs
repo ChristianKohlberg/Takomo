@@ -7,6 +7,7 @@ mod answer_grants;
 mod claims;
 mod events;
 mod helpers;
+mod initiatives;
 mod metrics;
 mod model;
 mod oauth;
@@ -22,6 +23,11 @@ mod transition;
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
+pub use initiatives::{
+    EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch, INITIATIVE_STATUSES,
+    MAX_ENTRIES_PAGE, MAX_ENTRY_CONTENT_BYTES, MAX_INITIATIVES_PAGE, MAX_INITIATIVE_BYTES,
+    MAX_INITIATIVE_ENTRIES,
+};
 pub use model::*;
 pub use oauth::{
     ACCESS_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, MAX_REDIRECT_URIS, REFRESH_TOKEN_TTL_SECONDS,
@@ -622,6 +628,81 @@ CREATE TABLE IF NOT EXISTS answer_grants (
   revoked_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_answer_grants_question ON answer_grants(question);
+
+-- Initiatives: a durable home for an idea that is not yet work. A product idea,
+-- a direction, the residue of a good conversation — something nurtured over time
+-- rather than claimed and closed. Deliberately NOT a ticket: there is no
+-- workflow, no state machine, no claim, no lease and no ready queue here, because
+-- none of those describe an idea being fed by several people and agents. `status`
+-- is a plain lifecycle label (see INITIATIVE_STATUSES), not a workflow state.
+--
+-- The metadata a reader wants at a glance — how many entries, how many
+-- characters, how many bytes, how many attachments — is deliberately NOT stored
+-- here. It is derived from `initiative_entries` on read (see
+-- `initiatives::load_rollup`), so it cannot drift from the entries it counts.
+CREATE TABLE IF NOT EXISTS initiatives (
+  id         TEXT PRIMARY KEY,
+  project    TEXT NOT NULL REFERENCES projects(id),
+  title      TEXT NOT NULL,
+  summary    TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'open',
+  labels     TEXT NOT NULL DEFAULT '[]',
+  -- Canonical `kind:handle` references into the project tag registry, exactly as
+  -- on tickets — so `person:ada` on an initiative means the same thing, and the
+  -- same registry answers who that is.
+  tags       TEXT NOT NULL DEFAULT '[]',
+  metadata   TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_initiatives_project ON initiatives(project, status);
+
+-- One contribution to an initiative: a note, a research finding, a colleague's
+-- feedback, a conversation transcript, an uploaded document. Append-only — the
+-- point is the accumulated record, so nothing here is edited in place.
+--
+-- Generic on purpose, in two directions. `kind` is a free-form slug, so a new
+-- sort of input needs no schema change; and every entry can carry text, an
+-- attachment, or both: `text` is the markdown a reader (and the UI) can always
+-- show, `content` the raw bytes of a document when there is a file. `content` is
+-- the ONLY blob in this schema and is never selected by the list or detail
+-- queries — it is fetched by itself, by id.
+--
+-- Provenance is first-class rather than left to a free-form note: `source` says
+-- where the input came from (an agent, a person, a conversation), `source_uri`
+-- points at it, and `origin_at` records when the content was *created* as opposed
+-- to `created_at`, when it landed here. A transcript pasted in a week later has
+-- two different, both correct, timestamps.
+--
+-- The three size columns are computed once, on append, from what was actually
+-- stored: `chars` counts characters of `text` (what a human means by "how long"),
+-- `text_bytes` its UTF-8 length, `content_bytes` the attachment's length. Summing
+-- them at read time is what makes the rollup free of drift.
+CREATE TABLE IF NOT EXISTS initiative_entries (
+  id            TEXT PRIMARY KEY,
+  initiative    TEXT NOT NULL REFERENCES initiatives(id),
+  -- Denormalized from the initiative so every scope check and project filter is
+  -- one query, matching the precedent set by shares and promotions.
+  project       TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  title         TEXT,
+  text          TEXT NOT NULL DEFAULT '',
+  content       BLOB,
+  mime          TEXT,
+  filename      TEXT,
+  chars         INTEGER NOT NULL DEFAULT 0,
+  text_bytes    INTEGER NOT NULL DEFAULT 0,
+  content_bytes INTEGER NOT NULL DEFAULT 0,
+  source        TEXT NOT NULL,
+  source_uri    TEXT,
+  origin_at     INTEGER,
+  meta          TEXT NOT NULL DEFAULT '{}',
+  author        TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_initiative_entries_initiative ON initiative_entries(initiative);
 
 -- Promotions: an append-only record that a ticket's work reached some named
 -- target/stage — "staging", "production", "published", "delivered", whatever

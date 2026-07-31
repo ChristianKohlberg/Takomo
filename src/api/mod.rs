@@ -4,6 +4,7 @@
 pub mod claims;
 pub mod events;
 pub mod export;
+pub mod initiatives;
 pub mod metrics;
 pub mod oauth;
 pub mod projects;
