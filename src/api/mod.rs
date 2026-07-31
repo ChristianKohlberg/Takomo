@@ -158,6 +158,9 @@ static BOARD_HTML: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| with_spa_common(include_str!("../board.html"), "board.html"));
 static INBOX_HTML: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| with_spa_common(include_str!("../inbox.html"), "inbox.html"));
+static INITIATIVES_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    with_spa_common(include_str!("../initiatives.html"), "initiatives.html")
+});
 
 pub async fn board() -> impl axum::response::IntoResponse {
     secure_html(BOARD_HTML.as_str())
@@ -169,6 +172,22 @@ pub async fn board() -> impl axum::response::IntoResponse {
 /// token, so serving it leaks nothing the API does not already guard.
 pub async fn inbox() -> impl axum::response::IntoResponse {
     secure_html(INBOX_HTML.as_str())
+}
+
+/// Initiatives: a self-contained page for the ideas a fleet is nurturing — a
+/// list with each collection's rollup, one initiative's entries in full, and the
+/// composer that appends to it. Like `/board` and `/inbox` it is unauthenticated
+/// static HTML; every data fetch carries the viewer's bearer token.
+///
+/// It is the one SPA that WRITES, which is why `/v1/initiatives` grew POST and
+/// PATCH handlers: an initiative is fed by people as well as agents, and a browser
+/// cannot call an MCP tool.
+/// Named `initiatives_page` rather than `initiatives`: the sibling module
+/// `crate::api::initiatives` holds the JSON handlers, and while Rust would let a
+/// function share that name (different namespace), a reader should not have to
+/// know that to tell which one a call site means.
+pub async fn initiatives_page() -> impl axum::response::IntoResponse {
+    secure_html(INITIATIVES_HTML.as_str())
 }
 
 /// The takomo mark ("tako" = octopus) as an SVG favicon, served at both

@@ -195,7 +195,7 @@ link, which is exactly the part that dominates here; measure before adopting it.
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` (`src/api/mod.rs`). `src/spa-common.js` — the shared markdown renderer — is inlined into both at the `// <<SPA_COMMON>>` marker, so each page stays ONE self-contained document: no second request, no new route. |
+| `/board`, `/inbox`, `/initiatives` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` / `src/initiatives.html` (`src/api/mod.rs`). `src/spa-common.js` — the shared markdown renderer — is inlined into each at the `// <<SPA_COMMON>>` marker, so every page stays ONE self-contained document: no second request, no new route. `/initiatives` is the only one that WRITES. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the
@@ -254,7 +254,8 @@ decision and never touches ticket state.
 being nurtured — a product direction, the residue of a good conversation — fed by appending
 entries over time, each recording where it came from. No workflow, no claim, no lease, no ready
 queue; `status` is a label, not a state machine. Written over MCP (`takomo_initiative_*`) because
-an agent in a conversation is what produces one; `/v1/initiatives*` is read-only, for the UI.
+an agent in a conversation is what produces one, with POST/PATCH added for `/initiatives`, the one
+SPA that writes (a browser cannot call an MCP tool). Entries stay append-only on every surface.
 Entries are the only place in the store that holds binary blobs, which is why they are the only
 thing with byte caps — an unbounded upload would hold the write mutex every claim waits on.
 
@@ -286,16 +287,19 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   `x-error-codes` so the two namespaces are not mistaken for one. Registration is likewise the one
   mutating handler that does **not** `reject_unknown`: RFC 7591 requires unrecognized client metadata
   to be ignored, and refusing it would refuse every real client.
-- Editing `src/board.html` / `src/inbox.html` only takes effect after a rebuild, since they are
-  compiled into the binary. Confirm before concluding anything: `curl -s "$URL/board" | grep -c <id>`.
-- Both SPAs render via DOM construction (never `innerHTML` on user data) and carry full DE/EN
-  `STR` tables — keep the two locales in key parity when adding UI strings.
-- Code both SPAs need goes in `src/spa-common.js`, not copy-pasted. It is inlined at the
+- Editing `src/board.html` / `src/inbox.html` / `src/initiatives.html` only takes effect after a
+  rebuild, since they are compiled into the binary. Confirm before concluding anything:
+  `curl -s "$URL/board" | grep -c <id>`.
+- Every SPA renders via DOM construction (never `innerHTML` on user data) and carries full DE/EN
+  `STR` tables — keep the two locales in key parity, same keys in the same order, when adding UI
+  strings. `scripts/lint-spa.sh` and `spa_string_tables_agree_on_every_key` both enumerate the pages
+  by hand, so a NEW page has to be added to each or it goes unchecked.
+- Code more than one SPA needs goes in `src/spa-common.js`, not copy-pasted. It is inlined at the
   `// <<SPA_COMMON>>` marker, which is the **last statement inside each page's IIFE** — appending
   there keeps every page line number as it is in its own file, and putting it outside the IIFE would
   take `el()` out of scope and break the renderer at runtime. The module may depend on `el()` and
   nothing else: no `state`, no `L()`/`t()`, no `api()`. The `STR` tables stay per-page (takomo-2hk4:
-  four keys collide across the two files with *different* values), and so does the typeahead, which
+  four keys collide across files with *different* values), and so does the typeahead, which
   genuinely differs between them.
 - The server refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`: it terminates plain
   HTTP and expects TLS in front.
