@@ -92,9 +92,9 @@ would stall every claim, transition and heartbeat in the process for as long as 
 
 | bound | value | error |
 |---|---|---|
-| one attachment | 1 MiB, checked on the **decoded** bytes | `initiative.attachment_too_large` |
+| one attachment | 5 MiB, checked on the **decoded** bytes | `initiative.attachment_too_large` |
 | entries per initiative | 1000 | `initiative.too_many_entries` |
-| bytes per initiative | 64 MiB | `initiative.too_large` |
+| bytes per initiative | 1 GiB | `initiative.too_large` |
 | entry text | 128 KiB | `validation.initiative_field_length` / `validation.entry_text` |
 
 Host anything larger elsewhere and reference it with `source_uri`, putting a summary in `text`.

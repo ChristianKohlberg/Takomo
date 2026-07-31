@@ -3327,7 +3327,7 @@ components:
         filename: { type: [string, "null"] }
         chars: { type: integer, description: 'characters of `text`' }
         bytes: { type: integer, description: 'this entry total: text UTF-8 bytes plus attachment bytes' }
-        content_bytes: { type: integer, description: 'attachment bytes, 0 when text-only. Capped at 1 MiB per entry.' }
+        content_bytes: { type: integer, description: 'attachment bytes, 0 when text-only. Capped at 5 MiB per entry.' }
         source: { type: string, description: 'REQUIRED where this came from — an agent id, a person, a conversation' }
         source_uri: { type: [string, "null"] }
         origin_at: { type: [string, "null"], format: date-time, description: 'when the content originated, as opposed to created_at' }
@@ -3664,8 +3664,8 @@ x-error-codes:
   tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
 
   # -- initiatives: the collection an idea accumulates ------------------------
-  initiative.attachment_too_large: "the decoded attachment is over the 1 MiB per-entry cap; `details` carries `bytes` and `max_bytes`. The bytes are written with the process-wide write mutex held, so an unbounded upload would stall every claim and transition while it lands. Host large documents elsewhere and reference them with `source_uri`."
-  initiative.too_large: "this entry would take the initiative over its 64 MiB total; `details` carries the current size, the size it would reach, and the cap. Reference large documents instead of storing them, or distil the initiative and open a fresh one."
+  initiative.attachment_too_large: "the decoded attachment is over the 5 MiB per-entry cap; `details` carries `bytes` and `max_bytes`. The bytes are written with the process-wide write mutex held, so this cap is how long one upload may make every claim and transition wait — a latency bound, not a storage one. Host anything larger elsewhere and reference it with `source_uri`."
+  initiative.too_large: "this entry would take the initiative over its 1 GiB total; `details` carries the current size, the size it would reach, and the cap. Unlike the per-attachment cap this one costs no request any latency — it bounds accumulation, because the store is one SQLite file someone has to back up. Reference large documents instead of storing them, or distil the initiative and open a fresh one."
   initiative.too_many_entries: "the initiative already holds the maximum number of entries. One this full has outgrown being a single idea: distil it into tickets, mark it `distilled`, and start a new one for what remains an idea."
   initiative.no_attachment: "the entry exists but is text-only, so there are no bytes to download. Its text is already in the entry list; only entries with `has_content: true` have an attachment."
 

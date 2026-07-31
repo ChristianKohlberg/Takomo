@@ -1646,10 +1646,10 @@ async fn initiative_attachment_cap_is_enforced_on_decoded_bytes() {
         .await;
     let id = created["initiative"]["id"].as_str().unwrap().to_string();
 
-    let oversized = vec![b'x'; 1_048_577];
+    let over = takomo::store::MAX_ENTRY_CONTENT_BYTES + 1;
     let encoded = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(&oversized)
+        base64::engine::general_purpose::STANDARD.encode(vec![b'x'; over])
     };
     let (body, is_error) = app
         .tool(
@@ -1663,8 +1663,11 @@ async fn initiative_attachment_cap_is_enforced_on_decoded_bytes() {
         .await;
     assert!(is_error);
     assert_eq!(body["code"], "initiative.attachment_too_large");
-    assert_eq!(body["details"]["bytes"], 1_048_577);
-    assert_eq!(body["details"]["max_bytes"], 1_048_576);
+    assert_eq!(body["details"]["bytes"], over);
+    assert_eq!(
+        body["details"]["max_bytes"],
+        takomo::store::MAX_ENTRY_CONTENT_BYTES
+    );
     assert!(
         body["remedy"]
             .as_str()
@@ -1673,11 +1676,22 @@ async fn initiative_attachment_cap_is_enforced_on_decoded_bytes() {
         "the remedy should point at referencing the document instead: {body}"
     );
 
-    // One byte under the cap lands.
+    // An attachment at exactly the cap lands — and this is doing more work than it
+    // looks. At 5 MiB the base64 body is ~7 MB, well past axum's 2 MB default
+    // request-body limit, so this asserts that a caller can actually reach the cap
+    // the error message promises. A limit applied in front of /mcp would fail here
+    // with a transport error instead of an entry.
+    let at_cap = takomo::store::MAX_ENTRY_CONTENT_BYTES;
     let ok = {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(vec![b'x'; 1_048_576])
+        base64::engine::general_purpose::STANDARD.encode(vec![b'x'; at_cap])
     };
+    assert!(
+        ok.len() > 2 * 1024 * 1024,
+        "this test is only meaningful if the encoded body exceeds the default 2 MB \
+         body limit; it is {} bytes",
+        ok.len()
+    );
     let landed = app
         .tool_ok(
             &app.worker,
@@ -1688,8 +1702,93 @@ async fn initiative_attachment_cap_is_enforced_on_decoded_bytes() {
             }),
         )
         .await;
-    assert_eq!(landed["entry"]["content_bytes"], 1_048_576);
-    assert_eq!(landed["initiative"]["rollup"]["megabytes"], 1.0);
+    assert_eq!(landed["entry"]["content_bytes"], at_cap);
+    assert_eq!(landed["initiative"]["rollup"]["megabytes"], 5.0);
+
+    // And the bytes come back out whole, all 5 MiB of them, through the content
+    // route — the response path has no size limit of its own either.
+    let entry_id = landed["entry"]["id"].as_str().unwrap();
+    let resp = app
+        .authed(
+            Method::GET,
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries/{entry_id}/content"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.bytes().await.unwrap().len(), at_cap);
+}
+
+/// The per-initiative total is a separate bound from the per-attachment one, and
+/// refuses the entry that would cross it rather than truncating anything.
+#[tokio::test]
+async fn initiative_total_size_cap_is_separate_from_the_attachment_cap() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_initiative_new",
+            json!({ "project": "tp", "title": "Big ideas" }),
+        )
+        .await;
+    let id = created["initiative"]["id"].as_str().unwrap().to_string();
+
+    // Filling 1 GiB honestly would mean ~205 max-size uploads and a gigabyte of
+    // disk in a unit test. The rollup sums the `text_bytes` / `content_bytes`
+    // columns, so the nearly-full state is staged by writing ONE row whose recorded
+    // size is large while its stored text is not — synthetic in the size column,
+    // exact in the arithmetic this test is about. The entry that crosses the line
+    // then goes through the real tool, over real HTTP.
+    let near = takomo::store::MAX_INITIATIVE_BYTES - 16;
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+        conn.execute(
+            "INSERT INTO initiative_entries (id, initiative, project, kind, text, chars, \
+             text_bytes, content_bytes, source, meta, author, created_at) \
+             VALUES ('ie-staged', ?1, 'tp', 'note', 'staged', 6, ?2, 0, 'test:setup', '{}', \
+             'test:setup', 0)",
+            rusqlite::params![id, near],
+        )
+        .expect("stage a nearly-full initiative");
+    }
+
+    let (body, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_initiative_append",
+            json!({
+                "id": id, "kind": "note", "source": "agent:w1",
+                "text": "seventeen chars..",
+            }),
+        )
+        .await;
+    assert!(is_error, "the crossing entry should be refused: {body}");
+    assert_eq!(body["code"], "initiative.too_large");
+    assert_eq!(body["status"], 409);
+    assert_eq!(
+        body["details"]["max_bytes"],
+        takomo::store::MAX_INITIATIVE_BYTES
+    );
+    assert!(
+        body["details"]["would_be"].as_i64().unwrap() > takomo::store::MAX_INITIATIVE_BYTES,
+        "details should show the size it would have reached: {body}"
+    );
+
+    // Nothing landed, and an entry that still fits is accepted — the cap refuses
+    // the crossing write, it does not close the initiative.
+    let shown = app
+        .tool_ok(&app.worker, "takomo_initiative_show", json!({ "id": id }))
+        .await;
+    assert_eq!(shown["initiative"]["rollup"]["entries"], 1);
+    app.tool_ok(
+        &app.worker,
+        "takomo_initiative_append",
+        json!({ "id": id, "kind": "note", "source": "agent:w1", "text": "tiny" }),
+    )
+    .await;
 }
 
 /// Initiative writes are writes: they need the `write` scope, they debit the
