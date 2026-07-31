@@ -525,7 +525,7 @@ pub struct InitiativeAppendArgs {
     /// it when appending something written earlier.
     pub origin_at: Option<String>,
     /// An attached document, base64-encoded (standard alphabet, padded). Capped
-    /// at 1 MiB decoded; host anything larger elsewhere and put its URL in
+    /// at 5 MiB decoded; host anything larger elsewhere and put its URL in
     /// `source_uri`.
     pub content_base64: Option<String>,
     /// The attachment's media type as bare `type/subtype`, e.g.
@@ -1031,7 +1031,7 @@ impl TakomoMcp {
 
     #[tool(
         description = "Append one contribution to an initiative: a note, a research finding, a \
-        colleague's feedback, a transcript, or an attached document (base64, up to 1 MiB). \
+        colleague's feedback, a transcript, or an attached document (base64, up to 5 MiB). \
         Append-only — the accumulated record IS the initiative. `source` is required: it records \
         where the input came from, so a later reader can weigh it."
     )]

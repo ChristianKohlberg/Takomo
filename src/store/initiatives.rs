@@ -14,13 +14,20 @@
 //! transitions.
 //!
 //! What *is* enforced is size, because an initiative is the one thing in this store
-//! that accepts binary uploads. Every write here happens inside the single
-//! `IMMEDIATE` transaction behind the process-wide write mutex — the mutex whose
-//! serialization is the exactly-one-claimant guarantee for the ready queue — so an
-//! unbounded attachment would stall every claim, transition and heartbeat in the
-//! process for as long as it takes to write. Hence [`MAX_ENTRY_CONTENT_BYTES`] per
-//! attachment, [`MAX_INITIATIVE_ENTRIES`] entries and [`MAX_INITIATIVE_BYTES`]
-//! total per initiative, all checked before any bytes are written.
+//! that accepts binary uploads, and the two bounds exist for two different reasons.
+//!
+//! [`MAX_ENTRY_CONTENT_BYTES`] is a **latency** bound. Every write here happens
+//! inside the single `IMMEDIATE` transaction behind the process-wide write mutex —
+//! the mutex whose serialization is the exactly-one-claimant guarantee for the
+//! ready queue — so the time one attachment takes to land is time every claim,
+//! transition and heartbeat in the process spends waiting. The point is not that
+//! the number is small; it is that it is bounded at all.
+//!
+//! [`MAX_INITIATIVE_BYTES`] and [`MAX_INITIATIVE_ENTRIES`] are **accumulation**
+//! bounds, and cost nothing per request: they stop one initiative from growing
+//! without limit, which matters because the store is a single SQLite file someone
+//! has to back up. Both are checked, along with the per-attachment cap, before any
+//! bytes are written.
 
 use super::helpers::emit_event;
 use super::merge_patch;
@@ -42,26 +49,56 @@ use serde_json::{json, Value};
 /// never "done" on its own terms.
 pub const INITIATIVE_STATUSES: [&str; 3] = ["open", "parked", "distilled"];
 
-/// Cap on a single attachment's bytes (1 MiB).
+/// Cap on a single attachment's bytes (5 MiB).
 ///
-/// This is the number that keeps a document upload from becoming a store-wide
-/// stall: the bytes are written with the process-wide write mutex held. 1 MiB
-/// comfortably holds the text documents an initiative actually collects — a spec,
-/// a transcript, a research write-up — while a large binary (a video, a design
-/// export) belongs somewhere built for blobs, referenced by `source_uri`.
-pub const MAX_ENTRY_CONTENT_BYTES: usize = 1_048_576;
+/// The bytes are written with the process-wide write mutex held, so this number is
+/// how long one upload may make every other writer in the process wait. It is
+/// deliberately a latency bound rather than a storage one: 5 MiB of blob is a
+/// single-digit-to-tens-of-milliseconds write on local disk, which is a real stall
+/// but a bounded one, and it is enough for the documents an initiative actually
+/// collects — a spec, a slide export, a scanned contract, a long transcript.
+///
+/// A video or a design bundle still does not belong here. Point `source_uri` at it
+/// and put a summary in `text`; the collection stays weighable and the store stays
+/// something a person can back up.
+pub const MAX_ENTRY_CONTENT_BYTES: usize = 5_242_880;
 
 /// Cap on how many entries one initiative may accumulate.
 ///
 /// Generous, because accumulating is the point — but finite, because every read of
 /// the initiative sums over all of them. At the cap the rollup is still one indexed
 /// scan of 1000 rows.
+///
+/// Note which bound binds first: 1000 entries at the attachment cap is far past
+/// [`MAX_INITIATIVE_BYTES`], so a document-heavy initiative hits the byte total
+/// long before this. This one is what bounds an initiative fed thousands of short
+/// notes, where no single entry is large and the total never approaches 1 GiB.
 pub const MAX_INITIATIVE_ENTRIES: i64 = 1_000;
 
-/// Cap on one initiative's total stored bytes (64 MiB), text and attachments
-/// together. Reached long before the entry cap if the entries are documents; the
-/// two bounds cover the two different ways this grows.
-pub const MAX_INITIATIVE_BYTES: i64 = 67_108_864;
+/// Cap on one initiative's total stored bytes (1 GiB), text and attachments
+/// together.
+///
+/// Unlike the per-attachment cap this costs no request any latency — it is a
+/// ceiling on accumulation, not on the work of one write. It is set where a single
+/// initiative stops being something the rest of the deployment can ignore: the
+/// store is one SQLite file, and one idea's collection should not be the reason
+/// that file is hard to copy.
+pub const MAX_INITIATIVE_BYTES: i64 = 1_073_741_824;
+
+/// Render a byte count the way the caps are written, so an error message never
+/// says "1024 MiB". Derived from the value rather than kept beside it as a label,
+/// which would be free to drift from the number it describes.
+fn human_bytes(bytes: i64) -> String {
+    const MIB: i64 = 1_048_576;
+    const GIB: i64 = 1_073_741_824;
+    if bytes >= GIB && bytes % GIB == 0 {
+        format!("{} GiB", bytes / GIB)
+    } else if bytes >= MIB && bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
 
 /// Default/max page size when listing initiatives.
 pub const MAX_INITIATIVES_PAGE: i64 = 200;
@@ -679,7 +716,10 @@ impl Store {
                 ),
             ));
         }
-        let content = req.content.clone().filter(|c| !c.is_empty());
+        // Borrowed, never cloned. At the attachment cap a clone here would copy
+        // 5 MiB for nothing — the bytes are handed straight to `params!` further
+        // down and are never mutated or kept.
+        let content = req.content.as_ref().filter(|c| !c.is_empty());
         if req.text.trim().is_empty() && content.is_none() {
             return Err(ApiError::validation(
                 "validation.entry_empty",
@@ -691,8 +731,8 @@ impl Store {
             return Err(ApiError::validation(
                 "initiative.attachment_too_large",
                 format!(
-                    "The attachment is {content_bytes} bytes; the cap is {MAX_ENTRY_CONTENT_BYTES} ({} MiB). The bytes are written with the process-wide write mutex held, so an unbounded upload would stall every claim and transition in the store while it lands.",
-                    MAX_ENTRY_CONTENT_BYTES / 1_048_576
+                    "The attachment is {content_bytes} bytes; the cap is {MAX_ENTRY_CONTENT_BYTES} ({}). The bytes are written with the process-wide write mutex held, so this cap is how long one upload may make every claim and transition in the store wait.",
+                    human_bytes(MAX_ENTRY_CONTENT_BYTES as i64)
                 ),
             )
             .remedy(
@@ -737,8 +777,8 @@ impl Store {
                 return Err(ApiError::conflict(
                     "initiative.too_large",
                     format!(
-                        "This entry would take initiative '{initiative}' to {would_be} bytes; the cap is {MAX_INITIATIVE_BYTES} ({} MiB).",
-                        MAX_INITIATIVE_BYTES / 1_048_576
+                        "This entry would take initiative '{initiative}' to {would_be} bytes; the cap is {MAX_INITIATIVE_BYTES} ({}).",
+                        human_bytes(MAX_INITIATIVE_BYTES)
                     ),
                 )
                 .remedy(
