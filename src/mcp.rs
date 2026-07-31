@@ -104,6 +104,7 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_ready",
     "takomo_releases",
     "takomo_roadmap",
+    "takomo_schedules",
     "takomo_show",
     "takomo_whoami",
     "takomo_workflow",
@@ -469,6 +470,51 @@ pub struct AnswerLinkArgs {
 // ---- initiative tool argument schemas ---------------------------------------
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SchedulesArgs {
+    /// Project id to list schedules for. Omit for every project the token can see.
+    pub project: Option<String>,
+    /// Narrow by status: pending | active | paused | rejected | retired.
+    pub status: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ScheduleNewArgs {
+    /// Project id the schedule belongs to.
+    pub project: String,
+    /// What the cadence is called, e.g. "Weekly review".
+    pub name: String,
+    /// day | week | month. The finest cadence is daily; there is no sub-daily
+    /// unit, because a ticket a fleet churns through every few minutes is a
+    /// worker loop rather than tracked work.
+    pub every: String,
+    /// Repeat every N units (default 1), counted from `starts_at` so "every 2
+    /// weeks" keeps landing on the same weeks.
+    pub interval: Option<u32>,
+    /// Weekday tokens (mon..sun) — required for `every: week`, refused otherwise.
+    /// Setting it on a daily cadence is an error, not an ignored extra: it almost
+    /// certainly means a weekly cadence was intended.
+    pub on: Option<Vec<String>>,
+    /// Day of month 1-31 for `every: month`; a day past a short month's end is
+    /// clamped to that month's last day.
+    pub day: Option<u32>,
+    /// Local wall-clock time, `HH:MM`, 24-hour and zero-padded.
+    pub at: String,
+    /// IANA zone name (e.g. "Europe/Berlin"). Defaults to UTC. Slots are computed
+    /// in LOCAL time, so 09:00 stays 09:00 across a daylight-saving boundary.
+    pub tz: Option<String>,
+    /// Title of the ticket each occurrence creates. Four placeholders are
+    /// substituted: {date} {week} {month} {slot}.
+    pub title: String,
+    /// Body of that ticket (markdown). Same placeholders apply.
+    pub body: Option<String>,
+    /// Labels for the created tickets.
+    pub labels: Option<Vec<String>>,
+    /// Why you think this work recurs. Shown to whoever reviews the proposal, so
+    /// it is worth writing: name the tickets that already repeated.
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct InitiativeNewArgs {
     /// Project id the initiative belongs to.
     pub project: String,
@@ -702,7 +748,7 @@ impl TakomoMcp {
             // `#[tool_router]` block because they are a genuinely separate
             // surface — no claims, no fences, no workflow — and keeping them
             // out of the work-loop block keeps each block readable.
-            tool_router: Self::tool_router() + Self::initiative_router(),
+            tool_router: Self::tool_router() + Self::initiative_router() + Self::schedule_router(),
         }
     }
 
@@ -1265,6 +1311,167 @@ impl TakomoMcp {
                 "projects": projects,
             }
         })))
+    }
+}
+
+// ---- schedule tools ---------------------------------------------------------
+//
+// Read is free; creating is a `write`, and what it creates is INERT. Unless the
+// project turned the flag off, a schedule proposed here lands `pending` with no
+// next slot, so the sweep cannot see it and nothing fires until a human
+// activates it. That is deliberate: a schedule outlives the token that made it,
+// so letting an agent start one would be a write credential that keeps writing
+// after it is revoked.
+
+#[tool_router(router = schedule_router)]
+impl TakomoMcp {
+    #[tool(
+        description = "List a project's schedules: recurrence rules that materialize ordinary \
+        tickets. Each carries its cadence, status, next slot and recent occurrence history with \
+        every outcome (done | open | not_fulfilled) derived from the ticket. Use it to check \
+        whether recurring work is actually getting done before proposing more of it."
+    )]
+    async fn takomo_schedules(
+        &self,
+        Parameters(a): Parameters<SchedulesArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_schedules(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Propose a schedule — a cadence that creates one ordinary ticket per slot. \
+        Use it when you notice the same work coming back on a rhythm (a weekly review, a monthly \
+        key rotation) instead of filing the same ticket by hand again. IMPORTANT: unless the \
+        project has turned approval off, this lands as `pending` and fires NOTHING until a human \
+        activates it — do not wait on it, finish your ticket. Give a `rationale` naming the \
+        tickets that already repeated; that is what a reviewer judges."
+    )]
+    async fn takomo_schedule_new(
+        &self,
+        Parameters(a): Parameters<ScheduleNewArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_schedule_new(&require_auth(&ctx)?, a))
+    }
+}
+
+impl TakomoMcp {
+    fn do_schedules(&self, auth: &AuthCtx, a: SchedulesArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        if let Some(p) = &a.project {
+            auth.require_project(p)?;
+        }
+        if let Some(st) = &a.status {
+            if !crate::store::SCHEDULE_STATUSES.contains(&st.as_str()) {
+                return Err(ApiError::validation(
+                    "validation.schedule.status",
+                    format!(
+                        "status must be one of {}, got '{st}'.",
+                        crate::store::SCHEDULE_STATUSES.join(", ")
+                    ),
+                ));
+            }
+        }
+        let filter = crate::store::ScheduleListFilter {
+            project: a.project,
+            status: a.status,
+            allowed_projects: auth.allowed_projects_vec(),
+        };
+        let rows = self
+            .state
+            .store
+            .list_schedules(&filter, crate::store::MAX_SCHEDULES_PAGE)?;
+        let items: Vec<Value> = rows
+            .iter()
+            .map(|sched| {
+                let occ = self
+                    .state
+                    .store
+                    .schedule_occurrences(&sched.id, 8)
+                    .unwrap_or_default();
+                let mut out = sched.to_json(&self.state.store.upcoming_slots(sched, 1));
+                out["occurrences"] = json!(occ.iter().map(|o| o.to_json()).collect::<Vec<_>>());
+                out
+            })
+            .collect();
+        Ok(json!({ "ok": true, "schedules": items }))
+    }
+
+    fn do_schedule_new(&self, auth: &AuthCtx, a: ScheduleNewArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        auth.require_project(&a.project)?;
+
+        // Build the cadence as JSON and hand it to the ONE parser, so an MCP
+        // caller gets exactly the teaching errors a REST caller does — including
+        // the refusal of a weekday list on a daily cadence.
+        let mut cadence = serde_json::Map::new();
+        cadence.insert("every".into(), json!(a.every));
+        cadence.insert("at".into(), json!(a.at));
+        if let Some(i) = a.interval {
+            cadence.insert("interval".into(), json!(i));
+        }
+        if let Some(on) = a.on {
+            cadence.insert("on".into(), json!(on));
+        }
+        if let Some(d) = a.day {
+            cadence.insert("day".into(), json!(d));
+        }
+        if let Some(tz) = a.tz {
+            cadence.insert("tz".into(), json!(tz));
+        }
+        let cadence = crate::schedule::Cadence::parse(&Value::Object(cadence)).map_err(|m| {
+            ApiError::validation("validation.schedule.cadence", m)
+                .remedy("See spec/schedule-format.md for the cadence grammar.")
+        })?;
+
+        let mut template = serde_json::Map::new();
+        template.insert("title".into(), json!(a.title));
+        if let Some(b) = a.body {
+            template.insert("body".into(), json!(b));
+        }
+        if let Some(l) = a.labels {
+            template.insert("labels".into(), json!(l));
+        }
+        let template = crate::store::ScheduleTemplate::parse(&Value::Object(template))
+            .map_err(|m| ApiError::validation("validation.schedule.template", m))?;
+
+        let req = crate::store::ScheduleCreate {
+            project: a.project.clone(),
+            name: a.name,
+            cadence,
+            template,
+            starts_at: None,
+            ends_at: None,
+            rationale: a.rationale,
+        };
+        // A `human` caller's own schedule is born active; the flag governs what an
+        // agent proposes.
+        let needs_approval = !auth.scopes.contains("human")
+            && self.state.store.schedule_approval_required(&a.project)?;
+        let sched = self
+            .state
+            .store
+            .create_schedule(&req, &auth.actor, needs_approval)?;
+        self.state.wake();
+
+        let note = if sched.status == "pending" {
+            "Recorded, but NOT active: this project requires a human to activate a schedule an \
+             agent proposed, so nothing will fire yet. Do NOT wait on it or poll for it — finish \
+             your ticket. `upcoming` shows the slots it would use once activated."
+                .to_string()
+        } else {
+            format!(
+                "Active. The next occurrence lands at {}, and each one is an ordinary ticket you \
+                 can claim from the ready queue like any other.",
+                sched.next_slot.map(crate::ids::iso).unwrap_or_default()
+            )
+        };
+        Ok(json!({
+            "ok": true,
+            "schedule": sched.to_json(&self.state.store.upcoming_slots(&sched, 3)),
+            "note": note,
+        }))
     }
 }
 

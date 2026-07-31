@@ -276,6 +276,14 @@
   .card .promo .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
   .card .promo .ptarget { font-family: var(--mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card .promo .page { color: var(--muted); flex: 0 0 auto; }
+  /* Where a card came from, when a schedule made it. Quiet on purpose: it is
+     provenance, not status — the card still belongs wherever its state puts it. */
+  .card .sched { display: flex; align-items: center; gap: 5px; margin-top: 9px; font-size: 12px; color: var(--chip-text); }
+  .card .sched .smark { flex: 0 0 auto; }
+  .card .sched .sname { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* An occurrence nobody finished in time. Not a state — nothing transitioned it
+     — so it is a marker on the card rather than a lane or a colour change. */
+  .card .nfflag { display: inline-block; font-size: 11.5px; font-weight: 700; color: var(--crit); background: var(--sel); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
   /* Commit proof — quieter than the promotion badge: it says "verifiable",
      not "shipped", and must not compete with the deploy signal. */
   .card .proof { display: flex; align-items: center; gap: 5px; margin-top: 7px; font-size: 12px; color: var(--muted); min-width: 0; }
@@ -628,7 +636,7 @@
 
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
-  <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a><a href="/initiatives" id="nav-init">Initiatives</a></nav>
+  <nav class="nav" id="nav"><span class="navpill active" id="nav-board">Board</span><a href="/inbox" id="nav-inbox">Inbox</a><a href="/initiatives" id="nav-init">Initiatives</a><a href="/schedules" id="nav-sched">Schedules</a></nav>
   <button class="ghost filtbtn" id="filters-btn" aria-expanded="false" aria-controls="filters"><span id="filters-label">Filters</span><span class="ico" aria-hidden="true">▾</span></button>
   <div id="filters">
     <select id="projsel" title="project"></select>
@@ -699,6 +707,9 @@
       board:"Board",
       inbox:"Inbox",
       initiatives:"Initiativen",
+      schedules:"Zeitpläne",
+      fromSchedule:"aus Zeitplan",
+      notFulfilled:"nicht erfüllt",
       gateSub:"Nur-Lese-Kanban. Lese-Token einfügen, um die Tickets eines Projekts zu sehen.",
       gateTokenLabel:"Lese-Token",
       gateProjectLabel:"Projekt",
@@ -825,6 +836,9 @@
       board:"Board",
       inbox:"Inbox",
       initiatives:"Initiatives",
+      schedules:"Schedules",
+      fromSchedule:"from schedule",
+      notFulfilled:"not fulfilled",
       gateSub:"Read-only kanban. Paste a read token to view a project's tickets.",
       gateTokenLabel:"Read token",
       gateProjectLabel:"Project",
@@ -2091,6 +2105,12 @@
     } else if (t.archived_at) {
       top.appendChild(el("span", "arch-tag", "archived"));
     }
+    // A scheduled occurrence whose deadline passed without being finished. The
+    // server transitions nothing, so this is the only place a reader learns that
+    // it has stopped counting as live work.
+    if (!isDone && t.expires_at && new Date(t.expires_at).getTime() <= Date.now()) {
+      top.appendChild(el("span", "nfflag", L().notFulfilled));
+    }
     c.appendChild(top);
 
     c.appendChild(el("div", "ctitle", t.title || "(untitled)"));
@@ -2111,6 +2131,16 @@
       cb.appendChild(el("span", "pmark", "⌗"));
       cb.appendChild(el("span", "psha", shortCommit(commit)));
       c.appendChild(cb);
+    }
+    // Where it came from, when a schedule made it. Clicking goes to /schedules
+    // rather than opening the ticket, so the two pages stay one product.
+    if (t.schedule) {
+      var sc = el("div", "sched");
+      sc.title = L().fromSchedule + ": " + t.schedule;
+      sc.appendChild(el("span", "smark", "\u21bb"));
+      sc.appendChild(el("span", "sname", t.schedule));
+      activate(sc, function (e) { e.stopPropagation(); window.location.href = "/schedules"; });
+      c.appendChild(sc);
     }
     // Latest promotion badge (e.g. "● production · 2h").
     var pr = state.promoByTicket[t.id];
@@ -2765,7 +2795,7 @@
   function applyChrome() {
     $("brand").innerHTML = LOGO + '<span>takomo</span>';
     $("gate-brand").innerHTML = LOGO;
-    $("nav-board").textContent = L().board; $("nav-inbox").textContent = L().inbox; $("nav-init").textContent = L().initiatives;
+    $("nav-board").textContent = L().board; $("nav-inbox").textContent = L().inbox; $("nav-init").textContent = L().initiatives; $("nav-sched").textContent = L().schedules;
     $("gate-sub").textContent = L().gateSub; $("gate-tokenlabel").textContent = L().gateTokenLabel;
     $("gate-projectlabel").textContent = L().gateProjectLabel; $("g-go").textContent = L().gateOpen;
     $("arch-label").textContent = L().archived; $("askhuman-label").textContent = L().askHuman;

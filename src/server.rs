@@ -398,6 +398,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/initiatives", get(crate::api::initiatives_page))
+        .route("/schedules", get(crate::api::schedules_page))
         .route("/favicon.svg", get(crate::api::favicon))
         .route("/favicon.ico", get(crate::api::favicon))
         .merge(oauth)

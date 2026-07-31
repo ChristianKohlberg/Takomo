@@ -948,6 +948,27 @@ fn is_primary_key_conflict(e: &rusqlite::Error) -> bool {
 }
 
 impl Store {
+    /// Rewind a schedule's next slot to an earlier instant.
+    ///
+    /// **Fixture support only.** `crate::seed` uses it to build a believable
+    /// occurrence history through the *real* firing path — rewind, fire, repeat —
+    /// rather than inserting tickets that merely look like occurrences. It is
+    /// `pub(crate)` on purpose: `next_slot` is server-owned, and no HTTP, MCP or
+    /// CLI surface can reach this.
+    pub(crate) fn rewind_next_slot(&self, id: &str, slot: i64) -> ApiResult<()> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let n = tx.execute(
+                "UPDATE schedules SET next_slot = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, slot, now],
+            )?;
+            if n == 0 {
+                return Err(ApiError::not_found("schedule", id));
+            }
+            Ok(())
+        })
+    }
+
     /// Whether this project requires a human to activate a schedule an agent
     /// proposed. Defaults to true for a project row that predates the column.
     ///

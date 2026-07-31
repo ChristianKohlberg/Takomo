@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lint the JavaScript inside the single-file SPAs.
 #
-# src/board.html, src/inbox.html and src/initiatives.html carry thousands of lines of hand-written
+# src/board.html, src/inbox.html, src/initiatives.html and src/schedules.html carry thousands of lines of hand-written
 # JavaScript each, and until takomo-rrjg nothing in this repo looked at any of
 # it: clippy has the Rust, shellcheck has the shell, Redocly has the spec, and
 # `spa_string_tables_agree_on_every_key` checks exactly one property of these
@@ -31,7 +31,7 @@ CONFIG=scripts/spa-eslint.config.mjs
 if [ "$#" -gt 0 ]; then
   FILES=("$@")
 else
-  FILES=(src/spa-common.js src/board.html src/inbox.html src/initiatives.html)
+  FILES=(src/spa-common.js src/board.html src/inbox.html src/initiatives.html src/schedules.html)
 fi
 
 # The shared module (takomo-ftix). It is inlined into both pages at build time,

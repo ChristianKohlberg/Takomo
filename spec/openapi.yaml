@@ -1574,7 +1574,7 @@ paths:
         tell a read from a write. The read-only tools (`takomo_show`,
         `takomo_list`, `takomo_ready`, `takomo_deps`, `takomo_questions`,
         `takomo_projects`, `takomo_workflow`, `takomo_roadmap`,
-        `takomo_whoami`) cost nothing, and neither do `initialize`,
+        `takomo_schedules`, `takomo_whoami`) cost nothing, and neither do `initialize`,
         `tools/list`, or an unknown tool name; every other tool debits one
         write. Exhausting the budget comes back as a tool-level error (HTTP
         200, `result.isError`) whose payload carries `code: rate.limited`,
@@ -1588,10 +1588,20 @@ paths:
         `takomo_heartbeat`, `takomo_release`, `takomo_archive`,
         `takomo_projects`, `takomo_workflow`, `takomo_roadmap`, `takomo_ask`,
         `takomo_answer`, `takomo_questions`, `takomo_withdraw`,
-        `takomo_answer_link`, `takomo_whoami`. Claimed
+        `takomo_answer_link`, `takomo_whoami`, `takomo_schedules`,
+        `takomo_schedule_new`. Claimed
         tickets track a fencing token that later transitions echo automatically;
         convenience verbs (start/done/block/cancel) resolve target states from
         the project workflow by category.
+
+        Schedules: `takomo_schedule_new` is the one write tool whose result may do
+        nothing. An agent proposing a cadence needs only `write`, but unless the
+        project turned `schedule_approval` off the schedule lands `pending` with
+        no next slot — the sweep's index is partial, so it cannot see the row at
+        all. **Activating needs `human`**, which is what keeps a `write`
+        credential from starting something that outlives it. The tool's `note`
+        says so in words; an agent that ignores it will poll a schedule a human
+        may never activate.
 
         Links: `takomo_link` writes only the key it names and lets the store
         merge it, exactly like `PATCH /v1/tickets/{id}` with

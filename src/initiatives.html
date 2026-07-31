@@ -237,7 +237,7 @@
 
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
-  <nav class="nav"><a href="/board" id="nav-board">Board</a><a href="/inbox" id="nav-inbox">Inbox</a><span class="navpill active" id="nav-init">Initiatives</span></nav>
+  <nav class="nav"><a href="/board" id="nav-board">Board</a><a href="/inbox" id="nav-inbox">Inbox</a><span class="navpill active" id="nav-init">Initiatives</span><a href="/schedules" id="nav-sched">Schedules</a></nav>
   <div class="projpick"><select id="projsel" title="project"></select></div>
   <span class="grow"></span>
   <button class="primary" id="newbtn"></button>
@@ -278,6 +278,7 @@
   var STR = {
     de: {
       initiatives:"Initiativen",
+      schedules:"Zeitpläne",
       board:"Board",
       inbox:"Inbox",
       gateTokenSub:"Token mit 'read' und 'write' — Initiativen werden hier gelesen und gefüttert.",
@@ -350,6 +351,7 @@
     },
     en: {
       initiatives:"Initiatives",
+      schedules:"Schedules",
       board:"Board",
       inbox:"Inbox",
       gateTokenSub:"A token with 'read' and 'write' — initiatives are read and fed here.",
@@ -1022,6 +1024,7 @@
     $("nav-board").textContent = t().board;
     $("nav-inbox").textContent = t().inbox;
     $("nav-init").textContent = t().initiatives;
+    $("nav-sched").textContent = t().schedules;
     $("newbtn").textContent = "+ " + t().newInitiative;
     $("lang-de").className = state.lang === "de" ? "on" : "";
     $("lang-en").className = state.lang === "en" ? "on" : "";

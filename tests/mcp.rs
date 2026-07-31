@@ -2093,3 +2093,133 @@ async fn checklist_read_tools_are_not_write_charged() {
         .await;
     assert!(!is_err, "a read-only token can read coverage: {out}");
 }
+
+/// An agent may propose a cadence, and what it proposes fires nothing.
+///
+/// This is the security property of the whole feature, so it is pinned at the
+/// surface an agent actually uses: the tool succeeds, the schedule is inert, and
+/// the response says so in words rather than leaving the agent to infer it from a
+/// status string.
+#[tokio::test]
+async fn an_agent_can_propose_a_schedule_but_it_fires_nothing() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+
+    let out = app
+        .tool_ok(
+            &app.worker,
+            "takomo_schedule_new",
+            json!({
+                "project": "tp",
+                "name": "Weekly review",
+                "every": "week",
+                "on": ["mon"],
+                "at": "09:00",
+                "tz": "Europe/Berlin",
+                "title": "Weekly review — {week}",
+                "rationale": "Filed by hand three weeks running."
+            }),
+        )
+        .await;
+
+    assert_eq!(out["schedule"]["status"], "pending");
+    assert!(
+        out["schedule"]["next_slot"].is_null(),
+        "a proposal must carry no next slot — the sweep's partial index is what \
+         makes it inert, and that index only sees rows that have one: {out}"
+    );
+    let note = out["note"]
+        .as_str()
+        .expect("a note explaining what happened");
+    assert!(
+        note.contains("NOT active") && note.contains("Do NOT wait"),
+        "the note must tell the agent not to poll something a human may never \
+         activate: {note}"
+    );
+    // It still previews what it would do, so a reviewer can judge it.
+    assert_eq!(out["schedule"]["upcoming"].as_array().unwrap().len(), 3);
+    assert_eq!(out["schedule"]["proposed_by"], "agent:w1");
+
+    // And the sweeper cannot fire it, however overdue it looks.
+    let id = out["schedule"]["id"].as_str().unwrap().to_string();
+    app.force_schedule_slot(&id, 1_000);
+    assert_eq!(
+        app.open_store().materialize_due().expect("sweep"),
+        0,
+        "a pending schedule must not fire"
+    );
+}
+
+/// The MCP path shares the REST validators rather than reimplementing them, so
+/// the two surfaces cannot drift into accepting what the other refuses.
+#[tokio::test]
+async fn the_schedule_tool_refuses_what_rest_refuses() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.worker, "initialize", init_params()).await;
+
+    // Weekdays on a daily cadence: an error, not an ignored extra, because
+    // accepting it would fire seven times a week when one was asked for.
+    let (payload, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_schedule_new",
+            json!({
+                "project": "tp", "name": "Backup", "every": "day",
+                "on": ["mon"], "at": "06:30", "title": "Verify the backup"
+            }),
+        )
+        .await;
+    assert!(
+        is_error,
+        "a day cadence with weekdays must be refused: {payload}"
+    );
+    assert!(
+        payload.to_string().contains("every: week"),
+        "and the refusal should name the cadence they probably meant: {payload}"
+    );
+
+    // A human's own schedule is born active — the flag governs proposals.
+    app.ok_call(&app.human, "initialize", init_params()).await;
+    let out = app
+        .tool_ok(
+            &app.human,
+            "takomo_schedule_new",
+            json!({
+                "project": "tp", "name": "Backup", "every": "day",
+                "at": "06:30", "title": "Verify the backup — {date}"
+            }),
+        )
+        .await;
+    assert_eq!(out["schedule"]["status"], "active");
+    assert!(out["schedule"]["next_slot"].is_string());
+}
+
+/// `takomo_schedules` reads, and reads carry the history an agent needs to decide
+/// whether recurring work is actually getting done.
+#[tokio::test]
+async fn the_schedules_read_tool_carries_the_occurrence_history() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.human, "initialize", init_params()).await;
+    let created = app
+        .tool_ok(
+            &app.human,
+            "takomo_schedule_new",
+            json!({
+                "project": "tp", "name": "Weekly review", "every": "week",
+                "on": ["mon"], "at": "09:00", "title": "Weekly review — {week}"
+            }),
+        )
+        .await;
+    let id = created["schedule"]["id"].as_str().unwrap().to_string();
+    app.post(&app.human, &format!("/v1/schedules/{id}/run"), json!({}))
+        .await;
+
+    let out = app
+        .tool_ok(&app.human, "takomo_schedules", json!({ "project": "tp" }))
+        .await;
+    let rows = out["schedules"].as_array().expect("schedules");
+    assert_eq!(rows.len(), 1, "{out}");
+    let occ = rows[0]["occurrences"].as_array().expect("occurrences");
+    assert_eq!(occ.len(), 1, "the read tool carries the history: {out}");
+    assert_eq!(occ[0]["outcome"], "open");
+}

@@ -362,6 +362,7 @@ fn spa_string_tables_agree_on_every_key() {
             "src/initiatives.html",
             include_str!("../src/initiatives.html"),
         ),
+        ("src/schedules.html", include_str!("../src/schedules.html")),
     ] {
         let de = str_keys(file, src, "de");
         let en = str_keys(file, src, "en");
@@ -11571,4 +11572,145 @@ async fn a_finished_occurrence_reads_as_done_however_late() {
         "a ticket somebody finished is done however late — terminal state wins \
          over the clock: {hist}"
     );
+}
+
+/// `/schedules` is served like the other three pages, with the shared renderer
+/// inlined and the same defence-in-depth headers — it holds a bearer token in
+/// localStorage exactly as they do.
+#[tokio::test]
+async fn schedules_page_is_served_with_the_shared_renderer() {
+    let app = TestApp::spawn().await;
+    let resp = app.request(Method::GET, "/schedules").send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let headers = resp.headers().clone();
+    assert_eq!(headers["x-frame-options"], "DENY");
+    assert!(headers["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("frame-ancestors 'none'"));
+    let page = resp.text().await.unwrap();
+    assert!(
+        page.contains("var MD_INLINE"),
+        "the shared renderer was not inlined, so a proposal's ticket body would \
+         render as markdown source to whoever is approving it"
+    );
+    assert!(
+        !page.contains("<<SPA_COMMON>>"),
+        "the marker should have been replaced, not served"
+    );
+}
+
+/// Every page links to every other one, so the four surfaces read as one product
+/// rather than four apps that happen to share a palette.
+#[tokio::test]
+async fn every_spa_links_to_the_schedules_page() {
+    let app = TestApp::spawn().await;
+    for path in ["/board", "/inbox", "/initiatives"] {
+        let page = app
+            .request(Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            page.contains("href=\"/schedules\""),
+            "{path} has no link to /schedules — a reader would have to know the URL"
+        );
+    }
+}
+
+/// The seeded demo carries the two schedules the page needs to be worth opening:
+/// one active with history, and one an agent proposed and left pending.
+///
+/// Both are anchored to a fixed past instant rather than "now minus N days", so
+/// the fixture is deterministic whatever day the template is baked on.
+#[tokio::test]
+async fn the_dev_seed_ships_schedules_worth_looking_at() {
+    let app = TestApp::spawn().await;
+    let store = app.open_store();
+    takomo::seed::dev(&store).expect("seed");
+
+    let rows = store
+        .list_schedules(
+            &takomo::store::ScheduleListFilter {
+                project: Some("demo".to_string()),
+                status: None,
+                allowed_projects: None,
+            },
+            50,
+        )
+        .expect("list");
+    assert_eq!(rows.len(), 2, "the dev preset seeds two schedules");
+
+    // Waiting-for-you first, which is the order the page renders.
+    assert_eq!(rows[0].status, "pending");
+    assert!(
+        rows[0].proposed_by.is_some() && rows[0].rationale.is_some(),
+        "a proposal needs a proposer and a rationale, or the confirm row has \
+         nothing for a reviewer to judge: {:?}",
+        rows[0]
+    );
+    assert!(
+        rows[0].next_slot.is_none(),
+        "a pending schedule must have no next slot — that is what makes it inert"
+    );
+
+    assert_eq!(rows[1].status, "active");
+    assert!(rows[1].next_slot.is_some());
+
+    // The active one has a history, and a MIXED one — the strip's whole value is
+    // showing a cadence that is being kept unevenly, so a fixture where every
+    // cell is the same colour would demo nothing.
+    let occ = store
+        .schedule_occurrences(&rows[1].id, 8)
+        .expect("occurrences");
+    assert!(
+        occ.len() >= 5,
+        "the seeded strip needs history to be worth opening, got {} occurrence(s)",
+        occ.len()
+    );
+    let done = occ.iter().filter(|o| o.outcome == "done").count();
+    let nf = occ.iter().filter(|o| o.outcome == "not_fulfilled").count();
+    assert!(
+        done > 0 && nf > 0,
+        "the strip should show both kept and missed occurrences, got {done} done / {nf} not \
+         fulfilled: {occ:?}"
+    );
+    // Built through the real firing path, so every occurrence is a real ticket on
+    // a real cadence slot — not a row the seeder drew to look like one.
+    for o in &occ {
+        assert!(
+            o.ticket.starts_with("demo-"),
+            "occurrence {o:?} should point at a real demo ticket"
+        );
+        assert!(
+            o.expires_at.is_some(),
+            "every occurrence carries a deadline"
+        );
+    }
+}
+
+/// The board card says where a scheduled ticket came from, and says when its
+/// clock has run out — the only place a reader learns that, since expiry
+/// transitions nothing.
+#[tokio::test]
+async fn the_board_marks_scheduled_and_not_fulfilled_cards() {
+    let page = include_str!("../src/board.html");
+    assert!(
+        page.contains("L().fromSchedule") && page.contains("\\u21bb"),
+        "the board should carry the ↻ provenance chip"
+    );
+    assert!(
+        page.contains("L().notFulfilled") && page.contains("t.expires_at"),
+        "the board should mark an occurrence whose deadline passed"
+    );
+    for key in ["fromSchedule", "notFulfilled", "schedules"] {
+        assert_eq!(
+            page.matches(&format!("{key}:\"")).count(),
+            2,
+            "`{key}` must appear in both the de and en tables of board.html"
+        );
+    }
 }
