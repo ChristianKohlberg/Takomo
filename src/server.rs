@@ -345,6 +345,57 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
     });
 }
 
+/// Decide whether the OAuth authorization server is on, from the raw
+/// `TAKOMO_PUBLIC_URL`, and produce the startup line that says which.
+///
+/// **A value this server cannot use as an OAuth issuer turns OAuth off and says so
+/// loudly. It does not stop the server** — and that is a deliberate reversal of
+/// how this first shipped (takomo-z919).
+///
+/// The reason is that `TAKOMO_PUBLIC_URL` is older than OAuth and has a second,
+/// far more tolerant reader: `notify::board_link` and the answer links in
+/// `api::questions` only ever needed a non-empty string to put in front of a path.
+/// An operator who set it long ago for readable notification links — with a path
+/// prefix, or as plain `http` on a tailnet host, both of which `docs/hosting.md`
+/// describes as supported deployments — must not lose their server to an upgrade
+/// that merely added a stricter reader of the same variable. They never asked for
+/// OAuth at all.
+///
+/// [`check_bind_guard`] below *does* refuse to boot, and the asymmetry is the
+/// point rather than an inconsistency: that guard stops an unencrypted service
+/// from being exposed to a network, where continuing is the dangerous option.
+/// Here the entire consequence of a bad value is that hosted MCP clients cannot
+/// attach — which every `/oauth/*` route already reports per request, in a 404
+/// that names the variable. So the failure is reported twice and costs nothing,
+/// where refusing to boot would cost an outage.
+///
+/// Returns the line rather than printing it so the decision is testable without
+/// starting a server, which is the gap that let the original mistake through: the
+/// validator itself was well covered, and nothing pinned what `serve` did with it.
+pub fn resolve_oauth(raw: Option<&str>) -> (Option<crate::api::oauth::OauthConfig>, String) {
+    let Some(raw) = raw.filter(|v| !v.trim().is_empty()) else {
+        return (
+            None,
+            "OAuth off (set TAKOMO_PUBLIC_URL to let hosted MCP clients connect)".to_string(),
+        );
+    };
+    match crate::api::oauth::OauthConfig::from_public_url(raw) {
+        Ok(cfg) => {
+            let line = format!("OAuth issuer {} (resource {})", cfg.issuer(), cfg.resource());
+            (Some(cfg), line)
+        }
+        Err(why) => (
+            None,
+            format!(
+                "OAuth OFF — TAKOMO_PUBLIC_URL is set but unusable as an issuer: {why}\n  \
+                 Hosted MCP clients (claude.ai, ChatGPT, the Gemini app) cannot connect until it is \
+                 fixed. Everything else, including the absolute links in ask-a-human \
+                 notifications, is unaffected and still uses this value as before."
+            ),
+        ),
+    }
+}
+
 /// Refuse to bind non-loopback addresses unless explicitly allowed — the
 /// server terminates plain HTTP; TLS is the deployment's job (see auth.md).
 pub fn check_bind_guard(addr: &SocketAddr) -> Result<(), String> {
@@ -366,26 +417,11 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         .parse()
         .map_err(|e| format!("invalid bind address '{bind}': {e}"))?;
     check_bind_guard(&addr)?;
-    // Validated here, at startup, so a malformed public URL is a refusal to boot
-    // rather than a connector that fails to attach for reasons only visible in
-    // another vendor's logs.
-    let oauth = match std::env::var("TAKOMO_PUBLIC_URL") {
-        Ok(raw) if !raw.trim().is_empty() => {
-            Some(crate::api::oauth::OauthConfig::from_public_url(&raw)?)
-        }
-        _ => None,
-    };
+    let public_url = std::env::var("TAKOMO_PUBLIC_URL").ok();
+    let (oauth, oauth_line) = resolve_oauth(public_url.as_deref());
     let store = Store::open(db_path).map_err(|e| e.into_message())?;
     let state = AppState::new_with_oauth(store, oauth);
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
-    let oauth_line = match state.oauth.as_ref() {
-        Some(cfg) => format!(
-            "OAuth issuer {} (resource {})",
-            cfg.issuer(),
-            cfg.resource()
-        ),
-        None => "OAuth off (set TAKOMO_PUBLIC_URL to let hosted MCP clients connect)".to_string(),
-    };
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -395,4 +431,61 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("server error: {e}"))
+}
+
+/// Unit tests for the one decision in this file that is pure. The rest of the
+/// server surface is exercised over real HTTP from `tests/`, per this repo's
+/// convention; this is here because the bug it guards against (takomo-z919) was
+/// invisible to that surface — a server that refuses to start has no surface to
+/// test, and the validator it delegates to was already fully covered.
+#[cfg(test)]
+mod oauth_env_tests {
+    use super::resolve_oauth;
+
+    #[test]
+    fn a_usable_origin_turns_oauth_on() {
+        let (cfg, line) = resolve_oauth(Some("https://takomo.example.com"));
+        let cfg = cfg.expect("a bare https origin is usable");
+        assert_eq!(cfg.issuer(), "https://takomo.example.com");
+        assert_eq!(cfg.resource(), "https://takomo.example.com/mcp");
+        assert!(line.contains("OAuth issuer"), "line: {line}");
+    }
+
+    #[test]
+    fn unset_or_blank_turns_oauth_off_without_complaint() {
+        for raw in [None, Some(""), Some("   ")] {
+            let (cfg, line) = resolve_oauth(raw);
+            assert!(cfg.is_none(), "{raw:?} must not configure OAuth");
+            assert!(
+                line.contains("OAuth off"),
+                "an absent value is a normal state, not a warning ({raw:?}): {line}"
+            );
+        }
+    }
+
+    /// The regression this function exists for: a value that is useless to OAuth
+    /// must leave the server running, because the same variable has a tolerant
+    /// older reader (notification links) whose operator never asked for OAuth.
+    #[test]
+    fn an_unusable_value_turns_oauth_off_loudly_instead_of_failing() {
+        for raw in [
+            "http://takomo.internal",          // plain http on a tailnet host
+            "https://takomo.example.com/path", // a path prefix
+            "https://takomo.example.com?x=1",  // a query string
+            "takomo.example.com",              // no scheme
+        ] {
+            let (cfg, line) = resolve_oauth(Some(raw));
+            assert!(cfg.is_none(), "{raw} must not configure OAuth");
+            assert!(
+                line.contains("OAuth OFF"),
+                "a rejected value must be reported loudly ({raw}): {line}"
+            );
+            // The operator needs to know two things: that hosted clients are the
+            // only casualty, and that their notification links still work.
+            assert!(
+                line.contains("cannot connect") && line.contains("notifications"),
+                "the line must scope the damage ({raw}): {line}"
+            );
+        }
+    }
 }

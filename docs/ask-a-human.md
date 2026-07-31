@@ -411,10 +411,10 @@ the question's tags (a question with no tags matches only `"*"` routes).
 - **webhook** — POSTs the full question JSON (plus a rendered `text`) to any URL. This is the escape hatch for Discord, PagerDuty, or a transactional-email HTTP API.
 - **email** — sends via SMTP. Set `TAKOMO_SMTP_URL` (e.g. `smtps://user:pass@smtp.example.com:465`) and `TAKOMO_SMTP_FROM`.
 
-Set `TAKOMO_PUBLIC_URL` so notifications link straight to your `/board`. It must be a bare
-origin (`https://takomo.example.com` — no path, no query) and is checked at startup, so a
-malformed value is a refusal to boot rather than a broken link; see
-[hosting.md](hosting.md#environment-variables).
+Set `TAKOMO_PUBLIC_URL` so notifications link straight to your `/board`. This reader is
+tolerant — any non-empty prefix works, trailing slashes are trimmed — but the same variable is
+also read, strictly, as the OAuth issuer identity; see
+[hosting.md](hosting.md#takomo_public_url-has-two-readers).
 
 Dispatch is fire-and-forget: it never blocks or fails the ask, and failures are
 logged to stderr.

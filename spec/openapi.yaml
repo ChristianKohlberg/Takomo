@@ -1696,8 +1696,10 @@ paths:
                   resource_name: { type: string }
         "404":
           description: |
-            No OAuth authorization server is configured on this instance
-            (`TAKOMO_PUBLIC_URL` unset). The body names the variable to set.
+            No OAuth authorization server is configured on this instance —
+            `TAKOMO_PUBLIC_URL` is unset or unusable as an issuer; see
+            `temporarily_unavailable` under `x-oauth-errors`. The body names the
+            variable to set.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
@@ -3554,4 +3556,4 @@ x-oauth-errors:
   unsupported_response_type: "the authorization endpoint was asked for something other than `code`. Reported by redirect once the redirect target itself has been verified."
   unsupported_grant_type: "the token endpoint was asked for a grant this server does not implement. `client_credentials` in particular is not offered: every credential here represents a human's consent. For a non-interactive agent, mint a token with `takomo token create`."
   access_denied: "the human at the consent screen declined. A normal outcome of the flow, not a failure."
-  temporarily_unavailable: "either no OAuth authorization server is configured on this instance (`TAKOMO_PUBLIC_URL` unset — the remedy names it), or the global registration budget for this minute is spent."
+  temporarily_unavailable: "either this instance runs no OAuth authorization server, or the global registration budget for this minute is spent. In the first case `TAKOMO_PUBLIC_URL` is unset OR is set to a value unusable as an issuer; an instance in that second state serves normally with OAuth off (takomo-z919), so this response cannot tell the two apart and does not pretend to — its startup line names which. The remedy states the accepted shape."
