@@ -1,4 +1,4 @@
-//! Server assembly: shared state, router, bind guard, lease sweeper.
+//! Server assembly: shared state, router, bind guard, lease/question/schedule sweeper.
 
 use crate::auth::{answer_auth_middleware, auth_middleware, share_auth_middleware};
 use crate::store::Store;
@@ -162,6 +162,41 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/cases/{id}/verdict",
             post(crate::api::checklist::record_verdict),
         )
+        .route(
+            "/v1/projects/{project}/schedule-approval",
+            put(crate::api::schedules::put_approval),
+        )
+        .route(
+            "/v1/schedules",
+            get(crate::api::schedules::list).post(crate::api::schedules::create),
+        )
+        .route(
+            "/v1/schedules/{id}",
+            get(crate::api::schedules::get_one)
+                .merge(patch(crate::api::schedules::patch))
+                .merge(axum::routing::delete(crate::api::schedules::delete)),
+        )
+        .route(
+            "/v1/schedules/{id}/occurrences",
+            get(crate::api::schedules::occurrences),
+        )
+        .route(
+            "/v1/schedules/{id}/activate",
+            post(crate::api::schedules::activate),
+        )
+        .route(
+            "/v1/schedules/{id}/reject",
+            post(crate::api::schedules::reject),
+        )
+        .route(
+            "/v1/schedules/{id}/pause",
+            post(crate::api::schedules::pause),
+        )
+        .route(
+            "/v1/schedules/{id}/resume",
+            post(crate::api::schedules::resume),
+        )
+        .route("/v1/schedules/{id}/run", post(crate::api::schedules::run_now))
         .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
@@ -391,6 +426,15 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
                 Ok(n) if n > 0 => woke = true,
                 Ok(_) => {}
                 Err(e) => eprintln!("question sweep failed: {}", e.body.message),
+            }
+            // The third pass: fire every schedule whose slot has come. Each one
+            // is its own transaction, so a single corrupt cadence cannot stop
+            // the rest — and a ticket that appears here is an ordinary ticket,
+            // so waking the long-pollers is all the dispatch it needs.
+            match state.store.materialize_due() {
+                Ok(n) if n > 0 => woke = true,
+                Ok(_) => {}
+                Err(e) => eprintln!("schedule sweep failed: {}", e.body.message),
             }
             // Spent authorization codes, retired refresh tokens, and OAuth-issued
             // access tokens long past expiry. Deliberately does NOT set `woke`:

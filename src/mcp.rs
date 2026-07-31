@@ -1547,6 +1547,12 @@ impl TakomoMcp {
             labels: a.label.into_iter().collect(),
             tags: a.tag.into_iter().collect(),
             tag_kinds: a.tag_kind.into_iter().collect(),
+            // Scheduled-occurrence filters are not on the MCP list tool: an agent
+            // wants work to do, and `takomo_next` already refuses to hand it an
+            // expired occurrence. Tidying them up is a human-directed maintenance
+            // task that goes through the REST filter.
+            expired: None,
+            schedule: None,
             parent: None,
             q: a.q,
             claimed_by: None,

@@ -167,6 +167,15 @@ pub struct TicketListFilter {
     pub allowed_projects: Option<Vec<String>>,
     /// Archived-ticket visibility (default: active only).
     pub archived: ArchivedFilter,
+    /// Restrict to scheduled occurrences that have stopped counting as live
+    /// work. This is what a maintenance agent queries to find what to tidy —
+    /// nothing on the server closes an expired ticket, by design.
+    ///
+    /// `Some(true)` = only expired, `Some(false)` = only unexpired (a hand-made
+    /// ticket, which has no expiry, counts as unexpired), `None` = no filter.
+    pub expired: Option<bool>,
+    /// Restrict to occurrences of one schedule.
+    pub schedule: Option<String>,
 }
 
 /// RFC 7386 merge-patch: objects merge recursively, null deletes, everything
@@ -647,6 +656,25 @@ impl Store {
                 ArchivedFilter::Exclude => sql.push_str(" AND t.archived_at IS NULL"),
                 ArchivedFilter::Only => sql.push_str(" AND t.archived_at IS NOT NULL"),
                 ArchivedFilter::Include => {}
+            }
+            match filter.expired {
+                // Terminal state is deliberately NOT considered here: this asks
+                // "has the clock run out", and a finished ticket whose slot has
+                // passed is still a finished ticket. The maintenance agent
+                // filters on state itself.
+                Some(true) => {
+                    sql.push_str(" AND t.expires_at IS NOT NULL AND t.expires_at <= ?");
+                    params_vec.push(SqlValue::Integer(crate::ids::now_ms()));
+                }
+                Some(false) => {
+                    sql.push_str(" AND (t.expires_at IS NULL OR t.expires_at > ?)");
+                    params_vec.push(SqlValue::Integer(crate::ids::now_ms()));
+                }
+                None => {}
+            }
+            if let Some(sched) = &filter.schedule {
+                sql.push_str(" AND t.schedule = ?");
+                params_vec.push(SqlValue::Text(sched.clone()));
             }
             if let Some(c) = cursor {
                 sql.push_str(" AND t.rowid < ?");

@@ -12,7 +12,7 @@ pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.bod
     COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS state_category, \
     t.priority, t.labels, t.tags, t.metadata, t.links, t.claim_holder, t.claim_expires_at, \
     t.lapsed_claim_holder, t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, \
-    t.archived_at";
+    t.archived_at, t.schedule, t.occurrence, t.expires_at";
 
 pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
     let labels_raw: String = row.get("labels")?;
@@ -43,6 +43,9 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         archived_at: row.get("archived_at")?,
+        schedule: row.get("schedule")?,
+        occurrence: row.get("occurrence")?,
+        expires_at: row.get("expires_at")?,
     })
 }
 

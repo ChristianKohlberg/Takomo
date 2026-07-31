@@ -77,13 +77,13 @@ An occurrence's deadline is **the next occurrence**. When a ticket is created fo
 
 The resulting three outcomes are derived at read time, never stored:
 
-| Outcome | Derived when |
+| Outcome (`ScheduleOccurrence.outcome`) | Derived when |
 |---|---|
 | `done` | the ticket's state is terminal |
 | `open` | not terminal, and `now <= expires_at` |
-| `not fulfilled` | not terminal, and `now > expires_at` |
+| `not_fulfilled` | not terminal, and `now > expires_at` |
 
-Expiry changes no state and needs no workflow edge: an expired ticket is not archived, cancelled or transitioned. It drops out of `GET /v1/ready` so no agent is handed last month's review, and is rendered as not fulfilled. Closing them out is ordinary work for a maintenance agent — which can itself be a schedule.
+Expiry changes no state and needs no workflow edge: an expired ticket is not archived, cancelled or transitioned. It drops out of `GET /v1/ready` so no agent is handed last month's review, and is rendered as not fulfilled. Closing them out is ordinary work for a maintenance agent — which can itself be a schedule. `GET /v1/tickets?expired=true` is how that agent finds them; `GET /v1/schedules/{id}/occurrences` is the history, newest first.
 
 ## Ticket title placeholders
 

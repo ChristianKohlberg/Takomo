@@ -47,6 +47,11 @@ pub fn initiative_entry_id() -> String {
     format!("ie-{}", random_chars(BASE36, 8))
 }
 
+/// Schedule id, e.g. "sch-9f3ka2xz".
+pub fn schedule_id() -> String {
+    format!("sch-{}", random_chars(BASE36, 8))
+}
+
 /// Tag (project entity — person, component, …) id, e.g. "tag-9f3ka2xz".
 pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))

@@ -361,6 +361,48 @@ impl TestApp {
         assert_eq!(n, 1, "backdate should touch exactly one row ({case})");
     }
 
+    // --- schedules -----------------------------------------------------------
+
+    /// Backdate a schedule's next slot so the sweep considers it due.
+    ///
+    /// The alternative is waiting for a real slot to arrive, and the finest
+    /// cadence is daily — so without this every materialization test would be
+    /// untestable rather than merely slow. Writes the column directly because the
+    /// API deliberately has no way to set it: `next_slot` is server-owned.
+    pub fn force_schedule_slot(&self, id: &str, slot_ms: i64) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        let n = conn
+            .execute(
+                "UPDATE schedules SET next_slot = ?2 WHERE id = ?1",
+                rusqlite::params![id, slot_ms],
+            )
+            .expect("force next_slot");
+        assert_eq!(
+            n, 1,
+            "force_schedule_slot should touch exactly one row ({id})"
+        );
+    }
+
+    /// Backdate a scheduled ticket's deadline, so "the clock ran out" is
+    /// observable without waiting a week for it.
+    pub fn force_ticket_expiry(&self, id: &str, expires_ms: i64) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        let n = conn
+            .execute(
+                "UPDATE tickets SET expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![id, expires_ms],
+            )
+            .expect("force expires_at");
+        assert_eq!(
+            n, 1,
+            "force_ticket_expiry should touch exactly one row ({id})"
+        );
+    }
+
     // --- tickets -------------------------------------------------------------
 
     pub async fn create_ticket(&self, title: &str) -> String {

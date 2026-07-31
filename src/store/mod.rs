@@ -15,6 +15,7 @@ mod oauth;
 mod projects;
 mod questions;
 mod roadmap;
+mod schedules;
 mod shares;
 mod tags;
 mod tickets;
@@ -45,6 +46,10 @@ pub use projects::{
 pub use questions::{
     question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
     ReviseOptionsRequest, TimeoutAction, MAX_QUESTIONS_PAGE, QUESTION_KINDS,
+};
+pub use schedules::{
+    derive_outcome, ScheduleCreate, ScheduleListFilter, SchedulePatch, ScheduleTemplate,
+    MAX_SCHEDULES_PAGE, MAX_SCHEDULES_PER_PROJECT, SCHEDULE_STATUSES,
 };
 pub use shares::{ShareKind, DEFAULT_SHARE_TTL_SECONDS, MAX_SHARE_TTL_SECONDS, SHARE_TICKETS_PAGE};
 pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, TagPatch};
@@ -399,6 +404,35 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // projects.schedule_approval: whether a schedule an AGENT proposes over MCP
+    // must be activated by a human before it fires. Defaults to 1 (on), because
+    // the safe value is the one that surprises nobody — a schedule outlives the
+    // token that created it, so letting a `write` credential make one that fires
+    // forever is an escalation an operator should opt into deliberately.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "schedule_approval") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN schedule_approval INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
+    // tickets.schedule / occurrence / expires_at: where a scheduled ticket came
+    // from and how long it counts as live. All three nullable, and NULL is
+    // exactly right for every existing row — "nothing made this on a cadence".
+    if !columns.iter().any(|c| c == "schedule") {
+        conn.execute("ALTER TABLE tickets ADD COLUMN schedule TEXT", [])?;
+    }
+    if !columns.iter().any(|c| c == "occurrence") {
+        conn.execute("ALTER TABLE tickets ADD COLUMN occurrence INTEGER", [])?;
+    }
+    if !columns.iter().any(|c| c == "expires_at") {
+        conn.execute("ALTER TABLE tickets ADD COLUMN expires_at INTEGER", [])?;
+    }
+    // Created after the columns are guaranteed to exist. This index IS the
+    // exactly-once guarantee, so it is added on an old database too.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_occurrence ON tickets(schedule, occurrence) WHERE schedule IS NOT NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -463,7 +497,22 @@ CREATE TABLE IF NOT EXISTS tickets (
   created_by       TEXT NOT NULL,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL,
-  archived_at      TEXT
+  archived_at      TEXT,
+  -- Where this ticket came from, when a schedule made it. Provenance and a link
+  -- back, NOT a relationship: two occurrences of one schedule have no edge
+  -- between them. Deliberately no REFERENCES, so deleting the rule leaves the
+  -- work and the record of its origin intact.
+  schedule         TEXT,
+  -- The calendar slot this ticket stands for, as a unix-ms instant.
+  occurrence       INTEGER,
+  -- When this ticket stops counting as LIVE work: the moment its schedule's next
+  -- occurrence comes due, stamped once at creation from the cadence alone. Never
+  -- read from a sibling ticket, which is what keeps occurrences independent.
+  --
+  -- Expiry changes no state. The ticket is not archived, cancelled or
+  -- transitioned — it drops out of the ready queue and reads as not_fulfilled.
+  -- Closing it out is a maintenance agent's job, through the ordinary API.
+  expires_at       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tickets_project_state ON tickets(project, state);
 CREATE INDEX IF NOT EXISTS idx_tickets_parent ON tickets(parent);
@@ -727,6 +776,42 @@ CREATE TABLE IF NOT EXISTS promotions (
 );
 CREATE INDEX IF NOT EXISTS idx_promotions_ticket ON promotions(ticket);
 CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project);
+
+-- A recurrence rule that materializes ordinary tickets. See
+-- spec/schedule-format.md and src/store/schedules.rs.
+--
+-- `cadence` is the rule as JSON (every/interval/on/day/at/tz), validated by
+-- src/schedule.rs on the way in; `template` is a ticket create minus the
+-- project. Both are stored as text because they are authored documents, not
+-- query targets: nothing filters on the inside of either.
+CREATE TABLE IF NOT EXISTS schedules (
+  id          TEXT PRIMARY KEY,
+  project     TEXT NOT NULL REFERENCES projects(id),
+  name        TEXT NOT NULL,
+  cadence     TEXT NOT NULL,
+  template    TEXT NOT NULL,
+  -- pending | active | paused | rejected | retired. `pending` is what an
+  -- agent-proposed schedule lands in when the project requires approval.
+  status      TEXT NOT NULL DEFAULT 'active',
+  proposed_by TEXT,
+  rationale   TEXT,
+  -- The next slot to fire, NULL unless status = 'active'. That invariant is what
+  -- makes a pending or paused schedule inert BY CONSTRUCTION rather than by a
+  -- check somewhere: the partial index below cannot see it, so the sweep cannot
+  -- either.
+  next_slot   INTEGER,
+  -- The interval anchor and the earliest slot. Anchoring `interval` here rather
+  -- than on calendar parity is what keeps "every 2 weeks" landing on the same
+  -- weeks a year later.
+  starts_at   INTEGER NOT NULL,
+  ends_at     INTEGER,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_project ON schedules(project, status);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(next_slot) WHERE next_slot IS NOT NULL;
 
 -- OAuth 2.1 authorization server (src/store/oauth.rs). Present in every database
 -- but inert unless the operator sets a public base URL: with none, the OAuth

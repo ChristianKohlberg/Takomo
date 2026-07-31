@@ -130,6 +130,23 @@ pub async fn list(
         q: first(&pairs, "q").map(str::to_string),
         claimed_by: first(&pairs, "claimed_by").map(str::to_string),
         allowed_projects: ctx.allowed_projects_vec(),
+        // `expired=true` is what a maintenance agent queries to find the
+        // scheduled occurrences nobody finished; `schedule=<id>` narrows it to
+        // one cadence.
+        expired: match first(&pairs, "expired") {
+            None => None,
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            Some(other) => {
+                return Err(ApiError::validation(
+                    "validation.expired",
+                    format!(
+                        "'expired' must be true or false, got '{other}'. true = only scheduled occurrences whose deadline has passed; false = only ones still live."
+                    ),
+                ))
+            }
+        },
+        schedule: first(&pairs, "schedule").map(|s| s.to_string()),
         archived: parse_archived(&pairs)?,
     };
     let limit = parse_i64_param(&pairs, "limit")?
