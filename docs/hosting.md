@@ -69,7 +69,18 @@ Config: [`litestream.yml`](../litestream.yml).
 |---|---|
 | `TAKOMO_ALLOW_PUBLIC_BIND` | Set to `1` to allow non-loopback binds (required when serving publicly). |
 | `TAKOMO_DB` | DB path (alternative to `--db`). |
-| `TAKOMO_PUBLIC_URL` | The public origin this server is reached at, e.g. `https://takomo.example.com` — no path, no trailing slash. Turns on the OAuth authorization server, which is what lets **hosted** MCP clients (claude.ai, ChatGPT, the Gemini app) connect. Absent = OAuth off; local clients carrying a bearer token are unaffected either way. Validated at startup, so a non-loopback `http` origin, a path prefix or a query string is a refusal to boot rather than a connector that fails inside someone else's product — and that check applies even on an instance that sets the variable only for its other use, the absolute links in question notifications ([ask-a-human.md](ask-a-human.md)). See [hosted-mcp-clients.md](hosted-mcp-clients.md). |
+| `TAKOMO_PUBLIC_URL` | The public origin this server is reached at, e.g. `https://takomo.example.com`. **Two consumers, different strictness** (see below). Absent = OAuth off; local clients carrying a bearer token are unaffected either way. See [hosted-mcp-clients.md](hosted-mcp-clients.md). |
 | `LITESTREAM_*` | Off-box backup (see above); absent = backups off. |
+
+### `TAKOMO_PUBLIC_URL` has two readers
+
+Worth knowing before you tighten anything around it, because the two want different things from the same string:
+
+1. **Absolute links** in ask-a-human notifications and answer links ([ask-a-human.md](ask-a-human.md)) — the original use, and *tolerant*: any non-empty value works, trailing slashes are trimmed, a path prefix or a plain-`http` tailnet host is fine.
+2. **The OAuth issuer identity** ([spec/auth.md](../spec/auth.md#oauth-21-for-hosted-mcp-clients)) — *strict*: it must be a bare `https` origin with no path, no query and no trailing slash, because a hosted client compares the issuer and the `resource` byte-for-byte against what it fetched and what the user typed. Plain `http` is accepted only on loopback.
+
+A value that fails the strict reading **turns OAuth off and says so on the startup line; it does not stop the server.** That matters if you set this variable years ago for readable notification links: an upgrade must not take your instance down over a setting you chose for something else, having never asked for OAuth (takomo-z919). The one casualty is that hosted clients cannot connect, which the `/oauth/*` routes also report per request.
+
+So: if you want OAuth, use a bare origin and check the startup line says `OAuth issuer …` rather than `OAuth OFF —`.
 
 Client-side (`takomo` CLI / MCP): `TAKOMO_URL`, `TAKOMO_TOKEN`, and optionally `TAKOMO_PROJECT` / `TAKOMO_ACTOR` — usually supplied by `.takomo/config` after `takomo init`.

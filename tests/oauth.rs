@@ -373,6 +373,25 @@ async fn without_a_public_url_there_is_no_challenge_and_no_authorization_server(
             .contains("TAKOMO_PUBLIC_URL"),
         "the remedy must name the variable to set: {body}"
     );
+    // OAuth being off has two causes and this handler cannot tell them apart:
+    // unset, or set to something unusable as an issuer — and since takomo-z919 the
+    // latter keeps serving instead of stopping the server, so it is a state a live
+    // instance is genuinely in. Claiming "not set" would send an operator whose
+    // value IS set looking in the wrong place, so the description must own the
+    // ambiguity and point at the startup line, which is what knows.
+    // Asserted on meaning rather than wording, which is why "either" carries it:
+    // the sentence must present two possibilities, not commit to one.
+    let description = body["error_description"].as_str().unwrap_or("");
+    assert!(
+        description.contains("either")
+            && description.contains("unset")
+            && description.contains("usable"),
+        "the description must cover both causes rather than asserting one: {body}"
+    );
+    assert!(
+        description.contains("startup"),
+        "…and point at the one place that can tell them apart: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

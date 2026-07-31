@@ -222,8 +222,13 @@ fn oauth_disabled() -> Response {
     oauth_error(
         StatusCode::NOT_FOUND,
         "temporarily_unavailable",
-        "This takomo instance has no OAuth authorization server: TAKOMO_PUBLIC_URL is not set, so it cannot state its own issuer identity or build a redirect back to a client.",
-        "Set TAKOMO_PUBLIC_URL to the public origin this server is reached at (e.g. https://takomo.example.com, no trailing slash, no path) and restart. Until then, hosted clients cannot connect; local clients can still use a bearer token directly.",
+        // Says "unset or unusable" rather than naming one, deliberately: OAuth is
+        // off in both cases, this handler cannot tell them apart, and since
+        // takomo-z919 the unusable case no longer stops the server — so it is a
+        // state a live instance can genuinely be serving in. Asserting "not set"
+        // when it *is* set would send an operator looking in the wrong place.
+        "This takomo instance has no OAuth authorization server: TAKOMO_PUBLIC_URL is either unset or not usable as an issuer, so the server cannot state its own identity or build a redirect back to a client. Its startup line says which of the two.",
+        "Set TAKOMO_PUBLIC_URL to the public origin this server is reached at — a bare origin, e.g. https://takomo.example.com: no path, no query, no trailing slash, and plain http only on loopback. Restart, then check the startup line reads 'OAuth issuer ...' rather than 'OAuth OFF -'. Until then hosted clients cannot connect; local clients can still use a bearer token directly.",
     )
 }
 
