@@ -1626,15 +1626,33 @@ PY
 cmd_token_ls() {
   api GET /v1/tokens >/dev/null
   python3 - "$REQ_OUT" <<'PY'
-import json, sys
+import json, sys, unicodedata
 rows = json.load(open(sys.argv[1]))
 if not rows:
     print("(no tokens)"); sys.exit()
 def proj(p): return "*" if p == "*" else ",".join(p) if isinstance(p, list) else str(p)
-print(f"{'ID':<14} {'ACTOR':<22} {'SCOPES':<20} {'PROJECTS':<12} {'REVOKED':<8} LAST USED")
+BIDI = {chr(0x200e), chr(0x200f)} | {chr(c) for c in range(0x202a, 0x202f)} | {chr(c) for c in range(0x2066, 0x206a)}
+def connection(t):
+    c = t.get("oauth_client") or {}
+    # `label` is what the server sanitizes for display; client_name/client_id are
+    # the fallback for a server that predates it. Sanitize whichever we picked:
+    # this name arrived through an UNAUTHENTICATED registration endpoint and a
+    # terminal interprets escape sequences, so a forged row here could hide or
+    # overwrite the row an operator is about to revoke.
+    raw = (c.get("label") or c.get("client_name") or c.get("client_id") or "").strip()
+    if not raw: return "-"
+    return "".join("?" if unicodedata.category(ch) == "Cc" or ch in BIDI else ch for ch in raw)
+# The CONNECTION column appears only when a row belongs to one. Most deployments
+# have no OAuth tokens at all, and widening every row for a column that would be
+# empty in all of them is a worse table.
+conns = any(t.get("oauth_client") for t in rows)
+head = f"{'ID':<14} {'ACTOR':<22} {'SCOPES':<20} {'PROJECTS':<12} {'REVOKED':<8}"
+print(f"{head} {'LAST USED':<22} CONNECTION" if conns else f"{head} LAST USED")
 for t in rows:
-    print(f"{t.get('id',''):<14} {t.get('actor',''):<22} {','.join(t.get('scopes',[])):<20} "
-          f"{proj(t.get('projects')):<12} {('yes' if t.get('revoked_at') else 'no'):<8} {t.get('last_used_at') or 'never'}")
+    row = (f"{t.get('id',''):<14} {t.get('actor',''):<22} {','.join(t.get('scopes',[])):<20} "
+           f"{proj(t.get('projects')):<12} {('yes' if t.get('revoked_at') else 'no'):<8}")
+    used = t.get('last_used_at') or 'never'
+    print(f"{row} {used:<22} {connection(t)}" if conns else f"{row} {used}")
 PY
 }
 

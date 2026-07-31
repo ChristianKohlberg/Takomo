@@ -296,13 +296,22 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                 println!("no tokens; mint one with: takomo token create --actor <name>");
                 return Ok(());
             }
-            println!(
-                "{:<14} {:<24} {:<24} {:<12} {:<22} {:<10} LAST USED",
+            // The CONNECTION column appears only when something in the list is an
+            // OAuth connection. Most deployments have none, and widening every row
+            // for a column that would be empty in all of them is a worse table.
+            let connections = tokens.iter().any(|t| t.oauth_client.is_some());
+            let head = format!(
+                "{:<14} {:<24} {:<24} {:<12} {:<22} {:<10}",
                 "ID", "ACTOR", "SCOPES", "PROJECTS", "EXPIRES", "REVOKED"
             );
+            if connections {
+                println!("{head} {:<22} CONNECTION", "LAST USED");
+            } else {
+                println!("{head} LAST USED");
+            }
             for t in tokens {
-                println!(
-                    "{:<14} {:<24} {:<24} {:<12} {:<22} {:<10} {}",
+                let row = format!(
+                    "{:<14} {:<24} {:<24} {:<12} {:<22} {:<10}",
                     t.id,
                     t.actor,
                     t.scopes.join(","),
@@ -311,8 +320,21 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                         .unwrap_or_else(|| "*".into()),
                     t.expires_at.map(iso).unwrap_or_else(|| "never".into()),
                     if t.revoked_at.is_some() { "yes" } else { "no" },
-                    t.last_used_at.map(iso).unwrap_or_else(|| "never".into()),
                 );
+                let last_used = t.last_used_at.map(iso).unwrap_or_else(|| "never".into());
+                if connections {
+                    // `label()` is what makes this safe to print: the name behind it
+                    // came from an unauthenticated registration endpoint, and a
+                    // terminal interprets escape sequences.
+                    let connection = t
+                        .oauth_client
+                        .as_ref()
+                        .map(|c| c.label())
+                        .unwrap_or_else(|| "-".to_string());
+                    println!("{row} {last_used:<22} {connection}");
+                } else {
+                    println!("{row} {last_used}");
+                }
             }
             Ok(())
         }

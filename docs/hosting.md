@@ -38,7 +38,7 @@ Takomo terminates **plain HTTP** and expects to sit behind TLS — a platform (R
 TAKOMO_ALLOW_PUBLIC_BIND=1 takomo --db takomo.db serve --bind 0.0.0.0:8080
 ```
 
-`/healthz` is the only unauthenticated endpoint (use it as your platform's readiness/liveness probe). Every other route requires `Authorization: Bearer tk_...`.
+`/healthz` needs no token — use it as your platform's readiness/liveness probe. Every API route requires `Authorization: Bearer tk_...`. The exception is the OAuth authorization server (`/oauth/*` and the two `.well-known` documents), which is unauthenticated by design when `TAKOMO_PUBLIC_URL` is set, because it is what a hosted client reads in order to obtain a token — see [spec/auth.md](../spec/auth.md#oauth-21-for-hosted-mcp-clients).
 
 ### WAF note
 
@@ -69,6 +69,7 @@ Config: [`litestream.yml`](../litestream.yml).
 |---|---|
 | `TAKOMO_ALLOW_PUBLIC_BIND` | Set to `1` to allow non-loopback binds (required when serving publicly). |
 | `TAKOMO_DB` | DB path (alternative to `--db`). |
+| `TAKOMO_PUBLIC_URL` | The public origin this server is reached at, e.g. `https://takomo.example.com` — no path, no trailing slash. Turns on the OAuth authorization server, which is what lets **hosted** MCP clients (claude.ai, ChatGPT, the Gemini app) connect. Absent = OAuth off; local clients carrying a bearer token are unaffected either way. Validated at startup, so a non-loopback `http` origin, a path prefix or a query string is a refusal to boot rather than a connector that fails inside someone else's product — and that check applies even on an instance that sets the variable only for its other use, the absolute links in question notifications ([ask-a-human.md](ask-a-human.md)). See [hosted-mcp-clients.md](hosted-mcp-clients.md). |
 | `LITESTREAM_*` | Off-box backup (see above); absent = backups off. |
 
 Client-side (`takomo` CLI / MCP): `TAKOMO_URL`, `TAKOMO_TOKEN`, and optionally `TAKOMO_PROJECT` / `TAKOMO_ACTOR` — usually supplied by `.takomo/config` after `takomo init`.

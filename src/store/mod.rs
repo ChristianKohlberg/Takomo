@@ -9,6 +9,7 @@ mod events;
 mod helpers;
 mod metrics;
 mod model;
+mod oauth;
 mod projects;
 mod questions;
 mod roadmap;
@@ -22,6 +23,10 @@ pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use claims::{ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
+pub use oauth::{
+    ACCESS_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, MAX_REDIRECT_URIS, REFRESH_TOKEN_TTL_SECONDS,
+    SPENT_CODE_RETENTION_SECONDS, UNUSED_CLIENT_RETENTION_SECONDS,
+};
 pub use projects::{
     normalize_answer_link_ttl, normalize_claim_ttls, normalize_style_guide, Conventions,
     DeletedCounts, MAX_STYLE_GUIDE_CHARS,
@@ -636,6 +641,85 @@ CREATE TABLE IF NOT EXISTS promotions (
 );
 CREATE INDEX IF NOT EXISTS idx_promotions_ticket ON promotions(ticket);
 CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project);
+
+-- OAuth 2.1 authorization server (src/store/oauth.rs). Present in every database
+-- but inert unless the operator sets a public base URL: with none, the OAuth
+-- routes are not mounted at all, so nothing ever writes here.
+--
+-- Clients register themselves (RFC 7591) and are always PUBLIC clients — hence no
+-- client_secret column. `redirect_uris` is a JSON array, matched literally: the
+-- exact-match check against it is the only thing standing between this endpoint
+-- and an open redirect, so it is stored in a form that cannot be split by a comma
+-- inside a URI. Registration being unauthenticated by specification, a row that
+-- never produced a code or a refresh token is swept on age — that, not the rate
+-- limit, is what bounds this table.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  client_id     TEXT PRIMARY KEY,
+  client_name   TEXT NOT NULL DEFAULT '',
+  redirect_uris TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+
+-- Authorization codes: single-use, ~60s, PKCE-bound. Columns actor..granted_by
+-- are the consent snapshot (see model::GrantedAccess) — the slice of authority
+-- the human handed this client, frozen so a later change to their own token can
+-- neither widen it nor resurrect it. `issued_family` records which refresh-token
+-- family the code produced, so a replay can revoke everything it bought — which is
+-- why a spent row outlives its 60s expiry by an hour instead of being swept at once.
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash      TEXT PRIMARY KEY,
+  client_id      TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  redirect_uri   TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  resource       TEXT,
+  actor          TEXT NOT NULL,
+  scopes         TEXT NOT NULL,
+  projects       TEXT NOT NULL DEFAULT '*',
+  rate_limit     INTEGER NOT NULL,
+  scope          TEXT NOT NULL,
+  granted_by     TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  expires_at     INTEGER NOT NULL,
+  used_at        INTEGER,
+  issued_family  TEXT
+);
+
+-- Refresh tokens, hashed at rest like every credential here. Rotated on every
+-- use: the presented row gets `rotated_at` and a successor is inserted with the
+-- same `family`. Presenting a row that already has `rotated_at` or `revoked_at`
+-- is reuse, and revokes the whole family.
+CREATE TABLE IF NOT EXISTS oauth_refresh (
+  token_hash TEXT PRIMARY KEY,
+  family     TEXT NOT NULL,
+  client_id  TEXT NOT NULL,
+  actor      TEXT NOT NULL,
+  scopes     TEXT NOT NULL,
+  projects   TEXT NOT NULL DEFAULT '*',
+  rate_limit INTEGER NOT NULL,
+  scope      TEXT NOT NULL,
+  granted_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  rotated_at INTEGER,
+  revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_family ON oauth_refresh(family);
+
+-- Ledger of access tokens this authorization server minted. An OAuth access
+-- token is an ordinary `tokens` row (that is the point — one auth path, not two),
+-- which leaves no way to tell it apart from one an operator minted by hand. This
+-- table is that way: it is what lets the sweeper delete only OAuth-issued tokens,
+-- and what lets a detected replay find and revoke the tokens a compromised
+-- credential already produced.
+CREATE TABLE IF NOT EXISTS oauth_issued (
+  token_id     TEXT PRIMARY KEY,
+  client_id    TEXT NOT NULL,
+  family       TEXT NOT NULL,
+  refresh_hash TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_issued_family ON oauth_issued(family);
+CREATE INDEX IF NOT EXISTS idx_oauth_issued_refresh ON oauth_issued(refresh_hash);
 "#;
 
 #[cfg(test)]

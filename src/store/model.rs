@@ -502,14 +502,80 @@ pub struct TokenRow {
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
     pub last_used_at: Option<i64>,
+    /// Which OAuth connection this token *is*, when it came from the OAuth flow.
+    ///
+    /// Filled only by the listing query, which is the one place the question gets
+    /// asked; every other read of a token row is an authorization decision that has
+    /// no use for it. `None` on a hand-minted token, and on every path that does not
+    /// join the ledger.
+    pub oauth_client: Option<OauthConnection>,
+}
+
+/// The connection an OAuth-issued token belongs to, for the listing surfaces.
+///
+/// Exists because revoking a token now ends a whole connection, which makes
+/// picking the wrong row an unrecoverable mistake — and until this was joined
+/// through, two connectors approved by the same human were indistinguishable in
+/// `takomo token list`: same actor, same scopes, same projects, differing only in
+/// id and expiry timestamp.
+#[derive(Debug, Clone)]
+pub struct OauthConnection {
+    pub client_id: String,
+    /// The registered `client_name`, absent when the client registered without one
+    /// (RFC 7591 makes it optional) or when its registration has since been swept.
+    pub client_name: Option<String>,
+}
+
+impl OauthConnection {
+    /// What to show a human: the client's name, falling back to its id. A person
+    /// recognizes "Claude"; nobody recognizes `oc_x3jolbbtodnog1rh`.
+    ///
+    /// Characters that would forge the display are replaced, not passed through.
+    /// This name arrives through an **unauthenticated** registration endpoint and
+    /// one of its sinks is a terminal — `takomo token list`, which is the listing an
+    /// operator reads to decide which connection to revoke, an act that cannot be
+    /// undone. An escape sequence there can erase or overwrite a line, so a forged
+    /// row is not cosmetic. `api::oauth::register` refuses such a name outright;
+    /// this is the other half of that pair, covering rows stored before that check
+    /// existed and whatever writes this column next.
+    pub fn label(&self) -> String {
+        let raw = self
+            .client_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.client_id);
+        raw.chars()
+            .map(|c| if display_hostile(c) { '?' } else { c })
+            .collect()
+    }
+}
+
+/// Would this character forge or garble a line of text a human is reading?
+///
+/// Control characters (a newline splitting one row into two, an ANSI escape erasing
+/// the row above) and the bidirectional overrides, which reorder what a terminal
+/// shows without changing the bytes — the Trojan Source trick, and the same problem
+/// wearing different clothes.
+///
+/// Lives in the store layer because both users need the same answer and only one
+/// direction of dependency exists: [`OauthConnection::label`] sanitizes for display,
+/// and `api::oauth` refuses on the way in.
+pub fn display_hostile(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 impl TokenRow {
     /// Public metadata wire shape — never carries the plaintext or the hash.
     /// `projects` is the string `"*"` (all) or an array of ids, mirroring the
     /// CLI's convention.
+    ///
+    /// `oauth_client` appears only on a token the OAuth flow issued. Omitted
+    /// entirely otherwise rather than emitted as `null`, so a hand-minted token
+    /// serializes exactly as it always has.
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "id": self.id,
             "actor": self.actor,
             "scopes": self.scopes,
@@ -522,6 +588,129 @@ impl TokenRow {
             "expires_at": self.expires_at.map(iso),
             "revoked_at": self.revoked_at.map(iso),
             "last_used_at": self.last_used_at.map(iso),
+        });
+        if let Some(conn) = &self.oauth_client {
+            out["oauth_client"] = json!({
+                "client_id": conn.client_id,
+                "client_name": conn.client_name,
+                "label": conn.label(),
+            });
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth 2.1 authorization server (src/store/oauth.rs, src/api/oauth.rs).
+
+/// An OAuth client, registered dynamically (RFC 7591) by whichever hosted
+/// product is connecting. Always a **public** client: no `client_secret` column,
+/// because a client that cannot keep a secret gains nothing from being issued
+/// one, and PKCE is what actually binds a code to its requester.
+#[derive(Debug, Clone)]
+pub struct OauthClient {
+    pub client_id: String,
+    pub client_name: String,
+    /// Exact-match allowlist. A redirect target that is not literally one of
+    /// these is refused, which is the whole defense against an open redirect.
+    pub redirect_uris: Vec<String>,
+    pub created_at: i64,
+}
+
+impl OauthClient {
+    /// RFC 7591 §3.2.1 client information response.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "client_id": self.client_id,
+            "client_id_issued_at": self.created_at / 1000,
+            "client_name": self.client_name,
+            "redirect_uris": self.redirect_uris,
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
         })
     }
+}
+
+/// The slice of one takomo token's authority that a human consented to hand a
+/// client, snapshotted at consent time.
+///
+/// Snapshotted rather than looked up later on purpose: the access token minted
+/// from it must not silently widen if the consenting token is later given more
+/// scopes.
+///
+/// A snapshot must not survive revocation either, or revocation would be a lie —
+/// so `granted_by` is not only a breadcrumb for tracing a connector's authority
+/// back to the human who granted it. Every path that mints a credential from this
+/// snapshot re-checks that token first, and refuses if it has been revoked or
+/// deleted (`GrantRejection::ConsentWithdrawn`). A consenting token that merely
+/// *expires* is deliberately not treated that way: a revocation is a decision, an
+/// expiry is bookkeeping, and a connected client is meant to stay connected.
+#[derive(Debug, Clone)]
+pub struct GrantedAccess {
+    pub actor: String,
+    pub scopes: Vec<String>,
+    /// None = all projects (`*`), same convention as [`TokenRow`].
+    pub projects: Option<Vec<String>>,
+    pub rate_limit: i64,
+    /// The OAuth scope string exactly as granted (space separated). Echoed back
+    /// on the token response, because it may be *narrower* than what the client
+    /// asked for — the human can uncheck scopes on the consent screen.
+    pub scope: String,
+    /// Token id of the credential the human consented with.
+    pub granted_by: String,
+}
+
+/// What the token endpoint hands back on a successful exchange.
+#[derive(Debug, Clone)]
+pub struct OauthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    pub scope: String,
+}
+
+/// Why an authorization code or refresh token was refused.
+///
+/// A store-layer enum rather than an `ApiError`, because the OAuth endpoints are
+/// the one place in this codebase that cannot use takomo's own error shape: a
+/// client parses RFC 6749's `error` field and nothing else. The mapping to that
+/// vocabulary happens at the HTTP edge (`crate::api::oauth`), so the store stays
+/// free of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantRejection {
+    /// No such code or refresh token.
+    Unknown,
+    /// Past its expiry.
+    Expired,
+    /// Already spent (a code) or already rotated (a refresh token). For a refresh
+    /// token this also revokes its whole family — see `store::oauth`.
+    ///
+    /// Reuse, in other words, which is why it is kept distinct from
+    /// [`GrantRejection::ConnectionRevoked`]: one says a credential may have been
+    /// stolen, the other says it was taken away.
+    Replayed,
+    /// Presented by a different client than the one it was issued to.
+    ClientMismatch,
+    /// `redirect_uri` does not match the one the code was bound to.
+    RedirectMismatch,
+    /// The PKCE `code_verifier` does not hash to the recorded challenge.
+    PkceMismatch,
+    /// The token the human consented with has been revoked or deleted, so the
+    /// snapshot it authorized can mint nothing further. An *expired* consenting
+    /// token does not land here — see [`GrantedAccess`].
+    ConsentWithdrawn,
+    /// This refresh token was revoked without ever having been rotated: the
+    /// connection was ended at the server, by `Store::revoke_token` on its derived
+    /// token or by reuse detected on a sibling in the same family. Nobody presented
+    /// it twice, so it must not be reported as reuse.
+    ConnectionRevoked,
+}
+
+/// The outcome of a token-endpoint grant: either credentials, or a refusal the
+/// edge turns into an RFC 6749 error body.
+#[derive(Debug, Clone)]
+pub enum OauthExchange {
+    Issued(OauthTokens),
+    Rejected(GrantRejection),
 }
