@@ -33,6 +33,7 @@ tags:
   - { name: identity }
   - { name: shares }
   - { name: tags }
+  - { name: checklist }
   - { name: oauth }
 
 paths:
@@ -2734,6 +2735,368 @@ paths:
           content:
             image/svg+xml: {}
 
+  /projects/{project}/releases:
+    get:
+      tags: [checklist]
+      summary: List the project's releases, newest first (read scope)
+      description: |
+        Releases are an ordered spine: `seq` is monotonic per project, which is
+        what makes a release-count expiry policy arithmetic rather than a date
+        comparison.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 500 } }
+      responses:
+        "200":
+          description: The releases.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Release" } }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [checklist]
+      summary: Record a release and learn what it invalidated (write scope)
+      description: |
+        Pushed by the agent that merged the work. There is deliberately no direct
+        integration: the pusher supplies `touched_paths` and `orphan_globs`
+        because it has the tree checked out, and the server clones nothing.
+
+        Every lane claiming a glob that matches a touched path has its verified
+        cases marked stale. A case that was NEVER verified stays `never` — calling
+        it stale would report re-testing for work nobody has done once. Globs
+        listed in `orphan_globs` matched no file, so those lanes are flagged and
+        stop counting toward coverage.
+
+        A `ref` is immutable: pushing one twice is a 409, not an update.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleasePush" }
+      responses:
+        "201":
+          description: The release, with what it invalidated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseWithImpact" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "That ref is already recorded for this project" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{project}/lanes:
+    get:
+      tags: [checklist]
+      summary: List the project's checklist lanes (read scope)
+      description: |
+        Each lane carries its case counts, its resolved policy, and any globs that
+        matched nothing in the newest release.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped lanes' }
+        - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
+        - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
+        - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived lanes' }
+      responses:
+        "200":
+          description: The lanes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Lane" } }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [checklist]
+      summary: Declare a checklist lane (write scope)
+      description: |
+        A lane is ONE action with ONE entry precondition at ONE layer. Draw the
+        boundary at a state transition rather than a screen: if something needs a
+        persisted record, has its own permission gate, or is reachable only from
+        another lane's terminal state, it is a separate lane.
+
+        Takomo stores what you file and does not judge whether the model is right.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LaneCreate" }
+      responses:
+        "201":
+          description: The created lane.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lane" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /lanes/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [checklist]
+      summary: One lane, with its resolved policy and case counts (read scope)
+      responses:
+        "200":
+          description: The lane.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lane" }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [checklist]
+      summary: Update a lane (write scope)
+      description: |
+        Send an override field as `null` to clear it so inheritance resumes. That
+        is why the wire format distinguishes absent from null: collapsing them
+        would make an inherited policy impossible to restore once overridden.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LanePatch" }
+      responses:
+        "200":
+          description: The updated lane.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lane" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [checklist]
+      summary: Archive a lane (write scope)
+      description: |
+        Archiving removes the lane from coverage and from the default list, and
+        keeps its cases and their verdict history: a lane no longer worth running
+        is still evidence of what was once verified.
+      responses:
+        "200":
+          description: The archived lane.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Lane" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /lanes/{id}/cases:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [checklist]
+      summary: A lane's cases (read scope)
+      parameters:
+        - { name: retired, in: query, schema: { type: string, enum: [include] }, description: 'include cases retired by a later regeneration' }
+      responses:
+        "200":
+          description: The cases.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lane: { type: string }
+                  items: { type: array, items: { $ref: "#/components/schemas/Case" } }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [checklist]
+      summary: File the generated case set for a lane (write scope)
+      description: |
+        Upsert is by `key`, which you derive from the parameter assignment. A case
+        still present keeps its id and its verdicts; one that vanished is retired
+        rather than deleted; one that returns is revived. That is what makes
+        regenerating a model after adding a parameter safe — history follows the
+        assignment, not the row order.
+
+        `prune: false` extends the set instead of replacing it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CaseFile" }
+      responses:
+        "200":
+          description: What filing the set did.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaseFileOutcome" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /cases/{id}:
+    get:
+      tags: [checklist]
+      summary: One case, with its full verdict history (read scope)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The case.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaseWithHistory" }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /cases/{id}/verdict:
+    post:
+      tags: [checklist]
+      summary: Record a verdict on a case (write scope; human scope for a human verdict)
+      description: |
+        The agent's verdict and the human's are stored as separate facts, because
+        a policy of `agent_then_human` needs both and collapsing them would make
+        "a person looked at this" unrecoverable. A verdict clears staleness — that
+        is the point of re-running it.
+
+        `actor_kind` defaults to `agent`. Sending `human` requires the `human`
+        scope: an agent may record what it observed, but only a person's token may
+        assert that a person approved a case.
+
+        `unreachable` is not a failure. It says the lane's declared layer gives no
+        way to reach this configuration, which is a finding worth reporting, and it
+        is counted apart from both covered and uncovered.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerdictCreate" }
+      responses:
+        "200":
+          description: The case after the verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Case" }
+        "403": { description: "Token lacks the write scope, the project, or the human scope for a human verdict" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "The case was retired by a later regeneration" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{project}/checklist/policy:
+    get:
+      tags: [checklist]
+      summary: The project's checklist policies (read scope)
+      description: |
+        One row per scope. The row whose `epic` is null is the project-level
+        default; a row with an epic id overrides it for that epic's lanes.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The policies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ChecklistPolicy" } }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [checklist]
+      summary: Set the project default or an epic override (write scope)
+      description: |
+        Policy resolves project then epic then lane, and every resolved value says
+        which level supplied it — an inherited setting nobody can trace is worse
+        than no setting. Send a field as `null` to clear the override.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChecklistPolicyInput" }
+      responses:
+        "200":
+          description: The stored policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChecklistPolicy" }
+        "403": { description: Token lacks the write scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /projects/{project}/checklist/coverage:
+    get:
+      tags: [checklist]
+      summary: Coverage, rolled up per epic (read scope)
+      description: |
+        `percent` is verified-or-approved over *verifiable* cases. Stale, failed and
+        never are outside the numerator: a percentage that counts a case nobody has
+        re-run since the code changed is the exact comfort this feature exists to
+        remove.
+
+        `unreachable` is outside the **denominator** as well — that is what "counted
+        apart from both covered and uncovered" means arithmetically. Leaving it in
+        would cap a fully-verified project below 100% forever with no action that
+        could close the gap, and a ceiling nobody can reach is a number people learn
+        to ignore. The count stays on the report as its own finding.
+
+        This measures coverage of the DECLARED surface — hand-written globs that
+        are known to rot — not measured execution. `orphan_globs` is how the rot
+        stays visible.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The coverage report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Coverage" }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{project}/checklist/worklist:
+    get:
+      tags: [checklist]
+      summary: What must be re-verified, split by who can clear it (read scope)
+      description: |
+        Human time is the scarce resource — a hundred cases cost an agent minutes
+        and cost a person a day — so the split is the product rather than a
+        formatting choice. A stale case under `agent_then_human` appears on the
+        AGENT list until it has a fresh agent verdict, so it never sits in a
+        person's queue waiting for work only an agent can do.
+
+        `reason` is one of stale, expired, failed, never or awaiting_human.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The worklist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Worklist" }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{project}/checklist/gate:
+    get:
+      tags: [checklist]
+      summary: Is verification good enough to ship (read scope)
+      description: |
+        Only `blocking` severity blocks. Advisory and low lanes nag: a gate that
+        fires on everything gets overridden out of habit and stops meaning
+        anything.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The gate verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChecklistGate" }
+        "403": { description: Token lacks the read scope or the project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   securitySchemes:
     bearer:
@@ -3379,6 +3742,365 @@ components:
 # The HTTP status a code rides on is documented per route, under that route's
 # `responses`. It is deliberately not restated here: a second copy would be one
 # nothing checks.
+    Release:
+      type: object
+      description: |
+        An ordered marker in a project's release history, pushed by the agent that
+        merged the work. `seq` is monotonic per project, which is what makes a
+        release-count expiry policy arithmetic.
+      properties:
+        id: { type: string }
+        project: { type: string }
+        ref: { type: string, description: 'the tag or FULL commit sha this release stands for' }
+        seq: { type: integer, description: 'monotonic per project, starting at 1' }
+        note: { type: [string, "null"] }
+        pushed_by: { type: string }
+        created_at: { type: string, format: date-time }
+        touched_paths: { type: integer, description: 'how many paths the diff carried' }
+        orphan_globs:
+          type: array
+          items: { type: string }
+          description: 'lane globs that matched no file in this tree'
+
+    ReleasePush:
+      type: object
+      required: [ref]
+      properties:
+        ref: { type: string, description: 'the tag or FULL commit sha; short shas are ambiguous' }
+        note: { type: string }
+        touched_paths:
+          type: array
+          items: { type: string }
+          description: |
+            Paths the release's diff touched. Supplied by the pusher because it has
+            the tree checked out; the server clones nothing.
+        orphan_globs:
+          type: array
+          items: { type: string }
+          description: |
+            Lane globs that matched NO file in this tree. An orphaned glob reads as
+            "still covered" while covering nothing, which is this feature's worst
+            failure mode, so reporting them takes those lanes out of coverage.
+
+    ReleaseImpact:
+      type: object
+      description: What the push invalidated, returned so the pusher needs no second call.
+      properties:
+        stale_cases: { type: integer }
+        stale_lanes: { type: array, items: { type: string } }
+        expired_lanes: { type: array, items: { type: string }, description: 'lanes whose policy clock ran out at this release' }
+        orphaned_lanes: { type: array, items: { type: string }, description: 'lanes whose every glob matched nothing' }
+
+    ReleaseWithImpact:
+      allOf:
+        - { $ref: "#/components/schemas/Release" }
+        - type: object
+          properties:
+            impact: { $ref: "#/components/schemas/ReleaseImpact" }
+
+    LaneCounts:
+      type: object
+      description: |
+        A lane's live cases by state. `total` is the sum of the rest. `unreachable`
+        is deliberately its own bucket rather than folded into covered or uncovered.
+      properties:
+        total: { type: integer }
+        approved: { type: integer, description: 'a human passed it' }
+        verified: { type: integer, description: 'an agent passed it' }
+        stale: { type: integer, description: 'was verified, then the claimed code moved' }
+        failed: { type: integer }
+        unreachable: { type: integer, description: 'the declared layer cannot reach this configuration' }
+        never: { type: integer, description: 'no verdict has ever been recorded' }
+
+    ResolvedPolicy:
+      type: object
+      description: |
+        The policy in force for a lane after resolving project then epic then lane.
+        The `*_from` fields name the level that supplied the value, because an
+        inherited setting nobody can trace is worse than no setting.
+      properties:
+        verification: { type: string, enum: [agent, human, agent_then_human] }
+        verification_from: { type: string, enum: [default, project, epic, lane] }
+        expiry_days: { type: [integer, "null"] }
+        expiry_releases: { type: [integer, "null"] }
+        expiry_from: { type: string, enum: [default, project, epic, lane] }
+
+    Lane:
+      type: object
+      description: |
+        ONE action with ONE entry precondition at ONE layer. `body` is free-form
+        prose an agent or a human follows — there is deliberately no step model and
+        no dependency graph, because the precondition is a statement about data
+        state, which is what keeps lanes independently runnable.
+      properties:
+        id: { type: string }
+        project: { type: string }
+        epic: { type: [string, "null"], description: 'a ticket of type epic this lane groups under' }
+        title: { type: string }
+        body: { type: string, description: 'the traversal to follow' }
+        precondition: { type: string, description: 'the data state and permissions needed to start' }
+        layer: { type: string, enum: [ui, api, other] }
+        severity: { type: string, enum: [blocking, advisory, low] }
+        verification: { type: [string, "null"], description: 'override; null means inherit' }
+        expiry_days: { type: [integer, "null"] }
+        expiry_releases: { type: [integer, "null"] }
+        cost_agent_minutes: { type: [integer, "null"] }
+        cost_human_minutes: { type: [integer, "null"] }
+        metadata: { description: free-form }
+        version: { type: integer }
+        globs:
+          type: array
+          items: { type: string }
+          description: 'paths of the app under test this lane claims, e.g. src/claims/**'
+        orphan_globs:
+          type: array
+          items: { type: string }
+          description: 'of those globs, the ones that matched nothing in the newest release'
+        cases: { $ref: "#/components/schemas/LaneCounts" }
+        policy: { $ref: "#/components/schemas/ResolvedPolicy" }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: [string, "null"], format: date-time }
+
+    LaneCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        epic: { type: string }
+        body: { type: string }
+        precondition: { type: string }
+        layer: { type: string, enum: [ui, api, other], default: api }
+        severity: { type: string, enum: [blocking, advisory, low], default: advisory }
+        verification: { type: string, enum: [agent, human, agent_then_human] }
+        expiry_days: { type: integer, minimum: 0 }
+        expiry_releases: { type: integer, minimum: 0 }
+        cost_agent_minutes: { type: integer, minimum: 0 }
+        cost_human_minutes: { type: integer, minimum: 0 }
+        globs: { type: array, items: { type: string } }
+        metadata: { type: object }
+
+    LanePatch:
+      type: object
+      description: |
+        Every override field accepts `null` to clear it so inheritance resumes.
+        Absent and null mean different things here on purpose.
+      properties:
+        title: { type: string }
+        body: { type: string }
+        precondition: { type: string }
+        layer: { type: string, enum: [ui, api, other] }
+        severity: { type: string, enum: [blocking, advisory, low] }
+        epic: { type: [string, "null"] }
+        verification: { type: [string, "null"] }
+        expiry_days: { type: [integer, "null"] }
+        expiry_releases: { type: [integer, "null"] }
+        cost_agent_minutes: { type: [integer, "null"] }
+        cost_human_minutes: { type: [integer, "null"] }
+        globs: { type: array, items: { type: string }, description: 'replaces the whole set' }
+        metadata_merge: { type: object }
+
+    Case:
+      type: object
+      description: |
+        A lane crossed with one parameter assignment: the unit that actually gets
+        executed. One lane can be dozens of these. `key` is stable across
+        regeneration so history survives.
+      properties:
+        id: { type: string }
+        lane: { type: string }
+        key: { type: string, description: 'stable identity derived from the assignment' }
+        label: { type: string, description: 'what makes this case different from its siblings' }
+        assignment: { type: object, description: 'the setup a person or agent must reproduce' }
+        seeded: { type: boolean, description: 'a hand-written happy path rather than a generated case' }
+        state:
+          type: string
+          enum: [approved, verified, stale, failed, unreachable, never, retired]
+          description: |
+            `stale` outranks `unreachable` deliberately: once the claimed code
+            moved, an earlier "the interface cannot reach this" is a statement about
+            code that no longer exists.
+        agent: { $ref: "#/components/schemas/CaseVerdictFact" }
+        human: { $ref: "#/components/schemas/CaseVerdictFact" }
+        stale_since: { type: [string, "null"], description: 'the release id that invalidated it' }
+        retired_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CaseVerdictFact:
+      type: object
+      description: |
+        The last verdict from one kind of actor. Agent and human are separate facts
+        because `agent_then_human` needs both.
+      properties:
+        verdict: { type: [string, "null"], enum: [pass, fail, blocked, unreachable, null] }
+        at: { type: [string, "null"], format: date-time }
+        by: { type: [string, "null"] }
+        release: { type: [string, "null"] }
+
+    CaseWithHistory:
+      allOf:
+        - { $ref: "#/components/schemas/Case" }
+        - type: object
+          properties:
+            history:
+              type: array
+              items: { $ref: "#/components/schemas/RecordedVerdict" }
+              description: 'append-only, newest first'
+
+    RecordedVerdict:
+      type: object
+      properties:
+        id: { type: string }
+        case: { type: string }
+        actor_kind: { type: string, enum: [agent, human] }
+        actor: { type: string }
+        verdict: { type: string, enum: [pass, fail, blocked, unreachable] }
+        note: { type: [string, "null"] }
+        release: { type: [string, "null"] }
+        at: { type: string, format: date-time }
+
+    CaseFile:
+      type: object
+      required: [cases]
+      properties:
+        prune:
+          type: boolean
+          default: true
+          description: 'retire live cases the set no longer contains; false extends instead of replacing'
+        cases:
+          type: array
+          items: { $ref: "#/components/schemas/CaseInput" }
+
+    CaseInput:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string, description: 'derive from the assignment so regeneration matches existing cases' }
+        label: { type: string }
+        assignment: { type: object }
+        seeded: { type: boolean }
+
+    CaseFileOutcome:
+      type: object
+      properties:
+        added: { type: integer }
+        updated: { type: integer }
+        retired: { type: integer, description: 'live cases the new set dropped; verdicts are kept' }
+        revived: { type: integer, description: 'previously retired cases the new set brought back' }
+        live: { type: integer }
+
+    VerdictCreate:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [pass, fail, blocked, unreachable]
+          description: |
+            `unreachable` is not a failure: the declared layer gives no way to reach
+            this configuration, which is a finding worth reporting.
+        note: { type: string, description: 'required on a fail' }
+        release: { type: string, description: 'the release this verdict was taken against' }
+        actor_kind:
+          type: string
+          enum: [agent, human]
+          default: agent
+          description: '`human` requires the human scope'
+
+    ChecklistPolicy:
+      type: object
+      properties:
+        project: { type: string }
+        epic: { type: [string, "null"], description: 'null is the project-level default' }
+        verification: { type: [string, "null"] }
+        expiry_days: { type: [integer, "null"] }
+        expiry_releases: { type: [integer, "null"] }
+
+    ChecklistPolicyInput:
+      type: object
+      properties:
+        epic: { type: string, description: 'omit to set the project-level default' }
+        verification: { type: [string, "null"], enum: [agent, human, agent_then_human, null] }
+        expiry_days: { type: [integer, "null"] }
+        expiry_releases: { type: [integer, "null"] }
+
+    Coverage:
+      type: object
+      properties:
+        project: { type: string }
+        release: { type: [object, "null"], description: 'the newest release, if any' }
+        lanes: { type: integer }
+        cases: { $ref: "#/components/schemas/LaneCounts" }
+        percent: { type: integer, description: 'verified or approved, over verifiable cases — unreachable is excluded from both sides' }
+        epics:
+          type: array
+          items:
+            type: object
+            properties:
+              epic: { type: [string, "null"] }
+              title: { type: [string, "null"] }
+              lanes: { type: integer }
+              cases: { $ref: "#/components/schemas/LaneCounts" }
+              percent: { type: integer }
+              orphan_globs: { type: array, items: { type: string } }
+        lane_detail:
+          type: array
+          items: { $ref: "#/components/schemas/Lane" }
+
+    WorkItem:
+      type: object
+      properties:
+        lane: { type: string }
+        lane_title: { type: string }
+        severity: { type: string, enum: [blocking, advisory, low] }
+        layer: { type: string, enum: [ui, api, other] }
+        case: { type: string }
+        case_key: { type: string }
+        case_label: { type: string }
+        reason:
+          type: string
+          enum: [stale, expired, failed, never, awaiting_human]
+          description: |
+            `stale` the release diff touched the claimed code, `expired` a policy
+            clock ran out, `never` no verdict was ever recorded, `awaiting_human` an
+            agent has passed it and the policy still wants a person.
+        verification: { type: string, enum: [agent, human, agent_then_human] }
+        cost_minutes: { type: [integer, "null"] }
+
+    WorklistBucket:
+      type: object
+      properties:
+        cases: { type: integer }
+        minutes: { type: [integer, "null"] }
+        items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
+
+    Worklist:
+      type: object
+      properties:
+        project: { type: string }
+        release: { type: [object, "null"] }
+        agent: { $ref: "#/components/schemas/WorklistBucket" }
+        human: { $ref: "#/components/schemas/WorklistBucket" }
+
+    ChecklistGate:
+      type: object
+      properties:
+        project: { type: string }
+        release: { type: [object, "null"] }
+        blocked: { type: boolean, description: 'true when a blocking-severity case is outstanding' }
+        blocking:
+          type: object
+          properties:
+            agent_cases: { type: integer }
+            human_cases: { type: integer }
+            items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
+        advisory_outstanding:
+          type: integer
+          description: 'outstanding cases that do NOT block, because a gate firing on everything gets overridden out of habit'
+
+
 # ---------------------------------------------------------------------------
 x-error-codes:
   # -- bearer tokens (tk_): authentication, scopes, project allowlist, budget --
@@ -3539,6 +4261,35 @@ x-error-codes:
   validation.tag_label: "a tag label is over its length limit."
   validation.tag_meta: "tag `meta`, or `meta_merge`, must be a JSON object."
   validation.tag_meta_size: "serialized tag `meta` is over its cap."
+
+  # -- checklist: releases, lanes, cases, verdicts ----------------------------
+  notfound.release: "no release with that id in this project. A verdict may only cite a release the project actually has."
+  notfound.lane: "no checklist lane with that id."
+  notfound.case: "no checklist case with that id."
+  conflict.release_exists: "that `ref` is already recorded for the project. A release is an immutable marker, not a mutable record — push the next ref rather than re-pushing this one."
+  conflict.case_retired: "the case was retired by a later regeneration, so it is history rather than work. File the current case set and record verdicts against a live case."
+  forbidden.human_scope: "recording a verdict with `actor_kind: human` needs the `human` scope. An agent may record what it observed as `agent`; only a person's token may assert that a person approved a case."
+  validation.release_ref: "`ref` is required and within its length bound — the tag or FULL commit sha the release stands for. Short shas are ambiguous."
+  validation.release_note: "the release note is over its length limit."
+  validation.release_paths: "more touched paths than one push may carry. A diff that large is a repository-wide sweep: push without `touched_paths` and retest every lane instead of enumerating it."
+  validation.lane_title: "a lane needs a non-empty `title`, within its length bound, naming the one action it verifies."
+  validation.lane_body: "the lane body is over its length limit. It is free-form prose an agent or a human follows."
+  validation.lane_precondition: "the lane precondition is over its length limit."
+  validation.lane_layer: "`layer` must be `ui`, `api` or `other`. A lane covers ONE layer: a rule enforced only in the interface passes at the API layer, so the two verdicts are not interchangeable."
+  validation.lane_severity: "`severity` must be `blocking`, `advisory` or `low`. Only `blocking` blocks a release gate."
+  validation.lane_epic: "the `epic` given is not a ticket of type `epic`, or belongs to another project. Lanes group under epics so the vocabulary matches tickets."
+  validation.lane_globs: "a lane glob is empty, over its length bound, or there are more than one lane may claim. A lane covers one action, which a handful of path patterns describes."
+  validation.lane_numbers: "an expiry or cost field on a lane is negative. Send a non-negative number, or null to inherit."
+  validation.lane_metadata_size: "serialized lane `metadata` is over its cap. The bulk belongs in the lane body."
+  validation.verification: "`verification` must be `agent`, `human` or `agent_then_human`. `agent_then_human` needs BOTH verdicts, which is why they are stored as separate facts."
+  validation.policy_numbers: "an expiry field on a checklist policy is negative. Send a non-negative number, or null to clear the override."
+  validation.cases: "`cases` is required and must be an array of objects, each with a `key`."
+  validation.case_key: "every case needs a `key`, unique within its lane and within its length bound. Derive it from the parameter assignment so regenerating the model matches existing cases instead of orphaning their history."
+  validation.case_label: "a case label is over its length limit."
+  validation.case_count: "more cases in one call than the cap allows. A pairwise model for a large form lands near 76 — thousands means most of the parameters are inert fields that do not belong in the model."
+  validation.verdict: "`verdict` must be `pass`, `fail`, `blocked` or `unreachable`. `unreachable` is not a failure: it says the declared layer gives no way to reach this configuration, and it is counted apart from both covered and uncovered."
+  validation.verdict_note: "a `fail` verdict needs a `note` saying what went wrong, and a note stays within its length limit. A bare fail is a claim the next reader cannot act on."
+  validation.actor_kind: "`actor_kind` must be `agent` or `human`."
 
   # -- the catch-all ----------------------------------------------------------
   internal: "an invariant failed server-side — a database error, a poisoned lock. The message is deliberately generic so SQL text and schema names never reach a client; the detail is in the server log. Nothing a caller can act on beyond retrying."

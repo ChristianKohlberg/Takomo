@@ -344,6 +344,23 @@ impl TestApp {
         assert_eq!(n, 1, "force_parent should touch exactly one row ({id})");
     }
 
+    /// Backdate a case's agent verdict so time-based expiry can be tested without
+    /// sleeping for a month. Writes straight to the file, the same trick
+    /// `force_parent` uses.
+    pub fn backdate_case_verdict(&self, case: &str, millis_ago: i64) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        let when = chrono::Utc::now().timestamp_millis() - millis_ago;
+        let n = conn
+            .execute(
+                "UPDATE cases SET agent_at = ?2 WHERE id = ?1",
+                rusqlite::params![case, when],
+            )
+            .expect("backdate case verdict");
+        assert_eq!(n, 1, "backdate should touch exactly one row ({case})");
+    }
+
     // --- tickets -------------------------------------------------------------
 
     pub async fn create_ticket(&self, title: &str) -> String {

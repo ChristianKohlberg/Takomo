@@ -4,6 +4,7 @@
 //! added behind the same methods later.
 
 mod answer_grants;
+mod checklist;
 mod claims;
 mod events;
 mod helpers;
@@ -20,6 +21,10 @@ mod tokens;
 mod transition;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
+pub use checklist::{
+    glob_matches, CaseFileOutcome, CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput,
+    ReleasePush, WorkItem, MAX_CASES_PER_FILE, MAX_LANE_GLOBS, MAX_RELEASE_PATHS,
+};
 pub use claims::{ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
 pub use events::EventFilter;
 pub use model::*;
@@ -720,6 +725,139 @@ CREATE TABLE IF NOT EXISTS oauth_issued (
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_issued_family ON oauth_issued(family);
 CREATE INDEX IF NOT EXISTS idx_oauth_issued_refresh ON oauth_issued(refresh_hash);
+
+-- Checklist. A release is an ordered marker in a project's history, pushed by the
+-- agent that merged the work; `seq` is monotonic per project so a release-count
+-- expiry policy ("retest every 5 releases") is arithmetic rather than a date
+-- comparison. `ref` is the tag or full sha, unique per project so pushing the same
+-- release twice is a conflict rather than a silent duplicate.
+CREATE TABLE IF NOT EXISTS releases (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  ref TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  note TEXT,
+  pushed_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(project, ref),
+  UNIQUE(project, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_releases_project_seq ON releases(project, seq);
+
+-- The paths the release's diff touched. Supplied by the pusher (it has the tree
+-- checked out; the server does not clone anything) and intersected against lane
+-- globs to decide what went stale.
+CREATE TABLE IF NOT EXISTS release_paths (
+  release TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  PRIMARY KEY (release, path)
+) WITHOUT ROWID;
+
+-- Lane globs that matched NO file in this release's tree. An orphaned glob is the
+-- feature's worst failure mode — it reads as "still covered" while covering
+-- nothing — so it is recorded per release and excluded from coverage rather than
+-- counted.
+CREATE TABLE IF NOT EXISTS release_orphan_globs (
+  release TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+  glob TEXT NOT NULL,
+  PRIMARY KEY (release, glob)
+) WITHOUT ROWID;
+
+-- Inherited checklist policy. `epic = ''` is the project-level default; a row with
+-- an epic ticket id overrides it for that epic's lanes. Empty string rather than
+-- NULL because SQLite treats NULLs as distinct in a UNIQUE index, which would
+-- allow two project-level defaults.
+CREATE TABLE IF NOT EXISTS checklist_policies (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  epic TEXT NOT NULL DEFAULT '',
+  verification TEXT,
+  expiry_days INTEGER,
+  expiry_releases INTEGER,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(project, epic)
+);
+
+-- A lane is one action with one entry precondition at one layer. `body` is
+-- free-form prose an agent or a human can follow — there is deliberately no step
+-- model and no dependency graph, because the precondition is a statement about
+-- data state, which is what keeps lanes independently runnable.
+CREATE TABLE IF NOT EXISTS lanes (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  epic TEXT,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  precondition TEXT NOT NULL DEFAULT '',
+  layer TEXT NOT NULL DEFAULT 'api',
+  severity TEXT NOT NULL DEFAULT 'advisory',
+  verification TEXT,
+  expiry_days INTEGER,
+  expiry_releases INTEGER,
+  cost_agent_minutes INTEGER,
+  cost_human_minutes INTEGER,
+  metadata TEXT NOT NULL DEFAULT 'null',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_lanes_project ON lanes(project);
+CREATE INDEX IF NOT EXISTS idx_lanes_epic ON lanes(epic) WHERE epic IS NOT NULL;
+
+-- Which paths of the application under test a lane claims to exercise. Declared by
+-- hand and known to rot; `release_orphan_globs` is how the rot becomes visible.
+CREATE TABLE IF NOT EXISTS lane_globs (
+  lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+  glob TEXT NOT NULL,
+  PRIMARY KEY (lane, glob)
+) WITHOUT ROWID;
+
+-- One executable case: a lane crossed with one parameter assignment. `key` is a
+-- stable identity derived from that assignment, so regenerating a model after
+-- adding a parameter matches surviving cases and keeps their history instead of
+-- orphaning it. A case dropped by regeneration is `retired_at`-stamped, never
+-- deleted, so its verdicts remain auditable.
+CREATE TABLE IF NOT EXISTS cases (
+  id TEXT PRIMARY KEY,
+  lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  assignment TEXT NOT NULL DEFAULT '{}',
+  seeded INTEGER NOT NULL DEFAULT 0,
+  agent_verdict TEXT,
+  agent_at INTEGER,
+  agent_by TEXT,
+  agent_release TEXT,
+  human_verdict TEXT,
+  human_at INTEGER,
+  human_by TEXT,
+  human_release TEXT,
+  stale_since TEXT,
+  retired_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(lane, key)
+);
+CREATE INDEX IF NOT EXISTS idx_cases_lane ON cases(lane);
+CREATE INDEX IF NOT EXISTS idx_cases_live ON cases(lane) WHERE retired_at IS NULL;
+
+-- Append-only verdict history. The `cases` row carries the LAST agent verdict and
+-- the LAST human verdict as separate columns because they are separate facts — a
+-- case can be agent-verified and human-approved, and a policy may require both —
+-- while this table keeps every verdict ever recorded.
+CREATE TABLE IF NOT EXISTS case_verdicts (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  actor_kind TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  note TEXT,
+  release TEXT,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
 "#;
 
 #[cfg(test)]

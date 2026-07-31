@@ -1315,3 +1315,194 @@ async fn mcp_link_deletes_with_null_and_leaves_other_keys_alone() {
         json!({ "design": "https://example.test/doc", "pr": "https://example.test/pr/2" })
     );
 }
+
+/// The whole checklist loop an agent actually runs, over MCP: file a lane, file
+/// its generated cases, record a verdict, push the release you merged, then read
+/// what that invalidated. This is the surface the feature exists to serve — a
+/// human never has to touch any of it.
+#[tokio::test]
+async fn mcp_drives_the_full_checklist_loop() {
+    let app = TestApp::spawn().await;
+
+    let (lane, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_lane_file",
+            json!({
+                "project": "tp",
+                "title": "Create a claim",
+                "layer": "ui",
+                "severity": "blocking",
+                "body": "Open claims, start one, submit it.",
+                "globs": ["src/claims/**"],
+            }),
+        )
+        .await;
+    assert!(!is_err, "lane_file failed: {lane}");
+    let lane_id = lane["id"].as_str().expect("lane id").to_string();
+    assert_eq!(lane["policy"]["verification"], "agent");
+
+    let (filed, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_cases_file",
+            json!({
+                "lane": lane_id,
+                "cases": [
+                    { "key": "happy", "label": "happy path", "seeded": true,
+                      "assignment": { "guardian": "none" } },
+                    { "key": "guardian", "label": "guardian required",
+                      "assignment": { "guardian": "required" } },
+                ],
+            }),
+        )
+        .await;
+    assert!(!is_err, "cases_file failed: {filed}");
+    assert_eq!(filed["added"], 2);
+    assert_eq!(filed["live"], 2);
+
+    // The worklist is what an agent asks for rather than reasoning over the tree.
+    let (wl, _) = app
+        .tool(&app.worker, "takomo_worklist", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(wl["agent"]["cases"], 2, "{wl}");
+    assert_eq!(wl["human"]["cases"], 0);
+    let first_case = wl["agent"]["items"][0]["case"]
+        .as_str()
+        .expect("a case id")
+        .to_string();
+
+    let (verdict, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_verdict",
+            json!({ "case": first_case, "verdict": "pass" }),
+        )
+        .await;
+    assert!(!is_err, "verdict failed: {verdict}");
+    assert_eq!(verdict["agent"]["verdict"], "pass");
+    assert_eq!(verdict["state"], "verified");
+
+    // Pushing the release reports back what it invalidated, so the agent learns
+    // the consequence of its own merge without a second call.
+    let (rel, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_release_push",
+            json!({
+                "project": "tp",
+                "ref": "v2.0.0",
+                "touched_paths": ["src/claims/create.rs"],
+                "orphan_globs": [],
+            }),
+        )
+        .await;
+    assert!(!is_err, "release_push failed: {rel}");
+    assert_eq!(rel["seq"], 1);
+    assert_eq!(rel["impact"]["stale_cases"], 1, "the verified case: {rel}");
+
+    let (gate, _) = app
+        .tool(&app.worker, "takomo_gate", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(
+        gate["blocked"], true,
+        "a blocking lane is unverified: {gate}"
+    );
+
+    let (cov, _) = app
+        .tool(&app.worker, "takomo_coverage", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(cov["cases"]["total"], 2);
+    assert_eq!(cov["cases"]["stale"], 1);
+    assert_eq!(cov["cases"]["never"], 1);
+    assert_eq!(cov["percent"], 0, "nothing currently verified: {cov}");
+}
+
+/// An agent cannot sign a person's name, and the MCP surface does not even offer
+/// the option: `takomo_verdict` has no `actor_kind`, so a human approval has to
+/// come through the REST route with a human-scoped token.
+#[tokio::test]
+async fn mcp_verdicts_are_always_agent_verdicts() {
+    let app = TestApp::spawn().await;
+    let (lane, _) = app
+        .tool(
+            &app.worker,
+            "takomo_lane_file",
+            json!({ "project": "tp", "title": "Create a claim",
+                    "verification": "agent_then_human" }),
+        )
+        .await;
+    let lane_id = lane["id"].as_str().unwrap().to_string();
+    app.tool(
+        &app.worker,
+        "takomo_cases_file",
+        json!({ "lane": lane_id, "cases": [{ "key": "only" }] }),
+    )
+    .await;
+    let (wl, _) = app
+        .tool(&app.worker, "takomo_worklist", json!({ "project": "tp" }))
+        .await;
+    let case = wl["agent"]["items"][0]["case"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (out, _) = app
+        .tool(
+            &app.worker,
+            "takomo_verdict",
+            json!({ "case": case, "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(out["agent"]["verdict"], "pass");
+    assert!(
+        out["human"]["verdict"].is_null(),
+        "MCP never records a human verdict: {out}"
+    );
+
+    // Under agent_then_human it now waits for a person, and the worklist says so.
+    let (wl, _) = app
+        .tool(&app.worker, "takomo_worklist", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(wl["human"]["cases"], 1, "{wl}");
+    assert_eq!(wl["human"]["items"][0]["reason"], "awaiting_human");
+
+    // An `actor_kind` argument does not exist on the tool, so sending one is a
+    // schema violation rather than a quiet escalation of authority.
+    let (err, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_verdict",
+            json!({ "case": case, "verdict": "pass", "actor_kind": "human" }),
+        )
+        .await;
+    assert!(
+        is_err || err["human"]["verdict"].is_null(),
+        "an unknown argument must never produce a human verdict: {err}"
+    );
+}
+
+/// Read tools must not be charged against the write budget, or an agent reading
+/// its worklist would spend the allowance it needs to record verdicts.
+#[tokio::test]
+async fn checklist_read_tools_are_not_write_charged() {
+    let app = TestApp::spawn().await;
+    for name in [
+        "takomo_coverage",
+        "takomo_gate",
+        "takomo_lanes",
+        "takomo_releases",
+        "takomo_worklist",
+    ] {
+        assert!(
+            takomo::mcp::READ_TOOLS.contains(&name),
+            "{name} must be classified as a read tool"
+        );
+    }
+    // And they work on a token with no write scope at all.
+    let reader = app.mint("agent:ro", &["read"], None);
+    let (out, is_err) = app
+        .tool(&reader, "takomo_coverage", json!({ "project": "tp" }))
+        .await;
+    assert!(!is_err, "a read-only token can read coverage: {out}");
+}

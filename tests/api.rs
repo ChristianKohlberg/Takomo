@@ -9287,3 +9287,868 @@ async fn both_spas_serve_the_shared_module_inlined() {
          extraction removes"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Checklist: releases, lanes, cases, verdicts, policy, coverage, gate
+// ---------------------------------------------------------------------------
+
+/// Create a lane and return its id.
+async fn lane(app: &TestApp, body: Value) -> String {
+    let (status, b) = app.post(&app.admin, "/v1/projects/tp/lanes", body).await;
+    assert_eq!(status, StatusCode::CREATED, "lane create failed: {b}");
+    b["id"].as_str().expect("lane id").to_string()
+}
+
+/// File a set of `(key, label)` cases on a lane, replacing whatever was there.
+async fn file_cases(app: &TestApp, lane_id: &str, keys: &[&str]) -> Value {
+    let cases: Vec<Value> = keys
+        .iter()
+        .map(|k| json!({ "key": k, "label": format!("case {k}"), "assignment": { "k": k } }))
+        .collect();
+    let (status, b) = app
+        .put(
+            &app.admin,
+            &format!("/v1/lanes/{lane_id}/cases"),
+            json!({ "cases": cases }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "file cases failed: {b}");
+    b
+}
+
+async fn case_ids(app: &TestApp, lane_id: &str) -> Vec<(String, String)> {
+    let (_, b) = app
+        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases"))
+        .await;
+    b["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["key"].as_str().unwrap().to_string(),
+                c["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Releases are an ordered spine: `seq` is monotonic per project so a
+/// release-count policy is arithmetic, and a ref cannot be pushed twice — a
+/// release is an immutable marker, not a mutable record.
+#[tokio::test]
+async fn releases_are_ordered_and_a_ref_cannot_be_pushed_twice() {
+    let app = TestApp::spawn().await;
+
+    let (status, first) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "v1.0.0", "touched_paths": ["src/a.rs"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert_eq!(first["seq"], 1);
+    assert_eq!(first["touched_paths"], 1);
+
+    let (status, second) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "v1.1.0" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(second["seq"], 2, "seq increments per project");
+
+    let (status, dup) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "v1.0.0" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{dup}");
+    assert_eq!(dup["code"], "conflict.release_exists");
+    assert!(
+        !dup["remedy"].as_str().unwrap_or("").is_empty(),
+        "a teaching error carries a remedy"
+    );
+
+    // Newest first.
+    let (_, list) = app.get(&app.admin, "/v1/projects/tp/releases").await;
+    let refs: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["ref"].as_str().unwrap())
+        .collect();
+    assert_eq!(refs, vec!["v1.1.0", "v1.0.0"]);
+}
+
+/// The whole point of the glob claim: a release invalidates the lanes that claim
+/// the code it touched, and leaves the others alone. Getting this wrong either
+/// invalidates everything (and the feature becomes noise) or nothing (and it
+/// becomes a lie).
+#[tokio::test]
+async fn a_release_stales_only_the_lanes_claiming_a_touched_path() {
+    let app = TestApp::spawn().await;
+    let claims = lane(
+        &app,
+        json!({ "title": "Create a claim", "globs": ["src/claims/**"] }),
+    )
+    .await;
+    let reports = lane(
+        &app,
+        json!({ "title": "Monthly report", "globs": ["src/reporting/**"] }),
+    )
+    .await;
+    file_cases(&app, &claims, &["a", "b"]).await;
+    file_cases(&app, &reports, &["a"]).await;
+
+    // Verify everything first, so "stale" is a real transition and not just "never".
+    for lane_id in [&claims, &reports] {
+        for (_, cid) in case_ids(&app, lane_id).await {
+            let (status, b) = app
+                .post(
+                    &app.admin,
+                    &format!("/v1/cases/{cid}/verdict"),
+                    json!({ "verdict": "pass" }),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{b}");
+        }
+    }
+
+    let (status, rel) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "r2", "touched_paths": ["src/claims/create.rs", "docs/readme.md"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{rel}");
+    assert_eq!(
+        rel["impact"]["stale_cases"], 2,
+        "both claims cases go stale"
+    );
+    assert_eq!(
+        rel["impact"]["stale_lanes"].as_array().unwrap().len(),
+        1,
+        "only the lane claiming src/claims/** is affected: {rel}"
+    );
+
+    let (_, claims_lane) = app.get(&app.admin, &format!("/v1/lanes/{claims}")).await;
+    assert_eq!(claims_lane["cases"]["stale"], 2);
+    assert_eq!(claims_lane["cases"]["verified"], 0);
+
+    let (_, reports_lane) = app.get(&app.admin, &format!("/v1/lanes/{reports}")).await;
+    assert_eq!(
+        reports_lane["cases"]["verified"], 1,
+        "an untouched lane keeps its verdicts: {reports_lane}"
+    );
+}
+
+/// Case identity is the assignment, not the row. Regenerating a model must match
+/// surviving cases and keep their history; a case that disappears is retired, not
+/// deleted, and one that comes back is revived with its verdicts intact.
+#[tokio::test]
+async fn refiling_cases_preserves_history_and_retires_the_absent() {
+    let app = TestApp::spawn().await;
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let out = file_cases(&app, &id, &["k1", "k2"]).await;
+    assert_eq!(out["added"], 2);
+
+    let cases = case_ids(&app, &id).await;
+    let k1 = cases.iter().find(|(k, _)| k == "k1").unwrap().1.clone();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{k1}/verdict"),
+        json!({ "verdict": "pass", "note": "looked fine" }),
+    )
+    .await;
+
+    // Regenerate with k2 gone and k3 added.
+    let out = file_cases(&app, &id, &["k1", "k3"]).await;
+    assert_eq!(out["added"], 1, "k3 is new: {out}");
+    assert_eq!(out["updated"], 1, "k1 matched by key: {out}");
+    assert_eq!(out["retired"], 1, "k2 is gone: {out}");
+    assert_eq!(out["live"], 2);
+
+    // k1 kept its id AND its verdict — that is the point of a stable key.
+    let (_, k1_after) = app.get(&app.admin, &format!("/v1/cases/{k1}")).await;
+    assert_eq!(k1_after["agent"]["verdict"], "pass");
+    assert_eq!(k1_after["history"].as_array().unwrap().len(), 1);
+
+    // k2 survives as history, and is refused for new work.
+    let (_, with_retired) = app
+        .get(&app.admin, &format!("/v1/lanes/{id}/cases?retired=include"))
+        .await;
+    let k2 = with_retired["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "k2")
+        .expect("k2 still exists as history");
+    assert_eq!(k2["state"], "retired");
+    let k2_id = k2["id"].as_str().unwrap();
+    let (status, refused) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{k2_id}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "conflict.case_retired");
+
+    // Bringing k2 back revives it rather than creating a second row.
+    let out = file_cases(&app, &id, &["k1", "k2", "k3"]).await;
+    assert_eq!(out["revived"], 1, "{out}");
+    assert_eq!(out["added"], 0, "no duplicate row for the same assignment");
+}
+
+/// The agent's verdict and the human's are separate facts, because a policy of
+/// `agent_then_human` needs both and collapsing them would make "a person looked
+/// at this" unrecoverable.
+#[tokio::test]
+async fn agent_and_human_verdicts_are_separate_facts() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({ "title": "Create a claim", "verification": "agent_then_human" }),
+    )
+    .await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    let (_, after_agent) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(after_agent["agent"]["verdict"], "pass");
+    assert!(after_agent["human"]["verdict"].is_null());
+    assert_eq!(after_agent["state"], "verified");
+
+    // Under agent_then_human the agent's pass is not enough — it still needs a
+    // human, so the case stays on the worklist.
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["human"]["cases"], 1, "awaiting a human: {wl}");
+    assert_eq!(wl["agent"]["cases"], 0);
+    assert_eq!(wl["human"]["items"][0]["reason"], "awaiting_human");
+
+    let (_, after_human) = app
+        .post(
+            &app.human,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass", "actor_kind": "human" }),
+        )
+        .await;
+    assert_eq!(
+        after_human["agent"]["verdict"], "pass",
+        "the agent's fact survives a human verdict"
+    );
+    assert_eq!(after_human["human"]["verdict"], "pass");
+    assert_eq!(after_human["state"], "approved");
+
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["human"]["cases"], 0, "now cleared: {wl}");
+
+    // Both verdicts are in the history, newest first.
+    let (_, case) = app.get(&app.admin, &format!("/v1/cases/{cid}")).await;
+    let kinds: Vec<&str> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["actor_kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["human", "agent"]);
+}
+
+/// An agent must not be able to sign a person's name. Recording a human verdict
+/// needs the `human` scope; a write-scoped agent token is refused.
+#[tokio::test]
+async fn a_human_verdict_needs_the_human_scope() {
+    let app = TestApp::spawn().await;
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    let (status, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass", "actor_kind": "human" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["code"], "forbidden.human_scope");
+    assert!(refused["remedy"]
+        .as_str()
+        .unwrap_or("")
+        .contains("actor_kind"));
+
+    // The same agent may record its own observation.
+    let (status, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A bare `fail` is a claim the next reader cannot act on.
+#[tokio::test]
+async fn a_fail_verdict_requires_a_note() {
+    let app = TestApp::spawn().await;
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    let (status, refused) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "fail" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.verdict_note");
+
+    let (status, ok) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "fail", "note": "submit was accepted when it should not be" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ok["state"], "failed");
+}
+
+/// Policy resolves project → epic → lane, and each level says where its value
+/// came from — an inherited setting nobody can trace is worse than no setting.
+#[tokio::test]
+async fn policy_resolves_project_then_epic_then_lane() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Claims", "epic", None).await;
+
+    let plain = lane(&app, json!({ "title": "Ungrouped" })).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{plain}")).await;
+    assert_eq!(l["policy"]["verification"], "agent", "built-in default");
+    assert_eq!(l["policy"]["verification_from"], "default");
+
+    // Project default.
+    let (status, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/checklist/policy",
+            json!({ "verification": "human", "expiry_releases": 5 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{plain}")).await;
+    assert_eq!(l["policy"]["verification"], "human");
+    assert_eq!(l["policy"]["verification_from"], "project");
+    assert_eq!(l["policy"]["expiry_releases"], 5);
+
+    // Epic override beats the project.
+    app.put(
+        &app.admin,
+        "/v1/projects/tp/checklist/policy",
+        json!({ "epic": epic, "verification": "agent_then_human" }),
+    )
+    .await;
+    let grouped = lane(&app, json!({ "title": "In the epic", "epic": epic })).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    assert_eq!(l["policy"]["verification"], "agent_then_human");
+    assert_eq!(l["policy"]["verification_from"], "epic");
+
+    // Lane override beats both.
+    app.patch(
+        &app.admin,
+        &format!("/v1/lanes/{grouped}"),
+        json!({ "verification": "agent" }),
+    )
+    .await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    assert_eq!(l["policy"]["verification"], "agent");
+    assert_eq!(l["policy"]["verification_from"], "lane");
+
+    // Explicit null clears the override and inheritance resumes. This is why the
+    // wire format has to distinguish absent from null.
+    app.patch(
+        &app.admin,
+        &format!("/v1/lanes/{grouped}"),
+        json!({ "verification": null }),
+    )
+    .await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    assert_eq!(l["policy"]["verification"], "agent_then_human");
+    assert_eq!(l["policy"]["verification_from"], "epic");
+}
+
+/// Release-count expiry: verified at r1 with a limit of 1 release, so pushing r2
+/// ages it out even though nothing in the diff touched the lane.
+#[tokio::test]
+async fn release_count_expiry_stales_a_case_without_a_touching_diff() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({ "title": "Create a claim", "globs": ["src/claims/**"], "expiry_releases": 1 }),
+    )
+    .await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    let (_, r1) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "r1" }),
+        )
+        .await;
+    let r1_id = r1["id"].as_str().unwrap();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass", "release": r1_id }),
+    )
+    .await;
+
+    let (_, r2) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "r2", "touched_paths": ["docs/unrelated.md"] }),
+        )
+        .await;
+    assert_eq!(
+        r2["impact"]["stale_cases"], 1,
+        "the policy clock ran out even though the diff missed the lane: {r2}"
+    );
+    assert_eq!(r2["impact"]["expired_lanes"].as_array().unwrap().len(), 1);
+
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["items"][0]["reason"], "stale");
+}
+
+/// Time-based expiry, driven by backdating the verdict in the store rather than
+/// sleeping. Both expiry kinds apply and whichever trips first wins.
+#[tokio::test]
+async fn time_based_expiry_puts_a_case_back_on_the_worklist() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({ "title": "Create a claim", "expiry_days": 30 }),
+    )
+    .await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass" }),
+    )
+    .await;
+
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["cases"], 0, "fresh, so nothing to do: {wl}");
+
+    // 45 days ago — past the 30-day policy.
+    app.backdate_case_verdict(&cid, 45 * 86_400_000);
+
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["cases"], 1, "aged out: {wl}");
+    assert_eq!(wl["agent"]["items"][0]["reason"], "expired");
+}
+
+/// `unreachable` is counted apart from covered and uncovered. Calling it a gap
+/// reports work nobody can do; calling it covered claims verification of code no
+/// path reaches.
+#[tokio::test]
+async fn coverage_counts_unreachable_apart_and_reports_orphaned_globs() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Claims", "epic", None).await;
+    let id = lane(
+        &app,
+        json!({
+            "title": "Create a claim",
+            "epic": epic,
+            "layer": "ui",
+            "globs": ["src/claims/**", "src/claims/legacy/**"],
+        }),
+    )
+    .await;
+    file_cases(&app, &id, &["a", "b", "c", "d"]).await;
+    let cases = case_ids(&app, &id).await;
+
+    let verdicts = [("a", "pass"), ("b", "unreachable"), ("c", "pass")];
+    for (key, verdict) in verdicts {
+        let cid = &cases.iter().find(|(k, _)| k == key).unwrap().1;
+        app.post(
+            &app.admin,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": verdict }),
+        )
+        .await;
+    }
+
+    let (status, cov) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/coverage")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cov["cases"]["total"], 4);
+    assert_eq!(cov["cases"]["verified"], 2);
+    assert_eq!(cov["cases"]["unreachable"], 1);
+    assert_eq!(cov["cases"]["never"], 1);
+    // 2 verified of 3 verifiable cases. The unreachable one is out of BOTH the
+    // numerator and the denominator: leaving it in the denominator would cap this
+    // project below 100% forever with no action that could close the gap.
+    assert_eq!(cov["percent"], 66, "{cov}");
+    assert_eq!(cov["epics"][0]["epic"], epic);
+    assert_eq!(cov["epics"][0]["lanes"], 1);
+
+    // An orphaned glob is flagged rather than counted, because a lane claiming
+    // code that is not there reads as covered while covering nothing.
+    app.post(
+        &app.admin,
+        "/v1/projects/tp/releases",
+        json!({
+            "ref": "r1",
+            "touched_paths": ["docs/x.md"],
+            "orphan_globs": ["src/claims/legacy/**"],
+        }),
+    )
+    .await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{id}")).await;
+    assert_eq!(
+        l["orphan_globs"],
+        json!(["src/claims/legacy/**"]),
+        "the empty glob is surfaced on the lane: {l}"
+    );
+}
+
+/// The gate blocks on `blocking` severity only. Advisory and low lanes nag: a
+/// gate that fires on everything gets overridden out of habit and stops meaning
+/// anything.
+#[tokio::test]
+async fn the_gate_blocks_on_blocking_severity_and_nags_on_the_rest() {
+    let app = TestApp::spawn().await;
+    let advisory = lane(
+        &app,
+        json!({ "title": "Print documents", "severity": "advisory" }),
+    )
+    .await;
+    file_cases(&app, &advisory, &["a"]).await;
+
+    let (_, gate) = app.get(&app.admin, "/v1/projects/tp/checklist/gate").await;
+    assert_eq!(
+        gate["blocked"], false,
+        "advisory alone never blocks: {gate}"
+    );
+    assert_eq!(gate["advisory_outstanding"], 1);
+
+    let blocking = lane(
+        &app,
+        json!({ "title": "Create a claim", "severity": "blocking" }),
+    )
+    .await;
+    file_cases(&app, &blocking, &["a"]).await;
+    let (_, gate) = app.get(&app.admin, "/v1/projects/tp/checklist/gate").await;
+    assert_eq!(gate["blocked"], true, "{gate}");
+    assert_eq!(gate["blocking"]["agent_cases"], 1);
+
+    // Clearing the blocking case unblocks it; the advisory one still only nags.
+    let cid = case_ids(&app, &blocking).await[0].1.clone();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass" }),
+    )
+    .await;
+    let (_, gate) = app.get(&app.admin, "/v1/projects/tp/checklist/gate").await;
+    assert_eq!(gate["blocked"], false, "{gate}");
+    assert_eq!(gate["advisory_outstanding"], 1);
+}
+
+/// The worklist splits by who can clear an item, because human time is the scarce
+/// resource. A stale case under `agent_then_human` needs the agent first, so it
+/// must not sit in a person's queue waiting for work only an agent can do.
+#[tokio::test]
+async fn the_worklist_routes_agent_first_work_away_from_humans() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({
+            "title": "Create a claim",
+            "verification": "agent_then_human",
+            "globs": ["src/claims/**"],
+            "cost_agent_minutes": 2,
+            "cost_human_minutes": 15,
+        }),
+    )
+    .await;
+    file_cases(&app, &id, &["a"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    // Never verified: the agent has to go first.
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["cases"], 1, "{wl}");
+    assert_eq!(wl["human"]["cases"], 0);
+    assert_eq!(wl["agent"]["minutes"], 2, "costed with the agent estimate");
+
+    // Agent passes, so now it needs the human — with the human cost.
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass" }),
+    )
+    .await;
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["cases"], 0);
+    assert_eq!(wl["human"]["cases"], 1, "{wl}");
+    assert_eq!(wl["human"]["minutes"], 15);
+
+    app.post(
+        &app.human,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass", "actor_kind": "human" }),
+    )
+    .await;
+
+    // A release touching the claimed code sends it back to the AGENT, not to the
+    // human who just signed it off.
+    app.post(
+        &app.admin,
+        "/v1/projects/tp/releases",
+        json!({ "ref": "r1", "touched_paths": ["src/claims/create.rs"] }),
+    )
+    .await;
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(
+        wl["agent"]["cases"], 1,
+        "stale under agent_then_human is agent work first: {wl}"
+    );
+    assert_eq!(wl["human"]["cases"], 0);
+}
+
+/// Lanes group under a `type: epic` ticket so the vocabulary matches tickets.
+/// Anything else is a typo worth a loud refusal rather than a silent orphan.
+#[tokio::test]
+async fn a_lane_refuses_a_parent_that_is_not_an_epic() {
+    let app = TestApp::spawn().await;
+    let task = app.create_typed("Just a task", "task", None).await;
+    let (status, refused) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/lanes",
+            json!({ "title": "Create a claim", "epic": task }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.lane_epic");
+
+    let (status, refused) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/lanes",
+            json!({ "title": "Create a claim", "epic": "nope-9999" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
+}
+
+/// Enum and shape validation is part of the contract: a typo must be a loud 4xx
+/// carrying the legal values, never a silently dropped field.
+#[tokio::test]
+async fn lane_and_case_input_is_validated_with_teaching_errors() {
+    let app = TestApp::spawn().await;
+
+    let (status, bad) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/lanes",
+            json!({ "title": "X", "layer": "gui" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.lane_layer");
+    assert!(
+        bad["message"].as_str().unwrap().contains("ui"),
+        "the error names the legal values: {bad}"
+    );
+
+    let (status, bad) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/lanes",
+            json!({ "title": "X", "sevrity": "blocking" }),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a typo'd field is loud: {bad}"
+    );
+
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let (status, bad) = app
+        .put(
+            &app.admin,
+            &format!("/v1/lanes/{id}/cases"),
+            json!({ "cases": [{ "key": "dup" }, { "key": "dup" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.case_key");
+
+    // A missing key is caught by the shared body parser before the store sees it,
+    // so it is a 400 on the field rather than a 422 on the concept. Either way it
+    // names the field: a case without a stable key would silently break history.
+    let (status, bad) = app
+        .put(
+            &app.admin,
+            &format!("/v1/lanes/{id}/cases"),
+            json!({ "cases": [{ "label": "no key" }] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    assert_eq!(bad["code"], "validation.field_required");
+    assert!(bad["message"].as_str().unwrap().contains("key"), "{bad}");
+}
+
+/// Archiving keeps the evidence. A lane no longer worth running is still a record
+/// of what was once verified, so it leaves coverage without deleting history.
+#[tokio::test]
+async fn archiving_a_lane_drops_it_from_coverage_but_keeps_its_cases() {
+    let app = TestApp::spawn().await;
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["a"]).await;
+
+    let (_, cov) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/coverage")
+        .await;
+    assert_eq!(cov["lanes"], 1);
+
+    let (status, archived) = app.delete(&app.admin, &format!("/v1/lanes/{id}")).await;
+    assert_eq!(status, StatusCode::OK, "{archived}");
+    assert!(!archived["archived_at"].is_null());
+
+    let (_, cov) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/coverage")
+        .await;
+    assert_eq!(cov["lanes"], 0, "archived lanes leave coverage: {cov}");
+
+    let (_, lanes) = app.get(&app.admin, "/v1/projects/tp/lanes").await;
+    assert_eq!(lanes["items"].as_array().unwrap().len(), 0);
+    let (_, lanes) = app
+        .get(&app.admin, "/v1/projects/tp/lanes?archived=include")
+        .await;
+    assert_eq!(lanes["items"].as_array().unwrap().len(), 1);
+
+    // The cases and their history are still reachable.
+    let (status, cases) = app.get(&app.admin, &format!("/v1/lanes/{id}/cases")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cases["items"].as_array().unwrap().len(), 1, "{cases}");
+}
+
+/// A verdict against a release from another project is a wiring mistake worth
+/// catching, not a null to store.
+#[tokio::test]
+async fn a_verdict_cannot_cite_an_unknown_release() {
+    let app = TestApp::spawn().await;
+    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["a"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    let (status, bad) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass", "release": "rel-nope" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{bad}");
+}
+
+/// A release must not turn "never tested" into "stale". Stale means *was verified,
+/// then the code moved*; using it for work nobody has done once would shrink the
+/// never-tested gap this feature exists to expose.
+#[tokio::test]
+async fn a_release_does_not_stale_a_case_that_was_never_verified() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({ "title": "Create a claim", "globs": ["src/claims/**"] }),
+    )
+    .await;
+    file_cases(&app, &id, &["verified", "untouched"]).await;
+    let cases = case_ids(&app, &id).await;
+    let verified = cases
+        .iter()
+        .find(|(k, _)| k == "verified")
+        .unwrap()
+        .1
+        .clone();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{verified}/verdict"),
+        json!({ "verdict": "pass" }),
+    )
+    .await;
+
+    let (_, rel) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "r1", "touched_paths": ["src/claims/create.rs"] }),
+        )
+        .await;
+    assert_eq!(
+        rel["impact"]["stale_cases"], 1,
+        "only the verified case goes stale: {rel}"
+    );
+
+    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{id}")).await;
+    assert_eq!(l["cases"]["stale"], 1);
+    assert_eq!(
+        l["cases"]["never"], 1,
+        "the never-verified case is still reported as never: {l}"
+    );
+
+    // And the worklist distinguishes the two reasons, because they call for
+    // different work: re-run versus write-and-run.
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    let reasons: Vec<&str> = wl["agent"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["reason"].as_str().unwrap())
+        .collect();
+    assert!(reasons.contains(&"stale"), "{wl}");
+    assert!(reasons.contains(&"never"), "{wl}");
+}

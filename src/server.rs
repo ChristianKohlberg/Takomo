@@ -122,6 +122,46 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project}/claim-ttl",
             put(crate::api::projects::put_claim_ttl),
         )
+        // Checklist: releases, lanes, cases, verdicts and the derived reports.
+        .route(
+            "/v1/projects/{project}/releases",
+            get(crate::api::checklist::list_releases).post(crate::api::checklist::push_release),
+        )
+        .route(
+            "/v1/projects/{project}/lanes",
+            get(crate::api::checklist::list_lanes).post(crate::api::checklist::create_lane),
+        )
+        .route(
+            "/v1/projects/{project}/checklist/policy",
+            get(crate::api::checklist::get_policies).put(crate::api::checklist::put_policy),
+        )
+        .route(
+            "/v1/projects/{project}/checklist/coverage",
+            get(crate::api::checklist::coverage),
+        )
+        .route(
+            "/v1/projects/{project}/checklist/worklist",
+            get(crate::api::checklist::worklist),
+        )
+        .route(
+            "/v1/projects/{project}/checklist/gate",
+            get(crate::api::checklist::gate),
+        )
+        .route(
+            "/v1/lanes/{id}",
+            get(crate::api::checklist::get_lane)
+                .merge(patch(crate::api::checklist::patch_lane))
+                .merge(axum::routing::delete(crate::api::checklist::archive_lane)),
+        )
+        .route(
+            "/v1/lanes/{id}/cases",
+            get(crate::api::checklist::list_cases).put(crate::api::checklist::file_cases),
+        )
+        .route("/v1/cases/{id}", get(crate::api::checklist::get_case))
+        .route(
+            "/v1/cases/{id}/verdict",
+            post(crate::api::checklist::record_verdict),
+        )
         .route(
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),

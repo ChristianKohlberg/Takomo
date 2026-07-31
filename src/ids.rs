@@ -42,6 +42,31 @@ pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))
 }
 
+/// Release id, e.g. "rel-9f3ka2xz".
+pub fn release_id() -> String {
+    format!("rel-{}", random_chars(BASE36, 8))
+}
+
+/// Checklist lane id, e.g. "lane-9f3ka2xz".
+pub fn lane_id() -> String {
+    format!("lane-{}", random_chars(BASE36, 8))
+}
+
+/// Checklist case id, e.g. "case-9f3ka2xz".
+pub fn case_id() -> String {
+    format!("case-{}", random_chars(BASE36, 8))
+}
+
+/// Recorded-verdict id, e.g. "cv-9f3ka2xz".
+pub fn verdict_id() -> String {
+    format!("cv-{}", random_chars(BASE36, 8))
+}
+
+/// Checklist policy id, e.g. "clp-9f3ka2xz".
+pub fn checklist_policy_id() -> String {
+    format!("clp-{}", random_chars(BASE36, 8))
+}
+
 /// Token id (public handle for list/revoke), e.g. "tok_a8f2k1x9".
 pub fn token_id() -> String {
     format!("tok_{}", random_chars(BASE36, 8))
