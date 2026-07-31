@@ -253,6 +253,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/answer-links/{id}",
             axum::routing::delete(crate::api::questions::revoke_link),
         )
+        // Initiatives. MCP came first (see crate::mcp), because an agent in a
+        // conversation is what produces one; these writes exist because the
+        // /initiatives page needs them and a browser cannot call an MCP tool.
+        .route(
+            "/v1/initiatives",
+            get(crate::api::initiatives::list).post(crate::api::initiatives::create),
+        )
+        .route(
+            "/v1/initiatives/{id}",
+            get(crate::api::initiatives::get_one).patch(crate::api::initiatives::patch),
+        )
+        .route(
+            "/v1/initiatives/{id}/entries",
+            get(crate::api::initiatives::list_entries)
+                .post(crate::api::initiatives::create_entry),
+        )
+        .route(
+            "/v1/initiatives/{id}/entries/{entry}/content",
+            get(crate::api::initiatives::entry_content),
+        )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))
@@ -342,6 +362,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(crate::api::healthz))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
+        .route("/initiatives", get(crate::api::initiatives_page))
         .route("/favicon.svg", get(crate::api::favicon))
         .route("/favicon.ico", get(crate::api::favicon))
         .merge(oauth)

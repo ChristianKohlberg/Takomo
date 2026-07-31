@@ -166,7 +166,7 @@ jobs:
       # in scripts/lint-spa.sh and nothing is committed under node_modules — the
       # SPAs stay dependency-free in the sense that matters, which is what the
       # browser downloads.
-      - name: ESLint (inline <script> of both SPAs)
+      - name: ESLint (inline <script> of the SPAs)
         run: ./scripts/lint-spa.sh
 
   mcp:

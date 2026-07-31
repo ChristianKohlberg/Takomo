@@ -35,6 +35,7 @@ tags:
   - { name: tags }
   - { name: checklist }
   - { name: oauth }
+  - { name: initiatives }
 
 paths:
   /whoami:
@@ -2668,6 +2669,243 @@ paths:
               schema: { $ref: "#/components/schemas/Question" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /initiatives:
+    get:
+      tags: [initiatives]
+      summary: List initiatives
+      description: |
+        Requires the `read` scope; bounded by the token's project allowlist.
+
+        An initiative is a home for an idea that is not yet work — a product idea,
+        a direction, what came out of a good conversation. It has no workflow, is
+        never claimed, and is nurtured by appending research inputs over time.
+
+        Initiatives are usually created and fed **over MCP** — the thing that
+        produces one is an agent in a conversation (`takomo_initiative_new`,
+        `takomo_initiative_append`, `takomo_initiative_update`). The write routes
+        here exist because the `/initiatives` page needs them: an initiative is fed
+        by people as well as agents, and a browser cannot call an MCP tool.
+      parameters:
+        - { name: project, in: query, required: false, schema: { type: string } }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [open, parked, distilled] }
+        - { name: q, in: query, required: false, schema: { type: string }, description: 'tokenized search over title and summary; every whitespace-separated term must match' }
+        - { name: label, in: query, required: false, schema: { type: string } }
+        - { name: tag, in: query, required: false, schema: { type: string }, description: 'exact `kind:handle` tag reference' }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of initiatives, newest first, each with its derived rollup.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Initiative" }
+                  next_cursor: { type: [string, "null"] }
+
+    post:
+      tags: [initiatives]
+      summary: Open an initiative
+      description: |
+        Requires the `write` scope for the named project.
+
+        MCP came first here (`takomo_initiative_new`), because an agent in a
+        conversation is what usually produces an initiative. This route exists
+        because the `/initiatives` page needs it: a person reading a collection
+        wants to start one, and a browser cannot call an MCP tool. Both go through
+        the same store method and the same validators.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, title]
+              properties:
+                project: { type: string }
+                title: { type: string, maxLength: 300, description: 'the quick name the idea goes by' }
+                summary: { type: string, description: 'a very short description; the long form belongs in an entry, where it carries provenance' }
+                status: { type: string, enum: [open, parked, distilled], default: open }
+                labels: { type: array, items: { type: string }, maxItems: 50 }
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: '`kind:handle` references; unknown handles are registered in the project tag registry on the fly'
+                metadata: { type: object }
+      responses:
+        "201":
+          description: The new initiative.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+
+  /initiatives/{id}:
+    get:
+      tags: [initiatives]
+      summary: Fetch one initiative with its rollup
+      description: Requires the `read` scope. The project check runs against the initiative's own project, so naming an id never grants access to it.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The initiative.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+
+    patch:
+      tags: [initiatives]
+      summary: Edit an initiative's description
+      description: |
+        Requires the `write` scope. Sets any of title, summary, status, labels or
+        tags, and/or merges into `metadata` (RFC 7386: a null value removes a key).
+
+        Entries are deliberately NOT reachable from here. They are append-only —
+        the accumulated record IS the initiative — so the only editable part is how
+        it is described and filed. A patch with no fields is a `400`
+        (`validation.no_changes`) rather than a version bump that changed nothing.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 300 }
+                summary: { type: string }
+                status: { type: string, enum: [open, parked, distilled] }
+                labels: { type: array, items: { type: string }, maxItems: 50, description: 'whole-set replace' }
+                tags: { type: array, items: { type: string }, description: 'whole-set replace' }
+                metadata_merge: { type: object }
+      responses:
+        "200":
+          description: The updated initiative.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+
+  /initiatives/{id}/entries:
+    get:
+      tags: [initiatives]
+      summary: List an initiative's entries — the collection of research inputs
+      description: |
+        Requires the `read` scope. Newest first, cursor-paged. Entry text is
+        included; attachment **bytes are not** — `has_content` says whether there
+        are any, and `/initiatives/{id}/entries/{entry}/content` serves them. The
+        collection's `rollup` rides along so a UI needs one request, not two.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of entries plus the whole collection's rollup.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/InitiativeEntry" }
+                  next_cursor: { type: [string, "null"] }
+                  rollup: { $ref: "#/components/schemas/InitiativeRollup" }
+
+    post:
+      tags: [initiatives]
+      summary: Append one contribution to an initiative
+      description: |
+        Requires the `write` scope. A note, a research finding, a colleague's
+        feedback, a transcript, an attached document — text, an attachment, or
+        both. Append-only: entries are never edited or deleted.
+
+        `source` is required, exactly as on the MCP tool. An entry whose origin
+        nobody recorded is text nobody can weigh later.
+
+        An attachment arrives as `content_base64` because JSON cannot carry bytes,
+        and is decoded before the caps are applied — so the 5 MiB limit bounds the
+        real document, not its 4/3-larger encoding. It needs a `filename` and/or a
+        `mime`; without either, nothing downstream can say what the bytes are.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, source]
+              properties:
+                kind:
+                  type: string
+                  description: 'free-form slug matching ^[a-z][a-z0-9-]*$ — conventionally note, research, feedback, transcript, document, decision'
+                source:
+                  type: string
+                  description: 'REQUIRED — where this input came from: an agent id, a person, a conversation'
+                title: { type: string, maxLength: 300 }
+                text: { type: string, description: 'markdown; give this, an attachment, or both' }
+                source_uri: { type: string, description: 'where the input lives — the conversation, the doc, the PR' }
+                origin_at:
+                  type: string
+                  format: date-time
+                  description: 'RFC 3339. When the content was WRITTEN, as opposed to when it landed here (recorded automatically). Refused rather than dropped if unparseable.'
+                content_base64:
+                  type: string
+                  description: 'the attachment, base64 (standard alphabet, padded). Capped at 5 MiB decoded.'
+                mime: { type: string, description: 'bare `type/subtype`; required unless filename is given' }
+                filename: { type: string, description: 'required unless mime is given' }
+                meta: { type: object }
+      responses:
+        "201":
+          description: |
+            The new entry, plus the initiative with its recomputed rollup — so a
+            caller that just appended can update the counts it is showing without a
+            second request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry: { $ref: "#/components/schemas/InitiativeEntry" }
+                  initiative: { $ref: "#/components/schemas/Initiative" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /initiatives/{id}/entries/{entry}/content:
+    get:
+      tags: [initiatives]
+      summary: Download one entry's attachment
+      description: |
+        Requires the `read` scope. The only endpoint in this API that returns
+        something other than JSON, and the reason attachment bytes are never
+        selected by any other query: a document is fetched by itself, once, by the
+        reader that wants it.
+
+        Served under the entry's own stored media type — validated as a bare
+        `type/subtype` when it was appended — with
+        `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`,
+        because these bytes were uploaded by an API caller and must never render as
+        active content in the origin that serves `/board`.
+
+        A text-only entry answers `404 initiative.no_attachment`, not an empty
+        body that would read like a corrupt download.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: entry, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The attachment bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
   /board:
     servers: [{ url: / }]
     get:
@@ -3502,6 +3740,93 @@ components:
         body: { type: string }
         created_at: { type: string, format: date-time }
 
+    InitiativeRollup:
+      type: object
+      description: |
+        The derived size and shape of an initiative: how much has accumulated on
+        it. Not stored anywhere — recomputed from the entries on every read, so it
+        cannot drift from what it describes.
+      properties:
+        entries: { type: integer, description: 'number of entries' }
+        attachments: { type: integer, description: 'entries carrying attachment bytes' }
+        chars: { type: integer, description: 'characters of entry text, summed — the "how long is this" number, counting characters rather than UTF-8 bytes' }
+        bytes: { type: integer, description: 'total stored bytes: entry text (UTF-8) plus attachment content' }
+        attachment_bytes: { type: integer, description: 'of which attachment content, so a wall of text is distinguishable from a pile of PDFs without fetching either' }
+        megabytes: { type: number, description: 'bytes as MiB, rounded to two decimals — precomputed because every surface wants it and each would round differently' }
+        last_entry_at: { type: [string, "null"], format: date-time }
+
+    Initiative:
+      type: object
+      description: |
+        An idea being nurtured, with a collection of research inputs appended over
+        time. Deliberately **not** a ticket: no workflow, no claim, no lease, no
+        fence, no ready queue — nothing races for an initiative, because appending
+        is not exclusive. Two agents adding findings at once both belong, and the
+        append-only entry log keeps both.
+
+        `status` is a plain lifecycle label, not a state machine: `open` is being
+        fed, `parked` is deliberately set aside (still readable, still appendable),
+        `distilled` records that its substance became tickets — the only outcome an
+        initiative has, since it is never "done" on its own terms.
+      properties:
+        id: { type: string, description: '`ini-…`' }
+        project: { type: string }
+        title: { type: string, description: 'the quick name the idea goes by' }
+        summary: { type: string, description: 'a very short description; the long form belongs in an entry, where it carries provenance' }
+        status: { type: string, enum: [open, parked, distilled] }
+        labels: { type: array, items: { type: string } }
+        tags:
+          type: array
+          items: { type: string }
+          description: '`kind:handle` references into the same project tag registry tickets use, so `person:ada` means the same thing here'
+        metadata: { type: object }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time, description: 'moves when an entry is appended too — the collection is part of the initiative' }
+        version: { type: integer, description: 'guards the description against a concurrent edit. Appending an entry does NOT move it: an append never conflicts with a description change.' }
+        rollup: { $ref: "#/components/schemas/InitiativeRollup" }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/InitiativeEntry" }
+          description: 'present only on the MCP `takomo_initiative_show` payload, which returns a page of entries inline; the REST detail route leaves them to /initiatives/{id}/entries'
+
+    InitiativeEntry:
+      type: object
+      description: |
+        One contribution to an initiative: a note, a research finding, a
+        colleague's feedback, a transcript, an uploaded document. Append-only —
+        the accumulated record IS the initiative, so nothing here is edited in
+        place.
+
+        Generic in two directions. `kind` is a free-form slug, so a new sort of
+        input needs no schema change; and every entry may carry text, an
+        attachment, or both.
+
+        Provenance is first-class rather than left to a note: `source` says where
+        the input came from, `source_uri` points at it, and `origin_at` records
+        when the content was *written* as opposed to `created_at`, when it landed
+        here. A transcript pasted in a week later has two different, both correct,
+        timestamps.
+      properties:
+        id: { type: string, description: '`ie-…`' }
+        initiative: { type: string }
+        project: { type: string }
+        kind: { type: string, description: 'free-form slug matching ^[a-z][a-z0-9-]*$ — conventionally note, research, feedback, transcript, document, decision' }
+        title: { type: [string, "null"] }
+        text: { type: string, description: 'the markdown content' }
+        has_content: { type: boolean, description: 'whether there are attachment bytes to download' }
+        mime: { type: [string, "null"], description: 'bare `type/subtype`; served back as the attachment Content-Type' }
+        filename: { type: [string, "null"] }
+        chars: { type: integer, description: 'characters of `text`' }
+        bytes: { type: integer, description: 'this entry total: text UTF-8 bytes plus attachment bytes' }
+        content_bytes: { type: integer, description: 'attachment bytes, 0 when text-only. Capped at 5 MiB per entry.' }
+        source: { type: string, description: 'REQUIRED where this came from — an agent id, a person, a conversation' }
+        source_uri: { type: [string, "null"] }
+        origin_at: { type: [string, "null"], format: date-time, description: 'when the content originated, as opposed to created_at' }
+        meta: { type: object }
+        author: { type: string, description: 'the actor that appended it' }
+        created_at: { type: string, format: date-time }
+
     Promotion:
       type: object
       description: A record that a ticket's work reached a named target/stage. Free-form and domain-agnostic.
@@ -4100,7 +4425,6 @@ components:
           type: integer
           description: 'outstanding cases that do NOT block, because a gate firing on everything gets overridden out of habit'
 
-
 # ---------------------------------------------------------------------------
 x-error-codes:
   # -- bearer tokens (tk_): authentication, scopes, project allowlist, budget --
@@ -4189,6 +4513,12 @@ x-error-codes:
   answer.relay_actor: "'on_behalf_of' must name the human who made the decision — it is what 'answered_by' records and what a later reader will hold someone to. Empty or whitespace would file the decision under nobody."
   tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
 
+  # -- initiatives: the collection an idea accumulates ------------------------
+  initiative.attachment_too_large: "the decoded attachment is over the 5 MiB per-entry cap; `details` carries `bytes` and `max_bytes`. The bytes are written with the process-wide write mutex held, so this cap is how long one upload may make every claim and transition wait — a latency bound, not a storage one. Host anything larger elsewhere and reference it with `source_uri`."
+  initiative.too_large: "this entry would take the initiative over its 1 GiB total; `details` carries the current size, the size it would reach, and the cap. Unlike the per-attachment cap this one costs no request any latency — it bounds accumulation, because the store is one SQLite file someone has to back up. Reference large documents instead of storing them, or distil the initiative and open a fresh one."
+  initiative.too_many_entries: "the initiative already holds the maximum number of entries. One this full has outgrown being a single idea: distil it into tickets, mark it `distilled`, and start a new one for what remains an idea."
+  initiative.no_attachment: "the entry exists but is text-only, so there are no bytes to download. Its text is already in the entry list; only entries with `has_content: true` have an attachment."
+
   # -- missing entities. `notfound.<kind>` names the kind the handler looked ---
   # -- for, so this family grows with the addressable kinds. -------------------
   notfound.ticket: "no ticket with that id."
@@ -4198,6 +4528,8 @@ x-error-codes:
   notfound.tag: "no tag with that `kind:handle` in the project."
   notfound.share: "no share with that id."
   notfound.answer-link: "no answer-link grant with that id."
+  notfound.initiative: "no initiative with that id. GET /v1/initiatives lists them; the id shape is `ini-…`."
+  notfound.initiative_entry: "no entry with that id on that initiative. The pair is the address — an entry id from a different initiative is not reachable here."
 
   # -- rejected input. `validation.<field-or-concept>`: 400 when the request ---
   # -- is malformed, 422 when it is well-formed but unacceptable. --------------
@@ -4261,6 +4593,22 @@ x-error-codes:
   validation.tag_label: "a tag label is over its length limit."
   validation.tag_meta: "tag `meta`, or `meta_merge`, must be a JSON object."
   validation.tag_meta_size: "serialized tag `meta` is over its cap."
+
+  # -- initiatives and their entries ------------------------------------------
+  validation.initiative_title: "an initiative needs a title, and it may not be cleared by an update — it is the quick name the idea goes by."
+  validation.initiative_status: "the status is not one of open | parked | distilled. It is a lifecycle label an owner sets, not a workflow state, so nothing gates the order."
+  validation.initiative_field_length: "a field on an initiative or one of its entries is over its character cap. `details` names the `field`, its length, and the cap — one code for every length overrun on this surface, because the caller's decision is the same: send less."
+  validation.initiative_labels: "a label is empty or whitespace-only, or there are more than 50 of them."
+  validation.initiative_metadata: "`metadata`, or `metadata_merge`, must be a JSON object."
+  validation.initiative_metadata_size: "serialized initiative `metadata` is over its cap."
+  validation.entry_kind: "the entry `kind` is not a slug matching ^[a-z][a-z0-9-]*$. The vocabulary is open — note, research, feedback, transcript, document — but the shape is fixed."
+  validation.entry_source: "`source` is required on an entry: it records where the input came from, so a later reader can weigh it. Without it the collection is text nobody can attribute."
+  validation.entry_empty: "the entry carries neither text nor an attachment, which would record provenance for nothing. Send `text`, `content_base64`, or both."
+  validation.entry_text: "the entry text is over its byte limit. Split it across entries, or attach it as a document."
+  validation.entry_content_base64: "`content_base64` is not valid base64 (standard alphabet, padded). Refused rather than decoded partially — a truncated document must never be stored as if it were whole."
+  validation.entry_attachment_unlabeled: "an attachment arrived with neither `filename` nor `mime`, so nothing downstream could tell a reader what the bytes are. Send at least one."
+  validation.entry_mime: "the attachment's media type is not a bare `type/subtype`. It is served back as the attachment's `Content-Type`, so it is restricted to what a header may hold — no parameters, no whitespace."
+  validation.origin_at: "`origin_at` is not an RFC 3339 timestamp. It states when the content was written, as opposed to when it landed here; a wrong provenance date is worse than a missing one, so it is refused rather than dropped."
 
   # -- checklist: releases, lanes, cases, verdicts ----------------------------
   notfound.release: "no release with that id in this project. A verdict may only cite a release the project actually has."
