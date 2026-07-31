@@ -10,7 +10,7 @@ There is now an OAuth 2.1 authorization server in front of `/mcp` (see [OAuth fo
 tk_<22 chars base62>            # ~128 bits of randomness
 ```
 
-- Sent as `Authorization: Bearer tk_...` on every request (only `/healthz` is open).
+- Sent as `Authorization: Bearer tk_...` on every request. `/healthz` is open, and so are the discovery documents and `/oauth/*` when OAuth is configured — they are what a client reads *in order to* obtain a token ([below](#oauth-21-for-hosted-mcp-clients)).
 - Stored server-side as SHA-256 hash only; the plaintext is shown once at mint time.
 - The token row carries: `actor` (display name), `scopes`, `projects` (list or `*`), `created_at`, `expires_at` (optional), `revoked_at`, `last_used_at`, `rate_limit` (per-minute write budget, default 120).
 
