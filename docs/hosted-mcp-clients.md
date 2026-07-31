@@ -14,7 +14,9 @@ TAKOMO_PUBLIC_URL=https://takomo.example.com   # public origin: no path, no trai
 ```
 
 Unset, the OAuth endpoints answer `404` and hosted clients cannot connect. Set it in your platform's
-environment (Render: Dashboard → Environment; Docker: `-e`), restart, and check the startup line:
+environment (Render: Dashboard → Environment; Docker: `-e`), restart, and check the startup line —
+which is also where a value the server cannot use as an issuer is reported, since that turns OAuth
+off rather than stopping the server ([hosting.md](hosting.md#takomo_public_url-has-two-readers)):
 
 ```
 takomo v0.3.0 listening on http://0.0.0.0:8080 (db: /var/data/takomo.db)
@@ -33,8 +35,9 @@ curl -si -X POST https://takomo.example.com/mcp -d '{}' | grep -i www-authentica
 The value must be the origin **exactly** as users type it into their client. A client compares the
 issuer against the URL it fetched discovery from, and the `resource` against the URL entered, byte
 for byte; a trailing slash or a `/takomo` path prefix is a connection that fails with
-"couldn't reach the MCP server" and no further explanation. takomo refuses the malformed forms at
-startup rather than let you find that out from someone else's error log.
+"couldn't reach the MCP server" and no further explanation. takomo rejects the malformed forms at
+startup — it leaves OAuth off and names the reason on its startup line — rather than let you find
+that out from someone else's error log.
 
 ## What the human does, once per client
 
@@ -169,7 +172,7 @@ when you want the fence-tracking convenience verbs.
 
 | Symptom | Cause |
 |---|---|
-| `404 temporarily_unavailable` on a `.well-known` path | `TAKOMO_PUBLIC_URL` is unset. The body names it. |
+| `404 temporarily_unavailable` on a `.well-known` path | `TAKOMO_PUBLIC_URL` is unset, or set to something unusable as an issuer. The body names the variable; the startup line says which of the two. |
 | Client reports it cannot reach the server, no request in your logs | Discovery never resolved. Check both `.well-known` documents are reachable without a token, and that a WAF is not blocking the vendor's user agent. |
 | The consent page says the token is not recognized | Truncated paste, or the token belongs to a different instance. Mint a fresh one. |
 | The consent page says "Nothing would be granted" | The pasted token carries none of the checked scopes. Uncheck what it does not have, or use a different token. |

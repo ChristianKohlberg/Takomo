@@ -1696,8 +1696,10 @@ paths:
                   resource_name: { type: string }
         "404":
           description: |
-            No OAuth authorization server is configured on this instance
-            (`TAKOMO_PUBLIC_URL` unset). The body names the variable to set.
+            No OAuth authorization server is configured on this instance —
+            `TAKOMO_PUBLIC_URL` is unset or unusable as an issuer; see
+            `temporarily_unavailable` under `x-oauth-errors`. The body names the
+            variable to set.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/OauthError" }
