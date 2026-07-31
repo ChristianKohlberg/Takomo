@@ -502,14 +502,52 @@ pub struct TokenRow {
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
     pub last_used_at: Option<i64>,
+    /// Which OAuth connection this token *is*, when it came from the OAuth flow.
+    ///
+    /// Filled only by the listing query, which is the one place the question gets
+    /// asked; every other read of a token row is an authorization decision that has
+    /// no use for it. `None` on a hand-minted token, and on every path that does not
+    /// join the ledger.
+    pub oauth_client: Option<OauthConnection>,
+}
+
+/// The connection an OAuth-issued token belongs to, for the listing surfaces.
+///
+/// Exists because revoking a token now ends a whole connection, which makes
+/// picking the wrong row an unrecoverable mistake — and until this was joined
+/// through, two connectors approved by the same human were indistinguishable in
+/// `takomo token list`: same actor, same scopes, same projects, differing only in
+/// id and expiry timestamp.
+#[derive(Debug, Clone)]
+pub struct OauthConnection {
+    pub client_id: String,
+    /// The registered `client_name`, absent when the client registered without one
+    /// (RFC 7591 makes it optional) or when its registration has since been swept.
+    pub client_name: Option<String>,
+}
+
+impl OauthConnection {
+    /// What to show a human: the client's name, falling back to its id. A person
+    /// recognizes "Claude"; nobody recognizes `oc_x3jolbbtodnog1rh`.
+    pub fn label(&self) -> &str {
+        self.client_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.client_id)
+    }
 }
 
 impl TokenRow {
     /// Public metadata wire shape — never carries the plaintext or the hash.
     /// `projects` is the string `"*"` (all) or an array of ids, mirroring the
     /// CLI's convention.
+    ///
+    /// `oauth_client` appears only on a token the OAuth flow issued. Omitted
+    /// entirely otherwise rather than emitted as `null`, so a hand-minted token
+    /// serializes exactly as it always has.
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "id": self.id,
             "actor": self.actor,
             "scopes": self.scopes,
@@ -522,7 +560,15 @@ impl TokenRow {
             "expires_at": self.expires_at.map(iso),
             "revoked_at": self.revoked_at.map(iso),
             "last_used_at": self.last_used_at.map(iso),
-        })
+        });
+        if let Some(conn) = &self.oauth_client {
+            out["oauth_client"] = json!({
+                "client_id": conn.client_id,
+                "client_name": conn.client_name,
+                "label": conn.label(),
+            });
+        }
+        out
     }
 }
 

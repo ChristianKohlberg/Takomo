@@ -130,7 +130,7 @@ Unauthenticated is not an oversight: these are what a client uses *in order to* 
 
 **Consent without user accounts.** takomo has tokens, not users, and `client_credentials` is deliberately not offered — every credential here has to represent a specific human's decision. So the consent screen authenticates the human with **a takomo token they already hold**: they paste one, see which client is asking and for what, uncheck anything they do not want to hand over, and approve.
 
-What the client receives is a **derived** token: same `actor`, the checked scopes intersected with the ones that token actually carries, the same project allowlist, the same write budget — plus a one-hour expiry and its own row in `takomo token list`. So it is:
+What the client receives is a **derived** token: same `actor`, the checked scopes intersected with the ones that token actually carries, the same project allowlist, the same write budget — plus a one-hour expiry and its own row in `takomo token list`, tagged with the client it belongs to (a `CONNECTION` column there, `oauth_client` on `GET /v1/tokens`). That tag is the only thing that identifies such a row: the token is deliberately an ordinary `tk_` row, an expiry does not distinguish it from a hand-minted one, and two connectors approved by the same person differ in nothing else. So it is:
 
 - attributable — events and claims still name the human's actor, and `granted_by` records which token consented;
 - revocable on its own, with `DELETE /v1/tokens/{id}`, which ends that one connection and touches nothing else;

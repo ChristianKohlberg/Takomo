@@ -1,6 +1,6 @@
 //! Token storage: minted/managed by the CLI, looked up by the auth middleware.
 
-use super::model::TokenRow;
+use super::model::{OauthConnection, TokenRow};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, token_hash, token_id, token_plaintext};
@@ -33,11 +33,39 @@ fn row_to_token(row: &Row) -> rusqlite::Result<TokenRow> {
         expires_at: row.get("expires_at")?,
         revoked_at: row.get("revoked_at")?,
         last_used_at: row.get("last_used_at")?,
+        oauth_client: None,
     })
+}
+
+/// A listed token, plus which OAuth connection it belongs to if any.
+fn row_to_listed_token(row: &Row) -> rusqlite::Result<TokenRow> {
+    let mut token = row_to_token(row)?;
+    if let Some(client_id) = row.get::<_, Option<String>>("oauth_client_id")? {
+        // `client_name` is NOT NULL DEFAULT '' on the clients table, and NULL here
+        // when that registration has been swept from under a still-listed token.
+        // Both mean "no name to show", so they collapse to one case.
+        let client_name = row
+            .get::<_, Option<String>>("oauth_client_name")?
+            .filter(|name| !name.trim().is_empty());
+        token.oauth_client = Some(OauthConnection {
+            client_id,
+            client_name,
+        });
+    }
+    Ok(token)
 }
 
 const TOKEN_COLS: &str =
     "id, actor, scopes, projects, rate_limit, created_at, expires_at, revoked_at, last_used_at";
+
+/// The same columns, aliased for the listing join.
+///
+/// Spelled out rather than reused with a table prefix because `oauth_clients` also
+/// has a `created_at`, and `row_to_token` reads columns by name — an ambiguous name
+/// would silently hand it the client's timestamp.
+const TOKEN_COLS_JOINED: &str = "t.id AS id, t.actor AS actor, t.scopes AS scopes, \
+     t.projects AS projects, t.rate_limit AS rate_limit, t.created_at AS created_at, \
+     t.expires_at AS expires_at, t.revoked_at AS revoked_at, t.last_used_at AS last_used_at";
 
 /// Insert one token row inside an existing transaction. Returns (row, plaintext).
 ///
@@ -92,6 +120,7 @@ pub(super) fn insert_token(
             expires_at,
             revoked_at: None,
             last_used_at: None,
+            oauth_client: None,
         },
         plaintext,
     ))
@@ -110,13 +139,29 @@ impl Store {
         self.with_tx(|tx| insert_token(tx, actor, scopes, projects, rate_limit, expires_at))
     }
 
+    /// Every token's metadata, each carrying the OAuth connection it belongs to.
+    ///
+    /// The join lives here, not in the handler or the CLI, so both listing surfaces
+    /// answer the operator's real question — *which connection is this row* —
+    /// identically. It is a question they could not answer before: an OAuth access
+    /// token is deliberately an ordinary `tokens` row, so the ledger is the only
+    /// thing that knows, and revoking the wrong row now ends the wrong connection
+    /// for good.
+    ///
+    /// `oauth_issued.token_id` is a primary key, so the join adds at most one row
+    /// per token and cannot multiply the listing.
     pub fn list_tokens(&self) -> ApiResult<Vec<TokenRow>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(&format!(
-                "SELECT {TOKEN_COLS} FROM tokens ORDER BY created_at"
+                "SELECT {TOKEN_COLS_JOINED}, i.client_id AS oauth_client_id, \
+                 c.client_name AS oauth_client_name \
+                 FROM tokens t \
+                 LEFT JOIN oauth_issued i ON i.token_id = t.id \
+                 LEFT JOIN oauth_clients c ON c.client_id = i.client_id \
+                 ORDER BY t.created_at"
             ))?;
             let rows = stmt
-                .query_map([], row_to_token)?
+                .query_map([], row_to_listed_token)?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })

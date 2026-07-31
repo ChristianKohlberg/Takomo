@@ -1446,6 +1446,123 @@ async fn revoking_an_ordinary_token_leaves_oauth_connections_alone() {
     );
 }
 
+/// The listing has to say which connection a row is, or the lever above cannot be
+/// aimed: an OAuth access token is an ordinary token row, an expiry does not
+/// distinguish it from a hand-minted one, two connectors approved by the same human
+/// are identical in actor, scopes and projects — and revoking the wrong row is not
+/// reversible.
+#[tokio::test]
+async fn the_token_listing_names_the_connection_a_row_belongs_to() {
+    let app = TestApp::spawn_with_oauth().await;
+    let named = app.register_client("Claude", &[REDIRECT]).await;
+    let code = app.authorization_code(&named, &app.human).await;
+    let (status, issued) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &named),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "exchange failed: {issued}");
+    let derived_id = app
+        .token_id_of(issued["access_token"].as_str().unwrap())
+        .await;
+    let plain_id = app
+        .token_id_of(&app.mint("agent:hand-minted", &["read"], None))
+        .await;
+
+    let (status, list) = app.get(&app.admin, "/v1/tokens").await;
+    assert_eq!(status, StatusCode::OK);
+    let row = |id: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("token {id} should be listed: {list}"))
+    };
+
+    let derived = row(&derived_id);
+    assert_eq!(derived["oauth_client"]["client_name"], "Claude");
+    assert_eq!(derived["oauth_client"]["client_id"], named);
+    assert_eq!(
+        derived["oauth_client"]["label"], "Claude",
+        "a human recognizes the name, not the client_id: {derived}"
+    );
+
+    // Absent, not null: /v1 evolves additively and a hand-minted token has to
+    // serialize exactly as it always did.
+    let plain = row(&plain_id);
+    assert!(
+        plain.get("oauth_client").is_none(),
+        "a hand-minted token must be untouched: {plain}"
+    );
+
+    // The CLI's `token list` renders the same store answer, so what it shows is
+    // pinned here rather than by spawning a binary.
+    let listed = app.open_store().list_tokens().expect("list tokens");
+    let connection = listed
+        .iter()
+        .find(|t| t.id == derived_id)
+        .and_then(|t| t.oauth_client.as_ref())
+        .expect("the store must join the connection through");
+    assert_eq!(connection.label(), "Claude");
+    assert!(listed
+        .iter()
+        .find(|t| t.id == plain_id)
+        .is_some_and(|t| t.oauth_client.is_none()));
+}
+
+/// `client_name` is optional in RFC 7591, so a nameless client must still be
+/// identifiable — by its `client_id`, which is the only handle there is.
+#[tokio::test]
+async fn a_nameless_client_is_still_identifiable_in_the_listing() {
+    let app = TestApp::spawn_with_oauth().await;
+    let (status, registered) = app
+        .json(
+            app.request(Method::POST, "/oauth/register")
+                .json(&json!({ "redirect_uris": [REDIRECT] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let client_id = registered["client_id"].as_str().unwrap().to_string();
+
+    let code = app.authorization_code(&client_id, &app.human).await;
+    let (status, issued) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "exchange failed: {issued}");
+    let derived_id = app
+        .token_id_of(issued["access_token"].as_str().unwrap())
+        .await;
+
+    let (_, list) = app.get(&app.admin, "/v1/tokens").await;
+    let derived = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == derived_id)
+        .expect("listed")
+        .clone();
+    assert_eq!(derived["oauth_client"]["client_id"], client_id);
+    assert!(
+        derived["oauth_client"]["client_name"].is_null(),
+        "an unregistered name must read as absent, not as an empty string: {derived}"
+    );
+    assert_eq!(
+        derived["oauth_client"]["label"], client_id,
+        "the label falls back to the only handle there is: {derived}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Retention
 

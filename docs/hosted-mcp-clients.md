@@ -46,16 +46,26 @@ Every hosted product runs the same flow, and from the person's side it is:
 
 The client never receives the token that was pasted. takomo issues it a *separate* one: same actor, a
 subset of the scopes (whatever is left checked), the same project allowlist, the same write budget,
-plus a one-hour expiry and its own entry in `takomo token list`. So you can end one connector without
-touching anything else:
+plus a one-hour expiry and its own entry in `takomo token list`, tagged with the client it belongs to.
+So you can end one connector without touching anything else:
 
 ```sh
-takomo --db /var/data/takomo.db token list          # find the OAuth-issued row (it has an expiry)
+takomo --db /var/data/takomo.db token list    # a CONNECTION column appears; find the client's row
 curl -sS -X DELETE "$URL/v1/tokens/tok_xxxxxxxx" -H "Authorization: Bearer tk_admin..."
 ```
 
-That is a real cut, not a one-hour inconvenience: the connection's refresh token is revoked along
-with the credential, so the client cannot answer the 401 by rotating into a new one. Other
+**Identify the row by its CONNECTION, not by its expiry.** The column names the client the row
+belongs to (`Claude`, `ChatGPT`, …, or the `client_id` for a client that registered nameless), and
+`GET /v1/tokens` carries the same thing as `oauth_client`. An expiry does not identify anything — the
+consent token below is minted with `--expires 90d` — and two connectors approved by the same person
+are otherwise identical rows: same actor, same scopes, same projects.
+
+Getting it wrong is not recoverable, so it is worth the second look. Revoking the derived row ends
+that one connection; revoking the token you approved with ends **every** connection approved with it,
+plus that person's own access. Neither can be undone — the human re-approves.
+
+Either way it is a real cut, not a one-hour inconvenience: the connection's refresh token is revoked
+along with the credential, so the client cannot answer the 401 by rotating into a new one. Other
 connections, including others approved by the same person, keep working.
 
 Mint the token you will paste for exactly this purpose, rather than reusing an admin one:

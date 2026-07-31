@@ -57,6 +57,12 @@ paths:
       summary: List token metadata (admin scope)
       description: |
         Returns metadata only — never the plaintext token or its at-rest hash.
+
+        A token the OAuth flow issued additionally carries `oauth_client`, naming the
+        connection it belongs to. That is the field to identify a row by before
+        revoking it: an expiry does not distinguish one (a hand-minted token can have
+        one too), two connectors approved by the same human are otherwise identical,
+        and revocation is not reversible.
       responses:
         "200":
           description: OK
@@ -2944,6 +2950,22 @@ components:
         expires_at: { type: [string, "null"], format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
         last_used_at: { type: [string, "null"], format: date-time }
+        oauth_client:
+          type: object
+          description: |
+            Present ONLY on a token the OAuth flow issued, and absent (not null) on
+            a hand-minted one — which is how you tell them apart, and which
+            connection a row is. It matters because revoking such a row ends that
+            whole connection: an OAuth access token is deliberately an ordinary
+            token row, so nothing else on it says so.
+          properties:
+            client_id: { type: string, examples: ["oc_a8f2k1x9q7z3n4m6"] }
+            client_name:
+              type: [string, "null"]
+              description: null when the client registered without one (RFC 7591 makes it optional), or when its registration has since been swept
+            label:
+              type: string
+              description: what to show a human — `client_name`, falling back to `client_id`
 
     TokenCreate:
       type: object
