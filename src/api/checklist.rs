@@ -1,0 +1,489 @@
+//! Checklist — the verification surface: `/v1/projects/{project}/releases`,
+//! `/v1/projects/{project}/lanes`, `/v1/lanes/{id}/cases`, `/v1/cases/{id}` and
+//! the derived coverage / worklist / gate reports.
+//!
+//! Takomo stores; the agent computes. Nothing here generates a combinatorial
+//! model or judges whether one is right — it validates shapes, enforces who may
+//! record what, and persists. The single place that rule bends is a human
+//! verdict, which requires a `human`-scoped token: "a person looked at this" is
+//! the one claim an agent must not be able to make on a person's behalf.
+
+use super::{
+    body_object, first, get_i64, get_str, get_string_array, query_pairs, reject_unknown,
+    require_str, ApiJson,
+};
+use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
+use crate::server::AppState;
+use crate::store::{CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput, ReleasePush};
+use axum::extract::{Path, RawQuery, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{Extension, Json};
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+const RELEASE_FIELDS: [&str; 4] = ["ref", "note", "touched_paths", "orphan_globs"];
+const LANE_CREATE_FIELDS: [&str; 13] = [
+    "epic",
+    "title",
+    "body",
+    "precondition",
+    "layer",
+    "severity",
+    "verification",
+    "expiry_days",
+    "expiry_releases",
+    "cost_agent_minutes",
+    "cost_human_minutes",
+    "globs",
+    "metadata",
+];
+const LANE_PATCH_FIELDS: [&str; 13] = [
+    "epic",
+    "title",
+    "body",
+    "precondition",
+    "layer",
+    "severity",
+    "verification",
+    "expiry_days",
+    "expiry_releases",
+    "cost_agent_minutes",
+    "cost_human_minutes",
+    "globs",
+    "metadata_merge",
+];
+const CASES_FIELDS: [&str; 2] = ["cases", "prune"];
+const CASE_FIELDS: [&str; 4] = ["key", "label", "assignment", "seeded"];
+const VERDICT_FIELDS: [&str; 4] = ["verdict", "note", "release", "actor_kind"];
+const POLICY_FIELDS: [&str; 4] = ["epic", "verification", "expiry_days", "expiry_releases"];
+
+/// Read a field that is present-but-null distinctly from absent. An override slot
+/// needs all three states: absent (leave alone), null (clear and inherit again),
+/// value (set). Collapsing null into absent would make an inherited policy
+/// impossible to restore once overridden.
+fn override_str(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+) -> ApiResult<Option<Option<String>>> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(s)) => Ok(Some(Some(s.clone()))),
+        Some(_) => Err(ApiError::bad_request(
+            "validation.field_type",
+            format!("Field '{key}' must be a string or null."),
+        )),
+    }
+}
+
+fn override_i64(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Option<Option<i64>>> {
+    match obj.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::Number(n)) => n.as_i64().map(|v| Some(Some(v))).ok_or_else(|| {
+            ApiError::bad_request(
+                "validation.field_type",
+                format!("Field '{key}' must be a whole number or null."),
+            )
+        }),
+        Some(_) => Err(ApiError::bad_request(
+            "validation.field_type",
+            format!("Field '{key}' must be a whole number or null."),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Releases
+// ---------------------------------------------------------------------------
+
+/// POST /v1/projects/{project}/releases (write) — record a release.
+///
+/// The pusher supplies `touched_paths` and `orphan_globs` because it has the tree
+/// checked out; Takomo clones nothing. That keeps releases something the merging
+/// agent reports rather than an integration the server owns, and it is the
+/// cheapest possible place to learn which globs now match no files.
+pub async fn push_release(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &RELEASE_FIELDS)?;
+    let req = ReleasePush {
+        project: project.clone(),
+        reference: require_str(obj, "ref")?,
+        note: get_str(obj, "note")?,
+        touched_paths: get_string_array(obj, "touched_paths")?.unwrap_or_default(),
+        orphan_globs: get_string_array(obj, "orphan_globs")?.unwrap_or_default(),
+    };
+    let (release, impact) = state.store.push_release(&req, &ctx.actor)?;
+    state.wake();
+    let mut out = release.to_json();
+    out["impact"] = impact.to_json();
+    Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// GET /v1/projects/{project}/releases?limit= (read) — newest first.
+pub async fn list_releases(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let limit = super::parse_i64_param(&pairs, "limit")?
+        .unwrap_or(50)
+        .clamp(1, 500) as usize;
+    let items = state.store.list_releases(&project, limit)?;
+    Ok(Json(
+        json!({ "items": items.iter().map(|r| r.to_json()).collect::<Vec<_>>() }),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Lanes
+// ---------------------------------------------------------------------------
+
+/// POST /v1/projects/{project}/lanes (write) — declare a lane.
+pub async fn create_lane(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &LANE_CREATE_FIELDS)?;
+    let req = LaneCreate {
+        project: project.clone(),
+        epic: get_str(obj, "epic")?,
+        title: require_str(obj, "title")?,
+        body: get_str(obj, "body")?.unwrap_or_default(),
+        precondition: get_str(obj, "precondition")?.unwrap_or_default(),
+        layer: get_str(obj, "layer")?,
+        severity: get_str(obj, "severity")?,
+        verification: get_str(obj, "verification")?,
+        expiry_days: get_i64(obj, "expiry_days")?,
+        expiry_releases: get_i64(obj, "expiry_releases")?,
+        cost_agent_minutes: get_i64(obj, "cost_agent_minutes")?,
+        cost_human_minutes: get_i64(obj, "cost_human_minutes")?,
+        globs: get_string_array(obj, "globs")?.unwrap_or_default(),
+        metadata: obj.get("metadata").filter(|v| !v.is_null()).cloned(),
+    };
+    let lane = state.store.create_lane(&req, &ctx.actor)?;
+    state.wake();
+    Ok((StatusCode::CREATED, Json(lane.to_json())))
+}
+
+/// GET /v1/projects/{project}/lanes?epic=&severity=&layer=&archived= (read).
+///
+/// `epic=none` narrows to ungrouped lanes, which is how you find work nobody
+/// filed under an epic — the same gap the roadmap's `unparented` bucket exists
+/// for.
+pub async fn list_lanes(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let epic = match first(&pairs, "epic") {
+        Some("none") => Some(String::new()),
+        other => other.map(str::to_string),
+    };
+    let filter = LaneFilter {
+        project: project.clone(),
+        epic,
+        severity: first(&pairs, "severity").map(str::to_string),
+        layer: first(&pairs, "layer").map(str::to_string),
+        include_archived: first(&pairs, "archived") == Some("include"),
+        with_policy: true,
+    };
+    let lanes = state.store.list_lanes(&filter)?;
+    Ok(Json(
+        json!({ "items": lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>() }),
+    ))
+}
+
+/// GET /v1/lanes/{id} (read) — the lane plus its resolved policy and case counts.
+pub async fn get_lane(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let lane = state.store.get_lane(&id)?;
+    ctx.require_project(&lane.project)?;
+    Ok(Json(lane.to_json()))
+}
+
+/// PATCH /v1/lanes/{id} (write). Send an override as null to clear it and inherit
+/// again.
+pub async fn patch_lane(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let existing = state.store.get_lane(&id)?;
+    ctx.require_project(&existing.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &LANE_PATCH_FIELDS)?;
+    let patch = LanePatch {
+        title: get_str(obj, "title")?,
+        body: get_str(obj, "body")?,
+        precondition: get_str(obj, "precondition")?,
+        layer: get_str(obj, "layer")?,
+        severity: get_str(obj, "severity")?,
+        verification: override_str(obj, "verification")?,
+        expiry_days: override_i64(obj, "expiry_days")?,
+        expiry_releases: override_i64(obj, "expiry_releases")?,
+        cost_agent_minutes: override_i64(obj, "cost_agent_minutes")?,
+        cost_human_minutes: override_i64(obj, "cost_human_minutes")?,
+        globs: get_string_array(obj, "globs")?,
+        metadata_merge: obj.get("metadata_merge").cloned(),
+        epic: override_str(obj, "epic")?,
+    };
+    let lane = state.store.patch_lane(&id, &patch, &ctx.actor)?;
+    state.wake();
+    Ok(Json(lane.to_json()))
+}
+
+/// DELETE /v1/lanes/{id} (write) — archive it. Cases and verdict history survive:
+/// a lane no longer worth running is still evidence of what was once verified.
+pub async fn archive_lane(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let existing = state.store.get_lane(&id)?;
+    ctx.require_project(&existing.project)?;
+    let lane = state.store.archive_lane(&id, &ctx.actor)?;
+    state.wake();
+    Ok(Json(lane.to_json()))
+}
+
+// ---------------------------------------------------------------------------
+// Cases
+// ---------------------------------------------------------------------------
+
+/// PUT /v1/lanes/{id}/cases (write) — file the generated case set.
+///
+/// Upsert by `key`. A case still present keeps its verdicts; one that vanished is
+/// retired, not deleted; one that returns is revived. That is what makes
+/// regenerating a model after adding a parameter safe. `prune: false` extends the
+/// set instead of replacing it.
+pub async fn file_cases(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let lane = state.store.get_lane(&id)?;
+    ctx.require_project(&lane.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &CASES_FIELDS)?;
+    let prune = match obj.get("prune") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.field_type",
+                "Field 'prune' must be a boolean.",
+            ))
+        }
+    };
+    let raw = obj.get("cases").ok_or_else(|| {
+        ApiError::validation("validation.cases", "Field 'cases' is required.")
+            .remedy("Send {\"cases\": [{\"key\": \"...\", \"assignment\": {...}}]}.".to_string())
+    })?;
+    let items = raw.as_array().ok_or_else(|| {
+        ApiError::bad_request(
+            "validation.field_type",
+            "Field 'cases' must be an array of objects.",
+        )
+    })?;
+    let mut cases = Vec::with_capacity(items.len());
+    for item in items {
+        let o = body_object(item)?;
+        reject_unknown(o, &CASE_FIELDS)?;
+        cases.push(CaseInput {
+            key: require_str(o, "key")?,
+            label: get_str(o, "label")?.unwrap_or_default(),
+            assignment: o.get("assignment").cloned().unwrap_or(Value::Null),
+            seeded: matches!(o.get("seeded"), Some(Value::Bool(true))),
+        });
+    }
+    let outcome = state.store.file_cases(&id, &cases, prune, &ctx.actor)?;
+    state.wake();
+    Ok(Json(outcome.to_json()))
+}
+
+/// GET /v1/lanes/{id}/cases?retired=include (read).
+pub async fn list_cases(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let lane = state.store.get_lane(&id)?;
+    ctx.require_project(&lane.project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let include_retired = first(&pairs, "retired") == Some("include");
+    let cases = state.store.list_cases(&id, include_retired)?;
+    Ok(Json(json!({
+        "lane": id,
+        "items": cases.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
+    })))
+}
+
+/// GET /v1/cases/{id} (read) — the case plus its full verdict history.
+pub async fn get_case(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (case, history) = state.store.get_case(&id)?;
+    let lane = state.store.get_lane(&case.lane)?;
+    ctx.require_project(&lane.project)?;
+    let mut out = case.to_json();
+    out["history"] = json!(history.iter().map(|v| v.to_json()).collect::<Vec<_>>());
+    Ok(Json(out))
+}
+
+/// POST /v1/cases/{id}/verdict (write) — record a verdict.
+///
+/// `actor_kind` defaults to `agent`; sending `human` requires the `human` scope.
+/// That gate is the point: an agent may record what it observed, but only a
+/// person's token can assert that a person approved it — the same line
+/// `ask-a-human` draws.
+pub async fn record_verdict(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let (case, _) = state.store.get_case(&id)?;
+    let lane = state.store.get_lane(&case.lane)?;
+    ctx.require_project(&lane.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &VERDICT_FIELDS)?;
+    let verdict = require_str(obj, "verdict")?;
+    let actor_kind = get_str(obj, "actor_kind")?.unwrap_or_else(|| "agent".to_string());
+    if actor_kind == "human" {
+        ctx.require_scope("human").map_err(|_| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden.human_scope",
+                "Recording a human verdict needs a token with the 'human' scope.",
+            )
+            .remedy(
+                "An agent can record what it observed with actor_kind 'agent'. Only a \
+                 person's token may assert that a person approved a case."
+                    .to_string(),
+            )
+        })?;
+    }
+    let note = get_str(obj, "note")?;
+    let release = get_str(obj, "release")?;
+    let out = state.store.record_verdict(
+        &id,
+        &actor_kind,
+        &ctx.actor,
+        &verdict,
+        note.as_deref(),
+        release.as_deref(),
+    )?;
+    state.wake();
+    Ok(Json(out.to_json()))
+}
+
+// ---------------------------------------------------------------------------
+// Policy and reports
+// ---------------------------------------------------------------------------
+
+/// PUT /v1/projects/{project}/checklist/policy (write) — set the project default
+/// or, with `epic`, an epic-level override. Send a field as null to clear it.
+pub async fn put_policy(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &POLICY_FIELDS)?;
+    let epic = get_str(obj, "epic")?;
+    let input = PolicyInput {
+        verification: override_str(obj, "verification")?,
+        expiry_days: override_i64(obj, "expiry_days")?,
+        expiry_releases: override_i64(obj, "expiry_releases")?,
+    };
+    let out = state
+        .store
+        .set_checklist_policy(&project, epic.as_deref(), &input, &ctx.actor)?;
+    Ok(Json(out))
+}
+
+/// GET /v1/projects/{project}/checklist/policy (read).
+pub async fn get_policies(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let items = state.store.list_checklist_policies(&project)?;
+    Ok(Json(json!({ "items": items })))
+}
+
+/// GET /v1/projects/{project}/checklist/coverage (read).
+pub async fn coverage(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    Ok(Json(state.store.checklist_coverage(&project)?))
+}
+
+/// GET /v1/projects/{project}/checklist/worklist (read).
+pub async fn worklist(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    Ok(Json(state.store.checklist_worklist(&project)?))
+}
+
+/// GET /v1/projects/{project}/checklist/gate (read).
+pub async fn gate(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    Ok(Json(state.store.checklist_gate(&project)?))
+}

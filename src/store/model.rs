@@ -860,3 +860,326 @@ pub enum OauthExchange {
     Issued(OauthTokens),
     Rejected(GrantRejection),
 }
+
+pub const LANE_LAYERS: [&str; 3] = ["ui", "api", "other"];
+pub const LANE_SEVERITIES: [&str; 3] = ["blocking", "advisory", "low"];
+pub const VERIFICATION_LEVELS: [&str; 3] = ["agent", "human", "agent_then_human"];
+pub const CASE_VERDICTS: [&str; 4] = ["pass", "fail", "blocked", "unreachable"];
+
+/// An ordered marker in a project's release history, pushed by the agent that
+/// merged the work. `seq` is monotonic per project so a release-count expiry
+/// ("retest every 5 releases") is arithmetic.
+#[derive(Debug, Clone)]
+pub struct Release {
+    pub id: String,
+    pub project: String,
+    pub reference: String,
+    pub seq: i64,
+    pub note: Option<String>,
+    pub pushed_by: String,
+    pub created_at: i64,
+    pub path_count: i64,
+    pub orphan_globs: Vec<String>,
+}
+
+impl Release {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "ref": self.reference,
+            "seq": self.seq,
+            "note": self.note,
+            "pushed_by": self.pushed_by,
+            "created_at": iso(self.created_at),
+            "touched_paths": self.path_count,
+            "orphan_globs": self.orphan_globs,
+        })
+    }
+}
+
+/// What a release push invalidated. Returned to the pusher so the agent learns
+/// immediately what it just made stale, without a second request.
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseImpact {
+    pub stale_cases: i64,
+    pub stale_lanes: Vec<String>,
+    pub expired_lanes: Vec<String>,
+    pub orphaned_lanes: Vec<String>,
+}
+
+impl ReleaseImpact {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "stale_cases": self.stale_cases,
+            "stale_lanes": self.stale_lanes,
+            "expired_lanes": self.expired_lanes,
+            "orphaned_lanes": self.orphaned_lanes,
+        })
+    }
+}
+
+/// How many of a lane's live cases sit in each state. Counted, never derived
+/// twice: `total` is the sum of the rest.
+#[derive(Debug, Clone, Default)]
+pub struct LaneCounts {
+    pub total: i64,
+    pub approved: i64,
+    pub verified: i64,
+    pub stale: i64,
+    pub failed: i64,
+    pub unreachable: i64,
+    pub never: i64,
+}
+
+impl LaneCounts {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "total": self.total,
+            "approved": self.approved,
+            "verified": self.verified,
+            "stale": self.stale,
+            "failed": self.failed,
+            "unreachable": self.unreachable,
+            "never": self.never,
+        })
+    }
+
+    pub fn add(&mut self, state: &str) {
+        self.total += 1;
+        match state {
+            "approved" => self.approved += 1,
+            "verified" => self.verified += 1,
+            "stale" => self.stale += 1,
+            "failed" => self.failed += 1,
+            "unreachable" => self.unreachable += 1,
+            _ => self.never += 1,
+        }
+    }
+}
+
+/// The policy actually in force for a lane, after resolving project → epic →
+/// lane. `verification_from` / `expiry_from` name the level that supplied the
+/// value so a reader can see why, which is the whole point of an inherited
+/// setting.
+#[derive(Debug, Clone)]
+pub struct ResolvedPolicy {
+    pub verification: String,
+    pub verification_from: String,
+    pub expiry_days: Option<i64>,
+    pub expiry_releases: Option<i64>,
+    pub expiry_from: String,
+}
+
+impl ResolvedPolicy {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "verification": self.verification,
+            "verification_from": self.verification_from,
+            "expiry_days": self.expiry_days,
+            "expiry_releases": self.expiry_releases,
+            "expiry_from": self.expiry_from,
+        })
+    }
+
+    /// Does clearing a case under this policy need a human?
+    pub fn needs_human(&self) -> bool {
+        self.verification == "human" || self.verification == "agent_then_human"
+    }
+}
+
+/// One action with one entry precondition at one layer. `body` is free-form
+/// prose an agent or a human follows; there is deliberately no step model.
+#[derive(Debug, Clone)]
+pub struct Lane {
+    pub id: String,
+    pub project: String,
+    pub epic: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub precondition: String,
+    pub layer: String,
+    pub severity: String,
+    pub verification: Option<String>,
+    pub expiry_days: Option<i64>,
+    pub expiry_releases: Option<i64>,
+    pub cost_agent_minutes: Option<i64>,
+    pub cost_human_minutes: Option<i64>,
+    pub metadata: Value,
+    pub version: i64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+    pub globs: Vec<String>,
+    pub counts: LaneCounts,
+    /// Globs that matched nothing in the most recent release — coverage claimed
+    /// over code that is not there.
+    pub orphan_globs: Vec<String>,
+    pub policy: Option<ResolvedPolicy>,
+}
+
+impl Lane {
+    pub fn to_json(&self) -> Value {
+        let mut v = json!({
+            "id": self.id,
+            "project": self.project,
+            "epic": self.epic,
+            "title": self.title,
+            "body": self.body,
+            "precondition": self.precondition,
+            "layer": self.layer,
+            "severity": self.severity,
+            "verification": self.verification,
+            "expiry_days": self.expiry_days,
+            "expiry_releases": self.expiry_releases,
+            "cost_agent_minutes": self.cost_agent_minutes,
+            "cost_human_minutes": self.cost_human_minutes,
+            "metadata": self.metadata,
+            "version": self.version,
+            "globs": self.globs,
+            "orphan_globs": self.orphan_globs,
+            "cases": self.counts.to_json(),
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "archived_at": self.archived_at.map(iso),
+        });
+        if let Some(p) = &self.policy {
+            v["policy"] = p.to_json();
+        }
+        v
+    }
+}
+
+/// A lane crossed with one parameter assignment: the unit that actually gets
+/// executed. `key` is stable across regeneration so history survives.
+#[derive(Debug, Clone)]
+pub struct Case {
+    pub id: String,
+    pub lane: String,
+    pub key: String,
+    pub label: String,
+    pub assignment: Value,
+    pub seeded: bool,
+    pub agent_verdict: Option<String>,
+    pub agent_at: Option<i64>,
+    pub agent_by: Option<String>,
+    pub agent_release: Option<String>,
+    pub human_verdict: Option<String>,
+    pub human_at: Option<i64>,
+    pub human_by: Option<String>,
+    pub human_release: Option<String>,
+    pub stale_since: Option<String>,
+    pub retired_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl Case {
+    /// The one word that describes where this case stands.
+    ///
+    /// `stale` outranks `unreachable` deliberately: once the claimed code moved,
+    /// an earlier "the interface cannot reach this" is a statement about code
+    /// that no longer exists, so it has to be re-established rather than trusted.
+    pub fn state(&self) -> &'static str {
+        if self.retired_at.is_some() {
+            return "retired";
+        }
+        if self.stale_since.is_some() {
+            return "stale";
+        }
+        if self.agent_verdict.as_deref() == Some("unreachable")
+            || self.human_verdict.as_deref() == Some("unreachable")
+        {
+            return "unreachable";
+        }
+        if self.agent_verdict.as_deref() == Some("fail")
+            || self.human_verdict.as_deref() == Some("fail")
+        {
+            return "failed";
+        }
+        if self.human_verdict.as_deref() == Some("pass") {
+            return "approved";
+        }
+        if self.agent_verdict.as_deref() == Some("pass") {
+            return "verified";
+        }
+        "never"
+    }
+
+    /// Is this case cleared under `policy`? `agent_then_human` needs both facts,
+    /// which is exactly why they are stored separately.
+    pub fn satisfies(&self, policy: &ResolvedPolicy) -> bool {
+        if self.state() == "unreachable" {
+            return true;
+        }
+        match policy.verification.as_str() {
+            "human" => self.human_verdict.as_deref() == Some("pass"),
+            "agent_then_human" => {
+                self.agent_verdict.as_deref() == Some("pass")
+                    && self.human_verdict.as_deref() == Some("pass")
+            }
+            _ => {
+                self.agent_verdict.as_deref() == Some("pass")
+                    || self.human_verdict.as_deref() == Some("pass")
+            }
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "lane": self.lane,
+            "key": self.key,
+            "label": self.label,
+            "assignment": self.assignment,
+            "seeded": self.seeded,
+            "state": self.state(),
+            "agent": {
+                "verdict": self.agent_verdict,
+                "at": self.agent_at.map(iso),
+                "by": self.agent_by,
+                "release": self.agent_release,
+            },
+            "human": {
+                "verdict": self.human_verdict,
+                "at": self.human_at.map(iso),
+                "by": self.human_by,
+                "release": self.human_release,
+            },
+            "stale_since": self.stale_since,
+            "retired_at": self.retired_at.map(iso),
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+        })
+    }
+}
+
+/// One recorded verdict, append-only.
+#[derive(Debug, Clone)]
+pub struct CaseVerdict {
+    pub id: String,
+    pub case_id: String,
+    pub actor_kind: String,
+    pub actor: String,
+    pub verdict: String,
+    pub note: Option<String>,
+    pub release: Option<String>,
+    pub at: i64,
+}
+
+impl CaseVerdict {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "case": self.case_id,
+            "actor_kind": self.actor_kind,
+            "actor": self.actor,
+            "verdict": self.verdict,
+            "note": self.note,
+            "release": self.release,
+            "at": iso(self.at),
+        })
+    }
+}

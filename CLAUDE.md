@@ -304,6 +304,16 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
 - The server refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`: it terminates plain
   HTTP and expects TLS in front.
 
+**Checklist** (`src/store/checklist.rs`, `src/api/checklist.rs`) is how a "done" claim becomes a
+*verified* one: releases, lanes, the cases generated beneath them, and the verdicts recorded
+against those cases. The rule that shapes every part of it is **Takomo stores, the agent
+computes** — nothing server-side generates a combinatorial model, validates one, or judges
+whether a coverage claim is true. A lane is ONE action with ONE entry precondition at ONE layer
+(a rule enforced only in a frontend passes at the API layer, so those verdicts are not
+interchangeable), and coverage is of the *declared* surface: hand-written globs, known to rot,
+with orphan detection so the rot stays visible. See `docs/checklist.md`.
+
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/initiatives.md`, `docs/promotions.md`,
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/checklist.md`, `docs/initiatives.md`,
+`docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).
