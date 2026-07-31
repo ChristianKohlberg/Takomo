@@ -36,6 +36,7 @@ tags:
   - { name: checklist }
   - { name: oauth }
   - { name: initiatives }
+  - { name: schedules }
 
 paths:
   /whoami:
@@ -629,6 +630,17 @@ paths:
         - { name: fields, in: query, schema: { type: string }, description: comma list for sparse responses }
         - { name: include_archived, in: query, schema: { type: boolean, default: false }, description: include archived tickets alongside active ones }
         - { name: archived, in: query, schema: { type: string, enum: [only, all, active] }, description: "only = archived only; all = both; active = default (non-archived)" }
+        - name: expired
+          in: query
+          schema: { type: boolean }
+          description: |
+            Scheduled occurrences only. `true` = the deadline has passed (what a
+            maintenance agent queries to find what to tidy — nothing on the server
+            closes an expired ticket); `false` = still live. A hand-made ticket has
+            no deadline and counts as unexpired. Terminal state is not considered:
+            this asks whether the clock ran out, so filter on state as well if you
+            only want the unfinished ones.
+        - { name: schedule, in: query, schema: { type: string }, description: 'only occurrences of this schedule' }
         - { name: cursor, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
       responses:
@@ -3335,6 +3347,324 @@ paths:
         "403": { description: Token lacks the read scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /projects/{project}/schedule-approval:
+    put:
+      tags: [schedules, admin]
+      summary: Require (or stop requiring) a human to activate an agent-proposed schedule
+      description: |
+        Requires the `admin` scope, like every other project setting.
+
+        A schedule outlives the token that created it, so a `write` credential able
+        to start one could keep writing tickets long after it was revoked. With this
+        on — the default — a schedule created by a caller **without** the `human`
+        scope lands `pending` and fires nothing until a human activates it. Turn it
+        off to let a fleet schedule its own recurring work.
+
+        A `human` caller's own schedule is born active either way: asking someone to
+        approve their own proposal is theatre when they already hold the authority
+        the flag protects.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [required]
+              properties:
+                required: { type: boolean }
+      responses:
+        "200":
+          description: The setting as stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { type: string }
+                  schedule_approval: { type: boolean }
+
+  /schedules:
+    get:
+      tags: [schedules]
+      summary: List schedules
+      description: |
+        Requires the `read` scope; bounded by the token's project allowlist.
+
+        Ordered the way the page renders: waiting-for-you (`pending`) first, then
+        `active`, then stopped — so a client never has to re-sort. Each row carries
+        the single next slot in `upcoming`.
+      parameters:
+        - { name: project, in: query, required: false, schema: { type: string } }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [pending, active, paused, rejected, retired] }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 200, minimum: 1, maximum: 200 } }
+      responses:
+        "200":
+          description: The project's schedules.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedules:
+                    type: array
+                    items: { $ref: "#/components/schemas/Schedule" }
+
+    post:
+      tags: [schedules]
+      summary: Create a schedule
+      description: |
+        Requires the `write` scope for the named project — deliberately not
+        `human`. An agent noticing "this keeps coming back every week" and
+        proposing a cadence is a behaviour worth having, and what it creates is
+        inert: unless the caller carries `human`, a project with
+        `schedule_approval` on lands the schedule `pending` with no next slot, so
+        the sweep cannot see it. **Activating** is what needs `human`.
+
+        The response always carries `upcoming` — the first three slots the cadence
+        produces — so the caller can see what it just bought without running the
+        rule in its head. When the schedule landed `pending` it also carries a
+        `message` saying so in words an agent will act on.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, name, cadence, template]
+              properties:
+                project: { type: string }
+                name: { type: string, maxLength: 300, description: 'what the cadence is called, e.g. "Weekly review"' }
+                cadence: { $ref: "#/components/schemas/Cadence" }
+                template: { $ref: "#/components/schemas/ScheduleTemplate" }
+                starts_at:
+                  type: string
+                  format: date-time
+                  description: |
+                    The interval anchor and the earliest slot; defaults to now.
+                    `interval` counts from here rather than from calendar parity,
+                    which is what keeps "every 2 weeks" landing on the same weeks a
+                    year later.
+                ends_at: { type: string, format: date-time, description: 'after this the schedule retires rather than firing forever' }
+                rationale: { type: string, description: 'why the proposer thinks this recurs; shown to whoever reviews it' }
+      responses:
+        "201":
+          description: The new schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+
+  /schedules/{id}:
+    get:
+      tags: [schedules]
+      summary: Fetch one schedule with its next slots and occurrence history
+      description: |
+        Requires the `read` scope. The project check runs against the schedule's
+        own project, so naming an id never grants access to it.
+
+        `occurrences` carries the history newest-first with each `outcome`
+        **derived** from the ticket rather than stored — which is why it can never
+        disagree with the ticket, and why re-opening an old ticket changes what its
+        slot looks like.
+
+        Returns an `ETag` (the version) for `If-Match` on PATCH.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: occurrences, in: query, required: false, schema: { type: integer, default: 8, minimum: 1, maximum: 200 }, description: 'how much history to include' }
+      responses:
+        "200":
+          description: The schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+
+    patch:
+      tags: [schedules]
+      summary: Edit a schedule
+      description: |
+        Requires the `human` scope. Send `If-Match: "<version>"` from the ETag;
+        a mismatch is a 409 carrying the current version.
+
+        Changing the cadence or the window recomputes the next slot immediately.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: If-Match, in: header, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 300 }
+                cadence: { $ref: "#/components/schemas/Cadence" }
+                template: { $ref: "#/components/schemas/ScheduleTemplate" }
+                ends_at: { type: [string, "null"], format: date-time, description: 'null clears the window; omit to keep it' }
+      responses:
+        "200":
+          description: The updated schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+    delete:
+      tags: [schedules]
+      summary: Delete a schedule
+      description: |
+        Requires the `human` scope.
+
+        The tickets it created are **kept**: they are real work with real history,
+        and the `schedule` field on them stays as the record of where they came
+        from. That column carries no foreign key for exactly this reason.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Confirmation, and a note that the tickets were kept.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: string }
+                  note: { type: string }
+
+  /schedules/{id}/occurrences:
+    get:
+      tags: [schedules]
+      summary: A schedule's occurrence history
+      description: |
+        Requires the `read` scope. The same list the detail view previews, over a
+        longer window — one row per slot that produced a ticket, newest first.
+
+        A slot that never produced a ticket (the server was down across it) is not
+        here: it leaves a gap rather than a row. The `schedule_missed` event
+        records how many were passed over, so a hole reads as "nothing was running"
+        rather than "nothing was scheduled".
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 40, minimum: 1, maximum: 200 } }
+      responses:
+        "200":
+          description: The history.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedule: { type: string }
+                  occurrences:
+                    type: array
+                    items: { $ref: "#/components/schemas/ScheduleOccurrence" }
+
+  /schedules/{id}/activate:
+    post:
+      tags: [schedules]
+      summary: Activate a pending schedule
+      description: |
+        Requires the `human` scope — this is the half of the flow that cannot be
+        automated, and the reason an agent may propose a schedule at all.
+
+        Computes the next slot, so the schedule starts firing. Legal only from
+        `pending`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The now-active schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /schedules/{id}/reject:
+    post:
+      tags: [schedules]
+      summary: Turn down a proposed schedule
+      description: |
+        Requires the `human` scope. Legal only from `pending`, and terminal: a
+        rejected schedule is re-created rather than revived, so the record stays
+        honest about what was agreed when.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The rejected schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /schedules/{id}/pause:
+    post:
+      tags: [schedules]
+      summary: Stop a schedule firing, keeping its history
+      description: |
+        Requires the `human` scope. Clears the next slot, which is what makes a
+        paused schedule inert by construction rather than by a check: the sweep's
+        partial index cannot see a row with no next slot.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The paused schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /schedules/{id}/resume:
+    post:
+      tags: [schedules]
+      summary: Resume a paused schedule
+      description: |
+        Requires the `human` scope. Computes forward from now and **never**
+        backfills the pause, so unpausing a long-paused schedule cannot dump
+        history into the ready queue.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The resumed schedule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /schedules/{id}/run:
+    post:
+      tags: [schedules]
+      summary: Fire a schedule now, off-cycle
+      description: |
+        Requires the `human` scope. Creates the ticket for the slot the schedule
+        would next have used, without shifting the cadence — the next slot still
+        advances normally, so a manual run is an extra occurrence rather than a
+        moved one.
+
+        `created: false` is **not** an error: it means that slot already has a
+        ticket, which is the `UNIQUE(schedule, occurrence)` index doing its job.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The ticket that was created, or a note that the slot already had one.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schedule: { type: string }
+                  ticket: { type: [string, "null"] }
+                  created: { type: boolean }
+                  note: { type: string }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+
 components:
   securitySchemes:
     bearer:
@@ -3605,6 +3935,130 @@ components:
             token: { type: string, description: 'the plaintext tk_ token — shown ONCE, never again' }
             warning: { type: string }
 
+    Cadence:
+      type: object
+      description: |
+        A recurrence rule. See `spec/schedule-format.md`.
+
+        Unknown fields are refused, and so is a field that does not apply to the
+        unit: `{"every":"day","on":["mon"]}` is a 422 rather than an ignored extra,
+        because accepting it would fire seven times a week when the author asked
+        for one. A cron-shaped string is answered with its translation instead of
+        being parsed.
+
+        The finest cadence is daily. There is no sub-daily unit on purpose: a
+        ticket a fleet churns through every few minutes is a worker loop, not a
+        task store's job.
+      required: [every, at]
+      additionalProperties: false
+      properties:
+        every: { type: string, enum: [day, week, month] }
+        interval: { type: integer, default: 1, minimum: 1, maximum: 52, description: 'repeat every N units, counted from the schedule''s starts_at' }
+        on:
+          type: array
+          items: { type: string, enum: [mon, tue, wed, thu, fri, sat, sun] }
+          description: 'week cadences only, and required there'
+        day: { type: integer, minimum: 1, maximum: 31, description: 'month cadences only; a day past the end of a short month is clamped to that month''s last day' }
+        at: { type: string, pattern: '^[0-2][0-9]:[0-5][0-9]$', description: 'local wall-clock time, 24-hour, zero-padded' }
+        tz:
+          type: string
+          description: |
+            IANA zone name, default UTC. Slots are computed in LOCAL time, so
+            "every Monday at 09:00" stays 09:00 across a daylight-saving boundary.
+            Where local time is not a total function: a wall clock deleted by
+            spring-forward clamps to the first minute that exists (never dropping
+            the occurrence), and one that happens twice on fall-back fires on the
+            earlier.
+
+    ScheduleTemplate:
+      type: object
+      description: |
+        The ticket each occurrence creates — a ticket create minus `project`, and
+        minus `parent` and `blocked_by`. Those two are absent on purpose: an
+        occurrence that inherited a dependency would stop being independent of its
+        siblings, which is the invariant the whole feature rests on.
+      required: [title]
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          maxLength: 300
+          description: |
+            May contain four placeholders, and deliberately only four:
+            `{date}` → 2026-08-03, `{week}` → 2026-W32, `{month}` → 2026-08 (all
+            local to the cadence's zone, because they label the occurrence for a
+            human) and `{slot}` → 2026-08-03T07:00:00Z (UTC, because it is the
+            occurrence's identity).
+        body: { type: string, maxLength: 131072, description: 'markdown; the same placeholders apply' }
+        type: { type: string, enum: [epic, task, bug, spike], default: task }
+        priority: { type: string, enum: [critical, high, normal, low], default: normal }
+        labels: { type: array, items: { type: string } }
+        tags: { type: array, items: { type: string }, description: '`kind:handle` references' }
+
+    Schedule:
+      type: object
+      properties:
+        id: { type: string }
+        project: { type: string }
+        name: { type: string }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        template: { $ref: "#/components/schemas/ScheduleTemplate" }
+        status:
+          type: string
+          enum: [pending, active, paused, rejected, retired]
+          description: |
+            `pending` = proposed by an agent, waiting on a human, firing nothing.
+            `active` = firing. `paused` = stopped, history kept. `rejected` and
+            `retired` (window elapsed) are terminal.
+        proposed_by: { type: [string, "null"], description: 'the agent that proposed it, when it needed approval' }
+        rationale: { type: [string, "null"] }
+        next_slot:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            The next slot to fire. Always null unless `status` is `active` — that
+            invariant is what makes a pending or paused schedule inert by
+            construction, because the sweep's partial index cannot see a row
+            without one.
+        starts_at: { type: string, format: date-time, description: 'the interval anchor and earliest slot' }
+        ends_at: { type: [string, "null"], format: date-time }
+        upcoming: { type: array, items: { type: string, format: date-time }, description: 'the next slots this cadence produces, so a caller can see what it bought' }
+        occurrences:
+          type: array
+          items: { $ref: "#/components/schemas/ScheduleOccurrence" }
+          description: 'present on the detail view only'
+        message: { type: string, description: 'present when the schedule landed pending: what happened and what to do about it' }
+        cadence_error: { type: string, description: 'present only when the stored cadence no longer parses — a corrupt row, reported rather than silently defaulted' }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 'monotonic; ETag value' }
+
+    ScheduleOccurrence:
+      type: object
+      description: |
+        One slot that produced a ticket, with its outcome derived from that ticket
+        rather than stored — so it can never disagree with the ticket, at the cost
+        of re-opening an old ticket changing what its slot looks like.
+      properties:
+        ticket: { type: string }
+        slot: { type: string, format: date-time }
+        expires_at: { type: [string, "null"], format: date-time }
+        title: { type: string }
+        state: { type: string }
+        state_category: { type: string }
+        outcome:
+          type: string
+          enum: [done, open, not_fulfilled]
+          description: |
+            `done` = the state is terminal. `open` = not terminal and the deadline
+            has not passed — this is the one to do. `not_fulfilled` = not terminal
+            and the deadline has passed: nobody finished it in time. Nothing on the
+            server closes a not_fulfilled occurrence; a maintenance agent does,
+            through the ordinary API.
+        claimed_by: { type: [string, "null"], description: 'who holds or last held the lease — evidence for the outcome, not part of it' }
+        archived_at: { type: [string, "null"], format: date-time }
+
     Ticket:
       type: object
       properties:
@@ -3645,6 +4099,9 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         archived_at: { type: [string, "null"], format: date-time, description: 'when archived (hidden from default views), or null when active' }
+        schedule: { type: [string, "null"], description: 'the schedule that materialized this ticket, or null for a hand-made one. Provenance and a link back, not a relationship: two occurrences of one schedule have no edge between them.' }
+        occurrence: { type: [string, "null"], format: date-time, description: 'the calendar slot this ticket stands for. Unique per schedule, which is what makes exactly-one-ticket-per-slot structural.' }
+        expires_at: { type: [string, "null"], format: date-time, description: 'when this ticket stops counting as LIVE work — the moment its schedule''s next occurrence is due. Past it the ticket leaves the ready queue and reads as not_fulfilled; nothing archives or transitions it.' }
 
     TicketCreate:
       type: object
@@ -4427,6 +4884,18 @@ components:
 
 # ---------------------------------------------------------------------------
 x-error-codes:
+  # -- schedules: recurrence rules that materialize ordinary tickets --
+  validation.schedule.cadence: "the recurrence rule is unusable. The message names every problem at once, and a cron-shaped string is answered with its declarative equivalent rather than parsed."
+  validation.schedule.template: "the ticket template a schedule stamps out is unusable. parent and blocked_by are refused on purpose — an occurrence that inherited a dependency would stop being independent of its siblings."
+  validation.schedule.name: "a schedule needs a non-blank name of at most 300 characters."
+  validation.schedule.window: "ends_at must be after starts_at."
+  validation.schedule.instant: "a timestamp field was neither RFC 3339 nor unix milliseconds."
+  validation.schedule.status: "the status filter is not one of pending, active, paused, rejected, retired."
+  validation.schedule.approval: "the schedule-approval setting takes a boolean `required`."
+  validation.schedule.too_many: "the project is at its cap of pending/active/paused schedules. Delete or reject one first."
+  validation.expired: "the `expired` ticket filter takes true or false."
+  notfound.schedule: "no schedule with that id exists. `GET /v1/schedules?project=<p>` lists them."
+  conflict.schedule.status: "the schedule cannot move to that status from the one it is in. The message names the legal moves; rejected and retired are terminal."
   # -- bearer tokens (tk_): authentication, scopes, project allowlist, budget --
   auth.missing: "no Authorization header. Every /v1 and /mcp call needs `Bearer tk_...`; only /healthz is open."
   auth.invalid: "the bearer token is not recognised, was revoked, or has expired. Mint a fresh one with `takomo token create`."

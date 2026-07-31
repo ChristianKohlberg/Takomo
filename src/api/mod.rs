@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod oauth;
 pub mod projects;
 pub mod questions;
+pub mod schedules;
 pub mod shares;
 pub mod tags;
 pub mod tickets;

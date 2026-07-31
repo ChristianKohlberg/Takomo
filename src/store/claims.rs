@@ -141,10 +141,17 @@ fn ready_query(
         WHERE ws.claimable = 1
           AND t.archived_at IS NULL
           AND (t.claim_holder IS NULL OR t.claim_expires_at <= ?)
+          -- An expired scheduled occurrence is no longer live work, so it must
+          -- not be handed to a worker: without this an agent calling /v1/ready
+          -- would keep being given last month's review forever. It stays
+          -- fetchable and claimable BY ID — only the queue stops offering it.
+          AND (t.expires_at IS NULL OR t.expires_at > ?)
           AND t.id NOT IN (SELECT id FROM blocked)
         "#
     );
-    let mut params_vec: Vec<SqlValue> = vec![SqlValue::Integer(now)];
+    // Two `now` binds: the claim-expiry check and the occurrence-expiry check,
+    // in the order the placeholders appear above.
+    let mut params_vec: Vec<SqlValue> = vec![SqlValue::Integer(now), SqlValue::Integer(now)];
     if let Some(p) = &filter.project {
         sql.push_str(" AND t.project = ?");
         params_vec.push(SqlValue::Text(p.clone()));

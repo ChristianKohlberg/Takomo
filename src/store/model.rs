@@ -46,6 +46,22 @@ pub struct Ticket {
     /// ISO timestamp when the ticket was archived, or None when active.
     /// Archived tickets are hidden from default list/ready/board/metrics views.
     pub archived_at: Option<String>,
+    /// The schedule that materialized this ticket, or None for a hand-made one.
+    ///
+    /// Provenance and a link back, not a relationship: two tickets from the same
+    /// schedule have no edge between them, and this column carries no foreign key
+    /// so deleting the rule leaves the work — and the record of where it came
+    /// from — intact.
+    pub schedule: Option<String>,
+    /// The calendar slot this ticket stands for. Unique per schedule, which is
+    /// what makes exactly-one-ticket-per-slot structural.
+    pub occurrence: Option<i64>,
+    /// When this ticket stops counting as live work — the moment its schedule's
+    /// next occurrence comes due, stamped at creation from the cadence alone.
+    ///
+    /// Expiry changes no state: an expired ticket is not archived, cancelled or
+    /// transitioned. It leaves the ready queue and reads as `not_fulfilled`.
+    pub expires_at: Option<i64>,
 }
 
 impl Ticket {
@@ -101,7 +117,19 @@ impl Ticket {
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
             "archived_at": self.archived_at,
+            "schedule": self.schedule,
+            "occurrence": self.occurrence.map(iso),
+            "expires_at": self.expires_at.map(iso),
         })
+    }
+
+    /// Whether this ticket has stopped counting as live work.
+    ///
+    /// Only ever true for a scheduled ticket: a hand-made one has no
+    /// `expires_at` and never expires. Terminal state wins — a ticket somebody
+    /// finished is `done`, however late.
+    pub fn is_expired(&self, now: i64) -> bool {
+        matches!(self.expires_at, Some(exp) if exp <= now)
     }
 }
 
@@ -1180,6 +1208,95 @@ impl CaseVerdict {
             "note": self.note,
             "release": self.release,
             "at": iso(self.at),
+        })
+    }
+}
+
+/// A recurrence rule that materializes ordinary tickets. See
+/// [`crate::store::schedules`] and `spec/schedule-format.md`.
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    pub id: String,
+    pub project: String,
+    pub name: String,
+    /// The parsed cadence, or `None` when the stored JSON no longer parses — a
+    /// corrupt row rather than a schedule with default behaviour, which is why
+    /// this is an Option and not a fallback.
+    pub cadence: Option<crate::schedule::Cadence>,
+    /// The cadence exactly as stored, so a corrupt row can be reported verbatim
+    /// instead of guessed at.
+    pub cadence_raw: String,
+    pub template: Value,
+    /// pending | active | paused | rejected | retired.
+    pub status: String,
+    /// The agent that proposed it, when it arrived over MCP and needed approval.
+    pub proposed_by: Option<String>,
+    pub rationale: Option<String>,
+    /// The next slot to fire. NULL unless `status = active`, which is what makes
+    /// a pending or paused schedule inert by construction: the sweep's index
+    /// cannot see it.
+    pub next_slot: Option<i64>,
+    /// The interval anchor and the earliest slot.
+    pub starts_at: i64,
+    pub ends_at: Option<i64>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+}
+
+impl Schedule {
+    pub fn to_json(&self, upcoming: &[i64]) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "name": self.name,
+            "cadence": self.cadence,
+            "template": self.template,
+            "status": self.status,
+            "proposed_by": self.proposed_by,
+            "rationale": self.rationale,
+            "next_slot": self.next_slot.map(iso),
+            "starts_at": iso(self.starts_at),
+            "ends_at": self.ends_at.map(iso),
+            "upcoming": upcoming.iter().copied().map(iso).collect::<Vec<_>>(),
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "version": self.version,
+        })
+    }
+}
+
+/// One occurrence of a schedule, with its outcome derived from the ticket.
+#[derive(Debug, Clone)]
+pub struct ScheduleOccurrence {
+    pub ticket: String,
+    pub slot: i64,
+    pub expires_at: Option<i64>,
+    pub title: String,
+    pub state: String,
+    pub state_category: String,
+    /// done | open | not_fulfilled.
+    pub outcome: String,
+    /// Who holds or last held the lease — evidence for the outcome, not part of
+    /// it.
+    pub claimed_by: Option<String>,
+    pub archived_at: Option<String>,
+}
+
+impl ScheduleOccurrence {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ticket": self.ticket,
+            "slot": iso(self.slot),
+            "expires_at": self.expires_at.map(iso),
+            "title": self.title,
+            "state": self.state,
+            "state_category": self.state_category,
+            "outcome": self.outcome,
+            "claimed_by": self.claimed_by,
+            "archived_at": self.archived_at,
         })
     }
 }
