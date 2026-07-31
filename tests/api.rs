@@ -10201,6 +10201,69 @@ async fn agent_and_human_verdicts_are_separate_facts() {
     assert_eq!(kinds, vec!["human", "agent"]);
 }
 
+/// Two verdicts in the same millisecond still read newest-first.
+///
+/// This is the regression for the flake that turned `main` red: the history
+/// tiebreak was `id DESC`, and a verdict id is `cv-` plus eight RANDOM base36
+/// characters — so whenever both verdicts shared a millisecond, which is exactly
+/// what an agent pass followed immediately by a human pass does, the order was a
+/// coin flip. `agent_and_human_verdicts_are_separate_facts` asserts that order
+/// and so failed about half the time.
+///
+/// Forcing the two timestamps equal makes the regression deterministic instead of
+/// leaving it to chance: with a random tiebreak this fails roughly 50% of runs,
+/// and with insertion order it cannot fail at all.
+#[tokio::test]
+async fn verdict_history_is_newest_first_within_a_single_millisecond() {
+    let app = TestApp::spawn().await;
+    let id = lane(
+        &app,
+        json!({ "title": "Create a claim", "verification": "agent_then_human" }),
+    )
+    .await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    // Agent first, then human — so newest-first means human, agent.
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass" }),
+    )
+    .await;
+    app.post(
+        &app.human,
+        &format!("/v1/cases/{cid}/verdict"),
+        json!({ "verdict": "pass", "actor_kind": "human" }),
+    )
+    .await;
+
+    // Collapse both timestamps onto one instant, so `at DESC` decides nothing and
+    // the tiebreak is the only thing left ordering them.
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    let touched = conn
+        .execute(
+            "UPDATE case_verdicts SET at = 1000 WHERE case_id = ?1",
+            rusqlite::params![cid],
+        )
+        .expect("flatten timestamps");
+    assert_eq!(touched, 2, "both verdicts should have been recorded");
+
+    let (_, case) = app.get(&app.admin, &format!("/v1/cases/{cid}")).await;
+    let kinds: Vec<&str> = case["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["actor_kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["human", "agent"],
+        "with equal timestamps the tiebreak must be insertion order, not a random \
+         id: {case}"
+    );
+}
+
 /// An agent must not be able to sign a person's name. Recording a human verdict
 /// needs the `human` scope; a write-scoped agent token is refused.
 #[tokio::test]
