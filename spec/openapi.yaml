@@ -1783,7 +1783,13 @@ paths:
                     what prevents an open redirect.
                 client_name:
                   type: string
-                  description: shown on the consent screen; truncated to 200 characters
+                  description: |
+                    shown on the consent screen and in the operator's token listing;
+                    truncated to 200 characters. Control characters and bidirectional
+                    overrides are refused (`invalid_client_metadata`) rather than
+                    stripped: registration is unauthenticated and this value is
+                    rendered, so a name that can forge a line of a terminal listing is
+                    not accepted at all.
                 token_endpoint_auth_method:
                   type: string
                   const: none
@@ -2965,7 +2971,10 @@ components:
               description: null when the client registered without one (RFC 7591 makes it optional), or when its registration has since been swept
             label:
               type: string
-              description: what to show a human — `client_name`, falling back to `client_id`
+              description: |
+                what to show a human — `client_name`, falling back to `client_id`, with
+                control characters and bidirectional overrides replaced by `?`. Prefer
+                it over raw `client_name` anywhere the value is displayed.
 
     TokenCreate:
       type: object

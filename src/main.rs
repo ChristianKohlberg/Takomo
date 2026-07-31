@@ -323,7 +323,14 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                 );
                 let last_used = t.last_used_at.map(iso).unwrap_or_else(|| "never".into());
                 if connections {
-                    let connection = t.oauth_client.as_ref().map(|c| c.label()).unwrap_or("-");
+                    // `label()` is what makes this safe to print: the name behind it
+                    // came from an unauthenticated registration endpoint, and a
+                    // terminal interprets escape sequences.
+                    let connection = t
+                        .oauth_client
+                        .as_ref()
+                        .map(|c| c.label())
+                        .unwrap_or_else(|| "-".to_string());
                     println!("{row} {last_used:<22} {connection}");
                 } else {
                     println!("{row} {last_used}");

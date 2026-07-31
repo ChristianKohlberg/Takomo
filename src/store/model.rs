@@ -529,13 +529,41 @@ pub struct OauthConnection {
 impl OauthConnection {
     /// What to show a human: the client's name, falling back to its id. A person
     /// recognizes "Claude"; nobody recognizes `oc_x3jolbbtodnog1rh`.
-    pub fn label(&self) -> &str {
-        self.client_name
+    ///
+    /// Characters that would forge the display are replaced, not passed through.
+    /// This name arrives through an **unauthenticated** registration endpoint and
+    /// one of its sinks is a terminal — `takomo token list`, which is the listing an
+    /// operator reads to decide which connection to revoke, an act that cannot be
+    /// undone. An escape sequence there can erase or overwrite a line, so a forged
+    /// row is not cosmetic. `api::oauth::register` refuses such a name outright;
+    /// this is the other half of that pair, covering rows stored before that check
+    /// existed and whatever writes this column next.
+    pub fn label(&self) -> String {
+        let raw = self
+            .client_name
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
-            .unwrap_or(&self.client_id)
+            .unwrap_or(&self.client_id);
+        raw.chars()
+            .map(|c| if display_hostile(c) { '?' } else { c })
+            .collect()
     }
+}
+
+/// Would this character forge or garble a line of text a human is reading?
+///
+/// Control characters (a newline splitting one row into two, an ANSI escape erasing
+/// the row above) and the bidirectional overrides, which reorder what a terminal
+/// shows without changing the bytes — the Trojan Source trick, and the same problem
+/// wearing different clothes.
+///
+/// Lives in the store layer because both users need the same answer and only one
+/// direction of dependency exists: [`OauthConnection::label`] sanitizes for display,
+/// and `api::oauth` refuses on the way in.
+pub fn display_hostile(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 impl TokenRow {

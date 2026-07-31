@@ -452,7 +452,13 @@ pub async fn register(
     }
 
     let client_name = match get_str(obj, "client_name") {
-        Ok(Some(name)) => name.chars().take(200).collect::<String>(),
+        Ok(Some(name)) => {
+            if let Err(why) = validate_client_name(&name) {
+                return invalid_metadata(&format!("client_name is not acceptable: {why}"));
+            }
+            // By `chars`, so a 200-character cut cannot land inside a multi-byte one.
+            name.chars().take(200).collect::<String>()
+        }
         Ok(None) => String::new(),
         Err(_) => return invalid_metadata("client_name must be a string."),
     };
@@ -477,6 +483,22 @@ fn invalid_metadata(description: &str) -> Response {
         description,
         "Fix the registration metadata and retry. Members this server does not recognize are ignored, so only the ones named in the description matter.",
     )
+}
+
+/// `client_name` is the other piece of client-supplied data this server *renders* —
+/// on the consent page, in `takomo token list`, in `GET /v1/tokens` — and
+/// registration is unauthenticated, so it is validated exactly like a redirect URI
+/// below, and for the same reason.
+///
+/// Refused rather than quietly stripped: this codebase does not fail silently, and a
+/// name carrying a newline or an ANSI escape is not a name anybody typed. RFC 7591
+/// requires *unrecognized* metadata to be ignored, which is not licence to accept a
+/// malformed value for a member the server understands and puts in front of a human.
+fn validate_client_name(name: &str) -> Result<(), &'static str> {
+    if name.chars().any(crate::store::display_hostile) {
+        return Err("it contains a control character or a bidirectional override. Those forge the display rather than describe the client: in a terminal listing an escape sequence can erase the line above, and a newline turns one row into two.");
+    }
+    Ok(())
 }
 
 /// A redirect URI is the one piece of client-supplied data that later gets turned

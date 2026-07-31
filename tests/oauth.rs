@@ -177,12 +177,18 @@ impl TestApp {
     /// endpoint's response body.
     async fn full_flow(&self, token: &str) -> Value {
         let client_id = self.register_client("Test Client", &[REDIRECT]).await;
-        let code = self.authorization_code(&client_id, token).await;
+        self.full_flow_with(&client_id, token).await
+    }
+
+    /// [`TestApp::full_flow`] for a client already registered, when the test cares
+    /// which client it is.
+    async fn full_flow_with(&self, client_id: &str, token: &str) -> Value {
+        let code = self.authorization_code(client_id, token).await;
         let (status, body) = self
             .token_call(&[
                 ("grant_type", "authorization_code"),
                 ("code", &code),
-                ("client_id", &client_id),
+                ("client_id", client_id),
                 ("redirect_uri", REDIRECT),
                 ("code_verifier", VERIFIER),
             ])
@@ -505,6 +511,103 @@ async fn registration_refuses_a_confidential_client() {
             .unwrap_or("")
             .contains("PKCE"),
         "the description should explain what replaces the secret: {body}"
+    );
+}
+
+/// A `client_name` that can forge a line of text is refused. Registration is
+/// unauthenticated and this value is rendered — on the consent page, and in the
+/// terminal listing an operator reads to decide which connection to revoke, where an
+/// escape sequence can erase the row above it.
+#[tokio::test]
+async fn registration_refuses_a_client_name_that_can_forge_a_display() {
+    let app = TestApp::spawn_with_oauth().await;
+    for (name, why) in [
+        (
+            "Claude\nchatgpt",
+            "a newline, which splits one row into two",
+        ),
+        ("Claude\rchatgpt", "a carriage return"),
+        ("Claude\x1b[2K\x1b[1A", "an ANSI escape that erases a line"),
+        ("Claude\u{202e}", "a bidirectional override"),
+    ] {
+        let (status, body) = app
+            .json(
+                app.request(Method::POST, "/oauth/register")
+                    .json(&json!({ "redirect_uris": [REDIRECT], "client_name": name })),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a name carrying {why} must be refused: {body}"
+        );
+        assert_eq!(
+            body["error"], "invalid_client_metadata",
+            "for {why}: {body}"
+        );
+    }
+
+    // The ordinary case is untouched — including punctuation and non-ASCII, which
+    // are not the problem.
+    let (status, body) = app
+        .json(
+            app.request(Method::POST, "/oauth/register").json(
+                &json!({ "redirect_uris": [REDIRECT], "client_name": "Claude – Ökobüro (v2)" }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["client_name"], "Claude – Ökobüro (v2)");
+}
+
+/// …and a name already stored before that check existed still lists safely. The
+/// validation and this filter are deliberately both present: the boundary keeps such
+/// bytes out, the sink keeps an old row — or a future writer of that column — from
+/// reaching a terminal.
+#[tokio::test]
+async fn a_hostile_stored_client_name_is_never_rendered_raw() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Claude", &[REDIRECT]).await;
+    let issued = app.full_flow_with(&client_id, &app.human).await;
+    let derived_id = app
+        .token_id_of(issued["access_token"].as_str().unwrap())
+        .await;
+
+    // Straight into the table, bypassing the endpoint that now refuses this.
+    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+    conn.execute(
+        "UPDATE oauth_clients SET client_name = ?2 WHERE client_id = ?1",
+        rusqlite::params![client_id, "Claude\u{1b}[2K\u{1b}[1A\nfake row"],
+    )
+    .expect("plant a hostile name");
+    drop(conn);
+
+    let (_, list) = app.get(&app.admin, "/v1/tokens").await;
+    let derived = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == derived_id)
+        .expect("listed")
+        .clone();
+    let label = derived["oauth_client"]["label"].as_str().expect("label");
+    assert!(
+        !label.chars().any(|c| c.is_control()),
+        "the display label must carry no control characters: {label:?}"
+    );
+    assert_eq!(label, "Claude?[2K?[1A?fake row");
+
+    // Same answer through the store, which is what `takomo token list` prints.
+    let listed = app.open_store().list_tokens().expect("list tokens");
+    let label = listed
+        .iter()
+        .find(|t| t.id == derived_id)
+        .and_then(|t| t.oauth_client.as_ref())
+        .expect("connection")
+        .label();
+    assert!(
+        !label.chars().any(|c| c.is_control()),
+        "the CLI must not print raw escapes: {label:?}"
     );
 }
 
