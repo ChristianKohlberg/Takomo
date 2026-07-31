@@ -1,5 +1,5 @@
-// ESLint configuration for the two single-file SPAs (src/board.html,
-// src/inbox.html). Driven by scripts/lint-spa.sh — never by a bare `eslint .`,
+// ESLint configuration for the single-file SPAs (src/board.html,
+// src/inbox.html, src/initiatives.html). Driven by scripts/lint-spa.sh — never by a bare `eslint .`,
 // since the JavaScript it lints lives inside HTML and is fed in on stdin.
 //
 // Deliberately a SMALL ruleset. The SPAs are hand-written, dependency-free ES5

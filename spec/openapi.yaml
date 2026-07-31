@@ -2679,10 +2679,11 @@ paths:
         a direction, what came out of a good conversation. It has no workflow, is
         never claimed, and is nurtured by appending research inputs over time.
 
-        Initiatives are **created and fed over MCP**, not here: the thing that
-        produces one is an agent in a conversation. See the `takomo_initiative_*`
-        tools (`takomo_initiative_new`, `takomo_initiative_append`,
-        `takomo_initiative_update`). This surface is what a UI reads.
+        Initiatives are usually created and fed **over MCP** — the thing that
+        produces one is an agent in a conversation (`takomo_initiative_new`,
+        `takomo_initiative_append`, `takomo_initiative_update`). The write routes
+        here exist because the `/initiatives` page needs them: an initiative is fed
+        by people as well as agents, and a browser cannot call an MCP tool.
       parameters:
         - { name: project, in: query, required: false, schema: { type: string } }
         - name: status
@@ -2707,6 +2708,42 @@ paths:
                     items: { $ref: "#/components/schemas/Initiative" }
                   next_cursor: { type: [string, "null"] }
 
+    post:
+      tags: [initiatives]
+      summary: Open an initiative
+      description: |
+        Requires the `write` scope for the named project.
+
+        MCP came first here (`takomo_initiative_new`), because an agent in a
+        conversation is what usually produces an initiative. This route exists
+        because the `/initiatives` page needs it: a person reading a collection
+        wants to start one, and a browser cannot call an MCP tool. Both go through
+        the same store method and the same validators.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, title]
+              properties:
+                project: { type: string }
+                title: { type: string, maxLength: 300, description: 'the quick name the idea goes by' }
+                summary: { type: string, description: 'a very short description; the long form belongs in an entry, where it carries provenance' }
+                status: { type: string, enum: [open, parked, distilled], default: open }
+                labels: { type: array, items: { type: string }, maxItems: 50 }
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: '`kind:handle` references; unknown handles are registered in the project tag registry on the fly'
+                metadata: { type: object }
+      responses:
+        "201":
+          description: The new initiative.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+
   /initiatives/{id}:
     get:
       tags: [initiatives]
@@ -2717,6 +2754,39 @@ paths:
       responses:
         "200":
           description: The initiative.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Initiative" }
+
+    patch:
+      tags: [initiatives]
+      summary: Edit an initiative's description
+      description: |
+        Requires the `write` scope. Sets any of title, summary, status, labels or
+        tags, and/or merges into `metadata` (RFC 7386: a null value removes a key).
+
+        Entries are deliberately NOT reachable from here. They are append-only —
+        the accumulated record IS the initiative — so the only editable part is how
+        it is described and filed. A patch with no fields is a `400`
+        (`validation.no_changes`) rather than a version bump that changed nothing.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 300 }
+                summary: { type: string }
+                status: { type: string, enum: [open, parked, distilled] }
+                labels: { type: array, items: { type: string }, maxItems: 50, description: 'whole-set replace' }
+                tags: { type: array, items: { type: string }, description: 'whole-set replace' }
+                metadata_merge: { type: object }
+      responses:
+        "200":
+          description: The updated initiative.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Initiative" }
@@ -2747,6 +2817,65 @@ paths:
                     items: { $ref: "#/components/schemas/InitiativeEntry" }
                   next_cursor: { type: [string, "null"] }
                   rollup: { $ref: "#/components/schemas/InitiativeRollup" }
+
+    post:
+      tags: [initiatives]
+      summary: Append one contribution to an initiative
+      description: |
+        Requires the `write` scope. A note, a research finding, a colleague's
+        feedback, a transcript, an attached document — text, an attachment, or
+        both. Append-only: entries are never edited or deleted.
+
+        `source` is required, exactly as on the MCP tool. An entry whose origin
+        nobody recorded is text nobody can weigh later.
+
+        An attachment arrives as `content_base64` because JSON cannot carry bytes,
+        and is decoded before the caps are applied — so the 5 MiB limit bounds the
+        real document, not its 4/3-larger encoding. It needs a `filename` and/or a
+        `mime`; without either, nothing downstream can say what the bytes are.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, source]
+              properties:
+                kind:
+                  type: string
+                  description: 'free-form slug matching ^[a-z][a-z0-9-]*$ — conventionally note, research, feedback, transcript, document, decision'
+                source:
+                  type: string
+                  description: 'REQUIRED — where this input came from: an agent id, a person, a conversation'
+                title: { type: string, maxLength: 300 }
+                text: { type: string, description: 'markdown; give this, an attachment, or both' }
+                source_uri: { type: string, description: 'where the input lives — the conversation, the doc, the PR' }
+                origin_at:
+                  type: string
+                  format: date-time
+                  description: 'RFC 3339. When the content was WRITTEN, as opposed to when it landed here (recorded automatically). Refused rather than dropped if unparseable.'
+                content_base64:
+                  type: string
+                  description: 'the attachment, base64 (standard alphabet, padded). Capped at 5 MiB decoded.'
+                mime: { type: string, description: 'bare `type/subtype`; required unless filename is given' }
+                filename: { type: string, description: 'required unless mime is given' }
+                meta: { type: object }
+      responses:
+        "201":
+          description: |
+            The new entry, plus the initiative with its recomputed rollup — so a
+            caller that just appended can update the counts it is showing without a
+            second request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry: { $ref: "#/components/schemas/InitiativeEntry" }
+                  initiative: { $ref: "#/components/schemas/Initiative" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /initiatives/{id}/entries/{entry}/content:
     get:

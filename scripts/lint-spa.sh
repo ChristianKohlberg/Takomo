@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Lint the JavaScript inside the two single-file SPAs.
+# Lint the JavaScript inside the single-file SPAs.
 #
-# src/board.html and src/inbox.html carry ~2900 and ~2600 lines of hand-written
+# src/board.html, src/inbox.html and src/initiatives.html carry thousands of lines of hand-written
 # JavaScript each, and until takomo-rrjg nothing in this repo looked at any of
 # it: clippy has the Rust, shellcheck has the shell, Redocly has the spec, and
-# `spa_string_tables_agree_on_every_key` checks exactly one property of these two
+# `spa_string_tables_agree_on_every_key` checks exactly one property of these
 # files. A duplicate key sat in board.html's `state` literal through several
 # refactors because it is legal JavaScript that no runtime complains about.
 #
@@ -20,7 +20,7 @@
 #
 # Exit: 0 clean, 1 defect found, 2 nothing to check / cannot check.
 #
-# Usage: scripts/lint-spa.sh [file.html ...]   (default: both SPAs)
+# Usage: scripts/lint-spa.sh [file.html ...]   (default: every SPA)
 set -uo pipefail
 
 ESLINT_VERSION=9.39.0
@@ -31,7 +31,7 @@ CONFIG=scripts/spa-eslint.config.mjs
 if [ "$#" -gt 0 ]; then
   FILES=("$@")
 else
-  FILES=(src/spa-common.js src/board.html src/inbox.html)
+  FILES=(src/spa-common.js src/board.html src/inbox.html src/initiatives.html)
 fi
 
 # The shared module (takomo-ftix). It is inlined into both pages at build time,

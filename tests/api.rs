@@ -358,6 +358,10 @@ fn spa_string_tables_agree_on_every_key() {
     for (file, src) in [
         ("src/board.html", include_str!("../src/board.html")),
         ("src/inbox.html", include_str!("../src/inbox.html")),
+        (
+            "src/initiatives.html",
+            include_str!("../src/initiatives.html"),
+        ),
     ] {
         let de = str_keys(file, src, "de");
         let en = str_keys(file, src, "en");
@@ -9604,4 +9608,311 @@ async fn initiative_reads_refuse_bad_input_clearly() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], "validation.cursor");
+}
+
+// ---------------------------------------------------------------------------
+// Initiative WRITE routes. They exist because /initiatives — the page — needs
+// them: an initiative is fed by people as well as agents, and a browser cannot
+// call an MCP tool. Every one goes through the same store method as the matching
+// MCP tool, so these tests are about the HTTP shape and the refusals.
+
+/// The loop the page drives: create, retitle, park, append an entry with an
+/// attachment, and watch the rollup follow.
+#[tokio::test]
+async fn initiative_write_routes_drive_the_page_loop() {
+    let app = TestApp::spawn().await;
+
+    let (status, ini) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({
+                "project": "tp",
+                "title": "Name the thing",
+                "summary": "Every project needs a good name.",
+                "labels": ["naming"],
+                "tags": ["person:ada"],
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = ini["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("ini-"), "unexpected id shape: {id}");
+    assert_eq!(ini["status"], "open");
+    assert_eq!(ini["labels"][0], "naming");
+    assert_eq!(ini["tags"][0], "person:ada");
+    assert_eq!(ini["rollup"]["entries"], 0);
+
+    // Retitle and park, the two edits the detail pane makes in place.
+    let (status, updated) = app
+        .patch(
+            &app.human,
+            &format!("/v1/initiatives/{id}"),
+            json!({ "title": "Naming the product", "status": "parked" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["title"], "Naming the product");
+    assert_eq!(updated["status"], "parked");
+    assert_eq!(updated["version"], 2);
+
+    // Append an entry with an attachment, the composer's main job.
+    let (status, appended) = app
+        .post(
+            &app.human,
+            &format!("/v1/initiatives/{id}/entries"),
+            json!({
+                "kind": "feedback",
+                "source": "person:ada",
+                "title": "Ada's note",
+                "text": "Prefer something pronounceable.",
+                "source_uri": "https://example.test/thread/9",
+                "origin_at": "2026-07-01T09:00:00Z",
+                // "hello takomo"
+                "content_base64": "aGVsbG8gdGFrb21v",
+                "mime": "text/plain",
+                "filename": "note.txt",
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(appended["entry"]["kind"], "feedback");
+    assert_eq!(appended["entry"]["source"], "person:ada");
+    assert_eq!(appended["entry"]["author"], "human:reviewer");
+    assert_eq!(appended["entry"]["origin_at"], "2026-07-01T09:00:00.000Z");
+    assert_eq!(appended["entry"]["has_content"], true);
+    assert_eq!(appended["entry"]["content_bytes"], 12);
+    // The refreshed initiative rides along so the page can update its rollup
+    // without a second request.
+    assert_eq!(appended["initiative"]["rollup"]["entries"], 1);
+    assert_eq!(appended["initiative"]["rollup"]["attachments"], 1);
+
+    // A parked initiative is still appendable — parking is not closing.
+    let (status, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/initiatives/{id}/entries"),
+            json!({ "kind": "note", "source": "person:ada", "text": "One more thought." }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // And the bytes come back through the content route.
+    let entry_id = appended["entry"]["id"].as_str().unwrap();
+    let resp = app
+        .authed(
+            Method::GET,
+            &app.human,
+            &format!("/v1/initiatives/{id}/entries/{entry_id}/content"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello takomo");
+}
+
+/// The refusals the page can walk into, each with the code the UI branches on.
+#[tokio::test]
+async fn initiative_write_routes_refuse_bad_input() {
+    let app = TestApp::spawn().await;
+    let (_, ini) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "Name the thing" }),
+        )
+        .await;
+    let id = ini["id"].as_str().unwrap().to_string();
+
+    // A typo'd field is refused, never silently dropped — the repo-wide norm.
+    let (status, body) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "x", "sumary": "typo" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation.unknown_field");
+
+    // A patch with nothing in it would bump the version for no change.
+    let (status, body) = app
+        .patch(&app.human, &format!("/v1/initiatives/{id}"), json!({}))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "validation.no_changes");
+
+    // Status is a fixed vocabulary even though it is only a label.
+    let (status, body) = app
+        .patch(
+            &app.human,
+            &format!("/v1/initiatives/{id}"),
+            json!({ "status": "shipped" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "validation.initiative_status");
+
+    // The entry refusals the composer has to render.
+    for (code, expect, body_json) in [
+        (
+            "validation.entry_source",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "kind": "note", "source": " ", "text": "x" }),
+        ),
+        (
+            "validation.entry_empty",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "kind": "note", "source": "person:ada" }),
+        ),
+        (
+            "validation.entry_content_base64",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "kind": "document", "source": "p", "content_base64": "no!", "mime": "text/plain" }),
+        ),
+        (
+            "validation.entry_attachment_unlabeled",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "kind": "document", "source": "p", "content_base64": "aGk=" }),
+        ),
+        (
+            "validation.origin_at",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "kind": "note", "source": "p", "text": "x", "origin_at": "last tuesday" }),
+        ),
+        (
+            "validation.field_required",
+            StatusCode::BAD_REQUEST,
+            json!({ "source": "p", "text": "x" }),
+        ),
+    ] {
+        let (status, body) = app
+            .post(
+                &app.human,
+                &format!("/v1/initiatives/{id}/entries"),
+                body_json.clone(),
+            )
+            .await;
+        assert_eq!(status, expect, "{code} for {body_json}: {body}");
+        assert_eq!(body["code"], code, "wrong code for {body_json}: {body}");
+    }
+
+    // An unknown initiative is a 404 on both write paths.
+    for (method_is_patch, path) in [
+        (true, "/v1/initiatives/ini-nope".to_string()),
+        (false, "/v1/initiatives/ini-nope/entries".to_string()),
+    ] {
+        let (status, body) = if method_is_patch {
+            app.patch(&app.human, &path, json!({ "status": "parked" }))
+                .await
+        } else {
+            app.post(
+                &app.human,
+                &path,
+                json!({ "kind": "note", "source": "p", "text": "x" }),
+            )
+            .await
+        };
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body["code"], "notfound.initiative");
+    }
+}
+
+/// Writing needs the `write` scope, and the project allowlist bounds it — the
+/// page's "this token can only read" state depends on the first, and naming an id
+/// must never be a way past the second.
+#[tokio::test]
+async fn initiative_writes_need_scope_and_respect_projects() {
+    let app = TestApp::spawn().await;
+    let (_, ini) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "Name the thing" }),
+        )
+        .await;
+    let id = ini["id"].as_str().unwrap().to_string();
+    let reader = app.mint("agent:reader", &["read"], None);
+    let outsider = app.mint("agent:elsewhere", &["read", "write"], Some(&["other"]));
+
+    for token in [&reader, &outsider] {
+        let (status, _) = app
+            .post(
+                token,
+                "/v1/initiatives",
+                json!({ "project": "tp", "title": "Sneaky" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = app
+            .patch(
+                token,
+                &format!("/v1/initiatives/{id}"),
+                json!({ "status": "parked" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = app
+            .post(
+                token,
+                &format!("/v1/initiatives/{id}/entries"),
+                json!({ "kind": "note", "source": "p", "text": "x" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+}
+
+/// The /initiatives page is served, carries the shared markdown renderer, and
+/// links the other two surfaces. Asserted against the bytes the binary serves,
+/// because the pages are `include_str!`'d and a stale build is the classic way to
+/// be wrong about them.
+#[tokio::test]
+async fn initiatives_page_is_served_with_the_shared_renderer() {
+    let app = TestApp::spawn().await;
+    let resp = app
+        .request(Method::GET, "/initiatives")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // Same defense-in-depth headers as the other two pages: these hold a bearer
+    // token in localStorage.
+    let headers = resp.headers().clone();
+    assert_eq!(headers["x-frame-options"], "DENY");
+    assert!(headers["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("frame-ancestors 'none'"));
+    let page = resp.text().await.unwrap();
+
+    assert!(
+        page.contains("var MD_INLINE"),
+        "the shared renderer was not inlined — an agent's markdown would render as source"
+    );
+    assert!(
+        !page.contains("<<SPA_COMMON>>"),
+        "the marker survived into the served page, so nothing was substituted"
+    );
+    // The composer and the rollup are the two things the page exists for.
+    assert!(page.contains("content_base64"), "no attachment upload path");
+    assert!(page.contains("/initiatives/"), "no initiative fetches");
+
+    // Every surface links the other two, so the new page is reachable.
+    for (path, needle) in [
+        ("/board", "href=\"/initiatives\""),
+        ("/inbox", "href=\"/initiatives\""),
+        ("/initiatives", "href=\"/board\""),
+    ] {
+        let body = app
+            .request(Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(body.contains(needle), "{path} does not link {needle}");
+    }
 }

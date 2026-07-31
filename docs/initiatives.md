@@ -50,10 +50,15 @@ drifting from the thing it describes. `chars` counts characters of entry text �
 means by "how long is this" — while `bytes` is what is actually stored, text and attachments
 together.
 
-## Writing: MCP. Reading: REST.
+## Three surfaces
 
-Initiatives are created and fed over **MCP**, because the thing that produces one is an agent in a
-conversation, not a form.
+`/initiatives` is the page. A list on the left with each collection's rollup, one initiative open on
+the right: its counts, its entries newest-first with markdown rendered by the same renderer `/board`
+and `/inbox` use, and a composer at the top. Title and summary are edited in place; status is a
+dropdown; a file picker attaches a document. It is the only SPA in this repo that **writes**.
+
+Initiatives are usually created and fed over **MCP**, because the thing that produces one is an
+agent in a conversation, not a form.
 
 | tool | |
 |---|---|
@@ -63,14 +68,28 @@ conversation, not a form.
 | `takomo_initiative_list` | *(read)* filter by project, status, label, tag, text |
 | `takomo_initiative_show` | *(read)* one initiative, its rollup, and a page of entries |
 
-The read surface a UI drives is REST:
+REST is what the page drives — reads, plus the three writes the page needs, since a browser cannot
+call an MCP tool:
 
 ```
-GET /v1/initiatives?project=&status=&q=&label=&tag=&limit=&cursor=
-GET /v1/initiatives/{id}
-GET /v1/initiatives/{id}/entries?limit=&cursor=
-GET /v1/initiatives/{id}/entries/{entry}/content
+GET   /v1/initiatives?project=&status=&q=&label=&tag=&limit=&cursor=
+POST  /v1/initiatives                                   # create
+GET   /v1/initiatives/{id}
+PATCH /v1/initiatives/{id}                              # title, summary, status, labels, tags, metadata
+GET   /v1/initiatives/{id}/entries?limit=&cursor=
+POST  /v1/initiatives/{id}/entries                      # append
+GET   /v1/initiatives/{id}/entries/{entry}/content
 ```
+
+Both surfaces go through the same `Store` methods and share `decode_attachment` and
+`parse_rfc3339_ms`, so neither can drift into accepting what the other refuses.
+
+Note what the page cannot do: **edit or delete an entry**. Entries are append-only, and no route
+exposes otherwise. The accumulated record is the point.
+
+One browser detail worth knowing if you touch the page: the attachment route needs the bearer token,
+so a plain `<a href>` cannot fetch it — the browser would send an unauthenticated request and get a
+401. The page fetches with the header and hands the blob to a throwaway object URL.
 
 Entry lists carry text but never attachment bytes — `has_content` says whether there are any, and
 the content route serves them. That route is the only endpoint in the API returning something other

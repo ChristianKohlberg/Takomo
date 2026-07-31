@@ -540,7 +540,7 @@
 
 <header class="hidden" id="topbar">
   <div class="brand" id="brand"></div>
-  <nav class="nav"><a href="/board" id="nav-board">Board</a><span class="navpill active" id="nav-inbox">Inbox</span></nav>
+  <nav class="nav"><a href="/board" id="nav-board">Board</a><span class="navpill active" id="nav-inbox">Inbox</span><a href="/initiatives" id="nav-init">Initiatives</a></nav>
   <div class="projpick"><select id="projsel" title="project"></select></div>
   <div class="ta hidden" id="tickpick"></div>
   <span class="grow"></span>
@@ -580,6 +580,7 @@
   var STR = {
     de: {
       inbox:"Inbox",
+      initiatives:"Initiativen",
       board:"Board",
       kbd:"j / k bewegen · ↵ antworten",
       folders:"Ordner",
@@ -699,6 +700,7 @@
     },
     en: {
       inbox:"Inbox",
+      initiatives:"Initiatives",
       board:"Board",
       kbd:"j / k move · ↵ answer",
       folders:"Folders",
@@ -2811,7 +2813,7 @@
   function applyChrome() {
     $("brand").innerHTML = LOGO + '<span>takomo</span>';
     $("gate-brand").innerHTML = LOGO;
-    $("nav-inbox").textContent = t().inbox; $("nav-board").textContent = t().board;
+    $("nav-inbox").textContent = t().inbox; $("nav-board").textContent = t().board; $("nav-init").textContent = t().initiatives;
     $("kbd-hint").textContent = t().kbd;
     $("lang-de").className = state.lang === "de" ? "on" : ""; $("lang-en").className = state.lang === "en" ? "on" : "";
     document.documentElement.lang = state.lang;

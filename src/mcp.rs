@@ -1124,11 +1124,11 @@ impl TakomoMcp {
         auth.require_project(&ini.project)?;
         let content = match &a.content_base64 {
             None => None,
-            Some(encoded) => Some(decode_attachment(encoded)?),
+            Some(encoded) => Some(crate::api::initiatives::decode_attachment(encoded)?),
         };
         let origin_at = match &a.origin_at {
             None => None,
-            Some(raw) => Some(parse_rfc3339_ms(raw)?),
+            Some(raw) => Some(crate::api::initiatives::parse_rfc3339_ms(raw)?),
         };
         let req = crate::store::EntryCreate {
             kind: a.kind,
@@ -2157,45 +2157,6 @@ fn respond(result: ApiResult<Value>) -> Result<CallToolResult, McpError> {
             ))]))
         }
     }
-}
-
-/// Decode a base64 attachment from the wire.
-///
-/// Strict (`STANDARD`, padded, no trailing garbage) on purpose: a truncated or
-/// mangled upload has to be a validation error the caller can see, never bytes
-/// silently stored short. The decoded length is what the store's caps are checked
-/// against — the encoding is 4/3 larger and bounding that instead would let a
-/// caller past the real limit.
-fn decode_attachment(encoded: &str) -> ApiResult<Vec<u8>> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
-        .map_err(|e| {
-            ApiError::validation(
-                "validation.entry_content_base64",
-                format!(
-                    "'content_base64' is not valid base64 ({e}). Use the standard alphabet with padding — the whole document, in one string."
-                ),
-            )
-        })
-}
-
-/// Parse an RFC 3339 timestamp to unix milliseconds.
-///
-/// Only used for `origin_at`, where the caller is stating when something was
-/// written. An unparseable value is refused rather than dropped: a wrong
-/// provenance date is worse than a missing one.
-fn parse_rfc3339_ms(raw: &str) -> ApiResult<i64> {
-    chrono::DateTime::parse_from_rfc3339(raw.trim())
-        .map(|dt| dt.timestamp_millis())
-        .map_err(|e| {
-            ApiError::validation(
-                "validation.origin_at",
-                format!(
-                    "'origin_at' must be an RFC 3339 timestamp such as '2026-07-01T09:00:00Z' ({e}). Omit it when the input originated now — that is already recorded."
-                ),
-            )
-        })
 }
 
 /// Parse an opaque list cursor, matching the REST handlers' contract exactly: it

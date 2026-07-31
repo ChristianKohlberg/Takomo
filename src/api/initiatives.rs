@@ -1,25 +1,102 @@
-//! /v1/initiatives — read surface for initiatives and their entries.
+//! /v1/initiatives — initiatives and their entries.
 //!
-//! Reads only, deliberately. Initiatives are created and fed over MCP
-//! (`takomo_initiative_*` in `src/mcp.rs`), because the thing that produces them is
-//! an agent in a conversation, not a form. These routes are what a UI reads: list,
-//! detail with the rollup, the entry collection, and the bytes of one attachment.
+//! MCP came first here (`takomo_initiative_*` in `src/mcp.rs`), because the thing
+//! that produces an initiative is an agent in a conversation, not a form. The write
+//! routes below exist because `/initiatives` — the page — needs them: a person
+//! reading a collection wants to start one, retitle it, park it, and add the
+//! feedback they just got, and a browser cannot call an MCP tool. Both surfaces go
+//! through the same `Store` methods and the same validators, so neither can drift
+//! into accepting what the other refuses.
 //!
 //! The attachment route is the only endpoint in the API that returns something
 //! other than JSON, and it is the reason `content` is never selected by any other
 //! query: a document is fetched by itself, once, by the reader that wants it.
 
-use super::{first, parse_i64_param, query_pairs};
+use super::{
+    body_object, first, get_str, get_string_array, parse_i64_param, query_pairs, reject_unknown,
+    require_str, ApiJson,
+};
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
-use crate::store::{InitiativeListFilter, MAX_ENTRIES_PAGE, MAX_INITIATIVES_PAGE};
+use crate::store::{
+    EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch, MAX_ENTRIES_PAGE,
+    MAX_INITIATIVES_PAGE,
+};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+const CREATE_FIELDS: [&str; 7] = [
+    "project", "title", "summary", "status", "labels", "tags", "metadata",
+];
+const PATCH_FIELDS: [&str; 6] = [
+    "title",
+    "summary",
+    "status",
+    "labels",
+    "tags",
+    "metadata_merge",
+];
+const ENTRY_FIELDS: [&str; 10] = [
+    "kind",
+    "title",
+    "text",
+    "source",
+    "source_uri",
+    "origin_at",
+    "content_base64",
+    "mime",
+    "filename",
+    "meta",
+];
+
+/// Decode a base64 attachment from the wire.
+///
+/// Strict (`STANDARD`, padded, no trailing garbage) on purpose: a truncated or
+/// mangled upload has to be a validation error the caller can see, never bytes
+/// silently stored short. The decoded length is what the store's caps are checked
+/// against — the encoding is 4/3 larger and bounding that instead would let a
+/// caller past the real limit.
+///
+/// Shared with the MCP tool rather than reimplemented there: this is the one place
+/// that decides what "a valid upload" means, so the two surfaces cannot disagree
+/// about it.
+pub fn decode_attachment(encoded: &str) -> ApiResult<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|e| {
+            ApiError::validation(
+                "validation.entry_content_base64",
+                format!(
+                    "'content_base64' is not valid base64 ({e}). Use the standard alphabet with padding — the whole document, in one string."
+                ),
+            )
+        })
+}
+
+/// Parse an RFC 3339 timestamp to unix milliseconds.
+///
+/// Only used for `origin_at`, where the caller is stating when something was
+/// written. An unparseable value is refused rather than dropped: a wrong
+/// provenance date is worse than a missing one. Shared with the MCP tool for the
+/// same reason [`decode_attachment`] is.
+pub fn parse_rfc3339_ms(raw: &str) -> ApiResult<i64> {
+    chrono::DateTime::parse_from_rfc3339(raw.trim())
+        .map(|dt| dt.timestamp_millis())
+        .map_err(|e| {
+            ApiError::validation(
+                "validation.origin_at",
+                format!(
+                    "'origin_at' must be an RFC 3339 timestamp such as '2026-07-01T09:00:00Z' ({e}). Omit it when the input originated now — that is already recorded."
+                ),
+            )
+        })
+}
 
 fn parse_cursor(pairs: &[(String, String)]) -> ApiResult<Option<i64>> {
     match first(pairs, "cursor") {
@@ -59,6 +136,123 @@ pub async fn list(
     let (items, next_cursor) = state.store.list_initiatives(&filter, cursor, limit)?;
     let items: Vec<Value> = items.iter().map(|i| i.to_json()).collect();
     Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
+}
+
+/// POST /v1/initiatives (write) — open an initiative. Body:
+/// `{"project":"tp","title":"Name the thing","summary":"…","tags":["person:ada"]}`.
+pub async fn create(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &CREATE_FIELDS)?;
+    let project = require_str(obj, "project")?;
+    ctx.require_project(&project)?;
+    let req = InitiativeCreate {
+        title: require_str(obj, "title")?,
+        summary: get_str(obj, "summary")?,
+        status: get_str(obj, "status")?,
+        labels: get_string_array(obj, "labels")?.unwrap_or_default(),
+        tags: get_string_array(obj, "tags")?.unwrap_or_default(),
+        metadata: obj.get("metadata").filter(|v| !v.is_null()).cloned(),
+    };
+    let ini = state.store.create_initiative(&project, &req, &ctx.actor)?;
+    state.wake();
+    Ok((StatusCode::CREATED, Json(ini.to_json())))
+}
+
+/// PATCH /v1/initiatives/{id} (write) — edit the description: title, summary,
+/// status, labels, tags, and/or merge into `metadata`.
+///
+/// Entries are deliberately not reachable from here. They are append-only — the
+/// accumulated record IS the initiative — so the only editable part is how it is
+/// described and filed.
+pub async fn patch(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    // Scope is checked against the initiative's own project, so naming an id never
+    // reaches one the token may not see.
+    let existing = state
+        .store
+        .get_initiative(&id)?
+        .ok_or_else(|| ApiError::not_found("initiative", &id))?;
+    ctx.require_project(&existing.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &PATCH_FIELDS)?;
+    let patch = InitiativePatch {
+        title: get_str(obj, "title")?,
+        summary: get_str(obj, "summary")?,
+        status: get_str(obj, "status")?,
+        labels: get_string_array(obj, "labels")?,
+        tags: get_string_array(obj, "tags")?,
+        metadata_merge: obj.get("metadata_merge").filter(|v| !v.is_null()).cloned(),
+    };
+    if patch.is_empty() {
+        return Err(ApiError::bad_request(
+            "validation.no_changes",
+            "The patch contains no changes. Provide at least one of 'title', 'summary', 'status', 'labels', 'tags', 'metadata_merge'.",
+        ));
+    }
+    let updated = state.store.patch_initiative(&id, &patch, &ctx.actor)?;
+    state.wake();
+    Ok(Json(updated.to_json()))
+}
+
+/// POST /v1/initiatives/{id}/entries (write) — append one contribution: a note,
+/// a research finding, a colleague's feedback, a transcript, a document.
+///
+/// `source` is required, as it is on the MCP tool: an entry whose origin nobody
+/// recorded is text nobody can weigh later. An attachment arrives as
+/// `content_base64` because JSON cannot carry bytes, and is decoded here so the
+/// store's caps bound the real payload rather than its encoding.
+pub async fn create_entry(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let ini = state
+        .store
+        .get_initiative(&id)?
+        .ok_or_else(|| ApiError::not_found("initiative", &id))?;
+    ctx.require_project(&ini.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &ENTRY_FIELDS)?;
+    let content = match get_str(obj, "content_base64")? {
+        None => None,
+        Some(encoded) => Some(decode_attachment(&encoded)?),
+    };
+    let origin_at = match get_str(obj, "origin_at")? {
+        None => None,
+        Some(raw) => Some(parse_rfc3339_ms(&raw)?),
+    };
+    let req = EntryCreate {
+        kind: require_str(obj, "kind")?,
+        title: get_str(obj, "title")?,
+        text: get_str(obj, "text")?.unwrap_or_default(),
+        content,
+        mime: get_str(obj, "mime")?,
+        filename: get_str(obj, "filename")?,
+        source: require_str(obj, "source")?,
+        source_uri: get_str(obj, "source_uri")?,
+        origin_at,
+        meta: obj.get("meta").filter(|v| !v.is_null()).cloned(),
+    };
+    let (entry, updated) = state.store.append_initiative_entry(&id, &req, &ctx.actor)?;
+    state.wake();
+    // The refreshed initiative rides along, so a UI that just appended can update
+    // the rollup it is showing without a second request.
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "entry": entry.to_json(), "initiative": updated.to_json() })),
+    ))
 }
 
 /// GET /v1/initiatives/{id} (read) — the initiative with its derived rollup.
