@@ -35,6 +35,13 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
+# IANA time-zone data for chrono, used by src/schedule.rs to compute a recurring
+# slot in LOCAL time. Without it slots could only be UTC, and "every Monday at
+# 09:00" would silently become 10:00 for the half of the year a zone is on
+# summer time — wrong for the feature's headline case. Data-only (a generated
+# table plus a `TimeZone` impl): no unsafe, no network, no build-time download,
+# and it tracks the IANA database rather than encoding today's rules.
+chrono-tz = "0.10"
 async-stream = "0.3"
 futures-core = "0.3"
 # Official Rust MCP SDK. Hosts the streamable-HTTP MCP server transport in-process

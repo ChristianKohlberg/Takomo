@@ -9,6 +9,7 @@ pub mod error;
 pub mod ids;
 pub mod mcp;
 pub mod notify;
+pub mod schedule;
 pub mod seed;
 pub mod server;
 pub mod store;
