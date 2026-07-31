@@ -11,8 +11,10 @@
 
 use crate::error::ApiResult;
 use crate::ids::now_ms;
+use crate::schedule::Cadence;
 use crate::store::{
-    AskRequest, QuestionFilter, Store, TicketCreate, TicketListFilter, TimeoutAction,
+    AskRequest, QuestionFilter, ScheduleCreate, ScheduleTemplate, Store, TicketCreate,
+    TicketListFilter, TimeoutAction,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -336,6 +338,140 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         ),
     )?;
     advance(store, &redirect, "cancelled", SEEDER, None)?;
+
+    // --- two schedules, so /schedules is worth opening ---------------------
+    //
+    // The page's whole point is the lineage strip, and a strip with no history is
+    // eight empty boxes. Both are anchored to a FIXED instant in the past rather
+    // than "now minus N days", so the fixture is deterministic: the same slots
+    // every time the template is baked, whatever day it is baked on.
+    //
+    // Nothing is materialized here. The sweeper does that on its own tick, which
+    // keeps the seed honest — what you see on the page is the real firing path,
+    // not tickets the seeder drew to look like one.
+    let anchor = 1_767_225_600_000; // 2026-01-01T00:00:00Z
+    let weekly = store.create_schedule(
+        &ScheduleCreate {
+            project: PROJECT.to_string(),
+            name: "Weekly review".to_string(),
+            cadence: Cadence {
+                every: "week".to_string(),
+                interval: 1,
+                on: vec!["mon".to_string()],
+                day: None,
+                at: "09:00".to_string(),
+                tz: Some("Europe/Berlin".to_string()),
+            },
+            template: ScheduleTemplate {
+                title: "Weekly review — {week}".to_string(),
+                body: "Skim the board: what moved, what stalled, what needs a decision.\n\n                       Close this out with a comment naming anything you re-prioritised."
+                    .to_string(),
+                ty: None,
+                priority: None,
+                labels: vec!["ritual".to_string()],
+                tags: vec![],
+            },
+            starts_at: Some(anchor),
+            ends_at: None,
+            rationale: None,
+        },
+        SEEDER,
+        false,
+    )?;
+    // …and one an agent proposed, left pending, so the confirm row and the nav
+    // badge both have something real to show.
+    store.create_schedule(
+        &ScheduleCreate {
+            project: PROJECT.to_string(),
+            name: "Rotate the deploy key".to_string(),
+            cadence: Cadence {
+                every: "month".to_string(),
+                interval: 1,
+                on: vec![],
+                day: Some(1),
+                at: "09:00".to_string(),
+                tz: Some("Europe/Berlin".to_string()),
+            },
+            template: ScheduleTemplate {
+                title: "Rotate the deploy key — {month}".to_string(),
+                body: "Rotate, then attach the commit that records the new fingerprint."
+                    .to_string(),
+                ty: None,
+                priority: Some("high".to_string()),
+                labels: vec!["ops".to_string()],
+                tags: vec![],
+            },
+            starts_at: Some(anchor),
+            ends_at: None,
+            rationale: Some(
+                "Rotated by hand three months running. Same work each time, so proposing a cadence."
+                    .to_string(),
+            ),
+        },
+        agent,
+        true,
+    )?;
+    // Give the weekly review a history, through the real firing path: rewind to a
+    // past slot, fire, repeat. Nothing is hand-inserted, so what the strip shows
+    // is what materialization actually produces.
+    //
+    // Deterministic in SHAPE rather than in dates — the anchor is pinned, so every
+    // slot is a real grid point, but how many lie between it and today depends on
+    // when the template is baked.
+    let weekly_cadence = Cadence {
+        every: "week".to_string(),
+        interval: 1,
+        on: vec!["mon".to_string()],
+        day: None,
+        at: "09:00".to_string(),
+        tz: Some("Europe/Berlin".to_string()),
+    };
+    let anchor_dt = chrono::DateTime::from_timestamp_millis(anchor).unwrap_or_default();
+    let mut past: Vec<i64> = Vec::new();
+    let mut cursor = anchor - 1;
+    let now = now_ms();
+    while past.len() < 400 {
+        match weekly_cadence.next_slot_after(
+            chrono::DateTime::from_timestamp_millis(cursor).unwrap_or_default(),
+            anchor_dt,
+        ) {
+            Some(next) => {
+                let ms = next.timestamp_millis();
+                if ms > now {
+                    break;
+                }
+                past.push(ms);
+                cursor = ms;
+            }
+            None => break,
+        }
+    }
+    // The last seven slots that have already come round: enough to fill the
+    // strip, which shows eight.
+    let recent: Vec<i64> = past.iter().rev().take(7).rev().copied().collect();
+    let mut fired: Vec<String> = Vec::new();
+    if let Some(first) = recent.first() {
+        store.rewind_next_slot(&weekly.id, *first)?;
+        for _ in &recent {
+            if let Some(ticket) = store.run_schedule_now(&weekly.id, SEEDER)? {
+                fired.push(ticket);
+            }
+        }
+    }
+    // Take four of them all the way to `done`, so the strip reads as a real
+    // cadence someone has been keeping unevenly — done, done, missed, done —
+    // rather than a wall of one colour.
+    for (i, ticket) in fired.iter().enumerate() {
+        if i % 2 == 1 {
+            continue; // leave the odd ones unfinished: `not fulfilled`
+        }
+        advance(store, ticket, "spec", SEEDER, None)?;
+        advance(store, ticket, "ready", SEEDER, None)?;
+        let fence = claim(store, ticket, agent)?;
+        advance(store, ticket, "implementing", agent, Some(fence))?;
+        advance(store, ticket, "review", agent, Some(fence))?;
+        advance(store, ticket, "done", SEEDER, None)?;
+    }
 
     // Counted, not hardcoded, so the summary can't drift from the content.
     Ok(SeedSummary {

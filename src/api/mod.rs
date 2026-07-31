@@ -163,6 +163,9 @@ static INBOX_HTML: std::sync::LazyLock<String> =
 static INITIATIVES_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     with_spa_common(include_str!("../initiatives.html"), "initiatives.html")
 });
+static SCHEDULES_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    with_spa_common(include_str!("../schedules.html"), "schedules.html")
+});
 
 pub async fn board() -> impl axum::response::IntoResponse {
     secure_html(BOARD_HTML.as_str())
@@ -196,6 +199,17 @@ pub async fn initiatives_page() -> impl axum::response::IntoResponse {
 /// `/favicon.svg` and `/favicon.ico`. Both surfaces link `/favicon.svg`
 /// explicitly; the `.ico` route catches the bare request legacy browsers make
 /// on their own so it never 404s. Static, unauthenticated, leaks nothing.
+/// GET /schedules — the recurrence page.
+///
+/// Rows, not columns, and that is the whole design decision: the board sorts by
+/// state, but a schedule's content is a *history*, so forcing cadences into
+/// columns would throw away the axis that carries the meaning. It shares the
+/// board's header, palette, mono identifiers and DE/EN tables, and none of its
+/// grid.
+pub async fn schedules_page() -> impl axum::response::IntoResponse {
+    secure_html(SCHEDULES_HTML.as_str())
+}
+
 pub async fn favicon() -> impl axum::response::IntoResponse {
     (
         [

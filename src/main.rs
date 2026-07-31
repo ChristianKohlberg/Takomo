@@ -47,6 +47,15 @@ enum Command {
         #[command(subcommand)]
         command: TicketCommand,
     },
+    /// Inspect and steer schedules directly on the database.
+    ///
+    /// The server is not the root of trust — shell access is (spec/auth.md) — so
+    /// this is how an operator sets up or stops a cadence without minting a
+    /// `human` token for themselves.
+    Schedule {
+        #[command(subcommand)]
+        command: ScheduleCommand,
+    },
     /// Populate a database with demo content, for a local instance you can
     /// actually look at (see the `backlot.yml` datastore presets).
     Seed {
@@ -103,6 +112,43 @@ enum TicketCommand {
         #[arg(long)]
         reason: Option<String>,
         /// Actor recorded as having forced it.
+        #[arg(long, default_value = "cli:admin")]
+        actor: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleCommand {
+    /// List schedules, waiting-for-you first.
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        /// pending | active | paused | rejected | retired.
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Activate a pending (agent-proposed) schedule so it starts firing.
+    Activate {
+        id: String,
+        #[arg(long, default_value = "cli:admin")]
+        actor: String,
+    },
+    /// Stop a schedule firing. Its history is kept.
+    Pause {
+        id: String,
+        #[arg(long, default_value = "cli:admin")]
+        actor: String,
+    },
+    /// Resume a paused schedule, from the NEXT slot — the pause is never
+    /// backfilled.
+    Resume {
+        id: String,
+        #[arg(long, default_value = "cli:admin")]
+        actor: String,
+    },
+    /// Fire a schedule now, off-cycle, without shifting its cadence.
+    Run {
+        id: String,
         #[arg(long, default_value = "cli:admin")]
         actor: String,
     },
@@ -204,6 +250,7 @@ fn main() {
         Command::Token { command } => run_token(&cli.db, command),
         Command::Project { command } => run_project(&cli.db, command),
         Command::Ticket { command } => run_ticket(&cli.db, command),
+        Command::Schedule { command } => run_schedule(&cli.db, command),
         Command::Seed { preset } => run_seed(&cli.db, &preset),
     };
     if let Err(msg) = result {
@@ -720,6 +767,98 @@ fn parse_expiry(raw: &str) -> Result<i64, String> {
 //
 // The content itself lives in `takomo::seed`, which drives the real state
 // machine and is tested there; this is just the CLI shell around it.
+
+fn run_schedule(db: &str, command: ScheduleCommand) -> Result<(), String> {
+    let store = open_store(db)?;
+    match command {
+        ScheduleCommand::List { project, status } => {
+            let filter = takomo::store::ScheduleListFilter {
+                project,
+                status,
+                allowed_projects: None,
+            };
+            let rows = store
+                .list_schedules(&filter, takomo::store::MAX_SCHEDULES_PAGE)
+                .map_err(|e| e.into_message())?;
+            if rows.is_empty() {
+                println!("no schedules.");
+                return Ok(());
+            }
+            for s in &rows {
+                let next = s
+                    .next_slot
+                    .map(takomo::ids::iso)
+                    .unwrap_or_else(|| "—".to_string());
+                println!(
+                    "{:<14} {:<9} {:<28} next {}  [{}]",
+                    s.id, s.status, s.name, next, s.project
+                );
+                let occ = store
+                    .schedule_occurrences(&s.id, 8)
+                    .map_err(|e| e.into_message())?;
+                if !occ.is_empty() {
+                    // Oldest first, so the line reads left-to-right in time —
+                    // the same direction the page's strip runs.
+                    let strip: Vec<String> = occ
+                        .iter()
+                        .rev()
+                        .map(|o| format!("{}={}", takomo::ids::iso(o.slot), o.outcome))
+                        .collect();
+                    println!("               {}", strip.join(" "));
+                }
+            }
+            Ok(())
+        }
+        ScheduleCommand::Activate { id, actor } => {
+            let s = store
+                .set_schedule_status(&id, "active", &actor)
+                .map_err(|e| e.into_message())?;
+            println!(
+                "{} is {}; next {}",
+                s.id,
+                s.status,
+                s.next_slot
+                    .map(takomo::ids::iso)
+                    .unwrap_or_else(|| "—".to_string())
+            );
+            Ok(())
+        }
+        ScheduleCommand::Pause { id, actor } => {
+            let s = store
+                .set_schedule_status(&id, "paused", &actor)
+                .map_err(|e| e.into_message())?;
+            println!("{} is {} — nothing scheduled.", s.id, s.status);
+            Ok(())
+        }
+        ScheduleCommand::Resume { id, actor } => {
+            let s = store
+                .set_schedule_status(&id, "active", &actor)
+                .map_err(|e| e.into_message())?;
+            println!(
+                "{} is {}; next {} (the pause was not backfilled)",
+                s.id,
+                s.status,
+                s.next_slot
+                    .map(takomo::ids::iso)
+                    .unwrap_or_else(|| "—".to_string())
+            );
+            Ok(())
+        }
+        ScheduleCommand::Run { id, actor } => {
+            match store
+                .run_schedule_now(&id, &actor)
+                .map_err(|e| e.into_message())?
+            {
+                Some(ticket) => println!("created {ticket}"),
+                None => println!(
+                    "nothing created: that slot already has a ticket (one per slot is enforced by \
+                     a unique index)."
+                ),
+            }
+            Ok(())
+        }
+    }
+}
 
 fn run_seed(db: &str, preset: &str) -> Result<(), String> {
     // Opening the store runs the migrations — which is the whole of `empty`.
