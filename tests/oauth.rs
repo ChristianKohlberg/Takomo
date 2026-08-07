@@ -2026,3 +2026,99 @@ fn public_url_validation_is_strict_about_what_it_accepts() {
         assert!(!err.is_empty(), "the refusal must explain itself ({why})");
     }
 }
+
+/// The consent page's CSP has to name the client's callback origin in
+/// `form-action`, or approving is blocked by the browser rather than by us.
+///
+/// `form-action` is enforced against every hop of the navigation a form starts,
+/// not just its POST target — and the POST to `/oauth/authorize` answers with a
+/// 302 to the client's `redirect_uri`. With `form-action 'self'` alone, Chrome
+/// refuses that hop, so a human who typed a valid token and clicked Approve sees
+/// nothing happen and the client reports only that it could not connect. Denying
+/// redirects the same way, so it fails the same way.
+#[tokio::test]
+async fn the_consent_csp_allows_the_navigation_approving_actually_makes() {
+    let app = TestApp::spawn_with_oauth().await;
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+
+    let resp = no_redirect()
+        .get(app.url(&app.authorize_url(&client_id)))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    assert!(
+        csp.contains("form-action 'self' https://client.example"),
+        "form-action must name the callback ORIGIN — and only the origin, not the \
+         path, which CSP would compare with a prefix match: {csp}"
+    );
+    assert!(
+        !csp.contains("/callback"),
+        "the path must not leak into the policy: {csp}"
+    );
+
+    // The rest of the policy is unchanged — this widened one directive, and a
+    // page that runs no script keeps saying so.
+    for directive in [
+        "default-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(csp.contains(directive), "{directive} missing from {csp}");
+    }
+
+    // A loopback client (RFC 8252 — Claude Code is one) carries its port, since
+    // an origin that drops it is a different origin to the browser.
+    let native = app
+        .register_client("Native Client", &["http://127.0.0.1:49152/cb"])
+        .await;
+    let resp = no_redirect()
+        .get(app.url(&format!(
+            "/oauth/authorize?response_type=code&client_id={native}\
+             &redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2Fcb\
+             &code_challenge={}&code_challenge_method=S256",
+            pkce_s256_challenge(VERIFIER)
+        )))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        csp.contains("form-action 'self' http://127.0.0.1:49152"),
+        "a loopback callback keeps its port: {csp}"
+    );
+
+    // The refusal page redirects nowhere, so it widens nothing.
+    let resp = no_redirect()
+        .get(app.url(&format!(
+            "/oauth/authorize?response_type=code&client_id={client_id}\
+             &redirect_uri=https%3A%2F%2Fattacker.example%2Fsteal\
+             &code_challenge={}&code_challenge_method=S256",
+            pkce_s256_challenge(VERIFIER)
+        )))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        csp.contains("form-action 'self'") && !csp.contains("attacker.example"),
+        "a refused request must not name its own rejected target: {csp}"
+    );
+}
