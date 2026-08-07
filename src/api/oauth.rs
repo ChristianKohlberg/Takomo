@@ -1003,7 +1003,7 @@ fn authorize_page_error(message: &str) -> Response {
 </main></body></html>"#,
         esc(message)
     );
-    html_response(StatusCode::BAD_REQUEST, page)
+    html_response(StatusCode::BAD_REQUEST, page, None)
 }
 
 /// The consent screen: who is asking, for what, and a field for the credential
@@ -1118,7 +1118,11 @@ fn consent_page(
 <p class="muted small">Check the address bar before typing: this page should be served by your own takomo host over https. takomo never asks for a credential anywhere else.</p>
 </main></body></html>"#
     );
-    html_response(StatusCode::OK, page)
+    html_response(
+        StatusCode::OK,
+        page,
+        redirect_form_action_source(&req.redirect_uri).as_deref(),
+    )
 }
 
 /// Shared styling for the two OAuth pages. Inline, like the rest of takomo's
@@ -1142,22 +1146,64 @@ button { padding: .55rem 1.1rem; font: inherit; cursor: pointer; border-radius: 
 button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 </style>"#;
 
+/// The origin of an already-validated `redirect_uri`, as a CSP source expression.
+///
+/// `form-action` is checked against every hop of the navigation the form starts,
+/// not just its POST target, so the consent page has to name where the redirect
+/// lands. Hand-parsed like `validate_redirect_uri`, whose guarantees this relies
+/// on: the input is an absolute `http(s)` URI with a host, no fragment, and no
+/// whitespace or control characters.
+///
+/// `None` when the authority holds anything outside a host and port — userinfo,
+/// most obviously. A CSP source expression cannot express those, and a malformed
+/// one invalidates the whole directive, so the policy keeps `'self'` alone and
+/// that client fails visibly rather than the page shipping a policy that parses
+/// as something nobody wrote.
+fn redirect_form_action_source(uri: &str) -> Option<String> {
+    let (scheme, rest) = match uri.split_once("://") {
+        Some(("https", rest)) => ("https", rest),
+        Some(("http", rest)) => ("http", rest),
+        _ => return None,
+    };
+    let authority = rest
+        .split(['/', '?'])
+        .next()
+        .filter(|a| !a.is_empty())?
+        .to_string();
+    let host_ok = authority
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+    host_ok.then(|| format!("{scheme}://{authority}"))
+}
+
 /// HTML with the headers these two pages specifically need.
 ///
 /// Not `api::secure_html`, which the board and inbox use: that policy sets
 /// `form-action 'none'`, which would block the consent form's own POST. This one
 /// swaps that for `form-action 'self'` and drops `connect-src`, since neither page
 /// runs any script at all.
-fn html_response(status: StatusCode, body: String) -> Response {
+///
+/// `form_action_extra` is the consent page's redirect target. `'self'` alone is
+/// not enough there: approving (and denying) answers the POST with a 302 to the
+/// client's `redirect_uri`, and browsers apply `form-action` to the redirect as
+/// well, so a cross-origin callback — `https://claude.ai/api/mcp/auth_callback`,
+/// say — is blocked and the flow dead-ends on a page that looks like it worked.
+/// The value is safe to name because it has already been matched against the
+/// client's registration; the refusal page, which redirects nowhere, passes `None`.
+fn html_response(status: StatusCode, body: String, form_action_extra: Option<&str>) -> Response {
+    let form_action = match form_action_extra {
+        Some(src) => format!("'self' {src}"),
+        None => "'self'".to_string(),
+    };
+    let csp = format!(
+        "default-src 'none'; style-src 'unsafe-inline'; form-action {form_action}; \
+         base-uri 'none'; frame-ancestors 'none'"
+    );
     (
         status,
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; \
-                 base-uri 'none'; frame-ancestors 'none'",
-            ),
+            (header::CONTENT_SECURITY_POLICY, csp.as_str()),
             (header::X_FRAME_OPTIONS, "DENY"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             // A consent page's URL carries the client's `state`; keep it out of

@@ -1914,6 +1914,22 @@ paths:
           content:
             text/html:
               schema: { type: string }
+          headers:
+            Content-Security-Policy:
+              schema: { type: string }
+              description: |
+                `form-action` names `'self'` **and the origin of the verified
+                `redirect_uri`**. Both are required: the form posts back here, and
+                the response to that post is a 302 onward to the client's callback.
+                A browser applies `form-action` to every hop of the navigation a
+                form starts rather than to its immediate target alone, so a policy
+                naming only `'self'` blocks the redirect that completes the flow —
+                the human sees a click that does nothing and the client reports
+                only that it could not connect. The origin alone appears, never the
+                path, because CSP matches a path prefix and the callback path is
+                not ours to constrain. On the `400` page below, which redirects
+                nowhere, `form-action` stays `'self'` and the rejected target is
+                not named.
         "302":
           description: |
             A protocol error, redirected to the verified `redirect_uri` as `error`
@@ -2005,6 +2021,12 @@ paths:
           content:
             text/html:
               schema: { type: string }
+          headers:
+            Content-Security-Policy:
+              schema: { type: string }
+              description: |
+                As on the `GET`: `form-action` names `'self'` and the verified
+                callback origin, so a retry from this re-rendered form can complete.
         "400":
           description: An HTML page — unknown client or unregistered redirect URI.
           content:
