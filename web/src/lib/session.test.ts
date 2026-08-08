@@ -7,7 +7,7 @@
 // a deploy logs everyone out, and the second is a silent data-loss bug if it
 // regresses.
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadToken, saveToken, loadProject, saveProject } from './session'
+import { loadToken, saveToken, loadProject, saveProject, isAuthError } from './session'
 
 beforeEach(() => localStorage.clear())
 
@@ -100,5 +100,36 @@ describe('the board narrowing rule', () => {
     // persisted its narrowing, this would read 'demo' and the viewer's
     // all-projects view would be silently gone.
     expect(loadProject()).toBe('')
+  })
+})
+
+describe('recognising a dead credential', () => {
+  // This predicate exists because two background polls did NOT have it. The
+  // board caught every poll failure as "reconnecting" and the inbox swallowed
+  // its own entirely, so a revoked or expired token left both surfaces showing
+  // stale data forever and neither ever asked for a new token.
+  it('recognises the flag the API client sets', () => {
+    expect(isAuthError({ auth: true })).toBe(true)
+  })
+
+  it('recognises 401 and 403', () => {
+    expect(isAuthError({ status: 401 })).toBe(true)
+    expect(isAuthError({ status: 403 })).toBe(true)
+  })
+
+  it('does NOT claim a transient failure is an auth failure', () => {
+    // The distinction is the whole point: these must stay "reconnecting", not
+    // throw the viewer back to the token screen mid-session.
+    expect(isAuthError({ status: 500 })).toBe(false)
+    expect(isAuthError({ status: 502 })).toBe(false)
+    expect(isAuthError({ status: 429 })).toBe(false)
+    expect(isAuthError(new TypeError('Failed to fetch'))).toBe(false)
+  })
+
+  it('survives the shapes a rejected fetch actually produces', () => {
+    expect(isAuthError(undefined)).toBe(false)
+    expect(isAuthError(null)).toBe(false)
+    expect(isAuthError('nope')).toBe(false)
+    expect(isAuthError({})).toBe(false)
   })
 })
