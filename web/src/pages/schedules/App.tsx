@@ -251,6 +251,7 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
+          settings: t.settings,
         }}
         badges={{ schedules: pending.length }}
         lang={lang}

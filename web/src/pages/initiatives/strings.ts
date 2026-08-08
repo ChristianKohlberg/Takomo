@@ -12,6 +12,7 @@ export const STR = defineStrings({
     schedules: 'Schedules',
     board: 'Board',
     inbox: 'Inbox',
+    settings: 'Settings',
     gateTokenSub: "A token with 'read' and 'write' — initiatives are read and fed here.",
     gateLabel: 'API token',
     gateOpen: 'Open',
@@ -93,6 +94,7 @@ export const STR = defineStrings({
     schedules: 'Zeitpläne',
     board: 'Board',
     inbox: 'Inbox',
+    settings: 'Einstellungen',
     gateTokenSub:
       "Token mit 'read' und 'write' — Initiativen werden hier gelesen und gefüttert.",
     gateLabel: 'API-Token',

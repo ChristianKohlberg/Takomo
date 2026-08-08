@@ -13,6 +13,7 @@ export interface NavLabels {
   inbox: string
   initiatives: string
   schedules: string
+  settings: string
 }
 
 export interface AppHeaderProps {
@@ -52,6 +53,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
   inbox: '/inbox',
   initiatives: '/initiatives',
   schedules: '/schedules',
+  settings: '/settings',
 }
 
 const linkCls =
