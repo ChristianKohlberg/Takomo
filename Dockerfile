@@ -12,6 +12,12 @@ COPY src ./src
 # workflows/factory-default.yaml, so the build fails without it. Anything else
 # the source embeds from outside src/ has to be copied here too.
 COPY workflows ./workflows
+# web/dist/ is the other one, and it is the reason this comment now has a CI job
+# behind it. The four pages used to live at src/*.html, so `COPY src ./src`
+# carried them; they are built from web/ now and `include_str!`d from
+# web/dist/*.html, which is outside every path above. Only the committed build
+# output is needed — no node here, which is the point of committing it.
+COPY web/dist ./web/dist
 RUN cargo build --release
 
 # Fetch the Litestream binary (pinned release) in a throwaway stage.
