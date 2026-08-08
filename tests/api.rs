@@ -3935,6 +3935,120 @@ async fn export_streams_jsonl_with_comments_and_deps() {
     assert_eq!(text.lines().filter(|l| !l.trim().is_empty()).count(), 2);
 }
 
+// GET /v1/export/sqlite hands back the whole database as one openable SQLite
+// file — and specifically one that carries data still sitting in the WAL.
+//
+// That last part is the reason the endpoint runs `VACUUM INTO` instead of
+// copying the file: the server holds its writer connection open for its whole
+// life, so nothing checkpoints, and a plain copy of `test.db` would be a torn
+// snapshot missing every recent commit. The ticket below is created moments
+// before the export, so if the snapshot were taken the naive way this assertion
+// is what would fail.
+#[tokio::test]
+async fn sqlite_export_is_an_openable_snapshot_including_unflushed_wal() {
+    let app = TestApp::spawn().await;
+    let id = app
+        .create_ticket("Ticket that must survive the snapshot")
+        .await;
+
+    let (status, disposition, bytes) = app
+        .get_bytes(&app.admin, "/v1/export/sqlite", "content-disposition")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        disposition.starts_with("attachment; filename=\"takomo-"),
+        "downloads as a named file: {disposition}"
+    );
+    assert!(
+        bytes.starts_with(b"SQLite format 3\0"),
+        "the body is a SQLite database, not an error document: {:?}",
+        String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
+    );
+
+    // Open the bytes as a real database and read the ticket back out of it.
+    let restored = app.tmp.path().join("restored.db");
+    std::fs::write(&restored, &bytes).expect("write snapshot");
+    let conn = rusqlite::Connection::open(&restored).expect("snapshot opens");
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .expect("integrity_check runs");
+    assert_eq!(integrity, "ok", "snapshot is not corrupt");
+    let title: String = conn
+        .query_row("SELECT title FROM tickets WHERE id = ?1", [&id], |r| {
+            r.get(0)
+        })
+        .expect("the ticket is in the snapshot");
+    assert_eq!(title, "Ticket that must survive the snapshot");
+
+    // And the claim above is not decoration: the live `.db` file on its own does
+    // NOT contain that title yet, because the commit is still in the `-wal`
+    // sidecar. This is the assertion that would catch someone "simplifying"
+    // snapshot_into into a std::fs::copy.
+    let main_db = std::fs::read(app.db_path()).expect("read the live db file");
+    let needle = b"Ticket that must survive the snapshot";
+    assert!(
+        !main_db
+            .windows(needle.len())
+            .any(|w| w == needle.as_slice()),
+        "the commit is expected to still be in the WAL — if it has been checkpointed \
+         into the main file this test no longer proves VACUUM INTO is required"
+    );
+
+    // The staging file is cleaned up: a snapshot is the size of the whole store,
+    // so one leaked per download would fill the operator's disk.
+    let leaked: Vec<_> = std::fs::read_dir(app.tmp.path())
+        .expect("read tmp dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains("snapshot") || n.ends_with(".tmp"))
+        .collect();
+    assert!(leaked.is_empty(), "staging file left behind: {leaked:?}");
+}
+
+// The whole-database export needs `admin` AND a token with no project
+// allowlist. The allowlist case is the one worth a test: the token has every
+// scope, so only the explicit check stands between one project's admin and the
+// other projects' rows, token hashes and OAuth client secrets.
+#[tokio::test]
+async fn sqlite_export_refuses_scoped_and_non_admin_tokens() {
+    let app = TestApp::spawn().await;
+    app.create_ticket("Present in the store").await;
+
+    // Admin, but fenced to one project.
+    let scoped = app.mint(
+        "human:scoped-admin",
+        &["read", "write", "human", "admin"],
+        Some(&["tp"]),
+    );
+    let (status, _d, bytes) = app
+        .get_bytes(&scoped, "/v1/export/sqlite", "content-type")
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a project-scoped admin cannot take the whole database"
+    );
+    let body: Value = serde_json::from_slice(&bytes).expect("error is JSON");
+    assert_eq!(body["code"], "auth.project", "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/v1/export?project="),
+        "the error points at the export that IS project-shaped: {body}"
+    );
+
+    // Every other token kind is refused on the scope instead.
+    for (label, token) in [("human", &app.human), ("worker", &app.worker)] {
+        let (status, _d, bytes) = app
+            .get_bytes(token, "/v1/export/sqlite", "content-type")
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{label} is refused");
+        let body: Value = serde_json::from_slice(&bytes).expect("error is JSON");
+        assert_eq!(body["code"], "auth.scope", "{label}: {body}");
+    }
+}
+
 // GET /v1/metrics reports ticket counts by state and category per project, open
 // claims, and the event total; a scoped token only sees its projects.
 #[tokio::test]

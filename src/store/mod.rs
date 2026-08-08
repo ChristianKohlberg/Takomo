@@ -60,7 +60,7 @@ pub use tickets::{
 
 use crate::error::{ApiError, ApiResult};
 use rusqlite::{Connection, OpenFlags};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -88,6 +88,12 @@ pub struct Store {
     readers: Vec<Mutex<Connection>>,
     /// Round-robin cursor, used only when every reader is busy.
     next_reader: AtomicUsize,
+    /// Where the database lives, when it lives anywhere a second connection can
+    /// reach — `None` for the private databases [`is_private_db`] describes.
+    /// Only [`Store::snapshot_into`] needs it: every other connection this store
+    /// will ever open is opened in [`Store::open`], while a snapshot has to open
+    /// one later, on demand, outside both the writer and the reader pool.
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -113,7 +119,8 @@ impl Store {
         // this repo opens the store that way, but rather than leave the trap
         // armed for whoever does, detect it and run without readers: `with_conn`
         // then falls back to the writer, which is exactly the old behavior.
-        let readers = if is_private_db(path) {
+        let private = is_private_db(path);
+        let readers = if private {
             Vec::new()
         } else {
             let mut readers = Vec::with_capacity(READ_CONNECTIONS);
@@ -127,6 +134,7 @@ impl Store {
             conn: Mutex::new(conn),
             readers,
             next_reader: AtomicUsize::new(0),
+            path: (!private).then(|| path.to_path_buf()),
         })
     }
 
@@ -187,6 +195,81 @@ impl Store {
             .map_err(|_| ApiError::internal("store lock poisoned"))?;
         read_snapshot(&mut conn, f)
     }
+
+    /// Write a consistent snapshot of the WHOLE database to `dest` — every
+    /// project, every table — as one self-contained SQLite file.
+    ///
+    /// `VACUUM INTO` rather than a file copy, because under WAL the `.db` file
+    /// alone is a torn snapshot: committed data lives in the `-wal` sidecar
+    /// until a checkpoint moves it. Verified, not assumed — 1000 rows committed
+    /// on a connection left open (so nothing checkpoints) are all present in the
+    /// snapshot. The output is `journal_mode=delete` with no sidecar of its own,
+    /// which is what makes it a single file you can hand someone.
+    ///
+    /// Three constraints decide how it must be run, and each one rules out the
+    /// connection you would otherwise reach for:
+    ///
+    /// - **Not inside a transaction** — `cannot VACUUM from within a
+    ///   transaction`. That rules out [`Store::with_conn`], which wraps its
+    ///   closure in a DEFERRED one.
+    /// - **Not with `query_only`** — SQLite classifies VACUUM as a write and
+    ///   refuses it with `attempt to write a readonly database`, even though the
+    ///   only file written is `dest`. That rules out the pooled readers.
+    /// - **Not on the writer** — it would hold the mutex every claim and
+    ///   transition serializes behind for the length of a full-database scan,
+    ///   which is the stall `long_export_does_not_stall_claims_and_heartbeats`
+    ///   exists to prevent.
+    ///
+    /// What is left, and what this uses, is a dedicated connection opened
+    /// `SQLITE_OPEN_READ_ONLY` *without* `query_only`: the open flag still
+    /// refuses any write to the source, so the "never a second writer"
+    /// invariant holds, while VACUUM INTO is free to write `dest`. It is opened
+    /// per call rather than pooled because a dump is rare and long, and parking
+    /// it in the pool would cost a reader the board's event polling needs.
+    ///
+    /// Where a caller should stage a [`Store::snapshot_into`] destination:
+    /// beside the database itself, falling back to the system temp directory for
+    /// a private database (which has no directory of its own).
+    ///
+    /// Beside the database on purpose. A snapshot is the size of the whole
+    /// store, and the volume holding the database is the one an operator
+    /// provisioned for exactly that much data — where `/tmp` is a tmpfs in RAM
+    /// on a good many hosts, so staging there turns a large backup into memory
+    /// pressure on the running server.
+    pub fn snapshot_dir(&self) -> PathBuf {
+        self.path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// `dest` must not already exist; SQLite refuses to overwrite it.
+    pub fn snapshot_into(&self, dest: &Path) -> ApiResult<()> {
+        let dest = dest.to_str().ok_or_else(|| {
+            ApiError::internal("snapshot destination path is not valid UTF-8".to_string())
+        })?;
+        match &self.path {
+            Some(path) => {
+                let conn = open_snapshot_reader(path)?;
+                conn.execute("VACUUM INTO ?1", [dest])
+                    .map_err(|e| ApiError::internal(format!("cannot write snapshot: {e}")))?;
+            }
+            // A private database has no path a second connection could reach, so
+            // the writer is the only connection there is. Holding it is
+            // acceptable precisely because nothing else can be reading it.
+            None => {
+                let conn = self
+                    .conn
+                    .lock()
+                    .map_err(|_| ApiError::internal("store lock poisoned"))?;
+                conn.execute("VACUUM INTO ?1", [dest])
+                    .map_err(|e| ApiError::internal(format!("cannot write snapshot: {e}")))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Run a read closure inside a DEFERRED transaction — a stable WAL snapshot for
@@ -233,6 +316,32 @@ fn open_reader(path: &Path) -> ApiResult<Connection> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "query_only", "ON")?;
+    Ok(conn)
+}
+
+/// A connection for [`Store::snapshot_into`], and for nothing else.
+///
+/// Deliberately NOT [`open_reader`]: it differs in exactly one pragma, and that
+/// pragma is the whole point. `query_only` would refuse VACUUM INTO, because
+/// SQLite classifies VACUUM as a write regardless of which file it writes.
+/// `SQLITE_OPEN_READ_ONLY` still holds the line that matters — the source
+/// database cannot be modified through this connection — so dropping
+/// `query_only` widens what is permitted from "no writes at all" to "no writes
+/// except a new file", which is precisely the operation being authorized.
+///
+/// The busy timeout is longer than a reader's. A snapshot reads the entire
+/// database, so its odds of meeting a checkpoint restarting the WAL are far
+/// higher than a point read's, and waiting is the right answer where a fast
+/// `SQLITE_BUSY` is not.
+fn open_snapshot_reader(path: &Path) -> ApiResult<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| ApiError::internal(format!("cannot open database for snapshot: {e}")))?;
+    conn.busy_timeout(std::time::Duration::from_secs(30))?;
     Ok(conn)
 }
 

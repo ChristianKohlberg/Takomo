@@ -311,6 +311,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))
+        .route("/v1/export/sqlite", get(crate::api::export::export_sqlite))
         .route("/v1/metrics", get(crate::api::metrics::metrics))
         .route(
             "/v1/shares",
