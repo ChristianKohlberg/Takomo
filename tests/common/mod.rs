@@ -206,6 +206,34 @@ impl TestApp {
         (status, ctype, text)
     }
 
+    /// GET returning the response bytes and one named header.
+    ///
+    /// [`TestApp::get_raw`] cannot serve here: the SQLite export is a binary
+    /// file, and `resp.text()` would lossily replace every byte that is not
+    /// valid UTF-8 — including, on a database of any size, the page bytes an
+    /// assertion about validity depends on.
+    pub async fn get_bytes(
+        &self,
+        token: &str,
+        path: &str,
+        header: &str,
+    ) -> (StatusCode, String, Vec<u8>) {
+        let resp = self
+            .authed(Method::GET, token, path)
+            .send()
+            .await
+            .expect("request");
+        let status = resp.status();
+        let value = resp
+            .headers()
+            .get(header)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+        (status, value, bytes)
+    }
+
     pub async fn patch(&self, token: &str, path: &str, body: Value) -> (StatusCode, Value) {
         self.patch_with(token, path, &[], body).await
     }

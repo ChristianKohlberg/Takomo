@@ -1316,6 +1316,45 @@ paths:
             application/x-ndjson:
               schema: { type: string }
 
+  /export/sqlite:
+    get:
+      tags: [admin]
+      summary: Download the whole database as one SQLite file — admin scope, unrestricted token
+      description: |
+        An operator backup, and a different kind of thing from GET /export. That
+        one is a logical, per-project export of tickets; this is the entire store
+        as a byte-exact SQLite database — every project, plus tokens, OAuth
+        clients, shares, answer grants and the event log.
+
+        There is no per-project variant and there will not be one: most of those
+        tables do not hang off a project at all. Use `GET /export?project=<id>`
+        for the project-shaped export.
+
+        Taken with `VACUUM INTO`, not a file copy, so the result is consistent
+        and includes commits still sitting in the WAL. The body is a single
+        self-contained file (`journal_mode=delete`, no `-wal` sidecar) that
+        `sqlite3` opens directly.
+
+        Requires the `admin` scope AND a token with no project allowlist. A
+        token limited to one project is refused `auth.project`, because the file
+        contains every other project's rows along with token hashes and OAuth
+        client secrets, and so cannot be narrowed to match the allowlist.
+      responses:
+        "200":
+          description: The database file; Content-Disposition names it takomo-<timestamp>.sqlite
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment filename for the download
+          content:
+            application/vnd.sqlite3:
+              schema: { type: string, format: binary }
+        "403":
+          description: Missing the admin scope (auth.scope), or the token carries a project allowlist (auth.project)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /metrics:
     get:
       tags: [admin]
