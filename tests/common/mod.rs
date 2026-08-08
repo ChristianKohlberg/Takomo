@@ -148,6 +148,35 @@ impl TestApp {
         self.client.request(method, self.url(path))
     }
 
+    /// The application's JavaScript, as a browser receives it.
+    ///
+    /// The four surfaces used to be four self-contained documents, so a test
+    /// about what a page ships could read `GET /board`. They are ONE
+    /// client-side-routed app now: every page route returns the same small
+    /// shell, and everything a page-content assertion cares about — the string
+    /// tables, the typeahead mounts, the API paths the client calls — lives in
+    /// the bundle that shell references.
+    ///
+    /// So assertions of the form "the application ships X" are unchanged in
+    /// substance; only the place to look moved. Assertions about which SURFACE
+    /// ships X are gone, and correctly so: there is one document now, and a
+    /// test claiming `/inbox` carries something `/board` does not would be
+    /// asserting a distinction that no longer exists.
+    pub async fn app_bundle(&self) -> String {
+        let resp = self
+            .request(Method::GET, "/assets/app.js")
+            .send()
+            .await
+            .expect("the app bundle should be served");
+        assert!(
+            resp.status().is_success(),
+            "GET /assets/app.js returned {} — the page shell references it, so a \
+             non-200 here means the app does not load at all",
+            resp.status()
+        );
+        resp.text().await.unwrap()
+    }
+
     /// Same as [`TestApp::request`], carrying a bearer token.
     pub fn authed(&self, method: Method, token: &str, path: &str) -> RequestBuilder {
         self.request(method, path).bearer_auth(token)

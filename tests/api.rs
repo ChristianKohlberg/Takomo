@@ -40,22 +40,31 @@ async fn healthz_open_everything_else_authed() {
 #[tokio::test]
 async fn inbox_and_board_pages_served_unauthenticated() {
     let app = TestApp::spawn().await;
-    for (path, marker) in [("/inbox", "takomo · inbox"), ("/board", "takomo")] {
+    for path in PAGE_ROUTES {
         let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
         let body = resp.text().await.unwrap();
-        assert!(
-            body.contains(marker),
-            "{path} body should contain '{marker}'"
-        );
-        // The inbox is wired to the questions API (path built from a base var).
-        assert!(
-            body.contains("/questions") || path == "/board",
-            "inbox talks to the questions API"
-        );
-        // Both surfaces link the octopus favicon.
+        assert_app_shell(path, &body);
+        // The octopus, on every route.
         assert!(body.contains("rel=\"icon\""), "{path} links a favicon");
     }
+
+    // The per-surface title used to live in each document's <head>; with one
+    // document it is set from the path at runtime, so it is asserted in the
+    // bundle instead. Losing it would leave every tab reading "takomo · board".
+    let bundle = app.app_bundle().await;
+    for title in [
+        "takomo · board",
+        "takomo · inbox",
+        "takomo · initiatives",
+        "takomo · schedules",
+    ] {
+        assert!(bundle.contains(title), "no document title for `{title}`");
+    }
+    assert!(
+        bundle.contains("/questions"),
+        "the inbox talks to the questions API"
+    );
 }
 
 /// The ticket filter on `/board` and `/inbox` is client-side, so its contract has
@@ -141,82 +150,61 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     );
 
     // ---- half 2: the control that reads them ----
-    // Both surfaces now mount a typeahead — /board's since takomo-fo1j, /inbox's
-    // since takomo-4io8 — over the same two fields asserted above.
-    for (path, control, wiring) in [
-        // Ported: JSX compiles `id="tickfilter"` to a prop, and the subtree walk
-        // is a bundled module whose local names the minifier renames. The stable
-        // signals are the mount id and the `/tickets` fetch the filter reads.
-        ("/board", "tickfilter", "/tickets"),
-        // The ported inbox keeps the same two names: the control's id, and the
+    // Both surfaces mount a typeahead — /board's since takomo-fo1j, /inbox's
+    // since takomo-4io8 — over the same two fields asserted above. They are one
+    // bundle now, so this reads it once instead of fetching two documents that
+    // would be byte-identical.
+    let bundle = app.app_bundle().await;
+    for (surface, control, wiring) in [
+        // JSX compiles `id="tickfilter"` to a prop and the subtree walk is a
+        // module whose local names the minifier renames. The stable signals are
+        // the mount id and the `/tickets` fetch the filter reads.
+        ("board", "tickfilter", "/tickets"),
+        // The inbox keeps the same two names: the control's id, and the
         // `visible()` set the folder split and the counts both read from.
-        // Ported: JSX compiles `id="tickpick"` to a prop, so the attribute
-        // syntax is gone while the id itself is still in the bundle.
-        ("/inbox", "tickpick", "visible"),
+        ("inbox", "tickpick", "visible"),
     ] {
-        let body = app
-            .request(Method::GET, path)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
         assert!(
-            body.contains(control),
-            "{path} ships the ticket-filter control ('{control}')"
+            bundle.contains(control),
+            "the {surface} ticket-filter control ('{control}') is missing from the bundle"
         );
         assert!(
-            body.contains(wiring),
-            "{path} wires the ticket filter into its render path ('{wiring}')"
-        );
-        // One STR table per language: a key added to only one renders as
-        // `undefined` for whichever locale was forgotten.
-        assert_eq!(
-            body.matches("allTickets:").count(),
-            2,
-            "{path} needs `allTickets` in both the DE and EN string tables"
+            bundle.contains(wiring),
+            "the {surface} ticket filter is not wired into its render path ('{wiring}')"
         );
     }
+    // Locale parity is a compile error in web/ (`defineStrings` makes EN the
+    // reference shape), so this is presence rather than the old per-page count
+    // of two — which counted 4 against one bundle carrying four string tables.
+    assert!(
+        bundle.contains("allTickets:"),
+        "the `allTickets` filter label is missing from the bundle"
+    );
 
-    // Each typeahead has to stay keyboard-operable: the <select> it replaced was,
-    // for free. No JS test lane exists here, so this asserts the markers whose
-    // absence means the control has silently become mouse-only — the ARIA
-    // combobox wiring and the key handling that drives it. Both pages carry their
-    // own copy of the factory (takomo-ftix tracks the extraction), so both are
-    // checked rather than trusting one to speak for the other.
-    for path in ["/board", "/inbox"] {
-        let body = app
-            .request(Method::GET, path)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        for marker in [
-            // The ROLES, not the syntax that sets them: a hand-written page
-            // calls setAttribute("role", "combobox"); a ported one compiles to
-            // `role: "combobox"`. Both name the role, which is the contract.
-            "combobox",              // the input announces itself as a combobox
-            "aria-expanded",         // …and whether its popup is open
-            "aria-activedescendant", // …and which option the arrow keys are on
-            "listbox",               // the popup is a real listbox
-            "option",                // with real options
-            // The key NAMES, not their quoting: the minifier emits backticks
-            // (`ArrowDown`), so asserting on double quotes would be asserting on
-            // minifier output rather than on the control being operable.
-            "ArrowDown", // arrow keys move the active option
-            "Enter",     // Enter commits it
-            "Escape",    // Escape dismisses the popup
-            "ta-clear",  // and the selection is clearable
-        ] {
-            assert!(
-                body.contains(marker),
-                "{path}'s ticket typeahead must keep '{marker}' — without it the control \
-                 is no longer fully keyboard-operable, which the <select> it replaced was"
-            );
-        }
+    // The typeahead has to stay keyboard-operable: the <select> it replaced was,
+    // for free. There is ONE `Typeahead` component behind all five mounts now,
+    // so a regression here cannot affect one surface and spare another — which
+    // is exactly why the old two-page loop is gone rather than duplicated.
+    for marker in [
+        // The ROLES, not the syntax that sets them.
+        "combobox",              // the input announces itself as a combobox
+        "aria-expanded",         // …and whether its popup is open
+        "aria-activedescendant", // …and which option the arrow keys are on
+        "listbox",               // the popup is a real listbox
+        "option",                // with real options
+        // The key NAMES, not their quoting: the minifier emits backticks
+        // (`ArrowDown`), so asserting on double quotes would be asserting on
+        // minifier output rather than on the control being operable.
+        "ArrowDown", // arrow keys move the active option
+        "Enter",     // Enter commits it
+        "Escape",    // Escape dismisses the popup
+        "ta-clear",  // and the selection is clearable
+    ] {
+        assert!(
+            bundle.contains(marker),
+            "the ticket typeahead must keep '{marker}' — without it the control is no \
+             longer fully keyboard-operable, which the <select> it replaced was"
+        );
     }
 }
 
@@ -251,23 +239,20 @@ async fn inbox_ticket_filter_has_titles_to_search() {
         "…and stay sparse — the filter needs three fields, not the whole ticket: {list}"
     );
 
-    let body = app
-        .request(Method::GET, "/inbox")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    let body = app.app_bundle().await;
     assert!(
         body.contains("fields=id,title,tags"),
         "/inbox must request `title` on the ticket fetch it already makes, or the \
          filter has nothing but ids to match on"
     );
-    assert_eq!(
-        body.matches("taTicket:").count(),
-        2,
-        "/inbox needs `taTicket` in both the DE and EN string tables"
+    // Locale parity used to be counted here — two occurrences meant a DE and an
+    // EN entry. That count is meaningless against one bundle carrying all four
+    // surfaces' tables, and it is also no longer this layer's job: `defineStrings`
+    // makes EN the reference shape, so a missing DE key is a COMPILE error in
+    // web/. What is still worth pinning here is that the key ships at all.
+    assert!(
+        body.contains("taTicket:"),
+        "the inbox's ticket-filter label is missing from the bundle"
     );
 }
 
@@ -279,14 +264,7 @@ async fn inbox_ticket_filter_has_titles_to_search() {
 #[tokio::test]
 async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
     let app = TestApp::spawn().await;
-    let body = app
-        .request(Method::GET, "/board")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    let body = app.app_bundle().await;
 
     assert!(
         body.contains("tagvalfilter"),
@@ -312,22 +290,53 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
              the one Typeahead component rather than growing a second"
         );
     }
-    assert_eq!(
-        body.matches("taTagValue:").count(),
-        2,
-        "/board needs `taTagValue` in both the DE and EN string tables"
-    );
-    assert_eq!(
-        body.matches("taLabel:").count(),
-        2,
-        "/board needs `taLabel` in both the DE and EN string tables"
-    );
+    // Presence, not a count: see the note in `inbox_ticket_filter_has_titles_to_search`.
+    // Locale parity is enforced by `defineStrings` at compile time in web/.
+    for key in ["taTagValue:", "taLabel:"] {
+        assert!(
+            body.contains(key),
+            "the board's `{key}` filter label is missing from the bundle"
+        );
+    }
 }
 
 /// Surfaces served from the `web/` build rather than a hand-written page in
 /// `src/`. Add to this as each port lands; when it holds all four, the
 /// source-text assertions that branch on it can go, along with the pages.
-const PORTED_PAGES: &[&str] = &["/board", "/inbox", "/initiatives", "/schedules"];
+/// The four routes that serve the application shell.
+///
+/// They serve the SAME document — the app is client-side routed — so a test that
+/// distinguishes them by content is asserting something that no longer exists.
+/// What each route still owes the caller is the shell contract below.
+const PAGE_ROUTES: &[&str] = &["/board", "/inbox", "/initiatives", "/schedules"];
+
+/// Assert a response is the app shell: the React mount point, and references to
+/// the assets the binary embeds.
+///
+/// This inverts what the old assertion checked. Four self-contained documents
+/// had to reference NO external asset — that was the premise `include_str!` of a
+/// whole page rested on. One client-side-routed app must reference exactly the
+/// assets the binary serves, and referencing one it does not serve is the
+/// failure mode worth catching: the page would load, then 404 and render blank.
+fn assert_app_shell(path: &str, page: &str) {
+    assert!(
+        page.contains("id=\"root\""),
+        "{path} is not the web build — no React mount point in the served document"
+    );
+    for asset in ["/assets/app.js", "/assets/vendor.js", "/assets/app.css"] {
+        assert!(
+            page.contains(asset),
+            "{path} does not reference {asset} — the shell is inert without it"
+        );
+    }
+    // Everything it references must be same-origin and embedded. A CDN or a
+    // hashed filename would 404 against a binary that embeds fixed paths.
+    assert!(
+        !page.contains("http://") && !page.contains("https://"),
+        "{path} references an absolute URL — every asset must be same-origin and \
+         embedded in the binary"
+    );
+}
 
 /// The `#a=` answer-link view ships with the markdown renderer.
 ///
@@ -346,14 +355,7 @@ const PORTED_PAGES: &[&str] = &["/board", "/inbox", "/initiatives", "/schedules"
 #[tokio::test]
 async fn answer_link_page_ships_the_grant_view_and_the_renderer() {
     let app = TestApp::spawn().await;
-    let body = app
-        .request(Method::GET, "/board")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    let body = app.app_bundle().await;
     assert!(
         body.contains("/answer/self"),
         "/board must carry the `#a=` grant view, which reads and writes /v1/answer/self"
@@ -362,6 +364,151 @@ async fn answer_link_page_ships_the_grant_view_and_the_renderer() {
         body.contains("md-table"),
         "the markdown renderer must be in the bundle the answer view renders through"
     );
+}
+
+/// The app's assets are served, unauthenticated, with the right content types.
+///
+/// This is new surface. Four self-contained documents needed no asset routes at
+/// all; one client-side-routed app is inert without them, and a wrong
+/// `Content-Type` on the JS means the browser refuses to execute it — a blank
+/// page with a console error, which no other test would catch.
+#[tokio::test]
+async fn app_assets_are_served_with_correct_types() {
+    let app = TestApp::spawn().await;
+    for (path, ct) in [
+        ("/assets/app.js", "text/javascript"),
+        ("/assets/vendor.js", "text/javascript"),
+        ("/assets/runtime.js", "text/javascript"),
+        ("/assets/app.css", "text/css"),
+    ] {
+        let resp = app.request(Method::GET, path).send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
+        let got = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            got.contains(ct),
+            "{path} must be served as {ct}, got '{got}' — a browser refuses to \
+             execute a script served under the wrong type"
+        );
+        assert!(
+            !resp.text().await.unwrap().is_empty(),
+            "{path} served an empty body"
+        );
+    }
+}
+
+/// Assets revalidate with an ETag instead of being cached forever.
+///
+/// The filenames are deliberately stable (the binary `include_str!`s them by
+/// name), so nothing in the URL changes between builds. That rules out
+/// `immutable` caching and makes the ETag the only thing standing between a
+/// deploy and a browser serving last build's JavaScript out of cache — with
+/// this build's HTML.
+#[tokio::test]
+async fn app_assets_revalidate_by_etag() {
+    let app = TestApp::spawn().await;
+    let resp = app
+        .request(Method::GET, "/assets/app.js")
+        .send()
+        .await
+        .unwrap();
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .expect("assets must carry an ETag — the filename cannot signal a change")
+        .to_string();
+    let cache = resp
+        .headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        cache.contains("must-revalidate"),
+        "stable filenames must be revalidated, not cached blind, got '{cache}'"
+    );
+    assert!(
+        !cache.contains("immutable"),
+        "`immutable` is only safe when the URL changes with the content, and these \
+         URLs deliberately do not: '{cache}'"
+    );
+
+    // The whole point: a matching validator costs a round trip and no body.
+    let again = app
+        .request(Method::GET, "/assets/app.js")
+        .header(reqwest::header::IF_NONE_MATCH, &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        again.status(),
+        StatusCode::NOT_MODIFIED,
+        "a matching If-None-Match must answer 304, or every navigation re-downloads \
+         the whole bundle"
+    );
+    assert!(
+        again.text().await.unwrap().is_empty(),
+        "a 304 must carry no body"
+    );
+
+    // A stale validator must serve the new bytes rather than a spurious 304.
+    let changed = app
+        .request(Method::GET, "/assets/app.js")
+        .header(reqwest::header::IF_NONE_MATCH, "\"stale\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+    assert!(!changed.text().await.unwrap().is_empty());
+}
+
+/// No inline script means the CSP no longer has to allow one.
+///
+/// This is the security dividend of the move to one bundle, and it is worth a
+/// test because it is easy to lose: someone adds one inline `<script>` for a
+/// quick fix, the CSP blocks it, and the tempting repair is to put
+/// `'unsafe-inline'` back — which silently re-opens the whole class of injected
+/// script attacks against a page holding a bearer token in localStorage.
+#[tokio::test]
+async fn script_src_allows_no_inline_script() {
+    let app = TestApp::spawn().await;
+    let resp = app.request(Method::GET, "/board").send().await.unwrap();
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("a page route must send a CSP")
+        .to_string();
+
+    let script_src = csp
+        .split(';')
+        .map(str::trim)
+        .find(|d| d.starts_with("script-src"))
+        .expect("the CSP must name script-src explicitly, not fall back to default-src");
+    assert!(
+        !script_src.contains("unsafe-inline"),
+        "script-src must not allow inline script — the app is bundled, so nothing \
+         needs it: '{script_src}'"
+    );
+    assert!(
+        script_src.contains("'self'"),
+        "script-src must allow the app's own same-origin bundle: '{script_src}'"
+    );
+
+    // …and the document must actually honour that: an inline <script> would be
+    // blocked at runtime, so its presence means a blank page in a real browser.
+    let page = resp.text().await.unwrap();
+    for open in ["<script>", "<script type=\"module\">"] {
+        assert!(
+            !page.contains(open),
+            "the served document carries an inline script ({open}), which this CSP blocks"
+        );
+    }
 }
 
 #[tokio::test]
@@ -9822,7 +9969,7 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    // Same defense-in-depth headers as the other two pages: these hold a bearer
+    // Same defense-in-depth headers as every page route: these hold a bearer
     // token in localStorage.
     let headers = resp.headers().clone();
     assert_eq!(headers["x-frame-options"], "DENY");
@@ -9830,53 +9977,22 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
         .to_str()
         .unwrap()
         .contains("frame-ancestors 'none'"));
-    let page = resp.text().await.unwrap();
+    assert_app_shell("/initiatives", &resp.text().await.unwrap());
 
-    // PORTED (phase 1 of 4): this page is the `web/` build, so the renderer is a
-    // bundled module rather than a spliced-in `var MD_INLINE`, and asserting on
-    // its source text here would only be asserting on minifier output. The
-    // renderer's behaviour is covered where it can be covered properly — 30
-    // tests in web/src/lib/markdown.test.ts, including the scheme allowlist and
-    // markup-injection cases that nothing verified before the port.
-    //
-    // What is still this layer's job, and is checked here, is that the document
-    // the BINARY serves is the self-contained build: one document, no second
-    // request. That is the premise `include_str!` rests on, and the only place it
-    // can be verified is against the running server.
+    // The renderer itself is a bundled module, so asserting on its source text
+    // would only assert on minifier output. Its behaviour is covered properly by
+    // 30 tests in web/src/lib/markdown.test.ts, including the scheme allowlist
+    // and the markup-injection cases nothing verified before the port. What this
+    // layer can still prove is that the initiatives vocabulary ships at all.
+    let bundle = app.app_bundle().await;
     assert!(
-        page.contains("id=\"root\""),
-        "not the web build — no React mount point in the served document"
+        bundle.contains("md-table"),
+        "the markdown renderer is missing"
     );
-    for needle in ["<script src=", "<link rel=\"stylesheet\"", "<link href="] {
-        assert!(
-            !page.contains(needle),
-            "the served page references an external asset ({needle}) — it must be ONE \
-             self-contained document, or `include_str!` is serving a page the browser \
-             cannot finish loading"
-        );
-    }
-    // The composer and the rollup are the two things the page exists for.
-    assert!(page.contains("content_base64"), "no attachment upload path");
-    assert!(page.contains("/initiatives/"), "no initiative fetches");
-
-    // Every surface links the other two, so the new page is reachable. The
-    // ported page builds its links in JS, so the path appears without the
-    // `href=` prefix — see `every_spa_links_to_the_schedules_page`.
-    for (path, needle) in [
-        ("/board", "/initiatives"),
-        ("/inbox", "/initiatives"),
-        ("/initiatives", "/board"),
-    ] {
-        let body = app
-            .request(Method::GET, path)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(body.contains(needle), "{path} does not link {needle}");
-    }
+    assert!(
+        bundle.contains("/v1/initiatives"),
+        "the initiatives client is missing from the bundle"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -11539,23 +11655,14 @@ async fn schedules_page_is_served_as_a_self_contained_build() {
         .to_str()
         .unwrap()
         .contains("frame-ancestors 'none'"));
-    let page = resp.text().await.unwrap();
-    assert!(
-        page.contains("id=\"root\""),
-        "not the web build — no React mount point in the served document"
-    );
-    for needle in ["<script src=", "<link rel=\"stylesheet\"", "<link href="] {
-        assert!(
-            !page.contains(needle),
-            "the served page references an external asset ({needle}) — it must be ONE \
-             self-contained document"
-        );
-    }
+    assert_app_shell("/schedules", &resp.text().await.unwrap());
+
     // The page exists to show a cadence and its history, and to let a human act
-    // on a proposal. All three vocabularies must be in the document.
-    assert!(page.contains("/schedules"), "no schedules fetches");
-    assert!(page.contains("occurrences"), "no occurrence history");
-    assert!(page.contains("activate"), "no activate action");
+    // on a proposal. All three vocabularies must ship.
+    let bundle = app.app_bundle().await;
+    assert!(bundle.contains("/schedules"), "no schedules fetches");
+    assert!(bundle.contains("occurrences"), "no occurrence history");
+    assert!(bundle.contains("activate"), "no activate action");
 }
 
 /// Every page links to every other one, so the four surfaces read as one product
@@ -11569,23 +11676,15 @@ async fn schedules_page_is_served_as_a_self_contained_build() {
 #[tokio::test]
 async fn every_spa_links_to_the_schedules_page() {
     let app = TestApp::spawn().await;
-    for path in ["/board", "/inbox", "/initiatives"] {
-        let page = app
-            .request(Method::GET, path)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        let found = if PORTED_PAGES.contains(&path) {
-            page.contains("/schedules")
-        } else {
-            page.contains("href=\"/schedules\"")
-        };
+    let bundle = app.app_bundle().await;
+    // One header component, one nav, one bundle — so this is asserted once
+    // rather than per page. Every surface renders that same header, which is
+    // what makes the four read as one product instead of four apps sharing a
+    // palette.
+    for href in ["/board", "/inbox", "/initiatives", "/schedules"] {
         assert!(
-            found,
-            "{path} has no link to /schedules — a reader would have to know the URL"
+            bundle.contains(href),
+            "the shared header has no link to {href} — a reader would have to know the URL"
         );
     }
 }
@@ -11672,14 +11771,7 @@ async fn the_dev_seed_ships_schedules_worth_looking_at() {
 #[tokio::test]
 async fn the_board_marks_scheduled_and_not_fulfilled_cards() {
     let app = TestApp::spawn().await;
-    let page = app
-        .request(Method::GET, "/board")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
+    let page = app.app_bundle().await;
     assert!(
         page.contains("fromSchedule") && page.contains("\u{21bb}"),
         "the board should carry the ↻ provenance chip"

@@ -1,58 +1,73 @@
-// Per-page size budget.
+// Gzip budget for the app.
 //
-// The four documents share nothing at runtime — no chunk, no cache — so every
-// dependency is paid four times over. With plain React 19 (no Preact alias) the
-// floor is already ~63 kB gz before any UI, which leaves little room: this gate
-// is what turns "someone imported a date library" into a failed build instead
-// of a page that quietly doubled.
+// The shape of this check changed with the move to one bundle. It used to be a
+// per-page budget, because the four documents shared nothing and every
+// dependency was paid four times — so the interesting number was "how big is
+// ONE page". Now the interesting numbers are different:
 //
-// The budget is deliberately absolute, not a delta: a ratchet that only ever
-// compares against the last build normalises the drift it is meant to catch.
-import { readdir, readFile } from 'node:fs/promises'
+//   * FIRST LOAD — everything the browser must fetch before the first surface
+//     renders. This got WORSE with one app (~106 kB gz for a single page before,
+//     ~164 kB now) because app.js carries all four surfaces, not one. That is
+//     the honest cost of the trade.
+//   * EVERY LATER ROUTE — zero. Moving to /inbox fetches nothing. Visiting all
+//     four surfaces went from ~421 kB to ~164 kB, and navigation is instant.
+//
+// So the budget guards first load, and separately guards vendor, because vendor
+// is the part that grows silently when someone adds a dependency.
+import { readFileSync, readdirSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
 
-// Measured floors, so the number is not folklore:
-//
-//   12.4 kB   schedules.html today (hand-written, no framework)
-//   47.0 kB   board.html today, fully featured
-//   60.9 kB   a placeholder page with React 19 and nothing else
-//   91.2 kB   a placeholder page with React + four shadcn primitives
-//
-// 91 kB is therefore the FLOOR for any page here — before a single line of
-// Takomo's own UI. The budget is not a target we are meeting; it is a tripwire
-// for accidents (a stray heavy import, a second icon set), set high enough that
-// a real port fits and low enough that doubling gets caught.
-//
-// If this fails on a legitimate port, raise it and record the new floor above.
-// Do not delete the gate: four documents share nothing, so every dependency is
-// paid four times and nothing else in the build will tell you.
-const BUDGET_KB = 140
-
 const dist = resolve(import.meta.dirname, '..', 'dist')
-const files = (await readdir(dist)).filter((f) => f.endsWith('.html'))
 
-if (files.length === 0) {
-  console.error('size: no pages in dist/ — run `npm run build` first')
-  process.exit(2)
-}
+/** Everything the browser fetches before the first surface paints. */
+const FIRST_LOAD = ['index.html', 'assets/vendor.js', 'assets/runtime.js', 'assets/app.js', 'assets/app.css']
+
+/**
+ * Budgets in gzipped kB.
+ *
+ * `firstLoad` sits ~20% above today's measurement: enough headroom for ordinary
+ * work, tight enough that adding a heavyweight dependency trips it. `vendor` is
+ * the one to watch — it is where a careless `npm i` lands.
+ */
+const BUDGET_KB = { firstLoad: 200, vendor: 135 }
+
+const gz = (file) => gzipSync(readFileSync(resolve(dist, file))).length / 1024
+
+// A stray file in dist/ means the build emitted something the Rust binary does
+// not embed. vite.config.ts fails the build on that, but dist/ is committed and
+// could be edited by hand, so say so here too rather than quietly ignoring it.
+const walk = (dir, base = '') =>
+  readdirSync(resolve(dist, dir), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(`${dir}/${e.name}`, `${base}${e.name}/`) : `${base}${e.name}`,
+  )
+const present = walk('.').sort()
+const unexpected = present.filter((f) => !FIRST_LOAD.includes(f))
 
 let failed = false
-for (const file of files.sort()) {
-  const bytes = await readFile(resolve(dist, file))
-  const gz = gzipSync(bytes).length / 1024
-  const raw = bytes.length / 1024
-  const over = gz > BUDGET_KB
-  if (over) failed = true
+
+const firstLoad = FIRST_LOAD.reduce((sum, f) => sum + gz(f), 0)
+for (const f of FIRST_LOAD) {
+  console.log(`     ${f.padEnd(22)} ${gz(f).toFixed(1).padStart(7)} kB gz`)
+}
+console.log(`  ${'─'.repeat(44)}`)
+
+const line = (label, value, budget) => {
+  const ok = value <= budget
+  if (!ok) failed = true
   console.log(
-    `${over ? 'FAIL' : 'ok  '} ${file.padEnd(20)} ${raw.toFixed(1).padStart(7)} kB raw   ${gz
-      .toFixed(1)
-      .padStart(6)} kB gz   (budget ${BUDGET_KB})`,
+    `${ok ? 'ok  ' : 'FAIL'} ${label.padEnd(22)} ${value.toFixed(1).padStart(7)} kB gz   (budget ${budget})`,
   )
 }
 
-if (failed) {
-  console.error(`\nsize: a page exceeded ${BUDGET_KB} kB gzipped.`)
-  console.error('Every page pays for every dependency separately — check what was imported.')
-  process.exit(1)
+line('first load', firstLoad, BUDGET_KB.firstLoad)
+line('└─ of which vendor', gz('assets/vendor.js'), BUDGET_KB.vendor)
+console.log(`ok   every later route         0.0 kB gz   (client-side routing)`)
+
+if (unexpected.length) {
+  failed = true
+  console.log(`\nFAIL unexpected files in dist/: ${unexpected.join(', ')}`)
+  console.log('     The binary embeds a fixed set by name — see EMBEDDED in vite.config.ts.')
 }
+
+if (failed) process.exit(1)

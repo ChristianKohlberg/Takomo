@@ -62,13 +62,13 @@ shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*
 ```
 
 **A page change needs TWO builds.** `npm run build` in `web/` regenerates
-`web/dist/*.html`; `cargo build --release` embeds them. Editing `web/src/` alone changes nothing the
+`web/dist/`; `cargo build --release` embeds it. Editing `web/src/` alone changes nothing the
 server serves. In the dev loop use `npm run dev` instead — it proxies `/v1` at a `backlot up`
 instance, so there is no Rust rebuild at all.
 
 `web/` carries its own gates: `npm run check` (tsc), `npm run lint` (eslint, defect rules only),
-`npm test` (vitest), and `npm run size` (a per-page gzip budget — the four documents share nothing,
-so every dependency is paid four times). They replace `scripts/lint-spa.sh`, which existed only to
+`npm test` (vitest), and `npm run size` (a gzip budget on FIRST LOAD, plus one on the vendor chunk —
+every later route costs nothing, because there is one bundle and a router). They replace `scripts/lint-spa.sh`, which existed only to
 read the JavaScript inside the hand-written pages.
 
 The weight is in `tests/` (`api.rs`, `mcp.rs`): `TestApp::spawn()` opens a temp SQLite DB, mints
@@ -196,7 +196,7 @@ link, which is exactly the part that dominates here; measure before adopting it.
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox`, `/initiatives`, `/schedules` | **All four built from `web/`** (React + Tailwind + shadcn, TypeScript, vitest), `include_str!`'d from `web/dist/*.html`. Still ONE self-contained document — `vite-plugin-singlefile` inlines everything — so the binary needs no static-file handler and the CSP is unchanged. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives` and `/schedules` are the ones that WRITE. See `web/README.md`. |
+| `/board`, `/inbox`, `/initiatives`, `/schedules` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). All four routes serve the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus four fixed assets (`assets/{app,vendor,runtime}.js`, `assets/app.css`) by name — not a static-file handler, so nothing to traverse. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives` and `/schedules` are the ones that WRITE. See `web/README.md`. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the
@@ -297,8 +297,13 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   `x-error-codes` so the two namespaces are not mistaken for one. Registration is likewise the one
   mutating handler that does **not** `reject_unknown`: RFC 7591 requires unrecognized client metadata
   to be ignored, and refusing it would refuse every real client.
-- **A ported page needs TWO builds:** `npm run build` in `web/`, then `cargo build --release`. The
-  Rust build embeds `web/dist/*.html`, so editing `web/src/` alone changes nothing the server serves.
+- **A page change needs TWO builds:** `npm run build` in `web/`, then `cargo build --release`. The
+  Rust build embeds `web/dist/`, so editing `web/src/` alone changes nothing the server serves.
+- **The asset names are load-bearing.** Rust `include_str!`s `assets/app.js`, `assets/vendor.js`,
+  `assets/runtime.js` and `assets/app.css` by name, so content hashing is off and a fifth chunk would
+  404 at runtime. `web/vite.config.ts` fails the build if the output is not exactly that set — it
+  caught the bundler's own runtime chunk the first time it ran. Cache correctness comes from an ETag,
+  not the filename.
   In the dev loop use `npm run dev` instead — it proxies `/v1` to a `backlot up` instance, so there
   is no Rust rebuild at all.
 - **No page renders user text through `innerHTML`.** `dangerouslySetInnerHTML` and `innerHTML =`

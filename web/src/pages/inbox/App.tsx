@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { useNavigate } from 'react-router'
+import { loadToken, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -43,15 +45,15 @@ import {
 } from '@/lib/questions'
 import { STR } from './strings'
 
-const LS_TOKEN = 'takomo.inbox.token'
 const LS_LANG = 'takomo.lang'
 const LS_PROJECT = 'takomo.inbox.project'
 const POLL_MS = 5000
 
 export function App() {
+  const navigate = useNavigate()
   const { toast } = useToast()
 
-  const [token, setToken] = useState(() => localStorage.getItem(LS_TOKEN) ?? '')
+  const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
   const [gateError, setGateError] = useState('')
@@ -74,7 +76,7 @@ export function App() {
     (e: unknown) => {
       const err = e as { auth?: boolean; status?: number; message?: string }
       if (err?.auth || err?.status === 401 || err?.status === 403) {
-        localStorage.removeItem(LS_TOKEN)
+        saveToken('')
         setToken('')
         return
       }
@@ -229,7 +231,7 @@ export function App() {
     // Write pending answers while the token is still valid — after it is gone
     // they are a 401, not a decision.
     void queue.flushAll().finally(() => {
-      localStorage.removeItem(LS_TOKEN)
+      saveToken('')
       setToken('')
       setQuestions([])
     })
@@ -245,7 +247,7 @@ export function App() {
         emptyMessage={t.typeFirst}
         error={gateError}
         onSubmit={(tk) => {
-          localStorage.setItem(LS_TOKEN, tk)
+          saveToken(tk)
           setGateError('')
           setToken(tk)
         }}
@@ -282,6 +284,7 @@ export function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader
+        onNavigate={navigate}
         current="inbox"
         nav={{ board: t.board, inbox: t.inbox, initiatives: t.initiatives, schedules: t.schedules }}
         badges={{ inbox: counts.open ?? 0 }}

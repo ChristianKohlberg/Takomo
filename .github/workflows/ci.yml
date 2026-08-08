@@ -235,6 +235,16 @@ jobs:
             fi
             echo "ok - /$page"
           done
+          # The shell is inert without its assets. Serving the document but not
+          # the bundle is a blank page with a console error — which the check
+          # above would happily call a pass.
+          for asset in app.js vendor.js runtime.js app.css; do
+            if ! curl -fsS "http://127.0.0.1:8080/assets/$asset" -o /dev/null; then
+              echo "::error::/assets/$asset did not serve — the app would load blank"
+              exit 1
+            fi
+            echo "ok - /assets/$asset"
+          done
           docker rm -f takomo-ci >/dev/null
 
   mcp:

@@ -3040,7 +3040,7 @@ paths:
     servers: [{ url: / }]
     get:
       tags: [admin]
-      summary: Board — one route, three audiences (self-contained SPA)
+      summary: Board — one route, three audiences (the app shell)
       description: |
         Self-contained page served at `/board`. Unauthenticated HTML; every data
         fetch carries a credential the page is given, and which credential
@@ -3056,7 +3056,10 @@ paths:
         while signed in must land on the question they were sent. Fragments never
         reach the server, which is what lets those tokens ride in a URL at all.
 
-        Built from `web/` (phase 4 of 4 — the last page ported).
+        Served from `web/`. This route and the three below return the SAME
+        document: the app is client-side routed, and the router picks the surface
+        from the path. Each is still a real server route, so a typed URL, a
+        bookmark and an `#a=` link all work without a history fallback.
       security: []
       responses:
         "200": { description: HTML page }
@@ -3079,7 +3082,7 @@ paths:
     get:
       operationId: schedulesPage
       tags: [schedules]
-      summary: Schedules page (self-contained SPA; served at `/schedules`)
+      summary: Schedules page (the app shell; served at `/schedules`)
       description: |
         Self-contained page served at **`/schedules`** — documented under a
         distinct key because the `/v1` collection route already claims
@@ -3095,8 +3098,8 @@ paths:
         is a HISTORY, so forcing cadences into columns would throw away the axis
         that carries the meaning.
 
-        Built from `web/` (phase 2 of the port); still ONE document with every
-        script and style inlined.
+        Served from `web/` — the same shell as `/board`, `/inbox` and
+        `/initiatives`, with the surface chosen by the router.
       security: []
       responses:
         "200": { description: HTML page }
@@ -3106,12 +3109,11 @@ paths:
     get:
       operationId: inboxPage
       tags: [questions]
-      summary: Ask-a-human inbox (self-contained SPA; served at `/inbox`)
+      summary: Ask-a-human inbox (the app shell; served at `/inbox`)
       description: |
-        Self-contained page served at **`/inbox`** — documented under a distinct
-        key because OpenAPI paths are unique per document and `/inbox` above
-        describes the same URL for the hand-written era. (The two collapse when
-        the last page is ported.)
+        The app shell, served at **`/inbox`** — documented under a distinct key
+        because OpenAPI paths are unique per document and `/inbox` above
+        describes the same URL for the `/v1` collection.
 
         Unauthenticated HTML; every data fetch carries the viewer's bearer token,
         and answering requires the `human` scope. Talks to `/v1/questions*`.
@@ -3121,7 +3123,7 @@ paths:
         working through a full inbox never waits on the network. Several windows
         run side by side, each with its own countdown.
 
-        Built from `web/` (phase 3 of the port).
+        Served from `web/` — the same shell as the other three page routes.
       security: []
       responses:
         "200": { description: HTML page }
@@ -3131,9 +3133,9 @@ paths:
     get:
       operationId: initiativesPage
       tags: [initiatives]
-      summary: Initiatives page (self-contained SPA; served at `/initiatives`)
+      summary: Initiatives page (the app shell; served at `/initiatives`)
       description: |
-        Self-contained page served at **`/initiatives`** — documented under a
+        The app shell, served at **`/initiatives`** — documented under a
         distinct key because the `/v1` collection route already claims
         `/initiatives` in this document, and OpenAPI paths are unique per
         document regardless of `servers`. (A duplicate key is not a parse error
@@ -3148,13 +3150,55 @@ paths:
         and PATCH handlers: an initiative is fed by people as well as agents, and
         a browser cannot call an MCP tool.
 
-        Built from `web/` rather than hand-written in `src/` (the first of the
-        four surfaces to be), but the contract is unchanged: still ONE document
-        with every script and style inlined, so there is no second request and no
-        static-asset route.
+        Served from `web/`. All four page routes return the same document; the
+        router picks the surface from the path.
       security: []
       responses:
         "200": { description: HTML page }
+
+  /assets/{file}:
+    servers: [{ url: / }]
+    get:
+      operationId: appAsset
+      tags: [admin]
+      summary: The app's JavaScript and CSS (unauthenticated, ETag-revalidated)
+      description: |
+        The bundle the page shell loads. Four fixed paths, embedded in the binary
+        by name — `app.js`, `vendor.js`, `runtime.js`, `app.css`. This is NOT a
+        static-file handler: there is no directory to traverse and no path to
+        sanitize, and a name outside the four 404s like any unknown route.
+
+        The filenames carry no content hash, deliberately: Rust `include_str!`s
+        them, which needs the names to be stable across builds. Cache correctness
+        therefore comes from a strong `ETag` over the body plus
+        `Cache-Control: public, max-age=0, must-revalidate`, so a browser
+        revalidates and normally gets a `304` with no body. `immutable` would be
+        wrong here — it is only safe when the URL changes with the content.
+      security: []
+      parameters:
+        - name: file
+          in: path
+          required: true
+          description: One of the four embedded asset names.
+          schema:
+            type: string
+            enum: [app.js, vendor.js, runtime.js, app.css]
+        - name: If-None-Match
+          in: header
+          required: false
+          description: A previously returned ETag; a match answers 304.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The asset.
+          headers:
+            ETag:
+              description: Strong validator over the body.
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+        "304": { description: The client's copy is current; no body. }
+        "404": { description: Not one of the embedded asset names. }
 
   /healthz:
     servers: [{ url: / }]

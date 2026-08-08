@@ -35,6 +35,16 @@ export interface AppHeaderProps {
   badges?: Partial<Record<keyof NavLabels, number>>
   /** Right-hand actions (a primary button, icon buttons). */
   children?: ReactNode
+  /**
+   * Client-side navigation, when the header is mounted inside a router.
+   *
+   * The nav renders real `<a href>` anchors either way — middle-click, cmd-click
+   * and "copy link" have to keep working, and a bare `<button>` would break all
+   * three. This only intercepts the plain left-click. Omit it and the anchors
+   * navigate normally, which is what lets this component render standalone in a
+   * design-system preview, where there is no router to call.
+   */
+  onNavigate?: (href: string) => void
 }
 
 const NAV_HREF: Record<keyof NavLabels, string> = {
@@ -59,6 +69,7 @@ export function AppHeader({
   projectLabel = 'project',
   badges,
   children,
+  onNavigate,
 }: AppHeaderProps) {
   return (
     <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
@@ -82,7 +93,21 @@ export function AppHeader({
               {badge}
             </span>
           ) : (
-            <a key={key} href={NAV_HREF[key]} className={linkCls}>
+            <a
+              key={key}
+              href={NAV_HREF[key]}
+              className={linkCls}
+              onClick={(e) => {
+                // Let the browser handle anything that is not a plain left-click:
+                // a modified click means "open this somewhere else", and
+                // hijacking it is the classic SPA regression.
+                if (!onNavigate) return
+                if (e.defaultPrevented) return
+                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                e.preventDefault()
+                onNavigate(NAV_HREF[key])
+              }}
+            >
               {nav[key]}
               {badge}
             </a>

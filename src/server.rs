@@ -400,6 +400,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/inbox", get(crate::api::inbox))
         .route("/initiatives", get(crate::api::initiatives_page))
         .route("/schedules", get(crate::api::schedules_page))
+        // The app's assets. Fixed paths, not a static-file handler: the binary
+        // embeds exactly these four by name (see src/api/mod.rs), so there is no
+        // directory to traverse and no path to sanitize.
+        .route("/assets/app.js", get(crate::api::app_js))
+        .route("/assets/vendor.js", get(crate::api::vendor_js))
+        .route("/assets/runtime.js", get(crate::api::runtime_js))
+        .route("/assets/app.css", get(crate::api::app_css))
         .route("/favicon.svg", get(crate::api::favicon))
         .route("/favicon.ico", get(crate::api::favicon))
         .merge(oauth)

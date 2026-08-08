@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { useNavigate } from 'react-router'
+import { loadToken, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -30,14 +32,14 @@ import {
 } from '@/lib/schedules'
 import { STR } from './strings'
 
-const LS_TOKEN = 'takomo.schedules.token'
 const LS_LANG = 'takomo.lang'
 const LS_PROJECT = 'takomo.schedules.project'
 
 export function App() {
+  const navigate = useNavigate()
   const { toast } = useToast()
 
-  const [token, setToken] = useState(() => localStorage.getItem(LS_TOKEN) ?? '')
+  const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
   const [gateError, setGateError] = useState('')
@@ -52,7 +54,7 @@ export function App() {
   const isHuman = scopes.includes('human')
 
   function signOut() {
-    localStorage.removeItem(LS_TOKEN)
+    saveToken('')
     setToken('')
     setSchedules([])
   }
@@ -61,7 +63,7 @@ export function App() {
     (e: unknown) => {
       const err = e as { auth?: boolean; status?: number; message?: string }
       if (err?.auth || err?.status === 401) {
-        localStorage.removeItem(LS_TOKEN)
+        saveToken('')
         setToken('')
         setGateError('')
         return
@@ -86,7 +88,7 @@ export function App() {
         if (cancelled) return
         const sc = who.scopes ?? []
         if (!sc.includes('read')) {
-          localStorage.removeItem(LS_TOKEN)
+          saveToken('')
           setToken('')
           setGateError(t.gateNoRead)
           return
@@ -168,7 +170,7 @@ export function App() {
         emptyMessage={t.tokenNeeded}
         error={gateError}
         onSubmit={(tk) => {
-          localStorage.setItem(LS_TOKEN, tk)
+          saveToken(tk)
           setGateError('')
           setToken(tk)
         }}
@@ -243,6 +245,7 @@ export function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader
+        onNavigate={navigate}
         current="schedules"
         nav={{
           board: t.board,

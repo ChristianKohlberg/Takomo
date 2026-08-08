@@ -4,10 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>takomo · initiatives</title>
+    <!--
+      One document for all four routes. The title is set per route at runtime
+      (see src/App.tsx) — this is only what shows before React mounts.
+    -->
+    <title>takomo</title>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/pages/initiatives/main.tsx"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -94,11 +94,20 @@ pub async fn healthz() -> Json<Value> {
     Json(serde_json::json!({ "status": "ok", "version": crate::server::VERSION }))
 }
 
-/// Serve a self-contained HTML app with defense-in-depth headers. These pages
-/// hold the viewer's bearer token in `localStorage`, so a strict CSP (no
-/// external origins; inline JS/CSS are bundled, hence `'unsafe-inline'`) keeps
-/// any future injection from exfiltrating it, and `frame-ancestors`/
-/// `X-Frame-Options` block clickjacking of the board.
+/// Serve the app document with defense-in-depth headers. The page holds the
+/// viewer's bearer token in `localStorage`, so a strict CSP keeps any future
+/// injection from exfiltrating it, and `frame-ancestors`/`X-Frame-Options`
+/// block clickjacking of the board.
+///
+/// `script-src` is now `'self'` with NO `'unsafe-inline'`. That is a real
+/// tightening, and it is a side effect of the move to one bundle: the scripts
+/// used to be inlined into each document, which forced `'unsafe-inline'` and
+/// with it the whole class of injected-`<script>` attacks. They are separate
+/// same-origin files now, so the allowance is simply no longer needed.
+///
+/// `style-src` keeps `'unsafe-inline'`: React writes element `style` attributes
+/// (the `style={{…}}` prop), and CSP counts those as inline styles. Dropping it
+/// would need every one of those rewritten to a class.
 fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
     use axum::http::header;
     (
@@ -106,7 +115,7 @@ fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (
                 header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; script-src 'self' 'unsafe-inline'; \
+                "default-src 'self'; script-src 'self'; \
                  style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
                  connect-src 'self'; base-uri 'none'; form-action 'none'; \
                  frame-ancestors 'none'",
@@ -123,75 +132,148 @@ fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
 /// same-origin `/v1` API with a token the viewer supplies in the browser. The
 /// page itself is unauthenticated (all data fetches carry the Bearer token);
 /// serving static HTML leaks nothing the API does not already guard.
-/// PORTED (phase 4 of 4 — the last). `/board` serves three audiences from one
-/// route: the board itself, a read-only `#s=` share, and a single-use `#a=`
-/// answer link for an outside expert. All three come out of the `web/` build.
-static BOARD_HTML: &str = include_str!("../../web/dist/board.html");
-/// PORTED (phase 3 of 4). The ask-a-human inbox, from the `web/` build.
-static INBOX_HTML: &str = include_str!("../../web/dist/inbox.html");
-/// PORTED (phase 1 of 4). `/initiatives` is served from the `web/` build, not
-/// from a hand-written page in `src/`.
 ///
-/// It is still ONE self-contained document — `vite-plugin-singlefile` inlines
-/// every script, style and asset — so this stays an `include_str!` and the
-/// binary needs no static-file handler, no second request, and no change to the
-/// CSP the page is already served under.
+/// ONE document for all four surfaces. It used to be four self-contained
+/// documents with every script inlined; the app is client-side routed now, so
+/// the same `index.html` is served on `/board`, `/inbox`, `/initiatives` and
+/// `/schedules` and the router picks the surface from the path.
+///
+/// Serving it on each real path rather than on a catch-all is deliberate: a
+/// typed URL, a bookmark and an `#a=` answer link all still hit a route the
+/// server actually knows, and an unknown `/v1/...` path keeps answering a JSON
+/// 404 instead of handing an agent an HTML document.
+static INDEX_HTML: &str = include_str!("../../web/dist/index.html");
+
+/// The app's JavaScript and CSS, embedded by name.
 ///
 /// `web/dist/` is committed for exactly this reason: `cargo build --release`
 /// must not require node. The CI gate rebuilds it and diffs, so the committed
-/// document cannot drift from `web/src/`.
+/// output cannot drift from `web/src/`.
 ///
-/// No `with_spa_common` here: the shared markdown renderer is an ordinary module
-/// in the web build (`web/src/lib/markdown.ts`), so there is no marker to splice.
-static INITIATIVES_HTML: &str = include_str!("../../web/dist/initiatives.html");
-/// PORTED (phase 2 of 4). Same arrangement as `/initiatives` above: one
-/// self-contained document out of the `web/` build, `include_str!`'d from
-/// committed output so `cargo build --release` stays node-free.
-static SCHEDULES_HTML: &str = include_str!("../../web/dist/schedules.html");
+/// The names are STABLE — content hashing is turned off in `web/vite.config.ts`
+/// so these paths can be `include_str!`d at all. Cache correctness therefore
+/// cannot come from the filename, and comes from the ETag below instead. That
+/// config also fails the build if the bundle ever emits a file not listed here,
+/// which is the only thing keeping these two lists in step.
+static APP_JS: &str = include_str!("../../web/dist/assets/app.js");
+static VENDOR_JS: &str = include_str!("../../web/dist/assets/vendor.js");
+static RUNTIME_JS: &str = include_str!("../../web/dist/assets/runtime.js");
+static APP_CSS: &str = include_str!("../../web/dist/assets/app.css");
 
+/// `GET /board` — the kanban board.
+///
+/// Serves three audiences from one route: the board itself, a read-only `#s=`
+/// share, and a single-use `#a=` answer link for an outside expert. The
+/// fragment never reaches the server, so all three are this same document; the
+/// client decides which to render.
 pub async fn board() -> impl axum::response::IntoResponse {
-    secure_html(BOARD_HTML)
+    secure_html(INDEX_HTML)
 }
 
-/// Ask-a-human inbox: a self-contained email-style page (folder rail, question
-/// list, reading/answer pane) served at `/inbox`. Like `/board` it is
-/// unauthenticated static HTML; every data fetch carries the viewer's bearer
-/// token, so serving it leaks nothing the API does not already guard.
+/// `GET /inbox` — the ask-a-human inbox (folder rail, question list, reading and
+/// answer pane). Unauthenticated like every page route; the data fetches carry
+/// the viewer's bearer token.
 pub async fn inbox() -> impl axum::response::IntoResponse {
-    secure_html(INBOX_HTML)
+    secure_html(INDEX_HTML)
 }
 
-/// Initiatives: a self-contained page for the ideas a fleet is nurturing — a
-/// list with each collection's rollup, one initiative's entries in full, and the
-/// composer that appends to it. Like `/board` and `/inbox` it is unauthenticated
-/// static HTML; every data fetch carries the viewer's bearer token.
+/// `GET /initiatives` — the ideas a fleet is nurturing.
 ///
-/// It is the one SPA that WRITES, which is why `/v1/initiatives` grew POST and
-/// PATCH handlers: an initiative is fed by people as well as agents, and a browser
-/// cannot call an MCP tool.
+/// One of the two surfaces that WRITE, which is why `/v1/initiatives` grew POST
+/// and PATCH handlers: an initiative is fed by people as well as agents, and a
+/// browser cannot call an MCP tool.
+///
 /// Named `initiatives_page` rather than `initiatives`: the sibling module
 /// `crate::api::initiatives` holds the JSON handlers, and while Rust would let a
 /// function share that name (different namespace), a reader should not have to
 /// know that to tell which one a call site means.
 pub async fn initiatives_page() -> impl axum::response::IntoResponse {
-    secure_html(INITIATIVES_HTML)
+    secure_html(INDEX_HTML)
 }
 
-/// The takomo mark ("tako" = octopus) as an SVG favicon, served at both
-/// `/favicon.svg` and `/favicon.ico`. Both surfaces link `/favicon.svg`
-/// explicitly; the `.ico` route catches the bare request legacy browsers make
-/// on their own so it never 404s. Static, unauthenticated, leaks nothing.
-/// GET /schedules — the recurrence page.
+/// `GET /schedules` — the recurrence page.
 ///
 /// Rows, not columns, and that is the whole design decision: the board sorts by
 /// state, but a schedule's content is a *history*, so forcing cadences into
-/// columns would throw away the axis that carries the meaning. It shares the
-/// board's header, palette, mono identifiers and DE/EN tables, and none of its
-/// grid.
+/// columns would throw away the axis that carries the meaning.
 pub async fn schedules_page() -> impl axum::response::IntoResponse {
-    secure_html(SCHEDULES_HTML)
+    secure_html(INDEX_HTML)
 }
 
+/// A strong ETag over the asset body.
+///
+/// The assets have stable names, so a client cannot tell one build's `app.js`
+/// from the next by URL — the ETag is what does it. `sha2` is already a
+/// dependency (token hashing), so this costs nothing new, and 16 hex characters
+/// of SHA-256 is far past what a cache validator needs.
+fn etag_for(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(body.as_bytes());
+    format!("\"{}\"", hex16(&digest))
+}
+
+fn hex16(bytes: &[u8]) -> String {
+    bytes.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Serve one embedded asset with revalidation caching.
+///
+/// `must-revalidate` with `max-age=0` rather than a far-future immutable cache:
+/// immutable is only safe when the URL changes with the content, and these URLs
+/// deliberately do not. So the browser asks every time and almost always gets a
+/// 304 with no body — one cheap round trip instead of re-downloading ~110 kB of
+/// vendor bundle on every navigation.
+fn asset(
+    headers: &axum::http::HeaderMap,
+    body: &'static str,
+    content_type: &'static str,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    let etag = etag_for(body);
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|c| c.trim() == etag));
+
+    let common = [
+        (header::ETAG, etag.clone()),
+        (
+            header::CACHE_CONTROL,
+            "public, max-age=0, must-revalidate".to_string(),
+        ),
+        // The assets are same-origin and referenced by the app's own document,
+        // but they are still attacker-visible surface; keep the sniffing off.
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+    ];
+
+    if fresh {
+        return (StatusCode::NOT_MODIFIED, common).into_response();
+    }
+    (common, [(header::CONTENT_TYPE, content_type)], body).into_response()
+}
+
+pub async fn app_js(headers: axum::http::HeaderMap) -> axum::response::Response {
+    asset(&headers, APP_JS, "text/javascript; charset=utf-8")
+}
+
+pub async fn vendor_js(headers: axum::http::HeaderMap) -> axum::response::Response {
+    asset(&headers, VENDOR_JS, "text/javascript; charset=utf-8")
+}
+
+pub async fn runtime_js(headers: axum::http::HeaderMap) -> axum::response::Response {
+    asset(&headers, RUNTIME_JS, "text/javascript; charset=utf-8")
+}
+
+pub async fn app_css(headers: axum::http::HeaderMap) -> axum::response::Response {
+    asset(&headers, APP_CSS, "text/css; charset=utf-8")
+}
+
+/// The takomo mark ("tako" = octopus) as an SVG favicon, served at both
+/// `/favicon.svg` and `/favicon.ico`. The document links `/favicon.svg`
+/// explicitly; the `.ico` route catches the bare request legacy browsers make
+/// on their own so it never 404s. Static, unauthenticated, leaks nothing.
 pub async fn favicon() -> impl axum::response::IntoResponse {
     (
         [
