@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+
+    // No `baseUrl`: it is deprecated in TS 7 and paths already resolve relative
+    // to this file. shadcn's generated components import through `@/…`, so the
+    // alias is required — it is mirrored in vite.config.ts.
+    "paths": { "@/*": ["./src/*"] },
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // vite/client declares the side-effect CSS imports; node is for the two
+    // build configs, which are the only files here that touch the filesystem.
+    "types": ["vitest/globals", "vite/client", "node"]
+  },
+  "include": ["src", "*.config.ts"]
+}

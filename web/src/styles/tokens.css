@@ -1,0 +1,53 @@
+/* ---- theme tokens (light default, dark via prefers-color-scheme) ----
+   Aquarelle palette, ported verbatim from src/board.html so the surfaces keep
+   the look they have. --accent = deep blue (primary / critical emphasis);
+   --high/--normal/--low = urgency scale; --crit = warm error/reject/bug. Each
+   attribute is encoded once: priority is a single colored word, identifiers are
+   monospace, the important card is a tinted field (no left stripe).
+
+   This file was four copies before — one per page, drifting. It is now imported
+   once per entry and is the only place a color is defined. Components style
+   themselves with `var(--*)` in their own *.module.css; nothing hardcodes a hex. */
+:root {
+  --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
+  --muted: #6e7c88; --cap: #5b6b78; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
+  --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
+  --shadow: 0 18px 50px -26px rgba(20, 40, 55, .28);
+  --crit: #b4543f; --ok: #3f7a5f; --warn: #c99a3a;
+  /* Outcome fills, from /schedules. `--nf` ("not fulfilled") is set at the same
+     muted saturation as --crit and --ok so it reads as a member of the family
+     rather than an import — the palette had no word for it. */
+  --okbg: #e9f2ed; --okbd: #cfe3d8;
+  --nf: #b4543f; --nfbg: #f7ebe7; --nfbd: #ecd7d0;
+  --muted2: #93a2ac;
+  --high: #2f6ba0; --normal: #5b8bb5; --low: #7d8a95; --gaugeoff: #cfd9e2;
+  --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --sel-border: #cfe0ee; --hover: #f2f6fa;
+  --overlay: rgba(20, 40, 55, .5);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e141b; --panel: #141d27; --col-bg: #101821; --text: #e6eef5;
+    --muted: #8ba0b0; --cap: #9aabb8; --ink2: #c3d2de; --border: #26313d; --border-soft: #1e2833;
+    --accent: #4c8dff; --accent2: #6ea8ff; --accent-ink: #7fb2ff;
+    --shadow: 0 18px 50px -26px rgba(0, 0, 0, .6);
+    --crit: #e0836f; --ok: #5fbf8f; --warn: #d8b25e;
+    --okbg: #16302a; --okbd: #24483c;
+    --nf: #e0836f; --nfbg: #351f1b; --nfbd: #4d2e27;
+    --muted2: #6f8291;
+    --high: #6ea8ff; --normal: #7fa8d4; --low: #8494a1; --gaugeoff: #33414f;
+    --chip-bg: #1a2836; --chip-text: #8fb6dc; --sel: #16263a; --sel-border: #2b4a63; --hover: #17212c;
+    --overlay: rgba(1, 4, 9, .72);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}

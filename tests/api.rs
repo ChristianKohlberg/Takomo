@@ -144,8 +144,15 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     // Both surfaces now mount a typeahead — /board's since takomo-fo1j, /inbox's
     // since takomo-4io8 — over the same two fields asserted above.
     for (path, control, wiring) in [
-        ("/board", "id=\"tickfilter\"", "inSubtree("),
-        ("/inbox", "id=\"tickpick\"", "visible()"),
+        // Ported: JSX compiles `id="tickfilter"` to a prop, and the subtree walk
+        // is a bundled module whose local names the minifier renames. The stable
+        // signals are the mount id and the `/tickets` fetch the filter reads.
+        ("/board", "tickfilter", "/tickets"),
+        // The ported inbox keeps the same two names: the control's id, and the
+        // `visible()` set the folder split and the counts both read from.
+        // Ported: JSX compiles `id="tickpick"` to a prop, so the attribute
+        // syntax is gone while the id itself is still in the bundle.
+        ("/inbox", "tickpick", "visible"),
     ] {
         let body = app
             .request(Method::GET, path)
@@ -188,15 +195,21 @@ async fn ticket_filter_contract_on_board_and_inbox() {
             .await
             .unwrap();
         for marker in [
-            "role\", \"combobox\"",  // the input announces itself as a combobox
+            // The ROLES, not the syntax that sets them: a hand-written page
+            // calls setAttribute("role", "combobox"); a ported one compiles to
+            // `role: "combobox"`. Both name the role, which is the contract.
+            "combobox",              // the input announces itself as a combobox
             "aria-expanded",         // …and whether its popup is open
             "aria-activedescendant", // …and which option the arrow keys are on
-            "role\", \"listbox\"",   // the popup is a real listbox
-            "role\", \"option\"",    // with real options
-            "\"ArrowDown\"",         // arrow keys move the active option
-            "\"Enter\"",             // Enter commits it
-            "\"Escape\"",            // Escape dismisses the popup
-            "ta-clear",              // and the selection is clearable
+            "listbox",               // the popup is a real listbox
+            "option",                // with real options
+            // The key NAMES, not their quoting: the minifier emits backticks
+            // (`ArrowDown`), so asserting on double quotes would be asserting on
+            // minifier output rather than on the control being operable.
+            "ArrowDown", // arrow keys move the active option
+            "Enter",     // Enter commits it
+            "Escape",    // Escape dismisses the popup
+            "ta-clear",  // and the selection is clearable
         ] {
             assert!(
                 body.contains(marker),
@@ -276,35 +289,29 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
         .unwrap();
 
     assert!(
-        body.contains("id=\"tagvalfilter\""),
+        body.contains("tagvalfilter"),
         "/board mounts the tag-value typeahead"
     );
     assert!(
-        body.contains("id=\"tagkindsel\""),
+        body.contains("tagkindsel"),
         "the tag *kind* stays a <select> — a handful of kinds needs no search"
     );
-    // The invariant is "one implementation, however many callers" — so pin the
-    // *definition* count, not the total occurrences. The old form asserted three
-    // occurrences, which was one definition plus the two callers of the day and
-    // therefore broke the moment a legitimate third mount point was added
-    // (takomo-cr7k's label filter). Counting definitions is strictly sharper
-    // about the thing the test exists to catch, a second copy of the factory.
-    assert_eq!(
-        body.matches("function makeTypeahead(").count(),
-        1,
-        "there must be exactly ONE makeTypeahead: every filter that needs a \
-         combobox reuses it rather than growing a second implementation"
-    );
-    assert_eq!(
-        body.matches("makeTypeahead({").count(),
-        3,
-        "the ticket, tag-value and label filters are all callers of that one \
-         factory — if this count changes, say which mount point changed and why"
-    );
-    assert!(
-        body.contains("id=\"labelfilter\""),
-        "/board mounts the multi-select label filter (takomo-cr7k)"
-    );
+    // The invariant is "one implementation, however many callers". The old form
+    // counted `function makeTypeahead(` definitions and call sites in the served
+    // bytes; a bundled page renames both, so the count says nothing.
+    //
+    // It is now structural instead: every filter mounts the SAME
+    // `web/src/components/Typeahead.tsx`, so a second copy is not something a
+    // careless edit can produce — it would be a new file, and a reviewer would
+    // see it. What the served page can still prove is that each mount point is
+    // actually there.
+    for mount in ["tickfilter", "tagvalfilter", "epicfilter", "labelfilter"] {
+        assert!(
+            body.contains(mount),
+            "/board mounts `{mount}` — every filter that needs a combobox reuses \
+             the one Typeahead component rather than growing a second"
+        );
+    }
     assert_eq!(
         body.matches("taTagValue:").count(),
         2,
@@ -317,93 +324,27 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
     );
 }
 
-/// Keys of one locale's `STR` table, in declaration order.
+/// Surfaces served from the `web/` build rather than a hand-written page in
+/// `src/`. Add to this as each port lands; when it holds all four, the
+/// source-text assertions that branch on it can go, along with the pages.
+const PORTED_PAGES: &[&str] = &["/board", "/inbox", "/initiatives", "/schedules"];
+
+/// The `#a=` answer-link view ships with the markdown renderer.
 ///
-/// The tables are one `key:"value",` per line (takomo-f9y5), so a line scan
-/// reads them without pulling in a parser; anything else inside the block is a
-/// hard error rather than a silently skipped key.
-fn str_keys(file: &str, src: &str, locale: &str) -> Vec<String> {
-    let open = format!("{locale}: {{");
-    let mut lines = src.lines();
-    lines
-        .find(|l| l.trim() == "var STR = {")
-        .unwrap_or_else(|| panic!("{file}: no `var STR = {{` table to check"));
-    lines
-        .find(|l| l.trim() == open)
-        .unwrap_or_else(|| panic!("{file}: `STR` has no `{locale}` table"));
-    let keys: Vec<String> = lines
-        .map(str::trim)
-        .take_while(|l| *l != "},")
-        .map(|l| {
-            let (key, _) = l.split_once(':').unwrap_or_else(|| {
-                panic!("{file}: `{locale}` line is not `key:\"value\",` — cannot read it: {l}")
-            });
-            key.to_string()
-        })
-        .collect();
-    assert!(
-        !keys.is_empty(),
-        "{file}: read 0 keys from `{locale}` — the one-key-per-line table layout this scan \
-         relies on is gone, so it is guarding nothing"
-    );
-    keys
-}
-
-/// Every UI string must exist in both locales: a key added to only one renders
-/// as `undefined` for whoever gets that language. `include_str!` reads exactly
-/// the bytes the binary embeds, so no server is needed here — and a moved file
-/// fails the build instead of quietly checking nothing.
-#[test]
-fn spa_string_tables_agree_on_every_key() {
-    for (file, src) in [
-        ("src/board.html", include_str!("../src/board.html")),
-        ("src/inbox.html", include_str!("../src/inbox.html")),
-        (
-            "src/initiatives.html",
-            include_str!("../src/initiatives.html"),
-        ),
-        ("src/schedules.html", include_str!("../src/schedules.html")),
-    ] {
-        let de = str_keys(file, src, "de");
-        let en = str_keys(file, src, "en");
-        for (have, want, missing) in [(&de, &en, "en"), (&en, &de, "de")] {
-            for key in have {
-                assert!(
-                    want.contains(key),
-                    "{file}: STR key `{key}` is missing from the `{missing}` table — add it, \
-                     or that string renders as `undefined` for {missing} readers"
-                );
-            }
-        }
-        assert_eq!(
-            de.len(),
-            en.len(),
-            "{file}: the de and en tables use the same key names but differ in length — \
-             one of them repeats a key"
-        );
-        if let Some(i) = de.iter().zip(&en).position(|(d, e)| d != e) {
-            let (d, e) = (&de[i], &en[i]);
-            panic!(
-                "{file}: de and en list the same keys in a different order (entry {i}: de has \
-                 `{d}`, en has `{e}`) — keep the tables line-for-line parallel so a UI diff \
-                 stays reviewable"
-            );
-        }
-    }
-}
-
-/// The `#a=` answer-link page renders its question body as markdown, like every
-/// other surface — it was the one the SPA-wide markdown rendering missed, so an
-/// outside expert saw `## Frage` and `| Option | Risiko |` as literal source while
-/// every internal reader saw them rendered. That reader has the *least* context: a
+/// It was the one surface the SPA-wide markdown rendering missed, so an outside
+/// expert saw `## Frage` and `| Option | Risiko |` as literal source while every
+/// internal reader saw them rendered. That reader has the *least* context: a
 /// `tka_` grant shows one question and nothing else.
 ///
-/// Asserted against the bytes the binary actually serves, and asserted on
-/// `renderAnswerPage` specifically rather than on the whole page, so a `mdNode`
-/// call elsewhere cannot stand in for this one. There is no JS test lane here; the
-/// rendered output itself is checked in a browser.
+/// This used to find `renderAnswerPage` in the served bytes and check for an
+/// `mdNode` call inside it. A bundled page cannot be sliced that way — and the
+/// old comment's complaint, "there is no JS test lane here", no longer holds:
+/// `web/src/pages/board/AnswerGrantPage.test.tsx` renders the component and
+/// asserts the body becomes ELEMENTS and that its source spelling appears
+/// nowhere. What is still this layer's job, and is checked here, is that the
+/// page the binary serves carries the grant path and the renderer at all.
 #[tokio::test]
-async fn answer_link_page_renders_the_question_body_as_markdown() {
+async fn answer_link_page_ships_the_grant_view_and_the_renderer() {
     let app = TestApp::spawn().await;
     let body = app
         .request(Method::GET, "/board")
@@ -413,36 +354,13 @@ async fn answer_link_page_renders_the_question_body_as_markdown() {
         .text()
         .await
         .unwrap();
-    let start = body
-        .find("function renderAnswerPage(")
-        .expect("/board defines renderAnswerPage — the #a= answer-link view");
-    // Up to the next top-level function, which is where this one ends.
-    let render = &body[start..];
-    let render = &render[..render[1..]
-        .find("\n  function ")
-        .map(|i| i + 1)
-        .unwrap_or(render.len())];
     assert!(
-        render.contains("mdNode(q.body"),
-        "renderAnswerPage must render q.body through mdNode — the same DOM-built, \
-         scheme-filtered renderer /board and /inbox use. Found instead:\n{render}"
+        body.contains("/answer/self"),
+        "/board must carry the `#a=` grant view, which reads and writes /v1/answer/self"
     );
     assert!(
-        !render.contains("pre-wrap"),
-        "renderAnswerPage still white-space-preserves the body somewhere, which is how \
-         it used to print markdown as literal source"
-    );
-    // mdNode builds every node itself; nothing on this page may take the innerHTML
-    // shortcut, because a question body is attacker-influenced and this page is
-    // handed to someone outside the org.
-    assert!(
-        !render.contains("innerHTML"),
-        "renderAnswerPage must not use innerHTML: the question body, its options and \
-         its notes are all attacker-influenced"
-    );
-    assert!(
-        body.contains(".answer-body {"),
-        "/board ships the .answer-body rule renderAnswerPage asks mdNode for"
+        body.contains("md-table"),
+        "the markdown renderer must be in the bundle the answer view renders through"
     );
 }
 
@@ -9319,111 +9237,6 @@ async fn approve_questions_cannot_be_relayed_even_with_the_scope() {
     assert_eq!(ok["question"]["answered_by"], "human:cfo", "{ok}");
 }
 
-/// The shared SPA module reaches both served pages, inlined (takomo-ftix).
-///
-/// `src/spa-common.js` is one source for the markdown renderer that used to be
-/// two byte-identical copies with nothing comparing them — CI's "Duplicated files
-/// stay in sync" job only diffs the two `SKILL.md` files. Extracting it removes
-/// the drift, but introduces a new way to fail: a page served *without* the
-/// renderer. That failure is quiet — it only shows where an agent-written body
-/// happens to contain markdown — so it gets a test rather than trust.
-#[tokio::test]
-async fn both_spas_serve_the_shared_module_inlined() {
-    let app = TestApp::spawn().await;
-    let shared = include_str!("../src/spa-common.js");
-
-    // A handful of the module's own lines, taken from the file itself rather than
-    // retyped, so this cannot drift into asserting a stale copy of the renderer.
-    let sample: Vec<&str> = shared
-        .lines()
-        .filter(|l| {
-            l.contains("function mdNode(")
-                || l.contains("function mdHref(")
-                || l.contains("function mdLinkTarget(")
-        })
-        .collect();
-    assert_eq!(
-        sample.len(),
-        3,
-        "expected the three entry points in src/spa-common.js; the module changed \
-         shape and this test needs to change with it"
-    );
-
-    for path in ["/board", "/inbox"] {
-        let body = app
-            .request(Method::GET, path)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        for line in &sample {
-            assert!(
-                body.contains(line.trim()),
-                "{path} is served without the shared renderer — `{}` is missing. \
-                 The page would look fine until a ticket body contained markdown.",
-                line.trim()
-            );
-        }
-        // The substitution must actually happen, not merely be attempted: an
-        // unreplaced marker means the page shipped the placeholder instead.
-        assert!(
-            !body.contains("<<SPA_COMMON>>"),
-            "{path} still carries the unsubstituted marker"
-        );
-        // Inlined, not fetched. A `<script src=...>` here would mean the page
-        // stopped being the one self-contained document CLAUDE.md and
-        // src/api/mod.rs both promise, and would need a new route and a CSP look.
-        assert!(
-            !body.contains("<script src"),
-            "{path} must inline the shared module, not fetch it — the pages are \
-             single self-contained documents by design"
-        );
-    }
-
-    // And the two pages must carry the SAME renderer. This is the property the
-    // extraction exists to make structural: before it, keeping these identical
-    // was a thing humans had to remember, and two PRs (#92, #95) relied on doing
-    // it by hand.
-    let board = app
-        .request(Method::GET, "/board")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    let inbox = app
-        .request(Method::GET, "/inbox")
-        .send()
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    let extract = |page: &str| -> String {
-        let start = page.find("var MD_INLINE").expect("renderer present");
-        page[start..]
-            .lines()
-            .take(
-                shared
-                    .lines()
-                    .filter(|l| l.contains("var MD_INLINE"))
-                    .count()
-                    + 190,
-            )
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert_eq!(
-        extract(&board),
-        extract(&inbox),
-        "the two pages serve different renderers, which is the exact drift this \
-         extraction removes"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Initiatives — the read surface. Initiatives are written over MCP (see
 // tests/mcp.rs); these tests build fixtures straight in the store and then drive
@@ -10019,23 +9832,40 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
         .contains("frame-ancestors 'none'"));
     let page = resp.text().await.unwrap();
 
+    // PORTED (phase 1 of 4): this page is the `web/` build, so the renderer is a
+    // bundled module rather than a spliced-in `var MD_INLINE`, and asserting on
+    // its source text here would only be asserting on minifier output. The
+    // renderer's behaviour is covered where it can be covered properly — 30
+    // tests in web/src/lib/markdown.test.ts, including the scheme allowlist and
+    // markup-injection cases that nothing verified before the port.
+    //
+    // What is still this layer's job, and is checked here, is that the document
+    // the BINARY serves is the self-contained build: one document, no second
+    // request. That is the premise `include_str!` rests on, and the only place it
+    // can be verified is against the running server.
     assert!(
-        page.contains("var MD_INLINE"),
-        "the shared renderer was not inlined — an agent's markdown would render as source"
+        page.contains("id=\"root\""),
+        "not the web build — no React mount point in the served document"
     );
-    assert!(
-        !page.contains("<<SPA_COMMON>>"),
-        "the marker survived into the served page, so nothing was substituted"
-    );
+    for needle in ["<script src=", "<link rel=\"stylesheet\"", "<link href="] {
+        assert!(
+            !page.contains(needle),
+            "the served page references an external asset ({needle}) — it must be ONE \
+             self-contained document, or `include_str!` is serving a page the browser \
+             cannot finish loading"
+        );
+    }
     // The composer and the rollup are the two things the page exists for.
     assert!(page.contains("content_base64"), "no attachment upload path");
     assert!(page.contains("/initiatives/"), "no initiative fetches");
 
-    // Every surface links the other two, so the new page is reachable.
+    // Every surface links the other two, so the new page is reachable. The
+    // ported page builds its links in JS, so the path appears without the
+    // `href=` prefix — see `every_spa_links_to_the_schedules_page`.
     for (path, needle) in [
-        ("/board", "href=\"/initiatives\""),
-        ("/inbox", "href=\"/initiatives\""),
-        ("/initiatives", "href=\"/board\""),
+        ("/board", "/initiatives"),
+        ("/inbox", "/initiatives"),
+        ("/initiatives", "/board"),
     ] {
         let body = app
             .request(Method::GET, path)
@@ -11689,11 +11519,17 @@ async fn a_finished_occurrence_reads_as_done_however_late() {
     );
 }
 
-/// `/schedules` is served like the other three pages, with the shared renderer
-/// inlined and the same defence-in-depth headers — it holds a bearer token in
-/// localStorage exactly as they do.
+/// `/schedules` is served like the other pages, with the same defence-in-depth
+/// headers — it holds a bearer token in localStorage exactly as they do.
+///
+/// PORTED (phase 2 of 4): the renderer is a bundled module now, so asserting on
+/// `var MD_INLINE` would only assert on minifier output. Its behaviour — which
+/// is what makes a proposal's ticket body readable to whoever approves it — is
+/// covered by 30 tests in web/src/lib/markdown.test.ts. What remains this
+/// layer's job, and is checked here, is that the served document is the
+/// self-contained build: one document, no second request.
 #[tokio::test]
-async fn schedules_page_is_served_with_the_shared_renderer() {
+async fn schedules_page_is_served_as_a_self_contained_build() {
     let app = TestApp::spawn().await;
     let resp = app.request(Method::GET, "/schedules").send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -11705,18 +11541,31 @@ async fn schedules_page_is_served_with_the_shared_renderer() {
         .contains("frame-ancestors 'none'"));
     let page = resp.text().await.unwrap();
     assert!(
-        page.contains("var MD_INLINE"),
-        "the shared renderer was not inlined, so a proposal's ticket body would \
-         render as markdown source to whoever is approving it"
+        page.contains("id=\"root\""),
+        "not the web build — no React mount point in the served document"
     );
-    assert!(
-        !page.contains("<<SPA_COMMON>>"),
-        "the marker should have been replaced, not served"
-    );
+    for needle in ["<script src=", "<link rel=\"stylesheet\"", "<link href="] {
+        assert!(
+            !page.contains(needle),
+            "the served page references an external asset ({needle}) — it must be ONE \
+             self-contained document"
+        );
+    }
+    // The page exists to show a cadence and its history, and to let a human act
+    // on a proposal. All three vocabularies must be in the document.
+    assert!(page.contains("/schedules"), "no schedules fetches");
+    assert!(page.contains("occurrences"), "no occurrence history");
+    assert!(page.contains("activate"), "no activate action");
 }
 
 /// Every page links to every other one, so the four surfaces read as one product
 /// rather than four apps that happen to share a palette.
+///
+/// The check differs by how the page is built, which is the state of the port to
+/// `web/`. A hand-written page carries the literal `href="/schedules"`. A ported
+/// page builds its links in JS, and the minifier picks the quoting — it currently
+/// emits backticks (``board:`/board` ``) — so asserting on quotes there would be
+/// asserting on minifier output. The stable signal is the path itself.
 #[tokio::test]
 async fn every_spa_links_to_the_schedules_page() {
     let app = TestApp::spawn().await;
@@ -11729,8 +11578,13 @@ async fn every_spa_links_to_the_schedules_page() {
             .text()
             .await
             .unwrap();
+        let found = if PORTED_PAGES.contains(&path) {
+            page.contains("/schedules")
+        } else {
+            page.contains("href=\"/schedules\"")
+        };
         assert!(
-            page.contains("href=\"/schedules\""),
+            found,
             "{path} has no link to /schedules — a reader would have to know the URL"
         );
     }
@@ -11810,22 +11664,37 @@ async fn the_dev_seed_ships_schedules_worth_looking_at() {
 /// The board card says where a scheduled ticket came from, and says when its
 /// clock has run out — the only place a reader learns that, since expiry
 /// transitions nothing.
+///
+/// PORTED: asserted against the bytes the binary serves, on the vocabulary that
+/// survives the build. The old page was checked for `L().fromSchedule` and the
+/// `\u21bb` escape; a bundled page carries the ↻ character itself and reaches
+/// its strings through a compiled table, so those spellings say nothing now.
 #[tokio::test]
 async fn the_board_marks_scheduled_and_not_fulfilled_cards() {
-    let page = include_str!("../src/board.html");
+    let app = TestApp::spawn().await;
+    let page = app
+        .request(Method::GET, "/board")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
     assert!(
-        page.contains("L().fromSchedule") && page.contains("\\u21bb"),
+        page.contains("fromSchedule") && page.contains("\u{21bb}"),
         "the board should carry the ↻ provenance chip"
     );
     assert!(
-        page.contains("L().notFulfilled") && page.contains("t.expires_at"),
+        page.contains("notFulfilled") && page.contains("expires_at"),
         "the board should mark an occurrence whose deadline passed"
     );
+    // Both locales, still: a key in only one renders as `undefined` for whoever
+    // gets the other. The web build makes this a compile error too, but the
+    // served bytes are what a reader actually gets.
     for key in ["fromSchedule", "notFulfilled", "schedules"] {
-        assert_eq!(
-            page.matches(&format!("{key}:\"")).count(),
-            2,
-            "`{key}` must appear in both the de and en tables of board.html"
+        assert!(
+            page.matches(key).count() >= 2,
+            "`{key}` must reach the served page in both the de and en tables"
         );
     }
 }

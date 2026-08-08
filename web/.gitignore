@@ -1,0 +1,10 @@
+node_modules/
+
+# The LIBRARY build is a design-system artifact, regenerated on demand — nothing
+# in this repo's deploy consumes it, so it is not committed.
+dist-lib/
+
+# dist/ is deliberately NOT ignored: the four self-contained pages are committed
+# so `cargo build --release` stays node-free on Render and in the Dockerfile.
+# While no page is ported yet, dist/ holds placeholders and nothing includes it —
+# see web/README.md.

@@ -1,0 +1,49 @@
+// Display formatting, ported from initiatives.html. Pure, so it is finally
+// testable — these three were inline in the page and covered by nothing.
+
+/** Compact relative age: 45s, 12m, 3h, 9d. `—` for missing or unparseable. */
+export function fmtAge(iso: string | null | undefined, now: number = Date.now()): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  const s = Math.max(0, (now - d.getTime()) / 1000)
+  if (s < 60) return Math.floor(s) + 's'
+  if (s < 3600) return Math.floor(s / 60) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  return Math.floor(s / 86400) + 'd'
+}
+
+/**
+ * Bytes for a human. The API already sends `megabytes` on the rollup, but a
+ * 300-byte note would read as "0 MB" — so small sizes get their real unit.
+ */
+export function fmtBytes(n: number | null | undefined): string {
+  const v = n || 0
+  if (v < 1024) return v + ' B'
+  if (v < 1024 * 1024) return (v / 1024).toFixed(v < 10240 ? 1 : 0) + ' KB'
+  return (v / (1024 * 1024)).toFixed(v < 10 * 1024 * 1024 ? 2 : 1) + ' MB'
+}
+
+/** "a, b , ,c" -> ["a","b","c"] — the comma-separated label/tag inputs. */
+export function splitList(s: string | null | undefined): string[] {
+  return String(s || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0)
+}
+
+/**
+ * `<input type="datetime-local">` yields "2026-07-01T09:00", which is NOT
+ * RFC 3339 — the server refuses it rather than guessing at a zone. The offset is
+ * added here, where the browser's own zone is known.
+ *
+ * Returns null for empty or unparseable input so the caller can omit the field
+ * rather than send something the server will reject.
+ */
+export function localInputToRfc3339(value: string): string | null {
+  const v = value.trim()
+  if (!v) return null
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return null
+  return d.toISOString()
+}

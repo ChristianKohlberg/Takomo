@@ -1,0 +1,72 @@
+// The one HTTP client. Ported from the four forked `api()` helpers the pages
+// carried (board's was 28 lines, inbox's 17, and they had drifted) — that fork
+// is the reason this module exists.
+//
+// The error path is the important part and it is not generic: Takomo's error
+// bodies are flat (`{code, message, remedy}`) and the message is written for a
+// reader who must act on it. Surfacing `message` + `remedy` verbatim is what
+// turns a failure into something the user can fix; re-wording it here would
+// throw away the most carefully built thing in the API.
+export interface ApiErrorShape extends Error {
+  status?: number
+  /** 401/403 — the caller shows the token gate rather than an error toast. */
+  auth?: boolean
+  code?: string
+}
+
+export interface ApiOptions {
+  method?: string
+  body?: BodyInit | null
+  headers?: Record<string, string>
+  signal?: AbortSignal
+}
+
+/** Same-origin by default: the binary serves both the page and `/v1`. */
+export const API_BASE = '/v1'
+
+function apiError(message: string, status?: number, code?: string): ApiErrorShape {
+  const e = new Error(message) as ApiErrorShape
+  if (status != null) e.status = status
+  if (code != null) e.code = code
+  return e
+}
+
+export async function api<T = unknown>(
+  token: string,
+  path: string,
+  opts: ApiOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = { ...(opts.headers ?? {}) }
+  headers['Authorization'] = 'Bearer ' + token
+
+  const init: RequestInit = { headers, method: opts.method ?? 'GET' }
+  if (opts.body != null) init.body = opts.body
+  if (opts.signal) init.signal = opts.signal
+
+  const r = await fetch(API_BASE + path, init)
+
+  if (r.status === 401 || r.status === 403) {
+    const e = apiError('auth', r.status)
+    e.auth = true
+    throw e
+  }
+
+  if (!r.ok) {
+    const text = await r.text()
+    let message = text
+    let code: string | undefined
+    try {
+      const j = JSON.parse(text) as { message?: string; remedy?: string; code?: string; error?: { message?: string } }
+      message = j.message ?? j.error?.message ?? text
+      code = j.code
+      // The remedy says what to DO about it. Dropping it is how a teaching
+      // error becomes a wall.
+      if (j.remedy) message += ' — ' + j.remedy
+    } catch {
+      // Not JSON (a proxy error page, an empty body): keep the raw text.
+    }
+    throw apiError(message || 'HTTP ' + r.status, r.status, code)
+  }
+
+  return (await r.json()) as T
+}

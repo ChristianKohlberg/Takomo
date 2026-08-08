@@ -146,28 +146,59 @@ jobs:
       - name: Loads in Ruby (Psych — stricter on flow scalars)
         run: ruby -ryaml -e 'YAML.load_file("spec/openapi.yaml"); puts "ok - Psych accepts it too"'
 
-  spa:
-    name: SPA JavaScript lint
+  web:
+    name: web (typecheck, lint, tests, size, dist is current)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
     steps:
       - uses: actions/checkout@v4
 
-      # src/board.html and src/inbox.html carry ~5500 lines of hand-written
-      # JavaScript between them, and until takomo-rrjg no job in this file looked
-      # at a single line of it. board.html had declared `ticketFilter` twice in
-      # the same object literal for several refactors: legal JavaScript, last one
-      # wins, nothing to see at runtime. Agents kept hand-rolling the same
-      # `new Function(...)` parse check per ticket instead; eslint subsumes it,
-      # since a parse error is an eslint error, and unlike a parse check it also
-      # catches the duplicate key that started this.
-      #
-      # No setup-node: Node and npx are preinstalled on the runner, the same
-      # assumption the `spec` job's Redocly step already makes. eslint is pinned
-      # in scripts/lint-spa.sh and nothing is committed under node_modules — the
-      # SPAs stay dependency-free in the sense that matters, which is what the
-      # browser downloads.
-      - name: ESLint (inline <script> of the SPAs)
-        run: ./scripts/lint-spa.sh
+      # This replaces the old `spa` job, which ran eslint over JavaScript
+      # extracted from inside the hand-written HTML pages. Those pages are gone;
+      # `web/` is an ordinary TypeScript project, so it gets ordinary gates —
+      # and four the old arrangement could not have: a typechecker, unit tests,
+      # a per-page size budget, and the check below.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      # `web/dist/*.html` is COMMITTED, because `cargo build --release` embeds it
+      # with `include_str!` and must stay node-free on Render and in the
+      # Dockerfile. That makes it the one build output that can go stale in the
+      # repo: edit `web/src/`, forget `npm run build`, and the binary keeps
+      # serving the previous page while every test here passes. So rebuild it and
+      # fail if the result differs from what was committed.
+      - name: Build the four pages
+        run: npm run build
+
+      - name: web/dist is current
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::web/dist/ is stale — run 'npm run build' in web/ and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi
+          echo "ok - web/dist matches a fresh build"
+
+      - name: Per-page size budget
+        run: npm run size
 
   mcp:
     name: MCP typecheck
