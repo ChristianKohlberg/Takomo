@@ -3040,15 +3040,23 @@ paths:
       responses:
         "200": { description: HTML page }
 
-  /initiatives:
+  /initiatives-page:
     servers: [{ url: / }]
     get:
+      operationId: initiativesPage
       tags: [initiatives]
-      summary: Initiatives page (self-contained SPA; the one surface that WRITES)
+      summary: Initiatives page (self-contained SPA; served at `/initiatives`)
       description: |
-        Self-contained page served at `/initiatives`. Unauthenticated HTML; every
-        data fetch carries the viewer's bearer token, and appending an entry
-        requires the `write` scope. Talks to `/v1/initiatives*`.
+        Self-contained page served at **`/initiatives`** — documented under a
+        distinct key because the `/v1` collection route already claims
+        `/initiatives` in this document, and OpenAPI paths are unique per
+        document regardless of `servers`. (A duplicate key is not a parse error
+        in every YAML reader: PyYAML keeps the last one silently, so only
+        Redocly's parser catches it.)
+
+        Unauthenticated HTML; every data fetch carries the viewer's bearer token,
+        and appending an entry requires the `write` scope. Talks to
+        `/v1/initiatives*`.
 
         It is the one page that writes, which is why `/v1/initiatives` grew POST
         and PATCH handlers: an initiative is fed by people as well as agents, and
