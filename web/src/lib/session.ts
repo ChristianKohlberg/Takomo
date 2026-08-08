@@ -86,3 +86,22 @@ export function loadProject(): string {
 export function saveProject(id: string): void {
   localStorage.setItem(PROJECT_KEY, id)
 }
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Is this error the API saying "your credential is no longer good"?
+ *
+ * Worth one predicate rather than the same three-way check written out at each
+ * call site, because the sites that FORGOT it are the bug this exists for: both
+ * background polls swallowed their errors, so a revoked or expired token left
+ * the board reading "reconnecting" and the inbox reading completely normal —
+ * both showing stale data forever, neither ever asking for a new token.
+ *
+ * `auth` is the flag the API client sets; the status codes are the fallback for
+ * anything that reaches here without going through it.
+ */
+export function isAuthError(e: unknown): boolean {
+  const err = e as { auth?: boolean; status?: number } | null | undefined
+  return !!err && (!!err.auth || err.status === 401 || err.status === 403)
+}
