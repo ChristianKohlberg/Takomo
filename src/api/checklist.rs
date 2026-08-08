@@ -9,13 +9,16 @@
 //! the one claim an agent must not be able to make on a person's behalf.
 
 use super::{
-    body_object, first, get_i64, get_str, get_string_array, query_pairs, reject_unknown,
-    require_str, ApiJson,
+    body_object, first, get_i64, get_str, get_string_array, parse_i64_param, query_pairs,
+    reject_unknown, require_str, ApiJson,
 };
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
-use crate::store::{CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput, ReleasePush};
+use crate::store::{
+    CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput, ReleasePush, MAX_CASES_PAGE,
+    MAX_LANES_PAGE,
+};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -209,11 +212,19 @@ pub async fn list_lanes(
         layer: first(&pairs, "layer").map(str::to_string),
         include_archived: first(&pairs, "archived") == Some("include"),
         with_policy: true,
+        limit: parse_i64_param(&pairs, "limit")?,
     };
-    let lanes = state.store.list_lanes(&filter)?;
-    Ok(Json(
-        json!({ "items": lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>() }),
-    ))
+    let limit = filter
+        .limit
+        .unwrap_or(MAX_LANES_PAGE)
+        .clamp(1, MAX_LANES_PAGE);
+    let (lanes, total) = state.store.list_lanes(&filter)?;
+    Ok(Json(super::paged(
+        lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+        total,
+        limit,
+        "Raise the page size with ?limit=N (max 200), or narrow with ?epic=/?severity=/?layer=.",
+    )))
 }
 
 /// GET /v1/lanes/{id} (read) — the lane plus its resolved policy and case counts.
@@ -345,11 +356,26 @@ pub async fn list_cases(
     ctx.require_project(&lane.project)?;
     let pairs = query_pairs(raw.as_deref());
     let include_retired = first(&pairs, "retired") == Some("include");
-    let cases = state.store.list_cases(&id, include_retired)?;
-    Ok(Json(json!({
-        "lane": id,
-        "items": cases.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
-    })))
+    let limit_arg = parse_i64_param(&pairs, "limit")?;
+    let offset = parse_i64_param(&pairs, "offset")?.unwrap_or(0).max(0);
+    let limit = limit_arg.unwrap_or(MAX_CASES_PAGE).clamp(1, MAX_CASES_PAGE);
+    let (cases, total) = state
+        .store
+        .list_cases(&id, include_retired, limit_arg, Some(offset))?;
+    let mut out = super::paged(
+        cases.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
+        total,
+        limit,
+        &format!(
+            "Read the next page with ?offset={}&limit={limit} (max page 500), and repeat while \
+             offset+limit is below total. Cases are ordered by key, which is stable, so the \
+             pages do not shift under you.",
+            offset + limit
+        ),
+    );
+    out["lane"] = json!(id);
+    out["offset"] = json!(offset);
+    Ok(Json(out))
 }
 
 /// GET /v1/cases/{id} (read) — the case plus its full verdict history.

@@ -810,6 +810,14 @@ paths:
         bounds it even when A blocks B blocks A). Edges are canonical
         `{ticket, blocked_by}` pairs (ticket is blocked by blocked_by)
         regardless of traversal direction, so `both` never duplicates an edge.
+
+        **The walk is bounded at 500 nodes.** The cycle guard stops the traversal
+        repeating, not the traversal being large, and one edge into a densely
+        linked epic pulls in its whole component at a query per node. On reaching
+        the ceiling the response is a correct partial graph with `truncated: true`
+        and a `note`. Treat a truncated graph as evidence about the nodes present
+        and about nothing else — in particular, an absent blocker is not proof of
+        no blocker. Narrow with `direction`, or drop `transitive`.
       parameters:
         - { $ref: "#/components/parameters/id" }
         - { name: direction, in: query, schema: { type: string, enum: [blocked_by, blocks, both], default: blocked_by } }
@@ -1177,13 +1185,40 @@ paths:
         - { name: project, in: query, schema: { type: string } }
         - { name: type, in: query, schema: { type: string } }
         - { name: label, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+          description: Page size. Out-of-range values are clamped rather than refused.
       responses:
         "200":
-          description: Ready = claimable state, unclaimed, unblocked (directly or via ancestors), ordered by priority then age
+          description: |
+            Ready = claimable state, unclaimed, unblocked (directly or via
+            ancestors), ordered by priority then age.
+
+            **This is an envelope, not a bare array** — it was an array before
+            takomo 0.4. An array had nowhere to report what it left out, so a
+            caller that asked for 20 and received 20 could not tell a queue of 20
+            from the head of a queue of 137. `total` is the whole queue for this
+            filter, counted with the same predicate that selected the page.
+
+            There is no cursor, deliberately. The ready queue is live — other
+            workers claim from it while you read — so a positional page 2 would
+            promise a stable sequence that does not exist. Raise `limit` or
+            narrow the filter instead.
           content:
             application/json:
-              schema: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
+                  total:
+                    type: integer
+                    description: Ready tickets matching the filter, ignoring limit.
+                  limit: { type: integer, description: 'The page size actually applied.' }
+                  note:
+                    type: string
+                    description: Present only when total exceeds the page — says so in words, and what to do about it.
 
   /ready/claim:
     post:
@@ -3084,15 +3119,29 @@ paths:
         - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
         - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
         - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived lanes' }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, minimum: 1, maximum: 200 }
+          description: |
+            Page size, clamped rather than refused. Applied after the severity
+            and layer filters, so a narrowed page is never short for the wrong
+            reason.
       responses:
         "200":
-          description: The lanes.
+          description: |
+            The lanes. Bounded since 0.4 — this used to return every lane a
+            project had, each hydrated with three further queries. `total`
+            reports how many matched, so a capped read is visible as one.
           content:
             application/json:
               schema:
                 type: object
+                required: [items, total, limit]
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/Lane" } }
+                  total: { type: integer, description: 'Lanes matching the filter, ignoring limit.' }
+                  limit: { type: integer }
+                  note: { type: string, description: 'Present only when the page left lanes out.' }
         "403": { description: Token lacks the read scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
     post:
@@ -3180,16 +3229,34 @@ paths:
       summary: A lane's cases (read scope)
       parameters:
         - { name: retired, in: query, schema: { type: string, enum: [include] }, description: 'include cases retired by a later regeneration' }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 500, minimum: 1, maximum: 500 }
+          description: Page size, clamped rather than refused.
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+          description: |
+            Skip this many. An offset is honest here where it would not be on the
+            ready queue - cases are ordered by `key`, which is stable and does not
+            reshuffle as agents work, so page 2 means the same thing on a second read.
       responses:
         "200":
-          description: The cases.
+          description: |
+            The cases. Bounded since 0.4: cases are generated, and a PICT model can
+            land thousands under a single lane, all of which this used to return.
           content:
             application/json:
               schema:
                 type: object
+                required: [items, total, limit]
                 properties:
                   lane: { type: string }
                   items: { type: array, items: { $ref: "#/components/schemas/Case" } }
+                  total: { type: integer, description: 'Cases in the lane, ignoring limit and offset.' }
+                  limit: { type: integer }
+                  offset: { type: integer }
+                  note: { type: string, description: 'Present only when cases remain beyond this page.' }
         "403": { description: Token lacks the read scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
     put:

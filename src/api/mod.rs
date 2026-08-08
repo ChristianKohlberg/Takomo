@@ -391,6 +391,26 @@ pub fn parse_i64_param(pairs: &[(String, String)], key: &str) -> ApiResult<Optio
     }
 }
 
+/// A bounded list, shaped so a short page cannot be mistaken for a whole one.
+///
+/// Always carries `total` (how many matched, ignoring the page size) alongside
+/// `items` and the `limit` actually applied. When the page left something out it
+/// also carries a `note` saying so in the terms of the surface being read —
+/// `more` is that surface's advice, e.g. which parameter to raise.
+///
+/// The `note` is prose rather than a flag on purpose, and it is the same bet the
+/// error contract makes: the reader is usually an LLM, and a sentence telling it
+/// what to do next is acted on where a `truncated: true` it did not think to
+/// check is not. `total` remains the machine answer for anything that wants one.
+pub fn paged(items: Vec<Value>, total: i64, limit: i64, more: &str) -> Value {
+    let shown = items.len() as i64;
+    let mut out = serde_json::json!({ "items": items, "total": total, "limit": limit });
+    if total > shown {
+        out["note"] = serde_json::json!(format!("Showing {shown} of {total}. {more}"));
+    }
+    out
+}
+
 /// Clamp long-poll wait to the contract's 0..=120 seconds.
 pub fn clamp_wait(wait: Option<i64>) -> Duration {
     Duration::from_secs(wait.unwrap_or(0).clamp(0, 120) as u64)

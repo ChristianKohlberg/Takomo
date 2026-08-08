@@ -17,6 +17,11 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+/// Node ceiling for a transitive dependency walk. Reaching it returns a correct
+/// partial graph flagged `truncated`, which is the one honest answer: a graph
+/// silently missing edges reads as "nothing blocks this".
+pub const MAX_DEP_GRAPH_NODES: usize = 500;
+
 const MAX_PROMOTION_TARGET: usize = 100;
 const MAX_PROMOTION_FIELD: usize = 2048;
 
@@ -1342,7 +1347,21 @@ impl Store {
             nodes.insert(root.to_string());
             queue.push_back(root.to_string());
 
+            // Whether the walk stopped early. A transitive walk follows every
+            // dependency edge reachable from the root, and nothing about the
+            // schema bounds that — one edge into a densely linked epic pulls in
+            // its whole component, and each node below costs another query. The
+            // cycle guard prevents an infinite walk, not a large one.
+            let mut truncated = false;
+
             while let Some(node) = queue.pop_front() {
+                if nodes.len() >= MAX_DEP_GRAPH_NODES {
+                    // Stop expanding, but finish the loop body for nothing else:
+                    // the nodes already collected are returned as a correct
+                    // partial graph, flagged as partial.
+                    truncated = true;
+                    break;
+                }
                 if !expanded.insert(node.clone()) {
                     continue; // already walked — cycle guard
                 }
@@ -1424,13 +1443,20 @@ impl Store {
                 .map(|(t, b)| json!({ "ticket": t, "blocked_by": b }))
                 .collect();
 
-            Ok(json!({
+            let mut out = json!({
                 "root": root,
                 "direction": direction.as_str(),
                 "transitive": transitive,
                 "nodes": node_json,
                 "edges": edge_json,
-            }))
+                "truncated": truncated,
+            });
+            if truncated {
+                out["note"] = json!(format!(
+                    "This graph is PARTIAL: the walk stopped at {MAX_DEP_GRAPH_NODES} nodes. Edges to tickets beyond that boundary are missing, so do not read the absence of a blocker here as proof there is none. Narrow with direction=blocked_by or direction=blocks, or drop transitive=true to see the root's immediate edges only."
+                ));
+            }
+            Ok(out)
         })
     }
 

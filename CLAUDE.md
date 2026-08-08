@@ -274,6 +274,15 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   want a release note, write a good commit subject.
 - Every new/changed HTTP route ships with an integration test **and** an `spec/openapi.yaml`
   update. The spec is the contract and it drifts silently.
+- **A list route is bounded, and says what it left out.** The reader is usually an agent, and a
+  full page it cannot distinguish from a complete one is how it comes to treat a fraction of the
+  work as all of it. So a list returns an envelope, never a bare array — `items` plus `total`
+  (counted with the *same* predicate that selected the page) plus the `limit` applied, and a prose
+  `note` when the two differ. `api::paged` builds it. Which continuation to offer depends on
+  whether the order is stable: `cases` are keyed and get an `offset`, `tickets` get a rowid
+  `cursor`, and the **ready queue gets neither** — other workers claim from it as you read, so a
+  positional page 2 would promise a sequence that does not exist. Raise `limit` there instead.
+  A walk that cannot be paged at all (`dep_graph`) carries `truncated` and stops at a ceiling.
 - `spec/openapi.yaml` must stay a *valid* OpenAPI **3.1** document, not merely parseable YAML.
   Two traps invisible to a human reader: a comma inside an unquoted description in a flow mapping
   truncates the sentence and turns its tail into a junk key; `nullable: true` is 3.0 syntax that

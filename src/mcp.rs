@@ -117,6 +117,36 @@ pub const READ_TOOLS: &[&str] = &[
 pub struct TakomoMcp {
     state: Arc<AppState>,
     tool_router: ToolRouter<TakomoMcp>,
+    /// The `tools/list` reply, built once and shared by every session (see
+    /// [`slim_tools`]). `Arc` because this type is cloned per session and the
+    /// list is identical for all of them.
+    tools: Arc<Vec<rmcp::model::Tool>>,
+}
+
+/// The tool list with per-tool JSON Schema boilerplate removed.
+///
+/// Every session pays for `tools/list` before it can call anything, and on this
+/// surface that reply is ~46 KB across 49 tools — roughly 12.5k tokens of an
+/// agent's context spent on discovery. Two thirds of it is generated schema
+/// rather than anything written here, and one line of that is pure repetition:
+/// `schemars` stamps the same `$schema` dialect URI into all 49, where it says
+/// nothing a client acts on. Dropping it removes about 2.8 KB.
+///
+/// Deliberately only the dialect line. The other obvious candidate is the
+/// `["string", "null"]` type that every optional argument carries, which would
+/// save more — but `Option<T>` genuinely accepts an explicit `null`, and a
+/// client that sends one would then be sending something the advertised schema
+/// forbids. Saving tokens by publishing a schema that is not true about the
+/// arguments is the wrong trade.
+fn slim_tools(mut tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
+    for tool in &mut tools {
+        if tool.input_schema.contains_key("$schema") {
+            let mut schema = (*tool.input_schema).clone();
+            schema.remove("$schema");
+            tool.input_schema = Arc::new(schema);
+        }
+    }
+    tools
 }
 
 // ---- tool argument schemas --------------------------------------------------
@@ -173,6 +203,9 @@ pub struct ReadyArgs {
     pub r#type: Option<String>,
     /// Restrict to a single label.
     pub label: Option<String>,
+    /// How many to return, 1..=200 (default 20). The response always reports the
+    /// queue's `total`, so a page that left work out says so.
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -654,6 +687,9 @@ pub struct LanesArgs {
     pub severity: Option<String>,
     /// Narrow by layer: ui, api, other.
     pub layer: Option<String>,
+    /// How many to return, 1..=200 (default 200). `total` always reports how
+    /// many matched.
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -662,6 +698,11 @@ pub struct LaneShowArgs {
     pub id: String,
     /// Include the lane's cases in the response.
     pub cases: Option<bool>,
+    /// With `cases`: how many to return, 1..=500 (default 500). `case_total`
+    /// always reports how many the lane holds.
+    pub limit: Option<i64>,
+    /// With `cases`: skip this many, for reading past the first page.
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -742,13 +783,16 @@ pub struct VerdictArgs {
 #[tool_router]
 impl TakomoMcp {
     pub fn new(state: Arc<AppState>) -> Self {
+        // Two routers, merged. The initiative tools sit in their own
+        // `#[tool_router]` block because they are a genuinely separate
+        // surface — no claims, no fences, no workflow — and keeping them
+        // out of the work-loop block keeps each block readable.
+        let tool_router = Self::tool_router() + Self::initiative_router() + Self::schedule_router();
+        let tools = Arc::new(slim_tools(tool_router.list_all()));
         Self {
             state,
-            // Two routers, merged. The initiative tools sit in their own
-            // `#[tool_router]` block because they are a genuinely separate
-            // surface — no claims, no fences, no workflow — and keeping them
-            // out of the work-loop block keeps each block readable.
-            tool_router: Self::tool_router() + Self::initiative_router() + Self::schedule_router(),
+            tool_router,
+            tools,
         }
     }
 
@@ -1792,9 +1836,17 @@ impl TakomoMcp {
             labels: a.label.into_iter().collect(),
             allowed_projects: auth.allowed_projects_vec(),
         };
-        let tickets = self.state.store.ready_peek(&filter, 20)?;
+        let limit = a.limit.unwrap_or(20).clamp(1, 200);
+        let (tickets, total) = self.state.store.ready_peek(&filter, limit)?;
         let items: Vec<Value> = tickets.iter().map(brief).collect();
-        Ok(json!({ "ok": true, "items": items }))
+        let mut out = json!({ "ok": true, "items": items, "total": total, "limit": limit });
+        if total > items.len() as i64 {
+            out["note"] = json!(format!(
+                "Showing {} of {total} ready ticket(s). Raise `limit` (max 200) or narrow with project/type/label. The queue is live — other workers claim from it as you read.",
+                items.len()
+            ));
+        }
+        Ok(out)
     }
 
     fn do_show(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
@@ -2475,12 +2527,26 @@ impl TakomoMcp {
             layer: a.layer,
             include_archived: false,
             with_policy: true,
+            limit: a.limit,
         };
-        let lanes = self.state.store.list_lanes(&filter)?;
-        Ok(json!({
+        let limit = a
+            .limit
+            .unwrap_or(crate::store::MAX_LANES_PAGE)
+            .clamp(1, crate::store::MAX_LANES_PAGE);
+        let (lanes, total) = self.state.store.list_lanes(&filter)?;
+        let mut out = json!({
             "ok": true,
             "lanes": lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
-        }))
+            "total": total,
+            "limit": limit,
+        });
+        if total > lanes.len() as i64 {
+            out["note"] = json!(format!(
+                "Showing {} of {total} lane(s). Raise `limit` (max 200) or narrow with epic/severity/layer.",
+                lanes.len()
+            ));
+        }
+        Ok(out)
     }
 
     fn do_lane(&self, auth: &AuthCtx, a: LaneShowArgs) -> ApiResult<Value> {
@@ -2490,8 +2556,19 @@ impl TakomoMcp {
         let mut out = lane.to_json();
         out["ok"] = json!(true);
         if a.cases.unwrap_or(false) {
-            let cases = self.state.store.list_cases(&a.id, false)?;
+            let (cases, total) = self
+                .state
+                .store
+                .list_cases(&a.id, false, a.limit, a.offset)?;
+            let shown = cases.len() as i64;
             out["case_list"] = json!(cases.iter().map(|c| c.to_json()).collect::<Vec<_>>());
+            out["case_total"] = json!(total);
+            if total > shown {
+                let next = a.offset.unwrap_or(0).max(0) + shown;
+                out["case_note"] = json!(format!(
+                    "Showing {shown} of {total} case(s). Read the next page with offset={next}, and repeat while offset is below case_total. Cases are ordered by key, which is stable."
+                ));
+            }
         }
         Ok(out)
     }
@@ -2702,6 +2779,21 @@ impl ServerHandler for TakomoMcp {
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
+    }
+
+    /// Hand back the pre-slimmed list rather than the router's own
+    /// (`#[tool_handler]` generates this method only when it is absent, so
+    /// defining it here replaces the generated one).
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, McpError> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: (*self.tools).clone(),
+            meta: None,
+            next_cursor: None,
+        })
     }
 
     fn get_info(&self) -> ServerInfo {

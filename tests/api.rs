@@ -1374,7 +1374,7 @@ async fn blocked_tickets_never_ready_including_inherited() {
 
     // Neither epic (directly blocked) nor child (via ancestor) is ready.
     let (_, ready) = app.get(&app.admin, "/v1/ready?project=tp").await;
-    let ids: Vec<&str> = ready
+    let ids: Vec<&str> = ready["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1405,7 +1405,7 @@ async fn blocked_tickets_never_ready_including_inherited() {
     let (s, b) = app.transition(&app.admin, &blocker, "cancelled").await;
     assert_eq!(s, StatusCode::OK, "{b}");
     let (_, ready) = app.get(&app.admin, "/v1/ready?project=tp").await;
-    let ids: Vec<&str> = ready
+    let ids: Vec<&str> = ready["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -4676,8 +4676,9 @@ async fn archive_hides_from_default_views_and_migration_is_additive() {
     // ready-queue exclusion is meaningful.
     app.to_ready(&archived).await;
 
-    let ready_has =
-        |v: &Value, id: &str| -> bool { v.as_array().unwrap().iter().any(|t| t["id"] == id) };
+    let ready_has = |v: &Value, id: &str| -> bool {
+        v["items"].as_array().unwrap().iter().any(|t| t["id"] == id)
+    };
     let list_has = |v: &Value, id: &str| -> bool {
         v["items"].as_array().unwrap().iter().any(|t| t["id"] == id)
     };
@@ -7180,7 +7181,7 @@ async fn ticket_lists_stay_free_of_convention_hints() {
 
     let (s, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
     assert_eq!(s, StatusCode::OK, "{ready}");
-    for t in ready.as_array().expect("ready array") {
+    for t in ready["items"].as_array().expect("ready items") {
         assert!(t.get("style_hint").is_none(), "{t}");
         assert!(t.get("language_hint").is_none(), "{t}");
     }
@@ -7277,7 +7278,7 @@ async fn question_answer_resumes_on_the_simple_workflow() {
     // The point of resuming: the ticket is back in the ready queue, so an agent
     // will actually pick it up again.
     let (_, ready) = app.get(&app.admin, "/v1/ready?project=sw").await;
-    let ids: Vec<&str> = ready
+    let ids: Vec<&str> = ready["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -11131,9 +11132,9 @@ async fn an_expired_occurrence_leaves_the_ready_queue_without_being_transitioned
 
     // While live it is offered as work.
     let (_, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
-    let offered: Vec<&str> = ready
+    let offered: Vec<&str> = ready["items"]
         .as_array()
-        .expect("/v1/ready returns a bare array")
+        .expect("/v1/ready returns an items envelope")
         .iter()
         .map(|t| t["id"].as_str().unwrap())
         .collect();
@@ -11146,9 +11147,9 @@ async fn an_expired_occurrence_leaves_the_ready_queue_without_being_transitioned
     app.force_ticket_expiry(&ticket, 2_000);
 
     let (_, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
-    let offered: Vec<&str> = ready
+    let offered: Vec<&str> = ready["items"]
         .as_array()
-        .expect("/v1/ready returns a bare array")
+        .expect("/v1/ready returns an items envelope")
         .iter()
         .map(|t| t["id"].as_str().unwrap())
         .collect();
@@ -11713,4 +11714,213 @@ async fn the_board_marks_scheduled_and_not_fulfilled_cards() {
             "`{key}` must appear in both the de and en tables of board.html"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded reads: every list says how much it left out
+// ---------------------------------------------------------------------------
+
+/// `/v1/ready` answers with an envelope carrying `total`, not the bare array it
+/// used to return.
+///
+/// The array had nowhere to report what it omitted, so a caller that asked for
+/// 20 and got 20 could not tell a queue of 20 from the head of a queue of 137 —
+/// and an agent draining work would read a fraction of it as the whole thing.
+#[tokio::test]
+async fn ready_reports_the_whole_queue_alongside_the_page() {
+    let app = TestApp::spawn().await;
+    for i in 0..4 {
+        let id = app.create_ticket(&format!("ready {i}")).await;
+        app.to_ready(&id).await;
+    }
+
+    let (status, all) = app.get(&app.admin, "/v1/ready?project=tp").await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    let n = all["items"].as_array().expect("items envelope").len() as i64;
+    assert_eq!(n, 4, "{all}");
+    assert_eq!(all["total"], 4);
+    assert_eq!(all["limit"], 20, "the documented default page size");
+    assert!(
+        all["note"].is_null(),
+        "a page holding the whole queue must not claim otherwise: {all}"
+    );
+
+    // Clipped: total still counts the queue, and the note says what to do.
+    let (_, page) = app.get(&app.admin, "/v1/ready?project=tp&limit=2").await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 2);
+    assert_eq!(page["total"], 4, "total is the queue, not the page: {page}");
+    assert_eq!(page["limit"], 2);
+    let note = page["note"]
+        .as_str()
+        .expect("a clipped page explains itself");
+    assert!(
+        note.contains("limit"),
+        "the note should name the way to see more: {note}"
+    );
+
+    // Clamped at both ends rather than refused, so a caller cannot ask for a
+    // page large enough to be a denial of service against itself.
+    let (_, big) = app
+        .get(&app.admin, "/v1/ready?project=tp&limit=100000")
+        .await;
+    assert_eq!(big["limit"], 200);
+    let (_, small) = app.get(&app.admin, "/v1/ready?project=tp&limit=0").await;
+    assert_eq!(small["limit"], 1);
+
+    // `total` counts with the same predicate that selects the page: a blocked
+    // ticket is absent from both, not from one.
+    let blocker = app.create_ticket("blocker").await;
+    let blocked = app.create_ticket("blocked").await;
+    app.to_ready(&blocked).await;
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{blocked}/deps"),
+            json!({ "blocked_by": blocker }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let (_, after) = app.get(&app.admin, "/v1/ready?project=tp").await;
+    let ids: Vec<&str> = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(!ids.contains(&blocked.as_str()), "{after}");
+    assert_eq!(
+        after["total"], 4,
+        "a blocked ticket must not be counted by a total the page excludes it from: {after}"
+    );
+}
+
+/// Lanes and cases are bounded, and report the count they were bounded from.
+///
+/// Cases are the sharp case: they are *generated*, so one PICT model can land
+/// thousands under a single lane — all of which this used to return in one
+/// reply.
+#[tokio::test]
+async fn lane_and_case_lists_are_bounded_and_say_so() {
+    let app = TestApp::spawn().await;
+    let lane_id = lane(
+        &app,
+        json!({ "title": "checkout", "layer": "api", "severity": "blocking" }),
+    )
+    .await;
+    let keys: Vec<String> = (0..7).map(|i| format!("k{i}")).collect();
+    let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    file_cases(&app, &lane_id, &key_refs).await;
+
+    // Whole set: total equals what came back, and nothing claims to be partial.
+    let (status, all) = app
+        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all["items"].as_array().unwrap().len(), 7);
+    assert_eq!(all["total"], 7);
+    assert!(all["note"].is_null(), "{all}");
+
+    // A page, and the offset that reads the next one. Cases order by `key`, so
+    // the pages are stable and must not overlap.
+    let (_, first) = app
+        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases?limit=3"))
+        .await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["total"], 7, "total ignores the page size: {first}");
+    assert_eq!(first["offset"], 0);
+    assert!(
+        first["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("offset=3"),
+        "the note should hand back the next offset: {first}"
+    );
+
+    let (_, second) = app
+        .get(
+            &app.admin,
+            &format!("/v1/lanes/{lane_id}/cases?limit=3&offset=3"),
+        )
+        .await;
+    let page1: Vec<&str> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    let page2: Vec<&str> = second["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(page1, ["k0", "k1", "k2"], "ordered by key");
+    assert_eq!(
+        page2,
+        ["k3", "k4", "k5"],
+        "the next page, disjoint from the first"
+    );
+
+    // Lanes: same envelope.
+    for i in 0..3 {
+        lane(
+            &app,
+            json!({ "title": format!("lane {i}"), "layer": "ui", "severity": "advisory" }),
+        )
+        .await;
+    }
+    let (_, lanes) = app.get(&app.admin, "/v1/projects/tp/lanes?limit=2").await;
+    assert_eq!(lanes["items"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        lanes["total"], 4,
+        "one blocking lane plus three advisory: {lanes}"
+    );
+    assert!(lanes["note"].is_string(), "{lanes}");
+
+    // The page size applies AFTER the severity filter, not as a SQL LIMIT before
+    // it — otherwise narrowing would return a page short for a reason the caller
+    // cannot see.
+    let (_, filtered) = app
+        .get(
+            &app.admin,
+            "/v1/projects/tp/lanes?severity=advisory&limit=3",
+        )
+        .await;
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        filtered["total"], 3,
+        "total counts what matched the filter: {filtered}"
+    );
+    assert!(filtered["note"].is_null(), "{filtered}");
+}
+
+/// A dependency walk reports whether it was cut short. The flag is always
+/// present, so a reader never has to infer completeness from its absence.
+#[tokio::test]
+async fn a_dependency_graph_states_whether_it_is_complete() {
+    let app = TestApp::spawn().await;
+    let a = app.create_ticket("a").await;
+    let b = app.create_ticket("b").await;
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{a}/deps"),
+            json!({ "blocked_by": b }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+
+    let (status, graph) = app
+        .get(&app.admin, &format!("/v1/tickets/{a}/deps?transitive=true"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{graph}");
+    assert_eq!(
+        graph["truncated"], false,
+        "a small graph is complete, and says so rather than staying silent: {graph}"
+    );
+    assert!(
+        graph["note"].is_null(),
+        "a complete graph carries no partial-graph warning: {graph}"
+    );
+    assert_eq!(graph["nodes"].as_array().unwrap().len(), 2, "{graph}");
 }
