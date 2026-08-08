@@ -3150,8 +3150,36 @@ paths:
         and PATCH handlers: an initiative is fed by people as well as agents, and
         a browser cannot call an MCP tool.
 
-        Served from `web/`. All four page routes return the same document; the
+        Served from `web/`. All five page routes return the same document; the
         router picks the surface from the path.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
+  /settings-page:
+    servers: [{ url: / }]
+    get:
+      operationId: settingsPage
+      tags: [admin]
+      summary: Settings — the admin console (the app shell; served at `/settings`)
+      description: |
+        The app shell, served at **`/settings`**. Documented under a distinct key
+        for the same reason as `/initiatives-page`: OpenAPI paths are unique per
+        document regardless of `servers`.
+
+        The console over the admin surface — the current token's actor, scopes and
+        project allowlist; the whole-database export (`GET /v1/export/sqlite`);
+        tokens (list, mint, revoke); and projects (list, create, delete). Almost
+        none of that is new: those endpoints existed long before the page, and an
+        operator reached them through the CLI or curl. The export is the
+        exception, and the reason this page exists.
+
+        Unauthenticated HTML, like every page route, even though everything ON it
+        requires `admin`. The document carries no data and each request behind it
+        is refused without the scope, so gating the HTML would protect nothing
+        while breaking the one thing a page route owes a caller: answering a typed
+        URL. A non-admin token is told so in one message rather than left to watch
+        four sections fail.
       security: []
       responses:
         "200": { description: HTML page }

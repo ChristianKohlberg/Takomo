@@ -1,14 +1,14 @@
-// The router. Four routes, one bundle, one document.
+// The router. Five routes, one bundle, one document.
 //
 // Every route is still a real URL the server answers — `/board` typed into the
 // address bar, an `#a=` answer link mailed to an outside expert, a bookmarked
 // `/schedules` all work exactly as before, because the server serves this same
-// document on all four paths. What changed is that moving BETWEEN them no
+// document on all five paths. What changed is that moving BETWEEN them no
 // longer reloads the page.
 //
 // Routes are eagerly imported on purpose. Lazy routes would emit extra chunks,
 // and the binary embeds a fixed set of asset files by name — vite.config.ts
-// fails the build if the output ever grows beyond it. Four surfaces sharing one
+// fails the build if the output ever grows beyond it. Five surfaces sharing one
 // vendor chunk is small enough that splitting them buys nothing.
 import { useEffect } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router'
@@ -16,6 +16,7 @@ import { App as BoardApp } from './pages/board/App'
 import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
 import { App as SchedulesApp } from './pages/schedules/App'
+import { App as SettingsApp } from './pages/settings/App'
 
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
@@ -23,6 +24,7 @@ const TITLES: Record<string, string> = {
   '/inbox': 'takomo · inbox',
   '/initiatives': 'takomo · initiatives',
   '/schedules': 'takomo · schedules',
+  '/settings': 'takomo · settings',
 }
 
 /**
@@ -49,8 +51,9 @@ const router = createBrowserRouter([
       { path: '/inbox', element: <InboxApp /> },
       { path: '/initiatives', element: <InitiativesApp /> },
       { path: '/schedules', element: <SchedulesApp /> },
+      { path: '/settings', element: <SettingsApp /> },
       // Anything else the server handed this document for. The server serves it
-      // only on the four routes, so this is a safety net rather than a real path.
+      // only on the five routes, so this is a safety net rather than a real path.
       { path: '*', element: <Navigate to="/board" replace /> },
     ],
   },

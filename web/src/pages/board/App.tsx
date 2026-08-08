@@ -375,7 +375,13 @@ function Board({
       <AppHeader
         onNavigate={navigate}
         current="board"
-        nav={{ board: t.board, inbox: t.inbox, initiatives: t.initiatives, schedules: t.schedules }}
+        nav={{
+          board: t.board,
+          inbox: t.inbox,
+          initiatives: t.initiatives,
+          schedules: t.schedules,
+          settings: t.settings,
+        }}
         lang={lang}
         onLang={(l) => {
           setLang(l)

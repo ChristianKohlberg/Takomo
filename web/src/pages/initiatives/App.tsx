@@ -326,6 +326,7 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
+          settings: t.settings,
         }}
         lang={lang}
         onLang={(l) => {

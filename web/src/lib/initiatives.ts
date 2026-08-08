@@ -79,7 +79,16 @@ export interface Project {
 export interface Whoami {
   actor: string
   scopes: string[]
-  projects?: string[] | null
+  /**
+   * `'*'` for an unrestricted token, else the project allowlist.
+   *
+   * The literal, not `null` — `/v1/whoami` serializes the unrestricted case as
+   * the STRING `"*"`, the same way a token row does. This said `string[] | null`
+   * until /settings became the first page to read it, where `projects.join()`
+   * threw at runtime on a perfectly ordinary admin token: `"*"` has a `.length`
+   * of 1, so a truthy-plus-length guard sails straight past it too.
+   */
+  projects?: '*' | string[]
 }
 
 const json = { 'Content-Type': 'application/json' }
