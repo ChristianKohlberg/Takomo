@@ -25,6 +25,21 @@ services:
       # terminates TLS in front of the service.
       - key: TAKOMO_ALLOW_PUBLIC_BIND
         value: "1"
+      # The public origin this service is reached at, e.g.
+      # https://takomo.example.com — no path, no trailing slash. Render asks for
+      # it when you apply the blueprint (`sync: false`), because it differs per
+      # deployment and a value baked in here would be wrong for everyone but its
+      # author: a client compares the OAuth issuer against the URL it fetched
+      # discovery from, byte for byte, so someone else's host means every hosted
+      # connector fails with an unexplained "couldn't reach the MCP server".
+      #
+      # Leave it blank and the server still runs — it just answers 404 on the
+      # OAuth endpoints, so claude.ai / ChatGPT / the Gemini app cannot connect
+      # at all, while local clients carrying a bearer token are unaffected. The
+      # startup line reports which of the two you got. See
+      # docs/hosted-mcp-clients.md.
+      - key: TAKOMO_PUBLIC_URL
+        sync: false
     disk:
       name: takomo-data
       mountPath: /var/data
