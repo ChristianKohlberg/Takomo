@@ -1,0 +1,60 @@
+/* Markdown block styling, ported verbatim from src/board.html.
+
+   The one deliberate exception to "components use CSS Modules": the renderer in
+   src/lib/markdown.ts builds nodes with FIXED class names (`md`, `md-table`)
+   rather than importing a hashed module, because keeping it framework-agnostic
+   is what lets it stay imperative — and staying imperative is what guarantees
+   no user text ever becomes markup. So its stylesheet is global too. */
+.md { color: var(--ink2); }
+.md p { margin: 0 0 12px; line-height: 1.6; }
+
+/* `list-style` is restated because Tailwind's preflight resets `ul`/`ol` to
+   `list-style: none`. The pages this replaced had no Tailwind, so their bullets
+   came from the browser default — without these two lines every agent-written
+   bullet list renders as unmarked, indented text, which reads as prose and
+   loses the structure the author meant. */
+.md ul { margin: 0 0 12px; padding-left: 20px; list-style-type: disc; }
+.md ol { margin: 0 0 12px; padding-left: 22px; list-style-type: decimal; }
+.md li { margin: 4px 0; line-height: 1.55; display: list-item; }
+.md b { color: var(--text); }
+.md code {
+  font-family: var(--mono); font-size: 12px; background: var(--hover);
+  padding: 1px 5px; border-radius: 4px; color: var(--accent-ink);
+}
+
+/* Headings start at h3 (see renderMarkdown): panels own h1/h2. */
+.md h3, .md h4, .md h5, .md h6 { color: var(--text); margin: 18px 0 8px; line-height: 1.35; }
+.md h3 { font-size: 15px; font-weight: 700; }
+.md h4 { font-size: 13.5px; font-weight: 700; }
+.md h5, .md h6 {
+  font-size: 12.5px; font-weight: 700; letter-spacing: .02em;
+  text-transform: uppercase; color: var(--muted);
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+
+.md blockquote {
+  margin: 0 0 12px; padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--border); color: var(--muted);
+}
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
+.md a {
+  color: var(--accent2); text-decoration: underline;
+  text-underline-offset: 2px; overflow-wrap: anywhere;
+}
+
+/* Fenced code: scrolls in its own box so a long line never widens the page. */
+.md pre {
+  margin: 0 0 12px; padding: 10px 12px; background: var(--hover);
+  border: 1px solid var(--border); border-radius: 6px; overflow-x: auto;
+}
+.md pre code {
+  font-family: var(--mono); font-size: 12px; background: none;
+  padding: 0; border-radius: 0; color: var(--ink2); white-space: pre;
+}
+
+/* Tables likewise: the wrapper scrolls, the page does not. */
+.md-table { overflow-x: auto; margin: 0 0 12px; }
+.md table { border-collapse: collapse; font-size: 12.5px; }
+.md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+.md th { color: var(--text); font-weight: 700; background: var(--hover); white-space: nowrap; }

@@ -1,0 +1,20 @@
+// Declaration emit for the library build.
+//
+// `vite build --config vite.lib.config.ts` produces the JavaScript; it does not
+// produce types. Both are needed: a design system consumes a component through
+// its PROPS CONTRACT, and `MarkdownProps` is what tells a design agent what the
+// component takes. Shipping the JS without the .d.ts leaves it guessing.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    // Emits `dist-lib/index.d.ts` next to `dist-lib/index.js`, which is the
+    // layout `package.json` advertises and consumers expect.
+    "declarationDir": "dist-lib",
+    "rootDir": "src"
+  },
+  "include": ["src/index.ts", "src/components", "src/lib"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

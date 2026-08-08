@@ -1,0 +1,144 @@
+/* Tailwind + shadcn, wired onto Takomo's own palette.
+ *
+ * RECONCILED AFTER `shadcn init`. The CLI appends its default neutral-grey
+ * palette here, and three of its token names collide with Aquarelle's — meaning
+ * the same word for a different job:
+ *
+ *   --accent   Aquarelle: the deep primary blue.   shadcn: the hover/selected wash.
+ *   --muted    Aquarelle: muted TEXT.              shadcn: a muted BACKGROUND.
+ *   --border   Aquarelle: the border color.        shadcn: the same idea, but
+ *                                                  redefined in terms of itself.
+ *
+ * Left as generated, `:root { --accent: oklch(0.97 0 0) }` silently repaints
+ * every existing consumer of `var(--accent)` grey. So the generated palette is
+ * deleted and the mapping happens ONLY in `@theme inline`: shadcn components
+ * use utility classes (`bg-muted`, `border-border`, `text-accent-foreground`)
+ * and those resolve through `--color-*`, never through the raw names.
+ *
+ * Also removed from the generated output, deliberately:
+ *   - `@import "@fontsource-variable/geist"` — 228 kB of font, inlined into all
+ *     four documents, replacing the system stack these pages use today.
+ *   - the `.dark { … }` block — the dark VARIANT here is bound to the media
+ *     query, because these pages have no theme toggle and follow the OS, which
+ *     is what the pages being replaced do.
+ *
+ * Consequences worth keeping:
+ *   1. tokens.css remains the ONE place a color is defined, so these surfaces
+ *      cannot drift into looking like default shadcn slate.
+ *   2. Dark mode needs no duplication — tokens.css already flips every variable
+ *      under `prefers-color-scheme`, and every mapped token follows for free.
+ *
+ * Re-running `shadcn init` will re-append its defaults. Re-apply this file.
+ */
+@import 'tailwindcss';
+@import './tokens.css';
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+:root {
+  --radius: 0.625rem;
+
+  /* The two foregrounds with no Aquarelle equivalent: text ON the primary blue
+     and ON the error red. Both surfaces are dark in either theme, so white is
+     correct in both and does not belong in the light/dark token flip. */
+  --primary-foreground: #ffffff;
+  --destructive-foreground: #ffffff;
+
+  /* Charts and the sidebar have no Takomo equivalent yet; they are derived from
+     the palette so a shadcn component that reaches for them is at least on
+     brand. Replace with real values if either surface ever ships. */
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--accent);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--sel);
+  --sidebar-accent-foreground: var(--accent-ink);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--accent2);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+
+  /* Panels and popovers are the raised surface. */
+  --color-card: var(--panel);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--text);
+
+  /* Primary is the deep blue that carries emphasis across every surface. */
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--primary-foreground);
+
+  /* Secondary is the chip: the vocabulary for a labelled, non-emphatic value. */
+  --color-secondary: var(--chip-bg);
+  --color-secondary-foreground: var(--chip-text);
+
+  --color-muted: var(--hover);
+  --color-muted-foreground: var(--muted);
+
+  /* shadcn's "accent" is the hover/selected wash — see the note above. */
+  --color-accent: var(--sel);
+  --color-accent-foreground: var(--accent-ink);
+
+  --color-destructive: var(--crit);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--accent2);
+
+  /* Urgency and outcome, kept as first-class colors: they are load-bearing
+     vocabulary on the board (priority is a single colored word), not decoration. */
+  --color-crit: var(--crit);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  /* The occurrence outcomes on /schedules: done, not-fulfilled, and their fills. */
+  --color-nf: var(--nf);
+  --color-okbg: var(--okbg);
+  --color-okbd: var(--okbd);
+  --color-nfbg: var(--nfbg);
+  --color-nfbd: var(--nfbd);
+  --color-muted2: var(--muted2);
+  --color-gaugeoff: var(--gaugeoff);
+  --color-high: var(--high);
+  --color-normal: var(--normal);
+  --color-low: var(--low);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* The system stack tokens.css already sets on <body> — NOT Geist. */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-heading: var(--font-sans);
+
+  /* Identifiers are monospace everywhere — it is how a ticket id reads as an
+     id. Exposing it as Tailwind's mono family keeps `font-mono` honest. */
+  --font-mono: var(--mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

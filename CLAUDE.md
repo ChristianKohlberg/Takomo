@@ -56,19 +56,20 @@ cargo test --release --lib <substring>                    # ONE unit test
 cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*.sh .handrail/adapters/*.sh
-./scripts/lint-spa.sh                                     # eslint over the SPAs' inline <script>
 (cd clients/mcp && npm ci && npm run build)               # MCP typecheck
+(cd web && npm ci && npm run check && npm test)           # the four surfaces
+(cd web && npm run build)                                 # then cargo build — see below
 ```
 
-`scripts/lint-spa.sh` is the only thing in the repo that reads the ~5500 lines of JavaScript inside
-`src/board.html` and `src/inbox.html`. It extracts the single inline `<script>` from each, splices
-`src/spa-common.js` in at that page's `// <<SPA_COMMON>>` marker exactly as the server does, and runs
-a pinned eslint over the assembly with a small, defect-only ruleset (`scripts/spa-eslint.config.mjs`) — duplicate
-keys, undefined names, dead bindings, parse errors; no style rules, so a red is always real.
-Findings are reported at the HTML file's own path and line. Nothing is added to the pages
-themselves: the SPAs stay dependency-free in the sense that matters, which is what the browser
-downloads. Offline the script exits 2 (skipped, not failed) because it cannot fetch eslint; CI has
-the network and is the wall.
+**A page change needs TWO builds.** `npm run build` in `web/` regenerates
+`web/dist/*.html`; `cargo build --release` embeds them. Editing `web/src/` alone changes nothing the
+server serves. In the dev loop use `npm run dev` instead — it proxies `/v1` at a `backlot up`
+instance, so there is no Rust rebuild at all.
+
+`web/` carries its own gates: `npm run check` (tsc), `npm run lint` (eslint, defect rules only),
+`npm test` (vitest), and `npm run size` (a per-page gzip budget — the four documents share nothing,
+so every dependency is paid four times). They replace `scripts/lint-spa.sh`, which existed only to
+read the JavaScript inside the hand-written pages.
 
 The weight is in `tests/` (`api.rs`, `mcp.rs`): `TestApp::spawn()` opens a temp SQLite DB, mints
 four tokens (`admin`/`human`/`worker`/`worker2`), and serves on an ephemeral port, so tests drive
@@ -195,7 +196,7 @@ link, which is exactly the part that dominates here; measure before adopting it.
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox`, `/initiatives` | Dependency-free SPAs `include_str!`'d from `src/board.html` / `src/inbox.html` / `src/initiatives.html` (`src/api/mod.rs`). `src/spa-common.js` — the shared markdown renderer — is inlined into each at the `// <<SPA_COMMON>>` marker, so every page stays ONE self-contained document: no second request, no new route. `/initiatives` is the only one that WRITES. |
+| `/board`, `/inbox`, `/initiatives`, `/schedules` | **All four built from `web/`** (React + Tailwind + shadcn, TypeScript, vitest), `include_str!`'d from `web/dist/*.html`. Still ONE self-contained document — `vite-plugin-singlefile` inlines everything — so the binary needs no static-file handler and the CSP is unchanged. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives` and `/schedules` are the ones that WRITE. See `web/README.md`. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the
@@ -287,20 +288,24 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   `x-error-codes` so the two namespaces are not mistaken for one. Registration is likewise the one
   mutating handler that does **not** `reject_unknown`: RFC 7591 requires unrecognized client metadata
   to be ignored, and refusing it would refuse every real client.
-- Editing `src/board.html` / `src/inbox.html` / `src/initiatives.html` only takes effect after a
-  rebuild, since they are compiled into the binary. Confirm before concluding anything:
-  `curl -s "$URL/board" | grep -c <id>`.
-- Every SPA renders via DOM construction (never `innerHTML` on user data) and carries full DE/EN
-  `STR` tables — keep the two locales in key parity, same keys in the same order, when adding UI
-  strings. `scripts/lint-spa.sh` and `spa_string_tables_agree_on_every_key` both enumerate the pages
-  by hand, so a NEW page has to be added to each or it goes unchecked.
-- Code more than one SPA needs goes in `src/spa-common.js`, not copy-pasted. It is inlined at the
-  `// <<SPA_COMMON>>` marker, which is the **last statement inside each page's IIFE** — appending
-  there keeps every page line number as it is in its own file, and putting it outside the IIFE would
-  take `el()` out of scope and break the renderer at runtime. The module may depend on `el()` and
-  nothing else: no `state`, no `L()`/`t()`, no `api()`. The `STR` tables stay per-page (takomo-2hk4:
-  four keys collide across files with *different* values), and so does the typeahead, which
-  genuinely differs between them.
+- **A ported page needs TWO builds:** `npm run build` in `web/`, then `cargo build --release`. The
+  Rust build embeds `web/dist/*.html`, so editing `web/src/` alone changes nothing the server serves.
+  In the dev loop use `npm run dev` instead — it proxies `/v1` to a `backlot up` instance, so there
+  is no Rust rebuild at all.
+- **No page renders user text through `innerHTML`.** `dangerouslySetInnerHTML` and `innerHTML =`
+  are eslint ERRORS in `web/`; agent- and human-written text goes through `web/src/lib/markdown.ts`,
+  which builds DOM nodes and allows only http(s)/mailto links. Locale parity is a compile error
+  (`defineStrings` makes EN the reference shape), not a test that has to remember each page —
+  `scripts/lint-spa.sh` and `spa_string_tables_agree_on_every_key` are both gone, along with the
+  hand-enumeration hazard that made them necessary.
+- Code more than one page needs goes in `web/src/components/` or `web/src/lib/` and is imported —
+  the marker-substitution trick the hand-written pages needed is gone, because a bundler does this
+  properly. Two things that were per-page out of necessity stay per-page by decision: the `STR`
+  tables (takomo-2hk4 — four keys collide across pages with *different* values), and nothing else.
+  The typeahead, which the old pages could not share, is now ONE `Typeahead` with five mounts.
+- **A component in `web/src/components/` is invisible to the design system unless it is exported
+  from `web/src/components/index.ts`.** That barrel is the contract `.design-sync/` converts; the
+  page still works without it, so nothing fails — the component just silently never appears.
 - The server refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`: it terminates plain
   HTTP and expects TLS in front.
 

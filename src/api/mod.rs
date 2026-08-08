@@ -123,52 +123,34 @@ fn secure_html(body: &'static str) -> impl axum::response::IntoResponse {
 /// same-origin `/v1` API with a token the viewer supplies in the browser. The
 /// page itself is unauthenticated (all data fetches carry the Bearer token);
 /// serving static HTML leaks nothing the API does not already guard.
-/// The shared SPA code, inlined into both pages at the `// <<SPA_COMMON>>`
-/// marker (takomo-ftix). One source of truth for the markdown renderer that was
-/// two byte-identical copies, with nothing in CI comparing them.
+/// PORTED (phase 4 of 4 — the last). `/board` serves three audiences from one
+/// route: the board itself, a read-only `#s=` share, and a single-use `#a=`
+/// answer link for an outside expert. All three come out of the `web/` build.
+static BOARD_HTML: &str = include_str!("../../web/dist/board.html");
+/// PORTED (phase 3 of 4). The ask-a-human inbox, from the `web/` build.
+static INBOX_HTML: &str = include_str!("../../web/dist/inbox.html");
+/// PORTED (phase 1 of 4). `/initiatives` is served from the `web/` build, not
+/// from a hand-written page in `src/`.
 ///
-/// Substituted once at first use rather than per request, and deliberately at
-/// runtime rather than in a `build.rs`: the pages are already `include_str!`'d
-/// here, so this keeps the whole assembly visible in the file that serves them
-/// instead of splitting it across a build script nobody reads.
+/// It is still ONE self-contained document — `vite-plugin-singlefile` inlines
+/// every script, style and asset — so this stays an `include_str!` and the
+/// binary needs no static-file handler, no second request, and no change to the
+/// CSP the page is already served under.
 ///
-/// The marker is each script's last line, so appending leaves every
-/// page-specific line number as it is in its own file — a stack trace still
-/// points somewhere you can go.
-const SPA_COMMON: &str = include_str!("../spa-common.js");
-
-/// Panics at first use if the marker is missing, which is the intended
-/// behaviour: a page served without the renderer would fail only where an
-/// agent-written body happens to contain markdown — a defect that reaches
-/// production and shows up as "links do not work sometimes". Failing on the
-/// first request to the page instead is loud, immediate and local.
-fn with_spa_common(page: &'static str, which: &str) -> String {
-    let marker = page
-        .lines()
-        .find(|l| l.contains("<<SPA_COMMON>>"))
-        .unwrap_or_else(|| {
-            panic!(
-                "{which} has no `// <<SPA_COMMON>>` marker — the shared renderer \
-                 (src/spa-common.js) would not be in the served page. Restore the \
-                 marker as the last line of the page's script."
-            )
-        });
-    page.replace(marker, SPA_COMMON)
-}
-
-static BOARD_HTML: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| with_spa_common(include_str!("../board.html"), "board.html"));
-static INBOX_HTML: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| with_spa_common(include_str!("../inbox.html"), "inbox.html"));
-static INITIATIVES_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    with_spa_common(include_str!("../initiatives.html"), "initiatives.html")
-});
-static SCHEDULES_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    with_spa_common(include_str!("../schedules.html"), "schedules.html")
-});
+/// `web/dist/` is committed for exactly this reason: `cargo build --release`
+/// must not require node. The CI gate rebuilds it and diffs, so the committed
+/// document cannot drift from `web/src/`.
+///
+/// No `with_spa_common` here: the shared markdown renderer is an ordinary module
+/// in the web build (`web/src/lib/markdown.ts`), so there is no marker to splice.
+static INITIATIVES_HTML: &str = include_str!("../../web/dist/initiatives.html");
+/// PORTED (phase 2 of 4). Same arrangement as `/initiatives` above: one
+/// self-contained document out of the `web/` build, `include_str!`'d from
+/// committed output so `cargo build --release` stays node-free.
+static SCHEDULES_HTML: &str = include_str!("../../web/dist/schedules.html");
 
 pub async fn board() -> impl axum::response::IntoResponse {
-    secure_html(BOARD_HTML.as_str())
+    secure_html(BOARD_HTML)
 }
 
 /// Ask-a-human inbox: a self-contained email-style page (folder rail, question
@@ -176,7 +158,7 @@ pub async fn board() -> impl axum::response::IntoResponse {
 /// unauthenticated static HTML; every data fetch carries the viewer's bearer
 /// token, so serving it leaks nothing the API does not already guard.
 pub async fn inbox() -> impl axum::response::IntoResponse {
-    secure_html(INBOX_HTML.as_str())
+    secure_html(INBOX_HTML)
 }
 
 /// Initiatives: a self-contained page for the ideas a fleet is nurturing — a
@@ -192,7 +174,7 @@ pub async fn inbox() -> impl axum::response::IntoResponse {
 /// function share that name (different namespace), a reader should not have to
 /// know that to tell which one a call site means.
 pub async fn initiatives_page() -> impl axum::response::IntoResponse {
-    secure_html(INITIATIVES_HTML.as_str())
+    secure_html(INITIATIVES_HTML)
 }
 
 /// The takomo mark ("tako" = octopus) as an SVG favicon, served at both
@@ -207,7 +189,7 @@ pub async fn initiatives_page() -> impl axum::response::IntoResponse {
 /// board's header, palette, mono identifiers and DE/EN tables, and none of its
 /// grid.
 pub async fn schedules_page() -> impl axum::response::IntoResponse {
-    secure_html(SCHEDULES_HTML.as_str())
+    secure_html(SCHEDULES_HTML)
 }
 
 pub async fn favicon() -> impl axum::response::IntoResponse {

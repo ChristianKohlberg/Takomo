@@ -1,0 +1,82 @@
+{
+  "projectId": "f7ab4716-548a-47a9-b2b9-3aa9cc2ad9f6",
+  "shape": "package",
+  "pkg": "@takomo/web",
+  "globalName": "TakomoDS",
+  "buildCmd": "npm run build:lib",
+  "srcDir": "src",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": "dist-lib/index.css",
+  "overrides": {
+    "Dialog": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "760x460"
+    },
+    "CreateDialog": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "760x620"
+    },
+    "TokenGate": {
+      "cardMode": "single",
+      "primaryStory": "Empty",
+      "viewport": "760x560"
+    },
+    "AppHeader": {
+      "cardMode": "column"
+    },
+    "Composer": {
+      "cardMode": "column"
+    },
+    "AskDrawer": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "640x900"
+    },
+    "CreateScheduleDialog": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "640x980"
+    },
+    "SettingsSheet": {
+      "cardMode": "single",
+      "primaryStory": "Filled",
+      "viewport": "640x900"
+    },
+    "AnswerLinkDialog": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "860x520"
+    },
+    "DetailPanel": {
+      "cardMode": "single",
+      "primaryStory": "Blocked",
+      "viewport": "900x760"
+    },
+    "InboxDrawer": {
+      "cardMode": "single",
+      "primaryStory": "WithQuestions",
+      "viewport": "900x760"
+    },
+    "ReadingPane": {
+      "cardMode": "single",
+      "primaryStory": "Open",
+      "viewport": "900x620"
+    },
+    "Column": {
+      "cardMode": "column"
+    },
+    "QuestionRow": {
+      "cardMode": "column"
+    },
+    "OccurrenceStrip": {
+      "cardMode": "column"
+    },
+    "UndoSnackbar": {
+      "cardMode": "single",
+      "primaryStory": "SeveralWindows"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}
