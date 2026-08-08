@@ -2185,6 +2185,12 @@ paths:
         page and `cursor` (an opaque row offset) fetches the next one. When more
         rows remain the response carries a non-null `next_cursor` to pass back as
         `cursor`.
+
+        `total` is the whole match, counted with the same predicate that selected
+        the page, and `next_cursor` is derived from it. Before 0.4 the cursor was
+        inferred instead — "this page is full, so there is probably more" — which
+        offered a cursor to an empty page whenever the queue happened to be an
+        exact multiple of the page size.
       parameters:
         - { name: project, in: query, schema: { type: string } }
         - { name: ticket, in: query, schema: { type: string } }
@@ -2200,10 +2206,16 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [items, total, limit]
                 properties:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Question" }
+                  total:
+                    type: integer
+                    description: Questions matching the filter, ignoring limit and cursor.
+                  limit: { type: integer, description: 'The page size actually applied.' }
+                  note: { type: string, description: 'Present only when questions remain beyond this page.' }
                   next_cursor:
                     type: [integer, "null"]
                     description: Pass as `cursor` to fetch the next page; null when the last page was returned.

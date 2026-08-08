@@ -2030,10 +2030,18 @@ impl Store {
         })
     }
 
-    /// List questions (the inbox). Ordered by urgency then age (oldest first).
-    pub fn list_questions(&self, filter: &QuestionFilter) -> ApiResult<Vec<Question>> {
+    /// List questions (the inbox), plus how many matched before the page size
+    /// applied. Ordered by urgency then age (oldest first).
+    ///
+    /// The count is what makes a capped read visible as one. The cap itself is
+    /// old — [`MAX_QUESTIONS_PAGE`] has always been enforced here — but until
+    /// takomo-5ktp nothing said so, and the MCP surface passed no `limit` at all,
+    /// so an agent with more than 500 open questions read the first 500 and had
+    /// no way to learn there were more. Selecting and counting are built from one
+    /// `scope` string so a filter can never apply to one and not the other.
+    pub fn list_questions(&self, filter: &QuestionFilter) -> ApiResult<(Vec<Question>, i64)> {
         self.with_conn(|conn| {
-            let mut sql = format!("SELECT {QUESTION_COLS} FROM questions WHERE 1=1");
+            let mut sql = String::from(" FROM questions WHERE 1=1");
             let mut p: Vec<SqlValue> = Vec::new();
             let statuses = if filter.statuses.is_empty() {
                 vec!["open".to_string()]
@@ -2075,7 +2083,17 @@ impl Store {
                 );
                 p.push(SqlValue::Text(tag.clone()));
             }
-            sql.push_str(
+            // `sql` is the shared scope — FROM and WHERE only. The count reads it
+            // as-is; the page appends its own ordering and window.
+            let scope = sql;
+            let total: i64 = conn.query_row(
+                &format!("SELECT COUNT(*){scope}"),
+                rusqlite::params_from_iter(p.iter()),
+                |r| r.get(0),
+            )?;
+
+            let mut page = format!("SELECT {QUESTION_COLS}{scope}");
+            page.push_str(
                 " ORDER BY CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at ASC, id ASC",
             );
             let limit = filter
@@ -2083,14 +2101,14 @@ impl Store {
                 .unwrap_or(MAX_QUESTIONS_PAGE)
                 .clamp(1, MAX_QUESTIONS_PAGE);
             let offset = filter.offset.unwrap_or(0).max(0);
-            sql.push_str(" LIMIT ? OFFSET ?");
+            page.push_str(" LIMIT ? OFFSET ?");
             p.push(SqlValue::Integer(limit));
             p.push(SqlValue::Integer(offset));
-            let mut stmt = conn.prepare(&sql)?;
+            let mut stmt = conn.prepare(&page)?;
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(p), row_to_question)?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(rows)
+            Ok((rows, total))
         })
     }
 

@@ -498,7 +498,7 @@ fn seeded_questions(store: &Store) -> ApiResult<Vec<crate::store::Question>> {
         project: Some(PROJECT.to_string()),
         ..Default::default()
     };
-    store.list_questions(&filter)
+    store.list_questions(&filter).map(|(items, _total)| items)
 }
 
 #[cfg(test)]

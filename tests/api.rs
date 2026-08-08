@@ -11924,3 +11924,59 @@ async fn a_dependency_graph_states_whether_it_is_complete() {
     );
     assert_eq!(graph["nodes"].as_array().unwrap().len(), 2, "{graph}");
 }
+
+/// The question inbox reports its true size, and its cursor is derived from that
+/// rather than guessed from a full page.
+///
+/// The old rule was "this page is full, so there is probably more", which hands
+/// back a cursor to an empty page whenever the queue is an exact multiple of the
+/// page size — the caller then makes a request to learn nothing.
+#[tokio::test]
+async fn the_question_inbox_pages_on_a_real_count() {
+    let app = TestApp::spawn().await;
+    for i in 0..4 {
+        let t = app.create_ticket(&format!("q host {i}")).await;
+        app.ask(
+            &app.worker,
+            json!({ "ticket": t, "mode": "advisory", "kind": "confirm", "title": format!("question {i}") }),
+        )
+        .await;
+    }
+
+    let (status, all) = app.get(&app.human, "/v1/questions?project=tp").await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all["items"].as_array().unwrap().len(), 4);
+    assert_eq!(all["total"], 4);
+    assert!(all["next_cursor"].is_null(), "nothing left to fetch: {all}");
+    assert!(all["note"].is_null(), "{all}");
+
+    // A partial page: total counts the queue, and the cursor advances.
+    let (_, first) = app
+        .get(&app.human, "/v1/questions?project=tp&limit=3")
+        .await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["total"], 4);
+    assert_eq!(first["next_cursor"], 3);
+    assert!(first["note"].is_string(), "{first}");
+
+    let (_, second) = app
+        .get(&app.human, "/v1/questions?project=tp&limit=3&cursor=3")
+        .await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_eq!(second["total"], 4);
+    assert!(
+        second["next_cursor"].is_null(),
+        "the last page must not point at an empty one: {second}"
+    );
+
+    // The boundary the old heuristic got wrong: a page that exactly exhausts the
+    // queue is the end, and must not offer a cursor.
+    let (_, exact) = app
+        .get(&app.human, "/v1/questions?project=tp&limit=4")
+        .await;
+    assert_eq!(exact["items"].as_array().unwrap().len(), 4);
+    assert!(
+        exact["next_cursor"].is_null(),
+        "a full page that is also the whole queue is not 'probably more': {exact}"
+    );
+}

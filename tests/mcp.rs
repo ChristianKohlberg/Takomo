@@ -2331,3 +2331,92 @@ async fn mcp_ready_reports_the_whole_queue_not_just_the_page() {
         "limit clamps to the documented ceiling"
     );
 }
+
+/// takomo_questions used to pass no limit at all, so it took the store's 500-row
+/// cap and reported nothing about it: an agent with more open questions than
+/// that read the first 500 and had no way to learn there were more (takomo-5ktp).
+#[tokio::test]
+async fn mcp_questions_pages_instead_of_silently_capping() {
+    let app = TestApp::spawn().await;
+    for i in 0..4 {
+        let created = app
+            .tool_ok(
+                &app.worker,
+                "takomo_new",
+                json!({ "project": "tp", "title": format!("q host {i}") }),
+            )
+            .await;
+        let id = created["ticket"]["id"]
+            .as_str()
+            .unwrap_or_else(|| created["id"].as_str().expect("created id"))
+            .to_string();
+        app.tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({ "id": id, "mode": "advisory", "kind": "confirm", "title": format!("question {i}") }),
+        )
+        .await;
+    }
+
+    let all = app
+        .tool_ok(&app.human, "takomo_questions", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(all["items"].as_array().unwrap().len(), 4, "{all}");
+    assert_eq!(all["total"], 4);
+    assert_eq!(all["limit"], 500, "the documented default page");
+    assert!(all["next_cursor"].is_null(), "{all}");
+
+    // Paged: total is the queue, the cursor continues it, and the pages are
+    // disjoint.
+    let first = app
+        .tool_ok(
+            &app.human,
+            "takomo_questions",
+            json!({ "project": "tp", "limit": 3 }),
+        )
+        .await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["total"], 4, "total counts the queue, not the page");
+    assert_eq!(first["next_cursor"], 3);
+    assert!(
+        first["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cursor=3"),
+        "the note should hand back the cursor to use: {first}"
+    );
+
+    let second = app
+        .tool_ok(
+            &app.human,
+            "takomo_questions",
+            json!({ "project": "tp", "limit": 3, "cursor": 3 }),
+        )
+        .await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["next_cursor"].is_null(), "{second}");
+
+    let ids = |v: &serde_json::Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (p1, p2) = (ids(&first), ids(&second));
+    assert!(
+        p1.iter().all(|i| !p2.contains(i)),
+        "pages must not overlap: {p1:?} vs {p2:?}"
+    );
+
+    // Clamped rather than refused, matching REST.
+    let clamped = app
+        .tool_ok(
+            &app.human,
+            "takomo_questions",
+            json!({ "project": "tp", "limit": 99999 }),
+        )
+        .await;
+    assert_eq!(clamped["limit"], 500);
+}

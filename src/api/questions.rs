@@ -241,13 +241,26 @@ pub async fn list(
         limit: Some(limit),
         offset: Some(offset),
     };
-    let questions = state.store.list_questions(&filter)?;
-    // A full page implies there may be more — hand back the next offset cursor.
-    let next_cursor = (questions.len() as i64 == limit).then_some(offset + limit);
-    Ok(Json(json!({
-        "items": questions.iter().map(|q| q.to_json()).collect::<Vec<_>>(),
-        "next_cursor": next_cursor,
-    })))
+    let (questions, total) = state.store.list_questions(&filter)?;
+    // With a real `total` the cursor no longer has to be inferred from a full
+    // page. The old heuristic — "len == limit, so there is probably more" —
+    // handed back a cursor to an empty page whenever the queue happened to be an
+    // exact multiple of the page size.
+    let seen = offset + questions.len() as i64;
+    let next_cursor = (seen < total).then_some(offset + limit);
+    let mut out = super::paged(
+        questions.iter().map(|q| q.to_json()).collect::<Vec<_>>(),
+        total,
+        limit,
+        &format!(
+            "Read the next page with ?cursor={}&limit={limit} (max page {}), and repeat while \
+             next_cursor is set.",
+            offset + limit,
+            crate::store::MAX_QUESTIONS_PAGE
+        ),
+    );
+    out["next_cursor"] = json!(next_cursor);
+    Ok(Json(out))
 }
 
 pub async fn create(

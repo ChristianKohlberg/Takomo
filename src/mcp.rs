@@ -430,6 +430,11 @@ pub struct QuestionsArgs {
     pub status: Option<String>,
     /// Only questions routed to your token's expert:<tag> scopes.
     pub mine: Option<bool>,
+    /// How many to return, 1..=500 (default 500). `total` always reports how
+    /// many matched, so a capped read is visible as one.
+    pub limit: Option<i64>,
+    /// Skip this many — pass the previous reply's `next_cursor` to continue.
+    pub cursor: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2028,6 +2033,11 @@ impl TakomoMcp {
         if let Some(p) = &a.project {
             auth.require_project(p)?;
         }
+        let limit = a
+            .limit
+            .unwrap_or(crate::store::MAX_QUESTIONS_PAGE)
+            .clamp(1, crate::store::MAX_QUESTIONS_PAGE);
+        let offset = a.cursor.unwrap_or(0).max(0);
         let expertise = if a.mine.unwrap_or(false) {
             let tags: Vec<String> = auth
                 .scopes
@@ -2035,9 +2045,14 @@ impl TakomoMcp {
                 .filter_map(|s| s.strip_prefix("expert:").map(str::to_string))
                 .collect();
             if tags.is_empty() {
-                return Ok(
-                    json!({ "ok": true, "items": [], "note": "Your token carries no expert:<tag> scopes, so no questions route to you. Drop `mine` to see the whole queue." }),
-                );
+                return Ok(json!({
+                    "ok": true,
+                    "items": [],
+                    "total": 0,
+                    "limit": limit,
+                    "next_cursor": Value::Null,
+                    "note": "Your token carries no expert:<tag> scopes, so no questions route to you. Drop `mine` to see the whole queue.",
+                }));
             }
             tags
         } else {
@@ -2058,11 +2073,25 @@ impl TakomoMcp {
                 .unwrap_or_default(),
             expertise,
             allowed_projects: auth.allowed_projects_vec(),
-            limit: None,
-            offset: None,
+            limit: Some(limit),
+            offset: Some(offset),
         };
-        let items = self.state.store.list_questions(&filter)?;
-        Ok(json!({ "ok": true, "items": items.iter().map(|q| q.to_json()).collect::<Vec<_>>() }))
+        let (items, total) = self.state.store.list_questions(&filter)?;
+        let shown = items.len() as i64;
+        let next_cursor = (offset + shown < total).then_some(offset + limit);
+        let mut out = json!({
+            "ok": true,
+            "items": items.iter().map(|q| q.to_json()).collect::<Vec<_>>(),
+            "total": total,
+            "limit": limit,
+            "next_cursor": next_cursor,
+        });
+        if let Some(next) = next_cursor {
+            out["note"] = json!(format!(
+                "Showing {shown} of {total} question(s). Read the next page with cursor={next}, and repeat while next_cursor is set."
+            ));
+        }
+        Ok(out)
     }
 
     fn do_withdraw(&self, auth: &AuthCtx, a: WithdrawArgs) -> ApiResult<Value> {
