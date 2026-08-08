@@ -2223,3 +2223,111 @@ async fn the_schedules_read_tool_carries_the_occurrence_history() {
     assert_eq!(occ.len(), 1, "the read tool carries the history: {out}");
     assert_eq!(occ[0]["outcome"], "open");
 }
+
+/// `tools/list` is what every session reads before it can call anything, so
+/// what rides along in it is charged to the agent's context 49 times over.
+/// `schemars` stamps the same JSON Schema dialect URI into every tool, where no
+/// client acts on it; `slim_tools` drops it.
+#[tokio::test]
+async fn tools_list_carries_no_schema_dialect_boilerplate() {
+    let app = TestApp::spawn().await;
+    let list = app.ok_call(&app.worker, "tools/list", json!({})).await;
+    let tools = list["tools"].as_array().expect("tools array");
+    assert!(!tools.is_empty(), "no tools advertised");
+
+    for t in tools {
+        assert!(
+            t["inputSchema"].get("$schema").is_none(),
+            "tool {} still advertises the dialect URI",
+            t["name"]
+        );
+        // The schema must still be a usable object — stripping one key must not
+        // have flattened what a client validates against.
+        assert_eq!(
+            t["inputSchema"]["type"], "object",
+            "tool {} lost its schema shape",
+            t["name"]
+        );
+    }
+
+    // Tools that take arguments must still describe them: a slimmer payload that
+    // dropped `properties` would save tokens by making the surface unusable.
+    let ready = tools
+        .iter()
+        .find(|t| t["name"] == "takomo_ready")
+        .expect("takomo_ready listed");
+    assert!(
+        ready["inputSchema"]["properties"]["project"].is_object(),
+        "takomo_ready lost its documented arguments: {ready}"
+    );
+}
+
+/// The ready queue reports how much it did not return. Without `total`, a full
+/// page and a queue that happens to be exactly that long are indistinguishable,
+/// and an agent draining work reads a fraction of it as if it were all of it.
+#[tokio::test]
+async fn mcp_ready_reports_the_whole_queue_not_just_the_page() {
+    let app = TestApp::spawn().await;
+    for i in 0..5 {
+        let created = app
+            .tool_ok(
+                &app.worker,
+                "takomo_new",
+                json!({ "project": "tp", "title": format!("ready item {i}") }),
+            )
+            .await;
+        // A new ticket lands in `brief`, which is not claimable; the ready queue
+        // only offers work that has been through the approval path.
+        let id = created["ticket"]["id"]
+            .as_str()
+            .unwrap_or_else(|| created["id"].as_str().expect("created id"))
+            .to_string();
+        app.to_ready(&id).await;
+    }
+
+    let full = app
+        .tool_ok(&app.worker, "takomo_ready", json!({ "project": "tp" }))
+        .await;
+    let all = full["items"].as_array().expect("items").len() as i64;
+    assert!(all >= 5, "expected the seeded work to be ready: {full}");
+    assert_eq!(
+        full["total"], all,
+        "an unclipped page's total is its length"
+    );
+    assert!(
+        full["note"].is_null(),
+        "a complete page must not claim to be partial: {full}"
+    );
+
+    // A page smaller than the queue says so, in words and in `total`.
+    let page = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ready",
+            json!({ "project": "tp", "limit": 2 }),
+        )
+        .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 2);
+    assert_eq!(page["limit"], 2);
+    assert_eq!(page["total"], all, "total counts the queue, not the page");
+    let note = page["note"]
+        .as_str()
+        .expect("a clipped page explains itself");
+    assert!(
+        note.contains(&all.to_string()) && note.contains("limit"),
+        "the note should say how many there are and how to get them: {note}"
+    );
+
+    // Out-of-range limits are clamped, not refused — the same contract as REST.
+    let clamped = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ready",
+            json!({ "project": "tp", "limit": 9999 }),
+        )
+        .await;
+    assert_eq!(
+        clamped["limit"], 200,
+        "limit clamps to the documented ceiling"
+    );
+}

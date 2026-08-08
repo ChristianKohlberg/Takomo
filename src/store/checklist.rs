@@ -37,6 +37,15 @@ pub const MAX_LANE_GLOBS: usize = 50;
 /// model while still bounding the transaction.
 pub const MAX_CASES_PER_FILE: usize = 5_000;
 
+/// Page ceilings for the two checklist lists that grow with the work rather
+/// than with the project. Both used to return everything they had: a lane per
+/// action per layer, and up to [`MAX_CASES_PER_FILE`] cases *per lane* — so a
+/// single unfiltered read could hand an agent a five-thousand-row reply that
+/// buries whatever it was actually looking for. The counts are still reported in
+/// full, so a capped read is visible as one rather than looking complete.
+pub const MAX_LANES_PAGE: i64 = 200;
+pub const MAX_CASES_PAGE: i64 = 500;
+
 const MAX_KEY: usize = 200;
 const MAX_LABEL: usize = 300;
 const MAX_GLOB: usize = 400;
@@ -198,6 +207,8 @@ pub struct LaneFilter {
     pub layer: Option<String>,
     pub include_archived: bool,
     pub with_policy: bool,
+    /// Page size; `None` means [`MAX_LANES_PAGE`], which is also the ceiling.
+    pub limit: Option<i64>,
 }
 
 /// One thing that needs re-verifying, and why.
@@ -1075,7 +1086,24 @@ impl Store {
         })
     }
 
-    pub fn list_lanes(&self, filter: &LaneFilter) -> ApiResult<Vec<Lane>> {
+    /// Lanes for a project, plus how many matched before the page size applied.
+    ///
+    /// The cap is not paranoia: a project accumulates a lane per action per
+    /// layer, each hydrated below with three further queries, and the whole set
+    /// used to be returned and hydrated however large it grew.
+    ///
+    /// `severity` and `layer` are filtered in Rust rather than SQL (they live
+    /// behind `row_to_lane`), so the page size is applied *after* that filter and
+    /// not as a `LIMIT` on the query — a `LIMIT` would cap the rows before
+    /// narrowing them and hand back a page shorter than the caller asked for,
+    /// with no way to tell that from the end of the list. Hydration then runs
+    /// only over the rows actually returned, so asking for ten lanes out of two
+    /// hundred costs ten lanes' worth of queries instead of two hundred.
+    pub fn list_lanes(&self, filter: &LaneFilter) -> ApiResult<(Vec<Lane>, i64)> {
+        let limit = filter
+            .limit
+            .unwrap_or(MAX_LANES_PAGE)
+            .clamp(1, MAX_LANES_PAGE);
         self.with_conn(|conn| {
             project_exists(conn, &filter.project)?;
             let mut sql = format!("SELECT {LANE_COLS} FROM lanes WHERE project = ?1");
@@ -1103,6 +1131,8 @@ impl Store {
                 filter.severity.as_deref().is_none_or(|s| s == l.severity)
                     && filter.layer.as_deref().is_none_or(|s| s == l.layer)
             });
+            let total = lanes.len() as i64;
+            lanes.truncate(limit as usize);
             for lane in &mut lanes {
                 lane.globs = load_globs(conn, &lane.id)?;
                 lane.counts = load_counts(conn, &lane.id)?;
@@ -1111,7 +1141,7 @@ impl Store {
                     lane.policy = Some(resolve_policy(conn, lane)?);
                 }
             }
-            Ok(lanes)
+            Ok((lanes, total))
         })
     }
 
@@ -1459,7 +1489,25 @@ impl Store {
         })
     }
 
-    pub fn list_cases(&self, lane: &str, include_retired: bool) -> ApiResult<Vec<Case>> {
+    /// One page of a lane's cases, plus how many the lane holds in total.
+    ///
+    /// Bounded because cases are *generated*: a PICT model over a form of any
+    /// size lands up to [`MAX_CASES_PER_FILE`] rows under one lane, and this used
+    /// to return all of them. `limit` is `None` for the full page size, which is
+    /// also the ceiling ([`MAX_CASES_PAGE`]); `offset` pages through the rest.
+    ///
+    /// An offset cursor is honest here in a way it is not for the ready queue:
+    /// cases are ordered by `key`, which is stable and does not reshuffle as
+    /// other agents work, so page 2 means the same thing on the second read.
+    pub fn list_cases(
+        &self,
+        lane: &str,
+        include_retired: bool,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> ApiResult<(Vec<Case>, i64)> {
+        let limit = limit.unwrap_or(MAX_CASES_PAGE).clamp(1, MAX_CASES_PAGE);
+        let offset = offset.unwrap_or(0).max(0);
         self.with_conn(|conn| {
             let exists: Option<i64> = conn
                 .query_row("SELECT 1 FROM lanes WHERE id = ?1", params![lane], |r| {
@@ -1469,18 +1517,25 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("lane", lane));
             }
-            let sql = if include_retired {
-                format!("SELECT {CASE_COLS} FROM cases WHERE lane = ?1 ORDER BY key")
+            let retired_clause = if include_retired {
+                ""
             } else {
-                format!(
-                    "SELECT {CASE_COLS} FROM cases WHERE lane = ?1 AND retired_at IS NULL ORDER BY key"
-                )
+                " AND retired_at IS NULL"
             };
+            let total: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM cases WHERE lane = ?1{retired_clause}"),
+                params![lane],
+                |r| r.get(0),
+            )?;
+            let sql = format!(
+                "SELECT {CASE_COLS} FROM cases WHERE lane = ?1{retired_clause} \
+                 ORDER BY key LIMIT ?2 OFFSET ?3"
+            );
             let mut stmt = conn.prepare(&sql)?;
             let out = stmt
-                .query_map(params![lane], row_to_case)?
+                .query_map(params![lane, limit, offset], row_to_case)?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(out)
+            Ok((out, total))
         })
     }
 

@@ -139,10 +139,21 @@ pub async fn ready_peek(
     let limit = parse_i64_param(&pairs, "limit")?
         .unwrap_or(20)
         .clamp(1, 200);
-    let tickets = state.store.ready_peek(&filter, limit)?;
+    let (tickets, total) = state.store.ready_peek(&filter, limit)?;
     let now = now_ms();
-    Ok(Json(Value::Array(
-        tickets.iter().map(|t| t.to_json(now)).collect(),
+    let items: Vec<Value> = tickets.iter().map(|t| t.to_json(now)).collect();
+    // An envelope rather than the bare array this used to return, because a bare
+    // array has nowhere to say how much it left out: a caller that asked for 20
+    // and received 20 could not distinguish a queue of 20 from the head of a
+    // queue of 137, and silently reading a fraction of the work as if it were all
+    // of it is the failure this shape exists to prevent.
+    Ok(Json(super::paged(
+        items,
+        total,
+        limit,
+        "Raise the page size with ?limit=N (max 200), or narrow with ?project=/?type=/?label=. \
+         The queue is live — other workers claim from it as you read, so treat this as a \
+         snapshot rather than a stable page.",
     )))
 }
 

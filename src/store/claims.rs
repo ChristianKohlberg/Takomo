@@ -115,16 +115,18 @@ pub fn clamp_ttl_for(tx: &Connection, project: &str, ttl_seconds: Option<i64>) -
     Ok(ttl)
 }
 
-/// The ready-queue SELECT. Ready = claimable state, unclaimed (or lease
+/// The ready-queue scope: everything up to and including the `WHERE`, with the
+/// projection left to the caller. Ready = claimable state, unclaimed (or lease
 /// expired), and unblocked — where blocked propagates from ancestors: a ticket
 /// is blocked if it, or any ancestor, has a blocked_by edge to a non-terminal
-/// ticket. Ordered by priority then age.
-fn ready_query(
-    conn: &Connection,
-    filter: &ReadyFilter,
-    now: i64,
-    limit: i64,
-) -> ApiResult<Vec<Ticket>> {
+/// ticket.
+///
+/// Shared by [`ready_query`] and [`ready_total`] so the count and the page it
+/// annotates cannot answer different questions. Duplicating this recursive CTE
+/// to count it would be the obvious way to drift: a filter added to one copy and
+/// not the other reports "20 of 137" where 137 counts tickets the page would
+/// never have offered.
+fn ready_scope(projection: &str, filter: &ReadyFilter, now: i64) -> (String, Vec<SqlValue>) {
     let mut sql = format!(
         r#"
         WITH RECURSIVE blocked(id) AS (
@@ -136,7 +138,7 @@ fn ready_query(
             UNION
             SELECT c.id FROM tickets c JOIN blocked ON c.parent = blocked.id
         )
-        SELECT {TICKET_COLS} FROM tickets t
+        SELECT {projection} FROM tickets t
         JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
         WHERE ws.claimable = 1
           AND t.archived_at IS NULL
@@ -175,6 +177,17 @@ fn ready_query(
         sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(t.labels) WHERE json_each.value = ?)");
         params_vec.push(SqlValue::Text(label.clone()));
     }
+    (sql, params_vec)
+}
+
+/// One page of the ready queue, ordered by priority then age.
+fn ready_query(
+    conn: &Connection,
+    filter: &ReadyFilter,
+    now: i64,
+    limit: i64,
+) -> ApiResult<Vec<Ticket>> {
+    let (mut sql, mut params_vec) = ready_scope(TICKET_COLS, filter, now);
     sql.push_str(
         " ORDER BY CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, t.created_at ASC, t.rowid ASC LIMIT ?",
     );
@@ -188,6 +201,18 @@ fn ready_query(
         load_blocked_by(conn, t)?;
     }
     Ok(tickets)
+}
+
+/// How many tickets the ready queue holds for this filter, ignoring any page
+/// size — the number a caller needs to know whether the page it just read is
+/// the whole queue or the first 20 of 137.
+fn ready_total(conn: &Connection, filter: &ReadyFilter, now: i64) -> ApiResult<i64> {
+    let (sql, params_vec) = ready_scope("COUNT(*)", filter, now);
+    let mut stmt = conn.prepare(&sql)?;
+    let total = stmt.query_row(rusqlite::params_from_iter(params_vec), |r| {
+        r.get::<_, i64>(0)
+    })?;
+    Ok(total)
 }
 
 /// Grant a lease inside a write tx: bump fence, set holder + expiry, emit.
@@ -636,9 +661,26 @@ impl Store {
         })
     }
 
-    /// Peek the ready queue (no side effects).
-    pub fn ready_peek(&self, filter: &ReadyFilter, limit: i64) -> ApiResult<Vec<Ticket>> {
-        self.with_conn(|conn| ready_query(conn, filter, now_ms(), limit))
+    /// Peek the ready queue (no side effects): one page, plus how many tickets
+    /// the queue holds in total.
+    ///
+    /// The total is what makes a short page readable. Without it a caller that
+    /// asked for 20 and got 20 cannot tell a queue of exactly 20 from a queue of
+    /// 137, and an agent draining work has no way to know it is looking at a
+    /// fraction. Both come from one `with_conn`, so they are consistent with each
+    /// other even though the queue mutates constantly around them.
+    ///
+    /// Deliberately a total and not a cursor: the ready queue is a *live*
+    /// priority queue that other workers are claiming from as you read it, so a
+    /// positional cursor would promise a stable sequence that does not exist.
+    /// "20 of 137" is true when it is read; "page 2" would not be.
+    pub fn ready_peek(&self, filter: &ReadyFilter, limit: i64) -> ApiResult<(Vec<Ticket>, i64)> {
+        self.with_conn(|conn| {
+            let now = now_ms();
+            let tickets = ready_query(conn, filter, now, limit)?;
+            let total = ready_total(conn, filter, now)?;
+            Ok((tickets, total))
+        })
     }
 
     /// Atomically pop-and-lease the next ready ticket. None = nothing ready.
