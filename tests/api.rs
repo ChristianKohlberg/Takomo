@@ -467,6 +467,65 @@ async fn app_assets_revalidate_by_etag() {
     assert!(!changed.text().await.unwrap().is_empty());
 }
 
+/// A WEAK validator must still revalidate.
+///
+/// This is the one that got away. The strong-ETag test above passes locally and
+/// passed in CI, and the feature was still broken in production: a compressing
+/// proxy (Cloudflare, in front of Render) rewrites the strong `"abc"` this
+/// server emits to a weak `W/"abc"`, because compression changes the bytes. The
+/// browser returns the weak form, a literal comparison never matches, and every
+/// single load re-downloaded the whole vendor bundle.
+///
+/// `If-None-Match` is specified to use WEAK comparison (RFC 9110 §13.1.2), so
+/// the original implementation was simply non-compliant — it just could not be
+/// observed without a proxy in the way.
+#[tokio::test]
+async fn a_weak_validator_still_revalidates() {
+    let app = TestApp::spawn().await;
+    let strong = app
+        .request(Method::GET, "/assets/vendor.js")
+        .send()
+        .await
+        .unwrap()
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .expect("an ETag")
+        .to_string();
+    assert!(
+        !strong.starts_with("W/"),
+        "this server emits a STRONG ETag; the weak form is what a proxy makes of it"
+    );
+
+    // Exactly what a browser sends back from behind a compressing CDN.
+    let weakened = format!("W/{strong}");
+    let resp = app
+        .request(Method::GET, "/assets/vendor.js")
+        .header(reqwest::header::IF_NONE_MATCH, &weakened)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_MODIFIED,
+        "a weak validator for the same body must answer 304 — anything else means \
+         every load behind a CDN re-downloads the whole bundle"
+    );
+
+    // And a weak validator for DIFFERENT content must still miss.
+    let other = app
+        .request(Method::GET, "/assets/app.js")
+        .header(reqwest::header::IF_NONE_MATCH, &weakened)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "vendor.js's validator must not satisfy a request for app.js"
+    );
+}
+
 /// No inline script means the CSP no longer has to allow one.
 ///
 /// This is the security dividend of the move to one bundle, and it is worth a

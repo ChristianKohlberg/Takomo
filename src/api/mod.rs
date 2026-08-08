@@ -216,6 +216,21 @@ fn hex16(bytes: &[u8]) -> String {
     bytes.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
+/// Compare two entity-tags the way `If-None-Match` requires: WEAK comparison,
+/// which ignores the `W/` prefix on either side (RFC 9110 §13.1.2).
+///
+/// This is not pedantry. In production a compressing proxy sits in front of this
+/// server, and compressing a response changes its bytes — so the proxy correctly
+/// downgrades the strong `"abc"` we emit to a weak `W/"abc"`. The browser stores
+/// and returns the weak form. A literal `==` therefore never matches, every
+/// revalidation answers 200 with a full body, and the ~110 kB vendor bundle is
+/// re-downloaded on every load — with the ETag machinery all present and looking
+/// correct. It reproduces against any CDN and against nothing locally, which is
+/// how it shipped.
+fn weak_eq(a: &str, b: &str) -> bool {
+    a.strip_prefix("W/").unwrap_or(a) == b.strip_prefix("W/").unwrap_or(b)
+}
+
 /// Serve one embedded asset with revalidation caching.
 ///
 /// `must-revalidate` with `max-age=0` rather than a far-future immutable cache:
@@ -235,7 +250,7 @@ fn asset(
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|c| c.trim() == etag));
+        .is_some_and(|v| v.split(',').any(|c| weak_eq(c.trim(), &etag)));
 
     let common = [
         (header::ETAG, etag.clone()),
