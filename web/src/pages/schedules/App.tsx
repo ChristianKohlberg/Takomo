@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadToken, saveToken } from '@/lib/session'
+import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -33,7 +33,6 @@ import {
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
-const LS_PROJECT = 'takomo.schedules.project'
 
 export function App() {
   const navigate = useNavigate()
@@ -41,7 +40,7 @@ export function App() {
 
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
+  const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
   const [scopes, setScopes] = useState<string[]>([])
@@ -265,7 +264,7 @@ export function App() {
         projectLabel={t.project}
         onProject={(id) => {
           setProject(id)
-          localStorage.setItem(LS_PROJECT, id)
+          saveProject(id)
         }}
       >
         <Button
