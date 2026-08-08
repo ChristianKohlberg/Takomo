@@ -59,12 +59,16 @@ afterEach(cleanup)
 describe('the #a= answer page', () => {
   it('renders the question body as markdown, not as source', async () => {
     const { container } = render(<AnswerGrantPage token="tka_x" lang="en" labels={LABELS} />)
-    await waitFor(() => expect(screen.getByText('Drop the table?')).toBeTruthy())
 
+    // Wait for the MARKDOWN, not for the title. `Markdown` builds its tree in a
+    // `useEffect` and hands it to `replaceChildren`, so it lands a tick after the
+    // render that shows the title — waiting on the title and then asserting on
+    // `.md` is a race. It won on a warm dev machine and lost on CI.
+    //
     // Headings, emphasis, inline code and tables become ELEMENTS. `##` renders
     // as h4, not h3: the renderer starts at h3 because these bodies sit inside
     // panels that already own h1/h2.
-    expect(container.querySelector('.md h4')?.textContent).toBe('Frage')
+    await waitFor(() => expect(container.querySelector('.md h4')?.textContent).toBe('Frage'))
     expect(container.querySelector('.md b')?.textContent).toBe('note')
     expect(container.querySelector('.md code')?.textContent).toBe('billing_v1')
     expect(container.querySelectorAll('.md table tbody tr')).toHaveLength(1)
