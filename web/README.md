@@ -4,11 +4,11 @@ One source, **two builds**, because two different consumers want different thing
 
 | build | command | output | consumed by |
 |---|---|---|---|
-| **app** | `npm run build` | `dist/{board,inbox,initiatives,schedules}.html` — one self-contained document each | the Rust binary, via `include_str!` |
+| **app** | `npm run build` | `dist/index.html` + `dist/assets/{app,vendor,runtime}.js` + `dist/assets/app.css` | the Rust binary, via `include_str!` |
 | **library** | `npm run build:lib` | `dist-lib/index.js` + `index.css` + `index.d.ts` | `claude.ai/design` (the design-sync skill) |
 
 The app build is what ships. The library build exists because a design system is
-consumed as components with a props contract, not as four inlined documents —
+consumed as components with a props contract, not as a bundled application —
 and keeping it green is a constraint with teeth: a component that cannot be
 built there is one that reached into page state instead of taking props.
 
@@ -38,7 +38,7 @@ npm test             # vitest (113 tests)
 npm run check        # tsc --noEmit
 npm run lint         # eslint, defect rules only
 npm run build        # the four pages
-npm run size         # per-page gzip budget
+npm run size         # gzip budget: first load, and the vendor chunk
 npm run build:lib    # the component library + .d.ts
 ```
 
@@ -72,24 +72,39 @@ duplication. The dark variant is bound to `prefers-color-scheme`, not shadcn's
 
 ## Decisions worth knowing before editing
 
-**Four builds, not one with four entries.** Inlining everything requires
-`output.codeSplitting: false`, and rollup refuses that with multiple inputs. So
-`scripts/build-pages.mjs` drives four sequential builds over one shared
-`vite.config.ts`. Each document therefore carries its own React — there is no
-shared chunk and no cross-page caching, by construction.
+**One app, one router, one bundle.** This replaced four independently-built
+self-contained documents. That shape let the binary `include_str!` a whole page
+and needed no asset routes at all — but React and every shared module were paid
+four times, and moving between surfaces was a full page load that dropped all
+warm state.
 
-**The size budget is real, and the floor is high.** Measured:
+**The asset names are load-bearing.** Rust embeds `assets/app.js`,
+`assets/vendor.js`, `assets/runtime.js` and `assets/app.css` BY NAME, so content
+hashing is off. Two consequences: cache correctness comes from an ETag rather
+than the filename, and a fifth chunk would be referenced by `index.html` and
+then 404 because nothing embeds it. `vite.config.ts` fails the build if the
+output is not exactly that set — it caught the bundler's own runtime chunk the
+first time it ran, which is why `runtime.js` is in the list at all (renamed from
+the bundler's internal name so neither Rust nor the CSP encodes "rolldown").
+
+**What the trade actually cost and bought.** Measured:
 
 | | gzipped |
 |---|---|
-| `schedules.html` today (no framework) | 12.4 kB |
-| `board.html` today, fully featured | 47.0 kB |
-| placeholder + React 19 only | 60.9 kB |
-| **placeholder + React + 4 shadcn primitives** | **91.2 kB** |
+| before — one page | ~106 kB |
+| before — all four surfaces | ~421 kB |
+| **now — first load** | **~159 kB** |
+| **now — every later route** | **0 kB** |
 
-91 kB is the floor before a line of Takomo's own UI. `npm run size` fails past
-140 kB per page — a tripwire for accidents, not a target we are meeting. Every
-dependency is paid four times over, because the four documents share nothing.
+So first paint got *worse* for someone who opens one surface and leaves: `app.js`
+carries all four surfaces, not one. It gets better the moment they navigate, and
+much better across a session. `npm run size` guards first load (200 kB) and the
+vendor chunk separately (135 kB) — vendor is where a careless `npm i` lands.
+
+If first paint ever matters more than it does today, route-level splitting is the
+lever: emit `assets/board.js` and friends, add them to `EMBEDDED` in
+`vite.config.ts`, `include_str!` them, and serve them. The build guard makes that
+a deliberate change rather than a silent one.
 
 **TypeScript is pinned to 6.x on purpose.** 7.0 is the current stable release,
 but `typescript-eslint` refuses it at runtime (upstream issue #10940) and its

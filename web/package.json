@@ -16,7 +16,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build-pages.mjs",
+    "build": "vite build",
     "size": "node scripts/check-size.mjs",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "check": "tsc --noEmit",
@@ -32,6 +32,7 @@
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-router": "^7.18.2",
     "shadcn": "^4.16.2",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",

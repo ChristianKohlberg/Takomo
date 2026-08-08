@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { useNavigate } from 'react-router'
+import { loadToken, saveToken } from '@/lib/session'
 import { EditableText } from '@/components/EditableText'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
@@ -40,7 +42,6 @@ import {
 } from '@/lib/initiatives'
 import { STR } from './strings'
 
-const LS_TOKEN = 'takomo.initiatives.token'
 const LS_LANG = 'takomo.lang'
 const LS_PROJECT = 'takomo.initiatives.project'
 
@@ -52,9 +53,10 @@ interface Me {
 const EMPTY_DRAFT: Draft = { kind: 'note', source: '', title: '', text: '', uri: '', origin: '' }
 
 export function App() {
+  const navigate = useNavigate()
   const { toast } = useToast()
 
-  const [token, setToken] = useState(() => localStorage.getItem(LS_TOKEN) ?? '')
+  const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
   const [gateError, setGateError] = useState('')
@@ -89,7 +91,7 @@ export function App() {
       const err = e as { auth?: boolean; message?: string }
       if (err?.auth) {
         setToken('')
-        localStorage.removeItem(LS_TOKEN)
+        saveToken('')
         setGateError('')
         return
       }
@@ -286,13 +288,13 @@ export function App() {
   // ---- gate ---------------------------------------------------------------
 
   function signIn(tk: string) {
-    localStorage.setItem(LS_TOKEN, tk)
+    saveToken(tk)
     setGateError('')
     setToken(tk)
   }
 
   function signOut() {
-    localStorage.removeItem(LS_TOKEN)
+    saveToken('')
     setToken('')
     setItems([])
     setSelectedId(null)
@@ -318,6 +320,7 @@ export function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader
+        onNavigate={navigate}
         current="initiatives"
         nav={{
           board: t.board,

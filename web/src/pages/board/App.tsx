@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { useNavigate } from 'react-router'
+import { loadToken, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { Typeahead } from '@/components/Typeahead'
 import { useToast } from '@/components/Toaster'
@@ -41,7 +43,6 @@ import {
 } from '@/lib/project-settings'
 import { STR } from './strings'
 
-const LS_TOKEN = 'takomo.board.token'
 const LS_LANG = 'takomo.lang'
 const LS_PROJECT = 'takomo.board.project'
 const POLL_MS = 4000
@@ -110,10 +111,11 @@ function Board({
   setLang: (l: Locale) => void
   deepTicket?: string
 }) {
+  const navigate = useNavigate()
   const { toast } = useToast()
   const t = useMemo(() => pick(STR, lang), [lang])
 
-  const [token, setToken] = useState(() => localStorage.getItem(LS_TOKEN) ?? '')
+  const [token, setToken] = useState(() => loadToken())
   const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
   const [projects, setProjects] = useState<Project[]>([])
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
@@ -152,7 +154,7 @@ function Board({
     (e: unknown) => {
       const err = e as { auth?: boolean; status?: number; message?: string }
       if (err?.auth || err?.status === 401 || err?.status === 403) {
-        localStorage.removeItem(LS_TOKEN)
+        saveToken('')
         setToken('')
         return
       }
@@ -330,7 +332,7 @@ function Board({
         emptyMessage={t.typeFirst}
         initialToken={token}
         onSubmit={(tk) => {
-          localStorage.setItem(LS_TOKEN, tk)
+          saveToken(tk)
           setToken(tk)
           // A board needs a project; the picker in the header chooses it once
           // the token can list them.
@@ -352,6 +354,7 @@ function Board({
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <AppHeader
+        onNavigate={navigate}
         current="board"
         nav={{ board: t.board, inbox: t.inbox, initiatives: t.initiatives, schedules: t.schedules }}
         lang={lang}
@@ -507,7 +510,7 @@ function Board({
           size="icon"
           title={t.signout}
           onClick={() => {
-            localStorage.removeItem(LS_TOKEN)
+            saveToken('')
             setToken('')
           }}
         >
