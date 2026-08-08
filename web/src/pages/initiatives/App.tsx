@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadToken, saveToken } from '@/lib/session'
+import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { EditableText } from '@/components/EditableText'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
@@ -43,7 +43,6 @@ import {
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
-const LS_PROJECT = 'takomo.initiatives.project'
 
 interface Me {
   actor: string
@@ -58,7 +57,7 @@ export function App() {
 
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
+  const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
   const [me, setMe] = useState<Me>({ actor: '', scopes: [] })
@@ -339,7 +338,7 @@ export function App() {
         projectLabel={t.project}
         onProject={(id) => {
           setProject(id)
-          localStorage.setItem(LS_PROJECT, id)
+          saveProject(id)
           setSelectedId(null)
           setEntries([])
           setEntryCursor(null)

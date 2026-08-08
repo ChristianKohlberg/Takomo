@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadToken, saveToken } from '@/lib/session'
+import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { Typeahead } from '@/components/Typeahead'
 import { useToast } from '@/components/Toaster'
@@ -44,7 +44,6 @@ import {
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
-const LS_PROJECT = 'takomo.board.project'
 const POLL_MS = 4000
 
 export function App() {
@@ -116,8 +115,19 @@ function Board({
   const t = useMemo(() => pick(STR, lang), [lang])
 
   const [token, setToken] = useState(() => loadToken())
-  const [project, setProject] = useState(() => localStorage.getItem(LS_PROJECT) ?? '')
+  const [project, setProject] = useState(() => loadProject())
   const [projects, setProjects] = useState<Project[]>([])
+
+  // The project selection is shared across all four surfaces, and `''` there
+  // means ALL PROJECTS — a real state the inbox, initiatives and schedules each
+  // offer. A kanban cannot show it: columns come from a project's workflow, and
+  // two projects need not agree on their states.
+  //
+  // So the board NARROWS to a concrete project for its own rendering, and
+  // deliberately does not write that back. Writing it back would mean a visit to
+  // the board silently converted someone's "All projects" inbox into a
+  // single-project one.
+  const effectiveProject = project || projects[0]?.id || ''
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [cursor, setCursor] = useState<number | string>(0)
@@ -182,26 +192,34 @@ function Board({
   }, [token])
 
   const load = useCallback(async () => {
-    if (!token || !project) return
+    if (!token || !effectiveProject) return
     setConn((c) => (c === 'live' ? c : 'loading'))
     const [wf, ts] = await Promise.all([
-      getWorkflow(token, project),
-      listTickets(token, project),
+      getWorkflow(token, effectiveProject),
+      listTickets(token, effectiveProject),
     ])
     setWorkflow(wf)
     setTickets(ts)
     setConn('live')
-  }, [token, project])
+  }, [token, effectiveProject])
+
+  // The project list is what makes `effectiveProject` resolvable, so it is
+  // fetched whenever there is a token — not only from the token gate, which is
+  // where it used to happen and which a returning viewer never sees.
+  useEffect(() => {
+    if (!token || projects.length) return
+    listProjects(token).then(setProjects).catch(handleErr)
+  }, [token, projects.length, handleErr])
 
   useEffect(() => {
-    if (!token || !project) return
+    if (!token || !effectiveProject) return
     load().catch(handleErr)
-  }, [token, project, load, handleErr])
+  }, [token, effectiveProject, load, handleErr])
 
   // Live updates by polling the event log. `EventSource` cannot set an
   // Authorization header, which is why this is a poll and not the SSE stream.
   useEffect(() => {
-    if (!token || !project) return
+    if (!token || !effectiveProject) return
     const id = window.setInterval(() => {
       getEvents(token, cursor)
         .then((page) => {
@@ -214,15 +232,15 @@ function Board({
         .catch(() => setConn('reconnecting'))
     }, POLL_MS)
     return () => window.clearInterval(id)
-  }, [token, project, cursor, load])
+  }, [token, effectiveProject, cursor, load])
 
   // Open questions per ticket — what the detail drawer's callout counts.
   useEffect(() => {
-    if (!token || !project) return
-    listQuestions(token, { project, status: 'open' })
+    if (!token || !effectiveProject) return
+    listQuestions(token, { project: effectiveProject, status: 'open' })
       .then(setQuestions)
       .catch(() => setQuestions([]))
-  }, [token, project, tickets])
+  }, [token, effectiveProject, tickets])
 
   const questionsByTicket = useMemo(() => {
     const m = new Map<string, { count: number; blocking: number; advisory: number; conv: number }>()
@@ -318,11 +336,11 @@ function Board({
     [tickets, token],
   )
 
-  const currentProject = projects.find((p) => p.id === project) as
+  const currentProject = projects.find((p) => p.id === effectiveProject) as
     | (Project & Record<string, unknown>)
     | undefined
 
-  if (!token || !project) {
+  if (!token) {
     return (
       <TokenGate
         title="takomo · board"
@@ -334,18 +352,8 @@ function Board({
         onSubmit={(tk) => {
           saveToken(tk)
           setToken(tk)
-          // A board needs a project; the picker in the header chooses it once
-          // the token can list them.
-          if (!project) {
-            listProjects(tk)
-              .then((ps) => {
-                const first = ps[0]?.id ?? ''
-                setProjects(ps)
-                setProject(first)
-                localStorage.setItem(LS_PROJECT, first)
-              })
-              .catch(handleErr)
-          }
+          // The project list arrives via the effect above; nothing is chosen on
+          // the viewer's behalf here.
         }}
       />
     )
@@ -363,10 +371,12 @@ function Board({
           localStorage.setItem(LS_LANG, l)
         }}
         projects={projects.map((p) => ({ id: p.id }))}
-        project={project}
+        project={effectiveProject}
         onProject={(id) => {
+          // An explicit pick DOES change the shared selection — that is a human
+          // saying which project they mean, on every surface.
           setProject(id)
-          localStorage.setItem(LS_PROJECT, id)
+          saveProject(id)
           setTicketFilter('')
           setTagFilter('')
         }}
@@ -605,7 +615,7 @@ function Board({
           await askQuestion(token, fields)
           setAsking(false)
           toast(t.askHuman, 'success')
-          const qs = await listQuestions(token, { project, status: 'open' }).catch(() => [])
+          const qs = await listQuestions(token, { project: effectiveProject, status: 'open' }).catch(() => [])
           setQuestions(qs)
         }}
         labels={{
@@ -638,7 +648,7 @@ function Board({
         onClose={() => setInboxOpen(false)}
         onAnswer={async (q, value, note) => {
           await answerQuestion(token, q.id, { value, note: note || undefined })
-          const qs = await listQuestions(token, { project, status: 'open' }).catch(() => [])
+          const qs = await listQuestions(token, { project: effectiveProject, status: 'open' }).catch(() => [])
           setQuestions(qs)
           void load()
         }}
@@ -680,7 +690,7 @@ function Board({
         onSave={() => {
           setSaving(true)
           setSaveErr('')
-          saveProjectSettings(token, project, settings, origSettings)
+          saveProjectSettings(token, effectiveProject, settings, origSettings)
             .then((calls) => {
               // Nothing changed → close, do not claim a save that never
               // happened. "Saved." over an unchanged form is a small lie that
