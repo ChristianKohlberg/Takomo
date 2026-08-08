@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { Typeahead } from '@/components/Typeahead'
 import { useToast } from '@/components/Toaster'
@@ -162,8 +162,8 @@ function Board({
 
   const handleErr = useCallback(
     (e: unknown) => {
-      const err = e as { auth?: boolean; status?: number; message?: string }
-      if (err?.auth || err?.status === 401 || err?.status === 403) {
+      const err = e as { message?: string }
+      if (isAuthError(e)) {
         saveToken('')
         setToken('')
         return
@@ -229,10 +229,21 @@ function Board({
         })
         // A failed poll is not an error to shout about, but the board must stop
         // claiming to be live — silently stale is the failure worth surfacing.
-        .catch(() => setConn('reconnecting'))
+        //
+        // An AUTH failure is a different thing entirely and used to land here
+        // too: a revoked or expired token read as "reconnecting" forever, so the
+        // viewer sat looking at stale tickets that would never update, never
+        // told to re-authenticate. A dead credential is not a flaky network.
+        .catch((e) => {
+          if (isAuthError(e)) {
+            handleErr(e)
+            return
+          }
+          setConn('reconnecting')
+        })
     }, POLL_MS)
     return () => window.clearInterval(id)
-  }, [token, effectiveProject, cursor, load])
+  }, [token, effectiveProject, cursor, load, handleErr])
 
   // Open questions per ticket — what the detail drawer's callout counts.
   useEffect(() => {

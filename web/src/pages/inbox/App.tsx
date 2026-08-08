@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -73,8 +73,8 @@ export function App() {
 
   const handleErr = useCallback(
     (e: unknown) => {
-      const err = e as { auth?: boolean; status?: number; message?: string }
-      if (err?.auth || err?.status === 401 || err?.status === 403) {
+      const err = e as { message?: string }
+      if (isAuthError(e)) {
         saveToken('')
         setToken('')
         return
@@ -143,9 +143,19 @@ export function App() {
   // cheaper than relying on it.
   useEffect(() => {
     if (!token || queue.pending.length) return
-    const id = window.setInterval(() => void fetchAll().catch(() => {}), POLL_MS)
+    // A transient poll failure is genuinely not worth a toast — the next tick
+    // fixes it. An AUTH failure is, and swallowing it meant a revoked token left
+    // the inbox looking perfectly normal while showing questions that would
+    // never refresh, and accepting answers that would fail on submit.
+    const id = window.setInterval(
+      () =>
+        void fetchAll().catch((e) => {
+          if (isAuthError(e)) handleErr(e)
+        }),
+      POLL_MS,
+    )
     return () => window.clearInterval(id)
-  }, [token, queue.pending.length, fetchAll])
+  }, [token, queue.pending.length, fetchAll, handleErr])
 
   // `visible()` — everything the current filters admit. The folder split and the
   // counts both read from it, so a filtered-out question cannot be counted in a

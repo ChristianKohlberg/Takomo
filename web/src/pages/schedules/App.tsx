@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -60,8 +60,8 @@ export function App() {
 
   const handleErr = useCallback(
     (e: unknown) => {
-      const err = e as { auth?: boolean; status?: number; message?: string }
-      if (err?.auth || err?.status === 401) {
+      const err = e as { message?: string }
+      if (isAuthError(e)) {
         saveToken('')
         setToken('')
         setGateError('')

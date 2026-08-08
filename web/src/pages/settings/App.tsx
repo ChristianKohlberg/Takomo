@@ -21,7 +21,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 
-import { loadToken, saveToken } from '@/lib/session'
+import { isAuthError, loadToken, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project, type Whoami } from '@/lib/initiatives'
 import {
@@ -81,14 +81,13 @@ export function App() {
 
   const handleErr = useCallback(
     (e: unknown) => {
-      const err = e as { auth?: boolean; status?: number; message?: string }
-      if (err?.auth || err?.status === 401) {
+      if (isAuthError(e)) {
         saveToken('')
         setToken('')
         setGateError('')
         return
       }
-      toast(err?.message || t.requestFailed, 'err')
+      toast((e as { message?: string })?.message || t.requestFailed, 'err')
     },
     [toast, t],
   )
@@ -120,13 +119,31 @@ export function App() {
     }
   }, [token, refresh, handleErr])
 
+  // Deliberately NOT routed through `handleErr`.
+  //
+  // `isAuthError` counts 403 as an auth failure and signs the viewer out, which
+  // is right for the polls it was written for: a revoked token must not read as
+  // a flaky network. It is wrong here. A 403 from the export means "this token
+  // may not take a whole-database dump" — a refusal of ONE operation by a token
+  // that is otherwise entitled to this page. Throwing that person back to the
+  // gate would log them out of a console they can legitimately use, and the
+  // reason they came would never be shown.
+  //
+  // The button is hidden for a token with a project allowlist, so this path is
+  // not the normal way to meet that refusal; it is the backstop for a token
+  // whose grants changed under an open tab.
   const onExport = async () => {
     setExporting(true)
     try {
       const { filename, bytes } = await downloadDatabase(token)
       toast(fill(t.exportDone, { name: filename, size: formatBytes(bytes) }), 'success')
     } catch (e) {
-      handleErr(e)
+      const status = (e as { status?: number })?.status
+      if (status === 401) {
+        handleErr(e)
+        return
+      }
+      toast((e as { message?: string })?.message || t.requestFailed, 'err')
     } finally {
       setExporting(false)
     }

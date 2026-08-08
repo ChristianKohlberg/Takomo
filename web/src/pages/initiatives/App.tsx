@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
-import { loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { EditableText } from '@/components/EditableText'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
@@ -87,8 +87,8 @@ export function App() {
   // carrying the API's own message and remedy, verbatim.
   const handleErr = useCallback(
     (e: unknown) => {
-      const err = e as { auth?: boolean; message?: string }
-      if (err?.auth) {
+      const err = e as { message?: string }
+      if (isAuthError(e)) {
         setToken('')
         saveToken('')
         setGateError('')
