@@ -32,6 +32,8 @@ export interface TypeaheadProps {
     noMatch: string
     count: string
     count1: string
+    /** Shown when the list is truncated; `{shown}` of `{n}`. Falls back to `count`. */
+    countTruncated?: string
   }
 }
 
@@ -48,13 +50,40 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
   // arrow keys are on, and without it the popup is navigable only by sight.
   const optId = (i: number) => `${listId}-opt-${i}`
 
-  const matches = useMemo(() => {
+  // Rank, then truncate — and count BEFORE truncating.
+  //
+  // This used to `.filter().slice(0, 12)` and then report `matches.length`, so
+  // the footer said "12 matches" whether there were 12 or 400: the reader was
+  // told the list was complete when it was a fraction of it. Worse, with no
+  // ranking the survivors were just the first twelve in server order, so on a
+  // large project the ticket you wanted could be unreachable no matter what you
+  // typed — narrowing further needs text you cannot see.
+  //
+  // The ranking is deliberately cheap and predictable: an exact id wins, then
+  // an id prefix, then a title prefix, then anything else. No fuzzy matching —
+  // a filter that reorders unpredictably is worse than one that does not.
+  const { all, shown } = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return options.slice(0, MAX_SHOWN)
-    return options
-      .filter((t) => t.id.toLowerCase().includes(q) || (t.title ?? '').toLowerCase().includes(q))
-      .slice(0, MAX_SHOWN)
+    if (!q) return { all: options, shown: options.slice(0, MAX_SHOWN) }
+    const hits = options.filter(
+      (t) => t.id.toLowerCase().includes(q) || (t.title ?? '').toLowerCase().includes(q),
+    )
+    const rank = (t: TypeaheadOption) => {
+      const id = t.id.toLowerCase()
+      const title = (t.title ?? '').toLowerCase()
+      if (id === q) return 0
+      if (id.startsWith(q)) return 1
+      if (title.startsWith(q)) return 2
+      if (id.includes(q)) return 3
+      return 4
+    }
+    // A stable sort keeps server order within a rank, so equal-ranked results
+    // do not shuffle as you type.
+    const ranked = [...hits].sort((a, b) => rank(a) - rank(b))
+    return { all: ranked, shown: ranked.slice(0, MAX_SHOWN) }
   }, [options, query])
+
+  const matches = shown
 
   useEffect(() => setActive(0), [query])
 
@@ -114,7 +143,7 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
           }
         }}
         className={cn(
-          'bg-muted border-border focus:border-ring w-55 rounded-lg border px-2.5 py-1.5 text-[13px] outline-none',
+          'bg-muted border-border focus:border-ring w-full sm:w-55 rounded-lg border px-2.5 py-1.5 text-base md:text-[13px] outline-none',
           value && 'text-primary font-[650]',
         )}
       />
@@ -135,7 +164,7 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
         <div
           id={listId}
           role="listbox"
-          className="bg-card border-border absolute top-full left-0 z-50 mt-1 max-h-72 w-80 overflow-y-auto rounded-lg border shadow-[var(--shadow)]"
+          className="bg-card border-border absolute top-full left-0 max-w-[calc(100vw-2rem)] z-50 mt-1 max-h-72 w-80 overflow-y-auto rounded-lg border shadow-[var(--shadow)]"
         >
           <button
             type="button"
@@ -171,10 +200,14 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
                 </button>
               ))}
               <div className="text-muted-foreground border-t-border-soft border-t px-3 py-1 text-[11.5px]">
-                {(matches.length === 1 ? labels.count1 : labels.count).replace(
-                  '{n}',
-                  String(matches.length),
-                )}
+                {(all.length === 1
+                  ? labels.count1
+                  : all.length > matches.length
+                    ? (labels.countTruncated ?? labels.count)
+                    : labels.count
+                )
+                  .replace('{shown}', String(matches.length))
+                  .replace('{n}', String(all.length))}
               </div>
             </>
           )}

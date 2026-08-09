@@ -56,13 +56,13 @@ export function ToastProvider({
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="fixed right-4 bottom-4 z-90 flex flex-col gap-2">
+      <div className="fixed right-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-90 flex flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
             role="status"
             className={cn(
-              'flex max-w-100 items-start gap-2.5 rounded-[10px] px-3.5 py-3 text-[12.8px] shadow-[0_18px_40px_-18px_rgba(0,0,0,.5)]',
+              'flex max-w-[min(25rem,calc(100vw-2rem))] items-start gap-2.5 rounded-[10px] px-3.5 py-3 text-[12.8px] shadow-[0_18px_40px_-18px_rgba(0,0,0,.5)]',
               t.kind === 'success' ? 'bg-ok text-white' : 'bg-foreground text-background',
             )}
           >

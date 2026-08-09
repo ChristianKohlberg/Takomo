@@ -57,6 +57,8 @@ export interface TicketCardProps {
    */
   blockedLabel?: string
   onOpen: (id: string) => void
+  /** Client-side navigation for the schedule chip; see AppHeader.onNavigate. */
+  onNavigate?: (href: string) => void
 }
 
 export function TicketCard({
@@ -66,6 +68,7 @@ export function TicketCard({
   scheduleLabels,
   isDone,
   onOpen,
+  onNavigate,
 }: TicketCardProps) {
   const blocked = (t.blocked_by?.length ?? 0) > 0
   // An occurrence whose deadline passed has stopped counting as live work, and
@@ -74,15 +77,29 @@ export function TicketCard({
   const notFulfilled =
     !isDone && !!t.expires_at && new Date(t.expires_at).getTime() <= Date.now()
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(t.id)}
-      aria-current={selected}
+    // A stretched button rather than a button wrapping everything.
+    //
+    // The schedule chip is a real link to /schedules, and an <a> inside a
+    // <button> is invalid HTML — which is what it used to be, as a
+    // `span[role="link"]` with no href at all, so middle-click, cmd-click and
+    // "copy link address" silently did nothing. Here the button covers the card
+    // for the open-ticket action, the content sits above it with
+    // `pointer-events-none` so clicks fall through, and the chip re-enables
+    // pointer events for itself. Two real, unnested interactive elements.
+    <div
       className={cn(
-        'bg-card border-border hover:border-ring w-full cursor-pointer rounded-[9px] border px-3 py-2.5 text-left',
+        'bg-card border-border hover:border-ring relative rounded-[9px] border px-3 py-2.5 text-left',
         selected && 'bg-accent border-ring',
       )}
     >
+      <button
+        type="button"
+        onClick={() => onOpen(t.id)}
+        aria-current={selected}
+        aria-label={t.title || t.id}
+        className="absolute inset-0 cursor-pointer rounded-[9px]"
+      />
+      <div className="pointer-events-none relative">
       <div className="flex items-baseline gap-2">
         <span className="text-muted-foreground shrink-0 font-mono text-[11px]">{t.id}</span>
         {t.priority && (
@@ -109,25 +126,23 @@ export function TicketCard({
       {/* Where a scheduled ticket came from. It links to /schedules rather than
           opening the ticket, so the two pages stay one product. */}
       {t.schedule && scheduleLabels && (
-        <span
+        <a
+          href="/schedules"
           title={`${scheduleLabels.fromSchedule}: ${t.schedule}`}
-          role="link"
-          tabIndex={0}
           onClick={(e) => {
             e.stopPropagation()
-            window.location.href = '/schedules'
+            // Same rule as the header nav: only a plain left-click is
+            // intercepted, so cmd-click still opens a new tab.
+            if (!onNavigate) return
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+            e.preventDefault()
+            onNavigate('/schedules')
           }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.stopPropagation()
-              window.location.href = '/schedules'
-            }
-          }}
-          className="text-muted-foreground mt-1.5 flex w-fit cursor-pointer items-center gap-1 font-mono text-[10.5px]"
+          className="text-muted-foreground pointer-events-auto mt-1.5 -mx-1 -my-0.5 flex w-fit cursor-pointer items-center gap-1 px-1 py-0.5 font-mono text-[10.5px] no-underline"
         >
           <span>{'\u21bb'}</span>
           <span>{t.schedule}</span>
-        </span>
+        </a>
       )}
 
       {(t.labels?.length || t.tags?.length || t.claim?.holder || blocked) && (
@@ -155,6 +170,7 @@ export function TicketCard({
           ))}
         </div>
       )}
-    </button>
+      </div>
+    </div>
   )
 }

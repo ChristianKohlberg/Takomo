@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
+import { cn } from '@/lib/utils'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
@@ -185,9 +186,22 @@ export function App() {
     const m = /(?:^#|&)q=([^&]+)/.exec(window.location.hash || '')
     if (m?.[1]) setSelectedId(decodeURIComponent(m[1]))
   }, [])
+  // `replace`, and through the router.
+  //
+  // Assigning `window.location.hash` pushed a history entry React Router did
+  // not create, leaving its own index bookkeeping stale — and it pushed ONE PER
+  // SELECTION, so walking twenty questions with j/k meant twenty Back presses
+  // before leaving the inbox. With one app the expectation is that Back returns
+  // to the previous SURFACE, not the previously-read question.
   useEffect(() => {
-    if (selected) window.location.hash = 'q=' + selected.id
-  }, [selected])
+    // Clearing the selection clears the hash too. Without that, closing a
+    // question leaves `#q=…` in the URL and the next visit to /inbox reads it
+    // back on mount — so a phone user, for whom the pane REPLACES the list,
+    // lands straight in the last question they read instead of their inbox.
+    // The pathname is given explicitly: `navigate({ hash: '' })` alone does not
+    // reliably drop an existing fragment.
+    navigate({ pathname: '/inbox', hash: selectedId ? 'q=' + selectedId : '' }, { replace: true })
+  }, [selectedId, navigate])
 
   useEffect(() => {
     if (!selected || !token) {
@@ -265,6 +279,7 @@ export function App() {
   }
 
   const paneLabels = selected && {
+    back: t.back,
     yes: selected.kind === 'approve' ? t.approve : t.confirm,
     no: selected.kind === 'approve' ? t.holdApprove : t.holdConfirm,
     writeOwn: t.customDivider,
@@ -291,7 +306,7 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <AppHeader
         onNavigate={navigate}
         current="inbox"
@@ -327,6 +342,7 @@ export function App() {
             noMatch: t.taNoMatch,
             count: t.taCount,
             count1: t.taCount1,
+        countTruncated: t.taCountMore,
           }}
         />
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
@@ -338,8 +354,14 @@ export function App() {
         </Button>
       </AppHeader>
 
-      <main className="grid min-h-0 flex-1 grid-cols-[180px_320px_1fr]">
+      {/* Stacked master/detail on a phone, three panes from `md` up.
+          The fixed columns totalled 500px, so below ~540px the `1fr` reading
+          pane resolved to literally 0px — and with the root `overflow-hidden`
+          it could not even be scrolled to. Tapping a question did nothing
+          visible. Measured 0px at every width from 320 to 430. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[180px_320px_1fr]">
         <FolderRail
+          className="hidden md:block"
           folders={FOLDERS}
           current={folder}
           counts={counts}
@@ -356,11 +378,68 @@ export function App() {
           }}
         />
 
-        <section className="bg-card border-r-border-soft min-h-0 overflow-y-auto border-r">
+        <section
+          className={cn(
+            'bg-card border-r-border-soft min-h-0 overflow-y-auto border-r md:block',
+            // On a phone the list and the reading pane occupy the same cell;
+            // selecting a question swaps to it, and the pane's back button
+            // swaps back. `#q=` is already in the URL, so Back works too.
+            selectedId ? 'hidden' : 'block',
+          )}
+        >
+          {/* The folder rail is hidden on a phone, so the folders come back as a
+              chip row above the list — folders are how this surface is
+              navigated, and losing them to a breakpoint would be worse than the
+              cramped rail. */}
+          <div className="border-b-border-soft flex gap-1 overflow-x-auto border-b px-3 py-2 md:hidden">
+            {FOLDERS.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => {
+                  setFolder(f)
+                  setSelectedId(null)
+                }}
+                className={cn(
+                  'shrink-0 cursor-pointer rounded-lg px-3 py-2 text-[13px] font-[650]',
+                  f === folder ? 'bg-secondary text-primary' : 'text-muted-foreground',
+                )}
+              >
+                {t[f] ?? f}
+                {(counts[f] ?? 0) > 0 && (
+                  <span className="ml-1.5 tabular-nums">{counts[f]}</span>
+                )}
+              </button>
+            ))}
+          </div>
+
           {inFolder.length === 0 ? (
+            // "All clear — the fleet is working" is a claim about the SYSTEM,
+            // and it was being made whenever the reader's own ticket filter
+            // emptied the list, or whenever they opened a folder that simply
+            // has nothing in it. Both are statements about the view, not the
+            // fleet. `noneForTicket` was written for exactly this and had never
+            // been wired up.
             <div className="text-muted-foreground px-6 py-14 text-center">
-              <div className="text-foreground mb-1.5 text-[15px] font-[680]">{t.allClear}</div>
-              <div className="text-[13px]">{t.allClearSub}</div>
+              {ticket ? (
+                <>
+                  <div className="text-[13px]">{t.noneForTicket}</div>
+                  <button
+                    type="button"
+                    onClick={() => setTicket('')}
+                    className="text-primary mt-2 cursor-pointer px-2 py-1 text-[13px] font-[650] underline"
+                  >
+                    {t.taClear}
+                  </button>
+                </>
+              ) : folder === 'open' ? (
+                <>
+                  <div className="text-foreground mb-1.5 text-[15px] font-[680]">{t.allClear}</div>
+                  <div className="text-[13px]">{t.allClearSub}</div>
+                </>
+              ) : (
+                <div className="text-[13px]">{t.folderEmpty}</div>
+              )}
             </div>
           ) : (
             inFolder.map((q) => (
@@ -379,6 +458,8 @@ export function App() {
         {selected && paneLabels ? (
           <ReadingPane
             key={selected.id}
+            className={selectedId ? 'flex' : 'hidden md:flex'}
+            onBack={() => setSelectedId(null)}
             question={selected}
             thread={thread}
             draft={drafts[selected.id]}

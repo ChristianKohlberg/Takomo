@@ -49,17 +49,38 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  side = "center",
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  /**
+   * `center` is a dialog; `right` is a full-height sheet anchored to the right
+   * edge — the shape the ticket detail and the board's inbox use.
+   *
+   * Both are the same Radix primitive, which is the point: those two panels
+   * used to be hand-rolled `position: fixed` markup and therefore had no focus
+   * trap, no focus restore, no Escape handling and no `role="dialog"` — none of
+   * which anyone was ever going to hand-write correctly. Positioning was the
+   * only thing the hand-rolled version actually needed, and positioning is just
+   * classes.
+   */
+  side?: "center" | "right"
 }) {
+  const position =
+    side === "right"
+      ? // A sheet: full height at the right edge, full width on a phone.
+        "inset-y-0 right-0 h-full w-[min(480px,100%)] max-w-none overflow-y-auto rounded-none border-l data-open:slide-in-from-right data-closed:slide-out-to-right"
+      : "top-1/2 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl sm:max-w-sm data-open:zoom-in-95 data-closed:zoom-out-95"
+
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        data-side={side}
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed z-50 grid w-full gap-4 bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+          position,
           className
         )}
         {...props}

@@ -55,7 +55,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
 }
 
 const linkCls =
-  'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer rounded-lg px-3.5 py-1.5 text-[13px] font-[650] no-underline'
+  'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer rounded-lg px-3.5 py-1.5 text-base md:text-[13px] font-[650] no-underline'
 
 export function AppHeader({
   nav,
@@ -78,7 +78,10 @@ export function AppHeader({
         <span className="text-foreground text-base font-[750] tracking-[-0.02em]">takomo</span>
       </div>
 
-      <nav className="ml-1 flex gap-1">
+      {/* Scrollable rather than wrapping: four surface names do not fit a 375px
+          row, and wrapping them pushes everything below further down the screen
+          on the surface that can least afford it. */}
+      <nav className="ml-1 flex min-w-0 max-w-full gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {(Object.keys(nav) as (keyof NavLabels)[]).map((key) => {
           const count = badges?.[key] ?? 0
           const badge =
@@ -88,7 +91,7 @@ export function AppHeader({
               </span>
             ) : null
           return key === current ? (
-            <span key={key} className={cn(linkCls, 'text-primary bg-secondary font-[680]')}>
+            <span key={key} className={cn(linkCls, 'shrink-0 text-primary bg-secondary font-[680]')}>
               {nav[key]}
               {badge}
             </span>
@@ -96,7 +99,7 @@ export function AppHeader({
             <a
               key={key}
               href={NAV_HREF[key]}
-              className={linkCls}
+              className={cn(linkCls, 'shrink-0')}
               onClick={(e) => {
                 // Let the browser handle anything that is not a plain left-click:
                 // a modified click means "open this somewhere else", and

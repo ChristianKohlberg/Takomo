@@ -220,15 +220,35 @@ export interface TicketRef {
  * `title` the filter has nothing but ids to match on, and asking for the whole
  * ticket would pull every body across the wire to populate a dropdown.
  */
-export function listTicketRefs(token: string, project?: string): Promise<TicketRef[]> {
-  // Written as a literal rather than assembled: `fields=id,title,tags` is an
-  // asserted contract, and a contract you cannot grep for is one that breaks
-  // silently.
-  const base = '/tickets?fields=id,title,tags&limit=500'
-  const path = project ? `${base}&project=${encodeURIComponent(project)}` : base
-  return api<{ items?: TicketRef[] } | TicketRef[]>(token, path).then((b) =>
-    Array.isArray(b) ? b : (b.items ?? []),
-  )
+export async function listTicketRefs(token: string, project?: string): Promise<TicketRef[]> {
+  // Paginated, like `listQuestions` above and `listTickets` in lib/board.ts.
+  //
+  // This used to be a single `limit=500` request with no loop, so on a project
+  // with more than 500 tickets the inbox's filter simply could not find the
+  // later ones — and the failure is indistinguishable from "that ticket does
+  // not exist", which is the worst way for a filter to fail.
+  const out: TicketRef[] = []
+  let cursor: string | null = null
+  for (let page = 0; page < 100 && out.length < 5000; page++) {
+    // Written as a literal rather than assembled: `fields=id,title,tags` is an
+    // asserted contract, and a contract you cannot grep for is one that breaks
+    // silently.
+    const qs = new URLSearchParams({ limit: '500' })
+    if (project) qs.set('project', project)
+    if (cursor != null) qs.set('cursor', cursor)
+    const body: { items?: TicketRef[]; next_cursor?: string | null } | TicketRef[] = await api(
+      token,
+      `/tickets?fields=id,title,tags&${qs}`,
+    )
+    // The endpoint answers either shape depending on projection.
+    if (Array.isArray(body)) return body
+    const got = body.items ?? []
+    out.push(...got)
+    const next = body.next_cursor ?? null
+    if (next == null || next === cursor || got.length === 0) break
+    cursor = next
+  }
+  return out
 }
 
 export interface AskFields {

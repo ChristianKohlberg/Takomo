@@ -7,6 +7,7 @@
 // 40-character sha across the drawer.
 import { Markdown } from '@/components/Markdown'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
@@ -41,7 +42,6 @@ export interface DetailPanelLabels {
   noDescription: string
   dependencies: string
   blockedByRel: string
-  blocksRel: string
   links: string
   blockedN: string
   answeringResumes: string
@@ -66,6 +66,8 @@ export interface DetailPanelProps {
   canAsk: boolean
   onClose: () => void
   onAsk: () => void
+  /** Client-side navigation for the inbox link; see AppHeader.onNavigate. */
+  onNavigate?: (href: string) => void
 }
 
 export function DetailPanel({
@@ -75,6 +77,7 @@ export function DetailPanel({
   canAsk,
   onClose,
   onAsk,
+  onNavigate,
 }: DetailPanelProps) {
   if (!t) return null
 
@@ -84,22 +87,20 @@ export function DetailPanel({
   const convOnly = !!questions && questions.conv > 0 && !questions.blocking && !questions.advisory
 
   return (
-    <>
-      <div className="bg-[color:var(--overlay)] fixed inset-0 z-20" onClick={onClose} />
-      <aside className="bg-card border-border fixed top-0 right-0 z-21 h-full w-[min(480px,100%)] overflow-y-auto border-l shadow-[-24px_0_60px_-30px_rgba(20,40,55,.5)]">
-        <header className="bg-card border-b-border-soft sticky top-0 flex items-start gap-2 border-b px-6 pt-5 pb-4">
-          <h2 className="m-0 flex-1 text-[20px] leading-[1.3] font-[720] tracking-[-0.02em] break-words">
+    // A real dialog now, not an <aside> under a hand-rolled overlay. Radix
+    // supplies the focus trap, focus restore, Escape, `role="dialog"`,
+    // `aria-modal` and the `aria-labelledby` wiring from DialogTitle — every one
+    // of which was missing before, on the panel this board opens most.
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent
+        side="right"
+        className="bg-card border-border gap-0 p-0 shadow-[-24px_0_60px_-30px_rgba(20,40,55,.5)]"
+      >
+        <DialogHeader className="bg-card border-b-border-soft sticky top-0 z-1 flex-row items-start gap-2 border-b px-6 pt-5 pb-4">
+          <DialogTitle className="m-0 flex-1 text-[20px] leading-[1.3] font-[720] tracking-[-0.02em] break-words">
             {t.title || t.id}
-          </h2>
-          <button
-            type="button"
-            aria-label={labels.close}
-            onClick={onClose}
-            className="text-muted-foreground cursor-pointer px-1.5 text-[20px] leading-none"
-          >
-            ×
-          </button>
-        </header>
+          </DialogTitle>
+        </DialogHeader>
 
         <div className="flex flex-col gap-5 px-6 py-4">
           {questions && questions.count > 0 && (
@@ -119,6 +120,14 @@ export function DetailPanel({
               </div>
               <a
                 href="/inbox"
+                onClick={(e) => {
+                  // Same rule as the header nav: intercept only a plain
+                  // left-click, so cmd-click still opens the inbox in a new tab.
+                  if (!onNavigate) return
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                  e.preventDefault()
+                  onNavigate('/inbox')
+                }}
                 className="bg-primary text-primary-foreground inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-[680] no-underline"
               >
                 {convOnly ? labels.readThread : labels.answerInInbox}
@@ -274,8 +283,8 @@ export function DetailPanel({
             </Button>
           )}
         </div>
-      </aside>
-    </>
+      </DialogContent>
+    </Dialog>
   )
 }
 

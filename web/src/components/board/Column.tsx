@@ -18,15 +18,25 @@ export interface ColumnProps {
   /** Terminal state: its cards never carry a not-fulfilled flag. */
   isDone?: boolean
   onOpen: (id: string) => void
+  /** Passed to each card's schedule chip; see AppHeader.onNavigate. */
+  onNavigate?: (href: string) => void
 }
 
-export function Column({ state, tickets, selectedId, labels, isDone, onOpen }: ColumnProps) {
+export function Column({
+  state,
+  tickets,
+  selectedId,
+  labels,
+  isDone,
+  onOpen,
+  onNavigate,
+}: ColumnProps) {
   const [expanded, setExpanded] = useState(false)
   const shown = expanded ? tickets : tickets.slice(0, COLLAPSE_LIMIT)
   const hidden = tickets.length - shown.length
 
   return (
-    <section className="bg-muted/40 flex min-h-0 w-72 shrink-0 flex-col rounded-[10px]">
+    <section className="bg-muted/40 flex min-h-0 w-[85vw] max-w-72 shrink-0 snap-start flex-col rounded-[10px] sm:w-72">
       <header className="text-muted-foreground flex items-baseline gap-2 px-3 py-2 text-[11.5px] font-[750] tracking-[0.05em] uppercase">
         <span>{state}</span>
         <span className="font-semibold tabular-nums">{tickets.length}</span>
@@ -41,6 +51,7 @@ export function Column({ state, tickets, selectedId, labels, isDone, onOpen }: C
             scheduleLabels={{ fromSchedule: labels.fromSchedule, notFulfilled: labels.notFulfilled }}
             isDone={isDone}
             onOpen={onOpen}
+            onNavigate={onNavigate}
           />
         ))}
         {hidden > 0 && (

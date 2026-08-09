@@ -54,7 +54,7 @@ export function AnswerLinkDialog({ link, lang, onClose, labels }: AnswerLinkDial
 
   return (
     <Dialog open={!!link} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-140">
+      <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-140">
         <DialogHeader>
           <DialogTitle>{labels.title}</DialogTitle>
           <DialogDescription>{labels.body}</DialogDescription>

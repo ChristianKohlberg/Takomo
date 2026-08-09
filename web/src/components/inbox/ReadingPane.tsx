@@ -31,6 +31,8 @@ export interface ReadingPaneLabels extends AnswerAreaLabels {
   advisory: string
   askedBy: string
   readonly: string
+  /** Back to the question list; narrow screens only. */
+  back?: string
   waitingAgentPrefix: string
   waitingAgentSuffix: string
   noReply: string
@@ -47,10 +49,16 @@ export interface ReadingPaneProps {
   onFollowup: (text: string) => void
   onWithdraw: () => void
   onReopen: () => void
+  /** Shown only on narrow screens, where the pane replaces the list. */
+  onBack?: () => void
+  /** Lets the page hide the pane on narrow screens when nothing is chosen. */
+  className?: string
   onShare: () => void
 }
 
 export function ReadingPane({
+  onBack,
+  className,
   question: q,
   thread,
   draft,
@@ -75,8 +83,21 @@ export function ReadingPane({
   const reason = composing ? (followText.trim() ? '' : labels.followFirst) : blockReason
 
   return (
-    <section className="flex min-h-0 flex-col overflow-hidden">
+    <section className={cn('min-h-0 flex-col overflow-hidden', className ?? 'flex')}>
       <div className="min-h-0 grow overflow-y-auto px-6 pt-5 pb-4">
+        {/* On a phone this pane REPLACES the question list rather than sitting
+            beside it, so it needs a way back. Hidden from `md` up, where both
+            are on screen and the control would be meaningless. */}
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="text-primary -mx-2 mb-2 flex cursor-pointer items-center gap-1 px-2 py-2 text-[13px] font-[650] md:hidden"
+          >
+            <span aria-hidden="true">←</span>
+            {labels.back ?? 'Back'}
+          </button>
+        )}
         <div className="text-muted-foreground flex flex-wrap items-center gap-2 font-mono text-[11.5px]">
           <span>{q.ticket}</span>
           <span>·</span>
