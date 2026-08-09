@@ -36,7 +36,7 @@ export function Column({
   const hidden = tickets.length - shown.length
 
   return (
-    <section className="bg-muted/40 flex min-h-0 w-[85vw] max-w-72 shrink-0 snap-start flex-col rounded-[10px] sm:w-72">
+    <section className="bg-muted/40 flex min-h-0 w-full shrink-0 flex-col rounded-[10px] md:w-72">
       <header className="text-muted-foreground flex items-baseline gap-2 px-3 py-2 text-[11.5px] font-[750] tracking-[0.05em] uppercase">
         <span>{state}</span>
         <span className="font-semibold tabular-nums">{tickets.length}</span>

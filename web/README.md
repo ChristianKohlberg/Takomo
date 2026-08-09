@@ -70,6 +70,43 @@ so `tokens.css` stays the one place a color is defined and dark mode needs no
 duplication. The dark variant is bound to `prefers-color-scheme`, not shadcn's
 `.dark` class, because these pages follow the OS and have no toggle.
 
+## The responsive contract
+
+**One breakpoint: `md` (768px). It means "phone or not".**
+
+Takomo has no tablet-specific design, so `sm:` and `lg:` exist in Tailwind but
+should not appear in new code — a third layout nobody looks at is worse than two
+that are checked. `web/src/hooks/useIsPhone.ts` mirrors the same line in JS, for
+the handful of cases where the difference is structural rather than visual.
+
+Design mobile-first where it is free: an unprefixed class is the PHONE style, and
+`md:` adds the desktop one. That ordering matters, because the failure mode is
+always the same — a desktop-shaped value with no mobile fallback:
+
+| write | not |
+|---|---|
+| `w-full md:w-72` | `w-72` |
+| `grid-cols-1 md:grid-cols-[180px_320px_1fr]` | `grid-cols-[180px_320px_1fr]` |
+| `h-dvh` | `h-screen` |
+| `max-w-[calc(100%-2rem)] sm:max-w-140` | `max-w-140` |
+
+Four eslint rules enforce the left column (`eslint.config.js`). They exist
+because every one of those right-hand values shipped and broke a phone: the grid
+resolved its third column to **0px** at every phone width, `w-72` columns made a
+2400px strip in a 375px window, `h-screen` is the *large* viewport on mobile so
+the page bottom sat under browser chrome, and `max-w-140` silently deleted
+shadcn's mobile inset via tailwind-merge. All four look correct in source, which
+is why they are lint rules rather than review notes.
+
+`max-w-*` is deliberately NOT restricted: it is a cap, so on a narrow screen it
+does not bind and cannot overflow.
+
+**What lint cannot catch.** jsdom has no layout engine — `getBoundingClientRect`
+returns zeros — so no vitest test can see a collapsed column or a dropdown
+rendered off-screen. Those need a real browser. Until there is one in CI, a
+change that alters layout should be checked by hand at 375px; note that Chrome's
+macOS window will not go below 500px, so drive the app inside a 375px iframe.
+
 ## Decisions worth knowing before editing
 
 **One app, one router, one bundle.** This replaced four independently-built
