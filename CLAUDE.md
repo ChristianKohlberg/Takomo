@@ -317,6 +317,11 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   properly. Two things that were per-page out of necessity stay per-page by decision: the `STR`
   tables (takomo-2hk4 — four keys collide across pages with *different* values), and nothing else.
   The typeahead, which the old pages could not share, is now ONE `Typeahead` with five mounts.
+- **One breakpoint, `md`, meaning "phone or not".** Four eslint rules in `web/eslint.config.js` reject a
+  desktop-shaped value with no mobile fallback (`w-72`, `grid-cols-[180px_320px_1fr]`, `h-screen`), because
+  every one of those shipped and broke a phone while looking correct in source. `max-w-*` is exempt — a cap
+  cannot overflow. jsdom has no layout engine, so nothing in vitest can catch this class; the contract is in
+  `web/README.md`.
 - **A component in `web/src/components/` is invisible to the design system unless it is exported
   from `web/src/components/index.ts`.** That barrel is the contract `.design-sync/` converts; the
   page still works without it, so nothing fails — the component just silently never appears.

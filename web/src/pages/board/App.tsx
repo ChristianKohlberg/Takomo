@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
 import { useNavigate } from 'react-router'
+import { useIsPhone } from '@/hooks/useIsPhone'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { Typeahead } from '@/components/Typeahead'
@@ -111,6 +112,7 @@ function Board({
   deepTicket?: string
 }) {
   const navigate = useNavigate()
+  const isPhone = useIsPhone()
   const { toast } = useToast()
   const t = useMemo(() => pick(STR, lang), [lang])
 
@@ -134,6 +136,14 @@ function Board({
   const [selectedId, setSelectedId] = useState<string | null>(deepTicket ?? null)
 
   const [filtersOpen, setFiltersOpen] = useState(false)
+  // Which single column a phone is looking at.
+  //
+  // A kanban is horizontal by nature, and snap-scrolling eight columns through a
+  // 375px window is a coping mechanism, not a design: you see one of eight and
+  // have to swipe blind to find the rest. On a phone this picks ONE state and
+  // gives it the full width; `md` and up still get the real board. `null` means
+  // "not chosen yet" and resolves to the first state once the workflow loads.
+  const [mobileState, setMobileState] = useState<string | null>(null)
   const [ticketFilter, setTicketFilter] = useState(deepTicket ?? '')
   const [tagKind, setTagKind] = useState('')
   const [tagFilter, setTagFilter] = useState('')
@@ -327,6 +337,9 @@ function Board({
   }, [tickets, ticketFilter, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, me, index])
 
   const states = useMemo(() => workflow?.states?.map((s) => s.id) ?? [], [workflow])
+  // The phone's column, resolved: an explicit pick if the reader made one and it
+  // still exists in this project's workflow, otherwise the first state.
+  const phoneState = (mobileState && states.includes(mobileState) ? mobileState : states[0]) ?? ''
   const columns = useMemo(() => {
     const m = new Map<string, Ticket[]>()
     for (const s of states) m.set(s, [])
@@ -614,7 +627,32 @@ function Board({
         </Button>
       </AppHeader>
 
-      <main className="snap-x snap-mandatory min-h-0 flex-1 overflow-x-auto p-3">
+      {/* One state at a time on a phone. Rendered outside <main> so it does not
+          scroll away with the columns. */}
+      {states.length > 0 && (
+        <div className="border-b-border-soft flex gap-1 overflow-x-auto border-b px-3 py-2 md:hidden">
+          {states.map((s) => {
+            const n = (columns.get(s) ?? []).length
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setMobileState(s)}
+                aria-current={s === phoneState}
+                className={cn(
+                  'shrink-0 cursor-pointer rounded-lg px-3 py-2 text-[12.5px] font-[650] uppercase tracking-[0.04em]',
+                  s === phoneState ? 'bg-secondary text-primary' : 'text-muted-foreground',
+                )}
+              >
+                {s}
+                <span className="ml-1.5 tabular-nums">{n}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      <main className="min-h-0 flex-1 overflow-x-auto p-3">
         {/* Filtered to nothing: the board used to render its normal columns all
             reading 0, with no statement that a filter caused it and no way to
             undo them together. */}
@@ -637,7 +675,9 @@ function Board({
                   {epic ? (index[epic]?.title ?? epic) : t.noEpic}
                 </div>
                 <div className="flex gap-3">
-                  {states.map((s) => (
+                  {states
+                    .filter((s) => !isPhone || s === phoneState)
+                    .map((s) => (
                     <Column
                       key={s}
                       state={s}
@@ -655,7 +695,11 @@ function Board({
           </div>
         ) : (
           <div className="flex h-full min-h-0 gap-3">
-            {[...columns.entries()].map(([state, ts]) => (
+            {[...columns.entries()]
+              // On a phone only the selected state is mounted — not merely
+              // hidden — so its cards are the only ones rendered.
+              .filter(([state]) => !isPhone || state === phoneState)
+              .map(([state, ts]) => (
               <Column
                 key={state}
                 state={state}
