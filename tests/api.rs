@@ -58,6 +58,7 @@ async fn inbox_and_board_pages_served_unauthenticated() {
         "takomo · inbox",
         "takomo · initiatives",
         "takomo · schedules",
+        "takomo · settings",
     ] {
         assert!(bundle.contains(title), "no document title for `{title}`");
     }
@@ -300,15 +301,18 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
     }
 }
 
-/// Surfaces served from the `web/` build rather than a hand-written page in
-/// `src/`. Add to this as each port lands; when it holds all four, the
-/// source-text assertions that branch on it can go, along with the pages.
-/// The four routes that serve the application shell.
+/// The five routes that serve the application shell.
 ///
 /// They serve the SAME document — the app is client-side routed — so a test that
 /// distinguishes them by content is asserting something that no longer exists.
 /// What each route still owes the caller is the shell contract below.
-const PAGE_ROUTES: &[&str] = &["/board", "/inbox", "/initiatives", "/schedules"];
+const PAGE_ROUTES: &[&str] = &[
+    "/board",
+    "/inbox",
+    "/initiatives",
+    "/schedules",
+    "/settings",
+];
 
 /// Assert a response is the app shell: the React mount point, and references to
 /// the assets the binary embeds.
@@ -4127,6 +4131,31 @@ async fn sqlite_export_is_an_openable_snapshot_including_unflushed_wal() {
         .filter(|n| n.contains("snapshot") || n.ends_with(".tmp"))
         .collect();
     assert!(leaked.is_empty(), "staging file left behind: {leaked:?}");
+}
+
+// `/settings` is the admin console, and the two halves of it that can break
+// independently are asserted here: the route serves the app shell, and the
+// bundle actually calls the endpoints the console is made of.
+//
+// The second half is what makes this more than a duplicate of the shared page
+// test. A console that renders but calls nothing looks identical in a screenshot
+// and is useless — and `/export/sqlite` in particular is reachable from no other
+// surface, so nothing else would notice if it were dropped.
+#[tokio::test]
+async fn settings_page_serves_the_console_and_calls_the_admin_endpoints() {
+    let app = TestApp::spawn().await;
+
+    let resp = app.request(Method::GET, "/settings").send().await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_app_shell("/settings", &resp.text().await.unwrap());
+
+    let bundle = app.app_bundle().await;
+    for path in ["/export/sqlite", "/tokens", "/projects"] {
+        assert!(
+            bundle.contains(path),
+            "the settings console never calls {path} — the section is inert"
+        );
+    }
 }
 
 // The whole-database export needs `admin` AND a token with no project
@@ -11740,7 +11769,13 @@ async fn every_spa_links_to_the_schedules_page() {
     // rather than per page. Every surface renders that same header, which is
     // what makes the four read as one product instead of four apps sharing a
     // palette.
-    for href in ["/board", "/inbox", "/initiatives", "/schedules"] {
+    for href in [
+        "/board",
+        "/inbox",
+        "/initiatives",
+        "/schedules",
+        "/settings",
+    ] {
         assert!(
             bundle.contains(href),
             "the shared header has no link to {href} — a reader would have to know the URL"

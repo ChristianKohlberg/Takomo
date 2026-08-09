@@ -8,6 +8,7 @@ export const STR = defineStrings({
     board: 'Board',
     inbox: 'Inbox',
     initiatives: 'Initiatives',
+    settings: 'Settings',
     gateTokenSub: "A token with 'read'. Activating, pausing or creating additionally needs 'human'.",
     gateLabel: 'API token',
     gateOpen: 'Open',
@@ -92,6 +93,7 @@ export const STR = defineStrings({
     board: 'Board',
     inbox: 'Inbox',
     initiatives: 'Initiativen',
+    settings: 'Einstellungen',
     gateTokenSub:
       "Token mit 'read'. Zum Aktivieren, Pausieren oder Anlegen braucht es zusätzlich 'human'.",
     gateLabel: 'API-Token',

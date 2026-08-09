@@ -200,6 +200,18 @@ pub async fn schedules_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }
 
+/// `GET /settings` — the admin console: the current token, the database export,
+/// tokens and projects.
+///
+/// Unauthenticated like every other page route, which is worth stating plainly
+/// because everything ON it is admin-only. The document is the same shell the
+/// other four routes serve — it carries no data — and every request behind it is
+/// refused without an `admin` token. Gating the HTML would protect nothing and
+/// would break the one thing a page route owes a caller: answering a typed URL.
+pub async fn settings_page() -> impl axum::response::IntoResponse {
+    secure_html(INDEX_HTML)
+}
+
 /// A strong ETag over the asset body.
 ///
 /// The assets have stable names, so a client cannot tell one build's `app.js`

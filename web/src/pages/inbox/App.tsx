@@ -310,7 +310,13 @@ export function App() {
       <AppHeader
         onNavigate={navigate}
         current="inbox"
-        nav={{ board: t.board, inbox: t.inbox, initiatives: t.initiatives, schedules: t.schedules }}
+        nav={{
+          board: t.board,
+          inbox: t.inbox,
+          initiatives: t.initiatives,
+          schedules: t.schedules,
+          settings: t.settings,
+        }}
         badges={{ inbox: counts.open ?? 0 }}
         lang={lang}
         onLang={(l) => {
