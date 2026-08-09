@@ -77,7 +77,7 @@ export function SettingsSheet({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86vh] max-w-160 overflow-y-auto">
+      <DialogContent className="max-h-[86vh] max-w-[calc(100%-2rem)] sm:max-w-160 overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{labels.title}</DialogTitle>
           <DialogDescription>{labels.subtitle}</DialogDescription>

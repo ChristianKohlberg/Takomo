@@ -133,6 +133,7 @@ function Board({
   const [cursor, setCursor] = useState<number | string>(0)
   const [selectedId, setSelectedId] = useState<string | null>(deepTicket ?? null)
 
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [ticketFilter, setTicketFilter] = useState(deepTicket ?? '')
   const [tagKind, setTagKind] = useState('')
   const [tagFilter, setTagFilter] = useState('')
@@ -141,6 +142,26 @@ function Board({
   const [groupByEpic, setGroupByEpic] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const [mineOnly, setMineOnly] = useState(false)
+
+  // Six filters compose, each individually clearable — but with no count and no
+  // way to clear them together, an empty board gave the reader no clue which of
+  // the six did it or how many were even set.
+  const activeFilterCount =
+    (ticketFilter ? 1 : 0) +
+    (tagFilter ? 1 : 0) +
+    (epicFilter ? 1 : 0) +
+    (labelFilter ? 1 : 0) +
+    (showArchived ? 1 : 0) +
+    (mineOnly ? 1 : 0)
+
+  const clearFilters = useCallback(() => {
+    setTicketFilter('')
+    setTagFilter('')
+    setEpicFilter('')
+    setLabelFilter('')
+    setShowArchived(false)
+    setMineOnly(false)
+  }, [])
   const [inboxOpen, setInboxOpen] = useState(false)
   const [me, setMe] = useState({ actor: '', scopes: [] as string[], expertise: [] as string[] })
 
@@ -244,6 +265,22 @@ function Board({
     }, POLL_MS)
     return () => window.clearInterval(id)
   }, [token, effectiveProject, cursor, load, handleErr])
+
+  // The open drawer refreshes with the board.
+  //
+  // `detail` used to be fetched once, in `openTicket`, so polling updated the
+  // card BEHIND the drawer — state, claim, blocked chip — while the drawer kept
+  // rendering its open-time snapshot. The two then disagreed on screen at the
+  // same time, which is worse than either being stale alone.
+  useEffect(() => {
+    if (!token || !selectedId || !detail) return
+    getTicket(token, selectedId)
+      .then(setDetail)
+      // A failed refresh leaves the drawer on what it had; the next tick retries.
+      .catch(() => {})
+    // `tickets` is the signal that something changed — the poll replaces it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, selectedId, tickets])
 
   // Open questions per ticket — what the detail drawer's callout counts.
   useEffect(() => {
@@ -371,7 +408,7 @@ function Board({
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <AppHeader
         onNavigate={navigate}
         current="board"
@@ -398,6 +435,30 @@ function Board({
           setTagFilter('')
         }}
       >
+        {/* The filter bank collapses on a phone.
+            Measured: at 375px the header was 355px tall — 44% of the viewport —
+            leaving 457px of board and 1.3 of 8 columns visible. Hiding these
+            behind a toggle returns roughly a third of the screen, and they are
+            the controls a phone user reaches for least. */}
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((v) => !v)}
+          aria-expanded={filtersOpen}
+          className="text-muted-foreground border-border cursor-pointer rounded-lg border px-3 py-2 text-[13px] font-[650] md:hidden"
+        >
+          {t.filters}
+          {activeFilterCount > 0 && (
+            <span className="bg-primary text-primary-foreground ml-1.5 inline-block min-w-[17px] rounded-[9px] px-1.25 text-center text-[11px] font-bold">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+        <div
+          className={cn(
+            'flex flex-wrap items-center gap-2.5',
+            filtersOpen ? 'flex w-full md:w-auto' : 'hidden md:flex',
+          )}
+        >
         <Typeahead
           id="tickfilter"
           options={tickets.map((x) => ({ id: x.id, title: x.title }))}
@@ -410,6 +471,7 @@ function Board({
             noMatch: t.taNoMatch,
             count: t.taCount,
             count1: t.taCount1,
+        countTruncated: t.taCountMore,
           }}
         />
         {/* The SAME control as the ticket filter, mounted again — see
@@ -445,6 +507,7 @@ function Board({
             noMatch: t.taNoMatch,
             count: t.taCount,
             count1: t.taCount1,
+        countTruncated: t.taCountMore,
           }}
         />
         <Typeahead
@@ -459,6 +522,7 @@ function Board({
             noMatch: t.taNoMatch,
             count: t.taCount,
             count1: t.taCount1,
+        countTruncated: t.taCountMore,
           }}
         />
         <Typeahead
@@ -473,34 +537,39 @@ function Board({
             noMatch: t.taNoMatch,
             count: t.taCount,
             count1: t.taCount1,
+        countTruncated: t.taCountMore,
           }}
         />
-        <label className="text-muted-foreground flex items-center gap-1.5 text-[12px] font-[650]">
+        <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
           <input
             type="checkbox"
+            className="size-4"
             checked={groupByEpic}
             onChange={(e) => setGroupByEpic(e.target.checked)}
           />
           {t.groupEpic}
         </label>
-        <label className="text-muted-foreground flex items-center gap-1.5 text-[12px] font-[650]">
+        <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
           <input
             type="checkbox"
+            className="size-4"
             checked={showArchived}
             onChange={(e) => setShowArchived(e.target.checked)}
           />
           {t.archived}
         </label>
         {me.expertise.length > 0 && (
-          <label className="text-muted-foreground flex items-center gap-1.5 text-[12px] font-[650]">
+          <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
             <input
               type="checkbox"
+              className="size-4"
               checked={mineOnly}
               onChange={(e) => setMineOnly(e.target.checked)}
             />
             {t.mine}
           </label>
         )}
+        </div>
         <Button variant="outline" size="sm" onClick={() => setInboxOpen(true)}>
           {t.fullInbox}
           {questions.length > 0 && (
@@ -545,8 +614,22 @@ function Board({
         </Button>
       </AppHeader>
 
-      <main className="min-h-0 flex-1 overflow-x-auto p-3">
-        {epicGroups ? (
+      <main className="snap-x snap-mandatory min-h-0 flex-1 overflow-x-auto p-3">
+        {/* Filtered to nothing: the board used to render its normal columns all
+            reading 0, with no statement that a filter caused it and no way to
+            undo them together. */}
+        {visible.length === 0 && tickets.length > 0 && activeFilterCount > 0 ? (
+          <div className="text-muted-foreground px-2 py-14 text-center">
+            <div className="text-[13.5px]">{t.noMatchFilters}</div>
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="text-primary mt-2 cursor-pointer px-2 py-2 text-[13px] font-[650] underline"
+            >
+              {t.clearFilters} ({activeFilterCount})
+            </button>
+          </div>
+        ) : epicGroups ? (
           <div className="flex flex-col gap-4">
             {[...epicGroups.entries()].map(([epic, ts]) => (
               <div key={epic || '(none)'}>
@@ -563,6 +646,7 @@ function Board({
                       labels={{ showMore: t.showMore, blocked: t.blockedN, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled }}
                       isDone={workflow?.states?.find((w) => w.id === s)?.terminal}
                       onOpen={openTicket}
+              onNavigate={navigate}
                     />
                   ))}
                 </div>
@@ -580,6 +664,7 @@ function Board({
                 labels={{ showMore: t.showMore, blocked: t.blockedN, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled }}
                 isDone={workflow?.states?.find((w) => w.id === state)?.terminal}
                 onOpen={openTicket}
+              onNavigate={navigate}
               />
             ))}
           </div>
@@ -599,7 +684,6 @@ function Board({
           noDescription: t.noDescription,
           dependencies: t.dependencies,
           blockedByRel: t.blockedByRel,
-          blocksRel: t.blocksRel,
           links: t.links,
           blockedN: t.blockedN,
           answeringResumes: t.answeringResumes,

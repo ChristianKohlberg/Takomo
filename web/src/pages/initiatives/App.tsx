@@ -135,10 +135,12 @@ export function App() {
       setSelectedId(id)
       setEntries([])
       setEntryCursor(null)
-      window.location.hash = 'i=' + id
+      // Through the router and replacing, not pushing — see the note in the
+      // inbox: one history entry per row selected is not what Back should mean.
+      navigate({ hash: 'i=' + id }, { replace: true })
       fetchEntries(id, true).catch(handleErr)
     },
-    [fetchEntries, handleErr],
+    [fetchEntries, handleErr, navigate],
   )
 
   // Boot: projects + who am I, then the list. Re-runs when the token changes,
@@ -317,7 +319,7 @@ export function App() {
   const selected = items.find((i) => i.id === selectedId) ?? null
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <AppHeader
         onNavigate={navigate}
         current="initiatives"

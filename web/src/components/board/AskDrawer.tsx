@@ -81,6 +81,23 @@ export function AskDrawer({
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // Closing must clear the form. This component stays MOUNTED when closed — the
+  // board renders it unconditionally with an `open` prop — so without this the
+  // next open still holds the last question's title, body, options and kind,
+  // now pointed at whichever ticket is selected now. One stray Enter files the
+  // previous question against the wrong ticket. `initiatives/CreateDialog` got
+  // this right; these two did not.
+  function reset() {
+    setKind('confirm')
+    setMode('blocking')
+    setTitle('')
+    setBody('')
+    setOptions('')
+    setExpertise('')
+    setErr('')
+    setBusy(false)
+  }
+
   async function submit() {
     if (!title.trim()) {
       setErr(labels.needTitle)
@@ -103,8 +120,14 @@ export function AskDrawer({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86vh] max-w-140 overflow-y-auto">
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) reset()
+        onOpenChange(o)
+      }}
+    >
+      <DialogContent className="max-h-[86vh] max-w-[calc(100%-2rem)] sm:max-w-140 overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{labels.title}</DialogTitle>
           <DialogDescription>{labels.subtitle}</DialogDescription>

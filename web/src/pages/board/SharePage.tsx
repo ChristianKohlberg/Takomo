@@ -63,7 +63,7 @@ export function SharePage({ token, lang, labels }: SharePageProps) {
   }, [tickets, states])
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
         <div className="flex items-center gap-2.5 text-[color:var(--accent2)]">
           <Logo />

@@ -163,6 +163,7 @@ export function Composer({
               <span>{labels.attach}</span>
               <input
                 type="file"
+        style={{ maxWidth: '100%' }}
                 aria-label={labels.attachAria}
                 onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
                 className="text-[12.5px]"
@@ -170,7 +171,7 @@ export function Composer({
             </>
           )}
         </div>
-        <span className="grow" />
+        
         <Button onClick={onAppend} disabled={busy}>
           {busy ? labels.appending : labels.append}
         </Button>

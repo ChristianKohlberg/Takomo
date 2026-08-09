@@ -8,6 +8,7 @@
 // wastes the most valuable thing on this surface, which is their attention.
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Markdown } from '@/components/Markdown'
 import { AnswerArea } from '@/components/inbox/AnswerArea'
@@ -70,23 +71,29 @@ export function InboxDrawer({
   const [busy, setBusy] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
-  if (!open) return null
-
+  // Same conversion as DetailPanel: a real dialog, so Tab cannot walk out onto
+  // the cards behind an opaque overlay and Escape closes.
   return (
-    <>
-      <div className="bg-[color:var(--overlay)] fixed inset-0 z-20" onClick={onClose} />
-      <aside className="bg-card border-border fixed top-0 right-0 z-21 h-full w-[min(520px,100%)] overflow-y-auto border-l shadow-[-24px_0_60px_-30px_rgba(20,40,55,.5)]">
-        <header className="bg-card border-b-border-soft sticky top-0 flex items-center gap-2 border-b px-6 py-4">
-          <h2 className="m-0 flex-1 text-[18px] font-[720] tracking-[-0.02em]">{labels.title}</h2>
-          <button
-            type="button"
-            aria-label={labels.close}
-            onClick={onClose}
-            className="text-muted-foreground cursor-pointer px-1.5 text-[20px] leading-none"
-          >
-            ×
-          </button>
-        </header>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (o) return
+        // A half-typed answer is worth keeping; a stale error from the last time
+        // this was open is not — it would reappear over a fresh question.
+        setErrors({})
+        setBusy(null)
+        onClose()
+      }}
+    >
+      <DialogContent
+        side="right"
+        className="bg-card border-border gap-0 p-0 sm:w-[min(520px,100%)] shadow-[-24px_0_60px_-30px_rgba(20,40,55,.5)]"
+      >
+        <DialogHeader className="bg-card border-b-border-soft sticky top-0 z-1 flex-row items-center gap-2 border-b px-6 py-4">
+          <DialogTitle className="m-0 flex-1 text-[18px] font-[720] tracking-[-0.02em]">
+            {labels.title}
+          </DialogTitle>
+        </DialogHeader>
 
         <div className="flex flex-col gap-3 px-6 py-4">
           {questions.length === 0 ? (
@@ -196,7 +203,7 @@ export function InboxDrawer({
             })
           )}
         </div>
-      </aside>
-    </>
+      </DialogContent>
+    </Dialog>
   )
 }

@@ -215,7 +215,9 @@ export function App() {
   }
 
   const openTicket = (ticket: string) => {
-    window.location.href = '/board#t=' + encodeURIComponent(ticket)
+    // Client-side: the board reads `#t=` in a useState initializer, which runs
+    // after the history entry is pushed, so the deep link still lands.
+    navigate('/board#t=' + encodeURIComponent(ticket))
   }
 
   const renderGroup = (title: string, rows: Schedule[]) =>
@@ -242,7 +244,7 @@ export function App() {
     )
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <AppHeader
         onNavigate={navigate}
         current="schedules"

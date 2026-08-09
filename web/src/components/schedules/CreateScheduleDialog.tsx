@@ -72,6 +72,25 @@ export function CreateScheduleDialog({
   const unitLabel = (u: Unit) =>
     u === 'day' ? labels.unitDay : u === 'week' ? labels.unitWeek : labels.unitMonth
 
+  // See the note in AskDrawer: this dialog stays mounted when closed, so
+  // without an explicit reset the next "New schedule" opens holding the last
+  // one's name, cadence and ticket template.
+  function reset() {
+    setName('')
+    setUnit('week')
+    setInterval(1)
+    setDays(['mon'])
+    setDayOfMonth(1)
+    setAt('09:00')
+    setTz(guessTz())
+    setTitle('')
+    setBody('')
+    setLabelsCsv('')
+    setRationale('')
+    setErr('')
+    setBusy(false)
+  }
+
   async function submit() {
     const cadence: Cadence = { every: unit, at, tz: tz.trim() || 'UTC' }
     if (interval > 1) cadence.interval = interval
@@ -106,8 +125,14 @@ export function CreateScheduleDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[86vh] max-w-140 overflow-y-auto">
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) reset()
+        onOpenChange(o)
+      }}
+    >
+      <DialogContent className="max-h-[86vh] max-w-[calc(100%-2rem)] sm:max-w-140 overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{labels.title}</DialogTitle>
           <DialogDescription>{labels.subtitle}</DialogDescription>

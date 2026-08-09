@@ -17,7 +17,7 @@ export interface UndoSnackbarProps {
 export function UndoSnackbar({ pending, now, labels, onUndo }: UndoSnackbarProps) {
   if (!pending.length) return null
   return (
-    <div className="fixed bottom-4 left-1/2 z-90 flex -translate-x-1/2 flex-col gap-2">
+    <div className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 z-90 flex -translate-x-1/2 flex-col gap-2">
       {pending.map((p) => (
         <div
           key={p.qid}

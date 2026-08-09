@@ -10,6 +10,8 @@ export interface FolderRailProps {
   /** Set by the undo queue so a just-answered item tints its destination. */
   landed?: Folder | null
   onSelect: (f: Folder) => void
+  /** Lets the page hide the rail on narrow screens. */
+  className?: string
 }
 
 export function FolderRail({
@@ -18,10 +20,14 @@ export function FolderRail({
   counts,
   labels,
   landed,
-  onSelect,
-}: FolderRailProps) {
+  onSelect, className }: FolderRailProps) {
   return (
-    <nav className="bg-card border-r-border-soft min-h-0 overflow-y-auto border-r px-2.5 py-3">
+    <nav
+      className={cn(
+        'bg-card border-r-border-soft min-h-0 overflow-y-auto border-r px-2.5 py-3',
+        className,
+      )}
+    >
       <div className="text-muted-foreground mb-1.5 px-2 text-[10.5px] font-bold tracking-[0.06em] uppercase">
         {labels.heading}
       </div>
