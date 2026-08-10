@@ -339,6 +339,79 @@ pub async fn put_workflow(
     Ok(Json(stored))
 }
 
+/// POST /v1/projects/{project}/workflow/validate (admin) — would this document
+/// be accepted, without writing it?
+///
+/// The editor needs to tell someone their draft is wrong WHILE they edit it, and
+/// the rules that decide are subtle: reverse-BFS terminal reachability, the
+/// claimable-with-done-category trap, and — the one no client could compute —
+/// whether any ticket currently sits in a state the draft drops. Reimplementing
+/// that in the browser would be a second copy of the rules that drifts, so the
+/// editor asks the server the same question `put_workflow` answers, minus the
+/// write.
+///
+/// A separate route rather than `?dry_run=1` on the PUT: a query parameter that
+/// silently turns a write into a read is the kind of thing a proxy strips, a log
+/// hides, and a caller forgets — and getting it wrong writes the database.
+pub async fn validate_workflow_dry_run(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let wf = parse_workflow(&body)?;
+    // Same call `put_workflow` makes, so "valid here" and "accepted there" can
+    // never disagree — including the stranded-ticket rule, which needs the
+    // project's live states.
+    let problems = state.store.workflow_problems(&project, &wf)?;
+    Ok(Json(serde_json::json!({
+        "valid": problems.is_empty(),
+        "problems": problems,
+    })))
+}
+
+/// GET /v1/projects/{project}/workflow-layout — where the editor's nodes sit.
+pub async fn get_workflow_layout(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let layout = state.store.get_workflow_layout(&project)?;
+    Ok(Json(serde_json::json!({ "layout": layout })))
+}
+
+/// PUT /v1/projects/{project}/workflow-layout (admin) — store node positions.
+///
+/// Deliberately NOT part of `put_workflow`. Moving a node changes nothing about
+/// how the project behaves, so it emits no `workflow_changed` event and does not
+/// wake long-pollers: a board that refetched every time someone dragged a box
+/// would be reacting to nothing. It also cannot live INSIDE the document —
+/// `Workflow` is `deny_unknown_fields`, so a `positions` key would 422 on the
+/// way back in.
+pub async fn put_workflow_layout(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["layout"])?;
+    let layout = obj.get("layout").ok_or_else(|| {
+        ApiError::validation(
+            "layout.missing",
+            "Field 'layout' is required: an object of state id -> {x, y}.",
+        )
+    })?;
+    state.store.put_workflow_layout(&project, layout)?;
+    Ok(Json(serde_json::json!({ "layout": layout })))
+}
+
 fn parse_workflow(raw: &Value) -> ApiResult<Workflow> {
     serde_json::from_value(raw.clone()).map_err(|e| {
         ApiError::validation(

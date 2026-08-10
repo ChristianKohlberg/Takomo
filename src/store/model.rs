@@ -1300,3 +1300,42 @@ impl ScheduleOccurrence {
         })
     }
 }
+
+/// One entry in the workflow library: a named state machine, plus where its
+/// nodes sit in the editor.
+///
+/// `workflow` is a `Value` rather than a `Workflow` on purpose. This row is
+/// storage, and a document written by an older or newer binary must still be
+/// listable — parsing it into the typed struct here would make one unreadable
+/// row take down the whole list. The typed parse happens where it matters, on
+/// the way IN (validation) and on the way OUT into a project (applying).
+pub struct WorkflowEntry {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub workflow: Value,
+    /// Node positions for the editor. Outside the workflow document by
+    /// necessity: `Workflow` is `deny_unknown_fields`.
+    pub layout: Option<Value>,
+    /// Ships with the server: reseeded on every start, so not editable here.
+    pub builtin: bool,
+    pub created_at: i64,
+    pub created_by: String,
+    pub updated_at: i64,
+}
+
+impl WorkflowEntry {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "workflow": self.workflow,
+            "layout": self.layout,
+            "builtin": self.builtin,
+            "created_at": iso(self.created_at),
+            "created_by": self.created_by,
+            "updated_at": iso(self.updated_at),
+        })
+    }
+}

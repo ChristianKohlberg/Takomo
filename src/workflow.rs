@@ -276,6 +276,31 @@ pub fn factory_default() -> Workflow {
         .expect("workflows/factory-default.yaml is a valid workflow")
 }
 
+/// The canonical text of the `simple` workflow — the no-ceremony plain-tracker
+/// alternative that `takomo init` applies.
+///
+/// Embedded for the same reason `factory-default` is, and it was NOT embedded
+/// before: the only in-process copy lived in `clients/cli/takomo` as JSON, so
+/// the server could not hand `simple` to anything that was not a shell. A
+/// browser cannot read a file out of the repo, and a third hand-written copy in
+/// TypeScript would be a third thing to drift — `simple_matches_the_cli` exists
+/// precisely because two copies already did.
+pub const SIMPLE_YAML: &str = include_str!("../workflows/simple.yaml");
+
+/// The built-in `simple` workflow. See [`SIMPLE_YAML`].
+pub fn simple() -> Workflow {
+    serde_norway::from_str(SIMPLE_YAML).expect("workflows/simple.yaml is a valid workflow")
+}
+
+/// Every workflow this binary ships, in the order a chooser should offer them:
+/// the one a new project gets by default, then the plain-tracker alternative.
+///
+/// This is what lets the library seed itself without reading `workflows/` at
+/// runtime — a deployed binary has no repo to read.
+pub fn builtins() -> Vec<Workflow> {
+    vec![factory_default(), simple()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +406,22 @@ mod tests {
             shape(&shipped),
             "clients/cli/takomo embeds a different `simple` than workflows/simple.yaml"
         );
+        // The server's own embedded copy is the THIRD holder of this definition
+        // now that the library seeds from it. Two copies already drifted once,
+        // which is why the assertion above exists; a third that nothing compares
+        // would be strictly worse than the problem that test was written for.
+        assert_eq!(
+            shape(&simple()),
+            shape(&shipped),
+            "src/workflow.rs embeds a different `simple` than workflows/simple.yaml"
+        );
+    }
+
+    #[test]
+    fn simple_is_valid_and_builtins_covers_both() {
+        assert!(simple().validate(&[]).is_empty());
+        let names: Vec<String> = builtins().into_iter().map(|w| w.name).collect();
+        assert_eq!(names, vec!["factory-default", "simple"]);
     }
 
     #[test]

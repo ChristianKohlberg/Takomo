@@ -22,6 +22,7 @@ mod tags;
 mod tickets;
 mod tokens;
 mod transition;
+mod workflows;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use checklist::{
@@ -115,6 +116,11 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        // After the schema and the migrations, before any reader opens: the
+        // shipped workflows must be in the library for the same reason the
+        // schema must exist, and a reader that saw the table without them would
+        // report an empty library on a fresh database.
+        Store::seed_builtin_workflows(&conn, crate::ids::now_ms())?;
 
         // A second connection to `:memory:` (or to a private temp database) is a
         // *different, empty* database, not a second view of this one. Nothing in
@@ -486,6 +492,21 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     // preference). Additive; older project tables predate it.
     if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "style_guide") {
         conn.execute("ALTER TABLE projects ADD COLUMN style_guide TEXT", [])?;
+    }
+    // projects.workflow_layout_json: where the editor's nodes sit for THIS
+    // project's workflow. Nullable = never opened in the editor, so the client
+    // lays it out from the graph.
+    //
+    // A column beside the workflow rather than a key inside it, because
+    // `Workflow` is `deny_unknown_fields`: a `positions` key in the document
+    // would be rejected the moment it was PUT back. Separate storage also means
+    // dragging a node is not a workflow change — it emits no `workflow_changed`
+    // event and wakes no long-poller.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "workflow_layout_json") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN workflow_layout_json TEXT",
+            [],
+        )?;
     }
     // projects.answer_link_ttl_seconds: this project's default lifetime for an
     // answer link (nullable = unset, so minting uses DEFAULT_ANSWER_TTL_SECONDS).
@@ -1136,6 +1157,37 @@ CREATE TABLE IF NOT EXISTS case_verdicts (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
+
+-- Named workflows that can be applied to any project.
+--
+-- A workflow has always been a COLUMN on `projects`, which makes each project's
+-- state machine private to it: two projects that want the same lifecycle each
+-- carry their own copy, and improving one improves neither the other nor the
+-- next project created. This table is the shared shelf they can be taken from.
+--
+-- It is a SOURCE of documents, not a second way to apply one. Applying still
+-- goes through `PUT /v1/projects/{p}/workflow`, so the check that refuses to
+-- strand tickets has exactly one code path — a library that could write a
+-- project's workflow directly would be a second door into the one operation
+-- here that can break a live project.
+--
+-- `layout_json` holds node positions for the editor. It is deliberately OUTSIDE
+-- `workflow_json`: `Workflow` is `deny_unknown_fields`, so a `positions` key
+-- inside the document would 422 on the way back in.
+CREATE TABLE IF NOT EXISTS workflow_library (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,
+  description   TEXT,
+  workflow_json TEXT NOT NULL,
+  layout_json   TEXT,
+  -- 1 for the workflows this binary ships. They are reseeded on every open, so
+  -- editing or deleting one would be undone silently at the next restart; the
+  -- API refuses both instead.
+  builtin       INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  created_by    TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
 "#;
 
 #[cfg(test)]

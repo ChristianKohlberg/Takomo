@@ -92,6 +92,31 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project}/workflow",
             get(crate::api::projects::get_workflow).merge(put(crate::api::projects::put_workflow)),
         )
+        // Dry-run: would this document be accepted? A distinct route rather than
+        // a flag on the PUT, because a query parameter that turns a write into a
+        // read is the kind of thing a proxy strips and a caller forgets.
+        .route(
+            "/v1/projects/{project}/workflow/validate",
+            post(crate::api::projects::validate_workflow_dry_run),
+        )
+        .route(
+            "/v1/projects/{project}/workflow-layout",
+            get(crate::api::projects::get_workflow_layout)
+                .merge(put(crate::api::projects::put_workflow_layout)),
+        )
+        // The workflow library: named state machines reusable across projects.
+        // It stores documents and never applies one — applying stays the PUT
+        // above, so the never-strand-a-ticket check has a single code path.
+        .route(
+            "/v1/workflows",
+            get(crate::api::workflows::list).post(crate::api::workflows::create),
+        )
+        .route(
+            "/v1/workflows/{id}",
+            get(crate::api::workflows::get_one)
+                .merge(patch(crate::api::workflows::patch))
+                .merge(axum::routing::delete(crate::api::workflows::delete)),
+        )
         .route(
             "/v1/projects/{project}/roadmap",
             get(crate::api::projects::roadmap),
