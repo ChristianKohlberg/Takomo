@@ -12,6 +12,7 @@
 // not maintained, and nothing would say so.
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { rankOptions } from '@/lib/typeahead'
 
 export interface TypeaheadOption {
   id: string
@@ -50,38 +51,12 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
   // arrow keys are on, and without it the popup is navigable only by sight.
   const optId = (i: number) => `${listId}-opt-${i}`
 
-  // Rank, then truncate — and count BEFORE truncating.
-  //
-  // This used to `.filter().slice(0, 12)` and then report `matches.length`, so
-  // the footer said "12 matches" whether there were 12 or 400: the reader was
-  // told the list was complete when it was a fraction of it. Worse, with no
-  // ranking the survivors were just the first twelve in server order, so on a
-  // large project the ticket you wanted could be unreachable no matter what you
-  // typed — narrowing further needs text you cannot see.
-  //
-  // The ranking is deliberately cheap and predictable: an exact id wins, then
-  // an id prefix, then a title prefix, then anything else. No fuzzy matching —
-  // a filter that reorders unpredictably is worse than one that does not.
-  const { all, shown } = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return { all: options, shown: options.slice(0, MAX_SHOWN) }
-    const hits = options.filter(
-      (t) => t.id.toLowerCase().includes(q) || (t.title ?? '').toLowerCase().includes(q),
-    )
-    const rank = (t: TypeaheadOption) => {
-      const id = t.id.toLowerCase()
-      const title = (t.title ?? '').toLowerCase()
-      if (id === q) return 0
-      if (id.startsWith(q)) return 1
-      if (title.startsWith(q)) return 2
-      if (id.includes(q)) return 3
-      return 4
-    }
-    // A stable sort keeps server order within a rank, so equal-ranked results
-    // do not shuffle as you type.
-    const ranked = [...hits].sort((a, b) => rank(a) - rank(b))
-    return { all: ranked, shown: ranked.slice(0, MAX_SHOWN) }
-  }, [options, query])
+  // Ranking and truncation live in lib/typeahead so the navigation picker shares
+  // them; see the note there on why `total` is counted before the slice.
+  const { all, shown } = useMemo(
+    () => rankOptions(options, query, MAX_SHOWN),
+    [options, query],
+  )
 
   const matches = shown
 

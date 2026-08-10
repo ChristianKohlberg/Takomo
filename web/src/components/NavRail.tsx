@@ -27,6 +27,7 @@ import {
   SettingsIcon,
 } from 'lucide-react'
 import { Logo } from './Logo'
+import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
 import { cn } from '@/lib/utils'
 import { useIsPhone } from '@/hooks/useIsPhone'
 
@@ -59,6 +60,14 @@ export interface NavRailProps {
    */
   badges?: Partial<Record<keyof NavLabels, number>>
   labels: NavRailLabels
+  /**
+   * The project scope, which every surface reads. Omitted entirely when there is
+   * nothing to pick — /settings is about the token, not a project.
+   */
+  projects?: ProjectOption[]
+  project?: string
+  onProject?: (id: string) => void
+  projectLabels?: ProjectPickerLabels
   collapsed: boolean
   onCollapsed: (collapsed: boolean) => void
   /** Who the token belongs to, from `/v1/whoami`. Omitted when unknown. */
@@ -138,6 +147,10 @@ export function NavRail({
   current,
   badges,
   labels,
+  projects,
+  project = '',
+  onProject,
+  projectLabels,
   collapsed,
   onCollapsed,
   actor,
@@ -168,7 +181,11 @@ export function NavRail({
 
       <aside
         className={cn(
-          'bg-card border-r-border-soft flex flex-none flex-col overflow-y-auto border-r',
+          // NOT `overflow-y-auto` on the aside: an overflow container clips on
+          // BOTH axes, and the project picker's popover is wider than the rail.
+          // It rendered half off-screen until the scrolling moved to the nav
+          // list, which is the only part long enough to need it anyway.
+          'bg-card border-r-border-soft flex flex-none flex-col border-r',
           expanded ? 'w-56' : 'w-14',
           overlay && 'fixed inset-y-0 left-0 z-50 shadow-[var(--shadow)]',
         )}
@@ -196,7 +213,22 @@ export function NavRail({
           </IconButton>
         </div>
 
-        <nav className="flex min-h-0 grow flex-col gap-1 px-2 py-2">
+        {/* The scope sits ABOVE the destinations, because it changes what each
+            of them shows — reading it after picking a surface would be reading
+            the qualifier after the noun. */}
+        {projects && projectLabels && (
+          <div className={cn('flex-none px-2 pb-1', collapsed && 'flex justify-center px-0')}>
+            <ProjectPicker
+              projects={projects}
+              value={project}
+              onChange={(id) => onProject?.(id)}
+              labels={projectLabels}
+              collapsed={collapsed}
+            />
+          </div>
+        )}
+
+        <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
           {NAV_ORDER.map((key) => {
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0

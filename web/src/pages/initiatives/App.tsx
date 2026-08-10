@@ -354,6 +354,21 @@ export function App() {
           schedules: t.schedules,
           settings: t.settings,
         },
+        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        project,
+        onProject: (id) => {
+          setProject(id)
+          saveProject(id)
+          setSelectedId(null)
+          setEntries([])
+          setEntryCursor(null)
+        },
+        projectLabels: {
+          project: t.project,
+          search: t.projectSearch,
+          noMatch: t.projectNoMatch,
+          all: t.allProjects,
+        },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
@@ -373,17 +388,6 @@ export function App() {
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
-        }}
-        projects={projects.map((p) => ({ id: p.id }))}
-        project={project}
-        allProjectsLabel={t.allProjects}
-        projectLabel={t.project}
-        onProject={(id) => {
-          setProject(id)
-          saveProject(id)
-          setSelectedId(null)
-          setEntries([])
-          setEntryCursor(null)
         }}
       >
         {/* An initiative belongs to exactly one project, so this cannot act
