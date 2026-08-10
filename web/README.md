@@ -109,6 +109,26 @@ macOS window will not go below 500px, so drive the app inside a 375px iframe.
 
 ## Decisions worth knowing before editing
 
+**Navigation is a left rail, not a header strip.** `AppShell` wraps every
+surface: `NavRail` on the left, the page's own `AppHeader` and body to the right
+of it. The header used to carry the brand, five surface names, the project
+picker and up to four action buttons in one row — the nav was already scrolling
+sideways to hide what did not fit, behind an edge that signals nothing. The rail
+gives the surfaces their own axis, so a sixth costs vertical space nobody is
+short of. Two states, toggled by the icon at its top: expanded (icon + label,
+`w-56`) and collapsed (icons only, `w-14`). The choice is a viewer preference,
+so `useNavCollapsed` persists it per origin and every surface reads the same key.
+
+Sign-out lives at the bottom of the rail, with the actor and its role. It used
+to be one more icon button beside "refresh" on every page — two adjacent glyphs,
+one harmless and one that ends the session.
+
+On a phone the expanded rail would take 224 of 375 px, so there it **overlays**
+the content with a backdrop instead of pushing it, a spacer holds the collapsed
+strip's place in the flow, and following a link closes it. That is a structural
+difference rather than a visual one, which is why it reads `useIsPhone` instead
+of taking a `md:` prefix.
+
 **One app, one router, one bundle.** This replaced four independently-built
 self-contained documents. That shape let the binary `include_str!` a whole page
 and needed no asset routes at all — but React and every shared module were paid

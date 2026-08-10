@@ -22,6 +22,9 @@ export const STR = defineStrings({
     sessionProjects: 'projects',
     allProjects: 'all projects',
     signOut: 'Sign out',
+    navExpand: 'Expand navigation',
+    navCollapse: 'Collapse navigation',
+    navAccount: 'Account',
     notAdmin:
       "This token does not carry the 'admin' scope, so the sections below are unavailable. Sign in with an admin token, or mint one on the server with: takomo token create --actor you --scopes read,write,human,admin",
 
@@ -91,6 +94,9 @@ export const STR = defineStrings({
     sessionProjects: 'Projekte',
     allProjects: 'alle Projekte',
     signOut: 'Abmelden',
+    navExpand: 'Navigation ausklappen',
+    navCollapse: 'Navigation einklappen',
+    navAccount: 'Konto',
     notAdmin:
       "Dieses Token hat keinen 'admin'-Scope, daher sind die folgenden Bereiche nicht verfügbar. Melde dich mit einem Admin-Token an oder erzeuge eines auf dem Server: takomo token create --actor du --scopes read,write,human,admin",
 

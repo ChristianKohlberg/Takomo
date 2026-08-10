@@ -11779,19 +11779,16 @@ async fn schedules_page_is_served_as_a_self_contained_build() {
 /// Every page links to every other one, so the four surfaces read as one product
 /// rather than four apps that happen to share a palette.
 ///
-/// The check differs by how the page is built, which is the state of the port to
-/// `web/`. A hand-written page carries the literal `href="/schedules"`. A ported
-/// page builds its links in JS, and the minifier picks the quoting — it currently
-/// emits backticks (``board:`/board` ``) — so asserting on quotes there would be
+/// The links are built in JS and the minifier picks the quoting — it currently
+/// emits backticks (``board:`/board` ``) — so asserting on quotes would be
 /// asserting on minifier output. The stable signal is the path itself.
 #[tokio::test]
 async fn every_spa_links_to_the_schedules_page() {
     let app = TestApp::spawn().await;
     let bundle = app.app_bundle().await;
-    // One header component, one nav, one bundle — so this is asserted once
-    // rather than per page. Every surface renders that same header, which is
-    // what makes the four read as one product instead of four apps sharing a
-    // palette.
+    // One nav rail, one bundle — so this is asserted once rather than per page.
+    // Every surface mounts that same rail, which is what makes the five read as
+    // one product instead of five apps sharing a palette.
     for href in [
         "/board",
         "/inbox",

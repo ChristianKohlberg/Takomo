@@ -13,6 +13,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { TokenGate } from '@/components/TokenGate'
 import { Field } from '@/components/Field'
 import { useToast } from '@/components/Toaster'
@@ -57,6 +59,7 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [tokens, setTokens] = useState<TokenRow[]>([])
 
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
   const [creatingToken, setCreatingToken] = useState(false)
   const [minted, setMinted] = useState<CreatedToken | null>(null)
@@ -188,27 +191,38 @@ export function App() {
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="settings"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'settings',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
+        },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signOut,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: who?.actor,
+        scopes: who?.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.settings}
         lang={lang}
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
         }}
-      >
-        <Button variant="ghost" onClick={signOut}>
-          {t.signOut}
-        </Button>
-      </AppHeader>
+      />
 
       <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 overflow-y-auto px-5 py-6">
         <Card>
@@ -412,7 +426,7 @@ export function App() {
           </>
         )}
       </main>
-    </div>
+    </AppShell>
   )
 }
 
