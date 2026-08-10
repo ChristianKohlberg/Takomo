@@ -1,25 +1,19 @@
-// The shared header: brand, cross-surface nav, project picker, actions, and the
+// The shared header: the surface's title, the project picker, actions, and the
 // DE/EN toggle.
 //
-// Every page carried its own copy of this markup. It takes props now, which is
-// what lets the next three ports reuse it instead of forking it a fourth time.
+// It used to carry the brand and the cross-surface nav too. Both moved into
+// NavRail — the brand because it belongs with the nav, the nav because five
+// surface names, a project picker and up to four action buttons do not fit one
+// row and the strip was already scrolling sideways to hide the overflow. What
+// is left here is what is ABOUT THE CURRENT SURFACE, which is why the title
+// replaced the nav rather than being added beside it.
 import type { ReactNode } from 'react'
-import { Logo } from './Logo'
 import { cn } from '@/lib/utils'
 import type { Locale } from '@/lib/i18n'
 
-export interface NavLabels {
-  board: string
-  inbox: string
-  initiatives: string
-  schedules: string
-  settings: string
-}
-
 export interface AppHeaderProps {
-  nav: NavLabels
-  /** Which surface is current — rendered as a pill instead of a link. */
-  current: keyof NavLabels
+  /** The current surface's name — what the nav pill used to say. */
+  title: string
   lang: Locale
   onLang: (l: Locale) => void
   /** Project picker; omitted entirely when there is nothing to pick. */
@@ -28,40 +22,12 @@ export interface AppHeaderProps {
   onProject?: (id: string) => void
   allProjectsLabel?: string
   projectLabel?: string
-  /**
-   * A count beside a nav entry, the way /inbox badges open questions and
-   * /schedules badges proposals waiting on a human. Zero renders nothing —
-   * a "0" badge is noise, not information.
-   */
-  badges?: Partial<Record<keyof NavLabels, number>>
   /** Right-hand actions (a primary button, icon buttons). */
   children?: ReactNode
-  /**
-   * Client-side navigation, when the header is mounted inside a router.
-   *
-   * The nav renders real `<a href>` anchors either way — middle-click, cmd-click
-   * and "copy link" have to keep working, and a bare `<button>` would break all
-   * three. This only intercepts the plain left-click. Omit it and the anchors
-   * navigate normally, which is what lets this component render standalone in a
-   * design-system preview, where there is no router to call.
-   */
-  onNavigate?: (href: string) => void
 }
-
-const NAV_HREF: Record<keyof NavLabels, string> = {
-  board: '/board',
-  inbox: '/inbox',
-  initiatives: '/initiatives',
-  schedules: '/schedules',
-  settings: '/settings',
-}
-
-const linkCls =
-  'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer rounded-lg px-3.5 py-1.5 text-base md:text-[13px] font-[650] no-underline'
 
 export function AppHeader({
-  nav,
-  current,
+  title,
   lang,
   onLang,
   projects,
@@ -69,56 +35,13 @@ export function AppHeader({
   onProject,
   allProjectsLabel,
   projectLabel = 'project',
-  badges,
   children,
-  onNavigate,
 }: AppHeaderProps) {
   return (
     <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
-      <div className="flex items-center gap-2.5 text-[color:var(--accent2)]">
-        <Logo />
-        <span className="text-foreground text-base font-[750] tracking-[-0.02em]">takomo</span>
-      </div>
-
-      {/* Scrollable rather than wrapping: four surface names do not fit a 375px
-          row, and wrapping them pushes everything below further down the screen
-          on the surface that can least afford it. */}
-      <nav className="ml-1 flex min-w-0 max-w-full gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {(Object.keys(nav) as (keyof NavLabels)[]).map((key) => {
-          const count = badges?.[key] ?? 0
-          const badge =
-            count > 0 ? (
-              <span className="bg-primary text-primary-foreground ml-1.5 inline-block min-w-[17px] rounded-[9px] px-1.25 text-center text-[11px] leading-[17px] font-bold">
-                {count}
-              </span>
-            ) : null
-          return key === current ? (
-            <span key={key} className={cn(linkCls, 'shrink-0 text-primary bg-secondary font-[680]')}>
-              {nav[key]}
-              {badge}
-            </span>
-          ) : (
-            <a
-              key={key}
-              href={NAV_HREF[key]}
-              className={cn(linkCls, 'shrink-0')}
-              onClick={(e) => {
-                // Let the browser handle anything that is not a plain left-click:
-                // a modified click means "open this somewhere else", and
-                // hijacking it is the classic SPA regression.
-                if (!onNavigate) return
-                if (e.defaultPrevented) return
-                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-                e.preventDefault()
-                onNavigate(NAV_HREF[key])
-              }}
-            >
-              {nav[key]}
-              {badge}
-            </a>
-          )
-        })}
-      </nav>
+      <h1 className="text-foreground min-w-0 truncate text-base font-[750] tracking-[-0.02em]">
+        {title}
+      </h1>
 
       {projects && (
         // A native select rather than a Radix one, on purpose: it is one control

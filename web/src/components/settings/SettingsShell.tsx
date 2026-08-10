@@ -1,4 +1,4 @@
-// The frame the console is laid out in: a section rail and a titled panel.
+// The frame the console is laid out in: a section tab strip and a titled panel.
 //
 // The first version was four Cards in one column. Everything was equally
 // prominent, which meant nothing was — "download the entire database" sat at the
@@ -9,88 +9,71 @@
 //
 // Switched, not anchor-scrolled: scroll-spy needs an observer per section and
 // still lies at the end of the page, where the last section can never reach the
-// top. There are four destinations here. A rail is enough.
+// top. There are four destinations here; a tab strip is enough.
+//
+// TABS, along the top, rather than the left sidebar this first used. #132 gave
+// the whole app a left nav rail, and two left rails side by side is one rail too
+// many: the reader cannot tell which one moves them between surfaces and which
+// one moves them within this page. The global rail owns the left edge, so the
+// in-surface switcher goes horizontal, where its subordinate relationship to the
+// rail is legible from the layout alone.
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 export interface SectionDef<K extends string> {
   key: K
   label: string
-  /** Rendered under the label in the rail — what the section is FOR. */
+  /** Shown under the panel title — what the section is FOR. */
   hint: string
 }
 
-export interface SectionNavProps<K extends string> {
+export interface SectionTabsProps<K extends string> {
   sections: readonly SectionDef<K>[]
   current: K
   onSelect: (key: K) => void
 }
 
 /**
- * The rail: a sidebar from `md` up, a scrolling row of chips below it.
+ * The section switcher: an underlined tab strip that scrolls rather than wraps.
  *
- * The two are one list rendered twice rather than a single flex that reflows,
- * because they want genuinely different content — the sidebar has room for the
- * hint line and the chip row does not, and squeezing hints into chips is what
- * made the mobile board unreadable before #129.
+ * Scrolls because four labels plus their padding do not fit 320px, and wrapping
+ * them would push the panel down by a whole row on the screen that can least
+ * afford it. `shrink-0` on the strip is load-bearing for the same reason it was
+ * on the chips it replaced: its sibling is `flex-1`, and without it flex
+ * compresses the strip to a few pixels and the only way to change section is
+ * gone.
  */
-export function SectionNav<K extends string>({
+export function SectionTabs<K extends string>({
   sections,
   current,
   onSelect,
-}: SectionNavProps<K>) {
+}: SectionTabsProps<K>) {
   return (
-    <>
-      {/* Mobile: chips. Scrolls rather than wraps, so the panel below keeps its
-          vertical space on a phone. */}
-      {/* `shrink-0` is load-bearing: this sits in a `flex-col` whose panel
-          sibling is `flex-1`, so without it the chips are compressed to a few
-          pixels of blue and the only way to change section on a phone is gone. */}
-      <nav className="flex shrink-0 gap-1.5 overflow-x-auto pb-1 md:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {sections.map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            onClick={() => onSelect(s.key)}
-            aria-current={s.key === current ? 'page' : undefined}
-            className={cn(
-              'shrink-0 cursor-pointer rounded-lg px-3 py-1.5 text-[13px] font-[650] transition-colors',
-              s.key === current
-                ? 'bg-secondary text-primary'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-          >
-            {s.label}
-          </button>
-        ))}
-      </nav>
-
-      {/* Desktop: a sidebar with the hint line. */}
-      <nav className="hidden w-52 shrink-0 flex-col gap-0.5 md:flex">
-        {sections.map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            onClick={() => onSelect(s.key)}
-            aria-current={s.key === current ? 'page' : undefined}
-            className={cn(
-              'cursor-pointer rounded-lg px-3 py-2 text-left transition-colors',
-              s.key === current ? 'bg-secondary' : 'hover:bg-muted',
-            )}
-          >
-            <div
-              className={cn(
-                'text-[13px] font-[650]',
-                s.key === current ? 'text-primary' : 'text-foreground',
-              )}
-            >
-              {s.label}
-            </div>
-            <div className="text-muted-foreground mt-0.5 text-[11.5px] leading-snug">{s.hint}</div>
-          </button>
-        ))}
-      </nav>
-    </>
+    <nav
+      className="border-b-border-soft flex shrink-0 gap-1 overflow-x-auto border-b [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      aria-label="settings sections"
+    >
+      {sections.map((s) => (
+        <button
+          key={s.key}
+          type="button"
+          onClick={() => onSelect(s.key)}
+          aria-current={s.key === current ? 'page' : undefined}
+          className={cn(
+            'shrink-0 cursor-pointer border-b-2 px-3 py-2 text-[13px] font-[650] transition-colors',
+            // The active tab's underline sits ON the strip's own bottom border,
+            // so the row keeps one continuous baseline instead of gaining a
+            // second line under the selected item.
+            '-mb-px',
+            s.key === current
+              ? 'border-primary text-primary'
+              : 'text-muted-foreground hover:text-foreground border-transparent',
+          )}
+        >
+          {s.label}
+        </button>
+      ))}
+    </nav>
   )
 }
 

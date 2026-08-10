@@ -9,12 +9,20 @@
 // Laid out as four SWITCHED sections rather than four stacked cards. Stacked,
 // everything sat at one weight — "download the entire database, which contains
 // every secret in this deployment" read exactly like "here is a list of project
-// names" — and the page needed scrolling before it had any content. A rail makes
-// the shape legible and gives each section the whole panel.
+// names" — and the page needed scrolling before it had any content. Switching
+// gives each section the whole panel and makes the page's shape legible without
+// scrolling it.
+//
+// The switcher is a TAB STRIP along the top, not a left sidebar. It was a
+// sidebar until #132 gave the whole app a left nav rail, and two left rails side
+// by side leave the reader unable to tell which one moves between surfaces and
+// which one moves within this page.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
@@ -28,7 +36,7 @@ import {
   EmptyState,
   FactRow,
   Section,
-  SectionNav,
+  SectionTabs,
   type SectionDef,
 } from '@/components/settings/SettingsShell'
 
@@ -77,6 +85,7 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [tokens, setTokens] = useState<TokenRow[]>([])
 
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
   const [newToken, setNewToken] = useState(false)
   const [minted, setMinted] = useState<CreatedToken | null>(null)
@@ -191,31 +200,45 @@ export function App() {
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="settings"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'settings',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
+        },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signOut,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: who?.actor,
+        scopes: who?.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.settings}
         lang={lang}
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
         }}
-      >
-        <Button variant="ghost" onClick={signOut}>
-          {t.signOut}
-        </Button>
-      </AppHeader>
+      />
 
-      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 overflow-y-auto px-5 py-6 md:flex-row md:gap-10">
+      {/* max-w-3xl, not the wider column this used with a sidebar: the global
+          nav rail now takes the left edge, so the panel starts further in and a
+          5xl column pushed the content off-centre on a laptop. */}
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6">
         {isAdmin && (
-          <SectionNav
+          <SectionTabs
             sections={SECTIONS}
             current={section}
             onSelect={(k) => {
@@ -453,7 +476,7 @@ export function App() {
           }
         }}
       />
-    </div>
+    </AppShell>
   )
 }
 

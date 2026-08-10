@@ -99,11 +99,35 @@ lists every open question on the ticket so a resuming agent sees the full set.
 
 A human answers on the dedicated **`/inbox`** page — an email-style triage
 surface with a status folder rail (Open / Answered / Withdrawn / Expired), a
-scannable question list, and a reading/answer pane (with a **mine** filter for
-your expertise, inline answering, withdraw, and "create answer link"). A
-**ticket filter** narrows the queue to one ticket's questions — the folder counts
-follow it, and the choice is deep-linkable as `#ticket=<id>`, so "everything
-still open on TKM-42" is a URL you can share. The `/board` also has a
+scannable question list, and a reading/answer pane (inline answering, withdraw,
+and "create answer link").
+
+Above the list sits a **filter bar**. Every filter composes, the folder counts
+follow them, and the bar says how many questions survive:
+
+| Filter | What it answers |
+|---|---|
+| **ticket** | One ticket's questions. Subtree-aware, so choosing an **epic** keeps the questions asked against its children — they hang off the leaves. |
+| **search** | Free text over title, body, summary, ticket, asker, kind, urgency and expertise. The body is the point: the list row renders neither, so a phrase you remember from the question itself used to find nothing. |
+| **urgency** | Multi-select `critical / high / normal / low` — the same rank that colours each row's left rule. |
+| **blocking / advisory** | One is parking a ticket and holding up an agent; the other is a note. |
+| **mine** | Only questions routed to your `expert:<tag>` scopes. Shown only to a reader who holds one. |
+| **hide bounced back** | Drops questions you sent back to the agent (`awaiting: agent`) — they are not waiting on you. |
+| **expiring soon** | Only questions that auto-resolve (`on_timeout`) within 24 hours. The most urgent thing in the inbox, and previously invisible in the list. |
+| **asked by** | One agent's questions. |
+
+**Group by epic** turns the flat list into collapsible headings, each with its
+count; the folded set persists, and `j`/`k` walk only what is on screen rather
+than stepping invisibly through a collapsed group. Grouping is not a filter — it
+hides nothing, so it survives "clear filters".
+
+The whole view is a **URL**: `/inbox?folder=answered&ticket=TKM-42&urgency=critical,high&mine=1&group=1`,
+with the open question as `#q=<id>`. So "everything still critical on TKM-42" is
+something you can bookmark and send. The nav badge is the one count that does
+NOT follow the filters: it counts what is open, unfiltered, because a search
+that made it read 0 would say the queue is empty when it is only hidden.
+
+The `/board` also has a
 lightweight **Ask a human** drawer with an unread badge for answering in
 context; the board's own ticket filter narrows that drawer too, including the
 selected ticket's subtasks. Or over the API:

@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useNavigate } from 'react-router'
 import { cn } from '@/lib/utils'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
@@ -17,12 +19,22 @@ import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { AnswerLinkDialog } from '@/components/inbox/AnswerLinkDialog'
+import { FilterBar } from '@/components/inbox/FilterBar'
 import { FolderRail } from '@/components/inbox/FolderRail'
 import { QuestionRow } from '@/components/inbox/QuestionRow'
 import { ReadingPane } from '@/components/inbox/ReadingPane'
-import { Typeahead } from '@/components/Typeahead'
 import { UndoSnackbar } from '@/components/inbox/UndoSnackbar'
+import { EpicGroupHeader } from '@/components/inbox/EpicGroupHeader'
 import { useUndoQueue } from '@/hooks/useUndoQueue'
+import {
+  activeFilterCount,
+  filterQuestions,
+  groupByEpic,
+  sortForFolder,
+  type EpicGroup,
+} from '@/lib/question-filters'
+import { clearedFilters, readView, writeView, type InboxView } from '@/lib/inbox-url'
+import { indexById } from '@/lib/tickets'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
@@ -47,7 +59,18 @@ import {
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
+const LS_COLLAPSED = 'takomo.inbox.collapsed'
 const POLL_MS = 5000
+
+/** The folded-away epics, from the last visit. A corrupt value is not fatal. */
+function loadCollapsed(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_COLLAPSED) ?? '[]')
+    return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
 
 export function App() {
   const navigate = useNavigate()
@@ -59,18 +82,41 @@ export function App() {
   const [gateError, setGateError] = useState('')
 
   const [me, setMe] = useState({ actor: '', scopes: [] as string[] })
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
   const [questions, setQuestions] = useState<Question[]>([])
-  const [folder, setFolder] = useState<Folder>('open')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [thread, setThread] = useState<ThreadMessage[]>([])
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [link, setLink] = useState<AnswerLink | null>(null)
   const [tickets, setTickets] = useState<TicketRef[]>([])
-  const [ticket, setTicket] = useState('')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+
+  // The whole view — folder, every filter, and the grouping — read from the URL
+  // and written back to it, so it survives a reload and can be sent to someone.
+  // Initialised from `window.location` rather than from a default: a link
+  // arriving with filters must open showing them, not flash the unfiltered
+  // inbox first.
+  const [view, setView] = useState<InboxView>(() => readView(window.location.search))
+  const { folder, group } = view
+  const updateView = useCallback((p: Partial<InboxView>) => {
+    setView((v) => ({ ...v, ...p }))
+    // Any change to what the list contains invalidates the selection: the
+    // question you were reading may not be in the new view at all.
+    setSelectedId(null)
+  }, [])
+
+  // Which epics are folded away. Persisted, because a reader who collapsed the
+  // epic they are not working on this week means it for longer than one tab.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsed())
 
   const t = useMemo(() => pick(STR, lang), [lang])
   const canAnswer = me.scopes.includes('human')
+  // The tags an `expert:<tag>` scope routes questions on — what "mine" means.
+  const expertise = useMemo(
+    () => me.scopes.filter((s) => s.startsWith('expert:')).map((s) => s.slice(7)),
+    [me.scopes],
+  )
 
   const handleErr = useCallback(
     (e: unknown) => {
@@ -158,26 +204,64 @@ export function App() {
     return () => window.clearInterval(id)
   }, [token, queue.pending.length, fetchAll, handleErr])
 
-  // `visible()` — everything the current filters admit. The folder split and the
+  // The ticket tree, for the subtree filter and the epic grouping. Rebuilt only
+  // when the ticket list is refetched, not on every keystroke in the filter bar.
+  const index = useMemo(() => indexById(tickets), [tickets])
+
+  // `visible` — everything the current filters admit. The folder split and the
   // counts both read from it, so a filtered-out question cannot be counted in a
   // folder it is not listed in.
   const visible = useMemo(
-    () => (ticket ? questions.filter((q) => q.ticket === ticket) : questions),
-    [questions, ticket],
+    () => filterQuestions(questions, view, { index, expertise }),
+    [questions, view, index, expertise],
   )
   const inFolder = useMemo(
-    () => visible.filter((q) => q.status === folder),
+    () => sortForFolder(visible.filter((q) => q.status === folder), folder),
     [visible, folder],
   )
+  // Grouped, or one unnamed group holding everything — so the list below has
+  // ONE shape to render and the keyboard has one order to walk.
+  const groups: EpicGroup[] = useMemo(
+    () =>
+      group
+        ? groupByEpic(inFolder, index)
+        : [{ epic: '', title: '', questions: inFolder }],
+    [group, inFolder, index],
+  )
+  // What j/k walks and what "select the next one after answering" means: the
+  // rows a reader can actually see. A collapsed group is not skipped over
+  // silently — it is not in the list at all.
+  const walkable = useMemo(
+    () =>
+      group
+        ? groups.filter((g) => !collapsed.has(g.epic)).flatMap((g) => g.questions)
+        : inFolder,
+    [group, groups, collapsed, inFolder],
+  )
+  // "Collapse all" flips to "Expand all" once nothing is left to fold — the
+  // control names what it will DO, not what it did.
+  const allCollapsed = groups.length > 0 && groups.every((g) => collapsed.has(g.epic))
+  const askers = useMemo(
+    () => [...new Set(questions.map((q) => q.asked_by ?? '').filter(Boolean))].sort(),
+    [questions],
+  )
+  const active = activeFilterCount(view)
+  // The nav badge counts what is OPEN, unfiltered. The folder counts follow the
+  // filters — they describe this view — but the badge is a claim about the
+  // fleet, and a text search that made it read 0 would say the queue is empty
+  // when it is only hidden.
+  const openTotal = useMemo(() => questions.filter((q) => q.status === 'open').length, [questions])
   const counts = useMemo(() => {
     const c: Partial<Record<Folder, number>> = {}
     for (const f of FOLDERS) c[f] = visible.filter((q) => q.status === f).length
     return c
   }, [visible])
 
+  // An explicit selection wins even when its group is collapsed — you asked for
+  // that question. The FALLBACK only ever lands on a row you can see.
   const selected = useMemo(
-    () => inFolder.find((q) => q.id === selectedId) ?? inFolder[0] ?? null,
-    [inFolder, selectedId],
+    () => inFolder.find((q) => q.id === selectedId) ?? walkable[0] ?? null,
+    [inFolder, walkable, selectedId],
   )
 
   // Deep-linkable: #q=<id> opens that question, and selecting one writes it back
@@ -200,8 +284,19 @@ export function App() {
     // lands straight in the last question they read instead of their inbox.
     // The pathname is given explicitly: `navigate({ hash: '' })` alone does not
     // reliably drop an existing fragment.
-    navigate({ pathname: '/inbox', hash: selectedId ? 'q=' + selectedId : '' }, { replace: true })
-  }, [selectedId, navigate])
+    //
+    // The filters ride along in the SEARCH half, written by the same effect:
+    // two effects writing the same URL raced, and whichever ran second dropped
+    // the other's half.
+    navigate(
+      {
+        pathname: '/inbox',
+        search: writeView(view),
+        hash: selectedId ? 'q=' + selectedId : '',
+      },
+      { replace: true },
+    )
+  }, [selectedId, view, navigate])
 
   useEffect(() => {
     if (!selected || !token) {
@@ -224,14 +319,37 @@ export function App() {
       const tag = (e.target as HTMLElement | null)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return
       if (e.key === 'j' || e.key === 'k') {
-        const i = inFolder.findIndex((q) => q.id === selected?.id)
+        // Walks what is on screen: a collapsed epic's questions are not stepped
+        // through invisibly.
+        const i = walkable.findIndex((q) => q.id === selected?.id)
         const next = e.key === 'j' ? i + 1 : i - 1
-        if (next >= 0 && next < inFolder.length) setSelectedId(inFolder[next]!.id)
+        if (next >= 0 && next < walkable.length) setSelectedId(walkable[next]!.id)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [inFolder, selected])
+  }, [walkable, selected])
+
+  const toggleEpic = useCallback((epic: string) => {
+    setCollapsed((cur) => {
+      const next = new Set(cur)
+      if (!next.delete(epic)) next.add(epic)
+      localStorage.setItem(LS_COLLAPSED, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
+
+  const setAllCollapsed = useCallback(
+    (all: boolean) => {
+      // Only the epics on screen — collapsing "all" must not silently fold away
+      // groups this filter happens to be hiding, which the reader would meet as
+      // a collapsed inbox next time with no idea why.
+      const next = all ? new Set(groups.map((g) => g.epic)) : new Set<string>()
+      localStorage.setItem(LS_COLLAPSED, JSON.stringify([...next]))
+      setCollapsed(next)
+    },
+    [groups],
+  )
 
   const setDraft = (id: string, patch: Draft) =>
     setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }))
@@ -245,7 +363,7 @@ export function App() {
     const detail = q.mode === 'advisory' ? t.recorded : q.ticket + t.resumedInto
     queue.enqueue(q, payload, decision, detail)
     // It has left Open — move to the next one so the reader keeps going.
-    const rest = inFolder.filter((x) => x.id !== q.id)
+    const rest = walkable.filter((x) => x.id !== q.id)
     setSelectedId(rest[0]?.id ?? null)
     setQuestions((cur) => applyRef.current(cur, me.actor))
   }
@@ -306,18 +424,33 @@ export function App() {
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="inbox"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'inbox',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
-        badges={{ inbox: counts.open ?? 0 }}
+        },
+        badges: { inbox: openTotal },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signOut,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: me.actor,
+        scopes: me.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.inbox}
         lang={lang}
         onLang={(l) => {
           setLang(l)
@@ -329,36 +462,80 @@ export function App() {
         onProject={(id) => {
           setProject(id)
           saveProject(id)
-          setSelectedId(null)
-          setTicket('')
+          // Tickets, epics and askers are all per-project, so every filter that
+          // names one would only ever produce an empty inbox after the switch.
+          updateView(clearedFilters(view))
         }}
       >
-        <Typeahead
-          id="tickpick"
-          options={tickets}
-          value={ticket}
-          onChange={(id) => {
-            setTicket(id)
-            setSelectedId(null)
-          }}
-          labels={{
-            all: t.allTickets,
-            placeholder: t.taTicket,
-            clear: t.taClear,
-            noMatch: t.taNoMatch,
-            count: t.taCount,
-            count1: t.taCount1,
-        countTruncated: t.taCountMore,
-          }}
-        />
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
         <Button variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>
           ↻
         </Button>
-        <Button variant="outline" size="icon" title="Sign out" onClick={signOut}>
-          ⎋
-        </Button>
       </AppHeader>
+
+      {/* The filters, in their own row rather than in the shared header — see
+          components/inbox/FilterBar.tsx. On a phone the reading pane REPLACES
+          the list, so the bar goes with the list it filters. */}
+      <FilterBar
+        className={selectedId ? 'hidden md:flex' : 'flex'}
+        tickets={tickets}
+        ticket={view.ticket ?? ''}
+        onTicket={(id) => updateView({ ticket: id || undefined })}
+        search={view.search ?? ''}
+        onSearch={(text) => updateView({ search: text || undefined })}
+        urgency={view.urgency ?? []}
+        onUrgency={(levels) => updateView({ urgency: levels.length ? levels : undefined })}
+        mode={view.mode ?? ''}
+        onMode={(m) => updateView({ mode: m || undefined })}
+        mine={expertise.length ? (view.mine ?? false) : undefined}
+        onMine={expertise.length ? (on) => updateView({ mine: on || undefined }) : undefined}
+        hideAwaitingAgent={view.hideAwaitingAgent ?? false}
+        onHideAwaitingAgent={(on) => updateView({ hideAwaitingAgent: on || undefined })}
+        expiringSoon={view.expiringSoon ?? false}
+        onExpiringSoon={(on) => updateView({ expiringSoon: on || undefined })}
+        askers={askers}
+        askedBy={view.askedBy ?? ''}
+        onAskedBy={(a) => updateView({ askedBy: a || undefined })}
+        group={group}
+        onGroup={(on) => updateView({ group: on })}
+        matched={visible.length}
+        activeCount={active}
+        onClear={() => updateView(clearedFilters(view))}
+        open={filtersOpen}
+        onOpen={setFiltersOpen}
+        labels={{
+          filters: t.filters,
+          allTickets: t.allTickets,
+          taTicket: t.taTicket,
+          taClear: t.taClear,
+          taNoMatch: t.taNoMatch,
+          taCount: t.taCount,
+          taCount1: t.taCount1,
+          taCountMore: t.taCountMore,
+          search: t.search,
+          searchPlaceholder: t.searchPh,
+          urgency: t.urgencyHdr,
+          critical: t.crit,
+          high: t.high,
+          normal: t.normal,
+          low: t.low,
+          allModes: t.allModes,
+          blocking: t.blockingF,
+          advisory: t.advisoryF,
+          mine: t.mine,
+          mineHint: t.mineHint,
+          waiting: t.waitingF,
+          waitingHint: t.waitingHint,
+          soon: t.soonF,
+          soonHint: t.soonHint,
+          allAskers: t.allAskers,
+          asker: t.askerHdr,
+          groupEpic: t.groupEpic,
+          count: t.taQCount,
+          count1: t.taQCount1,
+          clearAll: t.clearAll,
+        }}
+      />
 
       {/* Stacked master/detail on a phone, three panes from `md` up.
           The fixed columns totalled 500px, so below ~540px the `1fr` reading
@@ -378,10 +555,7 @@ export function App() {
             withdrawn: t.withdrawn,
             expired: t.expired,
           }}
-          onSelect={(f) => {
-            setFolder(f)
-            setSelectedId(null)
-          }}
+          onSelect={(f) => updateView({ folder: f })}
         />
 
         <section
@@ -402,10 +576,7 @@ export function App() {
               <button
                 key={f}
                 type="button"
-                onClick={() => {
-                  setFolder(f)
-                  setSelectedId(null)
-                }}
+                onClick={() => updateView({ folder: f })}
                 className={cn(
                   'shrink-0 cursor-pointer rounded-lg px-3 py-2 text-[13px] font-[650]',
                   f === folder ? 'bg-secondary text-primary' : 'text-muted-foreground',
@@ -427,15 +598,17 @@ export function App() {
             // fleet. `noneForTicket` was written for exactly this and had never
             // been wired up.
             <div className="text-muted-foreground px-6 py-14 text-center">
-              {ticket ? (
+              {active > 0 ? (
                 <>
-                  <div className="text-[13px]">{t.noneForTicket}</div>
+                  <div className="text-[13px]">
+                    {view.ticket ? t.noneForTicket : t.noneForFilters}
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setTicket('')}
+                    onClick={() => updateView(clearedFilters(view))}
                     className="text-primary mt-2 cursor-pointer px-2 py-1 text-[13px] font-[650] underline"
                   >
-                    {t.taClear}
+                    {t.clearAll} ({active})
                   </button>
                 </>
               ) : folder === 'open' ? (
@@ -447,6 +620,41 @@ export function App() {
                 <div className="text-[13px]">{t.folderEmpty}</div>
               )}
             </div>
+          ) : group ? (
+            <>
+              {/* One control for the whole list, so a reader who wants an
+                  overview does not click eleven headings to get one. */}
+              <div className="border-b-border-soft flex items-center justify-end gap-3 border-b px-3.5 py-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAllCollapsed(!allCollapsed)}
+                  className="text-muted-foreground hover:text-primary cursor-pointer text-[11.5px] font-[650]"
+                >
+                  {allCollapsed ? t.expandAll : t.collapseAll}
+                </button>
+              </div>
+              {groups.map((g) => (
+                <div key={g.epic || '(none)'}>
+                  <EpicGroupHeader
+                    title={g.epic ? g.title : t.noEpic}
+                    count={g.questions.length}
+                    collapsed={collapsed.has(g.epic)}
+                    onToggle={() => toggleEpic(g.epic)}
+                  />
+                  {!collapsed.has(g.epic) &&
+                    g.questions.map((q) => (
+                      <QuestionRow
+                        key={q.id}
+                        question={q}
+                        selected={q.id === selected?.id}
+                        landed={queue.pending.some((p) => p.qid === q.id)}
+                        labels={{ advisory: t.advTag, askedBy: t.askedBy, waitingAgent: t.stallTag }}
+                        onSelect={setSelectedId}
+                      />
+                    ))}
+                </div>
+              ))}
+            </>
           ) : (
             inFolder.map((q) => (
               <QuestionRow
@@ -542,6 +750,6 @@ export function App() {
           copyFail: t.copyFail,
         }}
       />
-    </div>
+    </AppShell>
   )
 }

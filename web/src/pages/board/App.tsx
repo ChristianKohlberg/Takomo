@@ -8,8 +8,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
 import { useNavigate } from 'react-router'
 import { useIsPhone } from '@/hooks/useIsPhone'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { TokenGate } from '@/components/TokenGate'
 import { Typeahead } from '@/components/Typeahead'
@@ -117,6 +119,7 @@ function Board({
   const t = useMemo(() => pick(STR, lang), [lang])
 
   const [token, setToken] = useState(() => loadToken())
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [project, setProject] = useState(() => loadProject())
   const [projects, setProjects] = useState<Project[]>([])
 
@@ -171,6 +174,10 @@ function Board({
     setLabelFilter('')
     setShowArchived(false)
     setMineOnly(false)
+  }, [])
+  const signOut = useCallback(() => {
+    saveToken('')
+    setToken('')
   }, [])
   const [inboxOpen, setInboxOpen] = useState(false)
   const [me, setMe] = useState({ actor: '', scopes: [] as string[], expertise: [] as string[] })
@@ -421,17 +428,35 @@ function Board({
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="board"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'board',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
+        },
+        // The board already loads this project's open questions for its own
+        // inbox drawer, so the rail can badge /inbox without a second request.
+        badges: { inbox: questions.length },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signout,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: me.actor,
+        scopes: me.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.board}
         lang={lang}
         onLang={(l) => {
           setLang(l)
@@ -613,17 +638,6 @@ function Board({
         </Button>
         <Button variant="outline" size="icon" title={t.refresh} onClick={() => void load()}>
           ↻
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          title={t.signout}
-          onClick={() => {
-            saveToken('')
-            setToken('')
-          }}
-        >
-          ⎋
         </Button>
       </AppHeader>
 
@@ -875,6 +889,6 @@ function Board({
           readOnlyMsg: t.setReadOnly,
         }}
       />
-    </div>
+    </AppShell>
   )
 }

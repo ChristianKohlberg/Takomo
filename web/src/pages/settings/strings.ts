@@ -26,6 +26,9 @@ export const STR = defineStrings({
     navProjectsHint: 'Create and remove projects',
 
     signOut: 'Sign out',
+    navExpand: 'Expand navigation',
+    navCollapse: 'Collapse navigation',
+    navAccount: 'Account',
     notAdminTitle: 'This token is not an admin',
     notAdmin:
       "Everything on this page needs the 'admin' scope. Sign in with an admin token, or mint one on the server:",
@@ -146,6 +149,9 @@ export const STR = defineStrings({
     navProjectsHint: 'Projekte anlegen und entfernen',
 
     signOut: 'Abmelden',
+    navExpand: 'Navigation ausklappen',
+    navCollapse: 'Navigation einklappen',
+    navAccount: 'Konto',
     notAdminTitle: 'Dieses Token ist kein Admin',
     notAdmin:
       "Alles auf dieser Seite benötigt den 'admin'-Scope. Melde dich mit einem Admin-Token an oder erzeuge eines auf dem Server:",
