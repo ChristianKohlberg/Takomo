@@ -109,11 +109,67 @@ macOS window will not go below 500px, so drive the app inside a 375px iframe.
 
 ## Decisions worth knowing before editing
 
+**Navigation is a left rail, not a header strip.** `AppShell` wraps every
+surface: `NavRail` on the left, the page's own `AppHeader` and body to the right
+of it. The header used to carry the brand, five surface names, the project
+picker and up to four action buttons in one row — the nav was already scrolling
+sideways to hide what did not fit, behind an edge that signals nothing. The rail
+gives the surfaces their own axis, so a sixth costs vertical space nobody is
+short of. Two states, toggled by the icon at its top: expanded (icon + label,
+`w-56`) and collapsed (icons only, `w-14`). The choice is a viewer preference,
+so `useNavCollapsed` persists it per origin and every surface reads the same key.
+
+**The project picker is in the rail too**, because it is not about the current
+surface — it SCOPES all of them, and a control every page obeys belongs with the
+navigation rather than in each page's own toolbar. It stopped being a native
+`<select>` in the move: a `<select>` cannot be searched, and an install with
+fifty projects turns it into a scroll hunt. `ProjectPicker` is a trigger plus a
+popover with a search field, and it collapses to the project's initial.
+
+It is deliberately NOT `Typeahead`. That one is a filter — always showing its
+input, sized for a toolbar; this is a navigation control that must render as a
+40px square. They share the part worth sharing, `lib/typeahead`: ranking,
+truncation, and counting the total BEFORE the slice so a footer cannot claim a
+truncated list is complete. Fork that logic and the ranking rots in whichever
+copy nobody maintains.
+
+`/board` passes no `all` label, so it offers no "All projects" entry — a kanban's
+columns come from ONE project's workflow and two projects need not agree on their
+states. The other three surfaces offer it.
+
+Sign-out lives at the bottom of the rail, with the actor and its role. It used
+to be one more icon button beside "refresh" on every page — two adjacent glyphs,
+one harmless and one that ends the session.
+
+On a phone the expanded rail would take 224 of 375 px, so there it **overlays**
+the content with a backdrop instead of pushing it, a spacer holds the collapsed
+strip's place in the flow, and following a link closes it. That is a structural
+difference rather than a visual one, which is why it reads `useIsPhone` instead
+of taking a `md:` prefix.
+
 **One app, one router, one bundle.** This replaced four independently-built
 self-contained documents. That shape let the binary `include_str!` a whole page
 and needed no asset routes at all — but React and every shared module were paid
 four times, and moving between surfaces was a full page load that dropped all
 warm state.
+
+**Tailwind scans `src/` and nothing else.** `globals.css` opens with
+`@import 'tailwindcss' source(none)` plus two explicit `@source` lines, because
+automatic content detection scans the project minus whatever is gitignored — and
+`dist/` is COMMITTED here. Tailwind was therefore scanning the bundle it had just
+written, which made the emitted CSS a fixed point of "sources + previous dist"
+instead of a function of the sources: the first build after a merge was stale
+(this failed CI's `dist is current` gate on two separate PRs, each time looking
+like a flaky compiler), and a class could never leave the stylesheet once it had
+shipped. `scripts/` and this README were being scanned too, so `h-screen`,
+`w-72` and `max-w-140` — classes the lint rules exist to BAN — were compiled in
+because the rule messages name them.
+
+An allow list rather than an exclusion list, deliberately: an exclusion list has
+to grow every time a script, test or doc happens to mention a class name.
+Removing it all cut the stylesheet from 63.7 kB to 53.0 kB (11.8 → 10.4 kB gz).
+`npm run size` carries three canaries against the regression, because nothing
+else would notice — the build would stay self-consistent, just steadily larger.
 
 **The asset names are load-bearing.** Rust embeds `assets/app.js`,
 `assets/vendor.js`, `assets/runtime.js` and `assets/app.css` BY NAME, so content

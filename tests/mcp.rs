@@ -2420,3 +2420,55 @@ async fn mcp_questions_pages_instead_of_silently_capping() {
         .await;
     assert_eq!(clamped["limit"], 500);
 }
+
+/// `takomo_move` over MCP: the same move the REST surface performs, including
+/// the subtree default an agent relies on when it names an epic.
+#[tokio::test]
+async fn hosted_mcp_moves_an_epic_with_its_subtree() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "beta", "name": "Beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+
+    let epic = app.create_typed("Billing", "epic", None).await;
+    let child = app.create_typed("Invoices", "task", Some(&epic)).await;
+
+    let out = app
+        .tool_ok(
+            &app.admin,
+            "takomo_move",
+            json!({ "tickets": [epic], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["total"], 2, "the epic and its child: {out}");
+
+    let shown = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": child }))
+        .await;
+    assert_eq!(shown["ticket"]["project"], "beta", "{shown}");
+    assert_eq!(
+        shown["ticket"]["id"],
+        child.as_str(),
+        "a move never rewrites an id: {shown}"
+    );
+
+    // A claimed ticket refuses the whole move here too — the rule lives in the
+    // store, not in one surface's handler.
+    let (s, out2) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [epic], "to_project": "tp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "moving back is symmetric: {out2}");
+    assert_eq!(out2["total"], 2, "{out2}");
+}

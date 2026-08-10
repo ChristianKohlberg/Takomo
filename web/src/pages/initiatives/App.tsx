@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useNavigate } from 'react-router'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { EditableText } from '@/components/EditableText'
@@ -61,6 +63,7 @@ export function App() {
   const [gateError, setGateError] = useState('')
 
   const [me, setMe] = useState<Me>({ actor: '', scopes: [] })
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
   const [items, setItems] = useState<Initiative[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -340,32 +343,51 @@ export function App() {
   const selected = items.find((i) => i.id === selectedId) ?? null
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="initiatives"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'initiatives',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
-        projects={projects.map((p) => ({ id: p.id }))}
-        project={project}
-        allProjectsLabel={t.allProjects}
-        projectLabel={t.project}
-        onProject={(id) => {
+        },
+        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        project,
+        onProject: (id) => {
           setProject(id)
           saveProject(id)
           setSelectedId(null)
           setEntries([])
           setEntryCursor(null)
+        },
+        projectLabels: {
+          project: t.project,
+          search: t.projectSearch,
+          noMatch: t.projectNoMatch,
+          all: t.allProjects,
+        },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signOut,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: me.actor,
+        scopes: me.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.initiatives}
+        lang={lang}
+        onLang={(l) => {
+          setLang(l)
+          localStorage.setItem(LS_LANG, l)
         }}
       >
         {/* An initiative belongs to exactly one project, so this cannot act
@@ -390,9 +412,6 @@ export function App() {
         </Button>
         <Button variant="outline" size="icon" title={t.refresh} onClick={() => fetchAll().catch(handleErr)}>
           ↻
-        </Button>
-        <Button variant="outline" size="icon" title={t.signOut} onClick={signOut}>
-          ⎋
         </Button>
       </AppHeader>
 
@@ -601,7 +620,7 @@ export function App() {
           needTitle: t.needTitle,
         }}
       />
-    </div>
+    </AppShell>
   )
 }
 
