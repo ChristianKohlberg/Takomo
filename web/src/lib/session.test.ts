@@ -112,9 +112,18 @@ describe('recognising a dead credential', () => {
     expect(isAuthError({ auth: true })).toBe(true)
   })
 
-  it('recognises 401 and 403', () => {
+  it('recognises 401', () => {
     expect(isAuthError({ status: 401 })).toBe(true)
-    expect(isAuthError({ status: 403 })).toBe(true)
+  })
+
+  it('does NOT treat a refused operation as a dead credential', () => {
+    // 403 is an authentic token refused ONE thing, and the server says which
+    // scope is missing and how to get it. Counting it here signed a `human`
+    // token out of the whole inbox for touching an expert-gated approve — the
+    // explanation lost, the session with it.
+    expect(isAuthError({ status: 403 })).toBe(false)
+    expect(isAuthError({ status: 403, code: 'question.approve_expertise' })).toBe(false)
+    expect(isAuthError({ status: 403, code: 'auth.project' })).toBe(false)
   })
 
   it('does NOT claim a transient failure is an auth failure', () => {

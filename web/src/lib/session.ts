@@ -98,10 +98,16 @@ export function saveProject(id: string): void {
  * the board reading "reconnecting" and the inbox reading completely normal —
  * both showing stale data forever, neither ever asking for a new token.
  *
- * `auth` is the flag the API client sets; the status codes are the fallback for
+ * `auth` is the flag the API client sets; the status code is the fallback for
  * anything that reaches here without going through it.
+ *
+ * 401 only. A 403 is an authentic token refused ONE operation — a missing
+ * scope, a project outside its allowlist, an approve that wants a domain
+ * expert — and the server says so in a message written to be acted on. Signing
+ * that reader out discards the explanation and takes away the rest of a console
+ * they are still entitled to; the toast is the right place for it.
  */
 export function isAuthError(e: unknown): boolean {
   const err = e as { auth?: boolean; status?: number } | null | undefined
-  return !!err && (!!err.auth || err.status === 401 || err.status === 403)
+  return !!err && (!!err.auth || err.status === 401)
 }
