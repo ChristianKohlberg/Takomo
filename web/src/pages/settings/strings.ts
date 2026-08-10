@@ -119,6 +119,35 @@ export const STR = defineStrings({
     newProjNameHint: 'Shown in the project picker. Defaults to the id.',
     newProjCreate: 'Create project',
     newProjCancel: 'Cancel',
+    // Project detail — moved here from the board's dialog.
+    projOpen: 'Configure',
+    projBack: 'All projects',
+    projWorkflowLabel: 'Workflow',
+    projLangLabel: 'Question language',
+    projLangHelp:
+      'The human-facing language agents should phrase ask-a-human questions in (e.g. “German”). Leave empty for no preference.',
+    projLangPh: 'e.g. German',
+    projStyleLabel: 'Style guide',
+    projStyleHelp:
+      'The house style for text agents write — ticket titles and bodies, comments, and questions. Agents get it on every work-loop call, before they write.',
+    projStylePh:
+      'e.g. Two sentences max. Plain language, no marketing voice. Prefer a yes/no or a short choice over an open question.',
+    projChars: '{n}/{max} characters',
+    projTtlLabel: 'Answer-link lifetime (seconds)',
+    projTtlHelp:
+      'How long a link handed to someone outside the org to answer exactly one question stays valid. An individual link can override this when it is minted. Unlike the two fields above, this one is enforced.',
+    projClaimTtlLabel: 'Default claim lifetime (seconds)',
+    projClaimTtlHelp:
+      'How long an agent holds a ticket when it asks for no lifetime of its own. When it lapses the sweeper returns the ticket to the queue, even if work is still going — agents extend it with takomo_heartbeat.',
+    projMaxClaimTtlLabel: 'Maximum claim lifetime (seconds)',
+    projMaxClaimTtlHelp:
+      'The ceiling an agent may ask for when claiming. It is also how long a crashed agent blocks a ticket, since only expired claims are released — higher means fewer heartbeats but slower recovery.',
+    projSave: 'Save',
+    projSaving: 'Saving…',
+    projSaved: 'Saved.',
+    projOver: 'The style guide is over the limit.',
+    projReadOnly:
+      "Read-only — this token has no 'admin' scope. Changing these settings needs an admin token.",
     confirmDeleteProjTitle: 'Delete this project?',
     confirmDeleteProjBody:
       'Deleting {id} removes its tickets, questions, schedules and checklist data. This cannot be undone.',
@@ -242,6 +271,34 @@ export const STR = defineStrings({
     newProjNameHint: 'Wird in der Projektauswahl angezeigt. Standard ist die Id.',
     newProjCreate: 'Projekt erstellen',
     newProjCancel: 'Abbrechen',
+    projOpen: 'Konfigurieren',
+    projBack: 'Alle Projekte',
+    projWorkflowLabel: 'Workflow',
+    projLangLabel: 'Sprache der Fragen',
+    projLangHelp:
+      'Die menschlich sichtbare Sprache, in der Agenten Fragen an Menschen stellen sollen (z. B. „German“). Leer lassen für keine Vorgabe.',
+    projLangPh: 'z. B. German',
+    projStyleLabel: 'Stil-Leitfaden',
+    projStyleHelp:
+      'Der Hausstil für Texte, die Agenten schreiben — Ticket-Titel und -Beschreibungen, Kommentare und Fragen. Agenten erhalten ihn bei jedem Arbeitsschritt, bevor sie schreiben.',
+    projStylePh:
+      'z. B. Maximal zwei Sätze. Klare Sprache, kein Marketing-Ton. Lieber eine Ja/Nein-Frage als eine offene.',
+    projChars: '{n}/{max} Zeichen',
+    projTtlLabel: 'Gültigkeit des Antwort-Links (Sekunden)',
+    projTtlHelp:
+      'Wie lange ein Antwort-Link gültig bleibt, den jemand außerhalb der Organisation für genau eine Frage erhält. Ein einzelner Link kann beim Erstellen davon abweichen. Anders als die beiden Felder oben wird dies erzwungen.',
+    projClaimTtlLabel: 'Standard-Laufzeit eines Claims (Sekunden)',
+    projClaimTtlHelp:
+      'Wie lange ein Agent ein Ticket standardmäßig hält, wenn er beim Claim keine eigene Laufzeit angibt. Läuft sie ab, gibt der Sweeper das Ticket zurück in die Warteschlange — auch wenn noch daran gearbeitet wird. Agenten verlängern mit takomo_heartbeat.',
+    projMaxClaimTtlLabel: 'Maximale Laufzeit eines Claims (Sekunden)',
+    projMaxClaimTtlHelp:
+      'Die Obergrenze, die ein Agent beim Claim anfordern darf. Das ist zugleich die Zeit, die ein abgestürzter Agent ein Ticket blockiert, denn nur abgelaufene Claims werden freigegeben — höher heißt weniger Heartbeats, aber langsamere Erholung.',
+    projSave: 'Speichern',
+    projSaving: 'Speichern…',
+    projSaved: 'Gespeichert.',
+    projOver: 'Der Stil-Leitfaden ist zu lang.',
+    projReadOnly:
+      "Nur lesbar — dieses Token hat keine 'admin'-Berechtigung. Ändern erfordert ein Admin-Token.",
     confirmDeleteProjTitle: 'Dieses Projekt löschen?',
     confirmDeleteProjBody:
       'Mit {id} werden dessen Tickets, Fragen, Zeitpläne und Checklisten-Daten entfernt. Das lässt sich nicht rückgängig machen.',
