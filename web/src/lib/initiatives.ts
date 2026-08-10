@@ -80,6 +80,13 @@ export interface Whoami {
   actor: string
   scopes: string[]
   /**
+   * This credential's own id — what `takomo token revoke` takes, and what tells
+   * two tokens apart when they necessarily share an actor (one per machine,
+   * minted by the same script). /settings uses it to mark the viewer's own row
+   * and to withhold its Revoke button.
+   */
+  token_id?: string
+  /**
    * `'*'` for an unrestricted token, else the project allowlist.
    *
    * The literal, not `null` — `/v1/whoami` serializes the unrestricted case as

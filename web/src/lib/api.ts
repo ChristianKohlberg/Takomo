@@ -68,5 +68,19 @@ export async function api<T = unknown>(
     throw apiError(message || 'HTTP ' + r.status, r.status, code)
   }
 
-  return (await r.json()) as T
+  // A successful response with no body is not an error, and this used to treat
+  // it as one: `r.json()` on a 204 throws "Unexpected end of JSON input".
+  //
+  // Every DELETE in the API answers 204 — tokens, projects, shares, answer
+  // links, deps — so the failure mode was specific and nasty. The request had
+  // ALREADY SUCCEEDED by the time the parse blew up, so the caller's catch ran
+  // over a completed mutation: the UI reported "Request failed", skipped its
+  // refetch, and left the now-revoked token on screen looking live. Being told a
+  // revoke failed when it succeeded is the wrong direction to be wrong in.
+  //
+  // Read the body as text first and only parse when there is something to parse.
+  // `T` is what the caller declared; a void endpoint is declared `unknown`.
+  const text = await r.text()
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
 }
