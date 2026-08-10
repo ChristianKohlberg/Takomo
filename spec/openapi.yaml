@@ -889,6 +889,65 @@ paths:
         "204": { description: Removed }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /tickets/move:
+    post:
+      tags: [tickets]
+      summary: Move tickets to another project, in bulk (write scope)
+      description: |
+        Re-files tickets under another project. Subtrees come along by default,
+        so naming an epic moves the epic and everything beneath it.
+
+        **Ids do not change.** A ticket id is minted as `<project>-<suffix>` and
+        nothing — server, clients, or SPA — ever parses the project back out of
+        it, so the id keeps resolving in commit messages and links it was quoted
+        in. After a move the prefix reads as where the ticket was originally
+        filed; `project` is where it lives.
+
+        What the move reconciles, because it IS keyed on the project:
+
+        - **State.** A state the target workflow also defines is kept; anything
+          else lands on that workflow's `initial`. Never silent: each entry in
+          `moved` carries `from_state`, `to_state` and `state_reset`, and the
+          `ticket_moved` event carries the same.
+        - **Parent.** A parent and a child must share a project, so a moved
+          ticket whose parent stays behind is unparented (`parent_cleared`), and
+          a child left behind by a moving parent is orphaned and listed in
+          `orphaned` — which is what `descendants: false` is for.
+        - **Tags** are registered in the target project's tag registry, exactly
+          as a patch naming an unregistered tag does.
+        - **Questions, promotions, answer grants and subtree shares** carry a
+          denormalized project and follow the ticket. Past events are not
+          rewritten: the log records the project each event happened in.
+        - **Checklist lanes** cover a project's surface, so they do not move. A
+          lane pointing at a departing epic has its `epic` cleared and is listed
+          in `lanes_detached`; an epic-level checklist policy override is dropped.
+
+        Dependency edges are left alone — `deps` never required both ends to
+        share a project.
+
+        Refused as a whole (409 `claim.held`) if any ticket in the set is
+        claimed: a lease is held against a workflow the move would change, and a
+        partial move would split a subtree across two projects. Bounded at 500
+        tickets per call (422 `validation.move_too_large`) rather than
+        truncated, since a half-moved epic is worse than a refusal you can split.
+
+        The token must reach both sides — every named ticket's current project
+        and the target.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TicketMove" }
+      responses:
+        "200":
+          description: What moved, and what the move had to reconcile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TicketMoveResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /tickets/{id}/archive:
     post:
       tags: [tickets]
@@ -1659,7 +1718,7 @@ paths:
         `takomo_next`, `takomo_start`, `takomo_transition`,
         `takomo_done`, `takomo_block`, `takomo_cancel`,
         `takomo_comment`, `takomo_link`, `takomo_dep`, `takomo_deps`,
-        `takomo_heartbeat`, `takomo_release`, `takomo_archive`,
+        `takomo_heartbeat`, `takomo_release`, `takomo_archive`, `takomo_move`,
         `takomo_projects`, `takomo_workflow`, `takomo_roadmap`, `takomo_ask`,
         `takomo_answer`, `takomo_questions`, `takomo_withdraw`,
         `takomo_answer_link`, `takomo_whoami`, `takomo_schedules`,
@@ -4604,6 +4663,65 @@ components:
         author: { type: string, description: 'the actor that appended it' }
         created_at: { type: string, format: date-time }
 
+    TicketMove:
+      type: object
+      required: [tickets, to_project]
+      properties:
+        tickets:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: |
+            Ticket ids to move. An epic id moves the epic; whether its children
+            come along is `descendants`.
+        to_project:
+          type: string
+          description: The project these tickets should live in afterwards.
+        descendants:
+          type: boolean
+          default: true
+          description: |
+            Move each named ticket's full descendant subtree with it. false moves
+            only the named tickets and leaves their children behind with `parent`
+            cleared, because a parent and child must share a project.
+
+    TicketMoveResult:
+      type: object
+      properties:
+        to_project: { type: string }
+        total: { type: integer, description: 'How many tickets actually moved.' }
+        moved:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, description: 'Unchanged by the move.' }
+              from_project: { type: string }
+              to_project: { type: string }
+              from_state: { type: string }
+              to_state: { type: string, description: 'Equals from_state unless the target workflow lacks that state.' }
+              state_reset: { type: boolean, description: "The ticket landed on the target workflow's initial state." }
+              parent_cleared: { type: boolean, description: "The ticket's parent stayed behind, so the link was cut." }
+        unchanged:
+          type: array
+          items: { type: string }
+          description: Named or reached but already in the target project.
+        orphaned:
+          type: array
+          items: { type: string }
+          description: Tickets left behind whose parent moved away, so their parent was cleared.
+        lanes_detached:
+          type: array
+          items: { type: string }
+          description: Checklist lanes whose epic left the project; the lanes stayed.
+        policies_dropped:
+          type: array
+          items: { type: string }
+          description: Epics whose epic-level checklist policy override was dropped with them.
+        note:
+          type: string
+          description: Prose for anything the move had to reconcile — state resets, orphans, detached lanes.
+
     Promotion:
       type: object
       description: A record that a ticket's work reached a named target/stage. Free-form and domain-agnostic.
@@ -5343,6 +5461,9 @@ x-error-codes:
   validation.project: "the project named does not exist."
   validation.project_required: "this endpoint needs an explicit `project` query parameter."
   validation.parent: "the parent ticket does not exist, or belongs to a different project — parent and child must share one."
+  validation.tickets: "POST /v1/tickets/move needs a non-empty 'tickets' array. An epic id there moves its whole subtree unless descendants is false."
+  validation.descendants: "the 'descendants' field of a move must be a boolean: true (the default) moves each named ticket's subtree, false moves only the named tickets and orphans their children."
+  validation.move_too_large: "the move covers more tickets than one call may touch (500), because it holds the write lock every claim queues behind. Split it — name the child epics one at a time — or move the root alone with descendants:false and re-file its children."
   validation.parent_cycle: "setting that parent would make the ticket tree cyclic."
   validation.blocked_by: "a `blocked_by` entry names a ticket that does not exist."
   validation.dep_cycle: "adding that dependency would create a cycle — the would-be blocker already depends on this ticket, directly or transitively."

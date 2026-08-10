@@ -11,6 +11,7 @@ mod helpers;
 mod initiatives;
 mod metrics;
 mod model;
+mod moves;
 mod oauth;
 mod projects;
 mod questions;
@@ -36,6 +37,7 @@ pub use initiatives::{
     MAX_INITIATIVE_ENTRIES,
 };
 pub use model::*;
+pub use moves::{MoveOutcome, MoveRequest, MovedTicket, MAX_MOVE_TICKETS};
 pub use oauth::{
     ACCESS_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, MAX_REDIRECT_URIS, REFRESH_TOKEN_TTL_SECONDS,
     SPENT_CODE_RETENTION_SECONDS, UNUSED_CLIENT_RETENTION_SECONDS,

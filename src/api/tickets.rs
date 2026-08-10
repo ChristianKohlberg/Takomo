@@ -484,6 +484,75 @@ pub async fn unarchive(
     Ok(Json(ticket.to_json(now_ms())))
 }
 
+/// Every field `POST /v1/tickets/move` accepts.
+pub const MOVE_FIELDS: [&str; 3] = ["tickets", "to_project", "descendants"];
+
+/// POST /v1/tickets/move (write scope). Re-files tickets under another project,
+/// in bulk, subtrees included by default.
+///
+/// The ids do not change — nothing parses a project out of a ticket id, and the
+/// id is what a commit message quotes — so after a move the prefix reads as
+/// where the ticket was filed and `project` as where it lives. What does change
+/// is everything keyed on the project: a state the target workflow does not
+/// define lands on its initial state (reported per ticket as `state_reset`,
+/// never silent), tags are registered in the target project, and questions,
+/// promotions, answer grants and subtree shares follow the ticket.
+///
+/// `descendants` defaults to true: naming an epic moves the epic and everything
+/// beneath it. With `descendants: false` only the named tickets move and their
+/// children stay behind as orphans — parent and child must share a project — and
+/// the response lists every ticket that happened to.
+///
+/// The token must reach BOTH sides: each named ticket's current project and the
+/// target. A claimed ticket anywhere in the set refuses the whole call rather
+/// than splitting a subtree across two projects.
+pub async fn move_tickets(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown_fields(obj, &MOVE_FIELDS, "TicketMove")?;
+
+    let tickets = get_string_array(obj, "tickets")?.unwrap_or_default();
+    if tickets.is_empty() {
+        return Err(ApiError::validation(
+            "validation.tickets",
+            "Field 'tickets' must be a non-empty array of ticket ids: {\"tickets\": [\"<id>\"], \"to_project\": \"<project>\"}. An epic id moves its whole subtree unless you pass \"descendants\": false.",
+        ));
+    }
+    let to_project = require_str(obj, "to_project")?;
+    let descendants = match obj.get("descendants") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(ApiError::validation(
+                "validation.descendants",
+                "Field 'descendants' must be a boolean. true (the default) moves each named ticket's whole subtree; false moves only the named tickets and orphans their children.",
+            ))
+        }
+    };
+
+    ctx.require_project(&to_project)?;
+    // Both ends of the move, checked before anything is written: a scoped token
+    // must be allowed in the project a ticket is leaving as well as the one it
+    // is joining. Descendants ride along without their own check because a
+    // subtree cannot cross projects — parent and child always share one.
+    for id in &tickets {
+        load_visible(&state, &ctx, id)?;
+    }
+
+    let req = crate::store::MoveRequest {
+        tickets,
+        to_project,
+        descendants,
+    };
+    let outcome = state.store.move_tickets(&req, &ctx.actor)?;
+    state.wake();
+    Ok(Json(outcome.to_json()))
+}
+
 pub async fn add_dep(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
