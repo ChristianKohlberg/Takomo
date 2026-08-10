@@ -100,10 +100,15 @@ lists every open question on the ticket so a resuming agent sees the full set.
 A human answers on the dedicated **`/inbox`** page — an email-style triage
 surface with a status folder rail (Open / Answered / Withdrawn / Expired), a
 scannable question list, and a reading/answer pane (with a **mine** filter for
-your expertise, inline answering, withdraw, and "create answer link"). A
-**ticket filter** narrows the queue to one ticket's questions — the folder counts
-follow it, and the choice is deep-linkable as `#ticket=<id>`, so "everything
-still open on TKM-42" is a URL you can share. The `/board` also has a
+your expertise, inline answering, withdraw, and "create answer link"). Above the
+list sits a **filter bar**: a **ticket filter** narrowing the queue to one
+ticket's questions, and a **search** over the title, body, summary, ticket,
+asker and expertise tags — so a phrase you remember from a question body finds
+it even though the list row never renders one. Both compose, the folder counts
+follow them, and the bar says how many questions survive. The nav badge does
+not: it counts what is open, unfiltered, because a search that made it read 0
+would say the queue is empty when it is only hidden. The selected question is
+deep-linkable as `#q=<id>`. The `/board` also has a
 lightweight **Ask a human** drawer with an unread badge for answering in
 context; the board's own ticket filter narrows that drawer too, including the
 selected ticket's subtasks. Or over the API:

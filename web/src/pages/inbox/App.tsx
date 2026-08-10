@@ -17,12 +17,13 @@ import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { AnswerLinkDialog } from '@/components/inbox/AnswerLinkDialog'
+import { FilterBar } from '@/components/inbox/FilterBar'
 import { FolderRail } from '@/components/inbox/FolderRail'
 import { QuestionRow } from '@/components/inbox/QuestionRow'
 import { ReadingPane } from '@/components/inbox/ReadingPane'
-import { Typeahead } from '@/components/Typeahead'
 import { UndoSnackbar } from '@/components/inbox/UndoSnackbar'
 import { useUndoQueue } from '@/hooks/useUndoQueue'
+import { filterQuestions } from '@/lib/question-filters'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
@@ -68,6 +69,8 @@ export function App() {
   const [link, setLink] = useState<AnswerLink | null>(null)
   const [tickets, setTickets] = useState<TicketRef[]>([])
   const [ticket, setTicket] = useState('')
+  const [search, setSearch] = useState('')
+  const [filtersOpen, setFiltersOpen] = useState(false)
 
   const t = useMemo(() => pick(STR, lang), [lang])
   const canAnswer = me.scopes.includes('human')
@@ -162,13 +165,18 @@ export function App() {
   // counts both read from it, so a filtered-out question cannot be counted in a
   // folder it is not listed in.
   const visible = useMemo(
-    () => (ticket ? questions.filter((q) => q.ticket === ticket) : questions),
-    [questions, ticket],
+    () => filterQuestions(questions, { ticket, search }),
+    [questions, ticket, search],
   )
   const inFolder = useMemo(
     () => visible.filter((q) => q.status === folder),
     [visible, folder],
   )
+  // The nav badge counts what is OPEN, unfiltered. The folder counts follow the
+  // filters — they describe this view — but the badge is a claim about the
+  // fleet, and a text search that made it read 0 would say the queue is empty
+  // when it is only hidden.
+  const openTotal = useMemo(() => questions.filter((q) => q.status === 'open').length, [questions])
   const counts = useMemo(() => {
     const c: Partial<Record<Folder, number>> = {}
     for (const f of FOLDERS) c[f] = visible.filter((q) => q.status === f).length
@@ -317,7 +325,7 @@ export function App() {
           schedules: t.schedules,
           settings: t.settings,
         }}
-        badges={{ inbox: counts.open ?? 0 }}
+        badges={{ inbox: openTotal }}
         lang={lang}
         onLang={(l) => {
           setLang(l)
@@ -331,26 +339,9 @@ export function App() {
           saveProject(id)
           setSelectedId(null)
           setTicket('')
+          setSearch('')
         }}
       >
-        <Typeahead
-          id="tickpick"
-          options={tickets}
-          value={ticket}
-          onChange={(id) => {
-            setTicket(id)
-            setSelectedId(null)
-          }}
-          labels={{
-            all: t.allTickets,
-            placeholder: t.taTicket,
-            clear: t.taClear,
-            noMatch: t.taNoMatch,
-            count: t.taCount,
-            count1: t.taCount1,
-        countTruncated: t.taCountMore,
-          }}
-        />
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
         <Button variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>
           ↻
@@ -359,6 +350,42 @@ export function App() {
           ⎋
         </Button>
       </AppHeader>
+
+      {/* The filters, in their own row rather than in the shared header — see
+          components/inbox/FilterBar.tsx. On a phone the reading pane REPLACES
+          the list, so the bar goes with the list it filters. */}
+      <FilterBar
+        className={selectedId ? 'hidden md:flex' : 'flex'}
+        tickets={tickets}
+        ticket={ticket}
+        onTicket={(id) => {
+          setTicket(id)
+          setSelectedId(null)
+        }}
+        search={search}
+        onSearch={(text) => {
+          setSearch(text)
+          setSelectedId(null)
+        }}
+        matched={visible.length}
+        open={filtersOpen}
+        onOpen={setFiltersOpen}
+        labels={{
+          filters: t.filters,
+          allTickets: t.allTickets,
+          taTicket: t.taTicket,
+          taClear: t.taClear,
+          taNoMatch: t.taNoMatch,
+          taCount: t.taCount,
+          taCount1: t.taCount1,
+          taCountMore: t.taCountMore,
+          search: t.search,
+          searchPlaceholder: t.searchPh,
+          count: t.taQCount,
+          count1: t.taQCount1,
+          clearAll: t.clearAll,
+        }}
+      />
 
       {/* Stacked master/detail on a phone, three panes from `md` up.
           The fixed columns totalled 500px, so below ~540px the `1fr` reading
@@ -427,15 +454,18 @@ export function App() {
             // fleet. `noneForTicket` was written for exactly this and had never
             // been wired up.
             <div className="text-muted-foreground px-6 py-14 text-center">
-              {ticket ? (
+              {ticket || search.trim() ? (
                 <>
-                  <div className="text-[13px]">{t.noneForTicket}</div>
+                  <div className="text-[13px]">{ticket ? t.noneForTicket : t.noneForSearch}</div>
                   <button
                     type="button"
-                    onClick={() => setTicket('')}
+                    onClick={() => {
+                      setTicket('')
+                      setSearch('')
+                    }}
                     className="text-primary mt-2 cursor-pointer px-2 py-1 text-[13px] font-[650] underline"
                   >
-                    {t.taClear}
+                    {t.clearAll}
                   </button>
                 </>
               ) : folder === 'open' ? (
