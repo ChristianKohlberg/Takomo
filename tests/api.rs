@@ -209,20 +209,32 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     }
 }
 
-/// `/inbox`'s ticket filter searches ticket *titles*, not just ids (takomo-4io8).
+/// `/inbox`'s ticket filter searches ticket *titles*, not just ids (takomo-4io8),
+/// and its epic grouping walks `parent`/`type`.
 ///
 /// The titles are the whole point of the control — an id-only list is what the
 /// <select> already offered — and they arrive on a request the page makes for
-/// another reason entirely (the tag map). So this pins both halves: the sparse
-/// projection actually returns `title`, and the page asks for it.
+/// another reason entirely (the tag map). `parent` and `type` ride the same
+/// request: without them the inbox cannot tell which epic a question's ticket
+/// sits under, so "group by epic" would render one undifferentiated group and
+/// filtering by an epic would show an EMPTY inbox — questions hang off the
+/// leaves. So this pins both halves: the sparse projection actually returns all
+/// five fields, and the page asks for them.
 #[tokio::test]
 async fn inbox_ticket_filter_has_titles_to_search() {
     let app = TestApp::spawn().await;
-    let id = app.create_ticket("Sweep expired leases").await;
+    let epic = app.create_typed("Lease hygiene", "epic", None).await;
+    let id = app
+        .create_typed("Sweep expired leases", "task", Some(&epic))
+        .await;
 
-    // The projection the inbox uses: one request carrying tags *and* titles.
+    // The projection the inbox uses: one request carrying tags, titles and the
+    // tree.
     let (_, list) = app
-        .get(&app.admin, "/v1/tickets?project=tp&fields=id,title,tags")
+        .get(
+            &app.admin,
+            "/v1/tickets?project=tp&fields=id,title,tags,parent,type",
+        )
         .await;
     let t = list["items"]
         .as_array()
@@ -233,18 +245,29 @@ async fn inbox_ticket_filter_has_titles_to_search() {
     assert_eq!(
         t["title"],
         json!("Sweep expired leases"),
-        "`fields=id,title,tags` must return the title the filter searches: {list}"
+        "the projection must return the title the filter searches: {list}"
+    );
+    assert_eq!(
+        t["parent"],
+        json!(epic),
+        "…and `parent`, which the epic grouping walks upward: {list}"
+    );
+    assert_eq!(
+        t["type"],
+        json!("task"),
+        "…and `type`, which is how the walk recognises the epic it stops at: {list}"
     );
     assert!(
         t.get("body").is_none(),
-        "…and stay sparse — the filter needs three fields, not the whole ticket: {list}"
+        "…and stay sparse — the filter needs five fields, not the whole ticket: {list}"
     );
 
     let body = app.app_bundle().await;
     assert!(
-        body.contains("fields=id,title,tags"),
-        "/inbox must request `title` on the ticket fetch it already makes, or the \
-         filter has nothing but ids to match on"
+        body.contains("fields=id,title,tags,parent,type"),
+        "/inbox must request `title`, `parent` and `type` on the ticket fetch it \
+         already makes, or the filter has nothing but ids to match on and the epic \
+         grouping has no tree to walk"
     );
     // Locale parity used to be counted here — two occurrences meant a DE and an
     // EN entry. That count is meaningless against one bundle carrying all four
