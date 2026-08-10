@@ -226,13 +226,34 @@ export function App() {
         const ini = await createInitiative(token, fields)
         setCreating(false)
         toast(t.created, 'success')
-        await fetchAll()
+
+        // Clear the filters before refetching.
+        //
+        // The list is filtered SERVER-side by status and search text, and a new
+        // initiative is always `open` and rarely matches whatever the reader had
+        // typed. So creating one while the Parked filter was on did this: the
+        // toast said "Initiative created", the list refetched correctly, the new
+        // initiative was not in it, and `select()` below then found nothing to
+        // select — leaving the reader looking at an unchanged, empty list. It
+        // reads exactly like "creating did nothing".
+        //
+        // Making the thing you just created visible matters more than preserving
+        // a filter you set before it existed.
+        const filtered = status !== '' || q !== ''
+        if (filtered) {
+          setStatus('')
+          setQ('')
+        }
+        // `fetchAll` closes over the OLD status/q — setState is not synchronous —
+        // so refetch explicitly with the cleared values rather than calling it.
+        const page = await listInitiatives(token, { project, status: '', q: '' })
+        setItems(page.items ?? [])
         select(ini.id)
       } catch (e) {
         handleErr(e)
       }
     },
-    [token, toast, t, fetchAll, select, handleErr],
+    [token, toast, t, project, status, q, select, handleErr],
   )
 
   const doAppend = useCallback(async () => {
@@ -365,7 +386,15 @@ export function App() {
           setEntryCursor(null)
         }}
       >
+        {/* An initiative belongs to exactly one project, so this cannot act
+            while the selection is "All projects". It used to look perfectly
+            live and answer a click with a toast — a dead control that says why
+            only after you press it. It now shows its own state, and the reason
+            is on hover rather than after the fact. */}
         <Button
+          aria-disabled={!project}
+          title={project ? undefined : t.needProject}
+          className={project ? undefined : 'opacity-55'}
           onClick={() => {
             if (!guardWrite()) return
             if (!project) {
