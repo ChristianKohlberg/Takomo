@@ -17,6 +17,8 @@ mod questions;
 mod roadmap;
 mod schedules;
 mod shares;
+/// Dialect shim for the Postgres port. Temporary scaffold — see its module doc.
+mod sql;
 mod tags;
 mod tickets;
 mod tokens;
