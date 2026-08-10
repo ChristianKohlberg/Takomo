@@ -57,6 +57,11 @@ pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))
 }
 
+/// Workflow library entry id, e.g. "wf-9f3ka2xz".
+pub fn workflow_entry_id() -> String {
+    format!("wf-{}", random_chars(BASE36, 8))
+}
+
 /// Release id, e.g. "rel-9f3ka2xz".
 pub fn release_id() -> String {
     format!("rel-{}", random_chars(BASE36, 8))

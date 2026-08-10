@@ -12560,3 +12560,259 @@ async fn a_move_emits_an_event_carrying_what_it_reconciled() {
     assert_eq!(moved["payload"]["to_project"], "beta", "{moved}");
     assert_eq!(moved["payload"]["state_reset"], true, "{moved}");
 }
+
+// ---------------------------------------------------------------------------
+// Workflow library + dry-run validation + layout (Phase 2 of workflow config).
+
+/// The dry-run answers the same question the PUT does, and writes nothing.
+///
+/// The editor validates a draft while it is being typed, so it cannot be a
+/// write. What makes it trustworthy is that it runs the SAME `validate` against
+/// the SAME live in-use states — if it drifted, the editor would call a draft
+/// clean and the Apply a moment later would 422.
+#[tokio::test]
+async fn workflow_dry_run_validates_without_writing() {
+    let app = TestApp::spawn().await;
+    let (_, before) = app.get(&app.admin, "/v1/projects/tp/workflow").await;
+
+    // A structurally valid workflow validates clean.
+    let good = json!({
+        "name": "two-state",
+        "initial": "open",
+        "states": [
+            { "id": "open", "category": "todo", "claimable": true },
+            { "id": "done", "category": "done", "terminal": true }
+        ],
+        "transitions": [{ "from": "open", "to": "done" }]
+    });
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/workflow/validate",
+            good.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["valid"], true, "{body}");
+    assert_eq!(body["problems"].as_array().unwrap().len(), 0);
+
+    // An invalid one reports problems as data rather than throwing an error the
+    // editor would have to parse out of a sentence.
+    let bad = json!({
+        "name": "no-terminal",
+        "initial": "open",
+        "states": [{ "id": "open", "category": "todo" }],
+        "transitions": []
+    });
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/workflow/validate", bad)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["valid"], false, "{body}");
+    assert!(
+        body["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap_or_default().contains("terminal")),
+        "problems name the missing terminal state: {body}"
+    );
+
+    // And the project's workflow is untouched by either call.
+    let (_, after) = app.get(&app.admin, "/v1/projects/tp/workflow").await;
+    assert_eq!(before, after, "dry-run must not write");
+}
+
+/// The dry-run sees stranded tickets, which is the one rule a browser could
+/// never compute for itself: it depends on where this project's tickets
+/// currently sit, not on the document.
+#[tokio::test]
+async fn workflow_dry_run_reports_stranded_tickets() {
+    let app = TestApp::spawn().await;
+    // The seeded project's workflow has `todo`; put a ticket in it, then offer a
+    // workflow that does not define `todo` at all.
+    let id = app.create_ticket("Stranded by the new workflow").await;
+    assert!(!id.is_empty());
+
+    let without_todo = json!({
+        "name": "no-todo",
+        "initial": "start",
+        "states": [
+            { "id": "start", "category": "todo", "claimable": true },
+            { "id": "finished", "category": "done", "terminal": true }
+        ],
+        "transitions": [{ "from": "start", "to": "finished" }]
+    });
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/workflow/validate",
+            without_todo.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["valid"], false, "{body}");
+    let problems = body["problems"].as_array().unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.as_str().unwrap_or_default().contains("no longer defines")),
+        "the stranding problem is reported: {body}"
+    );
+
+    // The PUT refuses the same document, so preflight and apply agree.
+    let (s, body) = app
+        .put(&app.admin, "/v1/projects/tp/workflow", without_todo)
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "workflow.invalid");
+}
+
+/// The library ships the two built-in workflows and refuses to let them be
+/// edited — they are reseeded on every start, so an edit here would be undone
+/// silently at the next restart.
+#[tokio::test]
+async fn workflow_library_ships_builtins_and_protects_them() {
+    let app = TestApp::spawn().await;
+
+    let (s, list) = app.get(&app.admin, "/v1/workflows").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    let rows = list.as_array().expect("array");
+    let names: Vec<&str> = rows.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(
+        names.contains(&"factory-default") && names.contains(&"simple"),
+        "both shipped workflows are in the library: {names:?}"
+    );
+    // `simple` was NOT reachable from the server before this: the only copy the
+    // process had was inside the CLI shell script.
+    let simple = rows.iter().find(|r| r["name"] == "simple").expect("simple");
+    assert_eq!(simple["builtin"], true);
+    assert_eq!(simple["workflow"]["initial"], "todo");
+
+    let id = simple["id"].as_str().unwrap();
+    let (s, body) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/workflows/{id}"),
+            json!({ "description": "mine" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "workflow.builtin", "{body}");
+
+    let (s, _) = app.delete(&app.admin, &format!("/v1/workflows/{id}")).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A user entry may not squat a built-in's name either — the seed would
+    // overwrite it on the next start.
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/workflows",
+            json!({ "name": "simple", "workflow": simple["workflow"].clone() }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "workflow.name_reserved", "{body}");
+}
+
+/// A user entry round-trips, validates on the way in, and its name is unique.
+#[tokio::test]
+async fn workflow_library_crud_validates_and_keeps_names_unique() {
+    let app = TestApp::spawn().await;
+    let doc = json!({
+        "name": "lean",
+        "initial": "open",
+        "states": [
+            { "id": "open", "category": "todo", "claimable": true },
+            { "id": "shipped", "category": "done", "terminal": true }
+        ],
+        "transitions": [{ "from": "open", "to": "shipped", "requires": ["claim"] }]
+    });
+
+    let (s, created) = app
+        .post(
+            &app.admin,
+            "/v1/workflows",
+            json!({ "name": "Lean", "description": "two states", "workflow": doc.clone(),
+                    "layout": { "open": { "x": 0, "y": 0 } } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    assert_eq!(created["builtin"], false);
+    assert_eq!(created["layout"]["open"]["x"], 0);
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // A second entry cannot take the same name.
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/workflows",
+            json!({ "name": "Lean", "workflow": doc }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "workflow.name_taken", "{body}");
+
+    // An invalid document is refused with the same structured problems the
+    // project PUT returns, so one editor can render either.
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/workflows",
+            json!({
+                "name": "broken",
+                "workflow": {
+                    "name": "broken", "initial": "a",
+                    "states": [{ "id": "a", "category": "nonsense" }],
+                    "transitions": []
+                }
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "workflow.invalid");
+    assert!(body["details"]["problems"].is_array(), "{body}");
+
+    let (s, _) = app.delete(&app.admin, &format!("/v1/workflows/{id}")).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = app.get(&app.admin, &format!("/v1/workflows/{id}")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// Moving a node is not a workflow change: the layout round-trips and emits no
+/// `workflow_changed` event, so a board does not refetch because someone dragged
+/// a box.
+#[tokio::test]
+async fn workflow_layout_round_trips_without_emitting_an_event() {
+    let app = TestApp::spawn().await;
+    let (_, before) = app.get(&app.admin, "/v1/events?since=0").await;
+    let cursor = before["cursor"].as_i64().unwrap_or(0);
+
+    let (s, body) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/workflow-layout",
+            json!({ "layout": { "todo": { "x": 10, "y": 20 } } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    let (s, got) = app.get(&app.admin, "/v1/projects/tp/workflow-layout").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(got["layout"]["todo"]["x"], 10, "{got}");
+
+    let (_, after) = app
+        .get(&app.admin, &format!("/v1/events?since={cursor}"))
+        .await;
+    let kinds: Vec<&str> = after["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["kind"].as_str())
+        .collect();
+    assert!(
+        !kinds.contains(&"workflow_changed"),
+        "a layout write must not read as a workflow change: {kinds:?}"
+    );
+}

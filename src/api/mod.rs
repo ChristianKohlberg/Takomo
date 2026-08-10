@@ -16,6 +16,7 @@ pub mod tags;
 pub mod tickets;
 pub mod tokens;
 pub mod transition;
+pub mod workflows;
 
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;

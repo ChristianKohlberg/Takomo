@@ -769,6 +769,20 @@ impl Store {
         })
     }
 
+    /// What [`Store::put_workflow`] would complain about, WITHOUT writing.
+    ///
+    /// The same `validate` against the same live `states_in_use`, so a draft the
+    /// editor calls clean cannot be refused by the PUT a moment later. Empty
+    /// means it would be accepted. Runs on a read connection: it is a read.
+    pub fn workflow_problems(&self, project: &str, wf: &Workflow) -> ApiResult<Vec<String>> {
+        self.with_conn(|conn| {
+            // 404 if the project does not exist, exactly as the write path does.
+            get_workflow(conn, project)?;
+            let in_use = states_in_use(conn, project)?;
+            Ok(wf.validate(&in_use))
+        })
+    }
+
     /// Replace a project's workflow (PUT). Must remain valid for existing tickets.
     pub fn put_workflow(&self, project: &str, wf: Workflow, actor: &str) -> ApiResult<Workflow> {
         let now = now_ms();

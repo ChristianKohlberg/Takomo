@@ -226,6 +226,212 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /projects/{project}/workflow/validate:
+    post:
+      tags: [workflow]
+      summary: Would this workflow be accepted? (admin scope; writes nothing)
+      description: |
+        Runs exactly the validation `PUT /projects/{project}/workflow` runs —
+        including the stranded-ticket rule, which depends on where this project's
+        tickets currently sit — and returns the result instead of applying it.
+
+        Exists for editors: a draft has to be checked while it is being written,
+        and the rules are subtle enough (terminal reachability, the
+        claimable-with-done-category trap, stranding) that a client
+        reimplementing them would drift. Asking the server the same question the
+        PUT answers keeps "valid here" and "accepted there" from disagreeing.
+
+        A distinct route rather than a `dry_run` flag on the PUT: a query
+        parameter that silently turns a write into a read is the kind of thing a
+        proxy strips and a caller forgets, and getting it wrong writes the
+        database.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Workflow" }
+      responses:
+        "200":
+          description: "The verdict. `valid: false` is a normal 200 — an invalid draft is an answer, not a failure."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  problems:
+                    type: array
+                    items: { type: string }
+                    description: empty when valid; each entry names one defect
+        "422":
+          description: The body is not a workflow document at all (`workflow.parse`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /projects/{project}/workflow-layout:
+    get:
+      tags: [workflow]
+      summary: Node positions for the workflow editor (read scope)
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: "`layout` is null when nothing is stored; the client lays the graph out itself."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  layout: { type: [object, "null"], additionalProperties: true }
+    put:
+      tags: [workflow]
+      summary: Store node positions (admin scope)
+      description: |
+        Where the editor's nodes sit, stored BESIDE the workflow rather than
+        inside it: `Workflow` is `deny_unknown_fields`, so a `positions` key in
+        the document would be rejected on the way back in.
+
+        Separate from the workflow PUT for a second reason — moving a node
+        changes nothing about how the project behaves, so this emits no
+        `workflow_changed` event and wakes no long-poller. A board that refetched
+        every time someone dragged a box would be reacting to nothing.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [layout]
+              properties:
+                layout:
+                  type: object
+                  additionalProperties: true
+                  description: state id to an x/y position
+      responses:
+        "200": { description: Stored }
+
+  /workflows:
+    get:
+      tags: [workflow]
+      summary: The workflow library — named state machines reusable across projects (read scope)
+      description: |
+        A workflow has always been a COLUMN on a project, so two projects wanting
+        the same lifecycle each carried their own copy, and improving one
+        improved neither the other nor the next project created. This is the
+        shared shelf they can be taken from.
+
+        It stores documents and never applies one: applying stays
+        `PUT /projects/{project}/workflow`, the single place the
+        never-strand-a-ticket check runs. Deleting a library entry therefore does
+        not affect a project already using it — applying copies the document onto
+        the project.
+
+        Built-ins (`factory-default`, `simple`) are seeded from the binary on
+        every start and marked `builtin: true`. They cannot be edited, renamed or
+        deleted here, and a user entry may not take one of their names, because
+        the next restart would overwrite it.
+
+        Read scope, not admin: a non-admin can already read the workflow of any
+        project it can see, and choosing which one to ask an admin for is not
+        privileged.
+      responses:
+        "200":
+          description: Every entry, built-ins first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkflowEntry" }
+    post:
+      tags: [workflow]
+      summary: Save a named workflow (admin scope)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, workflow]
+              properties:
+                name: { type: string, description: "1-100 chars, unique, and not a built-in's name" }
+                description: { type: [string, "null"] }
+                workflow: { $ref: "#/components/schemas/Workflow" }
+                layout: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEntry" }
+        "409":
+          description: A workflow with that name exists (`workflow.name_taken`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Invalid document (`workflow.invalid`, with `details.problems`) or a reserved name (`workflow.name_reserved`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /workflows/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [workflow]
+      summary: One library entry (read scope)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEntry" }
+        "404": { description: No such entry }
+    patch:
+      tags: [workflow]
+      summary: Rename, re-describe, or replace a library entry (admin scope)
+      description: |
+        An absent key leaves that field alone; `description: null` clears it.
+        Built-ins refuse with `workflow.builtin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: [string, "null"] }
+                workflow: { $ref: "#/components/schemas/Workflow" }
+                layout: { type: [object, "null"], additionalProperties: true }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowEntry" }
+        "422":
+          description: Invalid document, a reserved name, or a built-in (`workflow.builtin`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [workflow]
+      summary: Delete a library entry (admin scope)
+      description: |
+        Does not touch a project already using the document. Built-ins refuse
+        with `workflow.builtin`.
+      responses:
+        "204": { description: Deleted }
+        "404": { description: No such entry }
+        "422":
+          description: A built-in cannot be deleted (`workflow.builtin`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /projects/{project}/roadmap:
     get:
       tags: [workflow]
@@ -4833,6 +5039,34 @@ components:
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 
+    WorkflowEntry:
+      type: object
+      description: |
+        One entry in the workflow library: a named state machine, plus where its
+        nodes sit in the editor.
+
+        `layout` is deliberately a SIBLING of `workflow`, not a key inside it.
+        The workflow document is `deny_unknown_fields`, so positions carried
+        inside it would be rejected the moment the document was applied.
+      required: [id, name, workflow, builtin, created_at, created_by, updated_at]
+      properties:
+        id: { type: string, description: "e.g. wf-9f3ka2xz" }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        workflow: { $ref: "#/components/schemas/Workflow" }
+        layout:
+          type: [object, "null"]
+          additionalProperties: true
+          description: state id to an x/y position; null when never laid out
+        builtin:
+          type: boolean
+          description: >-
+            ships with the server and is reseeded on every start, so it cannot be
+            edited, renamed or deleted through the API
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        updated_at: { type: string, format: date-time }
+
     Workflow:
       type: object
       description: See workflow-format.md for authoring format and semantics
@@ -5408,6 +5642,13 @@ x-error-codes:
   project.style_guide_too_long: "the project style guide is over its character limit. It rides along on every work-loop response, so it holds the few conventions that change how an agent writes; anything longer belongs in a ticket or repo docs."
   workflow.parse: "the workflow document does not match the expected shape. `name`, `initial`, `states` (id and category each) and `transitions` (from and to each) are required; see spec/workflow-format.md."
   workflow.invalid: "the workflow parsed but is not a usable state machine — an unreachable state, a transition to a state that does not exist, no terminal state. The message lists every problem found."
+  workflow.missing: "`workflow` is required: the state machine document to save. See spec/workflow-format.md."
+  workflow.name: "`name` must be 1-100 characters. It is how the workflow is chosen from the library, so it has to be typed by a human."
+  workflow.name_taken: "a workflow with that name already exists in the library. Pick another name, or edit the existing entry."
+  workflow.name_reserved: "the name belongs to a workflow this server ships. Those rows are reseeded on every start, so an entry using the name would be silently overwritten — pick another."
+  workflow.builtin: "the workflow ships with the server and is reseeded on every start, so editing or deleting it through the API would be undone at the next restart. Copy it under a new name and change the copy."
+  layout.missing: "`layout` is required: an object mapping each state id to an x/y position."
+  notfound.workflow: "no library entry with that id. List them with GET /v1/workflows; a project's own workflow lives at GET /v1/projects/{project}/workflow instead."
   token.actor: "`actor` must be non-empty and at most 200 characters. It is who the token acts as, and it lands in the event log."
   token.scopes: "`scopes` is required and must be a non-empty array of strings, e.g. [\"read\", \"write\"]."
   token.projects: "`projects` must be an array of project ids, or the string \"*\" for all of them — never an empty array."
