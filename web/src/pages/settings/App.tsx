@@ -31,6 +31,7 @@ import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
+import { PromptDialog } from '@/components/settings/PromptDialog'
 import { WorkflowEditor } from '@/components/settings/workflow/WorkflowEditor'
 import { TokenList } from '@/components/settings/TokenList'
 import { TokenRevealDialog } from '@/components/settings/TokenRevealDialog'
@@ -52,8 +53,10 @@ import {
 } from '@/lib/project-settings'
 import {
   createWorkflowEntry,
+  deleteWorkflowEntry,
   getProjectWorkflow,
   listWorkflows,
+  patchWorkflowEntry,
   type Layout,
   type WorkflowDoc,
   type WorkflowEntry,
@@ -75,7 +78,7 @@ import { STR } from './strings'
 const LS_LANG = 'takomo.lang'
 const LS_SECTION = 'takomo.settings.section'
 
-type SectionKey = 'overview' | 'data' | 'access' | 'projects'
+type SectionKey = 'overview' | 'data' | 'access' | 'projects' | 'library'
 
 /** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
 function fill(template: string, values: Record<string, string>): string {
@@ -97,7 +100,12 @@ export function App() {
   const [section, setSection] = useState<SectionKey>(() => {
     if (new URLSearchParams(window.location.search).get('project')) return 'projects'
     const stored = localStorage.getItem(LS_SECTION)
-    return stored === 'data' || stored === 'access' || stored === 'projects' ? stored : 'overview'
+    return stored === 'data' ||
+      stored === 'access' ||
+      stored === 'projects' ||
+      stored === 'library'
+      ? stored
+      : 'overview'
   })
 
   const [who, setWho] = useState<Whoami | null>(null)
@@ -125,6 +133,10 @@ export function App() {
   const [newProject, setNewProject] = useState(false)
   const [revoking, setRevoking] = useState<TokenRow | null>(null)
   const [deleting, setDeleting] = useState<Project | null>(null)
+  const [deletingWorkflow, setDeletingWorkflow] = useState<WorkflowEntry | null>(null)
+  const [renaming, setRenaming] = useState<WorkflowEntry | null>(null)
+  /** A draft waiting for a name before it goes into the library. */
+  const [savingDraft, setSavingDraft] = useState<{ wf: WorkflowDoc; layout: Layout } | null>(null)
 
   const t = useMemo(() => pick(STR, lang), [lang])
 
@@ -183,26 +195,21 @@ export function App() {
     void getProjectWorkflow(token, selectedKey)
       .then((wf) => !cancelled && setProjectWorkflow(wf))
       .catch(() => !cancelled && setProjectWorkflow(null))
-    void listWorkflows(token)
-      .then((l) => !cancelled && setLibrary(l))
-      .catch(() => !cancelled && setLibrary([]))
     return () => {
       cancelled = true
     }
   }, [selectedKey, isAdmin, token])
 
-  /** "Save to library…" from the editor. */
-  const saveDraftToLibrary = async (draft: WorkflowDoc, layout: Layout) => {
-    const name = window.prompt(t.wfSaveAsPrompt, draft.name)
-    if (!name) return
-    try {
-      await createWorkflowEntry(token, { name, workflow: draft, layout })
-      setLibrary(await listWorkflows(token))
-      toast(t.wfSavedToLibrary, 'success')
-    } catch (e) {
-      handleErr(e)
-    }
-  }
+  // The library is needed by the editor's "Start from…" AND by its own section,
+  // so it loads whenever either could be on screen.
+  const reloadLibrary = useCallback(async () => {
+    setLibrary(await listWorkflows(token).catch(() => [] as WorkflowEntry[]))
+  }, [token])
+
+  useEffect(() => {
+    if (!isAdmin) return
+    void reloadLibrary()
+  }, [isAdmin, reloadLibrary])
 
   const onSaveProject = () => {
     if (!selected) return
@@ -226,6 +233,7 @@ export function App() {
     { key: 'data', label: t.navData, hint: t.navDataHint },
     { key: 'access', label: t.navAccess, hint: t.navAccessHint },
     { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
+    { key: 'library', label: t.navLibrary, hint: t.navLibraryHint },
   ]
 
   function signOut() {
@@ -453,6 +461,63 @@ export function App() {
                 />
               )}
             </Section>
+          ) : section === 'library' ? (
+            <Section title={t.libTitle} description={t.libSub}>
+              {library.length === 0 ? (
+                <EmptyState>{t.libEmpty}</EmptyState>
+              ) : (
+                <ul className="flex flex-col gap-px">
+                  {library.map((w) => (
+                    <li
+                      key={w.id}
+                      className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-[650]">{w.name}</span>
+                          {w.builtin && (
+                            <Badge variant="secondary" title={t.libBuiltinLocked}>
+                              {t.libBuiltin}
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-muted-foreground mt-0.5 text-[11.5px]">
+                          {t.libStates.replace('{n}', String(w.workflow.states.length))}
+                          {' · '}
+                          {t.libTransitions.replace(
+                            '{n}',
+                            String(w.workflow.transitions?.length ?? 0),
+                          )}
+                          {w.description ? ` · ${w.description}` : ''}
+                        </div>
+                      </div>
+                      {/* Built-ins carry no actions at all rather than disabled
+                          ones: they are reseeded on every start, so every edit
+                          here would be undone silently. The badge's title says
+                          so, and the row stays readable. */}
+                      {!w.builtin && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setRenaming(w)}
+                          >
+                            {t.libRename}
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => setDeletingWorkflow(w)}
+                          >
+                            {t.libDelete}
+                          </Button>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
           ) : selected ? (
             <ProjectDetail
               project={selected}
@@ -469,7 +534,7 @@ export function App() {
                       void refresh()
                     }}
                     onError={handleErr}
-                    onSaveAs={(draft, layout) => void saveDraftToLibrary(draft, layout)}
+                    onSaveAs={(wf, layout) => setSavingDraft({ wf, layout })}
                     labels={{
                       title: t.wfTitle,
                       subtitle: t.wfSubtitle,
@@ -689,6 +754,67 @@ export function App() {
             // the panel showing a project that no longer exists.
             if (deleting.id === selectedId) selectProject(null)
             await refresh()
+          } catch (e) {
+            handleErr(e)
+          }
+        }}
+      />
+      <PromptDialog
+        open={savingDraft !== null}
+        onOpenChange={(o) => !o && setSavingDraft(null)}
+        title={t.wfSaveAs}
+        description={t.libSub}
+        label={t.wfSaveAsPrompt}
+        initial={savingDraft?.wf.name ?? ''}
+        confirmLabel={t.projSave}
+        cancelLabel={t.cancel}
+        onSubmit={async (name) => {
+          if (!savingDraft) return
+          try {
+            await createWorkflowEntry(token, {
+              name,
+              workflow: savingDraft.wf,
+              layout: savingDraft.layout,
+            })
+            await reloadLibrary()
+            toast(t.wfSavedToLibrary, 'success')
+          } catch (e) {
+            handleErr(e)
+          }
+        }}
+      />
+
+      <PromptDialog
+        open={renaming !== null}
+        onOpenChange={(o) => !o && setRenaming(null)}
+        title={t.libRename}
+        label={t.libRenamePrompt}
+        initial={renaming?.name ?? ''}
+        confirmLabel={t.projSave}
+        cancelLabel={t.cancel}
+        onSubmit={async (name) => {
+          if (!renaming || name === renaming.name) return
+          try {
+            await patchWorkflowEntry(token, renaming.id, { name })
+            await reloadLibrary()
+          } catch (e) {
+            handleErr(e)
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={deletingWorkflow !== null}
+        onOpenChange={(o) => !o && setDeletingWorkflow(null)}
+        title={t.confirmDeleteWfTitle}
+        description={fill(t.confirmDeleteWfBody, { name: deletingWorkflow?.name ?? '' })}
+        confirmLabel={t.confirmDeleteWfYes}
+        cancelLabel={t.cancel}
+        onConfirm={async () => {
+          if (!deletingWorkflow) return
+          try {
+            await deleteWorkflowEntry(token, deletingWorkflow.id)
+            await reloadLibrary()
           } catch (e) {
             handleErr(e)
           }

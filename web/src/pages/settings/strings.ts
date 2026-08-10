@@ -24,6 +24,8 @@ export const STR = defineStrings({
     navAccessHint: 'Tokens that can reach the API',
     navProjects: 'Projects',
     navProjectsHint: 'Create and remove projects',
+    navLibrary: 'Workflows',
+    navLibraryHint: 'Reusable state machines',
 
     signOut: 'Sign out',
     navExpand: 'Expand navigation',
@@ -205,6 +207,24 @@ export const STR = defineStrings({
       'Deleting {id} removes its tickets, questions, schedules and checklist data. This cannot be undone.',
     confirmDeleteProjYes: 'Delete project',
 
+    // Workflow library
+    libTitle: 'Workflow library',
+    libSub:
+      'Named state machines that can be applied to any project. Applying copies the document onto the project, so deleting an entry here never changes a project already using it.',
+    libEmpty: 'No saved workflows yet. Open a project, shape its workflow, and use “Save to library…”.',
+    libBuiltin: 'ships with takomo',
+    libStates: '{n} states',
+    libTransitions: '{n} transitions',
+    libRename: 'Rename',
+    libDelete: 'Delete',
+    libRenamePrompt: 'New name',
+    libBuiltinLocked:
+      'This workflow ships with the server and is reseeded on every start, so a change here would be undone at the next restart. Start a project from it and save the result under a new name.',
+    confirmDeleteWfTitle: 'Delete this workflow?',
+    confirmDeleteWfBody:
+      'Removes “{name}” from the library. Projects already using it keep their workflow — applying copies the document, so nothing breaks.',
+    confirmDeleteWfYes: 'Delete workflow',
+
     cancel: 'Cancel',
     requestFailed: 'Request failed.',
   },
@@ -228,6 +248,8 @@ export const STR = defineStrings({
     navAccessHint: 'Tokens, die die API erreichen',
     navProjects: 'Projekte',
     navProjectsHint: 'Projekte anlegen und entfernen',
+    navLibrary: 'Workflows',
+    navLibraryHint: 'Wiederverwendbare Zustandsautomaten',
 
     signOut: 'Abmelden',
     navExpand: 'Navigation ausklappen',
@@ -408,6 +430,24 @@ export const STR = defineStrings({
     confirmDeleteProjBody:
       'Mit {id} werden dessen Tickets, Fragen, Zeitpläne und Checklisten-Daten entfernt. Das lässt sich nicht rückgängig machen.',
     confirmDeleteProjYes: 'Projekt löschen',
+
+    libTitle: 'Workflow-Bibliothek',
+    libSub:
+      'Benannte Zustandsautomaten, die auf jedes Projekt angewendet werden können. Beim Anwenden wird das Dokument in das Projekt kopiert — ein Löschen hier ändert also nie ein Projekt, das ihn bereits nutzt.',
+    libEmpty:
+      'Noch keine gespeicherten Workflows. Öffne ein Projekt, gestalte seinen Workflow und nutze „In Bibliothek speichern…“.',
+    libBuiltin: 'wird mitgeliefert',
+    libStates: '{n} Zustände',
+    libTransitions: '{n} Übergänge',
+    libRename: 'Umbenennen',
+    libDelete: 'Löschen',
+    libRenamePrompt: 'Neuer Name',
+    libBuiltinLocked:
+      'Dieser Workflow wird mit dem Server ausgeliefert und bei jedem Start neu gesetzt — eine Änderung hier wäre beim nächsten Neustart weg. Starte ein Projekt damit und speichere das Ergebnis unter einem neuen Namen.',
+    confirmDeleteWfTitle: 'Diesen Workflow löschen?',
+    confirmDeleteWfBody:
+      'Entfernt „{name}“ aus der Bibliothek. Projekte, die ihn nutzen, behalten ihren Workflow — beim Anwenden wird das Dokument kopiert, es geht nichts kaputt.',
+    confirmDeleteWfYes: 'Workflow löschen',
 
     cancel: 'Abbrechen',
     requestFailed: 'Anfrage fehlgeschlagen.',
