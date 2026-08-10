@@ -201,6 +201,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/tickets",
             post(crate::api::tickets::create).get(crate::api::tickets::list),
         )
+        // Before `/v1/tickets/{id}` for readability only — the router matches a
+        // static segment ahead of a parameter either way, and no ticket id can
+        // be the bare word `move` (ids are `<project>-<suffix>`).
+        .route("/v1/tickets/move", post(crate::api::tickets::move_tickets))
         .route(
             "/v1/tickets/{id}",
             get(crate::api::tickets::get_one).merge(patch(crate::api::tickets::patch_one)),
