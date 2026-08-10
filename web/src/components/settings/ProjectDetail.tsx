@@ -11,7 +11,7 @@
 // call even when one half moved because the endpoint validates them together,
 // and a save that changed nothing closes without claiming "Saved" — a small lie
 // over an untouched form teaches the reader to distrust every later message.
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ArrowLeft } from 'lucide-react'
 
 import { Field } from '@/components/Field'
@@ -52,6 +52,14 @@ export interface ProjectDetailLabels {
 
 export interface ProjectDetailProps {
   project: { id: string; name?: string; workflow?: string }
+  /**
+   * The workflow editor, rendered below the conventions.
+   *
+   * A slot rather than props: the editor owns a draft, a debounced server
+   * validation and a preflight, and threading all of that through this
+   * component would make it the editor's controller instead of a form.
+   */
+  workflowSlot?: ReactNode
   settings: ProjectSettings
   onChange: (patch: Partial<ProjectSettings>) => void
   /** No `admin` scope: everything is shown, nothing can be saved. */
@@ -67,6 +75,7 @@ export interface ProjectDetailProps {
 
 export function ProjectDetail({
   project,
+  workflowSlot,
   settings: s,
   onChange,
   readOnly,
@@ -219,6 +228,13 @@ export function ProjectDetail({
           )}
         </div>
       </div>
+
+      {workflowSlot && (
+        <>
+          <hr className="border-border-soft" />
+          {workflowSlot}
+        </>
+      )}
     </div>
   )
 }

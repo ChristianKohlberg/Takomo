@@ -31,6 +31,7 @@ import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
+import { WorkflowEditor } from '@/components/settings/workflow/WorkflowEditor'
 import { TokenList } from '@/components/settings/TokenList'
 import { TokenRevealDialog } from '@/components/settings/TokenRevealDialog'
 import {
@@ -49,6 +50,14 @@ import {
   settingsFrom,
   type ProjectSettings,
 } from '@/lib/project-settings'
+import {
+  createWorkflowEntry,
+  getProjectWorkflow,
+  listWorkflows,
+  type Layout,
+  type WorkflowDoc,
+  type WorkflowEntry,
+} from '@/lib/workflows'
 import {
   createProject,
   createToken,
@@ -106,6 +115,8 @@ export function App() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveErr, setSaveErr] = useState('')
+  const [projectWorkflow, setProjectWorkflow] = useState<WorkflowDoc | null>(null)
+  const [library, setLibrary] = useState<WorkflowEntry[]>([])
 
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
@@ -159,6 +170,39 @@ export function App() {
     setSettings(settingsFrom(p))
     setOrigSettings(settingsFrom(p))
   }, [selectedKey, projects])
+
+  // The open project's workflow and the shared library, for the editor below the
+  // conventions. Both are fetched only when a project is actually open — the
+  // list view needs neither.
+  useEffect(() => {
+    if (!selectedKey || !isAdmin) {
+      setProjectWorkflow(null)
+      return
+    }
+    let cancelled = false
+    void getProjectWorkflow(token, selectedKey)
+      .then((wf) => !cancelled && setProjectWorkflow(wf))
+      .catch(() => !cancelled && setProjectWorkflow(null))
+    void listWorkflows(token)
+      .then((l) => !cancelled && setLibrary(l))
+      .catch(() => !cancelled && setLibrary([]))
+    return () => {
+      cancelled = true
+    }
+  }, [selectedKey, isAdmin, token])
+
+  /** "Save to library…" from the editor. */
+  const saveDraftToLibrary = async (draft: WorkflowDoc, layout: Layout) => {
+    const name = window.prompt(t.wfSaveAsPrompt, draft.name)
+    if (!name) return
+    try {
+      await createWorkflowEntry(token, { name, workflow: draft, layout })
+      setLibrary(await listWorkflows(token))
+      toast(t.wfSavedToLibrary, 'success')
+    } catch (e) {
+      handleErr(e)
+    }
+  }
 
   const onSaveProject = () => {
     if (!selected) return
@@ -412,6 +456,71 @@ export function App() {
           ) : selected ? (
             <ProjectDetail
               project={selected}
+              workflowSlot={
+                projectWorkflow && (
+                  <WorkflowEditor
+                    token={token}
+                    project={selected.id}
+                    workflow={projectWorkflow}
+                    library={library}
+                    readOnly={!isAdmin}
+                    onApplied={(wf) => {
+                      setProjectWorkflow(wf)
+                      void refresh()
+                    }}
+                    onError={handleErr}
+                    onSaveAs={(draft, layout) => void saveDraftToLibrary(draft, layout)}
+                    labels={{
+                      title: t.wfTitle,
+                      subtitle: t.wfSubtitle,
+                      addState: t.wfAddState,
+                      startFrom: t.wfStartFrom,
+                      apply: t.wfApply,
+                      applying: t.wfApplying,
+                      applied: t.wfApplied,
+                      revert: t.wfRevert,
+                      saveAs: t.wfSaveAs,
+                      problems: t.wfProblems,
+                      valid: t.wfValid,
+                      checking: t.wfChecking,
+                      blockedTitle: t.wfBlockedTitle,
+                      blockedBody: t.wfBlockedBody,
+                      blockedRow: t.wfBlockedRow,
+                      openBoard: t.wfOpenBoard,
+                      canvasInitial: t.wfCanvasInitial,
+                      canvasClaimable: t.wfCanvasClaimable,
+                      canvasTerminal: t.wfCanvasTerminal,
+                      canvasHint: t.wfCanvasHint,
+                      readOnlyMsg: t.wfReadOnly,
+                      newStateId: t.wfNewStateId,
+                      nothing: t.wfNothing,
+                      stateTitle: t.wfStateTitle,
+                      transitionTitle: t.wfTransitionTitle,
+                      id: t.wfId,
+                      idHint: t.wfIdHint,
+                      category: t.wfCategory,
+                      claimable: t.wfClaimable,
+                      claimableHint: t.wfClaimableHint,
+                      terminal: t.wfTerminal,
+                      terminalHint: t.wfTerminalHint,
+                      makeInitial: t.wfMakeInitial,
+                      isInitial: t.wfIsInitial,
+                      deleteState: t.wfDeleteState,
+                      deleteTransition: t.wfDeleteTransition,
+                      requires: t.wfRequires,
+                      reqClaim: t.wfReqClaim,
+                      reqHuman: t.wfReqHuman,
+                      reqNoChildren: t.wfReqNoChildren,
+                      reqNoBlockers: t.wfReqNoBlockers,
+                      reqHasLink: t.wfReqHasLink,
+                      reqHasLinkHint: t.wfReqHasLinkHint,
+                      linkKey: t.wfLinkKey,
+                      from: t.wfFrom,
+                      to: t.wfTo,
+                    }}
+                  />
+                )
+              }
               settings={settings}
               onChange={(patch) => {
                 setSettings((cur) => ({ ...cur, ...patch }))
