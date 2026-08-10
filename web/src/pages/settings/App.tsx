@@ -1,14 +1,22 @@
 // /settings — the admin console.
 //
-// The page is new; almost nothing behind it is. Tokens, projects and the write
-// budget have had endpoints since long before this page existed, and an operator
-// reached them through the CLI or curl. `GET /v1/export/sqlite` is the one thing
-// that had to be built for it, because "download the database" was the only
-// admin capability with no HTTP surface at all.
+// The page is new; almost nothing behind it is. Tokens and projects have had
+// endpoints since long before this page existed, and an operator reached them
+// through the CLI or curl. `GET /v1/export/sqlite` is the one thing that had to
+// be built for it, because "download the database" was the only admin capability
+// with no HTTP surface at all.
 //
-// Everything here is admin-only, so the page states that plainly rather than
-// rendering empty sections: a token without the scope gets one explanation and
-// the command that mints a better one, not four failed requests.
+// Laid out as four SWITCHED sections rather than four stacked cards. Stacked,
+// everything sat at one weight — "download the entire database, which contains
+// every secret in this deployment" read exactly like "here is a list of project
+// names" — and the page needed scrolling before it had any content. Switching
+// gives each section the whole panel and makes the page's shape legible without
+// scrolling it.
+//
+// The switcher is a TAB STRIP along the top, not a left sidebar. It was a
+// sidebar until #132 gave the whole app a left nav rail, and two left rails side
+// by side leave the reader unable to tell which one moves between surfaces and
+// which one moves within this page.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -16,12 +24,21 @@ import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { TokenGate } from '@/components/TokenGate'
-import { Field } from '@/components/Field'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
+import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
+import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
+import { TokenList } from '@/components/settings/TokenList'
+import { TokenRevealDialog } from '@/components/settings/TokenRevealDialog'
+import {
+  EmptyState,
+  FactRow,
+  Section,
+  SectionTabs,
+  type SectionDef,
+} from '@/components/settings/SettingsShell'
 
 import { isAuthError, loadToken, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
@@ -41,8 +58,11 @@ import {
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
+const LS_SECTION = 'takomo.settings.section'
 
-/** `{name}`/`{size}`/`{id}` substitution — the string tables carry placeholders. */
+type SectionKey = 'overview' | 'data' | 'access' | 'projects'
+
+/** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
 function fill(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m)
 }
@@ -54,6 +74,12 @@ export function App() {
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [gateError, setGateError] = useState('')
+  // Remembered, because the reason someone opens /settings twice in a row is
+  // usually the same reason.
+  const [section, setSection] = useState<SectionKey>(() => {
+    const stored = localStorage.getItem(LS_SECTION)
+    return stored === 'data' || stored === 'access' || stored === 'projects' ? stored : 'overview'
+  })
 
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
@@ -61,18 +87,26 @@ export function App() {
 
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
-  const [creatingToken, setCreatingToken] = useState(false)
+  const [newToken, setNewToken] = useState(false)
   const [minted, setMinted] = useState<CreatedToken | null>(null)
-  const [copied, setCopied] = useState(false)
-  const [creatingProject, setCreatingProject] = useState(false)
+  const [newProject, setNewProject] = useState(false)
+  const [revoking, setRevoking] = useState<TokenRow | null>(null)
+  const [deleting, setDeleting] = useState<Project | null>(null)
 
   const t = useMemo(() => pick(STR, lang), [lang])
 
   const isAdmin = (who?.scopes ?? []).includes('admin')
   // An allowlist is what makes the whole-database export unavailable, so the page
-  // can say why BEFORE the button is pressed rather than surfacing a 403 after.
+  // says why BEFORE the button is pressed rather than surfacing a 403 after.
   const allowlist = projectAllowlist(who)
   const scopedToProjects = allowlist !== null
+
+  const SECTIONS: readonly SectionDef<SectionKey>[] = [
+    { key: 'overview', label: t.navOverview, hint: t.navOverviewHint },
+    { key: 'data', label: t.navData, hint: t.navDataHint },
+    { key: 'access', label: t.navAccess, hint: t.navAccessHint },
+    { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
+  ]
 
   function signOut() {
     saveToken('')
@@ -131,44 +165,19 @@ export function App() {
   // that is otherwise entitled to this page. Throwing that person back to the
   // gate would log them out of a console they can legitimately use, and the
   // reason they came would never be shown.
-  //
-  // The button is hidden for a token with a project allowlist, so this path is
-  // not the normal way to meet that refusal; it is the backstop for a token
-  // whose grants changed under an open tab.
   const onExport = async () => {
     setExporting(true)
     try {
       const { filename, bytes } = await downloadDatabase(token)
-      toast(fill(t.exportDone, { name: filename, size: formatBytes(bytes) }), 'success')
+      toast(fill(t.dataDone, { name: filename, size: formatBytes(bytes) }), 'success')
     } catch (e) {
-      const status = (e as { status?: number })?.status
-      if (status === 401) {
+      if ((e as { status?: number })?.status === 401) {
         handleErr(e)
         return
       }
       toast((e as { message?: string })?.message || t.requestFailed, 'err')
     } finally {
       setExporting(false)
-    }
-  }
-
-  const onRevoke = async (row: TokenRow) => {
-    if (!window.confirm(t.confirmRevoke)) return
-    try {
-      await revokeToken(token, row.id)
-      await refresh()
-    } catch (e) {
-      handleErr(e)
-    }
-  }
-
-  const onDeleteProject = async (p: Project) => {
-    if (!window.confirm(fill(t.confirmDeleteProject, { id: p.id }))) return
-    try {
-      await deleteProject(token, p.id)
-      await refresh()
-    } catch (e) {
-      handleErr(e)
     }
   }
 
@@ -224,325 +233,280 @@ export function App() {
         }}
       />
 
-      <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 overflow-y-auto px-5 py-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{t.sessionTitle}</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2 text-[13px]">
-            <Row label={t.sessionActor}>
-              <span className="font-mono">{who?.actor ?? '…'}</span>
-            </Row>
-            <Row label={t.sessionScopes}>
-              <span className="flex flex-wrap gap-1">
-                {(who?.scopes ?? []).map((s) => (
-                  <Badge key={s} variant="secondary">
-                    {s}
-                  </Badge>
-                ))}
-              </span>
-            </Row>
-            <Row label={t.sessionProjects}>
-              {scopedToProjects ? (
-                <span className="font-mono">{(allowlist ?? []).join(', ')}</span>
-              ) : (
-                <span className="text-muted-foreground">{t.allProjects}</span>
-              )}
-            </Row>
-          </CardContent>
-        </Card>
-
-        {!isAdmin && (
-          <Card>
-            <CardContent className="text-muted-foreground pt-5 text-[13px] leading-relaxed">
-              {t.notAdmin}
-            </CardContent>
-          </Card>
+      {/* max-w-3xl, not the wider column this used with a sidebar: the global
+          nav rail now takes the left edge, so the panel starts further in and a
+          5xl column pushed the content off-centre on a laptop. */}
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6">
+        {isAdmin && (
+          <SectionTabs
+            sections={SECTIONS}
+            current={section}
+            onSelect={(k) => {
+              setSection(k)
+              localStorage.setItem(LS_SECTION, k)
+            }}
+          />
         )}
 
-        {isAdmin && (
-          <>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">{t.exportTitle}</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-[13px] leading-relaxed">
-                <p className="text-muted-foreground">{t.exportBody}</p>
-                <p className="border-l-2 border-[color:var(--accent2)] pl-3 font-medium">
-                  {t.exportWarn}
-                </p>
-                {scopedToProjects ? (
-                  <p className="text-muted-foreground">{t.exportScoped}</p>
-                ) : (
+        <div className="min-w-0 flex-1 pb-10">
+          {!isAdmin ? (
+            <Section title={t.notAdminTitle} description={t.notAdmin}>
+              <code className="bg-muted block overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12.5px] whitespace-pre">
+                {t.notAdminCmd}
+              </code>
+            </Section>
+          ) : section === 'overview' ? (
+            <Section title={t.overviewTitle} description={t.overviewSub}>
+              <dl className="border-border-soft bg-card rounded-xl border px-4">
+                <FactRow label={t.factActor}>
+                  <span className="font-mono">{who?.actor ?? '…'}</span>
+                </FactRow>
+                <FactRow label={t.factScopes}>
+                  <span className="flex flex-wrap gap-1">
+                    {(who?.scopes ?? []).map((s) => (
+                      <Badge key={s} variant="secondary">
+                        {s}
+                      </Badge>
+                    ))}
+                  </span>
+                </FactRow>
+                <FactRow label={t.factProjects}>
+                  {scopedToProjects ? (
+                    <span className="flex flex-wrap gap-1">
+                      {(allowlist ?? []).map((p) => (
+                        <Badge key={p} variant="outline" className="font-mono">
+                          {p}
+                        </Badge>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">{t.allProjects}</span>
+                  )}
+                </FactRow>
+                <FactRow label={t.factTokenId}>
+                  <span className="text-muted-foreground font-mono text-[12px]">
+                    {who?.token_id ?? '…'}
+                  </span>
+                </FactRow>
+              </dl>
+            </Section>
+          ) : section === 'data' ? (
+            <Section title={t.dataTitle} description={t.dataSub}>
+              <p className="text-muted-foreground max-w-prose text-[13px] leading-relaxed">
+                {t.dataHow}
+              </p>
+
+              {scopedToProjects ? (
+                <Callout tone="muted" title={t.dataScopedTitle}>
+                  {t.dataScoped}
+                </Callout>
+              ) : (
+                <>
+                  <Callout tone="warn" title={t.dataWarnTitle}>
+                    {t.dataWarn}
+                  </Callout>
                   <div>
                     <Button onClick={() => void onExport()} disabled={exporting}>
-                      {exporting ? t.exportBusy : t.exportBtn}
+                      {exporting ? t.dataBusy : t.dataBtn}
                     </Button>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-3">
-                <CardTitle className="text-base">{t.tokensTitle}</CardTitle>
-                <Button variant="secondary" onClick={() => setCreatingToken((v) => !v)}>
-                  + {t.tokensNew}
-                </Button>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-[13px]">
-                <p className="text-muted-foreground">{t.tokensSub}</p>
-
-                {minted && (
-                  <div className="bg-muted flex flex-col gap-2 rounded-lg p-3">
-                    <div className="font-medium">{t.tokenCreatedOnce}</div>
-                    <code className="break-all font-mono text-[12px]">{minted.token}</code>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="secondary"
-                        onClick={() => {
-                          void navigator.clipboard?.writeText(minted.token)
-                          setCopied(true)
-                        }}
-                      >
-                        {copied ? t.tokenCopied : t.tokenCopy}
+                </>
+              )}
+            </Section>
+          ) : section === 'access' ? (
+            <Section
+              title={t.accessTitle}
+              description={t.accessSub}
+              action={
+                <Button onClick={() => setNewToken(true)}>+&nbsp;{t.accessNew}</Button>
+              }
+            >
+              {tokens.length === 0 ? (
+                <EmptyState>{t.accessEmpty}</EmptyState>
+              ) : (
+                <TokenList
+                  tokens={tokens}
+                  currentTokenId={who?.token_id}
+                  labels={{
+                    scopes: t.tokScopes,
+                    projects: t.tokProjects,
+                    allProjects: t.allProjects,
+                    lastUsed: t.tokLastUsed,
+                    neverUsed: t.tokNeverUsed,
+                    revoked: t.tokRevoked,
+                    expired: t.tokExpired,
+                    revoke: t.tokRevoke,
+                    thisToken: t.tokThisToken,
+                  }}
+                  onRevoke={setRevoking}
+                />
+              )}
+            </Section>
+          ) : (
+            <Section
+              title={t.projTitle}
+              description={t.projSub}
+              action={<Button onClick={() => setNewProject(true)}>+&nbsp;{t.projNew}</Button>}
+            >
+              {projects.length === 0 ? (
+                <EmptyState>{t.projEmpty}</EmptyState>
+              ) : (
+                <ul className="flex flex-col gap-px">
+                  {projects.map((p) => (
+                    <li
+                      key={p.id}
+                      className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
+                    >
+                      <span className="font-mono text-[13px] font-[650]">{p.id}</span>
+                      <span className="text-muted-foreground min-w-0 flex-1 truncate text-[13px]">
+                        {p.name ?? ''}
+                      </span>
+                      {p.workflow && <Badge variant="outline">{p.workflow}</Badge>}
+                      <Button variant="destructive" size="sm" onClick={() => setDeleting(p)}>
+                        {t.projDelete}
                       </Button>
-                      <Button
-                        variant="ghost"
-                        onClick={() => {
-                          setMinted(null)
-                          setCopied(false)
-                        }}
-                      >
-                        {t.tokenDone}
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
+          )}
+        </div>
+      </div>
 
-                {creatingToken && (
-                  <NewTokenForm
-                    t={t}
-                    onCancel={() => setCreatingToken(false)}
-                    onCreate={async (fields) => {
-                      try {
-                        const created = await createToken(token, fields)
-                        setMinted(created)
-                        setCopied(false)
-                        setCreatingToken(false)
-                        await refresh()
-                      } catch (e) {
-                        handleErr(e)
-                      }
-                    }}
-                  />
-                )}
+      <NewTokenDialog
+        open={newToken}
+        onOpenChange={setNewToken}
+        projects={projects}
+        labels={{
+          title: t.newTokTitle,
+          subtitle: t.newTokSub,
+          actor: t.newTokActor,
+          actorPh: t.newTokActorPh,
+          actorHint: t.newTokActorHint,
+          scopes: t.newTokScopes,
+          scopeRead: t.newTokRead,
+          scopeWrite: t.newTokWrite,
+          scopeHuman: t.newTokHuman,
+          scopeAdmin: t.newTokAdmin,
+          projects: t.newTokProjects,
+          projectsHint: t.newTokProjectsHint,
+          allProjects: t.newTokAll,
+          create: t.newTokCreate,
+          cancel: t.newTokCancel,
+          needActor: t.newTokNeedActor,
+          needScope: t.newTokNeedScope,
+        }}
+        onCreate={async (fields) => {
+          const created = await createToken(token, fields)
+          setNewToken(false)
+          setMinted(created)
+          await refresh()
+        }}
+      />
 
-                {tokens.length === 0 ? (
-                  <p className="text-muted-foreground">{t.tokensEmpty}</p>
-                ) : (
-                  <ul className="flex flex-col gap-2">
-                    {tokens.map((row) => (
-                      <li
-                        key={row.id}
-                        className="border-b-border-soft flex flex-wrap items-center gap-2 border-b pb-2 last:border-b-0"
-                      >
-                        <span className="min-w-0 flex-1 font-mono break-all">{row.actor}</span>
-                        <span className="flex flex-wrap gap-1">
-                          {row.scopes.map((s) => (
-                            <Badge key={s} variant="secondary">
-                              {s}
-                            </Badge>
-                          ))}
-                          {row.projects !== '*' && (
-                            <Badge variant="secondary">{row.projects.join(', ')}</Badge>
-                          )}
-                          {row.revoked_at && <Badge>{t.tokenRevoked}</Badge>}
-                        </span>
-                        <span className="text-muted-foreground text-[11.5px]">
-                          {row.last_used_at
-                            ? `${t.tokenLastUsed} ${row.last_used_at.slice(0, 10)}`
-                            : t.tokenNeverUsed}
-                        </span>
-                        {!row.revoked_at && (
-                          <Button variant="ghost" onClick={() => void onRevoke(row)}>
-                            {t.tokenRevoke}
-                          </Button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
+      <TokenRevealDialog
+        token={minted?.token ?? null}
+        actor={minted?.actor}
+        labels={{
+          title: t.revealTitle,
+          subtitle: t.revealSub,
+          copy: t.revealCopy,
+          copied: t.revealCopied,
+          done: t.revealDone,
+        }}
+        onClose={() => setMinted(null)}
+      />
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between gap-3">
-                <CardTitle className="text-base">{t.projectsTitle}</CardTitle>
-                <Button variant="secondary" onClick={() => setCreatingProject((v) => !v)}>
-                  + {t.projectsNew}
-                </Button>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-[13px]">
-                <p className="text-muted-foreground">{t.projectsSub}</p>
+      <NewProjectDialog
+        open={newProject}
+        onOpenChange={setNewProject}
+        labels={{
+          title: t.newProjTitle,
+          subtitle: t.newProjSub,
+          id: t.newProjId,
+          idPh: t.newProjIdPh,
+          idHint: t.newProjIdHint,
+          idInvalid: t.newProjIdInvalid,
+          name: t.newProjName,
+          namePh: t.newProjNamePh,
+          nameHint: t.newProjNameHint,
+          create: t.newProjCreate,
+          cancel: t.newProjCancel,
+        }}
+        onCreate={async (fields) => {
+          await createProject(token, fields)
+          setNewProject(false)
+          await refresh()
+        }}
+      />
 
-                {creatingProject && (
-                  <NewProjectForm
-                    t={t}
-                    onCancel={() => setCreatingProject(false)}
-                    onCreate={async (fields) => {
-                      try {
-                        await createProject(token, fields)
-                        setCreatingProject(false)
-                        await refresh()
-                      } catch (e) {
-                        handleErr(e)
-                      }
-                    }}
-                  />
-                )}
+      <ConfirmDialog
+        open={revoking !== null}
+        onOpenChange={(o) => !o && setRevoking(null)}
+        title={t.confirmRevokeTitle}
+        description={fill(t.confirmRevokeBody, { actor: revoking?.actor ?? '' })}
+        confirmLabel={t.confirmRevokeYes}
+        cancelLabel={t.cancel}
+        onConfirm={async () => {
+          if (!revoking) return
+          try {
+            await revokeToken(token, revoking.id)
+            await refresh()
+          } catch (e) {
+            handleErr(e)
+          }
+        }}
+      />
 
-                {projects.length === 0 ? (
-                  <p className="text-muted-foreground">{t.projectsEmpty}</p>
-                ) : (
-                  <ul className="flex flex-col gap-2">
-                    {projects.map((p) => (
-                      <li
-                        key={p.id}
-                        className="border-b-border-soft flex flex-wrap items-center gap-2 border-b pb-2 last:border-b-0"
-                      >
-                        <span className="min-w-0 flex-1 font-mono break-all">{p.id}</span>
-                        <span className="text-muted-foreground">{p.name ?? ''}</span>
-                        {p.workflow && <Badge variant="secondary">{p.workflow}</Badge>}
-                        <Button variant="ghost" onClick={() => void onDeleteProject(p)}>
-                          {t.projectDelete}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
-          </>
-        )}
-      </main>
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title={t.confirmDeleteProjTitle}
+        description={fill(t.confirmDeleteProjBody, { id: deleting?.id ?? '' })}
+        confirmLabel={t.confirmDeleteProjYes}
+        cancelLabel={t.cancel}
+        onConfirm={async () => {
+          if (!deleting) return
+          try {
+            await deleteProject(token, deleting.id)
+            await refresh()
+          } catch (e) {
+            handleErr(e)
+          }
+        }}
+      />
     </AppShell>
   )
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="text-muted-foreground w-20 shrink-0 text-[10.5px] font-bold tracking-[0.05em] uppercase">
-        {label}
-      </span>
-      {children}
-    </div>
-  )
-}
-
-type Strings = ReturnType<typeof pick<(typeof STR)['en']>>
-
-function NewTokenForm({
-  t,
-  onCreate,
-  onCancel,
+/**
+ * A bordered aside that carries a consequence.
+ *
+ * `warn` is for the export: the file is a credential, and that sentence has to
+ * survive being read at a glance by someone who came here to press one button.
+ * `muted` is for a refusal, which is information rather than a hazard.
+ */
+function Callout({
+  tone,
+  title,
+  children,
 }: {
-  t: Strings
-  onCreate: (f: { actor: string; scopes: string[]; projects?: string[] | null }) => Promise<void>
-  onCancel: () => void
+  tone: 'warn' | 'muted'
+  title: string
+  children: React.ReactNode
 }) {
-  const [actor, setActor] = useState('')
-  const [scopes, setScopes] = useState('read,write')
-  const [projects, setProjects] = useState('')
-
-  const submit = () => {
-    const list = scopes
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    const proj = projects
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    if (!actor.trim() || list.length === 0) return
-    // Blank means "every project", which is `null` on the wire — an empty array
-    // would be an allowlist permitting nothing.
-    void onCreate({ actor: actor.trim(), scopes: list, projects: proj.length ? proj : null })
-  }
-
   return (
-    <div className="bg-muted flex flex-col gap-3 rounded-lg p-3">
-      <div className="flex flex-wrap gap-3 [&>*]:flex-[1_1_170px]">
-        <Field label={t.tokenActor}>
-          {(id) => (
-            <Input id={id} value={actor} onChange={(e) => setActor(e.target.value)} autoFocus />
-          )}
-        </Field>
-        <Field label={t.tokenScopes}>
-          {(id) => <Input id={id} value={scopes} onChange={(e) => setScopes(e.target.value)} />}
-        </Field>
-        <Field label={t.tokenProjects}>
-          {(id) => (
-            <Input id={id} value={projects} onChange={(e) => setProjects(e.target.value)} />
-          )}
-        </Field>
-      </div>
-      <div className="flex gap-2">
-        <Button onClick={submit}>{t.tokenCreate}</Button>
-        <Button variant="ghost" onClick={onCancel}>
-          {t.tokenCancel}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function NewProjectForm({
-  t,
-  onCreate,
-  onCancel,
-}: {
-  t: Strings
-  onCreate: (f: { id: string; name: string; workflow?: string }) => Promise<void>
-  onCancel: () => void
-}) {
-  const [id, setId] = useState('')
-  const [name, setName] = useState('')
-  const [workflow, setWorkflow] = useState('')
-
-  const submit = () => {
-    if (!id.trim()) return
-    const fields: { id: string; name: string; workflow?: string } = {
-      id: id.trim(),
-      name: name.trim() || id.trim(),
-    }
-    if (workflow.trim()) fields.workflow = workflow.trim()
-    void onCreate(fields)
-  }
-
-  return (
-    <div className="bg-muted flex flex-col gap-3 rounded-lg p-3">
-      <div className="flex flex-wrap gap-3 [&>*]:flex-[1_1_170px]">
-        <Field label={t.projectId}>
-          {(fid) => (
-            <Input id={fid} value={id} onChange={(e) => setId(e.target.value)} autoFocus />
-          )}
-        </Field>
-        <Field label={t.projectName}>
-          {(fid) => <Input id={fid} value={name} onChange={(e) => setName(e.target.value)} />}
-        </Field>
-        <Field label={t.projectWorkflow}>
-          {(fid) => (
-            <Input id={fid} value={workflow} onChange={(e) => setWorkflow(e.target.value)} />
-          )}
-        </Field>
-      </div>
-      <div className="flex gap-2">
-        <Button onClick={submit}>{t.projectCreate}</Button>
-        <Button variant="ghost" onClick={onCancel}>
-          {t.tokenCancel}
-        </Button>
+    <div
+      className={
+        tone === 'warn'
+          ? 'border-l-2 border-[color:var(--accent2)] py-1 pl-3.5'
+          : 'border-border-soft border-l-2 py-1 pl-3.5'
+      }
+    >
+      <div className="text-foreground text-[13px] font-[680]">{title}</div>
+      <div className="text-muted-foreground mt-0.5 max-w-prose text-[13px] leading-relaxed">
+        {children}
       </div>
     </div>
   )
