@@ -153,6 +153,24 @@ and needed no asset routes at all — but React and every shared module were pai
 four times, and moving between surfaces was a full page load that dropped all
 warm state.
 
+**Tailwind scans `src/` and nothing else.** `globals.css` opens with
+`@import 'tailwindcss' source(none)` plus two explicit `@source` lines, because
+automatic content detection scans the project minus whatever is gitignored — and
+`dist/` is COMMITTED here. Tailwind was therefore scanning the bundle it had just
+written, which made the emitted CSS a fixed point of "sources + previous dist"
+instead of a function of the sources: the first build after a merge was stale
+(this failed CI's `dist is current` gate on two separate PRs, each time looking
+like a flaky compiler), and a class could never leave the stylesheet once it had
+shipped. `scripts/` and this README were being scanned too, so `h-screen`,
+`w-72` and `max-w-140` — classes the lint rules exist to BAN — were compiled in
+because the rule messages name them.
+
+An allow list rather than an exclusion list, deliberately: an exclusion list has
+to grow every time a script, test or doc happens to mention a class name.
+Removing it all cut the stylesheet from 63.7 kB to 53.0 kB (11.8 → 10.4 kB gz).
+`npm run size` carries three canaries against the regression, because nothing
+else would notice — the build would stay self-consistent, just steadily larger.
+
 **The asset names are load-bearing.** Rust embeds `assets/app.js`,
 `assets/vendor.js`, `assets/runtime.js` and `assets/app.css` BY NAME, so content
 hashing is off. Two consequences: cache correctness comes from an ETag rather
