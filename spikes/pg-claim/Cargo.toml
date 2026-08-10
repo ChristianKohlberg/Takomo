@@ -1,0 +1,18 @@
+[package]
+name = "pg-claim-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Deliberately NOT a member of the takomo crate — there is no [workspace] in the
+# root Cargo.toml, so this builds and runs on its own. That keeps the spike from
+# dragging sqlx into the shipping binary's dependency tree before anyone has
+# decided the port is happening.
+
+[dependencies]
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+  "macros",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
