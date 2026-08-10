@@ -240,6 +240,71 @@ async fn run(pool: &PgPool, arm: Arm) -> sqlx::Result<()> {
     Ok(())
 }
 
+/// What does keeping the process-wide writer mutex COST once the database is on
+/// the other end of a socket?
+///
+/// Under SQLite the mutex is nearly free: a write is a local page-cache write,
+/// tens of microseconds, so serializing every mutation behind one lock costs
+/// almost nothing. Over Postgres the same lock is held across a full
+/// BEGIN/UPDATE/COMMIT round trip. That is the number that decides whether
+/// "keep the mutex" is a real option or a throughput ceiling in disguise.
+///
+/// Serial = what a retained mutex gives you (one write at a time, end to end).
+/// Pooled = what dropping it gives you (16 concurrent writers).
+async fn bench(pool: &PgPool) -> sqlx::Result<()> {
+    reset(pool).await?;
+    const N: usize = 300;
+
+    let t0 = std::time::Instant::now();
+    for i in 0..N {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE tickets SET version = version + 1, updated_at = $1 WHERE id = 't0'")
+            .bind(i as i64)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
+    let serial = t0.elapsed();
+
+    let t1 = std::time::Instant::now();
+    let mut hs = Vec::new();
+    for w in 0..WORKERS {
+        let p = pool.clone();
+        hs.push(tokio::spawn(async move {
+            for i in 0..(N / WORKERS) {
+                let Ok(mut tx) = p.begin().await else { return };
+                let _ = sqlx::query(
+                    "UPDATE tickets SET version = version + 1, updated_at = $1 WHERE id = $2",
+                )
+                .bind(i as i64)
+                .bind(format!("t{w}"))
+                .execute(&mut *tx)
+                .await;
+                let _ = tx.commit().await;
+            }
+        }));
+    }
+    for h in hs {
+        let _ = h.await;
+    }
+    let pooled = t1.elapsed();
+
+    println!("\n=== cost of keeping the writer mutex, over a socket ===");
+    println!(
+        "  serial  (mutex retained)  {N} txns in {:>7.0?}  = {:>6.2} ms/txn  ~{:>5.0} writes/s",
+        serial,
+        serial.as_secs_f64() * 1000.0 / N as f64,
+        N as f64 / serial.as_secs_f64()
+    );
+    println!(
+        "  pooled  (mutex dropped)   {N} txns in {:>7.0?}  = {:>6.2} ms/txn  ~{:>5.0} writes/s",
+        pooled,
+        pooled.as_secs_f64() * 1000.0 / N as f64,
+        N as f64 / pooled.as_secs_f64()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> sqlx::Result<()> {
     let url = std::env::var("DATABASE_URL")
@@ -251,6 +316,7 @@ async fn main() -> sqlx::Result<()> {
 
     run(&pool, Arm::Naive).await?;
     run(&pool, Arm::Locked).await?;
+    bench(&pool).await?;
     println!();
     Ok(())
 }

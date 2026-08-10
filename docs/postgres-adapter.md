@@ -124,11 +124,59 @@ lease sweeper both in scope.
 B is the version worth building. A is the version that can be finished quickly
 and is a useful stepping stone, since the SQL translation is common to both.
 
-**Decided: B, with `sqlx`.** Which means the async conversion reaches
-`src/api/`, `src/mcp.rs` and `src/main.rs`, and the exactly-one-claimant
-guarantee has to be re-proven. That proof is below, and it was done first
-precisely because everything else is mechanical translation whose value is zero
-if this does not hold.
+**Decided, then re-decided.** The first answer was B with `sqlx`, on the
+assumption that multi-instance was the goal. It is not: the target deployment is
+**one takomo process against one Postgres**. That withdraws the question both
+earlier answers were answering, so:
+
+| | first answer | after "one instance is fine" |
+|---|---|---|
+| concurrency | B — drop the mutex, `SKIP LOCKED` | **A — keep the writer mutex** |
+| driver | `sqlx`, async | **`postgres`, sync** |
+| shape | adapter behind a trait | **one-way port, no trait** |
+
+Why each flipped:
+
+- **Mutex retained.** With one process it still provides exactly-one-claimant by
+  construction. Nothing to re-prove, and `tests/api.rs` / `tests/mcp.rs` — which
+  drive the real HTTP surface and know nothing about the backend — validate the
+  port *unchanged*. That is the single most valuable property available here.
+- **Sync driver.** Async was forced by Postgres-native concurrency. Without it,
+  the sync `postgres` crate keeps every `Store` signature intact and confines
+  the change to `src/store/`, which removes the 69-`with_tx`-async-closure
+  problem entirely (a lifetime-generic closure returning a future borrowing the
+  transaction — awkward Rust, hit on line one of the conversion).
+- **No trait.** The brief is Postgres *instead of* SQLite, not alongside it. Two
+  backends would mean every future query written twice and every concurrency
+  invariant holding under two models, forever. A one-way port needs no
+  abstraction at all.
+
+The `SKIP LOCKED` result below is not wasted: it is the standing proof that IF a
+second instance is ever wanted, the claim path already works. It just is not
+needed today.
+
+### What retaining the mutex costs, measured
+
+Under SQLite the mutex is nearly free — a write is a local page-cache write. Over
+a socket it is held across a full BEGIN/UPDATE/COMMIT round trip. Measured
+against Postgres 16 in Docker on localhost (`spikes/pg-claim`, `bench`):
+
+| | 300 txns | per txn | throughput |
+|---|---:|---:|---:|
+| serial (mutex retained) | 431 ms | 1.44 ms | **~696 writes/s** |
+| pooled (mutex dropped) | 65 ms | 0.22 ms | ~4629 writes/s |
+
+6.6× — and that is the *best* case. The serial arm is latency-bound, so it
+degrades linearly with round-trip time: on a managed Postgres at ~2 ms RTT it
+lands nearer 150 writes/s while the pooled arm barely moves. Acceptable because
+the workload is nowhere near it (100 agents writing every 10 s is 10 writes/s),
+and because dropping the mutex later is a contained change against a store that
+is already on Postgres. Worth re-measuring against the real database before
+production, not assuming.
+
+The existing structure maps over almost literally: today's `Mutex<Connection>`
+writer plus `READ_CONNECTIONS = 4` read companions becomes one writer connection
+plus a 4-connection read pool.
 
 ## The claim guarantee, re-proven (`spikes/pg-claim/`)
 
