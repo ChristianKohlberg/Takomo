@@ -30,7 +30,34 @@
  *
  * Re-running `shadcn init` will re-append its defaults. Re-apply this file.
  */
-@import 'tailwindcss';
+/* Scan `src/` and nothing else.
+ *
+ * `source(none)` turns OFF Tailwind's automatic content detection, and the
+ * `@source` lines below are then the whole list. The default is to scan the
+ * project directory minus whatever is gitignored, and two things here are NOT
+ * gitignored but must never be treated as templates:
+ *
+ *   - `web/dist/` is COMMITTED — that is what keeps `cargo build --release`
+ *     node-free on Render and in the Dockerfile — so Tailwind was scanning the
+ *     bundle it had itself just written, finding the utility names in there and
+ *     keeping them "in use" forever. The emitted CSS became a FIXED POINT of
+ *     "sources + the previous dist" rather than a function of the sources: the
+ *     first build after a merge or checkout was stale (this failed CI's
+ *     "dist is current" gate on two separate PRs, each time looking like a
+ *     flaky compiler), and a class could never leave the stylesheet once it had
+ *     shipped — ~74 dead rules had accumulated that way.
+ *   - `web/scripts/` holds node build tools. `check-size.mjs` names three of
+ *     those dead utilities as canaries, which under auto-detection was enough
+ *     to resurrect them. An exclusion list would have to grow every time a
+ *     script or test mentions a class name; an allow list does not.
+ *
+ * So the rule is the simple one: templates live in `src/`, plus the shell.
+ * Anything outside it is not a template, whatever it happens to contain.
+ */
+@import 'tailwindcss' source(none);
+@source '../../index.html';
+@source '../**/*.{ts,tsx}';
+
 @import './tokens.css';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';

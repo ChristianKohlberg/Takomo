@@ -64,6 +64,28 @@ line('first load', firstLoad, BUDGET_KB.firstLoad)
 line('└─ of which vendor', gz('assets/vendor.js'), BUDGET_KB.vendor)
 console.log(`ok   every later route         0.0 kB gz   (client-side routing)`)
 
+// The stylesheet must not contain utilities that exist only inside Tailwind's
+// own output.
+//
+// `dist/` is committed, so it is not gitignored, and Tailwind's automatic
+// content detection used to scan the bundle it had just written — finding the
+// utility names in there and keeping them "in use" forever. `@source not` in
+// globals.css stops that (see the note there). Nothing else would notice if
+// that line were deleted: the build would stay self-consistent, just with a
+// steadily growing stylesheet, so "dist is current" would still pass.
+//
+// These three are canaries, not a whitelist. Each is a real Tailwind utility
+// that no Takomo source uses and that only ever appeared via the feedback loop.
+// If one is back, so is the loop.
+const CANARIES = ['.table-column-group{', '.oldstyle-nums{', '.zoom-in{']
+const css = readFileSync(resolve(dist, 'assets/app.css'), 'utf8')
+const leaked = CANARIES.filter((c) => css.includes(c))
+if (leaked.length) {
+  failed = true
+  console.log(`\nFAIL app.css contains build-output-only utilities: ${leaked.join(' ')}`)
+  console.log("     Tailwind is scanning dist/ again — check `@source not` in src/styles/globals.css.")
+}
+
 if (unexpected.length) {
   failed = true
   console.log(`\nFAIL unexpected files in dist/: ${unexpected.join(', ')}`)
