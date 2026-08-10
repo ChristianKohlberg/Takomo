@@ -446,6 +446,19 @@ pub struct WithdrawArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MoveArgs {
+    /// Ticket ids to move. An epic id moves the whole epic; whether its children
+    /// come along is `descendants`.
+    pub tickets: Vec<String>,
+    /// The project they should live in afterwards.
+    pub to_project: String,
+    /// Move each named ticket's full descendant subtree with it. Defaults to
+    /// true; false moves only the named tickets and orphans their children,
+    /// because a parent and child must share a project.
+    pub descendants: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PromoteArgs {
     /// Ticket id to promote.
     pub id: String,
@@ -1034,6 +1047,23 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_archive(&require_auth(&ctx)?, &a.id))
+    }
+
+    #[tool(
+        description = "Move tickets to another project, in bulk. Ticket ids never change \
+        (nothing reads a project out of an id), so links and commit messages keep resolving. \
+        `descendants` defaults to true: naming an epic moves its whole subtree; false moves only \
+        the named tickets and leaves their children behind as orphans, since a parent and child \
+        must share a project. A state the target workflow does not define lands on that \
+        workflow's initial state — the response reports every such reset per ticket. Refused \
+        while any ticket in the set is claimed."
+    )]
+    async fn takomo_move(
+        &self,
+        Parameters(a): Parameters<MoveArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_move(&require_auth(&ctx)?, a))
     }
 
     #[tool(
@@ -2502,6 +2532,26 @@ impl TakomoMcp {
         )?;
         self.state.wake();
         Ok(json!({ "ok": true, "promotion": promo.to_json() }))
+    }
+
+    fn do_move(&self, auth: &AuthCtx, a: MoveArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        auth.require_project(&a.to_project)?;
+        // Both ends checked before anything is written; descendants ride along
+        // without their own check, because a subtree cannot cross projects.
+        for id in &a.tickets {
+            load_visible(&self.state, auth, id)?;
+        }
+        let req = crate::store::MoveRequest {
+            tickets: a.tickets,
+            to_project: a.to_project,
+            descendants: a.descendants.unwrap_or(true),
+        };
+        let outcome = self.state.store.move_tickets(&req, &auth.actor)?;
+        self.state.wake();
+        let mut out = outcome.to_json();
+        out["ok"] = json!(true);
+        Ok(out)
     }
 
     fn do_archive(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {

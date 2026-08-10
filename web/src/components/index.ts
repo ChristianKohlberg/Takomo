@@ -101,6 +101,10 @@ export { SettingsSheet } from './board/SettingsSheet'
 export type { SettingsSheetProps } from './board/SettingsSheet'
 
 // ---- inbox ----
+export { FilterBar } from './inbox/FilterBar'
+export type { FilterBarProps, FilterBarLabels } from './inbox/FilterBar'
+export { EpicGroupHeader } from './inbox/EpicGroupHeader'
+export type { EpicGroupHeaderProps } from './inbox/EpicGroupHeader'
 export { FolderRail } from './inbox/FolderRail'
 export type { FolderRailProps } from './inbox/FolderRail'
 export { QuestionRow } from './inbox/QuestionRow'

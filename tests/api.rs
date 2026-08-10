@@ -209,20 +209,32 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     }
 }
 
-/// `/inbox`'s ticket filter searches ticket *titles*, not just ids (takomo-4io8).
+/// `/inbox`'s ticket filter searches ticket *titles*, not just ids (takomo-4io8),
+/// and its epic grouping walks `parent`/`type`.
 ///
 /// The titles are the whole point of the control — an id-only list is what the
 /// <select> already offered — and they arrive on a request the page makes for
-/// another reason entirely (the tag map). So this pins both halves: the sparse
-/// projection actually returns `title`, and the page asks for it.
+/// another reason entirely (the tag map). `parent` and `type` ride the same
+/// request: without them the inbox cannot tell which epic a question's ticket
+/// sits under, so "group by epic" would render one undifferentiated group and
+/// filtering by an epic would show an EMPTY inbox — questions hang off the
+/// leaves. So this pins both halves: the sparse projection actually returns all
+/// five fields, and the page asks for them.
 #[tokio::test]
 async fn inbox_ticket_filter_has_titles_to_search() {
     let app = TestApp::spawn().await;
-    let id = app.create_ticket("Sweep expired leases").await;
+    let epic = app.create_typed("Lease hygiene", "epic", None).await;
+    let id = app
+        .create_typed("Sweep expired leases", "task", Some(&epic))
+        .await;
 
-    // The projection the inbox uses: one request carrying tags *and* titles.
+    // The projection the inbox uses: one request carrying tags, titles and the
+    // tree.
     let (_, list) = app
-        .get(&app.admin, "/v1/tickets?project=tp&fields=id,title,tags")
+        .get(
+            &app.admin,
+            "/v1/tickets?project=tp&fields=id,title,tags,parent,type",
+        )
         .await;
     let t = list["items"]
         .as_array()
@@ -233,18 +245,29 @@ async fn inbox_ticket_filter_has_titles_to_search() {
     assert_eq!(
         t["title"],
         json!("Sweep expired leases"),
-        "`fields=id,title,tags` must return the title the filter searches: {list}"
+        "the projection must return the title the filter searches: {list}"
+    );
+    assert_eq!(
+        t["parent"],
+        json!(epic),
+        "…and `parent`, which the epic grouping walks upward: {list}"
+    );
+    assert_eq!(
+        t["type"],
+        json!("task"),
+        "…and `type`, which is how the walk recognises the epic it stops at: {list}"
     );
     assert!(
         t.get("body").is_none(),
-        "…and stay sparse — the filter needs three fields, not the whole ticket: {list}"
+        "…and stay sparse — the filter needs five fields, not the whole ticket: {list}"
     );
 
     let body = app.app_bundle().await;
     assert!(
-        body.contains("fields=id,title,tags"),
-        "/inbox must request `title` on the ticket fetch it already makes, or the \
-         filter has nothing but ids to match on"
+        body.contains("fields=id,title,tags,parent,type"),
+        "/inbox must request `title`, `parent` and `type` on the ticket fetch it \
+         already makes, or the filter has nothing but ids to match on and the epic \
+         grouping has no tree to walk"
     );
     // Locale parity used to be counted here — two occurrences meant a DE and an
     // EN entry. That count is meaningless against one bundle carrying all four
@@ -12145,4 +12168,395 @@ async fn the_question_inbox_pages_on_a_real_count() {
         exact["next_cursor"].is_null(),
         "a full page that is also the whole queue is not 'probably more': {exact}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Moving tickets between projects (POST /v1/tickets/move).
+// ---------------------------------------------------------------------------
+
+/// A second project whose workflow deliberately does NOT define `spec`, so the
+/// state-reset path is reachable, and whose initial state is `ready`.
+async fn beta_project(app: &TestApp) {
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({
+                "id": "beta",
+                "name": "Beta",
+                "workflow": {
+                    "name": "beta-wf",
+                    "initial": "ready",
+                    "states": [
+                        { "id": "ready", "category": "todo", "claimable": true },
+                        { "id": "review", "category": "review" },
+                        { "id": "done", "category": "done", "terminal": true },
+                        { "id": "cancelled", "category": "cancelled", "terminal": true }
+                    ],
+                    "transitions": [
+                        { "from": "ready", "to": "review" },
+                        { "from": "review", "to": "done" },
+                        { "from": "ready", "to": "cancelled" }
+                    ]
+                }
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+}
+
+/// The headline case: an epic moves with everything beneath it, and every id
+/// survives — a moved ticket is still findable by the id a commit message quotes.
+#[tokio::test]
+async fn moving_an_epic_takes_its_whole_subtree_and_keeps_every_id() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+
+    let epic = app.create_typed("Billing", "epic", None).await;
+    let child = app.create_typed("Invoices", "task", Some(&epic)).await;
+    let grandchild = app.create_typed("PDF render", "task", Some(&child)).await;
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [epic], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["total"], 3, "epic + child + grandchild: {out}");
+    assert!(
+        out["orphaned"].as_array().unwrap().is_empty(),
+        "nothing is orphaned when the subtree comes along: {out}"
+    );
+
+    for id in [&epic, &child, &grandchild] {
+        let (s, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+        assert_eq!(
+            s,
+            StatusCode::OK,
+            "the id still resolves after the move: {t}"
+        );
+        assert_eq!(t["project"], "beta", "{t}");
+        assert_eq!(t["id"], id.as_str(), "a move never rewrites an id");
+        assert!(
+            id.starts_with("tp-"),
+            "the id prefix is where it was filed, not where it lives: {id}"
+        );
+    }
+    // The tree is intact: only its project changed.
+    let (_, c) = app.get(&app.admin, &format!("/v1/tickets/{child}")).await;
+    assert_eq!(c["parent"], epic.as_str(), "{c}");
+    assert_eq!(c["parent_cleared"], Value::Null, "not a ticket field: {c}");
+    let (_, g) = app
+        .get(&app.admin, &format!("/v1/tickets/{grandchild}"))
+        .await;
+    assert_eq!(g["parent"], child.as_str(), "{g}");
+}
+
+/// `descendants: false` is the orphaning variant the caller asks for explicitly:
+/// the epic goes, its children stay, and the response names every one of them
+/// rather than leaving the caller to discover it.
+#[tokio::test]
+async fn moving_without_descendants_orphans_the_children_and_says_so() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+
+    let epic = app.create_typed("Billing", "epic", None).await;
+    let child = app.create_typed("Invoices", "task", Some(&epic)).await;
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [epic], "to_project": "beta", "descendants": false }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["total"], 1, "only the named ticket moved: {out}");
+    assert_eq!(out["orphaned"], json!([child]), "{out}");
+    assert!(
+        out["note"].as_str().unwrap_or("").contains("parent"),
+        "the response explains the orphaning in prose: {out}"
+    );
+
+    let (_, c) = app.get(&app.admin, &format!("/v1/tickets/{child}")).await;
+    assert_eq!(c["project"], "tp", "the child stayed behind: {c}");
+    assert_eq!(
+        c["parent"],
+        Value::Null,
+        "a parent and child cannot straddle two projects: {c}"
+    );
+}
+
+/// A state the target workflow does not define cannot be kept — nothing could
+/// transition out of it. It lands on the target's initial state, and the caller
+/// is told, per ticket.
+#[tokio::test]
+async fn a_state_the_target_workflow_lacks_lands_on_its_initial_state() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+
+    let specced = app.create_ticket("in spec").await;
+    let (s, b) = app.transition(&app.human, &specced, "spec").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    // `ready` exists in both workflows, so it must survive the move untouched.
+    let kept = app.create_ticket("already ready").await;
+    app.to_ready(&kept).await;
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [specced, kept], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let moved = out["moved"].as_array().unwrap();
+    let reset = &moved[0];
+    assert_eq!(reset["from_state"], "spec", "{reset}");
+    assert_eq!(reset["to_state"], "ready", "beta's initial state: {reset}");
+    assert_eq!(reset["state_reset"], true, "{reset}");
+    let survived = &moved[1];
+    assert_eq!(survived["to_state"], "ready", "{survived}");
+    assert_eq!(
+        survived["state_reset"], false,
+        "a state both workflows define is kept, not reset: {survived}"
+    );
+    assert!(
+        out["note"].as_str().unwrap_or("").contains("initial"),
+        "a state reset is never silent: {out}"
+    );
+
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{specced}")).await;
+    assert_eq!(t["state"], "ready", "{t}");
+    assert_eq!(t["state_category"], "todo", "{t}");
+}
+
+/// A lease is held against the workflow the move is about to change, so the
+/// whole call is refused rather than splitting a subtree across two projects.
+#[tokio::test]
+async fn a_claimed_ticket_refuses_the_whole_move() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+
+    let epic = app.create_typed("Billing", "epic", None).await;
+    let child = app.create_typed("Invoices", "task", Some(&epic)).await;
+    app.to_ready(&child).await;
+    app.claim(&child).await;
+
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [epic], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["code"], "claim.held", "{err}");
+    assert_eq!(
+        err["details"]["claimed"][0]["ticket"],
+        child.as_str(),
+        "{err}"
+    );
+
+    // Nothing moved: the refusal is the whole transaction, not a partial one.
+    for id in [&epic, &child] {
+        let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+        assert_eq!(t["project"], "tp", "{t}");
+    }
+}
+
+/// A move crosses a token's project boundary twice, so both ends are checked —
+/// a token that may write in the source cannot use a move to reach a project it
+/// was never given.
+#[tokio::test]
+async fn a_move_is_refused_at_either_end_of_a_scoped_token() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+    let ticket = app.create_ticket("scoped").await;
+
+    let tp_only = app.mint("agent:tp", &["read", "write"], Some(&["tp"]));
+    let (s, err) = app
+        .post(
+            &tp_only,
+            "/v1/tickets/move",
+            json!({ "tickets": [ticket], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "the target is out of scope: {err}"
+    );
+
+    let beta_only = app.mint("agent:beta", &["read", "write"], Some(&["beta"]));
+    let (s, err) = app
+        .post(
+            &beta_only,
+            "/v1/tickets/move",
+            json!({ "tickets": [ticket], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "the source is out of scope: {err}"
+    );
+
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{ticket}")).await;
+    assert_eq!(t["project"], "tp", "neither refusal moved anything: {t}");
+}
+
+/// The things keyed on a project that have to follow the ticket: its tags are
+/// registered in the target project, and its questions are filed there.
+#[tokio::test]
+async fn a_move_carries_the_tickets_tags_and_questions_into_the_target() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "tagged", "tags": ["component:billing"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    let id = t["id"].as_str().unwrap().to_string();
+
+    let (s, q) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "confirm",
+                "title": "Ship it?",
+                "mode": "advisory"
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{q}");
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+
+    let (_, tags) = app.get(&app.admin, "/v1/projects/beta/tags").await;
+    let handles: Vec<&str> = tags["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["handle"].as_str().unwrap())
+        .collect();
+    assert!(
+        handles.contains(&"billing"),
+        "a tag reference is into the project's registry, so the target gets it: {tags}"
+    );
+
+    let (_, in_beta) = app.get(&app.human, "/v1/questions?project=beta").await;
+    assert_eq!(
+        in_beta["total"], 1,
+        "the question followed its ticket: {in_beta}"
+    );
+    let (_, in_tp) = app.get(&app.human, "/v1/questions?project=tp").await;
+    assert_eq!(in_tp["total"], 0, "and left the old project: {in_tp}");
+}
+
+/// Moving into the project a ticket is already in is a no-op that says so, and
+/// the request shape is validated with the same teaching errors as everything
+/// else on this surface.
+#[tokio::test]
+async fn a_move_validates_its_request_and_reports_no_op_tickets() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+    let id = app.create_ticket("staying put").await;
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "tp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["total"], 0, "{out}");
+    assert_eq!(out["unchanged"], json!([id]), "{out}");
+
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "beta", "descendants": "yes" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "validation.descendants", "{err}");
+
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "nope" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "an unknown target project: {err}");
+
+    let (s, err) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "beta", "recursive": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{err}");
+    assert_eq!(err["code"], "validation.unknown_field", "{err}");
+}
+
+/// The move is on the event log, with what it had to reconcile, so a reader that
+/// finds a ticket in a project its history never mentions can see why.
+#[tokio::test]
+async fn a_move_emits_an_event_carrying_what_it_reconciled() {
+    let app = TestApp::spawn().await;
+    beta_project(&app).await;
+    let id = app.create_ticket("moved").await;
+    let (s, b) = app.transition(&app.human, &id, "spec").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    let (s, out) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [id], "to_project": "beta" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+
+    let (s, events) = app.get(&app.admin, "/v1/events?since=0&project=beta").await;
+    assert_eq!(s, StatusCode::OK, "{events}");
+    let moved = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "ticket_moved")
+        .unwrap_or_else(|| panic!("a ticket_moved event: {events}"));
+    assert_eq!(moved["ticket"], id.as_str(), "{moved}");
+    assert_eq!(moved["payload"]["from_project"], "tp", "{moved}");
+    assert_eq!(moved["payload"]["to_project"], "beta", "{moved}");
+    assert_eq!(moved["payload"]["state_reset"], true, "{moved}");
 }

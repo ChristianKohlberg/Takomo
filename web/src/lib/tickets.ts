@@ -8,8 +8,12 @@ export interface TicketNode {
   id: string
   type?: string
   parent?: string | null
-  /** Optional: the walks ignore it, but callers label groups with it. */
-  title?: string
+  /**
+   * Optional: the walks ignore it, but callers label groups with it. `null` is
+   * admitted because that is what the sparse ticket projection actually sends
+   * for a titleless ticket — narrowing it here only moved the cast to callers.
+   */
+  title?: string | null
 }
 
 /** Ticket id -> ticket. Missing ids are tolerated: a parent can dangle. */

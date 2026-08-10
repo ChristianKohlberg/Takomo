@@ -211,14 +211,20 @@ export interface TicketRef {
   id: string
   title?: string | null
   tags?: string[]
+  /** The tree, for the subtree filter and the epic grouping. */
+  parent?: string | null
+  type?: string
 }
 
 /**
  * The tickets the ticket filter matches on.
  *
- * `fields=id,title,tags` is deliberate and asserted by the Rust suite: without
- * `title` the filter has nothing but ids to match on, and asking for the whole
- * ticket would pull every body across the wire to populate a dropdown.
+ * `fields=id,title,tags,parent,type` is deliberate and asserted by the Rust
+ * suite: without `title` the filter has nothing but ids to match on, without
+ * `parent`/`type` it cannot walk to a ticket's epic — so filtering by an epic
+ * would show an empty inbox (questions hang off the leaves) and the epic
+ * grouping would have nothing to group by. Asking for the whole ticket would
+ * pull every body across the wire to populate a dropdown.
  */
 export async function listTicketRefs(token: string, project?: string): Promise<TicketRef[]> {
   // Paginated, like `listQuestions` above and `listTickets` in lib/board.ts.
@@ -230,15 +236,15 @@ export async function listTicketRefs(token: string, project?: string): Promise<T
   const out: TicketRef[] = []
   let cursor: string | null = null
   for (let page = 0; page < 100 && out.length < 5000; page++) {
-    // Written as a literal rather than assembled: `fields=id,title,tags` is an
-    // asserted contract, and a contract you cannot grep for is one that breaks
-    // silently.
+    // Written as a literal rather than assembled: `fields=id,title,tags,parent,type`
+    // is an asserted contract, and a contract you cannot grep for is one that
+    // breaks silently.
     const qs = new URLSearchParams({ limit: '500' })
     if (project) qs.set('project', project)
     if (cursor != null) qs.set('cursor', cursor)
     const body: { items?: TicketRef[]; next_cursor?: string | null } | TicketRef[] = await api(
       token,
-      `/tickets?fields=id,title,tags&${qs}`,
+      `/tickets?fields=id,title,tags,parent,type&${qs}`,
     )
     // The endpoint answers either shape depending on projection.
     if (Array.isArray(body)) return body
