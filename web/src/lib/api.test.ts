@@ -45,12 +45,31 @@ describe('api', () => {
     expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tk_secret')
   })
 
-  it('flags 401 and 403 as auth failures', async () => {
+  it('flags 401 as an auth failure', async () => {
     mockFetch(respond(401, ''))
     await expect(api('tk_x', '/tickets')).rejects.toMatchObject({ auth: true, status: 401 })
+  })
 
-    mockFetch(respond(403, ''))
-    await expect(api('tk_x', '/tickets')).rejects.toMatchObject({ auth: true, status: 403 })
+  it('keeps a 403 as an ordinary error, message and code intact', async () => {
+    // A 403 is an authentic token refused ONE operation, and the server says
+    // which scope is missing and how to get it. Flagging it `auth` discarded
+    // that body and signed the reader out: a `human` token answering an
+    // expert-gated approve lost its inbox instead of being told why.
+    mockFetch(
+      respond(
+        403,
+        JSON.stringify({
+          code: 'question.approve_expertise',
+          message: 'Approving this needs a domain expert: expert:domain:billing.',
+        }),
+      ),
+    )
+    await expect(api('tk_x', '/questions/q-1/answer')).rejects.toMatchObject({
+      status: 403,
+      code: 'question.approve_expertise',
+      message: 'Approving this needs a domain expert: expert:domain:billing.',
+    })
+    await expect(api('tk_x', '/questions/q-1/answer')).rejects.not.toMatchObject({ auth: true })
   })
 
   it('surfaces message + remedy from an error body, and keeps the code', async () => {

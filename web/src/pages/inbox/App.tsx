@@ -105,6 +105,13 @@ export function App() {
     // question you were reading may not be in the new view at all.
     setSelectedId(null)
   }, [])
+  // Clearing REPLACES the view rather than merging into it. `clearedFilters`
+  // expresses "gone" by omitting a key, and a partial merge reads an absent key
+  // as "unchanged" — so routing it through `updateView` cleared nothing at all.
+  const resetFilters = useCallback(() => {
+    setView(clearedFilters)
+    setSelectedId(null)
+  }, [])
 
   // Which epics are folded away. Persisted, because a reader who collapsed the
   // epic they are not working on this week means it for longer than one tab.
@@ -443,7 +450,7 @@ export function App() {
           saveProject(id)
           // Tickets, epics and askers are all per-project, so every filter that
           // names one would only ever produce an empty inbox after the switch.
-          updateView(clearedFilters(view))
+          resetFilters()
         },
         projectLabels: {
           project: t.project,
@@ -505,7 +512,7 @@ export function App() {
         onGroup={(on) => updateView({ group: on })}
         matched={visible.length}
         activeCount={active}
-        onClear={() => updateView(clearedFilters(view))}
+        onClear={() => resetFilters()}
         open={filtersOpen}
         onOpen={setFiltersOpen}
         labels={{
@@ -610,7 +617,7 @@ export function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => updateView(clearedFilters(view))}
+                    onClick={() => resetFilters()}
                     className="text-primary mt-2 cursor-pointer px-2 py-1 text-[13px] font-[650] underline"
                   >
                     {t.clearAll} ({active})

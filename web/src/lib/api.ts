@@ -9,7 +9,7 @@
 // throw away the most carefully built thing in the API.
 export interface ApiErrorShape extends Error {
   status?: number
-  /** 401/403 — the caller shows the token gate rather than an error toast. */
+  /** 401 — the caller shows the token gate rather than an error toast. */
   auth?: boolean
   code?: string
 }
@@ -45,7 +45,17 @@ export async function api<T = unknown>(
 
   const r = await fetch(API_BASE + path, init)
 
-  if (r.status === 401 || r.status === 403) {
+  // 401 is the ONLY status that means "this credential is not usable" — the
+  // token is missing, malformed, revoked or expired, and the gate is the one
+  // thing that helps. Every 403 the server emits is the opposite: an authentic
+  // token refused ONE operation, with a stable `code` and a message written to
+  // say what scope is missing and how to get it (`auth.scope`, `auth.project`,
+  // `question.approve_expertise`, the transition guards, the export). Treating
+  // those as an auth failure threw that message away and signed the reader out
+  // of a console they may legitimately use — so a `human` token meeting an
+  // expert-gated approve lost its session instead of being told why. 403 falls
+  // through to the normal error path and reaches the user as a toast.
+  if (r.status === 401) {
     const e = apiError('auth', r.status)
     e.auth = true
     throw e

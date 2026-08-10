@@ -156,26 +156,17 @@ export function App() {
     }
   }, [token, refresh, handleErr])
 
-  // Deliberately NOT routed through `handleErr`.
-  //
-  // `isAuthError` counts 403 as an auth failure and signs the viewer out, which
-  // is right for the polls it was written for: a revoked token must not read as
-  // a flaky network. It is wrong here. A 403 from the export means "this token
-  // may not take a whole-database dump" — a refusal of ONE operation by a token
-  // that is otherwise entitled to this page. Throwing that person back to the
-  // gate would log them out of a console they can legitimately use, and the
-  // reason they came would never be shown.
+  // A 403 from the export means "this token may not take a whole-database dump"
+  // — a refusal of ONE operation by a token otherwise entitled to this page,
+  // which `handleErr` now shows as a toast rather than a sign-out. This used to
+  // need a hand-rolled bypass of `handleErr`; the rule lives in `isAuthError`.
   const onExport = async () => {
     setExporting(true)
     try {
       const { filename, bytes } = await downloadDatabase(token)
       toast(fill(t.dataDone, { name: filename, size: formatBytes(bytes) }), 'success')
     } catch (e) {
-      if ((e as { status?: number })?.status === 401) {
-        handleErr(e)
-        return
-      }
-      toast((e as { message?: string })?.message || t.requestFailed, 'err')
+      handleErr(e)
     } finally {
       setExporting(false)
     }
