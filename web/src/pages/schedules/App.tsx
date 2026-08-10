@@ -261,6 +261,18 @@ export function App() {
           settings: t.settings,
         },
         badges: { schedules: pending.length },
+        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        project,
+        onProject: (id) => {
+          setProject(id)
+          saveProject(id)
+        },
+        projectLabels: {
+          project: t.project,
+          search: t.projectSearch,
+          noMatch: t.projectNoMatch,
+          all: t.allProjects,
+        },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
@@ -280,14 +292,6 @@ export function App() {
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
-        }}
-        projects={projects.map((p) => ({ id: p.id, label: p.name ?? p.id }))}
-        project={project}
-        allProjectsLabel={t.allProjects}
-        projectLabel={t.project}
-        onProject={(id) => {
-          setProject(id)
-          saveProject(id)
         }}
       >
         <Button

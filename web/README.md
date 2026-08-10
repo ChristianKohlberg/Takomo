@@ -119,6 +119,24 @@ short of. Two states, toggled by the icon at its top: expanded (icon + label,
 `w-56`) and collapsed (icons only, `w-14`). The choice is a viewer preference,
 so `useNavCollapsed` persists it per origin and every surface reads the same key.
 
+**The project picker is in the rail too**, because it is not about the current
+surface — it SCOPES all of them, and a control every page obeys belongs with the
+navigation rather than in each page's own toolbar. It stopped being a native
+`<select>` in the move: a `<select>` cannot be searched, and an install with
+fifty projects turns it into a scroll hunt. `ProjectPicker` is a trigger plus a
+popover with a search field, and it collapses to the project's initial.
+
+It is deliberately NOT `Typeahead`. That one is a filter — always showing its
+input, sized for a toolbar; this is a navigation control that must render as a
+40px square. They share the part worth sharing, `lib/typeahead`: ranking,
+truncation, and counting the total BEFORE the slice so a footer cannot claim a
+truncated list is complete. Fork that logic and the ranking rots in whichever
+copy nobody maintains.
+
+`/board` passes no `all` label, so it offers no "All projects" entry — a kanban's
+columns come from ONE project's workflow and two projects need not agree on their
+states. The other three surfaces offer it.
+
 Sign-out lives at the bottom of the rail, with the actor and its role. It used
 to be one more icon button beside "refresh" on every page — two adjacent glyphs,
 one harmless and one that ends the session.

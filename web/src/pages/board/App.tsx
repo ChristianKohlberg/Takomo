@@ -442,6 +442,19 @@ function Board({
         // The board already loads this project's open questions for its own
         // inbox drawer, so the rail can badge /inbox without a second request.
         badges: { inbox: questions.length },
+        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        project: effectiveProject,
+        onProject: (id) => {
+          // An explicit pick DOES change the shared selection — that is a human
+          // saying which project they mean, on every surface.
+          setProject(id)
+          saveProject(id)
+          setTicketFilter('')
+          setTagFilter('')
+        },
+        // No "all projects" entry here on purpose: a kanban's columns come from
+        // ONE project's workflow, and two projects need not agree on their states.
+        projectLabels: { project: t.project, search: t.projectSearch, noMatch: t.projectNoMatch },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
@@ -461,16 +474,6 @@ function Board({
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
-        }}
-        projects={projects.map((p) => ({ id: p.id }))}
-        project={effectiveProject}
-        onProject={(id) => {
-          // An explicit pick DOES change the shared selection — that is a human
-          // saying which project they mean, on every surface.
-          setProject(id)
-          saveProject(id)
-          setTicketFilter('')
-          setTagFilter('')
         }}
       >
         {/* The filter bank collapses on a phone.

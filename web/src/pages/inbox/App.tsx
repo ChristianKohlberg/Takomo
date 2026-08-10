@@ -436,6 +436,21 @@ export function App() {
           settings: t.settings,
         },
         badges: { inbox: openTotal },
+        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        project,
+        onProject: (id) => {
+          setProject(id)
+          saveProject(id)
+          // Tickets, epics and askers are all per-project, so every filter that
+          // names one would only ever produce an empty inbox after the switch.
+          updateView(clearedFilters(view))
+        },
+        projectLabels: {
+          project: t.project,
+          search: t.projectSearch,
+          noMatch: t.projectNoMatch,
+          all: t.allProjects,
+        },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
@@ -455,16 +470,6 @@ export function App() {
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
-        }}
-        projects={projects.map((p) => ({ id: p.id }))}
-        project={project}
-        allProjectsLabel={t.allProjects}
-        onProject={(id) => {
-          setProject(id)
-          saveProject(id)
-          // Tickets, epics and askers are all per-project, so every filter that
-          // names one would only ever produce an empty inbox after the switch.
-          updateView(clearedFilters(view))
         }}
       >
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
