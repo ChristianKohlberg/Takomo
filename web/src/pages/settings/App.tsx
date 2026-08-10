@@ -17,7 +17,7 @@
 // sidebar until #132 gave the whole app a left nav rail, and two left rails side
 // by side leave the reader unable to tell which one moves between surfaces and
 // which one moves within this page.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
@@ -30,6 +30,7 @@ import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
+import { ProjectDetail } from '@/components/settings/ProjectDetail'
 import { TokenList } from '@/components/settings/TokenList'
 import { TokenRevealDialog } from '@/components/settings/TokenRevealDialog'
 import {
@@ -43,6 +44,11 @@ import {
 import { isAuthError, loadToken, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project, type Whoami } from '@/lib/initiatives'
+import {
+  saveProjectSettings,
+  settingsFrom,
+  type ProjectSettings,
+} from '@/lib/project-settings'
 import {
   createProject,
   createToken,
@@ -75,8 +81,12 @@ export function App() {
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [gateError, setGateError] = useState('')
   // Remembered, because the reason someone opens /settings twice in a row is
-  // usually the same reason.
+  // usually the same reason — EXCEPT when a `?project=` deep link says otherwise.
+  // The board's gear sends the reader here to configure one project, and honouring
+  // the remembered tab over that landed them on Tokens with the project silently
+  // selected behind it.
   const [section, setSection] = useState<SectionKey>(() => {
+    if (new URLSearchParams(window.location.search).get('project')) return 'projects'
     const stored = localStorage.getItem(LS_SECTION)
     return stored === 'data' || stored === 'access' || stored === 'projects' ? stored : 'overview'
   })
@@ -84,6 +94,18 @@ export function App() {
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [tokens, setTokens] = useState<TokenRow[]>([])
+
+  // Which project's detail is open, and its editable settings. `?project=<id>`
+  // is what the board's gear links to, so a deep link opens straight on the
+  // project the reader was already looking at.
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('project'),
+  )
+  const [settings, setSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
+  const [origSettings, setOrigSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [saveErr, setSaveErr] = useState('')
 
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
@@ -100,6 +122,60 @@ export function App() {
   // says why BEFORE the button is pressed rather than surfacing a 403 after.
   const allowlist = projectAllowlist(who)
   const scopedToProjects = allowlist !== null
+
+  const selected = projects.find((p) => p.id === selectedId) ?? null
+
+  /**
+   * Open or close a project's detail, loading its saved values into the form.
+   *
+   * The URL is rewritten with `replaceState` rather than a router navigation:
+   * the section is page state, not a route, and pushing a history entry per
+   * project would make Back walk through them instead of leaving /settings.
+   */
+  const selectProject = useCallback((id: string | null) => {
+    setSelectedId(id)
+    setSaved(false)
+    setSaveErr('')
+    const url = new URL(window.location.href)
+    if (id) url.searchParams.set('project', id)
+    else url.searchParams.delete('project')
+    window.history.replaceState(null, '', url)
+  }, [])
+
+  // Load a project's saved values into the form when the OPEN project changes.
+  //
+  // The ref guard is what makes this safe rather than the dependency list.
+  // `refresh()` replaces the whole projects array after every write, so an
+  // effect that reacted to `projects` would re-run and silently discard whatever
+  // the reader had typed since. Reacting only when the open project's ID changes
+  // also covers the `?project=` deep link, where the selection exists before the
+  // fetch that resolves it.
+  const selectedKey = selected?.id ?? ''
+  const loadedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (loadedFor.current === selectedKey) return
+    loadedFor.current = selectedKey
+    const p = projects.find((x) => x.id === selectedKey)
+    setSettings(settingsFrom(p))
+    setOrigSettings(settingsFrom(p))
+  }, [selectedKey, projects])
+
+  const onSaveProject = () => {
+    if (!selected) return
+    setSaving(true)
+    setSaveErr('')
+    saveProjectSettings(token, selected.id, settings, origSettings)
+      .then(async (calls) => {
+        // Nothing changed → say nothing. "Saved." over an untouched form is a
+        // small lie that teaches the reader to distrust every later message.
+        if (calls === 0) return
+        setSaved(true)
+        setOrigSettings(settings)
+        await refresh()
+      })
+      .catch((e: Error) => setSaveErr(e.message))
+      .finally(() => setSaving(false))
+  }
 
   const SECTIONS: readonly SectionDef<SectionKey>[] = [
     { key: 'overview', label: t.navOverview, hint: t.navOverviewHint },
@@ -333,6 +409,45 @@ export function App() {
                 />
               )}
             </Section>
+          ) : selected ? (
+            <ProjectDetail
+              project={selected}
+              settings={settings}
+              onChange={(patch) => {
+                setSettings((cur) => ({ ...cur, ...patch }))
+                setSaved(false)
+              }}
+              readOnly={!isAdmin}
+              saving={saving}
+              saved={saved}
+              error={saveErr}
+              onSave={onSaveProject}
+              onBack={() => selectProject(null)}
+              onDelete={() => setDeleting(selected)}
+              labels={{
+                back: t.projBack,
+                workflowLabel: t.projWorkflowLabel,
+                langLabel: t.projLangLabel,
+                langHelp: t.projLangHelp,
+                langPh: t.projLangPh,
+                styleLabel: t.projStyleLabel,
+                styleHelp: t.projStyleHelp,
+                stylePh: t.projStylePh,
+                chars: t.projChars,
+                ttlLabel: t.projTtlLabel,
+                ttlHelp: t.projTtlHelp,
+                claimTtlLabel: t.projClaimTtlLabel,
+                claimTtlHelp: t.projClaimTtlHelp,
+                maxClaimTtlLabel: t.projMaxClaimTtlLabel,
+                maxClaimTtlHelp: t.projMaxClaimTtlHelp,
+                save: t.projSave,
+                saving: t.projSaving,
+                savedMsg: t.projSaved,
+                readOnlyMsg: t.projReadOnly,
+                over: t.projOver,
+                delete: t.projDelete,
+              }}
+            />
           ) : (
             <Section
               title={t.projTitle}
@@ -353,8 +468,8 @@ export function App() {
                         {p.name ?? ''}
                       </span>
                       {p.workflow && <Badge variant="outline">{p.workflow}</Badge>}
-                      <Button variant="destructive" size="sm" onClick={() => setDeleting(p)}>
-                        {t.projDelete}
+                      <Button variant="secondary" size="sm" onClick={() => selectProject(p.id)}>
+                        {t.projOpen}
                       </Button>
                     </li>
                   ))}
@@ -461,6 +576,9 @@ export function App() {
           if (!deleting) return
           try {
             await deleteProject(token, deleting.id)
+            // Deleting the project whose detail is open would otherwise leave
+            // the panel showing a project that no longer exists.
+            if (deleting.id === selectedId) selectProject(null)
             await refresh()
           } catch (e) {
             handleErr(e)

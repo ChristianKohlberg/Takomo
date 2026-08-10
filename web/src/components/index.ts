@@ -99,8 +99,6 @@ export { AskDrawer } from './board/AskDrawer'
 export type { AskDrawerProps, AskFields } from './board/AskDrawer'
 export { InboxDrawer } from './board/InboxDrawer'
 export type { InboxDrawerProps, InboxDrawerLabels } from './board/InboxDrawer'
-export { SettingsSheet } from './board/SettingsSheet'
-export type { SettingsSheetProps } from './board/SettingsSheet'
 
 // ---- inbox ----
 export { FilterBar } from './inbox/FilterBar'

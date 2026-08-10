@@ -21,7 +21,6 @@ import { Column } from '@/components/board/Column'
 import { AskDrawer } from '@/components/board/AskDrawer'
 import { DetailPanel } from '@/components/board/DetailPanel'
 import { InboxDrawer } from '@/components/board/InboxDrawer'
-import { SettingsSheet } from '@/components/board/SettingsSheet'
 import { AnswerGrantPage } from './AnswerGrantPage'
 import { SharePage } from './SharePage'
 
@@ -39,11 +38,6 @@ import {
   type Workflow,
 } from '@/lib/board'
 import { answerQuestion, askQuestion, listQuestions, type Question } from '@/lib/questions'
-import {
-  saveProjectSettings,
-  settingsFrom,
-  type ProjectSettings,
-} from '@/lib/project-settings'
 import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
@@ -185,12 +179,6 @@ function Board({
   const [detail, setDetail] = useState<Ticket | null>(null)
   const [questions, setQuestions] = useState<Question[]>([])
   const [asking, setAsking] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settings, setSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
-  const [origSettings, setOrigSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [saveErr, setSaveErr] = useState('')
 
   // The live indicator. `idle` before the first load, `live` once the event
   // cursor is moving, `reconnecting` when a poll failed — a board that has
@@ -630,13 +618,16 @@ function Board({
             (conn === 'idle' || conn === 'loading') && 'bg-muted-foreground',
           )}
         />
-        <Button variant="outline" size="icon" title={t.settings} onClick={() => {
-          setSettings(settingsFrom(currentProject))
-          setOrigSettings(settingsFrom(currentProject))
-          setSaved(false)
-          setSaveErr('')
-          setSettingsOpen(true)
-        }}>
+        {/* Project configuration lives in /settings now, not in a dialog here.
+            A board is for looking at tickets; the page you go to in order to
+            change how a project behaves is the settings page, and half the
+            settings in each place was the split worth ending. */}
+        <Button
+          variant="outline"
+          size="icon"
+          title={t.settings}
+          onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
+        >
           ⚙
         </Button>
         <Button variant="outline" size="icon" title={t.refresh} onClick={() => void load()}>
@@ -754,7 +745,7 @@ function Board({
           inConvSub: t.inConvSub,
           readThread: t.readThread,
           askHuman: t.askHuman,
-          close: t.setClose,
+          close: t.close,
           promotions: t.promotions,
           comments: t.comments,
           noComments: t.noComments,
@@ -796,9 +787,9 @@ function Board({
           advisory: t.advisory,
           blockingHint: t.answeringResumes,
           advisoryHint: t.decisionRouted,
-          langHint: t.setLangHelp,
+          langHint: t.askLangHint,
           ask: t.send,
-          cancel: t.setCancel,
+          cancel: t.cancel,
           needTitle: t.typeFirst,
         }}
       />
@@ -827,7 +818,7 @@ function Board({
           notePlaceholder: t.notePlaceholder,
           send: t.send,
           cantAnswer: t.cantAnswer,
-          close: t.setClose,
+          close: t.close,
           approve: t.approve,
           reject: t.reject,
           yes: t.yes,
@@ -840,58 +831,6 @@ function Board({
         }}
       />
 
-      <SettingsSheet
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        settings={settings}
-        onChange={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
-        readOnly={false}
-        saving={saving}
-        saved={saved}
-        error={saveErr}
-        onSave={() => {
-          setSaving(true)
-          setSaveErr('')
-          saveProjectSettings(token, effectiveProject, settings, origSettings)
-            .then((calls) => {
-              // Nothing changed → close, do not claim a save that never
-              // happened. "Saved." over an unchanged form is a small lie that
-              // teaches the reader to distrust the message.
-              if (calls === 0) {
-                setSettingsOpen(false)
-                return
-              }
-              setSaved(true)
-              setOrigSettings(settings)
-              return listProjects(token).then(setProjects)
-            })
-            .catch((e: Error) => setSaveErr(e.message))
-            .finally(() => setSaving(false))
-        }}
-        labels={{
-          title: t.setTitle,
-          subtitle: t.setSub,
-          langLabel: t.setLangLabel,
-          langHelp: t.setLangHelp,
-          langPh: t.setLangPh,
-          styleLabel: t.setStyleLabel,
-          styleHelp: t.setStyleHelp,
-          stylePh: t.setStylePh,
-          ttlLabel: t.setTtlLabel,
-          ttlHelp: t.setTtlHelp,
-          claimTtlLabel: t.setClaimTtlLabel,
-          claimTtlHelp: t.setClaimTtlHelp,
-          maxClaimTtlLabel: t.setMaxClaimTtlLabel,
-          maxClaimTtlHelp: t.setMaxClaimTtlHelp,
-          chars: t.setChars,
-          over: t.setOver,
-          save: t.setSave,
-          saving: t.setSaving,
-          savedMsg: t.setSaved,
-          cancel: t.setCancel,
-          readOnlyMsg: t.setReadOnly,
-        }}
-      />
     </AppShell>
   )
 }
