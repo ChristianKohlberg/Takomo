@@ -10,6 +10,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from '@/components/AppHeader'
+import { AppShell } from '@/components/AppShell'
+import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useNavigate } from 'react-router'
 import { cn } from '@/lib/utils'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
@@ -59,6 +61,7 @@ export function App() {
   const [gateError, setGateError] = useState('')
 
   const [me, setMe] = useState({ actor: '', scopes: [] as string[] })
+  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
   const [questions, setQuestions] = useState<Question[]>([])
   const [folder, setFolder] = useState<Folder>('open')
@@ -306,18 +309,33 @@ export function App() {
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
-      <AppHeader
-        onNavigate={navigate}
-        current="inbox"
-        nav={{
+    <AppShell
+      rail={{
+        onNavigate: navigate,
+        current: 'inbox',
+        nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
           settings: t.settings,
-        }}
-        badges={{ inbox: counts.open ?? 0 }}
+        },
+        badges: { inbox: counts.open ?? 0 },
+        labels: {
+          expand: t.navExpand,
+          collapse: t.navCollapse,
+          signOut: t.signOut,
+          account: t.navAccount,
+        },
+        collapsed: navCollapsed,
+        onCollapsed: setNavCollapsed,
+        actor: me.actor,
+        scopes: me.scopes,
+        onSignOut: signOut,
+      }}
+    >
+      <AppHeader
+        title={t.inbox}
         lang={lang}
         onLang={(l) => {
           setLang(l)
@@ -354,9 +372,6 @@ export function App() {
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
         <Button variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>
           ↻
-        </Button>
-        <Button variant="outline" size="icon" title="Sign out" onClick={signOut}>
-          ⎋
         </Button>
       </AppHeader>
 
@@ -542,6 +557,6 @@ export function App() {
           copyFail: t.copyFail,
         }}
       />
-    </div>
+    </AppShell>
   )
 }
