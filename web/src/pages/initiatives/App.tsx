@@ -20,7 +20,11 @@ import { Composer, type Draft, type PickedFile } from '@/components/initiatives/
 import { CreateDialog } from '@/components/initiatives/CreateDialog'
 import { EntryCard } from '@/components/initiatives/EntryCard'
 import { InitiativeRow } from '@/components/initiatives/InitiativeRow'
+import { PaneDoc } from '@/components/initiatives/PaneDoc'
 import { RollupStrip } from '@/components/initiatives/RollupStrip'
+import { SourceInspector } from '@/components/initiatives/SourceInspector'
+import { SourcesFooter } from '@/components/initiatives/SourcesFooter'
+import { buildDoc, PANES, type Pane } from '@/lib/initiative-doc'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { localInputToRfc3339 } from '@/lib/format'
@@ -77,8 +81,24 @@ export function App() {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [file, setFile] = useState<PickedFile | null>(null)
 
+  // The document is derived from the same entries the log renders — nothing is
+  // fetched twice and nothing is stored. `pane` is which of the three is open;
+  // `cite` is the source open in the inspector.
+  const [pane, setPane] = useState<Pane>('business')
+  const [cite, setCite] = useState<{ entry: Entry; n: number } | null>(null)
+  const [showLog, setShowLog] = useState(false)
+
   const t = useMemo(() => pick(STR, lang), [lang])
   const canWrite = me.scopes.includes('write')
+
+  // Reduced on every read, never stored — the same rule the server's `rollup`
+  // follows, and for the same reason: a cached summary drifts from the entries
+  // it summarises and there is no way to notice.
+  const doc = useMemo(() => buildDoc(entries), [entries])
+  const paneLabel = useCallback(
+    (p: Pane) => (p === 'business' ? t.paneBusiness : p === 'technical' ? t.paneTechnical : t.paneVerification),
+    [t],
+  )
 
   const statusLabel = useCallback(
     (s: InitiativeStatus) =>
@@ -138,6 +158,12 @@ export function App() {
       setSelectedId(id)
       setEntries([])
       setEntryCursor(null)
+      // The document state belongs to the initiative you were reading, not to
+      // the page: carrying an open citation across a selection would point the
+      // inspector at a source the new document does not cite.
+      setCite(null)
+      setPane('business')
+      setShowLog(false)
       // Through the router and replacing, not pushing — see the note in the
       // inbox: one history entry per row selected is not what Back should mean.
       navigate({ hash: 'i=' + id }, { replace: true })
@@ -568,6 +594,73 @@ export function App() {
                 </>
               )}
 
+              {doc.hasDocument && (
+                <>
+                  <div className="border-border mt-6.5 flex flex-wrap items-center gap-1 border-b">
+                    {PANES.map((p) => (
+                      <PaneTab
+                        key={p}
+                        label={paneLabel(p)}
+                        on={!showLog && pane === p}
+                        onClick={() => {
+                          setShowLog(false)
+                          setPane(p)
+                          setCite(null)
+                        }}
+                      />
+                    ))}
+                    <PaneTab
+                      label={t.paneLog}
+                      on={showLog}
+                      onClick={() => setShowLog(true)}
+                    />
+                  </div>
+
+                  {!showLog && (
+                    <div className="mt-4">
+                      <PaneDoc
+                        doc={doc.panes[pane]}
+                        selectedId={cite?.entry.id ?? null}
+                        onSelectSource={(entry, n) => setCite({ entry, n })}
+                        labels={{
+                          unwritten: t.paneUnwritten,
+                          unwrittenHint: t.paneUnwrittenHint,
+                          uncited: t.uncited,
+                          citation: t.aCitation,
+                          open: t.threadOpen,
+                          running: t.threadRunning,
+                          resolved: t.threadResolved,
+                        }}
+                        inspector={
+                          <SourceInspector
+                            entry={cite?.entry ?? null}
+                            n={cite?.n ?? null}
+                            onClose={() => setCite(null)}
+                            onDownload={(e) => downloadAttachment(token, e).catch(handleErr)}
+                            labels={{
+                              hint: t.citeHint,
+                              kind: t.eKind,
+                              source: t.eSource,
+                              wrote: t.wrote,
+                              landed: t.landed,
+                              download: t.download,
+                              close: t.dismiss,
+                            }}
+                          />
+                        }
+                      />
+                      <SourcesFooter
+                        sources={doc.sources}
+                        onSelect={(entry, n) => setCite({ entry, n })}
+                        labels={{ heading: t.lineageHdr, wrote: t.wrote, landed: t.landed }}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {(!doc.hasDocument || showLog) && (
+                <>
               <SectionHeader>{t.entriesHdr}</SectionHeader>
               {entries.length === 0 ? (
                 <Empty big={t.emptyEntries} hint={t.emptyEntriesHint} />
@@ -591,6 +684,8 @@ export function App() {
                       {t.loadMore}
                     </Button>
                   )}
+                </>
+              )}
                 </>
               )}
             </div>
@@ -621,6 +716,23 @@ export function App() {
         }}
       />
     </AppShell>
+  )
+}
+
+function PaneTab({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={on}
+      onClick={onClick}
+      className={cn(
+        'text-muted-foreground hover:text-foreground -mb-px cursor-pointer border-b-2 border-transparent px-3.5 py-2.5 text-[13.5px] font-[650]',
+        on && 'border-ring text-secondary-foreground bg-secondary',
+      )}
+    >
+      {label}
+    </button>
   )
 }
 

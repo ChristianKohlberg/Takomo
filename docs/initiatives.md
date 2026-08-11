@@ -96,6 +96,46 @@ the content route serves them. That route is the only endpoint in the API return
 than JSON, and it is why `content` is never selected by any other query: a document is fetched by
 itself, once, by the reader that wants it.
 
+## The document: three views reduced from the same entries
+
+Read newest-first, an entry log tells you what was **worked on**. It does not tell you what is now
+**understood** — and an initiative fed for months is exactly where those two come apart. So two
+reserved entry kinds turn the same rows into a document, without a schema change: `kind` has always
+been a free-form slug and `meta` a free-form JSON object on every entry.
+
+| kind | `meta` | what it produces |
+|---|---|---|
+| `view` | `{ pane, cites: [entryId, …] }` | one pane's prose. `pane` is `business`, `technical` or `verification` |
+| `thread` | `{ pane, para, state? }` | a margin note anchored to a paragraph. `state` is `open` (default), `running` or `resolved` |
+
+Everything else — `transcript`, `sample-data`, `code-research`, `research`, `note` — is **evidence**:
+citable from a pane, and listed in the lineage footer.
+
+**Citations are local to write and global to read.** A `[3]` mark in a pane's prose indexes that
+pane's own `cites` array, so an agent writing one pane never has to know what another pane cited.
+The reader-facing number is assigned across the whole document, in pane order, so two panes citing
+the same entry show the same number. A mark pointing at nothing — an index past the end, or an id
+outside the page of entries — is left as **literal text**. A broken citation that silently vanished
+would read as an uncited sentence, which is a lie about where the sentence came from.
+
+**A paragraph with no citation is marked.** Not as a failure, as a fact: it is an assertion nobody
+sourced, and it should look like one. That is what makes the prose checkable rather than merely
+confident.
+
+The document is **reduced from the entries on every read and never stored** — the same rule the
+`rollup` follows, for the same reason: a cached summary drifts from the rows it summarises and
+nothing notices. Latest `view` per pane wins, ties broken by id so the winner is deterministic. A
+pane is revised by appending a new `view`, never by editing one; the log stays append-only and every
+earlier revision is still there.
+
+`web/src/lib/initiative-doc.ts` is the whole derivation, and it is pure — `buildDoc(entries)` with
+no I/O, which is why it is unit-tested rather than driven through a browser. The page falls back to
+the plain entry log when no pane has been written, and the log is always reachable as a fourth tab.
+
+One limitation worth knowing: pane prose renders as **plain paragraphs**, not markdown. Citation
+marks are parsed into real elements, so the text cannot go through the markdown renderer without
+teaching it about marks first. Formatting inside a pane is therefore not available yet.
+
 ## Status is a label, not a state machine
 
 `open` is being fed. `parked` is deliberately set aside — still readable, still appendable; parking
