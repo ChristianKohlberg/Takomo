@@ -473,6 +473,8 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         advance(store, ticket, "done", SEEDER, None)?;
     }
 
+    initiative(store)?;
+
     // Counted, not hardcoded, so the summary can't drift from the content.
     Ok(SeedSummary {
         project: PROJECT.to_string(),
@@ -480,6 +482,185 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         questions: seeded_questions(store)?.len(),
         skipped: false,
     })
+}
+
+/// One day, in milliseconds — the unit every `origin_at` below is offset by.
+const DAY_MS: i64 = 86_400_000;
+
+/// Seed the demo initiative as a DOCUMENT, not just a pile of entries.
+///
+/// Three `view` entries (one per pane) carry the prose; `[n]` marks inside it
+/// index that pane's own `meta.cites` list, so an author only ever needs local
+/// numbering. `thread` entries are margin notes anchored to a paragraph. Every
+/// other entry here is evidence: citable, and listed in the lineage footer.
+///
+/// None of this needed a schema change — `kind` has always been a free-form slug
+/// and `meta` a free-form JSON object on every entry. The document is reduced
+/// from these rows on read and never stored, exactly like `rollup`.
+///
+/// Evidence is appended FIRST because a view cites entries by id, and the ids do
+/// not exist until the rows do.
+fn initiative(store: &Store) -> ApiResult<()> {
+    let now = now_ms();
+    let ini = store.create_initiative(
+        PROJECT,
+        &crate::store::InitiativeCreate {
+            title: "Split billing on shared invoices".to_string(),
+            summary: Some(
+                "Multi-entity customers want one invoice divided before it reaches their AP system."
+                    .to_string(),
+            ),
+            labels: vec!["billing".to_string()],
+            tags: vec!["person:ada".to_string(), "domain:billing".to_string()],
+            ..Default::default()
+        },
+        SEEDER,
+    )?;
+
+    // `origin_at` is when the content was WRITTEN; `created_at` is when it
+    // landed here. They are set apart on purpose — the five-month gap on the
+    // transcript is the most honest thing in this fixture.
+    let evidence = |kind: &str, title: &str, text: &str, source: &str, age_days: i64| {
+        store
+            .append_initiative_entry(
+                &ini.id,
+                &crate::store::EntryCreate {
+                    kind: kind.to_string(),
+                    title: Some(title.to_string()),
+                    text: text.to_string(),
+                    source: source.to_string(),
+                    origin_at: Some(now - age_days * DAY_MS),
+                    ..Default::default()
+                },
+                SEEDER,
+            )
+            .map(|(entry, _)| entry.id)
+    };
+
+    let call = evidence(
+        "transcript",
+        "QBR call, Nordwind",
+        "\"We get one invoice for six sites. Someone here retypes it into six lines every month. That person is me.\"",
+        "person:kunde-nordwind",
+        152,
+    )?;
+    let invoice = evidence(
+        "sample-data",
+        "Nordwind, March invoice",
+        "Page 3 divides a shared licence line pro-rata across all six sites — one line becomes six.",
+        "agent:w3",
+        150,
+    )?;
+    let talberg = evidence(
+        "note",
+        "Talberg says the same thing",
+        "Raised unprompted during onboarding, six weeks after Nordwind. Four legal entities, same manual workaround.",
+        "person:ada",
+        44,
+    )?;
+    let code = evidence(
+        "code-research",
+        "src/store/billing.rs:142-190",
+        "One ledger row, one account. The PDF renders from the ledger at request time, so nothing sits in between to divide.",
+        "agent:w1",
+        5,
+    )?;
+    let scan = evidence(
+        "research",
+        "How three competitors do it",
+        "Stripe has no native split. Chargebee splits by subscription. All three divide shared lines, and all three call it \"allocation\".",
+        "agent:w3",
+        1,
+    )?;
+
+    let view = |pane: &str, text: &str, cites: Vec<&str>| {
+        store.append_initiative_entry(
+            &ini.id,
+            &crate::store::EntryCreate {
+                kind: "view".to_string(),
+                text: text.to_string(),
+                source: "agent:w1".to_string(),
+                meta: Some(json!({ "pane": pane, "cites": cites })),
+                ..Default::default()
+            },
+            SEEDER,
+        )
+    };
+
+    view(
+        "business",
+        "Two multi-entity customers re-key a single invoice into their AP system by hand, every month[1]. \
+         Nordwind bills six sites; Talberg four legal entities[3]. Neither asked for a feature — both described \
+         the same manual workaround, unprompted, six weeks apart.\n\n\
+         Whether this is a segment or a coincidence is unknown. Nobody has counted how many accounts bill \
+         more than one site.\n\n\
+         The customer defines cost centres and receives one invoice per centre. Nordwind's invoice also divides \
+         a shared licence line across all six sites[2], which is where the two customers stop looking alike — \
+         and the open question is whether we promise whole-amount splits or allocation.",
+        vec![&call, &invoice, &talberg],
+    )?;
+
+    view(
+        "technical",
+        "An invoice is one ledger row carrying one account, and the PDF renders from it at request time[1]. \
+         There is no line-item table. This is a data-model change, not a rendering change.\n\n\
+         A new invoice_splits child table keyed on the ledger row. Cost centres reuse the existing project tag \
+         registry, so there is no second identity concept to keep consistent.\n\n\
+         Allocating a shared line across centres would need a second table and a rounding policy, so that the \
+         parts sum exactly to the whole.",
+        vec![&code],
+    )?;
+
+    view(
+        "verification",
+        "Three things no agent can answer. Does Nordwind's AP system import one file per vendor or one per \
+         site? Is the shared licence line divided by headcount or equally[1]? Is a per-entity invoice a \
+         separate tax point[2]?\n\n\
+         What must be true before this ships: split amounts sum exactly to the parent total, remainder cent \
+         included; a split cannot be issued against a closed ledger row; Nordwind's March invoice reproduces \
+         from the real ledger row[1]; invoices with no split rows render byte-identically to today.\n\n\
+         Each names the layer it holds at, because a rule enforced only in the UI is not the same claim as one \
+         enforced in the API. On distil these become a Checklist lane rather than a blank page.",
+        vec![&invoice, &scan],
+    )?;
+
+    let thread = |pane: &str, para: i64, state: &str, text: &str, source: &str| {
+        store.append_initiative_entry(
+            &ini.id,
+            &crate::store::EntryCreate {
+                kind: "thread".to_string(),
+                text: text.to_string(),
+                source: source.to_string(),
+                meta: Some(json!({ "pane": pane, "para": para, "state": state })),
+                ..Default::default()
+            },
+            SEEDER,
+        )
+    };
+
+    thread(
+        "business",
+        1,
+        "running",
+        "I am not building for two customers. How many accounts bill more than one site?",
+        "person:ada",
+    )?;
+    thread(
+        "business",
+        2,
+        "open",
+        "All three competitors call this \"allocation\", not \"split\". The word customers arrive with is not the one we use.",
+        "agent:w3",
+    )?;
+    thread(
+        "technical",
+        2,
+        "open",
+        "Who owns the remainder cent? Every allocation scheme gets this wrong once and then never again.",
+        "person:ada",
+    )?;
+
+    Ok(())
 }
 
 /// Every ticket in the demo project.

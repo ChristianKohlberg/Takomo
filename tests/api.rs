@@ -9622,6 +9622,80 @@ async fn initiative_entries_list_carries_provenance_but_not_bytes() {
     assert_eq!(body["rollup"]["entries"], 2);
 }
 
+/// `meta` survives the round-trip verbatim, on both the append response and the
+/// entry list.
+///
+/// This is the contract the /initiatives DOCUMENT view is built on: three `view`
+/// entries carry one pane's prose each, `meta.cites` maps a `[n]` mark in that
+/// prose to the entry it came from, and `thread` entries anchor a margin note to
+/// a paragraph. All of it rides in a column the store has always had — so the
+/// document needed no schema change and no new route, and this test is what
+/// says the field cannot be quietly dropped from the response.
+#[tokio::test]
+async fn initiative_entry_meta_round_trips_for_the_document_view() {
+    let app = TestApp::spawn().await;
+    let (id, note_id, _) = seed_initiative(&app.open_store());
+
+    let (status, appended) = app
+        .post(
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries"),
+            json!({
+                "kind": "view",
+                "text": "The problem, stated once[1].",
+                "source": "agent:w1",
+                "meta": { "pane": "business", "cites": [note_id] },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{appended}");
+    assert_eq!(appended["entry"]["kind"], "view");
+    assert_eq!(appended["entry"]["meta"]["pane"], "business");
+    assert_eq!(appended["entry"]["meta"]["cites"][0], note_id);
+
+    let (status, thread) = app
+        .post(
+            &app.worker,
+            &format!("/v1/initiatives/{id}/entries"),
+            json!({
+                "kind": "thread",
+                "text": "Who counted?",
+                "source": "person:ada",
+                "meta": { "pane": "business", "para": 0, "state": "open" },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{thread}");
+
+    let (status, body) = app
+        .get(&app.worker, &format!("/v1/initiatives/{id}/entries"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+
+    let view = items
+        .iter()
+        .find(|e| e["kind"] == "view")
+        .expect("the view entry is listed");
+    assert_eq!(view["meta"]["pane"], "business");
+    assert_eq!(view["meta"]["cites"][0], note_id);
+
+    let margin = items
+        .iter()
+        .find(|e| e["kind"] == "thread")
+        .expect("the thread entry is listed");
+    assert_eq!(margin["meta"]["para"], 0);
+    assert_eq!(margin["meta"]["state"], "open");
+
+    // An entry appended without `meta` reports an empty object rather than null,
+    // so a reader can index into it without a guard.
+    let plain = items
+        .iter()
+        .find(|e| e["id"] == note_id)
+        .expect("the seeded note is listed");
+    assert_eq!(plain["meta"], json!({}), "{plain}");
+}
+
 /// The attachment route is the only non-JSON endpoint in the API. It must serve
 /// the stored bytes under the entry's own media type, as a download rather than
 /// something a browser will render.

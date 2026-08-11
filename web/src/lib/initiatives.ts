@@ -62,6 +62,12 @@ export interface Entry {
   has_content?: boolean
   filename?: string | null
   content_bytes?: number | null
+  /**
+   * Free-form JSON the appender attached. The server has always stored and
+   * returned it (`meta` on the entry); the document view is the first reader to
+   * mean anything by it — `pane`, `cites`, `para`. See lib/initiative-doc.ts.
+   */
+  meta?: unknown
 }
 
 export interface Page<T> {
