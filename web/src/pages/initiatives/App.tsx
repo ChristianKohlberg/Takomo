@@ -24,7 +24,16 @@ import { PaneDoc } from '@/components/initiatives/PaneDoc'
 import { RollupStrip } from '@/components/initiatives/RollupStrip'
 import { SourceInspector } from '@/components/initiatives/SourceInspector'
 import { SourcesFooter } from '@/components/initiatives/SourcesFooter'
-import { buildDoc, PANES, type Pane } from '@/lib/initiative-doc'
+import { OriginMasthead } from '@/components/initiatives/OriginMasthead'
+import {
+  buildDoc,
+  DECISION_KIND,
+  PANES,
+  THREAD_KIND,
+  VIEW_KIND,
+  type Pane,
+  type Thread,
+} from '@/lib/initiative-doc'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { localInputToRfc3339 } from '@/lib/format'
@@ -33,6 +42,7 @@ import {
   STATUSES,
   appendEntry,
   createInitiative,
+  createTicket,
   downloadAttachment,
   listEntries,
   listInitiatives,
@@ -281,6 +291,105 @@ export function App() {
     },
     [token, toast, t, project, status, q, select, handleErr],
   )
+
+  // ---- document actions --------------------------------------------------
+  //
+  // All three are APPENDS. Nothing edits or deletes an entry, so the note, the
+  // ticket it became, the wording it replaced and the person who decided are all
+  // still readable afterwards.
+
+  /** File a ticket for a margin note, then supersede the note as `running`. */
+  const doDispatch = useCallback(
+    async (thread: Thread) => {
+      // `selected` is declared further down; look it up here rather than
+      // reordering the component around one handler.
+      const ini = items.find((i) => i.id === selectedId)
+      if (!selectedId || !ini) return
+      setBusy(true)
+      try {
+        const ticketId = await createTicket(token, {
+          project: ini.project,
+          title: (thread.entry.text ?? t.dispatchFallbackTitle).slice(0, 120),
+          body: `${thread.entry.text ?? ''}\n\nRaised in the margin of ${ini.title} (${selectedId}).\nAppend the answer to that initiative.`,
+          tags: [`initiative:${selectedId}`],
+        })
+        await appendEntry(token, selectedId, {
+          kind: THREAD_KIND,
+          source: me.actor || 'human:web',
+          title: thread.entry.title ?? undefined,
+          text: thread.entry.text ?? '',
+          meta: {
+            pane: pane,
+            para: thread.para,
+            state: 'running',
+            ticket: ticketId,
+            supersedes: thread.entry.id,
+          },
+        })
+        await fetchEntries(selectedId, true)
+        toast(`${t.dispatched} ${ticketId}`, 'success')
+      } catch (e) {
+        handleErr(e)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [token, selectedId, items, me.actor, pane, t, fetchEntries, toast, handleErr],
+  )
+
+  /**
+   * Accept an amendment: append the proposed prose as a real `view`, then record
+   * the decision. The new view is what makes it live — the decision entry only
+   * says who agreed and keeps the proposal from being offered twice.
+   */
+  const doAccept = useCallback(async () => {
+    const amendment = doc.panes[pane].pending
+    if (!selectedId || !amendment) return
+    setBusy(true)
+    try {
+      const proposal = amendment.entry
+      const m = (proposal.meta ?? {}) as { cites?: unknown }
+      await appendEntry(token, selectedId, {
+        kind: VIEW_KIND,
+        source: me.actor || 'human:web',
+        text: proposal.text ?? '',
+        meta: { pane, cites: Array.isArray(m.cites) ? m.cites : [], from: proposal.id },
+      })
+      await appendEntry(token, selectedId, {
+        kind: DECISION_KIND,
+        source: me.actor || 'human:web',
+        text: t.acceptedNote,
+        meta: { accepts: proposal.id, pane },
+      })
+      await fetchEntries(selectedId, true)
+      toast(t.accepted, 'success')
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy(false)
+    }
+  }, [token, selectedId, doc, pane, me.actor, t, fetchEntries, toast, handleErr])
+
+  /** Reject an amendment: one `decision` entry. The live pane is untouched. */
+  const doReject = useCallback(async () => {
+    const amendment = doc.panes[pane].pending
+    if (!selectedId || !amendment) return
+    setBusy(true)
+    try {
+      await appendEntry(token, selectedId, {
+        kind: DECISION_KIND,
+        source: me.actor || 'human:web',
+        text: t.rejectedNote,
+        meta: { rejects: amendment.entry.id, pane },
+      })
+      await fetchEntries(selectedId, true)
+      toast(t.rejected, 'success')
+    } catch (e) {
+      handleErr(e)
+    } finally {
+      setBusy(false)
+    }
+  }, [token, selectedId, doc, pane, me.actor, t, fetchEntries, toast, handleErr])
 
   const doAppend = useCallback(async () => {
     if (!selectedId || !guardWrite()) return
@@ -594,6 +703,11 @@ export function App() {
                 </>
               )}
 
+              <OriginMasthead
+                origins={doc.origins}
+                labels={{ heading: t.originHdr, wrote: t.wrote }}
+              />
+
               {doc.hasDocument && (
                 <>
                   <div className="border-border mt-6.5 flex flex-wrap items-center gap-1 border-b">
@@ -621,7 +735,12 @@ export function App() {
                       <PaneDoc
                         doc={doc.panes[pane]}
                         selectedId={cite?.entry.id ?? null}
+                        canWrite={canWrite}
+                        busy={busy}
                         onSelectSource={(entry, n) => setCite({ entry, n })}
+                        onDispatch={(th) => void doDispatch(th)}
+                        onAccept={() => void doAccept()}
+                        onReject={() => void doReject()}
                         labels={{
                           unwritten: t.paneUnwritten,
                           unwrittenHint: t.paneUnwrittenHint,
@@ -630,6 +749,20 @@ export function App() {
                           open: t.threadOpen,
                           running: t.threadRunning,
                           resolved: t.threadResolved,
+                          dispatch: t.dispatch,
+                          dispatching: t.dispatching,
+                          ticket: t.threadTicket,
+                          heading: t.amendHdr,
+                          proposedBy: t.amendBy,
+                          accept: t.accept,
+                          reject: t.reject,
+                          busy: t.working,
+                          same: t.diffSame,
+                          changed: t.diffChanged,
+                          added: t.diffAdded,
+                          removed: t.diffRemoved,
+                          was: t.diffWas,
+                          readOnly: t.writeNeeded,
                         }}
                         inspector={
                           <SourceInspector

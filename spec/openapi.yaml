@@ -4849,6 +4849,27 @@ components:
         when the content was *written* as opposed to `created_at`, when it landed
         here. A transcript pasted in a week later has two different, both correct,
         timestamps.
+
+        A handful of `kind` + `meta` combinations are RESERVED, and `/initiatives`
+        reduces them into a document of three panes. They are conventions over
+        this same schema, not new fields: see `docs/initiatives.md`.
+
+          kind `view`     meta { pane, cites: [entryId, …] } — one pane's prose,
+                          `pane` being business | technical | verification. A
+                          `[n]` mark in the text cites the n-th id in `cites`
+                          (1-based, local to that entry).
+                          With `proposed: true` it is an AMENDMENT: offered to a
+                          human as a diff, never live until accepted.
+          kind `thread`   meta { pane, para, state?, ticket?, supersedes? } — a
+                          margin note anchored to paragraph `para` (0-based).
+                          `state` is open | running | resolved.
+          kind `decision` meta { accepts | rejects: <entryId> } — a verdict on an
+                          amendment.
+          any kind        meta { origin: true } — the words the idea ARRIVED in,
+                          quoted above every pane.
+
+        Everything is still append-only. A pane is revised by appending a new
+        `view`; a thread changes state by appending one that `supersedes` it.
       properties:
         id: { type: string, description: '`ie-…`' }
         initiative: { type: string }
@@ -4865,7 +4886,7 @@ components:
         source: { type: string, description: 'REQUIRED where this came from — an agent id, a person, a conversation' }
         source_uri: { type: [string, "null"] }
         origin_at: { type: [string, "null"], format: date-time, description: 'when the content originated, as opposed to created_at' }
-        meta: { type: object }
+        meta: { type: object, description: 'free-form JSON the appender attached. Reserved shapes above are read by /initiatives; anything else is ignored by the server and carried verbatim.' }
         author: { type: string, description: 'the actor that appended it' }
         created_at: { type: string, format: date-time }
 

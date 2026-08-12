@@ -9696,6 +9696,123 @@ async fn initiative_entry_meta_round_trips_for_the_document_view() {
     assert_eq!(plain["meta"], json!({}), "{plain}");
 }
 
+/// The amendment loop, end to end over HTTP: propose, then decide.
+///
+/// Every step is an APPEND. A proposed pane carries `meta.proposed`, which keeps
+/// it out of the live document until a person acts; accepting appends the prose
+/// as a real `view` PLUS a `decision` naming the proposal; rejecting appends the
+/// decision alone and leaves the pane untouched. Nothing is edited or deleted, so
+/// the wording that lost and the person who decided are both still readable.
+///
+/// No route exists for any of this — it is the entry surface all the way down,
+/// which is the property this test is really pinning.
+#[tokio::test]
+async fn initiative_amendments_and_dispatch_are_appends() {
+    let app = TestApp::spawn().await;
+    let (id, note_id, _) = seed_initiative(&app.open_store());
+    let entries = format!("/v1/initiatives/{id}/entries");
+
+    // The live pane.
+    let (status, _) = app
+        .post(
+            &app.human,
+            &entries,
+            json!({
+                "kind": "view", "source": "agent:w1", "text": "The live position.",
+                "meta": { "pane": "business", "cites": [] },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // An amendment, which must NOT become the live pane on its own.
+    let (status, proposed) = app
+        .post(
+            &app.human,
+            &entries,
+            json!({
+                "kind": "view", "source": "agent:w3", "text": "The revised position[1].",
+                "meta": { "pane": "business", "cites": [note_id], "proposed": true },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let proposal_id = proposed["entry"]["id"].as_str().unwrap().to_string();
+    assert_eq!(proposed["entry"]["meta"]["proposed"], true);
+
+    // Accepting: the prose as a real view, then the decision.
+    for body in [
+        json!({
+            "kind": "view", "source": "human:reviewer", "text": "The revised position[1].",
+            "meta": { "pane": "business", "cites": [note_id], "from": proposal_id },
+        }),
+        json!({
+            "kind": "decision", "source": "human:reviewer", "text": "Accepted.",
+            "meta": { "accepts": proposal_id, "pane": "business" },
+        }),
+    ] {
+        let (status, out) = app.post(&app.human, &entries, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{out}");
+    }
+
+    // A margin note, then the dispatch that supersedes it as `running`.
+    let (_, note) = app
+        .post(
+            &app.human,
+            &entries,
+            json!({
+                "kind": "thread", "source": "person:ada", "text": "Who counted?",
+                "meta": { "pane": "business", "para": 1 },
+            }),
+        )
+        .await;
+    let thread_id = note["entry"]["id"].as_str().unwrap().to_string();
+
+    let (status, ticket) = app
+        .post(
+            &app.human,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Count multi-site accounts", "tags": [format!("initiative:{id}")] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{ticket}");
+    let ticket_id = ticket["id"].as_str().unwrap().to_string();
+
+    let (status, superseding) = app
+        .post(
+            &app.human,
+            &entries,
+            json!({
+                "kind": "thread", "source": "human:reviewer", "text": "Who counted?",
+                "meta": {
+                    "pane": "business", "para": 1, "state": "running",
+                    "ticket": ticket_id, "supersedes": thread_id,
+                },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{superseding}");
+
+    // Every step is still there: two views, the proposal, the decision, and BOTH
+    // threads. The reducer picks the winners; the store forgets nothing.
+    let (status, body) = app.get(&app.human, &entries).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let kinds: Vec<&str> = items.iter().filter_map(|e| e["kind"].as_str()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "view").count(), 3);
+    assert_eq!(kinds.iter().filter(|k| **k == "thread").count(), 2);
+    assert_eq!(kinds.iter().filter(|k| **k == "decision").count(), 1);
+
+    let decision = items.iter().find(|e| e["kind"] == "decision").unwrap();
+    assert_eq!(decision["meta"]["accepts"], proposal_id);
+    let dispatched = items
+        .iter()
+        .find(|e| e["meta"]["state"] == "running")
+        .expect("the superseding thread is listed");
+    assert_eq!(dispatched["meta"]["ticket"], ticket_id);
+    assert_eq!(dispatched["meta"]["supersedes"], thread_id);
+}
+
 /// The attachment route is the only non-JSON endpoint in the API. It must serve
 /// the stored bytes under the entry's own media type, as a download rather than
 /// something a browser will render.

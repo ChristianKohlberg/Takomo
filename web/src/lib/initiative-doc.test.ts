@@ -153,3 +153,154 @@ describe('buildDoc', () => {
     expect(doc.hasDocument).toBe(false)
   })
 })
+
+describe('origins', () => {
+  it('collects entries marked as how the idea arrived, oldest first', () => {
+    const late = entry('transcript', {
+      id: 'ent-late',
+      meta: { origin: true },
+      origin_at: '2026-06-28T00:00:00.000Z',
+    })
+    const early = entry('transcript', {
+      id: 'ent-early',
+      meta: { origin: true },
+      origin_at: '2026-03-12T00:00:00.000Z',
+    })
+    const notOrigin = entry('note', { id: 'ent-plain' })
+    // Newest-first in, oldest-first out: this is the beginning of the story.
+    const doc = buildDoc([late, early, notOrigin])
+    expect(doc.origins.map((o) => o.id)).toEqual(['ent-early', 'ent-late'])
+  })
+
+  it('falls back to created_at when an origin has no origin_at', () => {
+    const a = entry('note', { id: 'a', meta: { origin: true }, created_at: '2026-08-02T00:00:00.000Z' })
+    const b = entry('note', { id: 'b', meta: { origin: true }, created_at: '2026-08-01T00:00:00.000Z' })
+    expect(buildDoc([a, b]).origins.map((o) => o.id)).toEqual(['b', 'a'])
+  })
+})
+
+describe('threads that supersede', () => {
+  it('replaces a note with the one that supersedes it', () => {
+    const doc = buildDoc([
+      view('business', 'One.'),
+      entry('thread', { id: 'th-1', text: 'ask someone', meta: { pane: 'business', para: 0 } }),
+      entry('thread', {
+        id: 'th-2',
+        text: 'ask someone',
+        meta: { pane: 'business', para: 0, state: 'running', ticket: 'demo-9d3', supersedes: 'th-1' },
+      }),
+    ])
+    const threads = doc.panes.business.threads
+    expect(threads).toHaveLength(1)
+    expect(threads[0]?.entry.id).toBe('th-2')
+    expect(threads[0]?.state).toBe('running')
+    expect(threads[0]?.ticket).toBe('demo-9d3')
+  })
+
+  it('reports no ticket when the note has not been dispatched', () => {
+    const doc = buildDoc([
+      view('business', 'One.'),
+      entry('thread', { id: 'th', meta: { pane: 'business', para: 0 } }),
+    ])
+    expect(doc.panes.business.threads[0]?.ticket).toBeNull()
+  })
+})
+
+describe('amendments', () => {
+  it('keeps a proposed view out of the live pane and offers it as pending', () => {
+    const doc = buildDoc([
+      view('business', 'The live position.'),
+      view('business', 'The proposed position.', [], { id: 'prop-1', meta: { pane: 'business', cites: [], proposed: true } }),
+    ])
+    // The live pane is untouched until somebody accepts.
+    expect(doc.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'The live position.' }])
+    expect(doc.panes.business.pending?.entry.id).toBe('prop-1')
+    expect(doc.panes.business.pending?.paragraphs[0]?.runs).toEqual([
+      { text: 'The proposed position.' },
+    ])
+  })
+
+  it('diffs the proposal against the live pane, paragraph by paragraph', () => {
+    const doc = buildDoc([
+      view('business', 'Kept.\n\nOld wording.\n\nDropped.'),
+      view('business', 'Kept.\n\nNew wording.', [], {
+        id: 'prop-1',
+        meta: { pane: 'business', cites: [], proposed: true },
+      }),
+    ])
+    expect(doc.panes.business.pending?.diff).toEqual([
+      { kind: 'same', text: 'Kept.' },
+      { kind: 'changed', text: 'New wording.', was: 'Old wording.' },
+      { kind: 'removed', text: 'Dropped.' },
+    ])
+  })
+
+  it('marks a paragraph the proposal adds', () => {
+    const doc = buildDoc([
+      view('business', 'One.'),
+      view('business', 'One.\n\nTwo.', [], {
+        id: 'prop-1',
+        meta: { pane: 'business', cites: [], proposed: true },
+      }),
+    ])
+    expect(doc.panes.business.pending?.diff[1]).toEqual({ kind: 'added', text: 'Two.' })
+  })
+
+  it('drops a proposal once it has been decided, either way', () => {
+    const proposal = view('business', 'Proposed.', [], {
+      id: 'prop-1',
+      meta: { pane: 'business', cites: [], proposed: true },
+    })
+    const live = view('business', 'Live.')
+
+    const rejected = buildDoc([
+      live,
+      proposal,
+      entry('decision', { id: 'dec-1', meta: { rejects: 'prop-1' } }),
+    ])
+    expect(rejected.panes.business.pending).toBeNull()
+    expect(rejected.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'Live.' }])
+
+    const accepted = buildDoc([
+      live,
+      proposal,
+      entry('decision', { id: 'dec-2', meta: { accepts: 'prop-1' } }),
+      // Accepting appends the proposed text as a real view — that is what makes
+      // it live, not the decision entry itself.
+      view('business', 'Proposed.', [], { id: 'v-new', created_at: '2026-08-09T00:00:00.000Z' }),
+    ])
+    expect(accepted.panes.business.pending).toBeNull()
+    expect(accepted.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'Proposed.' }])
+  })
+
+  it('numbers citations a proposal introduces, so its marks resolve before acceptance', () => {
+    const src = entry('research', { id: 'ent-new-src' })
+    const doc = buildDoc([
+      src,
+      view('business', 'Live, uncited.'),
+      view('business', 'Now with a source[1].', ['ent-new-src'], {
+        id: 'prop-1',
+        meta: { pane: 'business', cites: ['ent-new-src'], proposed: true },
+      }),
+    ])
+    const runs = doc.panes.business.pending?.paragraphs[0]?.runs
+    expect(runs).toEqual([
+      { text: 'Now with a source' },
+      { cite: 1, entry: src },
+      { text: '.' },
+    ])
+    expect(doc.sources.map((s) => s.id)).toEqual(['ent-new-src'])
+  })
+
+  it('offers a proposal for a pane nobody has written yet', () => {
+    const doc = buildDoc([
+      view('business', 'Live.'),
+      view('technical', 'First draft.', [], {
+        id: 'prop-t',
+        meta: { pane: 'technical', cites: [], proposed: true },
+      }),
+    ])
+    expect(doc.panes.technical.entry).toBeNull()
+    expect(doc.panes.technical.pending?.diff).toEqual([{ kind: 'added', text: 'First draft.' }])
+  })
+})
