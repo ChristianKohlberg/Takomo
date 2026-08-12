@@ -878,7 +878,8 @@ impl Store {
     ) -> ApiResult<(Vec<InitiativeEntry>, Option<String>)> {
         self.with_conn(|conn| {
             let mut sql = format!(
-                "SELECT {ENTRY_COLS}, rowid AS rid FROM initiative_entries WHERE initiative = ?1"
+                // Bare `?`: the cursor/limit clauses below append bare placeholders.
+                "SELECT {ENTRY_COLS}, rowid AS rid FROM initiative_entries WHERE initiative = ?"
             );
             let mut params_vec: Vec<SqlValue> = vec![SqlValue::Text(initiative.to_string())];
             if let Some(c) = cursor {

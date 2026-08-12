@@ -535,6 +535,13 @@ fn pg_sql(sql: &str) -> String {
     to_pg_placeholders(&to_pg_dialect(sql))
 }
 
+/// The same translation, for the integration harness's `force_sql` escape
+/// hatches — so a test writing directly to the database goes through exactly the
+/// dialect rules the store does, rather than a second hand-maintained copy.
+pub fn pg_translate(sql: &str) -> String {
+    pg_sql(sql)
+}
+
 fn pg_params(params: &[Value]) -> Vec<&(dyn postgres::types::ToSql + Sync)> {
     params
         .iter()

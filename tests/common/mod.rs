@@ -37,6 +37,15 @@ pub struct TestApp {
     pub pg_schema: Option<String>,
 }
 
+use takomo::store::sql::Value as SqlValue;
+
+fn v_text(s: impl Into<String>) -> SqlValue {
+    SqlValue::Text(s.into())
+}
+fn v_int(i: i64) -> SqlValue {
+    SqlValue::Integer(i)
+}
+
 fn scope_vec(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
@@ -329,6 +338,248 @@ impl TestApp {
 
     /// Open a second connection to the running server's DB (WAL allows it) — used
     /// to mint a backdated/expired share without waiting on wall-clock time.
+
+    /// True when this app is backed by Postgres rather than SQLite.
+    ///
+    /// A handful of tests assert SQLite mechanics specifically — `PRAGMA
+    /// table_info`, opening the `.db` file as a snapshot. Those are not
+    /// portability gaps to be fixed but statements about the SQLite backend, so
+    /// they skip rather than fail when the suite runs against Postgres. Every
+    /// such skip is spelled out at the call site.
+    pub fn is_pg(&self) -> bool {
+        self.pg_schema.is_some()
+    }
+
+    /// The columns `table` actually has, on whichever backend is live.
+    ///
+    /// `seq` is filtered out on Postgres deliberately. It is the explicit
+    /// replacement for SQLite's implicit `rowid`, and `rowid` never appears in
+    /// `PRAGMA table_info` either — so including it would make the two backends
+    /// disagree about a column that, by design, is not part of the model and
+    /// never reaches the wire.
+    pub fn table_columns(&self, table: &str) -> Vec<String> {
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => {
+                let schema = schema.clone();
+                let table = table.to_string();
+                std::thread::scope(|sc| {
+                    sc.spawn(|| {
+                        let mut c =
+                            postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                        c.query(
+                            "SELECT column_name FROM information_schema.columns \
+                             WHERE table_schema = $1 AND table_name = $2 \
+                             ORDER BY ordinal_position",
+                            &[&schema, &table],
+                        )
+                        .expect("information_schema")
+                        .iter()
+                        .map(|r| r.get::<_, String>(0))
+                        .filter(|c| c != "seq")
+                        .collect()
+                    })
+                    .join()
+                    .expect("columns thread")
+                })
+            }
+            _ => {
+                let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+                let mut stmt = conn
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .expect("prepare table_info");
+                let cols = stmt
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .expect("query table_info")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("read column names");
+                cols
+            }
+        }
+    }
+
+    /// Read one TEXT value, on whichever backend is live. For the handful of
+    /// tests that assert on a stored payload rather than on the API response.
+    pub fn scalar_text(&self, sql: &str) -> String {
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => {
+                let schema = schema.clone();
+                let sql = takomo::store::sql::pg_translate(sql);
+                std::thread::scope(|sc| {
+                    sc.spawn(|| {
+                        let mut c =
+                            postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                        c.batch_execute(&format!("SET search_path TO {schema}"))
+                            .expect("search_path");
+                        c.query_one(sql.as_str(), &[])
+                            .expect("scalar_text")
+                            .get::<_, String>(0)
+                    })
+                    .join()
+                    .expect("scalar thread")
+                })
+            }
+            _ => {
+                let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+                conn.query_row(sql, [], |r| r.get(0)).expect("scalar_text")
+            }
+        }
+    }
+
+    /// Count rows in `table`, on whichever backend is live.
+    pub fn count_rows(&self, table: &str) -> i64 {
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => {
+                let schema = schema.clone();
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                std::thread::scope(|sc| {
+                    sc.spawn(|| {
+                        let mut c =
+                            postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                        c.batch_execute(&format!("SET search_path TO {schema}"))
+                            .expect("search_path");
+                        c.query_one(sql.as_str(), &[]).expect("count").get::<_, i64>(0)
+                    })
+                    .join()
+                    .expect("count thread")
+                })
+            }
+            _ => {
+                let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+                conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .expect("count")
+            }
+        }
+    }
+
+    /// Run a statement straight at the database, bypassing `Store`.
+    ///
+    /// These are the harness's escape hatches: a parent cycle, a backdated
+    /// schedule slot, an uninterpretable share `kind` — states the API
+    /// deliberately will not produce, which is exactly why a test has to reach
+    /// them another way. They used to open a raw rusqlite connection to the
+    /// SQLite file; against Postgres there is no file, so they route through
+    /// here and the SQL is translated by the SAME shim the store uses, rather
+    /// than a second hand-maintained copy of the dialect rules.
+    pub fn force_sql(&self, sql: &str, params: &[SqlValue]) -> usize {
+        self.force_sql_inner(sql, params, false)
+    }
+
+    /// As [`TestApp::force_sql`], with foreign keys disabled for the statement.
+    /// Only `force_parent` needs it, to build a cycle SQLite would otherwise
+    /// refuse.
+    pub fn force_sql_no_fk(&self, sql: &str, params: &[SqlValue]) -> usize {
+        self.force_sql_inner(sql, params, true)
+    }
+
+    /// Run one statement many times over a SINGLE connection.
+    ///
+    /// `force_sql` opens a connection per call, which is fine for the one-row
+    /// escape hatches and catastrophic for `seed_bulk_tickets`: 5000 rows became
+    /// 5000 Postgres connect/disconnect cycles and the export test stopped
+    /// finishing. One connection for the batch, as the SQLite arm always did
+    /// with its single transaction.
+    pub fn force_sql_many(&self, sql: &str, rows: &[Vec<SqlValue>]) {
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => {
+                let translated = takomo::store::sql::pg_translate(sql);
+                let schema = schema.clone();
+                std::thread::scope(|sc| {
+                    sc.spawn(|| {
+                        let mut c =
+                            postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                        c.batch_execute(&format!("SET search_path TO {schema}"))
+                            .expect("search_path");
+                        let stmt = c.prepare(translated.as_str()).expect("prepare");
+                        let mut tx = c.transaction().expect("begin");
+                        for row in rows {
+                            let bound: Vec<&(dyn postgres::types::ToSql + Sync)> = row
+                                .iter()
+                                .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+                                .collect();
+                            tx.execute(&stmt, &bound).expect("force_sql_many");
+                        }
+                        tx.commit().expect("commit");
+                    })
+                    .join()
+                    .expect("force_sql_many thread");
+                });
+            }
+            _ => {
+                let mut conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+                conn.busy_timeout(Duration::from_secs(10))
+                    .expect("busy timeout");
+                let tx = conn.transaction().expect("begin");
+                for row in rows {
+                    let bound: Vec<rusqlite::types::Value> = row
+                        .iter()
+                        .map(|v| match v {
+                            SqlValue::Null => rusqlite::types::Value::Null,
+                            SqlValue::Integer(i) => rusqlite::types::Value::Integer(*i),
+                            SqlValue::Real(f) => rusqlite::types::Value::Real(*f),
+                            SqlValue::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                            SqlValue::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
+                        })
+                        .collect();
+                    tx.execute(sql, rusqlite::params_from_iter(bound))
+                        .expect("force_sql_many");
+                }
+                tx.commit().expect("commit");
+            }
+        }
+    }
+
+    fn force_sql_inner(&self, sql: &str, params: &[SqlValue], no_fk: bool) -> usize {
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => {
+                let translated = takomo::store::sql::pg_translate(sql);
+                let schema = schema.clone();
+                // Off-runtime for the same reason the store is: the sync driver
+                // panics if its block_on runs inside a tokio runtime.
+                std::thread::scope(|sc| {
+                    sc.spawn(|| {
+                        let mut c =
+                            postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                        c.batch_execute(&format!("SET search_path TO {schema}"))
+                            .expect("search_path");
+                        if no_fk {
+                            // Session-scoped equivalent of SQLite's pragma.
+                            c.batch_execute("SET session_replication_role = replica")
+                                .expect("fk off");
+                        }
+                        let bound: Vec<&(dyn postgres::types::ToSql + Sync)> = params
+                            .iter()
+                            .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+                            .collect();
+                        c.execute(translated.as_str(), &bound).expect("force_sql") as usize
+                    })
+                    .join()
+                    .expect("force_sql thread")
+                })
+            }
+            _ => {
+                let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+                conn.busy_timeout(Duration::from_secs(10))
+                    .expect("busy timeout");
+                if no_fk {
+                    conn.pragma_update(None, "foreign_keys", "OFF")
+                        .expect("foreign_keys off");
+                }
+                let bound: Vec<rusqlite::types::Value> = params
+                    .iter()
+                    .map(|v| match v {
+                        SqlValue::Null => rusqlite::types::Value::Null,
+                        SqlValue::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        SqlValue::Real(f) => rusqlite::types::Value::Real(*f),
+                        SqlValue::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        SqlValue::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
+                    })
+                    .collect();
+                conn.execute(sql, rusqlite::params_from_iter(bound))
+                    .expect("force_sql")
+            }
+        }
+    }
+
     pub fn open_store(&self) -> Store {
         match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
             (Some(schema), Ok(url)) => Store::connect_pg_in(&url, schema).unwrap(),
@@ -372,24 +623,21 @@ impl TestApp {
     /// minimal but valid, so the export path reads them back through the normal
     /// ticket mapping. Ids are `bulk-NNNNNN`, well clear of the generated ones.
     pub fn seed_bulk_tickets(&self, n: usize) {
-        let mut conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(Duration::from_secs(10))
-            .expect("busy timeout");
-        let tx = conn.transaction().expect("begin");
         let base = 1_700_000_000_000i64;
-        for i in 0..n {
-            tx.execute(
-                "INSERT INTO tickets (id, project, type, title, state, priority, created_by, created_at, updated_at) \
-                 VALUES (?1, 'tp', 'task', ?2, 'brief', 'normal', 'test:bulk', ?3, ?3)",
-                rusqlite::params![
-                    format!("bulk-{i:06}"),
-                    format!("Bulk ticket {i}"),
-                    base + i as i64
-                ],
-            )
-            .expect("insert bulk ticket");
-        }
-        tx.commit().expect("commit bulk tickets");
+        let rows: Vec<Vec<SqlValue>> = (0..n)
+            .map(|i| {
+                vec![
+                    v_text(format!("bulk-{i:06}")),
+                    v_text(format!("Bulk ticket {i}")),
+                    v_int(base + i as i64),
+                ]
+            })
+            .collect();
+        self.force_sql_many(
+            "INSERT INTO tickets (id, project, type, title, state, priority, created_by, created_at, updated_at) \
+             VALUES (?1, 'tp', 'task', ?2, 'brief', 'normal', 'test:bulk', ?3, ?3)",
+            &rows,
+        );
     }
 
     /// Write a raw `kind` into a `shares` row, bypassing the typed store path.
@@ -398,15 +646,10 @@ impl TestApp {
     /// hand-edited database — could leave behind: one whose scope kind the store
     /// cannot interpret. Used to prove that read fails **closed**.
     pub fn force_share_kind(&self, share_id: &str, kind: &str) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(Duration::from_secs(5))
-            .expect("busy timeout");
-        let n = conn
-            .execute(
-                "UPDATE shares SET kind = ?2 WHERE id = ?1",
-                rusqlite::params![share_id, kind],
-            )
-            .expect("force share kind");
+        let n = self.force_sql(
+            "UPDATE shares SET kind = ?2 WHERE id = ?1",
+            &[v_text(share_id), v_text(kind)],
+        );
         assert_eq!(
             n, 1,
             "force_share_kind should touch exactly one row ({share_id})"
@@ -415,17 +658,14 @@ impl TestApp {
 
     /// Repoint `id`'s parent straight in the database, bypassing validation.
     pub fn force_parent(&self, id: &str, parent: &str) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .expect("busy timeout");
-        conn.pragma_update(None, "foreign_keys", "OFF")
-            .expect("foreign_keys off");
-        let n = conn
-            .execute(
-                "UPDATE tickets SET parent = ?2 WHERE id = ?1",
-                rusqlite::params![id, parent],
-            )
-            .expect("force parent");
+        // Deliberately bypasses the FK: the point is to build a parent CYCLE,
+        // which no valid path can produce. SQLite needs foreign_keys OFF for
+        // that; Postgres has no self-referential violation here because the
+        // target row does exist — only the cycle is nonsense.
+        let n = self.force_sql_no_fk(
+            "UPDATE tickets SET parent = ?2 WHERE id = ?1",
+            &[v_text(id), v_text(parent)],
+        );
         assert_eq!(n, 1, "force_parent should touch exactly one row ({id})");
     }
 
@@ -433,16 +673,11 @@ impl TestApp {
     /// sleeping for a month. Writes straight to the file, the same trick
     /// `force_parent` uses.
     pub fn backdate_case_verdict(&self, case: &str, millis_ago: i64) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .expect("busy timeout");
         let when = chrono::Utc::now().timestamp_millis() - millis_ago;
-        let n = conn
-            .execute(
-                "UPDATE cases SET agent_at = ?2 WHERE id = ?1",
-                rusqlite::params![case, when],
-            )
-            .expect("backdate case verdict");
+        let n = self.force_sql(
+            "UPDATE cases SET agent_at = ?2 WHERE id = ?1",
+            &[v_text(case), v_int(when)],
+        );
         assert_eq!(n, 1, "backdate should touch exactly one row ({case})");
     }
 
@@ -455,15 +690,10 @@ impl TestApp {
     /// untestable rather than merely slow. Writes the column directly because the
     /// API deliberately has no way to set it: `next_slot` is server-owned.
     pub fn force_schedule_slot(&self, id: &str, slot_ms: i64) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .expect("busy timeout");
-        let n = conn
-            .execute(
-                "UPDATE schedules SET next_slot = ?2 WHERE id = ?1",
-                rusqlite::params![id, slot_ms],
-            )
-            .expect("force next_slot");
+        let n = self.force_sql(
+            "UPDATE schedules SET next_slot = ?2 WHERE id = ?1",
+            &[v_text(id), v_int(slot_ms)],
+        );
         assert_eq!(
             n, 1,
             "force_schedule_slot should touch exactly one row ({id})"
@@ -473,15 +703,10 @@ impl TestApp {
     /// Backdate a scheduled ticket's deadline, so "the clock ran out" is
     /// observable without waiting a week for it.
     pub fn force_ticket_expiry(&self, id: &str, expires_ms: i64) {
-        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .expect("busy timeout");
-        let n = conn
-            .execute(
-                "UPDATE tickets SET expires_at = ?2 WHERE id = ?1",
-                rusqlite::params![id, expires_ms],
-            )
-            .expect("force expires_at");
+        let n = self.force_sql(
+            "UPDATE tickets SET expires_at = ?2 WHERE id = ?1",
+            &[v_text(id), v_int(expires_ms)],
+        );
         assert_eq!(
             n, 1,
             "force_ticket_expiry should touch exactly one row ({id})"

@@ -322,7 +322,11 @@ impl Store {
 
     pub fn list_tags(&self, filter: &TagListFilter) -> ApiResult<Vec<Tag>> {
         self.with_conn(|conn| {
-            let mut sql = format!("SELECT {TAG_COLS} FROM tags WHERE project = ?1");
+            // Bare `?`, not `?1`: the filters below append bare placeholders, and
+            // a statement that mixes the two forms is refused by the dialect shim
+            // rather than silently renumbered. SQLite happened to number this one
+            // correctly; that was luck, not design.
+            let mut sql = format!("SELECT {TAG_COLS} FROM tags WHERE project = ?");
             let mut params_vec: Vec<super::sql::Value> =
                 vec![super::sql::Value::Text(filter.project.clone())];
             if let Some(kind) = &filter.kind {

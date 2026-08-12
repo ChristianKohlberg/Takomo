@@ -84,8 +84,14 @@ CREATE TABLE projects (
   max_claim_ttl_seconds   BIGINT,
   -- Added by migrate() on SQLite rather than by SCHEMA, so it is easy to miss
   -- when translating: the real SQLite schema is SCHEMA *plus* every additive
-  -- migration. Whether an agent may propose schedules for this project.
-  schedule_approval       BIGINT NOT NULL DEFAULT 0,
+  -- migration (src/store/mod.rs:691).
+  --
+  -- DEFAULT 1, matching that migration. Not cosmetic: 1 means an agent-proposed
+  -- schedule lands `pending` and waits for a human. Defaulting it to 0 makes
+  -- agent proposals activate themselves — a silently weaker posture that no
+  -- test would have caught except by asserting the status, which is exactly how
+  -- it was caught.
+  schedule_approval       BIGINT NOT NULL DEFAULT 1,
   created_at              BIGINT NOT NULL
 );
 

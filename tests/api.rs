@@ -1986,21 +1986,13 @@ fn openapi_properties(schema: &str) -> Vec<String> {
 /// The `tickets` columns the running server's database actually has, i.e. list 1
 /// (SCHEMA plus whatever `migrate()` added) as SQLite sees it.
 fn tickets_table_columns(app: &TestApp) -> Vec<String> {
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    let mut stmt = conn
-        .prepare("PRAGMA table_info(tickets)")
-        .expect("prepare table_info");
-    let cols: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(1))
-        .expect("query table_info")
-        .collect::<Result<_, _>>()
-        .expect("read column names");
+    let cols = app.table_columns("tickets");
     assert!(
         cols.len() > 5,
-        "PRAGMA table_info(tickets) returned {} columns — the table this guard reads is gone",
+        "tickets has {} columns — the table this guard reads is gone",
         cols.len()
     );
-    sorted_strings(cols.iter().map(String::as_str))
+    cols
 }
 
 /// The ticket JSON keys a client sees, taken from the **list** endpoint: list
@@ -4530,7 +4522,6 @@ async fn project_delete_cascades_questions_tags_grants_and_promotions() {
 
     // Nothing survives in the tables the cascade used to skip. Read them
     // straight from SQLite: some have no list endpoint once the project is gone.
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
     for table in [
         "questions",
         "question_messages",
@@ -4538,20 +4529,13 @@ async fn project_delete_cascades_questions_tags_grants_and_promotions() {
         "tags",
         "promotions",
     ] {
-        let n: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
-            .expect("count");
+        let n = app.count_rows(table);
         assert_eq!(n, 0, "{table} rows survived the project delete");
     }
 
     // The audit event accounts for every table it cleared.
-    let payload: String = conn
-        .query_row(
-            "SELECT payload FROM events WHERE kind = 'project_deleted'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("audit event");
+    let payload =
+        app.scalar_text("SELECT payload FROM events WHERE kind = 'project_deleted'");
     let payload: Value = serde_json::from_str(&payload).expect("payload json");
     let deleted = &payload["deleted"];
     assert_eq!(deleted["tickets"], 2, "{deleted}");
@@ -7117,16 +7101,14 @@ async fn question_expiry_applies_recommendation() {
     // Backdate the deadline directly in the DB (as an aged question would be),
     // so the sweeper picks it up without waiting an hour.
     {
-        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
         let past = takomo::ids::now_ms() - 1000;
-        let n = conn
-            .execute(
-                "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
-                rusqlite::params![qid, past],
-            )
-            .expect("backdate");
+        let n = app.force_sql(
+            "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
+            &[
+                takomo::store::sql::Value::Text(qid.clone()),
+                takomo::store::sql::Value::Integer(past),
+            ],
+        );
         assert_eq!(n, 1);
     }
 
@@ -8197,14 +8179,13 @@ async fn timeout_recommendation_holds_ticket_while_another_blocking_question_is_
 
     // Backdate Q1's deadline so the sweeper fires it.
     {
-        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        conn.execute(
+        app.force_sql(
             "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
-            rusqlite::params![q1, takomo::ids::now_ms() - 1000],
-        )
-        .unwrap();
+            &[
+                takomo::store::sql::Value::Text(q1.clone()),
+                takomo::store::sql::Value::Integer(takomo::ids::now_ms() - 1000),
+            ],
+        );
     }
 
     // Wait for Q1 to be swept to answered.
@@ -8506,14 +8487,13 @@ async fn advisory_question_never_resumes_ticket_on_recommended_timeout() {
         )
         .await;
     {
-        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        conn.execute(
+        app.force_sql(
             "UPDATE questions SET expires_at = ?2 WHERE id = ?1",
-            rusqlite::params![q2, takomo::ids::now_ms() - 1000],
-        )
-        .unwrap();
+            &[
+                takomo::store::sql::Value::Text(q2.clone()),
+                takomo::store::sql::Value::Integer(takomo::ids::now_ms() - 1000),
+            ],
+        );
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -10406,13 +10386,10 @@ async fn verdict_history_is_newest_first_within_a_single_millisecond() {
 
     // Collapse both timestamps onto one instant, so `at DESC` decides nothing and
     // the tiebreak is the only thing left ordering them.
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    let touched = conn
-        .execute(
-            "UPDATE case_verdicts SET at = 1000 WHERE case_id = ?1",
-            rusqlite::params![cid],
-        )
-        .expect("flatten timestamps");
+    let touched = app.force_sql(
+        "UPDATE case_verdicts SET at = 1000 WHERE case_id = ?1",
+        &[takomo::store::sql::Value::Text(cid.clone())],
+    );
     assert_eq!(touched, 2, "both verdicts should have been recorded");
 
     let (_, case) = app.get(&app.admin, &format!("/v1/cases/{cid}")).await;

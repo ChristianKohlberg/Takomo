@@ -18,7 +18,7 @@ mod roadmap;
 mod schedules;
 mod shares;
 /// Dialect shim for the Postgres port. Temporary scaffold — see its module doc.
-pub(crate) mod sql;
+pub mod sql;
 mod tags;
 mod tickets;
 mod tokens;

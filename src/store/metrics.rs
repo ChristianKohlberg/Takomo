@@ -82,8 +82,10 @@ impl Store {
 
             // Open claims per project.
             let sql = format!(
+                // Bare `?`: {proj_clause} appends bare placeholders, and a
+                // statement mixing the two forms is refused by the dialect shim.
                 "SELECT t.project, COUNT(*) FROM tickets t \
-                 WHERE t.claim_holder IS NOT NULL AND t.claim_expires_at > ?1 AND t.archived_at IS NULL{proj_clause} \
+                 WHERE t.claim_holder IS NOT NULL AND t.claim_expires_at > ? AND t.archived_at IS NULL{proj_clause} \
                  GROUP BY t.project"
             );
             let mut claim_params: Vec<SqlValue> = vec![SqlValue::Integer(now)];
