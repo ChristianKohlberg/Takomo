@@ -1191,24 +1191,20 @@ async fn mcp_link_cannot_resurrect_a_link_deleted_mid_call() {
         .await;
     assert_eq!(first["links"]["branch"], "feat/doomed");
 
-    let conn = rusqlite::Connection::open(app.db_path()).expect("second connection");
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .expect("take write lock");
-
-    let deleter_id = id.clone();
-    let deleter = std::thread::spawn(move || {
-        // Long enough that the tool call below has certainly read the ticket and
-        // is now blocked on the write lock.
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        conn.execute(
-            "UPDATE tickets SET links = ?2 WHERE id = ?1",
-            (&deleter_id, "{}"),
-        )
-        .expect("delete the branch link");
-        conn.execute_batch("COMMIT").expect("commit the delete");
-    });
+    // Delete the link from a SECOND writer while the tool call below is in
+    // flight, so the tool's read-modify-write has already read `branch` by the
+    // time it disappears. `hold_write_lock` takes the lock, waits, writes and
+    // commits — BEGIN IMMEDIATE on SQLite, a row lock on Postgres — so the tool
+    // call is blocked behind it on either backend and the interleaving is the
+    // same.
+    let deleter = app.hold_write_lock_then(
+        std::time::Duration::from_millis(400),
+        "UPDATE tickets SET links = ?2 WHERE id = ?1",
+        vec![
+            takomo::store::sql::Value::Text(id.clone()),
+            takomo::store::sql::Value::Text("{}".to_string()),
+        ],
+    );
 
     // A *different* key, so nothing about this call is about `branch` — yet the
     // old client-side merge would carry `branch` along and re-insert it.
@@ -1743,17 +1739,16 @@ async fn initiative_total_size_cap_is_separate_from_the_attachment_cap() {
     // exact in the arithmetic this test is about. The entry that crosses the line
     // then goes through the real tool, over real HTTP.
     let near = takomo::store::MAX_INITIATIVE_BYTES - 16;
-    {
-        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-        conn.execute(
-            "INSERT INTO initiative_entries (id, initiative, project, kind, text, chars, \
-             text_bytes, content_bytes, source, meta, author, created_at) \
-             VALUES ('ie-staged', ?1, 'tp', 'note', 'staged', 6, ?2, 0, 'test:setup', '{}', \
-             'test:setup', 0)",
-            rusqlite::params![id, near],
-        )
-        .expect("stage a nearly-full initiative");
-    }
+    app.force_sql(
+        "INSERT INTO initiative_entries (id, initiative, project, kind, text, chars, \
+         text_bytes, content_bytes, source, meta, author, created_at) \
+         VALUES ('ie-staged', ?1, 'tp', 'note', 'staged', 6, ?2, 0, 'test:setup', '{}', \
+         'test:setup', 0)",
+        &[
+            takomo::store::sql::Value::Text(id.clone()),
+            takomo::store::sql::Value::Integer(near),
+        ],
+    );
 
     let (body, is_error) = app
         .tool(

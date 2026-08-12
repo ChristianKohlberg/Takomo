@@ -336,9 +336,6 @@ impl TestApp {
         self.tmp.path().join("test.db")
     }
 
-    /// Open a second connection to the running server's DB (WAL allows it) — used
-    /// to mint a backdated/expired share without waiting on wall-clock time.
-
     /// True when this app is backed by Postgres rather than SQLite.
     ///
     /// A handful of tests assert SQLite mechanics specifically — `PRAGMA
@@ -397,6 +394,80 @@ impl TestApp {
         }
     }
 
+    /// Take a write lock, wait `delay`, then run `sql` and commit — on a
+    /// background thread, returning its handle.
+    ///
+    /// For the lost-update tests: the point is that a SECOND writer commits
+    /// while an in-flight tool call is between its read and its write. SQLite
+    /// gets there with `BEGIN IMMEDIATE`, Postgres with an ordinary transaction
+    /// holding the row lock; either way the tool call blocks behind it and the
+    /// interleaving under test is identical.
+    pub fn hold_write_lock_then(
+        &self,
+        delay: Duration,
+        sql: &str,
+        params: Vec<SqlValue>,
+    ) -> std::thread::JoinHandle<()> {
+        let pg = self.pg_schema.clone().zip(
+            std::env::var("TAKOMO_TEST_PG")
+                .ok()
+                .filter(|u| !u.is_empty()),
+        );
+        let db_path = self.db_path();
+        let sql = sql.to_string();
+        // The caller must not proceed until the lock is actually held: the
+        // original SQLite version took `BEGIN IMMEDIATE` on the calling thread
+        // before spawning, so the in-flight tool call was guaranteed to arrive
+        // second. Doing it inside the thread turns that guarantee into a race,
+        // and the test then passes or fails on scheduling. The handshake
+        // restores the ordering on both backends.
+        let (tx, locked) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || match pg {
+            Some((schema, url)) => {
+                let translated = takomo::store::sql::pg_translate(&sql);
+                let mut c = postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
+                c.batch_execute(&format!("SET search_path TO {schema}"))
+                    .expect("search_path");
+                let mut t = c.transaction().expect("begin");
+                // Write first: a bare BEGIN on Postgres locks nothing, so the
+                // row lock only exists once a row is touched. SQLite's
+                // BEGIN IMMEDIATE takes the database lock with no row involved.
+                let bound: Vec<&(dyn postgres::types::ToSql + Sync)> = params
+                    .iter()
+                    .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+                    .collect();
+                t.execute(translated.as_str(), &bound)
+                    .expect("locked write");
+                tx.send(()).ok();
+                std::thread::sleep(delay);
+                t.commit().expect("commit");
+            }
+            None => {
+                let conn = rusqlite::Connection::open(&db_path).expect("second connection");
+                conn.busy_timeout(Duration::from_secs(5)).unwrap();
+                conn.execute_batch("BEGIN IMMEDIATE")
+                    .expect("take write lock");
+                tx.send(()).ok();
+                std::thread::sleep(delay);
+                let bound: Vec<rusqlite::types::Value> = params
+                    .iter()
+                    .map(|v| match v {
+                        SqlValue::Null => rusqlite::types::Value::Null,
+                        SqlValue::Integer(i) => rusqlite::types::Value::Integer(*i),
+                        SqlValue::Real(f) => rusqlite::types::Value::Real(*f),
+                        SqlValue::Text(t) => rusqlite::types::Value::Text(t.clone()),
+                        SqlValue::Blob(b) => rusqlite::types::Value::Blob(b.clone()),
+                    })
+                    .collect();
+                conn.execute(&sql, rusqlite::params_from_iter(bound))
+                    .expect("locked write");
+                conn.execute_batch("COMMIT").expect("commit");
+            }
+        });
+        locked.recv().expect("write lock acquired");
+        handle
+    }
+
     /// Read one TEXT value, on whichever backend is live. For the handful of
     /// tests that assert on a stored payload rather than on the API response.
     pub fn scalar_text(&self, sql: &str) -> String {
@@ -437,7 +508,9 @@ impl TestApp {
                             postgres::Client::connect(&url, postgres::NoTls).expect("connect pg");
                         c.batch_execute(&format!("SET search_path TO {schema}"))
                             .expect("search_path");
-                        c.query_one(sql.as_str(), &[]).expect("count").get::<_, i64>(0)
+                        c.query_one(sql.as_str(), &[])
+                            .expect("count")
+                            .get::<_, i64>(0)
                     })
                     .join()
                     .expect("count thread")
@@ -580,6 +653,10 @@ impl TestApp {
         }
     }
 
+    /// Open a second Store against the same database — used to mint a
+    /// backdated/expired share without waiting on wall-clock time. On SQLite
+    /// that is a second connection to the file (WAL allows it); on Postgres it
+    /// reconnects to this app's schema.
     pub fn open_store(&self) -> Store {
         match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
             (Some(schema), Ok(url)) => Store::connect_pg_in(&url, schema).unwrap(),

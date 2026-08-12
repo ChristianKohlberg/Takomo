@@ -593,13 +593,13 @@ async fn a_hostile_stored_client_name_is_never_rendered_raw() {
         .await;
 
     // Straight into the table, bypassing the endpoint that now refuses this.
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    conn.execute(
+    app.force_sql(
         "UPDATE oauth_clients SET client_name = ?2 WHERE client_id = ?1",
-        rusqlite::params![client_id, "Claude\u{1b}[2K\u{1b}[1A\nfake row"],
-    )
-    .expect("plant a hostile name");
-    drop(conn);
+        &[
+            takomo::store::sql::Value::Text(client_id.clone()),
+            takomo::store::sql::Value::Text("Claude\u{1b}[2K\u{1b}[1A\nfake row".to_string()),
+        ],
+    );
 
     let (_, list) = app.get(&app.admin, "/v1/tokens").await;
     let derived = list
@@ -1386,13 +1386,13 @@ async fn an_expired_consenting_token_leaves_the_connector_running() {
 
     // Push that token past its expiry, touching nothing else — the derived access
     // token has an expiry of its own and must keep its.
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    conn.execute(
+    app.force_sql(
         "UPDATE tokens SET expires_at = ?1 WHERE id = ?2",
-        rusqlite::params![takomo::ids::now_ms() - 60_000, parent.id],
-    )
-    .expect("backdate the expiry");
-    drop(conn);
+        &[
+            takomo::store::sql::Value::Integer(takomo::ids::now_ms() - 60_000),
+            takomo::store::sql::Value::Text(parent.id.clone()),
+        ],
+    );
 
     // The consenting token itself is finished…
     let (status, _) = app.get(&consenting, "/v1/whoami").await;
@@ -1517,13 +1517,9 @@ async fn revoking_a_derived_token_ends_that_connection_and_no_other() {
 /// refresh grant is checked against it — so a test that wants an unambiguous
 /// refusal (this revocation, not a client mismatch) has to send the real one.
 fn client_id_of(app: &TestApp, token_id: &str) -> String {
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    conn.query_row(
-        "SELECT client_id FROM oauth_issued WHERE token_id = ?1",
-        rusqlite::params![token_id],
-        |row| row.get::<_, String>(0),
-    )
-    .expect("the ledger names the client this token was issued to")
+    app.scalar_text(&format!(
+        "SELECT client_id FROM oauth_issued WHERE token_id = '{token_id}'"
+    ))
 }
 
 /// …and an ordinary hand-minted token revokes exactly as it always did. This is a
@@ -1702,13 +1698,10 @@ async fn an_unused_client_registration_is_swept_and_a_used_one_survives() {
     // Backdate both past the retention window — the alternative is waiting a day.
     let stale =
         takomo::ids::now_ms() - (takomo::store::UNUSED_CLIENT_RETENTION_SECONDS * 1000 + 60_000);
-    let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
-    conn.execute(
+    app.force_sql(
         "UPDATE oauth_clients SET created_at = ?1",
-        rusqlite::params![stale],
-    )
-    .expect("backdate");
-    drop(conn);
+        &[takomo::store::sql::Value::Integer(stale)],
+    );
 
     app.open_store().sweep_expired_oauth().expect("sweep");
 

@@ -79,6 +79,33 @@ pub fn get_ticket_required(conn: &super::sql::Conn, id: &str) -> ApiResult<Ticke
     get_ticket_opt(conn, id)?.ok_or_else(|| ApiError::not_found("ticket", id))
 }
 
+/// Load one ticket for a read-modify-write, taking a row lock.
+///
+/// The difference matters only on Postgres, and it matters a lot. `patch_ticket`
+/// reads a ticket, merges `links` in Rust, and writes the result. On SQLite that
+/// sequence is safe for free: the transaction holds the whole-database write
+/// lock, so no other writer can commit between the read and the write. Postgres
+/// is MVCC at READ COMMITTED — another writer can and does, and the merge then
+/// resurrects a key that writer just deleted. `FOR UPDATE` restores the
+/// property by locking the row at read time.
+///
+/// `mcp_link_cannot_resurrect_a_link_deleted_mid_call` is precisely this race,
+/// and it failed on Postgres until this existed. The clause is stripped on the
+/// SQLite arm (`store::sql::strip_for_update`), so one statement serves both.
+///
+/// Use inside `with_tx` only: a `FOR UPDATE` in a read-only transaction is an
+/// error on Postgres.
+pub fn get_ticket_for_update(tx: &super::sql::Tx, id: &str) -> ApiResult<Ticket> {
+    let sql = format!("SELECT {TICKET_COLS} FROM tickets t WHERE t.id = ?1 FOR UPDATE");
+    let ticket = tx
+        .query_row(&sql, params![id], row_to_ticket)
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("ticket", id))?;
+    let mut ticket = ticket;
+    load_blocked_by(tx, &mut ticket)?;
+    Ok(ticket)
+}
+
 /// Load a project's workflow or a teaching 404.
 pub fn get_workflow(conn: &super::sql::Conn, project: &str) -> ApiResult<Workflow> {
     let raw: Option<String> = conn

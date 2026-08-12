@@ -478,6 +478,11 @@ fn first_row(rows: Vec<Row>) -> Result<Row> {
 // ---- SQLite arm ----
 
 fn sqlite_query(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+    // SQLite has no `FOR UPDATE`, and needs none: `BEGIN IMMEDIATE` already
+    // holds the whole-database write lock, so a read inside a write transaction
+    // is already protected against every other writer. Stripping it here is what
+    // lets the store write ONE statement that is correct on both engines.
+    let sql = &strip_for_update(sql);
     let mut stmt = conn.prepare(sql)?;
     let names: std::rc::Rc<Vec<String>> = std::rc::Rc::new(
         stmt.column_names()
@@ -503,8 +508,17 @@ fn sqlite_query(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> R
 }
 
 fn sqlite_execute(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<usize> {
+    let sql = &strip_for_update(sql);
     let bound: Vec<rusqlite::types::Value> = params.into_iter().map(to_rusqlite).collect();
     Ok(conn.execute(sql, rusqlite::params_from_iter(bound))?)
+}
+
+fn strip_for_update(sql: &str) -> String {
+    if sql.contains(" FOR UPDATE") {
+        sql.replace(" FOR UPDATE", "")
+    } else {
+        sql.to_string()
+    }
 }
 
 fn to_rusqlite(v: Value) -> rusqlite::types::Value {

@@ -2,8 +2,8 @@
 //! patch (commutative field sets; CAS for body), comments, dependency edges.
 
 use super::helpers::{
-    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_opt, get_ticket_required,
-    get_workflow, load_blocked_by, row_to_ticket, touch_ticket, TICKET_COLS,
+    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_for_update, get_ticket_opt,
+    get_ticket_required, get_workflow, load_blocked_by, row_to_ticket, touch_ticket, TICKET_COLS,
 };
 use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
@@ -787,7 +787,8 @@ impl Store {
     ) -> ApiResult<Ticket> {
         let now = now_ms();
         self.with_tx(|tx| {
-            let mut t = get_ticket_required(tx, id)?;
+            // Locking read: the links merge below is a read-modify-write.
+            let mut t = get_ticket_for_update(tx, id)?;
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
                 t.claim_expires_at = None;

@@ -96,6 +96,14 @@ pub struct Store {
     /// will ever open is opened in [`Store::open`], while a snapshot has to open
     /// one later, on demand, outside both the writer and the reader pool.
     path: Option<PathBuf>,
+    /// Read-only companions for the Postgres arm, mirroring `readers` above.
+    ///
+    /// Not an optimization. `with_conn` exists so a table scan (`/v1/export`,
+    /// `/v1/metrics`, a roadmap, a dep graph) cannot queue behind a claim, and
+    /// routing Postgres reads through the single writer client silently gives
+    /// that property up — `long_export_does_not_stall_claims_and_heartbeats`
+    /// catches exactly that, which is what it is for.
+    pg_readers: Vec<Mutex<postgres::Client>>,
     /// The Postgres writer, when this store is backed by Postgres instead.
     ///
     /// `Some` here means the SQLite fields above are inert. Keeping both on one
@@ -144,6 +152,7 @@ impl Store {
             readers,
             next_reader: AtomicUsize::new(0),
             path: (!private).then(|| path.to_path_buf()),
+            pg_readers: Vec::new(),
             pg: None,
         })
     }
@@ -208,6 +217,23 @@ impl Store {
             Ok(client)
         })?;
 
+        // Read companions, opened the same way and into the same schema.
+        let url_owned = url.to_string();
+        let schema_owned = schema.to_string();
+        let pg_readers = run_off_runtime(move || {
+            let mut readers = Vec::with_capacity(READ_CONNECTIONS);
+            for _ in 0..READ_CONNECTIONS {
+                let mut c = postgres::Client::connect(&url_owned, postgres::NoTls)
+                    .map_err(|e| ApiError::internal(format!("cannot connect reader: {e}")))?;
+                c.batch_execute(&format!(
+                    "SET search_path TO {schema_owned}; SET default_transaction_read_only = on"
+                ))
+                .map_err(|e| ApiError::internal(format!("reader setup failed: {e}")))?;
+                readers.push(Mutex::new(c));
+            }
+            Ok(readers)
+        })?;
+
         Ok(Store {
             // Inert on this arm; `with_tx`/`with_conn` branch on `pg` first.
             conn: Mutex::new(
@@ -217,6 +243,7 @@ impl Store {
             readers: Vec::new(),
             next_reader: AtomicUsize::new(0),
             path: None,
+            pg_readers,
             pg: Some(Mutex::new(client)),
         })
     }
@@ -281,11 +308,26 @@ impl Store {
         f: impl FnOnce(&sql::Conn) -> ApiResult<T> + Send,
     ) -> ApiResult<T> {
         if let Some(pg) = &self.pg {
+            // Prefer an idle reader, then round-robin, then the writer — the same
+            // ladder the SQLite arm uses below, so a long scan does not queue in
+            // front of a claim.
+            let pool: &[Mutex<postgres::Client>] = &self.pg_readers;
+            let idx = if pool.is_empty() {
+                None
+            } else {
+                pool.iter()
+                    .position(|r| r.try_lock().is_ok())
+                    .or_else(|| Some(self.next_reader.fetch_add(1, Ordering::Relaxed) % pool.len()))
+            };
             // The lock is taken INSIDE the thread: a MutexGuard is not Send, while
             // `&Mutex<Client>` is, so the guard cannot cross the boundary but the
             // mutex itself can be shared across it.
             return run_off_runtime(move || {
-                let mut client = pg
+                let handle = match idx {
+                    Some(i) => &pool[i],
+                    None => pg,
+                };
+                let mut client = handle
                     .lock()
                     .map_err(|_| ApiError::internal("store lock poisoned"))?;
                 let tx = client
@@ -407,6 +449,11 @@ impl Store {
 /// whole binary down with SIGABRT and no report for the other 197 cases.
 impl Drop for Store {
     fn drop(&mut self) {
+        for r in std::mem::take(&mut self.pg_readers) {
+            if let Ok(c) = r.into_inner() {
+                let _ = std::thread::spawn(move || drop(c)).join();
+            }
+        }
         if let Some(client) = self.pg.take() {
             if let Ok(client) = client.into_inner() {
                 // Joined rather than detached: a 198-case suite would otherwise

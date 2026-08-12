@@ -4066,6 +4066,14 @@ async fn export_streams_jsonl_with_comments_and_deps() {
 // is what would fail.
 #[tokio::test]
 async fn sqlite_export_is_an_openable_snapshot_including_unflushed_wal() {
+    // `Store::snapshot_into` copies the SQLite file, WAL included, and this test
+    // opens the result as a database. There is no counterpart on Postgres — a
+    // snapshot there is pg_dump/basebackup, a different mechanism with a
+    // different artifact — so this asserts SQLite behaviour rather than a
+    // portability gap, and stands down when the suite runs against Postgres.
+    if std::env::var("TAKOMO_TEST_PG").is_ok_and(|v| !v.is_empty()) {
+        return;
+    }
     let app = TestApp::spawn().await;
     let id = app
         .create_ticket("Ticket that must survive the snapshot")
@@ -4534,8 +4542,7 @@ async fn project_delete_cascades_questions_tags_grants_and_promotions() {
     }
 
     // The audit event accounts for every table it cleared.
-    let payload =
-        app.scalar_text("SELECT payload FROM events WHERE kind = 'project_deleted'");
+    let payload = app.scalar_text("SELECT payload FROM events WHERE kind = 'project_deleted'");
     let payload: Value = serde_json::from_str(&payload).expect("payload json");
     let deleted = &payload["deleted"];
     assert_eq!(deleted["tickets"], 2, "{deleted}");
