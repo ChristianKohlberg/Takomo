@@ -106,10 +106,43 @@ been a free-form slug and `meta` a free-form JSON object on every entry.
 | kind | `meta` | what it produces |
 |---|---|---|
 | `view` | `{ pane, cites: [entryId, …] }` | one pane's prose. `pane` is `business`, `technical` or `verification` |
-| `thread` | `{ pane, para, state? }` | a margin note anchored to a paragraph. `state` is `open` (default), `running` or `resolved` |
+| `view` | `+ proposed: true` | an **amendment** — offered as a diff, never live until someone accepts |
+| `thread` | `{ pane, para, state?, ticket?, supersedes? }` | a margin note anchored to a paragraph. `state` is `open` (default), `running` or `resolved` |
+| `decision` | `{ accepts \| rejects: <proposalId> }` | a human's verdict on an amendment |
+| *(any)* | `origin: true` | the words the idea **arrived** in — quoted above every pane |
 
 Everything else — `transcript`, `sample-data`, `code-research`, `research`, `note` — is **evidence**:
 citable from a pane, and listed in the lineage footer.
+
+## Every action is an append
+
+Nothing in the document is ever edited or deleted, which is what makes the argument that produced
+the current text still readable:
+
+| doing this | appends |
+|---|---|
+| revising a pane | a new `view` for that pane; the old one stays |
+| acting on a margin note | a ticket, plus a `thread` carrying `supersedes` and the ticket id |
+| accepting an amendment | the proposed prose as a real `view`, **plus** a `decision` naming it |
+| rejecting an amendment | a `decision` alone — the live pane is untouched |
+
+Accepting is deliberately two entries rather than one. The `view` is what makes the wording live;
+the `decision` records who agreed and keeps the proposal from being offered a second time. A
+`decision` on its own changes no prose, which is exactly what a rejection should do.
+
+**Dispatch is a ticket, not a new mechanism.** A margin note becomes work by being filed into the
+project's ready queue — the one the fleet already pulls from — tagged `initiative:<id>`. There is no
+scheduler, no agent-spawning and no new route: the server stores, the fleet computes.
+
+## The part that is not code
+
+The document only exists if agents write it. `takomo_initiative_append`'s description tells them to:
+append the finding as evidence, then say what it *means* with a `view`; use `proposed: true` when a
+finding changes what a pane already says rather than adding to it; anchor a doubt as a `thread` next
+to the sentence that caused it; mark the arriving words with `origin`.
+
+That is a prompt, not an invariant. Nothing enforces it, and an agent that ignores it leaves an
+initiative that renders as a plain log — which is the honest failure mode, not a broken page.
 
 **Citations are local to write and global to read.** A `[3]` mark in a pane's prose indexes that
 pane's own `cites` array, so an agent writing one pane never has to know what another pane cited.

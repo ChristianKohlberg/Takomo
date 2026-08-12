@@ -1576,7 +1576,26 @@ impl TakomoMcp {
         description = "Append one contribution to an initiative: a note, a research finding, a \
         colleague's feedback, a transcript, or an attached document (base64, up to 5 MiB). \
         Append-only — the accumulated record IS the initiative. `source` is required: it records \
-        where the input came from, so a later reader can weigh it."
+        where the input came from, so a later reader can weigh it.\n\n\
+        WHEN YOU FINISH RESEARCH, DO NOT STOP AT THE FINDING. A pile of findings is what nobody \
+        reads. Append the finding as evidence, then say what it MEANS by writing the initiative's \
+        document — /initiatives renders three panes from reserved kinds, and every one of them is \
+        just an entry with `meta`:\n\
+        • kind 'view', meta { pane: 'business'|'technical'|'verification', cites: [entryId, …] } — \
+        one pane's prose. A `[n]` mark in the text cites the n-th id in YOUR cites array (1-based), \
+        so you only need local numbering. Cite every assertion you can: an uncited paragraph is \
+        rendered as flagged opinion, which is what it is.\n\
+        • the same, plus meta.proposed = true — an AMENDMENT. Use this whenever a finding changes \
+        what an existing pane says rather than merely adding to it. It is shown to a human as a \
+        diff to accept or reject; it never silently replaces the live pane.\n\
+        • kind 'thread', meta { pane, para } — a margin note anchored to paragraph `para` \
+        (0-based) of that pane. Use it for a doubt, a question, or something only a human can \
+        answer, next to the sentence that provoked it.\n\
+        • meta.origin = true on any entry — the words the idea ARRIVED in (a customer quote, the \
+        original request). Quoted above every pane.\n\n\
+        Revise by appending, never by rewriting: a new 'view' supersedes the old one for its pane \
+        and the earlier wording stays readable. Call takomo_initiative_show first to read the \
+        current panes and the entry ids you intend to cite."
     )]
     async fn takomo_initiative_append(
         &self,
@@ -1648,7 +1667,7 @@ impl TakomoMcp {
             "ok": true,
             "initiative": ini.to_json(),
             "note": format!(
-                "Feed it with takomo_initiative_append {{ id: \"{}\", kind: \"research\", source: \"…\", text: \"…\" }}. Every entry records where it came from, so the collection stays weighable later.",
+                "Feed it with takomo_initiative_append {{ id: \"{}\", kind: \"research\", source: \"…\", text: \"…\" }}. Every entry records where it came from, so the collection stays weighable later. Then write what it MEANS: append kind \"view\" with meta {{ pane: \"business\"|\"technical\"|\"verification\", cites: [entryId, …] }} so the idea reads as a document rather than a pile — and mark the words it arrived in with meta.origin = true.",
                 ini.id
             ),
         }))

@@ -520,22 +520,27 @@ fn initiative(store: &Store) -> ApiResult<()> {
     // `origin_at` is when the content was WRITTEN; `created_at` is when it
     // landed here. They are set apart on purpose — the five-month gap on the
     // transcript is the most honest thing in this fixture.
-    let evidence = |kind: &str, title: &str, text: &str, source: &str, age_days: i64| {
-        store
-            .append_initiative_entry(
-                &ini.id,
-                &crate::store::EntryCreate {
-                    kind: kind.to_string(),
-                    title: Some(title.to_string()),
-                    text: text.to_string(),
-                    source: source.to_string(),
-                    origin_at: Some(now - age_days * DAY_MS),
-                    ..Default::default()
-                },
-                SEEDER,
-            )
-            .map(|(entry, _)| entry.id)
-    };
+    // `origin` marks an entry as HOW THE IDEA ARRIVED — quoted at the top of the
+    // document, above every pane, because each pane is somebody's interpretation
+    // and this is the input they are accountable to.
+    let evidence =
+        |kind: &str, title: &str, text: &str, source: &str, age_days: i64, origin: bool| {
+            store
+                .append_initiative_entry(
+                    &ini.id,
+                    &crate::store::EntryCreate {
+                        kind: kind.to_string(),
+                        title: Some(title.to_string()),
+                        text: text.to_string(),
+                        source: source.to_string(),
+                        origin_at: Some(now - age_days * DAY_MS),
+                        meta: origin.then(|| json!({ "origin": true })),
+                        ..Default::default()
+                    },
+                    SEEDER,
+                )
+                .map(|(entry, _)| entry.id)
+        };
 
     let call = evidence(
         "transcript",
@@ -543,6 +548,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "\"We get one invoice for six sites. Someone here retypes it into six lines every month. That person is me.\"",
         "person:kunde-nordwind",
         152,
+        true,
     )?;
     let invoice = evidence(
         "sample-data",
@@ -550,6 +556,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "Page 3 divides a shared licence line pro-rata across all six sites — one line becomes six.",
         "agent:w3",
         150,
+        false,
     )?;
     let talberg = evidence(
         "note",
@@ -557,6 +564,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "Raised unprompted during onboarding, six weeks after Nordwind. Four legal entities, same manual workaround.",
         "person:ada",
         44,
+        true,
     )?;
     let code = evidence(
         "code-research",
@@ -564,6 +572,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "One ledger row, one account. The PDF renders from the ledger at request time, so nothing sits in between to divide.",
         "agent:w1",
         5,
+        false,
     )?;
     let scan = evidence(
         "research",
@@ -571,6 +580,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "Stripe has no native split. Chargebee splits by subscription. All three divide shared lines, and all three call it \"allocation\".",
         "agent:w3",
         1,
+        false,
     )?;
 
     let view = |pane: &str, text: &str, cites: Vec<&str>| {
@@ -658,6 +668,38 @@ fn initiative(store: &Store) -> ApiResult<()> {
         "open",
         "Who owns the remainder cent? Every allocation scheme gets this wrong once and then never again.",
         "person:ada",
+    )?;
+
+    // A proposed amendment, still undecided: the competitor scan found that the
+    // whole category says "allocation" where we say "split", which changes the
+    // Business view's third paragraph rather than adding a finding beside it.
+    //
+    // `proposed` keeps it OUT of the live pane. It is offered as a diff, and a
+    // person accepts or rejects it — at which point the accepted prose is
+    // appended as a real `view` and the decision recorded. Nothing is edited.
+    store.append_initiative_entry(
+        &ini.id,
+        &crate::store::EntryCreate {
+            kind: "view".to_string(),
+            title: Some("Adopt the word the rest of the category uses".to_string()),
+            text: "Two multi-entity customers re-key a single invoice into their AP system by hand, every month[1]. \
+                   Nordwind bills six sites; Talberg four legal entities[3]. Neither asked for a feature — both described \
+                   the same manual workaround, unprompted, six weeks apart.\n\n\
+                   Whether this is a segment or a coincidence is unknown. Nobody has counted how many accounts bill \
+                   more than one site.\n\n\
+                   The customer defines cost centres and receives one invoice per centre. Shared lines are allocated \
+                   across those centres by a customer-chosen rule — headcount, revenue or equal shares[4]. We use the \
+                   word the rest of the category uses, because it is the word customers arrive with[2]."
+                .to_string(),
+            source: "agent:w3".to_string(),
+            meta: Some(json!({
+                "pane": "business",
+                "cites": [&call, &scan, &talberg, &invoice],
+                "proposed": true,
+            })),
+            ..Default::default()
+        },
+        SEEDER,
     )?;
 
     Ok(())

@@ -181,6 +181,32 @@ export interface AppendFields {
   content_base64?: string
   filename?: string
   mime?: string
+  /**
+   * Free-form JSON stored on the entry. The document view is what reads it —
+   * `pane`, `cites`, `para`, `proposed`, `supersedes`, `accepts`/`rejects`. See
+   * lib/initiative-doc.ts.
+   */
+  meta?: unknown
+}
+
+/**
+ * File a ticket. The document view uses this to dispatch a margin note: the
+ * fleet then pulls it off the ready queue it already pulls from, so acting on a
+ * note needs no new execution machinery on the server.
+ */
+export async function createTicket(
+  token: string,
+  body: { project: string; title: string; body?: string; tags?: string[]; ty?: string },
+): Promise<string> {
+  // The create route answers the ticket FLAT — `{ id, project, title, … }` —
+  // not wrapped the way the entry-append route is. Getting this wrong is silent:
+  // the id reads as undefined and the note records a ticket called "undefined".
+  const res = await api<{ id: string }>(token, '/tickets', {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify(body),
+  })
+  return res.id
 }
 
 /**
