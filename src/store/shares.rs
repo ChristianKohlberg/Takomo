@@ -12,12 +12,11 @@
 
 use super::helpers::{load_blocked_by, row_to_ticket, TICKET_COLS};
 use super::model::{ShareRow, Ticket};
+use super::sql::{params, FromSql, OptionalExtension, Row};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, share_id, share_token_plaintext, token_hash};
 use axum::http::StatusCode;
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
-use rusqlite::{params, OptionalExtension, Row};
 
 /// Default share lifetime when the caller omits `ttl_seconds`: 24 hours.
 pub const DEFAULT_SHARE_TTL_SECONDS: i64 = 86_400;
@@ -111,10 +110,10 @@ impl std::error::Error for UnknownShareKind {}
 /// fails. That is what keeps the scope decision out of `&str` comparisons, where
 /// an unmatched string silently means "the other branch".
 impl FromSql for ShareKind {
-    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        let raw = value.as_str()?;
-        ShareKind::from_stored(raw)
-            .ok_or_else(|| FromSqlError::Other(Box::new(UnknownShareKind(raw.to_string()))))
+    fn from_sql_value(v: &super::sql::Value) -> super::sql::Result<Self> {
+        let raw = String::from_sql_value(v)?;
+        ShareKind::from_stored(&raw)
+            .ok_or_else(|| super::sql::Error::conversion(UnknownShareKind(raw).to_string()))
     }
 }
 
@@ -122,10 +121,12 @@ impl FromSql for ShareKind {
 /// takes the generic database-error mapping (opaque 500, detail logged); that one
 /// case gets its own teaching error, because it is the one an operator can act
 /// on — and because "this share is refused" must not look like a transient blip.
-fn share_read_err(e: rusqlite::Error) -> ApiError {
-    if let rusqlite::Error::FromSqlConversionFailure(_, _, src) = &e {
-        if let Some(bad) = src.downcast_ref::<UnknownShareKind>() {
-            eprintln!("share read refused: {bad}");
+fn share_read_err(e: super::sql::Error) -> ApiError {
+    // A conversion failure on this row can only be the `kind` column: it is the
+    // one column whose Rust type is an enum rather than a primitive.
+    if e.is_conversion() {
+        {
+            eprintln!("share read refused: {e}");
             return ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "share.kind_unrecognized",
@@ -147,7 +148,7 @@ fn share_read_err(e: rusqlite::Error) -> ApiError {
 const SHARE_COLS: &str =
     "id, kind, \"ref\" AS ref_id, project, expires_at, created_by, created_at, revoked_at";
 
-fn row_to_share(row: &Row) -> rusqlite::Result<ShareRow> {
+fn row_to_share(row: &Row) -> super::sql::Result<ShareRow> {
     Ok(ShareRow {
         id: row.get("id")?,
         kind: row.get("kind")?,

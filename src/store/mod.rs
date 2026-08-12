@@ -18,7 +18,7 @@ mod roadmap;
 mod schedules;
 mod shares;
 /// Dialect shim for the Postgres port. Temporary scaffold — see its module doc.
-mod sql;
+pub(crate) mod sql;
 mod tags;
 mod tickets;
 mod tokens;
@@ -148,10 +148,7 @@ impl Store {
     /// makes holding this connection across an `.await` structurally impossible.
     /// An async variant would trade the latency problem `with_conn` used to have
     /// for a whole class of deadlocks.
-    pub(crate) fn with_tx<T>(
-        &self,
-        f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
-    ) -> ApiResult<T> {
+    pub(crate) fn with_tx<T>(&self, f: impl FnOnce(&sql::Tx) -> ApiResult<T>) -> ApiResult<T> {
         let mut conn = self
             .conn
             .lock()
@@ -159,7 +156,7 @@ impl Store {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(ApiError::from)?;
-        let out = f(&tx)?;
+        let out = f(&sql::Tx::new(&tx))?;
         tx.commit().map_err(ApiError::from)?;
         Ok(out)
     }
@@ -176,13 +173,13 @@ impl Store {
     /// multi-statement (the export scans tickets, then queries deps and comments
     /// per ticket), and on the shared mutex they used to be atomic against
     /// writers by accident. The snapshot keeps that property on purpose.
-    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> ApiResult<T>) -> ApiResult<T> {
+    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&sql::Conn) -> ApiResult<T>) -> ApiResult<T> {
         if self.readers.is_empty() {
             let conn = self
                 .conn
                 .lock()
                 .map_err(|_| ApiError::internal("store lock poisoned"))?;
-            return f(&conn);
+            return f(&sql::Conn::new(&conn));
         }
         // Prefer any idle reader; only when all of them are busy pick one to
         // queue on, round-robin so concurrent readers spread out.
@@ -279,12 +276,12 @@ impl Store {
 /// commit; the connection could not write if it tried).
 fn read_snapshot<T>(
     conn: &mut Connection,
-    f: impl FnOnce(&Connection) -> ApiResult<T>,
+    f: impl FnOnce(&sql::Conn) -> ApiResult<T>,
 ) -> ApiResult<T> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
         .map_err(ApiError::from)?;
-    let out = f(&tx)?;
+    let out = f(&sql::Conn::new(&tx))?;
     drop(tx); // rollback: ends the read snapshot
     Ok(out)
 }

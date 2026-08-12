@@ -31,13 +31,13 @@
 
 use super::helpers::emit_event;
 use super::model::{Schedule, ScheduleOccurrence, MAX_TITLE, PRIORITIES, TICKET_TYPES};
+use super::sql::Value as SqlValue;
+use super::sql::{params, OptionalExtension};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, schedule_id, ticket_suffix};
 use crate::schedule::Cadence;
 use chrono::{DateTime, Utc};
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 /// The lifecycle a schedule row moves through.
@@ -168,7 +168,7 @@ pub struct ScheduleListFilter {
 const SCHEDULE_COLS: &str = "id, project, name, cadence, template, status, proposed_by, \
     rationale, next_slot, starts_at, ends_at, created_by, created_at, updated_at, version";
 
-fn row_to_schedule(row: &rusqlite::Row) -> rusqlite::Result<Schedule> {
+fn row_to_schedule(row: &super::sql::Row) -> super::sql::Result<Schedule> {
     let cadence_raw: String = row.get("cadence")?;
     let template_raw: String = row.get("template")?;
     Ok(Schedule {
@@ -370,7 +370,7 @@ impl Store {
             args.push(SqlValue::Integer(limit.clamp(1, MAX_SCHEDULES_PAGE)));
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
-                .query_map(rusqlite::params_from_iter(args), row_to_schedule)?
+                .query_map(super::sql::params_from_iter(args), row_to_schedule)?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
@@ -778,14 +778,14 @@ fn latest_due_slot(sched: &Schedule, slot: i64, now: i64) -> (i64, u32) {
     (current, missed)
 }
 
-fn load_schedule(conn: &Connection, id: &str) -> ApiResult<Schedule> {
+fn load_schedule(conn: &super::sql::Conn, id: &str) -> ApiResult<Schedule> {
     let sql = format!("SELECT {SCHEDULE_COLS} FROM schedules WHERE id = ?1");
     conn.query_row(&sql, params![id], row_to_schedule)
         .optional()?
         .ok_or_else(|| ApiError::not_found("schedule", id))
 }
 
-fn set_next_slot(conn: &Connection, id: &str, slot: Option<i64>, now: i64) -> ApiResult<()> {
+fn set_next_slot(conn: &super::sql::Conn, id: &str, slot: Option<i64>, now: i64) -> ApiResult<()> {
     conn.execute(
         "UPDATE schedules SET next_slot = ?2, updated_at = ?3 WHERE id = ?1",
         params![id, slot, now],
@@ -793,7 +793,7 @@ fn set_next_slot(conn: &Connection, id: &str, slot: Option<i64>, now: i64) -> Ap
     Ok(())
 }
 
-fn touch_schedule(conn: &Connection, id: &str, now: i64) -> ApiResult<i64> {
+fn touch_schedule(conn: &super::sql::Conn, id: &str, now: i64) -> ApiResult<i64> {
     conn.execute(
         "UPDATE schedules SET version = version + 1, updated_at = ?2 WHERE id = ?1",
         params![id, now],
@@ -813,7 +813,7 @@ fn touch_schedule(conn: &Connection, id: &str, now: i64) -> ApiResult<i64> {
 /// path to apologise for — it is the exactly-once guarantee doing its job, and
 /// the caller (sweep or `/run`) treats it as "someone else got there first".
 fn materialize_one(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     sched: &Schedule,
     slot: i64,
     now: i64,
@@ -929,22 +929,12 @@ fn materialize_one(
 
 /// True when the failure is the `(schedule, occurrence)` unique index — i.e. the
 /// exactly-once guarantee refusing a second ticket for one slot.
-fn is_occurrence_conflict(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(f, Some(msg))
-            if f.code == rusqlite::ErrorCode::ConstraintViolation
-                && msg.contains("tickets.occurrence")
-    )
+fn is_occurrence_conflict(e: &super::sql::Error) -> bool {
+    e.is_constraint_on("tickets.occurrence")
 }
 
-fn is_primary_key_conflict(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(f, Some(msg))
-            if f.code == rusqlite::ErrorCode::ConstraintViolation
-                && msg.contains("tickets.id")
-    )
+fn is_primary_key_conflict(e: &super::sql::Error) -> bool {
+    e.is_constraint_on("tickets.id")
 }
 
 impl Store {

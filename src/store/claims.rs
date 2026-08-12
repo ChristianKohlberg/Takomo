@@ -11,11 +11,11 @@ use super::helpers::{
     lease_expired_error, load_blocked_by, open_blockers, row_to_ticket, TICKET_COLS,
 };
 use super::model::{Lease, Ticket};
+use super::sql::Value as SqlValue;
+use super::sql::{params, Conn, OptionalExtension};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
 pub const DEFAULT_TTL_SECONDS: i64 = 900;
@@ -70,7 +70,7 @@ pub struct ReadyFilter {
 /// put that cost on every claim and every heartbeat. A missing row falls back to
 /// the built-ins: the caller has already resolved and authorized the ticket, so
 /// absence here can only mean the project was deleted underneath us.
-fn project_claim_ttls(tx: &Connection, project: &str) -> ApiResult<(i64, i64)> {
+fn project_claim_ttls(tx: &Conn, project: &str) -> ApiResult<(i64, i64)> {
     let row = tx
         .query_row(
             "SELECT claim_ttl_seconds, max_claim_ttl_seconds FROM projects WHERE id = ?1",
@@ -93,7 +93,7 @@ fn project_claim_ttls(tx: &Connection, project: &str) -> ApiResult<(i64, i64)> {
 /// Over the maximum is a 422, not a silent clamp — a caller that asked for four
 /// hours and received one would otherwise heartbeat on the wrong schedule and
 /// lose the lease it thought it had.
-pub fn clamp_ttl_for(tx: &Connection, project: &str, ttl_seconds: Option<i64>) -> ApiResult<i64> {
+pub fn clamp_ttl_for(tx: &Conn, project: &str, ttl_seconds: Option<i64>) -> ApiResult<i64> {
     let (default_ttl, max_ttl) = project_claim_ttls(tx, project)?;
     let ttl = ttl_seconds.unwrap_or(default_ttl);
     if !(1..=max_ttl).contains(&ttl) {
@@ -182,7 +182,7 @@ fn ready_scope(projection: &str, filter: &ReadyFilter, now: i64) -> (String, Vec
 
 /// One page of the ready queue, ordered by priority then age.
 fn ready_query(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     filter: &ReadyFilter,
     now: i64,
     limit: i64,
@@ -195,7 +195,7 @@ fn ready_query(
 
     let mut stmt = conn.prepare(&sql)?;
     let mut tickets = stmt
-        .query_map(rusqlite::params_from_iter(params_vec), row_to_ticket)?
+        .query_map(super::sql::params_from_iter(params_vec), row_to_ticket)?
         .collect::<Result<Vec<_>, _>>()?;
     for t in &mut tickets {
         load_blocked_by(conn, t)?;
@@ -206,10 +206,10 @@ fn ready_query(
 /// How many tickets the ready queue holds for this filter, ignoring any page
 /// size — the number a caller needs to know whether the page it just read is
 /// the whole queue or the first 20 of 137.
-fn ready_total(conn: &Connection, filter: &ReadyFilter, now: i64) -> ApiResult<i64> {
+fn ready_total(conn: &super::sql::Conn, filter: &ReadyFilter, now: i64) -> ApiResult<i64> {
     let (sql, params_vec) = ready_scope("COUNT(*)", filter, now);
     let mut stmt = conn.prepare(&sql)?;
-    let total = stmt.query_row(rusqlite::params_from_iter(params_vec), |r| {
+    let total = stmt.query_row(super::sql::params_from_iter(params_vec), |r| {
         r.get::<_, i64>(0)
     })?;
     Ok(total)
@@ -222,7 +222,7 @@ fn ready_total(conn: &Connection, filter: &ReadyFilter, now: i64) -> ApiResult<i
 /// the lease is written — same fence bump, same expiry, same holder lock — only
 /// what the event and the response say happened.
 fn grant_claim(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     ticket: &Ticket,
     actor: &str,
     ttl_seconds: i64,
@@ -285,7 +285,7 @@ struct StateFacts {
     category: String,
 }
 
-fn state_facts(tx: &Connection, project: &str, state: &str) -> ApiResult<StateFacts> {
+fn state_facts(tx: &Conn, project: &str, state: &str) -> ApiResult<StateFacts> {
     let row = tx
         .query_row(
             "SELECT claimable, terminal, category FROM workflow_states WHERE project = ?1 AND state = ?2",
@@ -413,10 +413,8 @@ impl Store {
                     let mut stmt = tx.prepare(
                         "SELECT state FROM workflow_states WHERE project = ?1 AND claimable = 1 ORDER BY state",
                     )?;
-                    let states = stmt
-                        .query_map(params![t.project], |r| r.get::<_, String>(0))?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    states
+                    stmt.query_map(params![t.project], |r| r.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?
                 };
                 // Naming the lapsed holder is the difference between "not
                 // claimable" and "not claimable *by you*": an agent that has lost
@@ -718,10 +716,8 @@ impl Store {
             );
             let expired = {
                 let mut stmt = tx.prepare(&sql)?;
-                let rows = stmt
-                    .query_map(params![now], row_to_ticket)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows
+                stmt.query_map(params![now], row_to_ticket)?
+                    .collect::<Result<Vec<_>, _>>()?
             };
             let mut cleared = 0;
             for t in &expired {

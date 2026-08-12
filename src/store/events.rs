@@ -2,9 +2,9 @@
 //! transaction as each mutation.
 
 use super::model::Event;
+use super::sql::Value as SqlValue;
 use super::Store;
 use crate::error::ApiResult;
-use rusqlite::types::Value as SqlValue;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
@@ -65,7 +65,7 @@ impl Store {
             params.push(SqlValue::Integer(limit));
 
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+            let rows = stmt.query_map(super::sql::params_from_iter(params), |r| {
                 let payload_raw: String = r.get(5)?;
                 Ok(Event {
                     seq: r.get(0)?,

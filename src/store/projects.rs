@@ -3,11 +3,11 @@
 use super::answer_grants::MAX_ANSWER_TTL_SECONDS;
 use super::helpers::{emit_event, get_workflow, sync_workflow_states};
 use super::model::Project;
+use super::sql::{params, OptionalExtension};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::now_ms;
 use crate::workflow::Workflow;
-use rusqlite::{params, Connection, OptionalExtension};
 
 /// The columns every `Project` read selects, in the order `row_to_project`
 /// expects. One literal so a new setting cannot be added to one query and
@@ -185,7 +185,7 @@ type ProjectRow = (
     i64,
 );
 
-fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
+fn project_row(r: &super::sql::Row) -> super::sql::Result<ProjectRow> {
     Ok((
         r.get(0)?,
         r.get(1)?,
@@ -259,7 +259,7 @@ fn project_id_valid(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-fn states_in_use(conn: &Connection, project: &str) -> ApiResult<Vec<String>> {
+fn states_in_use(conn: &super::sql::Conn, project: &str) -> ApiResult<Vec<String>> {
     let mut stmt = conn.prepare("SELECT DISTINCT state FROM tickets WHERE project = ?1")?;
     let states = stmt
         .query_map(params![project], |r| r.get::<_, String>(0))?

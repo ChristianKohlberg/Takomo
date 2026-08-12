@@ -20,13 +20,13 @@ use super::helpers::{
     touch_ticket,
 };
 use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
+use super::sql::Value as SqlValue;
+use super::sql::{params, OptionalExtension, Row};
 use super::transition::{apply_transition, MoveKind};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, question_id};
 use crate::workflow::{Requirement, Workflow};
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -177,7 +177,7 @@ pub struct QuestionFilter {
 /// a caller omits `limit`.
 pub const MAX_QUESTIONS_PAGE: i64 = 500;
 
-fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
+fn row_to_question(r: &Row) -> super::sql::Result<Question> {
     let options_raw: String = r.get("options")?;
     let option_notes_raw: String = r.get("option_notes")?;
     let recommended_multi_raw: String = r.get("recommended_multi")?;
@@ -221,7 +221,7 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
     })
 }
 
-fn get_question_row(conn: &Connection, id: &str) -> ApiResult<Question> {
+fn get_question_row(conn: &super::sql::Conn, id: &str) -> ApiResult<Question> {
     let sql = format!("SELECT {QUESTION_COLS} FROM questions WHERE id = ?1");
     conn.query_row(&sql, params![id], row_to_question)
         .optional()?
@@ -846,7 +846,7 @@ fn spent_link_error(question: &str, status: &str) -> ApiError {
 /// `to` must be an edge the actor is entitled to take — from [`resume_target`]
 /// for a resume, or `ensure_edge_answerable`-filtered for the timeout cancel.
 fn question_transition(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     t: &Ticket,
     to: &str,
     actor: &str,
@@ -895,7 +895,7 @@ fn question_transition(
 /// The events it emits are deliberately identical in shape to the normal path's,
 /// so an event consumer sees one kind of `transitioned` payload, not two.
 fn override_state(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     t: &Ticket,
     to: &str,
     actor: &str,
@@ -2088,7 +2088,7 @@ impl Store {
             let scope = sql;
             let total: i64 = conn.query_row(
                 &format!("SELECT COUNT(*){scope}"),
-                rusqlite::params_from_iter(p.iter()),
+                super::sql::params_from_iter(p.iter()),
                 |r| r.get(0),
             )?;
 
@@ -2106,7 +2106,7 @@ impl Store {
             p.push(SqlValue::Integer(offset));
             let mut stmt = conn.prepare(&page)?;
             let rows = stmt
-                .query_map(rusqlite::params_from_iter(p), row_to_question)?
+                .query_map(super::sql::params_from_iter(p), row_to_question)?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok((rows, total))
         })
@@ -2210,7 +2210,7 @@ impl Store {
 /// Timeout: apply the agent's recommendation as the answer and resume the ticket
 /// (as actor `system`). Best-effort resume: if the ticket is no longer parked or
 /// has no clean human-gated resume edge, the answer is still recorded.
-fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiResult<()> {
+fn expire_with_recommendation(conn: &super::sql::Conn, q: &Question, now: i64) -> ApiResult<()> {
     // Terminal resolution — outstanding answer links can no longer apply.
     revoke_open_grants_for_question(conn, &q.id, now)?;
     // For a multi choose the recommendation is the `recommended_multi` set.
@@ -2297,7 +2297,7 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
 
 /// Timeout: close the question expired and best-effort cancel the ticket via a
 /// no-scope transition to a cancelled-category state.
-fn expire_and_cancel(conn: &Connection, q: &Question, now: i64) -> ApiResult<()> {
+fn expire_and_cancel(conn: &super::sql::Conn, q: &Question, now: i64) -> ApiResult<()> {
     revoke_open_grants_for_question(conn, &q.id, now)?;
     conn.execute(
         "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",

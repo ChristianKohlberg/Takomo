@@ -20,12 +20,12 @@ use super::helpers::{
     touch_ticket,
 };
 use super::model::Ticket;
+use super::sql::{params, Conn};
 use super::Store;
 use crate::error::{AllowedTransition, ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use crate::workflow::{Requirement, Workflow, WorkflowTransition, GUARD_HAS_LINK};
 use axum::http::StatusCode;
-use rusqlite::{params, Connection};
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -79,7 +79,11 @@ fn allowed_from(wf: &Workflow, state: &str) -> Vec<AllowedTransition> {
         .collect()
 }
 
-fn eval_guard(conn: &Connection, guard: &str, ticket: &Ticket) -> ApiResult<Option<ReqFailure>> {
+fn eval_guard(
+    conn: &super::sql::Conn,
+    guard: &str,
+    ticket: &Ticket,
+) -> ApiResult<Option<ReqFailure>> {
     match guard {
         "no_open_children" => {
             let mut stmt = conn.prepare(
@@ -188,7 +192,7 @@ impl Store {
 /// for the HTTP route.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_transition(
-    tx: &Connection,
+    tx: &Conn,
     id: &str,
     to: &str,
     reason: Option<&str>,

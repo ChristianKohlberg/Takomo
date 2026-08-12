@@ -13,10 +13,10 @@ use super::model::{
     Case, CaseVerdict, Lane, LaneCounts, Release, ReleaseImpact, ResolvedPolicy, CASE_VERDICTS,
     LANE_LAYERS, LANE_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE, VERIFICATION_LEVELS,
 };
+use super::sql::{params, OptionalExtension, Row};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{case_id, checklist_policy_id, lane_id, now_ms, release_id, verdict_id};
-use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -459,7 +459,7 @@ fn normalize_globs(globs: &[String]) -> ApiResult<Vec<String>> {
     Ok(out)
 }
 
-fn project_exists(conn: &Connection, project: &str) -> ApiResult<()> {
+fn project_exists(conn: &super::sql::Conn, project: &str) -> ApiResult<()> {
     let found: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM projects WHERE id = ?1",
@@ -476,7 +476,7 @@ fn project_exists(conn: &Connection, project: &str) -> ApiResult<()> {
 /// An epic parent must exist, live in the same project, and actually be an epic.
 /// Checklist reuses `type: epic` tickets for grouping so the vocabulary matches
 /// tickets and the roadmap rollup keeps working.
-fn check_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> {
+fn check_epic(conn: &super::sql::Conn, project: &str, epic: &str) -> ApiResult<()> {
     let row: Option<(String, String)> = conn
         .query_row(
             "SELECT project, type FROM tickets WHERE id = ?1",
@@ -502,7 +502,7 @@ fn check_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> {
     }
 }
 
-fn row_to_lane(row: &Row) -> rusqlite::Result<Lane> {
+fn row_to_lane(row: &Row) -> super::sql::Result<Lane> {
     let metadata_raw: String = row.get("metadata")?;
     Ok(Lane {
         id: row.get("id")?,
@@ -531,7 +531,7 @@ fn row_to_lane(row: &Row) -> rusqlite::Result<Lane> {
     })
 }
 
-fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
+fn row_to_case(row: &Row) -> super::sql::Result<Case> {
     let assignment_raw: String = row.get("assignment")?;
     let seeded: i64 = row.get("seeded")?;
     Ok(Case {
@@ -564,7 +564,7 @@ const CASE_COLS: &str = "id, lane, key, label, assignment, seeded, agent_verdict
     agent_by, agent_release, human_verdict, human_at, human_by, human_release, stale_since, \
     retired_at, created_at, updated_at";
 
-fn load_globs(conn: &Connection, lane: &str) -> ApiResult<Vec<String>> {
+fn load_globs(conn: &super::sql::Conn, lane: &str) -> ApiResult<Vec<String>> {
     let mut stmt = conn.prepare("SELECT glob FROM lane_globs WHERE lane = ?1 ORDER BY glob")?;
     let out = stmt
         .query_map(params![lane], |r| r.get::<_, String>(0))?
@@ -573,7 +573,7 @@ fn load_globs(conn: &Connection, lane: &str) -> ApiResult<Vec<String>> {
 }
 
 /// Live cases of a lane, counted by state.
-fn load_counts(conn: &Connection, lane: &str) -> ApiResult<LaneCounts> {
+fn load_counts(conn: &super::sql::Conn, lane: &str) -> ApiResult<LaneCounts> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {CASE_COLS} FROM cases WHERE lane = ?1 AND retired_at IS NULL"
     ))?;
@@ -590,7 +590,7 @@ fn load_counts(conn: &Connection, lane: &str) -> ApiResult<LaneCounts> {
 /// Globs of this lane that matched nothing in the newest release. Reported by the
 /// pusher, stored per release; surfaced on the lane so the rot is visible where
 /// the claim is made.
-fn load_orphan_globs(conn: &Connection, project: &str, lane: &str) -> ApiResult<Vec<String>> {
+fn load_orphan_globs(conn: &super::sql::Conn, project: &str, lane: &str) -> ApiResult<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT g.glob FROM lane_globs g
          WHERE g.lane = ?1
@@ -612,7 +612,7 @@ fn load_orphan_globs(conn: &Connection, project: &str, lane: &str) -> ApiResult<
 type PolicyRow = (Option<String>, Option<i64>, Option<i64>);
 
 /// Resolve verification + expiry down project → epic → lane.
-fn resolve_policy(conn: &Connection, lane: &Lane) -> ApiResult<ResolvedPolicy> {
+fn resolve_policy(conn: &super::sql::Conn, lane: &Lane) -> ApiResult<ResolvedPolicy> {
     let load = |epic: &str| -> ApiResult<Option<PolicyRow>> {
         let mut s = conn.prepare(
             "SELECT verification, expiry_days, expiry_releases FROM checklist_policies
@@ -935,7 +935,11 @@ impl Store {
         })
     }
 
-    fn release_seq_map(&self, conn: &Connection, project: &str) -> ApiResult<HashMap<String, i64>> {
+    fn release_seq_map(
+        &self,
+        conn: &super::sql::Conn,
+        project: &str,
+    ) -> ApiResult<HashMap<String, i64>> {
         let mut stmt = conn.prepare("SELECT id, seq FROM releases WHERE project = ?1")?;
         let rows = stmt
             .query_map(params![project], |r| {

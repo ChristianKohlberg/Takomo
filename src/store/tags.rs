@@ -7,10 +7,10 @@
 use super::helpers::emit_event;
 use super::merge_patch;
 use super::model::{Tag, MAX_METADATA};
+use super::sql::{params, OptionalExtension};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, tag_id};
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -187,7 +187,7 @@ fn validate_meta(meta: &Value) -> ApiResult<()> {
     Ok(())
 }
 
-fn row_to_tag(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
+fn row_to_tag(r: &super::sql::Row) -> super::sql::Result<Tag> {
     let meta_raw: String = r.get("meta")?;
     Ok(Tag {
         id: r.get("id")?,
@@ -216,7 +216,7 @@ const TAG_COLS: &str = "id, project, kind, handle, label, meta, created_by, crea
 /// call sites — this is the function whose cost is unbounded, so this is where the
 /// bound belongs (takomo-xrp8).
 pub(crate) fn ensure_tags_exist(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     project: &str,
     refs: &[String],
     actor: &str,
@@ -323,21 +323,21 @@ impl Store {
     pub fn list_tags(&self, filter: &TagListFilter) -> ApiResult<Vec<Tag>> {
         self.with_conn(|conn| {
             let mut sql = format!("SELECT {TAG_COLS} FROM tags WHERE project = ?1");
-            let mut params_vec: Vec<rusqlite::types::Value> =
-                vec![rusqlite::types::Value::Text(filter.project.clone())];
+            let mut params_vec: Vec<super::sql::Value> =
+                vec![super::sql::Value::Text(filter.project.clone())];
             if let Some(kind) = &filter.kind {
                 sql.push_str(" AND kind = ?");
-                params_vec.push(rusqlite::types::Value::Text(kind.clone()));
+                params_vec.push(super::sql::Value::Text(kind.clone()));
             }
             if let Some(q) = &filter.q {
                 sql.push_str(" AND (LOWER(handle) LIKE ? OR LOWER(label) LIKE ?)");
                 let needle = format!("%{}%", q.to_lowercase());
-                params_vec.push(rusqlite::types::Value::Text(needle.clone()));
-                params_vec.push(rusqlite::types::Value::Text(needle));
+                params_vec.push(super::sql::Value::Text(needle.clone()));
+                params_vec.push(super::sql::Value::Text(needle));
             }
             sql.push_str(" ORDER BY kind, handle");
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), row_to_tag)?;
+            let rows = stmt.query_map(super::sql::params_from_iter(params_vec), row_to_tag)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);

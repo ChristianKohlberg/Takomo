@@ -15,10 +15,10 @@
 //! data nor perform any other write.
 
 use super::model::AnswerGrantRow;
+use super::sql::{params, OptionalExtension, Row};
 use super::Store;
 use crate::error::ApiResult;
 use crate::ids::{answer_grant_id, answer_grant_token_plaintext, now_ms, token_hash};
-use rusqlite::{params, Connection, OptionalExtension, Row};
 
 /// Revoke every still-live (unused, unrevoked) answer grant for a question.
 /// Called inside the caller's transaction whenever the question leaves the open
@@ -26,7 +26,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 /// one answering cycle can never answer a later one — enforcing the write-once
 /// invariant across ALL resolution paths, not just a successful self-answer.
 pub(crate) fn revoke_open_grants_for_question(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     question: &str,
     now: i64,
 ) -> ApiResult<()> {
@@ -47,7 +47,7 @@ pub(crate) fn revoke_open_grants_for_question(
 /// caller sees `true`, and a caller that sees `false` aborts the whole
 /// transaction, so nothing is recorded for it. A grant is equally unspendable
 /// once revoked, so a revoke landing mid-flight is honoured too.
-pub(crate) fn spend_grant(conn: &Connection, id: &str, now: i64) -> ApiResult<bool> {
+pub(crate) fn spend_grant(conn: &super::sql::Conn, id: &str, now: i64) -> ApiResult<bool> {
     let n = conn.execute(
         "UPDATE answer_grants SET used_at = ?2 WHERE id = ?1 AND used_at IS NULL AND revoked_at IS NULL",
         params![id, now],
@@ -74,7 +74,7 @@ pub const MAX_ANSWER_TTL_SECONDS: i64 = 30 * 86_400;
 const GRANT_COLS: &str =
     "id, question, project, actor, expires_at, created_by, created_at, used_at, revoked_at";
 
-fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
+fn row_to_grant(row: &Row) -> super::sql::Result<AnswerGrantRow> {
     Ok(AnswerGrantRow {
         id: row.get("id")?,
         question: row.get("question")?,

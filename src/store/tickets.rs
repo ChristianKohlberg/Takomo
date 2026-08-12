@@ -9,12 +9,12 @@ use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
     TICKET_TYPES,
 };
+use super::sql::Value as SqlValue;
+use super::sql::{params, OptionalExtension};
 use super::tags::{check_tag_count, ensure_tags_exist, normalize_tag_set};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{comment_id, now_ms, promotion_id, sha256_hex, ticket_suffix};
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 /// Node ceiling for a transitive dependency walk. Reaching it returns a correct
@@ -25,7 +25,7 @@ pub const MAX_DEP_GRAPH_NODES: usize = 500;
 const MAX_PROMOTION_TARGET: usize = 100;
 const MAX_PROMOTION_FIELD: usize = 2048;
 
-fn row_to_promotion(r: &rusqlite::Row) -> rusqlite::Result<Promotion> {
+fn row_to_promotion(r: &super::sql::Row) -> super::sql::Result<Promotion> {
     Ok(Promotion {
         id: r.get(0)?,
         ticket: r.get(1)?,
@@ -266,7 +266,7 @@ fn validate_metadata_size(metadata: &Value) -> ApiResult<()> {
 }
 
 /// Would setting `child`'s parent to `new_parent` create a cycle in the tree?
-fn parent_cycle(conn: &Connection, child: &str, new_parent: &str) -> ApiResult<bool> {
+fn parent_cycle(conn: &super::sql::Conn, child: &str, new_parent: &str) -> ApiResult<bool> {
     let mut cursor = Some(new_parent.to_string());
     let mut hops = 0;
     while let Some(node) = cursor {
@@ -291,7 +291,7 @@ fn parent_cycle(conn: &Connection, child: &str, new_parent: &str) -> ApiResult<b
 
 /// Would adding edge `ticket blocked_by target` create a dependency cycle?
 /// True when `target` transitively depends on (is blocked by) `ticket`.
-fn dep_cycle(conn: &Connection, ticket: &str, target: &str) -> ApiResult<bool> {
+fn dep_cycle(conn: &super::sql::Conn, ticket: &str, target: &str) -> ApiResult<bool> {
     if ticket == target {
         return Ok(true);
     }
@@ -352,7 +352,7 @@ fn similarity_score(
 /// hint is trustworthy rather than a cry-wolf keyword match. Each entry carries
 /// its `score` (0..1, 2 d.p.) and the `matched_terms` that drove it.
 fn open_similar(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     project: &str,
     title: &str,
     ty: &str,
@@ -405,7 +405,7 @@ fn open_similar(
     Ok(scored.into_iter().take(5).map(|(_, v)| v).collect())
 }
 
-fn generate_ticket_id(conn: &Connection, project: &str) -> ApiResult<String> {
+fn generate_ticket_id(conn: &super::sql::Conn, project: &str) -> ApiResult<String> {
     for len in [4usize, 4, 4, 5, 5, 6, 8] {
         let candidate = format!("{project}-{}", ticket_suffix(len));
         let exists: Option<i64> = conn
@@ -622,7 +622,7 @@ impl Store {
 
             let mut stmt = conn.prepare(&sql)?;
             let mut tickets = stmt
-                .query_map(rusqlite::params_from_iter(params_vec), row_to_ticket)?
+                .query_map(super::sql::params_from_iter(params_vec), row_to_ticket)?
                 .collect::<Result<Vec<_>, _>>()?;
             let mut out = Vec::with_capacity(tickets.len());
             for t in &mut tickets {
@@ -754,7 +754,7 @@ impl Store {
 
             let mut stmt = conn.prepare(&sql)?;
             let mut rows_with_rid: Vec<(Ticket, i64)> = Vec::new();
-            let mapped = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            let mapped = stmt.query_map(super::sql::params_from_iter(params_vec), |r| {
                 let rid: i64 = r.get("rid")?;
                 Ok((row_to_ticket(r)?, rid))
             })?;

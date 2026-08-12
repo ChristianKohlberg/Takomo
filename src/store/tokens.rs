@@ -1,12 +1,12 @@
 //! Token storage: minted/managed by the CLI, looked up by the auth middleware.
 
 use super::model::{OauthConnection, TokenRow};
+use super::sql::{params, OptionalExtension, Row};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, token_hash, token_id, token_plaintext};
-use rusqlite::{params, OptionalExtension, Row};
 
-fn row_to_token(row: &Row) -> rusqlite::Result<TokenRow> {
+fn row_to_token(row: &Row) -> super::sql::Result<TokenRow> {
     let scopes_raw: String = row.get("scopes")?;
     let projects_raw: String = row.get("projects")?;
     Ok(TokenRow {
@@ -38,7 +38,7 @@ fn row_to_token(row: &Row) -> rusqlite::Result<TokenRow> {
 }
 
 /// A listed token, plus which OAuth connection it belongs to if any.
-fn row_to_listed_token(row: &Row) -> rusqlite::Result<TokenRow> {
+fn row_to_listed_token(row: &Row) -> super::sql::Result<TokenRow> {
     let mut token = row_to_token(row)?;
     if let Some(client_id) = row.get::<_, Option<String>>("oauth_client_id")? {
         // `client_name` is NOT NULL DEFAULT '' on the clients table, and NULL here
@@ -76,7 +76,7 @@ const TOKEN_COLS_JOINED: &str = "t.id AS id, t.actor AS actor, t.scopes AS scope
 /// commit together, or a crash in between leaves a burnt code with no token —
 /// unrecoverable for the client, since a code is single-use by design.
 pub(super) fn insert_token(
-    tx: &rusqlite::Transaction,
+    tx: &super::sql::Tx,
     actor: &str,
     scopes: &[String],
     projects: Option<&[String]>,

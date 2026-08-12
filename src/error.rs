@@ -159,4 +159,14 @@ impl From<rusqlite::Error> for ApiError {
     }
 }
 
+/// The same flattening for errors coming through the dialect shim
+/// (`store::sql`). Kept identical on purpose: which backend produced the failure
+/// must not change what a client sees, and raw SQL text must not leak either way.
+impl From<crate::store::sql::Error> for ApiError {
+    fn from(e: crate::store::sql::Error) -> Self {
+        eprintln!("database error: {e}");
+        ApiError::internal("an internal database error occurred")
+    }
+}
+
 pub type ApiResult<T> = Result<T, ApiError>;

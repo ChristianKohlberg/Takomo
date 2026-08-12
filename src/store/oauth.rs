@@ -19,6 +19,7 @@
 use super::model::{
     GrantRejection, GrantedAccess, OauthClient, OauthExchange, OauthTokens, TokenRow,
 };
+use super::sql::{params, OptionalExtension, Row};
 use super::tokens::insert_token;
 use super::Store;
 use crate::error::{ApiError, ApiResult};
@@ -26,7 +27,6 @@ use crate::ids::{
     now_ms, oauth_client_id, oauth_code_plaintext, oauth_family_id, oauth_refresh_plaintext,
     pkce_s256_challenge, token_hash,
 };
-use rusqlite::{params, OptionalExtension, Row, Transaction};
 
 /// Lifetime of an issued access token. Claude refreshes reactively on a 401 and
 /// proactively up to five minutes before expiry, so an hour keeps the refresh
@@ -126,7 +126,7 @@ fn csv_to_vec(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn row_to_client(row: &Row) -> rusqlite::Result<OauthClient> {
+fn row_to_client(row: &Row) -> super::sql::Result<OauthClient> {
     let uris: String = row.get("redirect_uris")?;
     Ok(OauthClient {
         client_id: row.get("client_id")?,
@@ -141,7 +141,7 @@ fn row_to_client(row: &Row) -> rusqlite::Result<OauthClient> {
 }
 
 /// The consent snapshot as stored on a code or refresh row.
-fn row_to_grant(row: &Row) -> rusqlite::Result<GrantedAccess> {
+fn row_to_grant(row: &Row) -> super::sql::Result<GrantedAccess> {
     let scopes: String = row.get("scopes")?;
     let projects: String = row.get("projects")?;
     Ok(GrantedAccess {
@@ -483,7 +483,7 @@ impl Store {
 /// which is what [`Store::refresh_oauth_token`] needs to revoke a compromised
 /// chain wholesale.
 fn mint_grant(
-    tx: &Transaction,
+    tx: &super::sql::Tx,
     client_id: &str,
     grant: &GrantedAccess,
     family: Option<&str>,
@@ -560,7 +560,7 @@ fn mint_grant(
 /// A missing row counts as revoked: an id with no token behind it is one that was
 /// deleted, which is at least as final as one marked revoked, and there is nothing
 /// left to check the delegation against.
-fn consent_not_revoked(tx: &Transaction, granted_by: &str) -> ApiResult<bool> {
+fn consent_not_revoked(tx: &super::sql::Tx, granted_by: &str) -> ApiResult<bool> {
     let revoked_at = tx
         .query_row(
             "SELECT revoked_at FROM tokens WHERE id = ?1",
@@ -579,7 +579,7 @@ fn consent_not_revoked(tx: &Transaction, granted_by: &str) -> ApiResult<bool> {
 /// The family *is* the connection — every credential descended from one consent —
 /// so this is the response to detected refresh-token reuse and equally the way
 /// [`Store::revoke_token`] ends a single connector without touching any other.
-pub(super) fn revoke_refresh_family(tx: &Transaction, family: &str, now: i64) -> ApiResult<()> {
+pub(super) fn revoke_refresh_family(tx: &super::sql::Tx, family: &str, now: i64) -> ApiResult<()> {
     tx.execute(
         "UPDATE tokens SET revoked_at = ?2 WHERE revoked_at IS NULL AND id IN \
          (SELECT token_id FROM oauth_issued WHERE family = ?1)",

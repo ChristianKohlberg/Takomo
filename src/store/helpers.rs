@@ -1,10 +1,10 @@
 //! Shared SQL helpers used by multiple store submodules.
 
 use super::model::Ticket;
+use super::sql::{params, OptionalExtension, Row};
 use crate::error::{ApiError, ApiResult};
 use crate::ids::iso;
 use crate::workflow::Workflow;
-use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 
 /// Column list every ticket SELECT uses, with `t` as the tickets alias.
@@ -14,7 +14,7 @@ pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.bod
     t.lapsed_claim_holder, t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, \
     t.archived_at, t.schedule, t.occurrence, t.expires_at";
 
-pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
+pub fn row_to_ticket(row: &Row) -> super::sql::Result<Ticket> {
     let labels_raw: String = row.get("labels")?;
     let tags_raw: String = row.get("tags")?;
     let metadata_raw: String = row.get("metadata")?;
@@ -49,7 +49,7 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
     })
 }
 
-pub fn load_blocked_by(conn: &Connection, ticket: &mut Ticket) -> ApiResult<()> {
+pub fn load_blocked_by(conn: &super::sql::Conn, ticket: &mut Ticket) -> ApiResult<()> {
     let mut stmt =
         conn.prepare("SELECT blocked_by FROM deps WHERE ticket = ?1 ORDER BY blocked_by")?;
     let ids = stmt
@@ -60,7 +60,7 @@ pub fn load_blocked_by(conn: &Connection, ticket: &mut Ticket) -> ApiResult<()> 
 }
 
 /// Load one ticket (with blocked_by) or None.
-pub fn get_ticket_opt(conn: &Connection, id: &str) -> ApiResult<Option<Ticket>> {
+pub fn get_ticket_opt(conn: &super::sql::Conn, id: &str) -> ApiResult<Option<Ticket>> {
     let sql = format!("SELECT {TICKET_COLS} FROM tickets t WHERE t.id = ?1");
     let ticket = conn
         .query_row(&sql, params![id], row_to_ticket)
@@ -75,12 +75,12 @@ pub fn get_ticket_opt(conn: &Connection, id: &str) -> ApiResult<Option<Ticket>> 
 }
 
 /// Load one ticket or a teaching 404.
-pub fn get_ticket_required(conn: &Connection, id: &str) -> ApiResult<Ticket> {
+pub fn get_ticket_required(conn: &super::sql::Conn, id: &str) -> ApiResult<Ticket> {
     get_ticket_opt(conn, id)?.ok_or_else(|| ApiError::not_found("ticket", id))
 }
 
 /// Load a project's workflow or a teaching 404.
-pub fn get_workflow(conn: &Connection, project: &str) -> ApiResult<Workflow> {
+pub fn get_workflow(conn: &super::sql::Conn, project: &str) -> ApiResult<Workflow> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT workflow_json FROM projects WHERE id = ?1",
@@ -95,7 +95,7 @@ pub fn get_workflow(conn: &Connection, project: &str) -> ApiResult<Workflow> {
 
 /// Append an event inside the caller's transaction. Returns the new seq.
 pub fn emit_event(
-    conn: &Connection,
+    conn: &super::sql::Conn,
     ticket: Option<&str>,
     project: Option<&str>,
     actor: &str,
@@ -125,7 +125,7 @@ pub fn emit_event(
 /// because `active_claim(now)` and the ready query treat it as unclaimed, and
 /// `Ticket::lapsed_holder` reads the still-recorded expired claim as the same
 /// evidence the cleared column would carry.
-pub fn clear_expired_claim(conn: &Connection, ticket: &Ticket, now: i64) -> ApiResult<bool> {
+pub fn clear_expired_claim(conn: &super::sql::Conn, ticket: &Ticket, now: i64) -> ApiResult<bool> {
     if let (Some(holder), Some(exp)) = (&ticket.claim_holder, ticket.claim_expires_at) {
         if exp <= now {
             conn.execute(
@@ -153,7 +153,7 @@ pub fn clear_expired_claim(conn: &Connection, ticket: &Ticket, now: i64) -> ApiR
 
 /// Ids of tickets that block `id` (directly or via an ancestor) and are not
 /// terminal. Empty = unblocked.
-pub fn open_blockers(conn: &Connection, id: &str) -> ApiResult<Vec<String>> {
+pub fn open_blockers(conn: &super::sql::Conn, id: &str) -> ApiResult<Vec<String>> {
     let mut stmt = conn.prepare(
         r#"
         WITH RECURSIVE lineage(node) AS (
@@ -178,7 +178,7 @@ pub fn open_blockers(conn: &Connection, id: &str) -> ApiResult<Vec<String>> {
 }
 
 /// Bump version + updated_at (call inside a write tx after field changes).
-pub fn touch_ticket(conn: &Connection, id: &str, now: i64) -> ApiResult<i64> {
+pub fn touch_ticket(conn: &super::sql::Conn, id: &str, now: i64) -> ApiResult<i64> {
     conn.execute(
         "UPDATE tickets SET version = version + 1, updated_at = ?2 WHERE id = ?1",
         params![id, now],
@@ -289,7 +289,11 @@ pub fn check_fence_for_write(
 }
 
 /// Replace the workflow_states denormalization for a project.
-pub fn sync_workflow_states(conn: &Connection, project: &str, wf: &Workflow) -> ApiResult<()> {
+pub fn sync_workflow_states(
+    conn: &super::sql::Conn,
+    project: &str,
+    wf: &Workflow,
+) -> ApiResult<()> {
     conn.execute(
         "DELETE FROM workflow_states WHERE project = ?1",
         params![project],

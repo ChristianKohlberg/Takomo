@@ -23,10 +23,10 @@
 //! stops at an already-visited id — a malformed `parent` cycle terminates
 //! rather than hanging the endpoint.
 
+use super::sql::{params, Statement};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
-use rusqlite::{params, Connection, Statement};
 use serde_json::{json, Map, Value};
 
 /// Aggregate over a set of tickets (an epic's descendant subtree, or the
@@ -51,7 +51,7 @@ impl Rollup {
 
 /// Fold `(state, category, count)` rows — the shape every rollup query below
 /// returns — into a `Rollup`.
-fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiResult<Rollup> {
+fn collect_rollup(stmt: &mut Statement, args: &[&dyn super::sql::ToSql]) -> ApiResult<Rollup> {
     let rows = stmt
         .query_map(args, |r| {
             Ok((
@@ -89,7 +89,7 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
 /// count the whole subtree beneath the epic (the epic itself is the container,
 /// not counted). `done` is the number of descendants whose state category is
 /// `done`; `percent` is `done/total` rounded to a whole percent (0 when empty).
-fn rollup_for_epic(conn: &Connection, epic_id: &str) -> ApiResult<Rollup> {
+fn rollup_for_epic(conn: &super::sql::Conn, epic_id: &str) -> ApiResult<Rollup> {
     let mut stmt = conn.prepare(
         r#"
         WITH RECURSIVE sub(id) AS (
@@ -105,7 +105,7 @@ fn rollup_for_epic(conn: &Connection, epic_id: &str) -> ApiResult<Rollup> {
         GROUP BY t.state
         "#,
     )?;
-    collect_rollup(&mut stmt, params![epic_id])
+    collect_rollup(&mut stmt, &params![epic_id])
 }
 
 /// Rollup over the project's non-epic tickets that no epic owns: the recursive
@@ -113,7 +113,7 @@ fn rollup_for_epic(conn: &Connection, epic_id: &str) -> ApiResult<Rollup> {
 /// outer select keeps everything else. A ticket is excluded exactly when its
 /// `parent` chain reaches an epic, so a NULL parent, an all-non-epic ancestor
 /// chain, and a dangling parent id all land in the bucket.
-fn rollup_unparented(conn: &Connection, project: &str) -> ApiResult<Rollup> {
+fn rollup_unparented(conn: &super::sql::Conn, project: &str) -> ApiResult<Rollup> {
     let mut stmt = conn.prepare(
         r#"
         WITH RECURSIVE owned(id) AS (
@@ -134,7 +134,7 @@ fn rollup_unparented(conn: &Connection, project: &str) -> ApiResult<Rollup> {
         GROUP BY t.state
         "#,
     )?;
-    collect_rollup(&mut stmt, params![project])
+    collect_rollup(&mut stmt, &params![project])
 }
 
 /// Contradiction codes for an epic whose own state disagrees with its subtree.

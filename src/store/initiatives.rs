@@ -32,12 +32,12 @@
 use super::helpers::emit_event;
 use super::merge_patch;
 use super::model::{Initiative, InitiativeEntry, InitiativeRollup, MAX_BODY, MAX_METADATA};
+use super::sql::Value as SqlValue;
+use super::sql::{params, OptionalExtension};
 use super::tags::{ensure_tags_exist, normalize_tag_set};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{initiative_entry_id, initiative_id, now_ms};
-use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 /// The lifecycle labels an initiative can carry.
@@ -327,7 +327,7 @@ const INITIATIVE_COLS: &str =
 const ENTRY_COLS: &str = "id, initiative, project, kind, title, text, mime, filename, chars, \
      text_bytes, content_bytes, source, source_uri, origin_at, meta, author, created_at";
 
-fn row_to_initiative(r: &rusqlite::Row) -> rusqlite::Result<Initiative> {
+fn row_to_initiative(r: &super::sql::Row) -> super::sql::Result<Initiative> {
     let labels_raw: String = r.get("labels")?;
     let tags_raw: String = r.get("tags")?;
     let metadata_raw: String = r.get("metadata")?;
@@ -349,7 +349,7 @@ fn row_to_initiative(r: &rusqlite::Row) -> rusqlite::Result<Initiative> {
     })
 }
 
-fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<InitiativeEntry> {
+fn row_to_entry(r: &super::sql::Row) -> super::sql::Result<InitiativeEntry> {
     let meta_raw: String = r.get("meta")?;
     Ok(InitiativeEntry {
         id: r.get("id")?,
@@ -374,7 +374,7 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<InitiativeEntry> {
 
 /// Recompute an initiative's counts from its entries. One indexed aggregate; runs
 /// on both the read and the write path so a caller never sees stale numbers.
-fn load_rollup(conn: &Connection, initiative: &str) -> ApiResult<InitiativeRollup> {
+fn load_rollup(conn: &super::sql::Conn, initiative: &str) -> ApiResult<InitiativeRollup> {
     let rollup = conn.query_row(
         "SELECT COUNT(*) AS entries, \
                 COALESCE(SUM(content_bytes > 0), 0) AS attachments, \
@@ -400,7 +400,7 @@ fn load_rollup(conn: &Connection, initiative: &str) -> ApiResult<InitiativeRollu
     Ok(rollup)
 }
 
-fn get_initiative_row(conn: &Connection, id: &str) -> ApiResult<Option<Initiative>> {
+fn get_initiative_row(conn: &super::sql::Conn, id: &str) -> ApiResult<Option<Initiative>> {
     let sql = format!("SELECT {INITIATIVE_COLS} FROM initiatives WHERE id = ?1");
     let found = conn
         .query_row(&sql, params![id], row_to_initiative)
@@ -652,7 +652,7 @@ impl Store {
             params_vec.push(SqlValue::Integer(limit + 1));
 
             let mut stmt = conn.prepare(&sql)?;
-            let mapped = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            let mapped = stmt.query_map(super::sql::params_from_iter(params_vec), |r| {
                 let rid: i64 = r.get("rid")?;
                 Ok((row_to_initiative(r)?, rid))
             })?;
@@ -888,7 +888,7 @@ impl Store {
             sql.push_str(" ORDER BY rowid DESC LIMIT ?");
             params_vec.push(SqlValue::Integer(limit + 1));
             let mut stmt = conn.prepare(&sql)?;
-            let mapped = stmt.query_map(rusqlite::params_from_iter(params_vec), |r| {
+            let mapped = stmt.query_map(super::sql::params_from_iter(params_vec), |r| {
                 let rid: i64 = r.get("rid")?;
                 Ok((row_to_entry(r)?, rid))
             })?;

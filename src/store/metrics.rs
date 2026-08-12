@@ -3,10 +3,10 @@
 //! SQLite the API serves. Honors token project scoping so a scoped caller only
 //! sees the projects it may read.
 
+use super::sql::Value as SqlValue;
 use super::Store;
 use crate::error::ApiResult;
 use crate::ids::{iso, now_ms};
-use rusqlite::types::Value as SqlValue;
 use serde_json::{json, Map, Value};
 
 impl Store {
@@ -42,7 +42,7 @@ impl Store {
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
-                .query_map(rusqlite::params_from_iter(proj_params.clone()), |r| {
+                .query_map(super::sql::params_from_iter(proj_params.clone()), |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -88,7 +88,7 @@ impl Store {
             claim_params.extend(proj_params.clone());
             let mut stmt = conn.prepare(&sql)?;
             let claim_rows = stmt
-                .query_map(rusqlite::params_from_iter(claim_params), |r| {
+                .query_map(super::sql::params_from_iter(claim_params), |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -122,7 +122,7 @@ impl Store {
                         ps.push(SqlValue::Text(p.clone()));
                     }
                     sql.push(')');
-                    conn.query_row(&sql, rusqlite::params_from_iter(ps), |r| r.get(0))?
+                    conn.query_row(&sql, super::sql::params_from_iter(ps), |r| r.get(0))?
                 }
             };
 
