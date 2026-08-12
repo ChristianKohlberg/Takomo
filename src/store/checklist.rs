@@ -1739,7 +1739,7 @@ impl Store {
                      expiry_releases, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(project, epic) DO UPDATE SET
-                     verification = COALESCE(excluded.verification, verification),
+                     verification = COALESCE(excluded.verification, checklist_policies.verification),
                      expiry_days = excluded.expiry_days,
                      expiry_releases = excluded.expiry_releases,
                      updated_at = excluded.updated_at",

@@ -14,6 +14,10 @@ axum = { version = "0.8", features = ["json"] }
 # back is a one-line change — leaving "full" hides which of them the server relies on.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Postgres backend for the store, selected at runtime behind `store::sql`.
+# Sync client on purpose: it keeps every Store method signature synchronous, so
+# the port stays inside src/store/ instead of turning src/api/ async too.
+postgres = "0.19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Workflow definitions are authored in YAML (workflows/*.yaml, spec/workflow-format.md),
@@ -62,6 +66,9 @@ tempfile = "3"
 # Also a normal dependency; declared here so integration tests can build a
 # pre-migration (old-schema) database by hand to prove the additive migration.
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Also a dependency proper; declared here so the integration tests can point a
+# TestApp at a real Postgres and run the same suite against both backends.
+postgres = "0.19"
 # Also a normal dependency; declared here so the MCP tests can encode an
 # attachment the way a caller would — including one byte over the cap, which is
 # the only honest way to prove the cap is enforced on the decoded bytes.

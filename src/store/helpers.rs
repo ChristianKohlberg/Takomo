@@ -103,11 +103,16 @@ pub fn emit_event(
     payload: Value,
     now: i64,
 ) -> ApiResult<i64> {
-    conn.execute(
-        "INSERT INTO events (ticket, project, actor, kind, payload, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    // RETURNING rather than last_insert_rowid(): SQLite has supported it since
+    // 3.35 and Postgres has no equivalent of the latter, so this is the one form
+    // that means the same thing on both. It also removes the only place where a
+    // second statement could have observed a different insert.
+    Ok(conn.query_row(
+        "INSERT INTO events (ticket, project, actor, kind, payload, at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING seq",
         params![ticket, project, actor, kind, payload.to_string(), now],
-    )?;
-    Ok(conn.last_insert_rowid())
+        |r| r.get::<_, i64>(0),
+    )?)
 }
 
 /// Lazily expire a stale claim on `ticket`: clear it and emit `lease_expired`.

@@ -96,6 +96,13 @@ pub struct Store {
     /// will ever open is opened in [`Store::open`], while a snapshot has to open
     /// one later, on demand, outside both the writer and the reader pool.
     path: Option<PathBuf>,
+    /// The Postgres writer, when this store is backed by Postgres instead.
+    ///
+    /// `Some` here means the SQLite fields above are inert. Keeping both on one
+    /// struct rather than behind an enum is a deliberate scaffold: it keeps the
+    /// diff to `with_tx`/`with_conn` small while both engines are being compared,
+    /// and collapses to one field when the SQLite arm is deleted.
+    pg: Option<Mutex<postgres::Client>>,
 }
 
 impl Store {
@@ -137,6 +144,80 @@ impl Store {
             readers,
             next_reader: AtomicUsize::new(0),
             path: (!private).then(|| path.to_path_buf()),
+            pg: None,
+        })
+    }
+
+    /// Open a Postgres-backed store, creating the schema if the database is
+    /// empty.
+    ///
+    /// The writer mutex is retained exactly as on SQLite — see
+    /// `docs/postgres-adapter.md`. With one takomo process that is still the
+    /// exactly-one-claimant guarantee, so nothing about claims, fencing or
+    /// leases has to be re-argued; it costs throughput (measured at ~696 vs
+    /// ~4629 writes/s) against a workload two orders of magnitude below it.
+    pub fn connect_pg(url: &str) -> ApiResult<Store> {
+        Store::connect_pg_in(url, "public")
+    }
+
+    /// As [`Store::connect_pg`], but inside a named Postgres schema.
+    ///
+    /// Exists for the test harness: `tests/api.rs` runs its cases in parallel
+    /// against one server, and a schema per `TestApp` is the cheap way to give
+    /// each the isolated database it assumes. A database per test would also
+    /// work and costs a few hundred ms each, which over ~200 tests is a minute
+    /// of wall clock for no extra isolation.
+    pub fn connect_pg_in(url: &str, schema: &str) -> ApiResult<Store> {
+        if !schema
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(ApiError::internal("invalid schema name"));
+        }
+        // Connecting also drives the driver's internal runtime, so it has the
+        // same constraint as every query: not from inside an async runtime.
+        let client = run_off_runtime(move || {
+            let mut client = postgres::Client::connect(url, postgres::NoTls)
+                .map_err(|e| ApiError::internal(format!("cannot connect to postgres: {e}")))?;
+
+            if schema != "public" {
+                client
+                    .batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
+                    .map_err(|e| ApiError::internal(format!("create schema failed: {e}")))?;
+            }
+            // Session-scoped, and this client is the only one this Store uses, so
+            // every later statement resolves inside the schema without qualifying.
+            client
+                .batch_execute(&format!("SET search_path TO {schema}"))
+                .map_err(|e| ApiError::internal(format!("set search_path failed: {e}")))?;
+
+            // `to_regclass` returns NULL when the relation does not exist, which
+            // is the cheapest "is this database initialized" probe available.
+            let initialized: bool = client
+                .query_one(
+                    &format!("SELECT to_regclass('{schema}.tickets') IS NOT NULL"),
+                    &[],
+                )
+                .map_err(|e| ApiError::internal(format!("schema probe failed: {e}")))?
+                .get(0);
+            if !initialized {
+                client
+                    .batch_execute(PG_SCHEMA)
+                    .map_err(|e| ApiError::internal(format!("schema create failed: {e}")))?;
+            }
+            Ok(client)
+        })?;
+
+        Ok(Store {
+            // Inert on this arm; `with_tx`/`with_conn` branch on `pg` first.
+            conn: Mutex::new(
+                Connection::open_in_memory()
+                    .map_err(|e| ApiError::internal(format!("placeholder conn: {e}")))?,
+            ),
+            readers: Vec::new(),
+            next_reader: AtomicUsize::new(0),
+            path: None,
+            pg: Some(Mutex::new(client)),
         })
     }
 
@@ -148,7 +229,29 @@ impl Store {
     /// makes holding this connection across an `.await` structurally impossible.
     /// An async variant would trade the latency problem `with_conn` used to have
     /// for a whole class of deadlocks.
-    pub(crate) fn with_tx<T>(&self, f: impl FnOnce(&sql::Tx) -> ApiResult<T>) -> ApiResult<T> {
+    pub(crate) fn with_tx<T: Send>(
+        &self,
+        f: impl FnOnce(&sql::Tx) -> ApiResult<T> + Send,
+    ) -> ApiResult<T> {
+        if let Some(pg) = &self.pg {
+            // The lock is taken INSIDE the thread: a MutexGuard is not Send, while
+            // `&Mutex<Client>` is, so the guard cannot cross the boundary but the
+            // mutex itself can be shared across it.
+            return run_off_runtime(move || {
+                let mut client = pg
+                    .lock()
+                    .map_err(|_| ApiError::internal("store lock poisoned"))?;
+                let tx = client
+                    .transaction()
+                    .map_err(|e| ApiError::internal(format!("begin failed: {e}")))?;
+                let cell = std::cell::RefCell::new(tx);
+                let out = f(&sql::Tx::new_pg(&cell))?;
+                cell.into_inner()
+                    .commit()
+                    .map_err(|e| ApiError::internal(format!("commit failed: {e}")))?;
+                Ok(out)
+            });
+        }
         let mut conn = self
             .conn
             .lock()
@@ -173,7 +276,28 @@ impl Store {
     /// multi-statement (the export scans tickets, then queries deps and comments
     /// per ticket), and on the shared mutex they used to be atomic against
     /// writers by accident. The snapshot keeps that property on purpose.
-    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&sql::Conn) -> ApiResult<T>) -> ApiResult<T> {
+    pub(crate) fn with_conn<T: Send>(
+        &self,
+        f: impl FnOnce(&sql::Conn) -> ApiResult<T> + Send,
+    ) -> ApiResult<T> {
+        if let Some(pg) = &self.pg {
+            // The lock is taken INSIDE the thread: a MutexGuard is not Send, while
+            // `&Mutex<Client>` is, so the guard cannot cross the boundary but the
+            // mutex itself can be shared across it.
+            return run_off_runtime(move || {
+                let mut client = pg
+                    .lock()
+                    .map_err(|_| ApiError::internal("store lock poisoned"))?;
+                let tx = client
+                    .transaction()
+                    .map_err(|e| ApiError::internal(format!("begin failed: {e}")))?;
+                let cell = std::cell::RefCell::new(tx);
+                let out = f(&sql::Conn::new_pg(&cell))?;
+                // Roll back: this is a read snapshot, exactly like SQLite's.
+                drop(cell);
+                Ok(out)
+            });
+        }
         if self.readers.is_empty() {
             let conn = self
                 .conn
@@ -274,9 +398,53 @@ impl Store {
 /// Run a read closure inside a DEFERRED transaction — a stable WAL snapshot for
 /// its whole duration — and end it without committing (there is nothing to
 /// commit; the connection could not write if it tried).
-fn read_snapshot<T>(
+/// Dropping the Postgres client also drives its internal runtime, so it has the
+/// same "not from inside a runtime" constraint as connecting and querying.
+///
+/// Left alone this is worse than a panic. A test assertion fails, unwinding
+/// drops the `Store`, the client's destructor panics *during* that unwind, and a
+/// double panic aborts the process — so one ordinary test failure takes the
+/// whole binary down with SIGABRT and no report for the other 197 cases.
+impl Drop for Store {
+    fn drop(&mut self) {
+        if let Some(client) = self.pg.take() {
+            if let Ok(client) = client.into_inner() {
+                // Joined rather than detached: a 198-case suite would otherwise
+                // leave connections closing behind it and exhaust the server's
+                // max_connections partway through.
+                let _ = std::thread::spawn(move || drop(client)).join();
+            }
+        }
+    }
+}
+
+/// Run `job` on a scoped thread, off whatever async runtime the caller is on.
+///
+/// The sync `postgres` client drives its own tokio runtime internally, and
+/// `block_on` panics when called from a thread already inside one — which every
+/// axum handler is. So the SQLite arm can call the driver inline and the
+/// Postgres arm cannot.
+///
+/// A scoped thread rather than a worker thread or `spawn_blocking`, for two
+/// reasons: it can borrow locals, so the 69 `with_tx` closures need no `'static`
+/// bound; and it keeps `Store`'s methods synchronous, which is the whole reason
+/// a sync driver was chosen. The cost is one thread spawn per transaction, tens
+/// of microseconds against a transaction already measured at 1.44 ms.
+///
+/// This is the one thing the sync driver did NOT get for free, and it is worth
+/// knowing before anyone concludes the async client would have been simpler: it
+/// would have made every `Store` method `async` and rewritten `src/api/`.
+fn run_off_runtime<T: Send>(job: impl FnOnce() -> ApiResult<T> + Send) -> ApiResult<T> {
+    std::thread::scope(|s| {
+        s.spawn(job)
+            .join()
+            .map_err(|_| ApiError::internal("database worker panicked"))?
+    })
+}
+
+fn read_snapshot<T: Send>(
     conn: &mut Connection,
-    f: impl FnOnce(&sql::Conn) -> ApiResult<T>,
+    f: impl FnOnce(&sql::Conn) -> ApiResult<T> + Send,
 ) -> ApiResult<T> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
@@ -544,6 +712,8 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     )?;
     Ok(())
 }
+
+const PG_SCHEMA: &str = include_str!("../../migrations/postgres/0001_init.sql");
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (

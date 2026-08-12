@@ -35,10 +35,12 @@ impl Store {
 
             // Per project + state (+ category) ticket counts.
             let sql = format!(
-                "SELECT t.project, t.state, \
-                 COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS category, \
+                "SELECT t.project, t.state, COALESCE(ws.category, '') AS category, \
                  COUNT(*) AS n \
-                 FROM tickets t WHERE t.archived_at IS NULL{proj_clause} GROUP BY t.project, t.state"
+                 FROM tickets t \
+                 LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state \
+                 WHERE t.archived_at IS NULL{proj_clause} \
+                 GROUP BY t.project, t.state, ws.category"
             );
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt

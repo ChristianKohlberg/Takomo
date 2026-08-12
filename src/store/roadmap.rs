@@ -98,11 +98,11 @@ fn rollup_for_epic(conn: &super::sql::Conn, epic_id: &str) -> ApiResult<Rollup> 
             SELECT t.id FROM tickets t JOIN sub ON t.parent = sub.id
         )
         SELECT t.state,
-               COALESCE((SELECT ws.category FROM workflow_states ws
-                         WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
+               COALESCE(ws.category, '') AS category,
                COUNT(*) AS n
         FROM sub JOIN tickets t ON t.id = sub.id
-        GROUP BY t.state
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
+        GROUP BY t.state, ws.category
         "#,
     )?;
     collect_rollup(&mut stmt, &params![epic_id])
@@ -124,14 +124,14 @@ fn rollup_unparented(conn: &super::sql::Conn, project: &str) -> ApiResult<Rollup
             SELECT t.id FROM tickets t JOIN owned ON t.parent = owned.id
         )
         SELECT t.state,
-               COALESCE((SELECT ws.category FROM workflow_states ws
-                         WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
+               COALESCE(ws.category, '') AS category,
                COUNT(*) AS n
         FROM tickets t
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
         WHERE t.project = ?1
           AND t.type <> 'epic'
           AND t.id NOT IN (SELECT id FROM owned)
-        GROUP BY t.state
+        GROUP BY t.state, ws.category
         "#,
     )?;
     collect_rollup(&mut stmt, &params![project])

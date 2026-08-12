@@ -31,6 +31,10 @@ pub struct TestApp {
     /// Holds the temp dir open for the life of the app; also where `db_path`
     /// and `open_store` find the live SQLite file.
     pub tmp: tempfile::TempDir,
+    /// Set when running against Postgres: the schema this app's tables live in,
+    /// so `open_store` reconnects to the SAME database rather than opening a
+    /// fresh empty one.
+    pub pg_schema: Option<String>,
 }
 
 fn scope_vec(list: &[&str]) -> Vec<String> {
@@ -64,7 +68,27 @@ impl TestApp {
 
     async fn spawn_with(sweep: Option<Duration>, oauth: bool) -> TestApp {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let store = Store::open(tmp.path().join("test.db")).expect("open store");
+        // Differential testing: with TAKOMO_TEST_PG set, this same suite runs
+        // against Postgres instead of SQLite. Same tests, same assertions — the
+        // only honest way to claim the backends behave alike. Each TestApp gets
+        // its own schema because the suite runs in parallel and every case
+        // assumes a private database.
+        let mut pg_schema = None;
+        let store = match std::env::var("TAKOMO_TEST_PG") {
+            Ok(url) if !url.is_empty() => {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static N: AtomicU64 = AtomicU64::new(0);
+                let schema = format!(
+                    "t{}_{}",
+                    std::process::id(),
+                    N.fetch_add(1, Ordering::Relaxed)
+                );
+                let s = Store::connect_pg_in(&url, &schema).expect("connect postgres");
+                pg_schema = Some(schema);
+                s
+            }
+            _ => Store::open(tmp.path().join("test.db")).expect("open store"),
+        };
         store
             .create_project("tp", "Test Project", None, "test:setup")
             .expect("create project");
@@ -131,6 +155,7 @@ impl TestApp {
             worker2,
             client: reqwest::Client::new(),
             tmp,
+            pg_schema,
         }
     }
 
@@ -305,7 +330,10 @@ impl TestApp {
     /// Open a second connection to the running server's DB (WAL allows it) — used
     /// to mint a backdated/expired share without waiting on wall-clock time.
     pub fn open_store(&self) -> Store {
-        Store::open(self.db_path()).unwrap()
+        match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
+            (Some(schema), Ok(url)) => Store::connect_pg_in(&url, schema).unwrap(),
+            _ => Store::open(self.db_path()).unwrap(),
+        }
     }
 
     /// Mint an extra token straight in the server's DB — the CLI's root of

@@ -371,11 +371,76 @@ impl Row {
 // Statements, transactions, connections
 // ---------------------------------------------------------------------------
 
-/// A prepared statement. Holds the SQL and its executor; `query_map` mirrors
+/// Which engine is underneath. The ONLY place in the codebase that knows.
+///
+/// This is a dual backend, which the port deliberately is not at the `Store`
+/// level — there it would mean every query written twice, forever. Here it is
+/// one enum in one file, and it pays for itself: the same `tests/api.rs` runs
+/// against both engines, so "Postgres behaves like SQLite" is a measurement
+/// rather than a hope. When the port is finished the SQLite arm is deleted.
+#[derive(Clone, Copy)]
+pub enum Backend<'a> {
+    Sqlite(&'a rusqlite::Connection),
+    /// A Postgres transaction, behind a trait object.
+    ///
+    /// The indirection is not stylistic. `postgres::Transaction<'c>` borrows its
+    /// client, so a `&'a RefCell<Transaction<'c>>` would force `'a == 'c` — the
+    /// cell would have to outlive the very guard it is built from, which it
+    /// cannot. `&dyn` erases `'c` and the constraint with it.
+    Pg(&'a dyn PgExec),
+}
+
+impl Backend<'_> {
+    fn query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+        match self {
+            Backend::Sqlite(c) => sqlite_query(c, sql, params),
+            Backend::Pg(t) => t.pg_query(sql, params),
+        }
+    }
+    fn execute(&self, sql: &str, params: Vec<Value>) -> Result<usize> {
+        match self {
+            Backend::Sqlite(c) => sqlite_execute(c, sql, params),
+            Backend::Pg(t) => t.pg_execute(sql, params),
+        }
+    }
+}
+
+/// What the Postgres arm needs, with the transaction's own lifetime erased.
+///
+/// `RefCell` because `postgres::Transaction` wants `&mut` per query while the
+/// store holds a shared handle. Sound because the writer mutex means only one
+/// thread is ever inside it.
+pub trait PgExec {
+    fn pg_query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>>;
+    fn pg_execute(&self, sql: &str, params: Vec<Value>) -> Result<usize>;
+}
+
+impl PgExec for std::cell::RefCell<postgres::Transaction<'_>> {
+    fn pg_query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+        let translated = pg_sql(sql);
+        let bound = pg_params(&params);
+        let rows = self
+            .borrow_mut()
+            .query(translated.as_str(), &bound)
+            .map_err(|e| pg_err(e, &translated))?;
+        pg_rows(&rows)
+    }
+    fn pg_execute(&self, sql: &str, params: Vec<Value>) -> Result<usize> {
+        let translated = pg_sql(sql);
+        let bound = pg_params(&params);
+        let n = self
+            .borrow_mut()
+            .execute(translated.as_str(), &bound)
+            .map_err(|e| pg_err(e, &translated))?;
+        Ok(n as usize)
+    }
+}
+
+/// A prepared statement. Holds the SQL and its backend; `query_map` mirrors
 /// rusqlite's, returning an iterator of results so existing `.collect()` call
 /// sites are unchanged.
 pub struct Statement<'a> {
-    inner: &'a rusqlite::Connection,
+    be: Backend<'a>,
     sql: String,
 }
 
@@ -385,14 +450,14 @@ impl Statement<'_> {
         P: Params,
         F: FnMut(&Row) -> Result<T>,
     {
-        let rows = run_query(self.inner, &self.sql, params.into_values())?;
+        let rows = self.be.query(&self.sql, params.into_values())?;
         let mut f = f;
         let mapped: Vec<Result<T>> = rows.iter().map(&mut f).collect();
         Ok(mapped.into_iter())
     }
 
     pub fn execute<P: Params>(&mut self, params: P) -> Result<usize> {
-        run_execute(self.inner, &self.sql, params.into_values())
+        self.be.execute(&self.sql, params.into_values())
     }
 
     pub fn query_row<P, T, F>(&mut self, params: P, f: F) -> Result<T>
@@ -400,19 +465,19 @@ impl Statement<'_> {
         P: Params,
         F: FnOnce(&Row) -> Result<T>,
     {
-        let rows = run_query(self.inner, &self.sql, params.into_values())?;
-        let row = rows
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::with_kind("query returned no rows", Kind::NoRows))?;
-        f(&row)
+        first_row(self.be.query(&self.sql, params.into_values())?).and_then(|r| f(&r))
     }
 }
 
-/// Shared execution against a rusqlite connection. The one place that knows
-/// which backend is underneath — phase 2 replaces this function's body and the
-/// two structs below, and nothing in `src/store/` moves.
-fn run_query(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+fn first_row(rows: Vec<Row>) -> Result<Row> {
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| Error::with_kind("query returned no rows", Kind::NoRows))
+}
+
+// ---- SQLite arm ----
+
+fn sqlite_query(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
     let mut stmt = conn.prepare(sql)?;
     let names: std::rc::Rc<Vec<String>> = std::rc::Rc::new(
         stmt.column_names()
@@ -437,7 +502,7 @@ fn run_query(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Resu
     Ok(out)
 }
 
-fn run_execute(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<usize> {
+fn sqlite_execute(conn: &rusqlite::Connection, sql: &str, params: Vec<Value>) -> Result<usize> {
     let bound: Vec<rusqlite::types::Value> = params.into_iter().map(to_rusqlite).collect();
     Ok(conn.execute(sql, rusqlite::params_from_iter(bound))?)
 }
@@ -462,39 +527,157 @@ fn from_rusqlite(v: rusqlite::types::Value) -> Value {
     }
 }
 
+// ---- Postgres arm ----
+
+/// Translate the statement, then bind. Both rewrites happen here so no call site
+/// in `src/store/` is aware there is a second dialect.
+fn pg_sql(sql: &str) -> String {
+    to_pg_placeholders(&to_pg_dialect(sql))
+}
+
+fn pg_params(params: &[Value]) -> Vec<&(dyn postgres::types::ToSql + Sync)> {
+    params
+        .iter()
+        .map(|v| v as &(dyn postgres::types::ToSql + Sync))
+        .collect()
+}
+
+fn pg_rows(rows: &[postgres::Row]) -> Result<Vec<Row>> {
+    let mut out = Vec::new();
+    let mut names: Option<std::rc::Rc<Vec<String>>> = None;
+    for r in rows {
+        let names = names.get_or_insert_with(|| {
+            std::rc::Rc::new(r.columns().iter().map(|c| c.name().to_string()).collect())
+        });
+        let mut values = Vec::with_capacity(names.len());
+        for i in 0..names.len() {
+            values.push(pg_value(r, i)?);
+        }
+        out.push(Row {
+            names: names.clone(),
+            values,
+        });
+    }
+    Ok(out)
+}
+
+/// Classify a Postgres error into the same [`Kind`]s the SQLite arm produces, so
+/// the store's three branches behave identically on both engines.
+fn pg_err(e: postgres::Error, sql: &str) -> Error {
+    let kind = match e.as_db_error().map(|d| d.code().code().to_string()) {
+        // 23xxx = integrity constraint violation.
+        Some(c) if c.starts_with("23") => Kind::Constraint,
+        _ => Kind::Backend,
+    };
+    // The constraint NAME is what `is_constraint_on` matches, and Postgres puts
+    // it in the detail rather than the message — carry both.
+    let detail = e
+        .as_db_error()
+        .map(|d| format!("{} constraint={:?}", d.message(), d.constraint()))
+        .unwrap_or_else(|| e.to_string());
+    Error::with_kind(format!("{detail} [sql: {sql}]"), kind)
+}
+
+/// Read one column as a [`Value`], regardless of its Postgres type.
+///
+/// The store reads columns into concrete Rust types, so the mapping only has to
+/// cover the types `0001_init.sql` actually declares: TEXT, BIGINT, BYTEA, plus
+/// the counts and sums that come back as INT4/INT8/NUMERIC from aggregates.
+fn pg_value(row: &postgres::Row, i: usize) -> Result<Value> {
+    use postgres::types::Type;
+    let col = &row.columns()[i];
+    let v = match *col.type_() {
+        Type::TEXT | Type::VARCHAR | Type::NAME | Type::BPCHAR => row
+            .try_get::<_, Option<String>>(i)
+            .map(|o| o.map_or(Value::Null, Value::Text)),
+        Type::INT8 => row
+            .try_get::<_, Option<i64>>(i)
+            .map(|o| o.map_or(Value::Null, Value::Integer)),
+        Type::INT4 => row
+            .try_get::<_, Option<i32>>(i)
+            .map(|o| o.map_or(Value::Null, |v| Value::Integer(i64::from(v)))),
+        Type::INT2 => row
+            .try_get::<_, Option<i16>>(i)
+            .map(|o| o.map_or(Value::Null, |v| Value::Integer(i64::from(v)))),
+        Type::FLOAT8 => row
+            .try_get::<_, Option<f64>>(i)
+            .map(|o| o.map_or(Value::Null, Value::Real)),
+        Type::FLOAT4 => row
+            .try_get::<_, Option<f32>>(i)
+            .map(|o| o.map_or(Value::Null, |v| Value::Real(f64::from(v)))),
+        Type::BOOL => row
+            .try_get::<_, Option<bool>>(i)
+            .map(|o| o.map_or(Value::Null, |v| Value::Integer(i64::from(v)))),
+        Type::BYTEA => row
+            .try_get::<_, Option<Vec<u8>>>(i)
+            .map(|o| o.map_or(Value::Null, Value::Blob)),
+        ref other => {
+            return Err(Error::new(format!(
+                "unmapped Postgres column type {other} for column '{}'",
+                col.name()
+            )))
+        }
+    };
+    v.map_err(|e| Error::new(format!("column '{}': {e}", col.name())))
+}
+
+/// Bind a [`Value`] as a Postgres parameter.
+///
+/// `Value::Integer` binds as INT8 and `Value::Text` as TEXT, which is why
+/// `0001_init.sql` widens every INTEGER to BIGINT: a narrower column would make
+/// the driver reject the bind rather than coerce it.
+impl postgres::types::ToSql for Value {
+    fn to_sql(
+        &self,
+        ty: &postgres::types::Type,
+        out: &mut postgres::types::private::BytesMut,
+    ) -> std::result::Result<postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>>
+    {
+        match self {
+            Value::Null => Ok(postgres::types::IsNull::Yes),
+            Value::Integer(i) => i.to_sql(ty, out),
+            Value::Real(f) => f.to_sql(ty, out),
+            Value::Text(s) => s.to_sql(ty, out),
+            Value::Blob(b) => b.to_sql(ty, out),
+        }
+    }
+    fn accepts(_ty: &postgres::types::Type) -> bool {
+        true
+    }
+    postgres::types::to_sql_checked!();
+}
+
 /// A read-only connection handle, as handed to `Store::with_conn`.
 pub struct Conn<'a> {
-    pub(super) inner: &'a rusqlite::Connection,
+    be: Backend<'a>,
 }
 
 impl<'a> Conn<'a> {
     pub fn new(inner: &'a rusqlite::Connection) -> Self {
-        Conn { inner }
+        Conn {
+            be: Backend::Sqlite(inner),
+        }
     }
-    /// Last auto-generated row id. Used for `events.seq`.
-    pub fn last_insert_rowid(&self) -> i64 {
-        self.inner.last_insert_rowid()
+    pub fn new_pg(tx: &'a dyn PgExec) -> Self {
+        Conn {
+            be: Backend::Pg(tx),
+        }
     }
     pub fn prepare(&self, sql: &str) -> Result<Statement<'a>> {
         Ok(Statement {
-            inner: self.inner,
+            be: self.be,
             sql: sql.to_string(),
         })
     }
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
-        run_execute(self.inner, sql, params.into_values())
+        self.be.execute(sql, params.into_values())
     }
     pub fn query_row<P, T, F>(&self, sql: &str, params: P, f: F) -> Result<T>
     where
         P: Params,
         F: FnOnce(&Row) -> Result<T>,
     {
-        let rows = run_query(self.inner, sql, params.into_values())?;
-        let row = rows
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::with_kind("query returned no rows", Kind::NoRows))?;
-        f(&row)
+        first_row(self.be.query(sql, params.into_values())?).and_then(|r| f(&r))
     }
 }
 
@@ -503,19 +686,20 @@ impl<'a> Conn<'a> {
 /// Derefs to [`Conn`], mirroring `rusqlite::Transaction: Deref<Target =
 /// Connection>`. That is load-bearing, not convenience: dozens of helpers in
 /// this store take `&Conn` for reading and are called with the transaction
-/// during a write, relying on exactly that coercion. Without it every one of
-/// those call sites would need a manual `.conn()`, which is 163 edits whose only
-/// purpose is to restate what the type system already knew.
+/// during a write, relying on exactly that coercion.
 pub struct Tx<'a> {
     conn: Conn<'a>,
 }
 
 impl<'a> Tx<'a> {
     pub fn new(inner: &'a rusqlite::Transaction<'a>) -> Self {
-        // `rusqlite::Transaction` derefs to `Connection`, so the transaction is
-        // reachable as a connection and every method arrives through `Conn`.
         Tx {
-            conn: Conn { inner },
+            conn: Conn::new(inner),
+        }
+    }
+    pub fn new_pg(tx: &'a dyn PgExec) -> Self {
+        Tx {
+            conn: Conn::new_pg(tx),
         }
     }
 }
@@ -545,6 +729,184 @@ impl<T> OptionalExtension<T> for Result<T> {
 // ---------------------------------------------------------------------------
 // Dialect translation
 // ---------------------------------------------------------------------------
+
+/// Rewrite the SQLite-only constructs this store uses into Postgres.
+///
+/// Applied together with [`to_pg_placeholders`] on every statement heading for
+/// Postgres. Each rule is here rather than at the call sites because the store
+/// is one body of SQL that has to keep reading as SQLite — the port is a change
+/// of engine, not a fork of the queries.
+///
+/// * `rowid` -> `seq`. SQLite's implicit counter, made an explicit column by
+///   `migrations/postgres/0001_init.sql`. Covers `t.rowid`, bare `rowid` and
+///   `MAX(rowid)`.
+/// * `json_each(X)` -> `jsonb_array_elements_text((X)::jsonb) AS json_each(value)`.
+///   Aliasing the set-returning function BACK to `json_each(value)` is what lets
+///   the existing `WHERE json_each.value = ?` keep resolving, so the label and
+///   tag filters are untouched.
+/// * `A GLOB B` -> `glob(A, B)`, a function the schema defines. Postgres has no
+///   GLOB operator and no equivalent semantics in LIKE.
+/// * `INSERT OR IGNORE` -> `INSERT ... ON CONFLICT DO NOTHING`.
+fn to_pg_dialect(sql: &str) -> String {
+    let mut out = rewrite_outside_literals(sql, |tok| match tok {
+        "rowid" => Some("seq".to_string()),
+        _ => None,
+    });
+
+    // json_each(<expr>) — scan for the call and rewrite it with its argument.
+    while let Some(at) = out.find("json_each(") {
+        let open = at + "json_each(".len();
+        let mut depth = 1;
+        let mut i = open;
+        let bytes = out.as_bytes();
+        while i < bytes.len() && depth > 0 {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        let arg = &out[open..i - 1];
+        let replacement = format!("jsonb_array_elements_text(({arg})::jsonb) AS json_each(value)");
+        out = format!("{}{}{}", &out[..at], replacement, &out[i..]);
+        // Guard: the replacement contains no "json_each(" of its own except the
+        // alias, which has no trailing paren-arg form, so the loop terminates.
+        if !out[at + replacement.len()..].contains("json_each(") {
+            break;
+        }
+    }
+
+    // `A GLOB B` -> `glob(A, B)`. Both operands here are always a simple column
+    // or placeholder, which is what makes the narrow parse safe.
+    while let Some(at) = out.find(" GLOB ") {
+        let (lhs_start, lhs) = {
+            let before = &out[..at];
+            let start = before
+                .rfind(|c: char| c.is_whitespace() || c == '(')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            (start, before[start..].to_string())
+        };
+        let after = &out[at + " GLOB ".len()..];
+        let end = after
+            .find(|c: char| c.is_whitespace() || c == ')')
+            .unwrap_or(after.len());
+        let rhs = &after[..end];
+        let rest = &after[end..];
+        out = format!("{}glob({}, {}){}", &out[..lhs_start], lhs, rhs, rest);
+    }
+
+    // Postgres `SUM(bigint)` returns NUMERIC, and every SUM in this store is
+    // over an integer column read back as i64 (entry `chars`, `text_bytes`,
+    // `content_bytes`, and counts). Casting at the query keeps the Rust side
+    // unchanged and avoids a decimal dependency for values that are always
+    // integral. Handled here rather than in the type mapping because a NUMERIC
+    // arriving from anywhere else should still be a loud error, not a silent
+    // truncation.
+    out = wrap_calls(&out, "SUM(", "::bigint");
+
+    if let Some(rest) = out.strip_prefix("INSERT OR IGNORE") {
+        out = format!("INSERT{rest} ON CONFLICT DO NOTHING");
+    }
+    out
+}
+
+/// Wrap every `name(...)` call in parentheses and append `suffix`, e.g.
+/// `SUM(x)` -> `(SUM(x))::bigint`. Paren-matched so nested calls survive.
+fn wrap_calls(sql: &str, open_tok: &str, suffix: &str) -> String {
+    let mut out = sql.to_string();
+    let mut from = 0usize;
+    while let Some(rel) = out[from..].find(open_tok) {
+        let at = from + rel;
+        let open = at + open_tok.len();
+        let b = out.as_bytes();
+        let mut depth = 1;
+        let mut i = open;
+        while i < b.len() && depth > 0 {
+            match b[i] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            break; // unbalanced; leave the statement alone
+        }
+        let call = &out[at..i];
+        let replacement = format!("({call}){suffix}");
+        let next = at + replacement.len();
+        out = format!("{}{}{}", &out[..at], replacement, &out[i..]);
+        from = next;
+    }
+    out
+}
+
+/// Apply `f` to each bare word outside string literals, quoted identifiers and
+/// comments. Shares the scanner discipline of [`to_pg_placeholders`]: a word
+/// inside a literal is data.
+fn rewrite_outside_literals(sql: &str, f: impl Fn(&str) -> Option<String>) -> String {
+    let b = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] as char {
+            '\'' => {
+                out.push('\'');
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\'' {
+                        if i + 1 < b.len() && b[i + 1] == b'\'' {
+                            out.push_str("''");
+                            i += 2;
+                            continue;
+                        }
+                        out.push('\'');
+                        i += 1;
+                        break;
+                    }
+                    out.push(b[i] as char);
+                    i += 1;
+                }
+            }
+            '"' => {
+                out.push('"');
+                i += 1;
+                while i < b.len() {
+                    out.push(b[i] as char);
+                    let end = b[i] == b'"';
+                    i += 1;
+                    if end {
+                        break;
+                    }
+                }
+            }
+            '-' if i + 1 < b.len() && b[i + 1] == b'-' => {
+                while i < b.len() && b[i] != b'\n' {
+                    out.push(b[i] as char);
+                    i += 1;
+                }
+            }
+            c if c.is_alphanumeric() || c == '_' => {
+                let start = i;
+                while i < b.len() && ((b[i] as char).is_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let word = &sql[start..i];
+                match f(word) {
+                    Some(r) => out.push_str(&r),
+                    None => out.push_str(word),
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
 
 /// Rewrite SQLite placeholders into Postgres ones.
 ///

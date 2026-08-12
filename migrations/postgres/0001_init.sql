@@ -82,6 +82,10 @@ CREATE TABLE projects (
   answer_link_ttl_seconds BIGINT,
   claim_ttl_seconds       BIGINT,
   max_claim_ttl_seconds   BIGINT,
+  -- Added by migrate() on SQLite rather than by SCHEMA, so it is easy to miss
+  -- when translating: the real SQLite schema is SCHEMA *plus* every additive
+  -- migration. Whether an agent may propose schedules for this project.
+  schedule_approval       BIGINT NOT NULL DEFAULT 0,
   created_at              BIGINT NOT NULL
 );
 
@@ -95,7 +99,10 @@ CREATE TABLE workflow_states (
 );
 
 CREATE TABLE tickets (
-  id                  TEXT PRIMARY KEY,
+  -- Constraint NAME is load-bearing: schedules::is_primary_key_conflict matches
+  -- the substring "tickets.id", and Postgres reports the constraint name where
+  -- SQLite reports table.column. Default would be `tickets_pkey`.
+  id                  TEXT CONSTRAINT "tickets.id" PRIMARY KEY,
   seq                 BIGINT GENERATED ALWAYS AS IDENTITY,   -- rule 1 (was rowid)
   project             TEXT NOT NULL REFERENCES projects(id),
   type                TEXT NOT NULL DEFAULT 'task',
@@ -263,8 +270,10 @@ CREATE TABLE answer_grants (
 );
 CREATE INDEX idx_answer_grants_question ON answer_grants(question);
 
+-- rule 1: paginated by rowid (src/store/initiatives.rs:604,651).
 CREATE TABLE initiatives (
   id         TEXT PRIMARY KEY,
+  seq        BIGINT GENERATED ALWAYS AS IDENTITY,
   project    TEXT NOT NULL REFERENCES projects(id),
   title      TEXT NOT NULL,
   summary    TEXT NOT NULL DEFAULT '',
@@ -279,8 +288,10 @@ CREATE TABLE initiatives (
 );
 CREATE INDEX idx_initiatives_project ON initiatives(project, status);
 
+-- rule 1: paginated by rowid (src/store/initiatives.rs:881,888).
 CREATE TABLE initiative_entries (
   id            TEXT PRIMARY KEY,
+  seq           BIGINT GENERATED ALWAYS AS IDENTITY,
   initiative    TEXT NOT NULL REFERENCES initiatives(id),
   project       TEXT NOT NULL,
   kind          TEXT NOT NULL,
@@ -301,12 +312,11 @@ CREATE TABLE initiative_entries (
 );
 CREATE INDEX idx_initiative_entries_initiative ON initiative_entries(initiative);
 
--- TODO(rule 1): `promotions` is read with MAX(rowid) to pick the newest row per
--- ticket (src/store/tickets.rs:1248-1255) and ordered by rowid DESC. It needs a
--- `seq` column exactly like tickets. Left out here so the omission is visible in
--- review rather than papered over with a guess about tiebreak semantics.
+-- rule 1: read with MAX(rowid) to pick the newest promotion per ticket
+-- (src/store/tickets.rs:1248-1255) and ordered by rowid DESC.
 CREATE TABLE promotions (
   id         TEXT PRIMARY KEY,
+  seq        BIGINT GENERATED ALWAYS AS IDENTITY,
   ticket     TEXT NOT NULL REFERENCES tickets(id),
   project    TEXT NOT NULL,
   target     TEXT NOT NULL,
@@ -491,12 +501,12 @@ CREATE TABLE cases (
 CREATE INDEX idx_cases_lane ON cases(lane);
 CREATE INDEX idx_cases_live ON cases(lane) WHERE retired_at IS NULL;
 
--- TODO(rule 1): ordered by rowid to mean insertion order — this is the table
--- commit 1c58e1c fixed ("order verdict history by insertion, not by a random
--- id"). It needs a `seq` column, and getting it wrong silently reintroduces
--- that exact bug. Left explicit rather than guessed.
+-- rule 1: ordered by rowid to mean insertion order — this is the table commit
+-- 1c58e1c fixed ("order verdict history by insertion, not by a random id"), so
+-- an ordering that is merely plausible here is the bug returning.
 CREATE TABLE case_verdicts (
   id         TEXT PRIMARY KEY,
+  seq        BIGINT GENERATED ALWAYS AS IDENTITY,
   case_id    TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
   actor_kind TEXT NOT NULL,
   actor      TEXT NOT NULL,
@@ -506,3 +516,86 @@ CREATE TABLE case_verdicts (
   at         BIGINT NOT NULL
 );
 CREATE INDEX idx_case_verdicts_case ON case_verdicts(case_id);
+
+-- ---------------------------------------------------------------------------
+-- GLOB, which Postgres does not have.
+--
+-- The store matches checklist coverage paths with SQLite's GLOB operator, and
+-- `store::sql` rewrites `A GLOB B` into `glob(A, B)`. LIKE is not a substitute:
+-- glob is anchored, `*` spans separators, `?` is exactly one character, and
+-- `[abc]` is a class. Translating to a POSIX regex preserves all four.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION glob(subject TEXT, pattern TEXT) RETURNS BOOLEAN AS $$
+DECLARE
+  re   TEXT := '^';
+  i    INT  := 1;
+  ch   TEXT;
+BEGIN
+  IF subject IS NULL OR pattern IS NULL THEN RETURN NULL; END IF;
+  WHILE i <= length(pattern) LOOP
+    ch := substr(pattern, i, 1);
+    IF ch = '*' THEN
+      re := re || '.*';
+    ELSIF ch = '?' THEN
+      re := re || '.';
+    ELSIF ch = '[' THEN
+      -- Character class: copy through to the closing bracket verbatim.
+      DECLARE j INT := i + 1; BEGIN
+        WHILE j <= length(pattern) AND substr(pattern, j, 1) <> ']' LOOP
+          j := j + 1;
+        END LOOP;
+        re := re || substr(pattern, i, j - i + 1);
+        i := j;
+      END;
+    ELSE
+      -- Everything else is literal; escape any regex metacharacter.
+      -- Membership test, not a regex: PostgreSQL's advanced regex DOES treat
+      -- backslash as special inside brackets, so a class ending in \] is
+      -- unterminated. strpos sidesteps the question. chr(92) likewise, because
+      -- with standard_conforming_strings on (the default) '\\' is TWO
+      -- backslashes and would escape the wrong thing.
+      IF strpos('.^$+(){}|]' || chr(92), ch) > 0 THEN
+        re := re || chr(92) || ch;
+      ELSE
+        re := re || ch;
+      END IF;
+    END IF;
+    i := i + 1;
+  END LOOP;
+  RETURN subject ~ (re || '$');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- The unique index behind the schedules exactly-once guarantee. Its NAME is
+-- load-bearing: `store::sql::Error::is_constraint_on` matches the substring
+-- "tickets.occurrence", and Postgres reports the index name where SQLite
+-- reports table.column. Renaming this silently turns "one ticket per slot" into
+-- a 500. See src/store/schedules.rs::is_occurrence_conflict.
+CREATE UNIQUE INDEX "tickets.occurrence"
+  ON tickets(schedule, occurrence)
+  WHERE schedule IS NOT NULL AND occurrence IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Two SQLite built-ins Postgres lacks, supplied as functions so the store's SQL
+-- needs no rewriting. Defining them here rather than translating at the query
+-- layer keeps one body of SQL that still reads as the original.
+-- ---------------------------------------------------------------------------
+
+-- SQLite has no boolean: `SUM(x = 'done')` sums 1s and 0s. Postgres returns a
+-- real boolean from the comparison and has no sum() that accepts one.
+CREATE FUNCTION bool_sum_add(state BIGINT, value BOOLEAN) RETURNS BIGINT AS $$
+  SELECT state + CASE WHEN value THEN 1 ELSE 0 END;
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE AGGREGATE sum(BOOLEAN) (
+  SFUNC = bool_sum_add,
+  STYPE = BIGINT,
+  INITCOND = '0'
+);
+
+-- SQLite's json_extract(doc, '$.path'). The path syntax is already valid
+-- jsonpath, so this is a direct forward; `#>> '{}'` unwraps the jsonb to text
+-- the way SQLite returns a scalar rather than a quoted JSON string.
+CREATE FUNCTION json_extract(doc TEXT, path TEXT) RETURNS TEXT AS $$
+  SELECT jsonb_path_query_first(doc::jsonb, path::jsonpath) #>> '{}';
+$$ LANGUAGE sql IMMUTABLE;
