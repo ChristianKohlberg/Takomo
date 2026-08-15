@@ -359,6 +359,14 @@ pub struct Project {
     /// recovery time — the sweeper frees only expired leases, so a crashed worker
     /// parks its ticket for exactly this long.
     pub max_claim_ttl_seconds: Option<i64>,
+    /// When this project was archived, or None while it is live.
+    ///
+    /// A gate rather than a setting: while it is set every write under the
+    /// project is refused and its tickets leave the ready queue, while reads are
+    /// untouched. Clearing it puts the project back to work unchanged, which is
+    /// the whole point — archiving is the reversible thing to reach for when the
+    /// alternative is a cascade delete that is not.
+    pub archived_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -373,6 +381,11 @@ impl Project {
             "answer_link_ttl_seconds": self.answer_link_ttl_seconds,
             "claim_ttl_seconds": self.claim_ttl_seconds,
             "max_claim_ttl_seconds": self.max_claim_ttl_seconds,
+            // Both, deliberately: `archived` is the boolean a client branches on
+            // without having to know that "a timestamp is present" means frozen,
+            // and `archived_at` is when it happened.
+            "archived": self.archived_at.is_some(),
+            "archived_at": self.archived_at.map(iso),
             "created_at": iso(self.created_at),
         })
     }

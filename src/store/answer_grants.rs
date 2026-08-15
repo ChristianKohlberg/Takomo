@@ -104,6 +104,11 @@ impl Store {
         let id = answer_grant_id();
         let now = now_ms();
         self.with_tx(|tx| {
+            // Refused on an archived project, where answering is refused too: a
+            // link that could only ever fail is worse than no link, because it
+            // has already been mailed to someone outside the org by the time
+            // anyone finds out.
+            super::helpers::ensure_project_writable(tx, project)?;
             tx.execute(
                 "INSERT INTO answer_grants (id, token_hash, question, project, actor, expires_at, created_by, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

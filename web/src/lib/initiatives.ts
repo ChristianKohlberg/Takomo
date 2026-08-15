@@ -80,6 +80,13 @@ export interface Project {
   id: string
   name?: string
   workflow?: string
+  /**
+   * True while the project is archived: a gate, not a status. Every write under
+   * it is refused and its tickets are out of the ready queue; reads are
+   * unaffected and nothing was deleted, so it is reversible.
+   */
+  archived?: boolean
+  archived_at?: string | null
 }
 
 export interface Whoami {

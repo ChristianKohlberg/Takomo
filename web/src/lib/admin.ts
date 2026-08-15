@@ -65,6 +65,33 @@ export function deleteProject(token: string, id: string): Promise<unknown> {
   return api(token, '/projects/' + encodeURIComponent(id), { method: 'DELETE' })
 }
 
+/**
+ * Archive a project — the gate. Every write under it is then refused and its
+ * tickets leave the ready queue; reads are untouched and nothing is deleted.
+ *
+ * `force` releases any live leases first. Without it the server refuses with
+ * `project.active_claims` rather than freezing a worker mid-claim, which is why
+ * the page asks a second time instead of sending `force` by default.
+ */
+export function archiveProject(
+  token: string,
+  id: string,
+  force = false,
+): Promise<unknown> {
+  return api(
+    token,
+    '/projects/' + encodeURIComponent(id) + '/archive' + (force ? '?force=true' : ''),
+    { method: 'POST' },
+  )
+}
+
+/** Put an archived project back to work. The complete undo for `archiveProject`. */
+export function unarchiveProject(token: string, id: string): Promise<unknown> {
+  return api(token, '/projects/' + encodeURIComponent(id) + '/unarchive', {
+    method: 'POST',
+  })
+}
+
 // ---------------------------------------------------------------------------
 // The database export.
 

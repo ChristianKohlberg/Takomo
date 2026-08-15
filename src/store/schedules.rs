@@ -29,7 +29,7 @@
 //! ready queue and reads as `not_fulfilled`. Closing it out is ordinary work for
 //! a maintenance agent — which can itself be a schedule.
 
-use super::helpers::emit_event;
+use super::helpers::{emit_event, ensure_project_writable};
 use super::model::{Schedule, ScheduleOccurrence, MAX_TITLE, PRIORITIES, TICKET_TYPES};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
@@ -254,6 +254,7 @@ impl Store {
             if exists == 0 {
                 return Err(ApiError::not_found("project", &req.project));
             }
+            ensure_project_writable(tx, &req.project)?;
             let live: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM schedules WHERE project = ?1 AND status IN ('pending','active','paused')",
                 params![req.project],
@@ -388,6 +389,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let mut sched = load_schedule(tx, id)?;
+            ensure_project_writable(tx, &sched.project)?;
             if let Some(v) = expected_version {
                 if v != sched.version {
                     return Err(ApiError::conflict(
@@ -473,6 +475,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let mut sched = load_schedule(tx, id)?;
+            ensure_project_writable(tx, &sched.project)?;
             let legal: &[&str] = match sched.status.as_str() {
                 "pending" => &["active", "rejected"],
                 "active" => &["paused"],
@@ -550,6 +553,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let sched = load_schedule(tx, id)?;
+            ensure_project_writable(tx, &sched.project)?;
             tx.execute("DELETE FROM schedules WHERE id = ?1", params![id])?;
             emit_event(
                 tx,
@@ -573,6 +577,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let sched = load_schedule(tx, id)?;
+            ensure_project_writable(tx, &sched.project)?;
             if sched.status != "active" {
                 return Err(ApiError::conflict(
                     "conflict.schedule.status",
@@ -602,7 +607,16 @@ impl Store {
         let now = now_ms();
         let due: Vec<String> = self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id FROM schedules WHERE status = 'active' AND next_slot IS NOT NULL AND next_slot <= ?1 ORDER BY next_slot",
+                // Archived projects are skipped, not errored: a schedule that
+                // fired would CREATE a ticket under a project that takes no
+                // work. The schedule stays active and its slots keep advancing
+                // on the next pass once the project is unarchived — nothing here
+                // rewrites it, so unarchiving needs no repair.
+                "SELECT s.id FROM schedules s \
+                 JOIN projects p ON p.id = s.project \
+                 WHERE s.status = 'active' AND s.next_slot IS NOT NULL AND s.next_slot <= ?1 \
+                   AND p.archived_at IS NULL \
+                 ORDER BY s.next_slot",
             )?;
             let ids = stmt
                 .query_map(params![now], |r| r.get::<_, String>(0))?
@@ -1010,6 +1024,7 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", project));
             }
+            ensure_project_writable(tx, project)?;
             tx.execute(
                 "UPDATE projects SET schedule_approval = ?2 WHERE id = ?1",
                 params![project, required as i64],

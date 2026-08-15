@@ -7,8 +7,9 @@
 //! fence is rejected with a teaching 409.
 
 use super::helpers::{
-    clear_expired_claim, emit_event, fence_mismatch_error, get_ticket_required,
-    lease_expired_error, load_blocked_by, open_blockers, row_to_ticket, TICKET_COLS,
+    clear_expired_claim, emit_event, ensure_ticket_writable, fence_mismatch_error,
+    get_ticket_required, lease_expired_error, load_blocked_by, open_blockers, row_to_ticket,
+    TICKET_COLS,
 };
 use super::model::{Lease, Ticket};
 use super::Store;
@@ -140,8 +141,14 @@ fn ready_scope(projection: &str, filter: &ReadyFilter, now: i64) -> (String, Vec
         )
         SELECT {projection} FROM tickets t
         JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
+        JOIN projects p ON p.id = t.project
         WHERE ws.claimable = 1
           AND t.archived_at IS NULL
+          -- An archived project takes no work, so its tickets must not be
+          -- offered: a queue that handed one over would be inviting an agent to
+          -- claim something the archive gate then refuses to let it do anything
+          -- with. The count uses this same scope, so "n of m" stays honest.
+          AND p.archived_at IS NULL
           AND (t.claim_holder IS NULL OR t.claim_expires_at <= ?)
           -- An expired scheduled occurrence is no longer live work, so it must
           -- not be handed to a worker: without this an agent calling /v1/ready
@@ -361,6 +368,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            ensure_ticket_writable(tx, &t)?;
             // Resolved inside the transaction, because the bounds are the
             // *project's* now and only the ticket names its project.
             let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
@@ -476,6 +484,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            ensure_ticket_writable(tx, &t)?;
             let ttl = clamp_ttl_for(tx, &t.project, ttl_seconds)?;
             // An expired lease cannot be heartbeated back to life.
             if clear_expired_claim(tx, &t, now)? {

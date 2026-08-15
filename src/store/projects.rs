@@ -1,7 +1,7 @@
 //! Projects and workflow management.
 
 use super::answer_grants::MAX_ANSWER_TTL_SECONDS;
-use super::helpers::{emit_event, get_workflow, sync_workflow_states};
+use super::helpers::{emit_event, ensure_project_writable, get_workflow, sync_workflow_states};
 use super::model::Project;
 use super::Store;
 use crate::error::{ApiError, ApiResult};
@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// forgotten in the other.
 const PROJECT_COLS: &str =
     "id, name, workflow_json, question_language, style_guide, answer_link_ttl_seconds, \
-     claim_ttl_seconds, max_claim_ttl_seconds, created_at";
+     claim_ttl_seconds, max_claim_ttl_seconds, archived_at, created_at";
 
 /// Cap on a project's style guide. It is attached to work-loop responses an
 /// agent reads constantly, so it has to stay a glanceable convention rather
@@ -182,6 +182,7 @@ type ProjectRow = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
     i64,
 );
 
@@ -196,6 +197,7 @@ fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
         r.get(6)?,
         r.get(7)?,
         r.get(8)?,
+        r.get(9)?,
     ))
 }
 
@@ -209,6 +211,7 @@ fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
         answer_link_ttl_seconds,
         claim_ttl_seconds,
         max_claim_ttl_seconds,
+        archived_at,
         created_at,
     ) = row;
     let workflow = serde_json::from_str(&wf_raw)
@@ -222,6 +225,7 @@ fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
         answer_link_ttl_seconds,
         claim_ttl_seconds,
         max_claim_ttl_seconds,
+        archived_at,
         created_at,
     })
 }
@@ -336,6 +340,7 @@ impl Store {
                 answer_link_ttl_seconds: None,
                 claim_ttl_seconds: None,
                 max_claim_ttl_seconds: None,
+                archived_at: None,
                 created_at: now,
             })
         })
@@ -419,6 +424,9 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", id));
             }
+            // A project setting is a write like any other: an archived project is
+            // frozen as it stood, not reconfigurable in place.
+            ensure_project_writable(tx, id)?;
             tx.execute(
                 "UPDATE projects SET question_language = ?2 WHERE id = ?1",
                 params![id, language],
@@ -462,6 +470,9 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", id));
             }
+            // A project setting is a write like any other: an archived project is
+            // frozen as it stood, not reconfigurable in place.
+            ensure_project_writable(tx, id)?;
             tx.execute(
                 "UPDATE projects SET style_guide = ?2 WHERE id = ?1",
                 params![id, style],
@@ -530,6 +541,9 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", id));
             }
+            // A project setting is a write like any other: an archived project is
+            // frozen as it stood, not reconfigurable in place.
+            ensure_project_writable(tx, id)?;
             tx.execute(
                 "UPDATE projects SET answer_link_ttl_seconds = ?2 WHERE id = ?1",
                 params![id, ttl],
@@ -572,6 +586,9 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", id));
             }
+            // A project setting is a write like any other: an archived project is
+            // frozen as it stood, not reconfigurable in place.
+            ensure_project_writable(tx, id)?;
             tx.execute(
                 "UPDATE projects SET claim_ttl_seconds = ?2, max_claim_ttl_seconds = ?3 WHERE id = ?1",
                 params![id, default_ttl, max_ttl],
@@ -585,6 +602,146 @@ impl Store {
                 serde_json::json!({
                     "claim_ttl_seconds": default_ttl,
                     "max_claim_ttl_seconds": max_ttl,
+                }),
+                now,
+            )?;
+            Ok(())
+        })?;
+        self.get_project(id)?
+            .ok_or_else(|| ApiError::not_found("project", id))
+    }
+
+    /// Archive a project (`archived = true`) or put it back to work
+    /// (`archived = false`).
+    ///
+    /// This is the gate, and it is deliberately the *only* thing about a project
+    /// that archiving changes. Nothing is moved, rewritten, or deleted: the
+    /// tickets keep their states, claims, questions and history, and every read
+    /// answers exactly as it did before. What stops is writing —
+    /// [`ensure_project_writable`](super::helpers::ensure_project_writable)
+    /// refuses every mutation under the project — and the ready queue, which
+    /// stops offering its tickets so no agent is handed work it would then be
+    /// refused permission to do.
+    ///
+    /// **Reversible, and that is the point.** The existing way to retire a
+    /// project was `delete_project`, which cascades away every ticket, comment,
+    /// question and event and cannot be undone. Someone who only wants "stop
+    /// working on this" should not have to choose between that and leaving a dead
+    /// project in the ready queue. Unarchiving restores the project unchanged
+    /// because archiving never changed it.
+    ///
+    /// Idempotent in both directions: archiving an archived project keeps the
+    /// original `archived_at` and emits no second event, so the audit trail
+    /// records when the project was frozen rather than when someone last said so.
+    ///
+    /// Refuses with a teaching 409 when a ticket holds an active lease, unless
+    /// `force` — archiving under a live claim would strand that worker, whose
+    /// every next call (heartbeat, done, even release) would be refused. With
+    /// `force` those leases are released here rather than abandoned, bumping each
+    /// ticket's fence exactly as an admin force-release does, so a displaced
+    /// worker gets the fencing 409 it already knows how to read instead of a
+    /// ticket frozen mid-claim.
+    pub fn set_project_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        force: bool,
+        actor: &str,
+    ) -> ApiResult<Project> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let current: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT archived_at FROM projects WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(archived_at) = current else {
+                return Err(ApiError::not_found("project", id));
+            };
+            // Already where the caller wants it: nothing to write, nothing to
+            // announce.
+            if archived_at.is_some() == archived {
+                return Ok(());
+            }
+            if !archived {
+                tx.execute(
+                    "UPDATE projects SET archived_at = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+                emit_event(
+                    tx,
+                    None,
+                    Some(id),
+                    actor,
+                    "project_unarchived",
+                    serde_json::json!({}),
+                    now,
+                )?;
+                return Ok(());
+            }
+
+            // Archiving: refuse under a live lease unless forced.
+            let mut stmt = tx.prepare(
+                "SELECT id, claim_holder, fence_seq FROM tickets \
+                 WHERE project = ?1 AND claim_holder IS NOT NULL AND claim_expires_at > ?2 \
+                 ORDER BY id",
+            )?;
+            let claimed: Vec<(String, String, i64)> = stmt
+                .query_map(params![id, now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            if !claimed.is_empty() && !force {
+                let holders: Vec<&str> = claimed.iter().map(|(_, h, _)| h.as_str()).collect();
+                return Err(ApiError::conflict(
+                    "project.active_claims",
+                    format!(
+                        "Project '{id}' has {} ticket(s) with an active (unexpired) claim; archiving now would freeze those workers mid-lease — their next heartbeat, done or release would be refused with nothing they could do about it. Wait for the leases to expire or be released, or re-issue the archive with force=true to release them (bumping each ticket's fence, so the displaced worker gets a fencing 409 it can act on) and archive anyway.",
+                        claimed.len()
+                    ),
+                )
+                .details(serde_json::json!({
+                    "active_claims": claimed.len(),
+                    "tickets": claimed.iter().map(|(t, _, _)| t.clone()).collect::<Vec<_>>(),
+                    "holders": holders,
+                })));
+            }
+            for (ticket, holder, fence) in &claimed {
+                tx.execute(
+                    "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, \
+                     lapsed_claim_holder = NULL, fence_seq = fence_seq + 1, \
+                     version = version + 1, updated_at = ?2 WHERE id = ?1",
+                    params![ticket, now],
+                )?;
+                emit_event(
+                    tx,
+                    Some(ticket),
+                    Some(id),
+                    actor,
+                    "released",
+                    serde_json::json!({
+                        "holder": holder,
+                        "fence": fence + 1,
+                        "forced": true,
+                        "reason": "project archived",
+                    }),
+                    now,
+                )?;
+            }
+            tx.execute(
+                "UPDATE projects SET archived_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "project_archived",
+                serde_json::json!({
+                    "forced": force,
+                    "released_claims": claimed.len(),
                 }),
                 now,
             )?;
@@ -789,6 +946,10 @@ impl Store {
         self.with_tx(|tx| {
             // 404 if the project does not exist.
             get_workflow(tx, project)?;
+            // The state machine is the one thing an archived project must not
+            // change: its tickets are frozen where they stand, and a workflow
+            // that no longer describes them would strand them there for good.
+            ensure_project_writable(tx, project)?;
             let in_use = states_in_use(tx, project)?;
             validate_workflow(&wf, &in_use)?;
             tx.execute(

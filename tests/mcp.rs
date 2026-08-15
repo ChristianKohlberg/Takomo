@@ -2472,3 +2472,62 @@ async fn hosted_mcp_moves_an_epic_with_its_subtree() {
     assert_eq!(s, StatusCode::OK, "moving back is symmetric: {out2}");
     assert_eq!(out2["total"], 2, "{out2}");
 }
+
+// The archive gate reaches MCP, because it lives in the store rather than in a
+// REST handler: an agent working over `/mcp` gets the same teaching 409, with
+// the same code, from the same guard. Worth proving on this surface separately —
+// MCP has no HTTP method to classify a write by, so a gate implemented in the
+// REST middleware would have left this hole wide open.
+#[tokio::test]
+async fn archived_project_refuses_mcp_writes_but_not_reads() {
+    let app = TestApp::spawn().await;
+    let id = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({ "project": "tp", "title": "Filed before the freeze" }),
+        )
+        .await["ticket"]["id"]
+        .as_str()
+        .expect("ticket id")
+        .to_string();
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    for (tool, args) in [
+        (
+            "takomo_new",
+            json!({ "project": "tp", "title": "after the freeze" }),
+        ),
+        ("takomo_claim", json!({ "id": id })),
+        (
+            "takomo_comment",
+            json!({ "id": id, "body": "anyone there?" }),
+        ),
+        ("takomo_start", json!({ "id": id })),
+    ] {
+        let (out, is_error) = app.tool(&app.worker, tool, args).await;
+        assert!(is_error, "{tool} must be refused: {out}");
+        assert_eq!(out["code"], "project.archived", "{tool}: {out}");
+    }
+
+    // Reading is untouched on this surface too.
+    let shown = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": id }))
+        .await;
+    assert_eq!(shown["ticket"]["state"], "brief", "{shown}");
+    let projects = app.tool_ok(&app.worker, "takomo_projects", json!({})).await;
+    let tp = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "tp")
+        .expect("tp is listed");
+    assert_eq!(
+        tp["archived"], true,
+        "the freeze is visible to agents: {tp}"
+    );
+}

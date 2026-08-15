@@ -234,6 +234,25 @@ enum ProjectCommand {
         #[arg(long)]
         clear_max: bool,
     },
+    /// Archive a project: freeze it. Every write under it is then refused —
+    /// tickets, claims, transitions, comments, questions, tags, schedules,
+    /// checklist and the project's own settings — and its tickets leave the
+    /// ready queue. Reads keep working, nothing is deleted, and `unarchive`
+    /// puts it back exactly as it stood.
+    Archive {
+        /// Project id.
+        id: String,
+        /// Archive even while a worker holds a lease, releasing those leases.
+        /// Without this a live claim refuses the archive, because freezing a
+        /// project under a running worker leaves it no call it can make.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Put an archived project back to work. The undo for `archive`.
+    Unarchive {
+        /// Project id.
+        id: String,
+    },
     /// List projects.
     List,
 }
@@ -610,6 +629,28 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
             print_claim_ttls(&id, "lease policy now", &project);
             Ok(())
         }
+        ProjectCommand::Archive { id, force } => {
+            let project = store
+                .set_project_archived(&id, true, force, "cli:admin")
+                .map_err(|e| e.into_message())?;
+            println!(
+                "archived '{}' ({}) — every write under it is now refused and its tickets have \
+                 left the ready queue; reads are unchanged.",
+                project.id, project.name
+            );
+            println!("undo with: takomo project unarchive {}", project.id);
+            Ok(())
+        }
+        ProjectCommand::Unarchive { id } => {
+            let project = store
+                .set_project_archived(&id, false, false, "cli:admin")
+                .map_err(|e| e.into_message())?;
+            println!(
+                "unarchived '{}' ({}) — back to work, exactly as it stood.",
+                project.id, project.name
+            );
+            Ok(())
+        }
         ProjectCommand::List => {
             let projects = store.list_projects().map_err(|e| e.into_message())?;
             if projects.is_empty() {
@@ -618,13 +659,24 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
                 );
                 return Ok(());
             }
-            println!("{:<18} {:<32} {:<20} CREATED", "ID", "NAME", "WORKFLOW");
+            println!(
+                "{:<18} {:<32} {:<20} {:<10} CREATED",
+                "ID", "NAME", "WORKFLOW", "STATE"
+            );
             for p in projects {
                 println!(
-                    "{:<18} {:<32} {:<20} {}",
+                    "{:<18} {:<32} {:<20} {:<10} {}",
                     p.id,
                     p.name,
                     p.workflow.name,
+                    // A frozen project has to be visible in the one place an
+                    // operator looks to see what exists; otherwise the first
+                    // sign of it is a refused write somewhere else.
+                    if p.archived_at.is_some() {
+                        "archived"
+                    } else {
+                        "live"
+                    },
                     iso(p.created_at)
                 );
             }

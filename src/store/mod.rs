@@ -548,6 +548,13 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // projects.archived_at: when the project was archived (NULL = live). The
+    // gate that freezes every write under a project while leaving reads alone.
+    // Additive and nullable, and NULL is exactly right for every existing row —
+    // a database that predates the column has no archived project in it.
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "archived_at") {
+        conn.execute("ALTER TABLE projects ADD COLUMN archived_at INTEGER", [])?;
+    }
     // tickets.schedule / occurrence / expires_at: where a scheduled ticket came
     // from and how long it counts as live. All three nullable, and NULL is
     // exactly right for every existing row — "nothing made this on a cadence".
@@ -587,6 +594,13 @@ CREATE TABLE IF NOT EXISTS projects (
   -- credential, these bound how long work may be held.
   claim_ttl_seconds       INTEGER,
   max_claim_ttl_seconds   INTEGER,
+  -- When this project was archived, or NULL for a live project. Archiving is a
+  -- GATE, not a state: while it is set, every write under the project is
+  -- refused with a teaching 409 (`project.archived`) and the ready queue stops
+  -- offering its tickets, while every read keeps working exactly as before.
+  -- Reversible on purpose — clearing this column puts the project straight back
+  -- to work, which is what makes archiving safe to reach for instead of DELETE.
+  archived_at             INTEGER,
   created_at              INTEGER NOT NULL
 );
 

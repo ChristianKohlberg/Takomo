@@ -38,7 +38,7 @@
 //! bulk reorganization is not the place to resolve that — the whole call is
 //! refused, naming the leases, so the caller can release or wait.
 
-use super::helpers::{emit_event, get_ticket_opt, get_workflow};
+use super::helpers::{emit_event, ensure_project_writable, get_ticket_opt, get_workflow};
 use super::tags::ensure_tags_exist;
 use super::Store;
 use crate::error::{ApiError, ApiResult};
@@ -223,6 +223,9 @@ impl Store {
             // unknown project is a 404 here rather than a foreign-key error
             // three statements later.
             let wf = get_workflow(tx, &req.to_project)?;
+            // Both ends of the move, checked below once the set is resolved: an
+            // archived project neither takes work nor gives it up.
+            ensure_project_writable(tx, &req.to_project)?;
             let target_states: HashSet<&str> = wf.states.iter().map(|s| s.id.as_str()).collect();
 
             // Resolve the move set: the named roots, deduped in the order given,
@@ -260,6 +263,14 @@ impl Store {
             for id in &order {
                 let row = load_row(tx, id)?.ok_or_else(|| ApiError::not_found("ticket", id))?;
                 rows.insert(id.clone(), row);
+            }
+
+            // The source side of the gate. A ticket may not be moved OUT of an
+            // archived project either: the archive froze that project's work as
+            // it stood, and emptying it a ticket at a time is exactly the
+            // "moving things around" the gate exists to stop.
+            for row in rows.values() {
+                ensure_project_writable(tx, &row.project)?;
             }
 
             // A lease means someone is working the ticket against a workflow

@@ -93,6 +93,52 @@ pub fn get_workflow(conn: &Connection, project: &str) -> ApiResult<Workflow> {
         .map_err(|e| ApiError::internal(format!("stored workflow for '{project}' is corrupt: {e}")))
 }
 
+/// Refuse the write when `project` is archived — the whole of the archive gate.
+///
+/// Every mutation that touches a project's work calls this first, so "archived"
+/// means one thing everywhere instead of one thing per surface: REST, MCP and
+/// the CLI all arrive here because they all go through `Store`.
+///
+/// It lives at the store layer for exactly that reason. A check in
+/// `auth_middleware` would look tidier — one place, no call sites to forget —
+/// but the middleware cannot know which project a request touches: `POST
+/// /v1/tickets` carries it in the body, `POST /v1/tickets/{id}/claim` implies it
+/// through the ticket, and `/mcp` is one POST for every tool there is.
+///
+/// The error is a 409 rather than a 403: nothing is wrong with the caller's
+/// credential, and the same call succeeds unchanged once someone unarchives the
+/// project. That is what the remedy says, because the reader is usually an agent
+/// deciding whether to retry, escalate, or move on — and here the answer is
+/// "move on; a human decides when this project takes work again".
+pub fn ensure_project_writable(conn: &Connection, project: &str) -> ApiResult<()> {
+    let archived_at: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT archived_at FROM projects WHERE id = ?1",
+            params![project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    // An unknown project is not this guard's business: the caller's own 404 is
+    // the better error, and every path that reaches here either has already
+    // resolved the project or is about to.
+    let Some(Some(at)) = archived_at else {
+        return Ok(());
+    };
+    Err(ApiError::conflict(
+        "project.archived",
+        format!(
+            "Project '{project}' was archived on {} and is frozen: no ticket, claim, transition, comment, question, tag, schedule or checklist write is accepted under it. Reading keeps working — GET the tickets, events and questions as usual. This is reversible and a human decides: ask an admin to POST /v1/projects/{project}/unarchive if the work is live again. Do not retry in the meantime; nothing about this call will start working on its own.",
+            iso(at)
+        ),
+    )
+    .details(serde_json::json!({ "project": project, "archived_at": iso(at) })))
+}
+
+/// [`ensure_project_writable`] for a ticket the caller has already loaded.
+pub fn ensure_ticket_writable(conn: &Connection, ticket: &Ticket) -> ApiResult<()> {
+    ensure_project_writable(conn, &ticket.project)
+}
+
 /// Append an event inside the caller's transaction. Returns the new seq.
 pub fn emit_event(
     conn: &Connection,
