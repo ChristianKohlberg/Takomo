@@ -466,10 +466,34 @@ pub(super) fn apply_transition(
         )?;
     }
     let from = t.state.clone();
-    tx.execute(
-        "UPDATE tickets SET state = ?2 WHERE id = ?1",
-        params![id, to],
+    // CONDITIONAL on the state we validated against.
+    //
+    // Everything above — edge legality, `requires`, scope checks, guards — was
+    // decided from `t`, read at the top of this function. On SQLite that was
+    // sound for free: the transaction held the whole-database write lock, so no
+    // other writer could move the ticket in between. On Postgres at READ
+    // COMMITTED it can, and an unconditional write would then apply an edge that
+    // is legal from the state we saw and may not exist from the state the ticket
+    // is actually in — terminal states stop being terminal, and a
+    // `guard:has_link:commit` can be satisfied by a snapshot that no longer
+    // holds. `AND state = ?3` makes the check and the write one atomic step.
+    //
+    // Harmless on SQLite, where the predicate can never fail.
+    let moved = tx.execute(
+        "UPDATE tickets SET state = ?2 WHERE id = ?1 AND state = ?3",
+        params![id, to, from],
     )?;
+    if moved == 0 {
+        return Err(ApiError::conflict(
+            "conflict.state_changed",
+            format!(
+                "Ticket '{id}' was moved out of '{from}' by someone else while this transition \
+                 was being checked, so the move you asked for was decided against a state the \
+                 ticket is no longer in. Re-read the ticket and decide again from its current \
+                 state."
+            ),
+        ));
+    }
     touch_ticket(tx, id, now)?;
     emit_event(
         tx,

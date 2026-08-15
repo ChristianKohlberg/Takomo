@@ -246,10 +246,55 @@ fn grant_claim(
     // one to resume. Whoever wins this claim is the only actor the ticket answers
     // to, which is what makes the marker's absence mean "nothing to resume"
     // rather than "we forgot".
-    conn.execute(
-        "UPDATE tickets SET fence_seq = fence_seq + 1, claim_holder = ?2, claim_expires_at = ?3, lapsed_claim_holder = NULL, version = version + 1, updated_at = ?4 WHERE id = ?1",
+    // CONDITIONAL on the ticket being unclaimed (or holding only a lease that has
+    // already expired).
+    //
+    // The caller decided this ticket was claimable from `t.active_claim(now)`, a
+    // plain read. On SQLite the write lock made that decision still true at write
+    // time. On Postgres at READ COMMITTED another worker can take the claim in
+    // between, and an unconditional write silently obliterates their live lease —
+    // with no fence evidence that it ever existed, which is precisely the
+    // exactly-one-claimant guarantee this store advertises.
+    //
+    // Anyone who loses this race gets 0 rows and the teaching `claim.held` below,
+    // rather than a stolen ticket.
+    let granted = conn.execute(
+        "UPDATE tickets SET fence_seq = fence_seq + 1, claim_holder = ?2, claim_expires_at = ?3, lapsed_claim_holder = NULL, version = version + 1, updated_at = ?4 \
+         WHERE id = ?1 AND (claim_holder IS NULL OR claim_expires_at <= ?4)",
         params![ticket.id, actor, expires, now],
     )?;
+    if granted == 0 {
+        // Someone took it between the caller's read and this write. Report the
+        // holder as it stands NOW, not as we saw it.
+        let held: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT claim_holder, claim_expires_at FROM tickets WHERE id = ?1",
+                params![ticket.id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()?
+            .and_then(|(h, e)| Some((h?, e?)));
+        return Err(match held {
+            Some((holder, expires_at)) => ApiError::conflict(
+                "claim.held",
+                format!(
+                    "Ticket '{}' was claimed by '{holder}' until {} while this claim was being \
+                     granted. Pick different work (POST /v1/ready/claim) or retry after the lease \
+                     expires.",
+                    ticket.id,
+                    iso(expires_at)
+                ),
+            ),
+            None => ApiError::conflict(
+                "claim.held",
+                format!(
+                    "Ticket '{}' changed while this claim was being granted. Re-read it and try \
+                     again.",
+                    ticket.id
+                ),
+            ),
+        });
+    }
     let fence: i64 = conn.query_row(
         "SELECT fence_seq FROM tickets WHERE id = ?1",
         params![ticket.id],

@@ -321,11 +321,46 @@ impl Store {
                 return Ok(OauthExchange::Rejected(GrantRejection::ConsentWithdrawn));
             }
 
-            let (issued, family) = mint_grant(tx, client_id, &grant, None, now)?;
-            tx.execute(
-                "UPDATE oauth_codes SET used_at = ?2, issued_family = ?3 WHERE code_hash = ?1",
+            // Claim the code BEFORE minting anything, and claim it with a
+            // conditional write.
+            //
+            // The `used_at.is_some()` check above is made against a snapshot. On
+            // SQLite that was safe because the transaction held the whole-database
+            // write lock; on Postgres at READ COMMITTED another exchange can spend
+            // the code between that read and this write, and an unconditional
+            // UPDATE would then hand a full access+refresh pair to BOTH callers
+            // while the RFC 6749 §4.1.2 replay revocation never fired. A stolen
+            // code racing the real client would win and keep its credentials.
+            //
+            // `AND used_at IS NULL` makes the spend the atomic step. The family id
+            // is generated up front so nothing is minted until the claim succeeds
+            // — minting first and detecting the loss afterwards would leave the
+            // issued tokens behind, since a `Rejected` outcome still commits.
+            let family = oauth_family_id();
+            let claimed = tx.execute(
+                "UPDATE oauth_codes SET used_at = ?2, issued_family = ?3 \
+                 WHERE code_hash = ?1 AND used_at IS NULL",
                 params![hash, now, family],
             )?;
+            if claimed == 0 {
+                // Lost the race. This is a replay by any other name, so treat it
+                // exactly as the check above does: revoke whatever the winning
+                // exchange bought. Re-read rather than trusting `issued_family`
+                // from our snapshot — the winner wrote it after we looked.
+                let winner: Option<String> = tx
+                    .query_row(
+                        "SELECT issued_family FROM oauth_codes WHERE code_hash = ?1",
+                        params![hash],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .optional()?
+                    .flatten();
+                if let Some(winning_family) = winner {
+                    revoke_refresh_family(tx, &winning_family, now)?;
+                }
+                return Ok(OauthExchange::Rejected(GrantRejection::Replayed));
+            }
+            let (issued, _) = mint_grant(tx, client_id, &grant, Some(&family), now)?;
             Ok(OauthExchange::Issued(issued))
         })
     }
@@ -408,10 +443,26 @@ impl Store {
             // requests to buy at most an hour of exposure. Reuse detection above
             // is where revocation earns its keep, and that path does revoke every
             // access token in the family.
-            tx.execute(
-                "UPDATE oauth_refresh SET rotated_at = ?2 WHERE token_hash = ?1",
+            // Retire the presented token with a CONDITIONAL write, for the same
+            // reason the code spend above is conditional: the `rotated_at` /
+            // `revoked_at` checks were made against a snapshot, and at READ
+            // COMMITTED a second holder can rotate the row in between. An
+            // unconditional retire hands a fresh pair to both callers and the
+            // reuse detection never fires — which is the whole point of rotating.
+            // A thief replaying a captured refresh token would keep a
+            // self-renewing 30-day connection and the family would never be
+            // revoked.
+            let retired = tx.execute(
+                "UPDATE oauth_refresh SET rotated_at = ?2 \
+                 WHERE token_hash = ?1 AND rotated_at IS NULL AND revoked_at IS NULL",
                 params![hash, now],
             )?;
+            if retired == 0 {
+                // Someone rotated or revoked it under us. That IS reuse: revoke
+                // the family, exactly as the snapshot-based branch above does.
+                revoke_refresh_family(tx, &family, now)?;
+                return Ok(OauthExchange::Rejected(GrantRejection::Replayed));
+            }
             let (issued, _) = mint_grant(tx, client_id, &grant, Some(&family), now)?;
             Ok(OauthExchange::Issued(issued))
         })

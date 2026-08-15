@@ -16,8 +16,8 @@
 
 use super::answer_grants::revoke_open_grants_for_question;
 use super::helpers::{
-    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_required, get_workflow,
-    touch_ticket,
+    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_for_update,
+    get_ticket_required, get_workflow, touch_ticket,
 };
 use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
 use super::sql::Value as SqlValue;
@@ -1416,7 +1416,18 @@ impl Store {
             }
             let normalized = validate_answer(&q.kind, &q.options, answer, q.multi)?;
 
-            let mut t = get_ticket_required(tx, &q.ticket)?;
+            // LOCKING read, and the lock is what makes the barrier below correct.
+            //
+            // The barrier counts the OTHER open blocking questions on this ticket
+            // and resumes only when none remain. Two answers arriving together
+            // each counted the other as still open, so NEITHER resumed: every
+            // question ended `answered`, the ticket stayed parked in a blocked
+            // state, and there was nothing left for a human to answer — silent,
+            // permanent, and invisible in the inbox.
+            //
+            // Locking the ticket row serializes answers per ticket, so the second
+            // one counts after the first has committed and sees zero.
+            let mut t = get_ticket_for_update(tx, &q.ticket)?;
             let wf = get_workflow(tx, &t.project)?;
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
@@ -1502,10 +1513,29 @@ impl Store {
             };
 
             // Record the answer on the question.
-            tx.execute(
-                "UPDATE questions SET status = 'answered', answer = ?2, answered_by = ?3, answered_at = ?4, resolved_to = ?5, version = version + 1, updated_at = ?4 WHERE id = ?1",
+            // CONDITIONAL on the question still being open. The `q.status` check
+            // at the top of this transaction was made against a snapshot; without
+            // this predicate a second answer overwrites the first human's
+            // recorded decision, and `answered_by` names the loser of the race.
+            let recorded = tx.execute(
+                "UPDATE questions SET status = 'answered', answer = ?2, answered_by = ?3, answered_at = ?4, resolved_to = ?5, version = version + 1, updated_at = ?4 \
+                 WHERE id = ?1 AND status = 'open'",
                 params![id, normalized.to_string(), actor, now, resolved_to],
             )?;
+            if recorded == 0 {
+                let current: String = tx.query_row(
+                    "SELECT status FROM questions WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                return Err(ApiError::conflict(
+                    "question.not_open",
+                    format!(
+                        "Question '{id}' became '{current}' while this answer was being recorded, \
+                         so it cannot be answered again. Re-read it to see the decision that won."
+                    ),
+                ));
+            }
             // The question is resolved — kill any outstanding answer links so a
             // stale one can't answer it again (e.g. after a later reopen).
             super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
@@ -1614,7 +1644,18 @@ impl Store {
                 ));
             }
 
-            let mut t = get_ticket_required(tx, &q.ticket)?;
+            // LOCKING read, and the lock is what makes the barrier below correct.
+            //
+            // The barrier counts the OTHER open blocking questions on this ticket
+            // and resumes only when none remain. Two answers arriving together
+            // each counted the other as still open, so NEITHER resumed: every
+            // question ended `answered`, the ticket stayed parked in a blocked
+            // state, and there was nothing left for a human to answer — silent,
+            // permanent, and invisible in the inbox.
+            //
+            // Locking the ticket row serializes answers per ticket, so the second
+            // one counts after the first has committed and sees zero.
+            let mut t = get_ticket_for_update(tx, &q.ticket)?;
             let wf = get_workflow(tx, &t.project)?;
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
@@ -1677,7 +1718,7 @@ impl Store {
             }
 
             tx.execute(
-                "UPDATE questions SET status = 'open', answer = NULL, answered_by = NULL, answered_at = NULL, resolved_to = NULL, awaiting = 'human', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE questions SET status = 'open', answer = NULL, answered_by = NULL, answered_at = NULL, resolved_to = NULL, awaiting = 'human', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'answered'",
                 params![id, now],
             )?;
             // A fresh answering cycle needs a fresh link — make sure no grant
@@ -1723,7 +1764,7 @@ impl Store {
                 ));
             }
             tx.execute(
-                "UPDATE questions SET status = 'withdrawn', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE questions SET status = 'withdrawn', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'open'",
                 params![id, now],
             )?;
             super::answer_grants::revoke_open_grants_for_question(tx, id, now)?;
@@ -2208,7 +2249,7 @@ impl Store {
                     // Default / recommended-without-recommendation: just flag it.
                     revoke_open_grants_for_question(tx, &q.id, now)?;
                     tx.execute(
-                        "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                        "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'open'",
                         params![q.id, now],
                     )?;
                     emit_event(
@@ -2244,7 +2285,7 @@ fn expire_with_recommendation(conn: &super::sql::Conn, q: &Question, now: i64) -
         Err(_) => {
             // Recommendation is not a valid answer; fall back to flagging.
             conn.execute(
-                "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'open'",
                 params![q.id, now],
             )?;
             return Ok(());
@@ -2300,7 +2341,7 @@ fn expire_with_recommendation(conn: &super::sql::Conn, q: &Question, now: i64) -
         }
     }
     conn.execute(
-        "UPDATE questions SET status = 'answered', answer = ?2, answered_by = 'system', answered_at = ?3, resolved_to = ?4, version = version + 1, updated_at = ?3 WHERE id = ?1",
+        "UPDATE questions SET status = 'answered', answer = ?2, answered_by = 'system', answered_at = ?3, resolved_to = ?4, version = version + 1, updated_at = ?3 WHERE id = ?1 AND status = 'open'",
         params![q.id, normalized.to_string(), now, resolved_to],
     )?;
     emit_event(
@@ -2320,7 +2361,7 @@ fn expire_with_recommendation(conn: &super::sql::Conn, q: &Question, now: i64) -
 fn expire_and_cancel(conn: &super::sql::Conn, q: &Question, now: i64) -> ApiResult<()> {
     revoke_open_grants_for_question(conn, &q.id, now)?;
     conn.execute(
-        "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
+        "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'open'",
         params![q.id, now],
     )?;
     emit_event(
@@ -2367,7 +2408,7 @@ fn expire_and_cancel(conn: &super::sql::Conn, q: &Question, now: i64) -> ApiResu
                 .collect::<Result<_, _>>()?;
             for sid in siblings {
                 conn.execute(
-                    "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
+                    "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1 AND status = 'open'",
                     params![sid, now],
                 )?;
                 emit_event(

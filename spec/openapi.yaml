@@ -5255,6 +5255,7 @@ x-error-codes:
   # -- optimistic concurrency, on whole-body replacement only -----------------
   conflict.if_match_required: "replacing `body` needs `If-Match: \"<version>\"`, the value of the ticket's ETag. Field sets and `metadata_merge` never need it."
   conflict.version: "the `If-Match` version is not the current one, so the body changed since you read it. Re-read the ticket, re-apply your edit to the fresh body, retry."
+  conflict.state_changed: "the ticket was moved out of the state this transition was checked against, so the move you asked for was decided against a state it is no longer in. Re-read the ticket and decide again from its current state."
 
   # -- workflow transitions ---------------------------------------------------
   transition.illegal: "no transition from the ticket's state to the one requested exists in this project's workflow. `allowed_transitions` on the error lists the legal moves."

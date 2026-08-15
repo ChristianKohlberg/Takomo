@@ -160,10 +160,26 @@ pub fn emit_event(
 pub fn clear_expired_claim(conn: &super::sql::Conn, ticket: &Ticket, now: i64) -> ApiResult<bool> {
     if let (Some(holder), Some(exp)) = (&ticket.claim_holder, ticket.claim_expires_at) {
         if exp <= now {
-            conn.execute(
-                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = ?3, version = version + 1, updated_at = ?2 WHERE id = ?1",
-                params![ticket.id, now, holder],
+            // CONDITIONAL on the lease we actually observed.
+            //
+            // The expiry decision comes from `ticket`, read earlier — often much
+            // earlier: `sweep_expired` SELECTs every expired ticket and then
+            // loops clearing them, so the window spans the whole batch. On
+            // SQLite the write lock made that safe; on Postgres a fresh claim
+            // landing in the window would be wiped by an unconditional write,
+            // and the `lease_expired` event below would name the WRONG holder.
+            //
+            // Matching on holder AND expiry means we can only ever clear the
+            // exact lease we saw expire. If it changed under us, `cleared` is 0
+            // and we report "nothing to clear", which is the truth.
+            let cleared = conn.execute(
+                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = ?3, version = version + 1, updated_at = ?2 \
+                 WHERE id = ?1 AND claim_holder = ?3 AND claim_expires_at = ?4",
+                params![ticket.id, now, holder, exp],
             )?;
+            if cleared == 0 {
+                return Ok(false);
+            }
             emit_event(
                 conn,
                 Some(&ticket.id),
