@@ -4266,6 +4266,395 @@ async fn metrics_counts_by_state_category_and_claims() {
     assert_eq!(m["totals"]["tickets"], 0, "solo has no tickets yet: {m}");
 }
 
+// --- project archive --------------------------------------------------------
+
+// The gate itself: while a project is archived every write under it is refused
+// with a teaching 409, across every kind of write there is — and every read
+// still answers. This is the test that fails if a new mutating route forgets
+// `ensure_project_writable`.
+#[tokio::test]
+async fn project_archive_refuses_every_write_and_allows_every_read() {
+    let app = TestApp::spawn().await;
+    let existing = app.create_ticket("Written before the archive").await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], json!(true));
+    assert!(body["archived_at"].is_string(), "{body}");
+
+    // One write per surface that can reach a project's work.
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "after the archive" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "create ticket: {b}");
+    assert_eq!(b["code"], "project.archived");
+    assert_eq!(b["details"]["project"], json!("tp"));
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{existing}/comments"),
+            json!({ "body": "still here?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "comment: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    let (s, b) = app.transition(&app.human, &existing, "spec").await;
+    assert_eq!(s, StatusCode::CONFLICT, "transition: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    let (s, b) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{existing}"),
+            json!({ "priority": "high" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "patch: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{existing}/claim"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "claim: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": existing,
+                "kind": "confirm",
+                "title": "Should I keep going?",
+                "body": "The project froze underneath me.",
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "ask: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "person", "handle": "grace" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "tag: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    // The project's own settings are frozen too: an archived project is kept as
+    // it stood, not reconfigured in place.
+    let (s, b) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/language",
+            json!({ "language": "German" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "language: {b}");
+    assert_eq!(b["code"], "project.archived");
+
+    // …and every read still answers, unchanged.
+    let (s, t) = app
+        .get(&app.admin, &format!("/v1/tickets/{existing}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "reading a ticket must still work: {t}");
+    assert_eq!(t["state"], json!("brief"), "nothing moved: {t}");
+    let (s, _) = app.get(&app.admin, "/v1/tickets?project=tp").await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = app.get(&app.admin, "/v1/events?since=0&project=tp").await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, tags) = app.get(&app.admin, "/v1/projects/tp/tags").await;
+    assert_eq!(s, StatusCode::OK, "{tags}");
+}
+
+// The undo. Unarchiving restores the project exactly as it stood, because
+// archiving never changed it: the write that was refused now succeeds, from the
+// state the archive froze the ticket in.
+#[tokio::test]
+async fn project_unarchive_restores_writes() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Frozen, then thawed").await;
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = app.transition(&app.human, &id, "spec").await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], json!(false));
+    assert_eq!(body["archived_at"], Value::Null);
+
+    let (s, t) = app.transition(&app.human, &id, "spec").await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    assert_eq!(t["state"], json!("spec"));
+}
+
+// An archived project's tickets leave the ready queue: an agent must never be
+// offered work it would then be refused permission to do. The total moves with
+// the page, so "n of m" cannot count tickets the queue would not hand over.
+#[tokio::test]
+async fn project_archive_empties_the_ready_queue() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Ready until the project froze").await;
+    app.to_ready(&id).await;
+
+    let (_, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
+    assert_eq!(ready["total"], json!(1), "{ready}");
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (_, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
+    assert_eq!(
+        ready["total"],
+        json!(0),
+        "archived work must not be queued: {ready}"
+    );
+    assert!(ready["items"].as_array().unwrap().is_empty(), "{ready}");
+
+    // Nothing can be pulled from it either.
+    let (s, body) = app.post(&app.worker, "/v1/ready/claim", json!({})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{body}");
+
+    // Unarchiving puts it back, still ready.
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, ready) = app.get(&app.worker, "/v1/ready?project=tp").await;
+    assert_eq!(ready["total"], json!(1), "{ready}");
+}
+
+// An active lease refuses the archive with a teaching 409: freezing a project
+// under a running worker would leave it no call it could make, not even a
+// release. `?force=true` archives anyway and releases the lease, bumping the
+// fence so the displaced worker gets a fencing 409 it already knows how to read.
+#[tokio::test]
+async fn project_archive_refuses_active_claim_unless_forced() {
+    let app = TestApp::spawn().await;
+    let id = app
+        .create_ticket("Claimed while its project is archived")
+        .await;
+    app.to_ready(&id).await;
+    let fence = app.claim_ttl(&app.worker, &id, Some(900)).await;
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "project.active_claims");
+    assert_eq!(body["details"]["active_claims"], json!(1));
+    assert_eq!(body["details"]["tickets"][0], json!(id));
+    assert!(body["message"].as_str().unwrap().contains("force=true"));
+
+    // The refusal changed nothing: the lease is still the worker's.
+    let (_, t) = app.get(&app.worker, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(t["claim"]["holder"], json!("agent:w1"), "{t}");
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive?force=true", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], json!(true));
+
+    let (_, t) = app.get(&app.admin, &format!("/v1/tickets/{id}")).await;
+    assert_eq!(t["claim"], Value::Null, "the lease must be released: {t}");
+
+    // And the fence moved: even once the project is live again, the displaced
+    // worker's echo of its old fence is refused rather than accepted.
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, body) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "priority": "high", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "fence.stale");
+}
+
+// Archiving is idempotent and keeps the ORIGINAL timestamp: the audit trail says
+// when the project was frozen, not when someone last said so. Unarchiving a live
+// project is a no-op for the same reason.
+#[tokio::test]
+async fn project_archive_is_idempotent() {
+    let app = TestApp::spawn().await;
+    let (s, first) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let (s, second) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{second}");
+    assert_eq!(
+        first["archived_at"], second["archived_at"],
+        "a second archive must not restamp the first"
+    );
+    let (_, events) = app.get(&app.admin, "/v1/events?since=0&project=tp").await;
+    let archived = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "project_archived")
+        .count();
+    assert_eq!(archived, 1, "one event per actual freeze: {events}");
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["archived"], json!(false));
+}
+
+// Archiving is an admin act. An unknown project is a 404, not a silent success.
+#[tokio::test]
+async fn project_archive_requires_admin() {
+    let app = TestApp::spawn().await;
+    for token in [&app.human, &app.worker] {
+        let (s, body) = app.post(token, "/v1/projects/tp/archive", json!({})).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+        let (s, body) = app
+            .post(token, "/v1/projects/tp/unarchive", json!({}))
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    }
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/ghost/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "notfound.project");
+
+    let p = app.project(&app.admin, "tp").await;
+    assert_eq!(p["archived"], json!(false), "{p}");
+}
+
+// The gate is per project, not global: a second project keeps working while the
+// first is frozen.
+#[tokio::test]
+async fn project_archive_leaves_other_projects_alone() {
+    let app = TestApp::spawn().await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "other", "name": "Other" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let mine = app.create_ticket("Frozen").await;
+    let theirs = app.create_ticket_in("other", "Untouched").await;
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{theirs}/comments"),
+            json!({ "body": "still working" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let (s, body) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{mine}/comments"),
+            json!({ "body": "not working" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "project.archived");
+}
+
+// A ticket may not be moved OUT of an archived project either — emptying a
+// frozen project one ticket at a time is exactly what the gate exists to stop,
+// and it is the direction a caller is most likely to assume is allowed.
+#[tokio::test]
+async fn project_archive_blocks_moves_in_both_directions() {
+    let app = TestApp::spawn().await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "other", "name": "Other" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let from_archived = app.create_ticket("Leaving the frozen project").await;
+    let to_archived = app
+        .create_ticket_in("other", "Entering the frozen project")
+        .await;
+
+    let (s, _) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [from_archived], "to_project": "other" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "out of an archived project: {body}"
+    );
+    assert_eq!(body["code"], "project.archived");
+
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({ "tickets": [to_archived], "to_project": "tp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "into an archived project: {body}");
+    assert_eq!(body["code"], "project.archived");
+}
+
 // --- project delete ---------------------------------------------------------
 
 // DELETE /v1/projects/{id} cascade-removes the project and all of its tickets,

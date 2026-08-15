@@ -2,8 +2,9 @@
 //! patch (commutative field sets; CAS for body), comments, dependency edges.
 
 use super::helpers::{
-    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_opt, get_ticket_required,
-    get_workflow, load_blocked_by, row_to_ticket, touch_ticket, TICKET_COLS,
+    check_fence_for_write, clear_expired_claim, emit_event, ensure_project_writable,
+    ensure_ticket_writable, get_ticket_opt, get_ticket_required, get_workflow, load_blocked_by,
+    row_to_ticket, touch_ticket, TICKET_COLS,
 };
 use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
@@ -477,6 +478,10 @@ impl Store {
                     ),
                 )
             })?;
+            // No new work under an archived project — including an idempotent
+            // replay, which is checked below and would otherwise hand back a
+            // ticket as if the create had been accepted.
+            ensure_project_writable(tx, &req.project)?;
 
             // Idempotent replay?
             if let Some(key) = idempotency_key {
@@ -792,6 +797,7 @@ impl Store {
                 t.claim_holder = None;
                 t.claim_expires_at = None;
             }
+            ensure_ticket_writable(tx, &t)?;
 
             // Claimed-ticket write restrictions.
             match t.active_claim(now) {
@@ -1073,6 +1079,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, ticket_id)?;
+            ensure_ticket_writable(tx, &t)?;
             let comment = Comment {
                 id: comment_id(),
                 ticket: t.id.clone(),
@@ -1105,6 +1112,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            ensure_ticket_writable(tx, &t)?;
             if t.archived_at.is_none() {
                 let stamp = crate::ids::iso(now);
                 tx.execute(
@@ -1131,6 +1139,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, id)?;
+            ensure_ticket_writable(tx, &t)?;
             if t.archived_at.is_some() {
                 tx.execute(
                     "UPDATE tickets SET archived_at = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
@@ -1185,6 +1194,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, ticket_id)?;
+            ensure_ticket_writable(tx, &t)?;
             let promo = Promotion {
                 id: promotion_id(),
                 ticket: t.id.clone(),
@@ -1473,6 +1483,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, ticket_id)?;
+            ensure_ticket_writable(tx, &t)?;
             check_fence_for_write(&t, actor, fence, now, "modify dependencies")?;
             if get_ticket_opt(tx, blocked_by)?.is_none() {
                 return Err(ApiError::validation(
@@ -1518,6 +1529,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let t = get_ticket_required(tx, ticket_id)?;
+            ensure_ticket_writable(tx, &t)?;
             check_fence_for_write(&t, actor, fence, now, "modify dependencies")?;
             let n = tx.execute(
                 "DELETE FROM deps WHERE ticket = ?1 AND blocked_by = ?2",

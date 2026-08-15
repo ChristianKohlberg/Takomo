@@ -8,7 +8,7 @@
 //! arithmetic and history. A wrong model is stored faithfully — the alternative
 //! is Takomo growing an opinion about every application under test.
 
-use super::helpers::emit_event;
+use super::helpers::{emit_event, ensure_project_writable};
 use super::model::{
     Case, CaseVerdict, Lane, LaneCounts, Release, ReleaseImpact, ResolvedPolicy, CASE_VERDICTS,
     LANE_LAYERS, LANE_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE, VERIFICATION_LEVELS,
@@ -783,6 +783,7 @@ impl Store {
 
         self.with_tx(|tx| {
             project_exists(tx, &project)?;
+            ensure_project_writable(tx, &project)?;
 
             let taken: Option<i64> = tx
                 .query_row(
@@ -1036,6 +1037,7 @@ impl Store {
 
         self.with_tx(|tx| {
             project_exists(tx, &project)?;
+            ensure_project_writable(tx, &project)?;
             if let Some(e) = &epic {
                 check_epic(tx, &project, e)?;
             }
@@ -1200,6 +1202,7 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("lane", &id))?;
             drop(stmt);
+            ensure_project_writable(tx, &existing.project)?;
 
             if let Some(Some(e)) = &patch.epic {
                 check_epic(tx, &existing.project, e)?;
@@ -1302,6 +1305,7 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("lane", &id))?;
             drop(stmt);
+            ensure_project_writable(tx, &existing.project)?;
             tx.execute(
                 "UPDATE lanes SET archived_at = ?1, updated_at = ?1, version = version + 1
                  WHERE id = ?2 AND archived_at IS NULL",
@@ -1398,6 +1402,7 @@ impl Store {
                 .query_row(params![lane], row_to_lane)
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("lane", &lane))?;
+            ensure_project_writable(tx, &lane_row.project)?;
             drop(stmt);
 
             let mut existing: HashMap<String, (String, Option<i64>)> = HashMap::new();
@@ -1621,6 +1626,14 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("case", &case))?;
             drop(stmt);
+            // A case names its lane, and the lane names the project — the only
+            // hop between a verdict and the gate it has to pass.
+            let case_project: String = tx.query_row(
+                "SELECT project FROM lanes WHERE id = ?1",
+                params![existing.lane],
+                |r| r.get(0),
+            )?;
+            ensure_project_writable(tx, &case_project)?;
             if existing.retired_at.is_some() {
                 return Err(ApiError::conflict(
                     "conflict.case_retired",
@@ -1719,6 +1732,7 @@ impl Store {
         let scope = epic.unwrap_or("").to_string();
         self.with_tx(|tx| {
             project_exists(tx, &project)?;
+            ensure_project_writable(tx, &project)?;
             if !scope.is_empty() {
                 check_epic(tx, &project, &scope)?;
             }

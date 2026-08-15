@@ -199,6 +199,13 @@ pub(super) fn apply_transition(
     kind: MoveKind,
 ) -> ApiResult<Ticket> {
     let mut t = get_ticket_required(tx, id)?;
+    // The chokepoint for the archive gate on ticket state: this function is the
+    // single writer of `tickets.state`, so every way a ticket could move — a
+    // plain transition, a question parking or resuming it, a bulk move — is
+    // refused here while the project is archived, with no per-caller check to
+    // forget. The sweepers, which transition on nobody's behalf, filter archived
+    // projects out of their queries instead of arriving here and erroring.
+    super::helpers::ensure_ticket_writable(tx, &t)?;
     let wf = get_workflow(tx, &t.project)?;
     if clear_expired_claim(tx, &t, now)? {
         // Mirror exactly what the clear wrote, marker included: the holder moved

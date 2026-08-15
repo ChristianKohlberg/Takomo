@@ -238,6 +238,20 @@ serialization *is* the exactly-one-claimant guarantee for the ready queue. Layer
 - **CAS + idempotency**: replacing a ticket `body` requires `If-Match: "<version>"` (from the
   ETag); `Idempotency-Key` on ticket create replays the original instead of duplicating.
 
+**A project can be archived, which is a gate rather than a state.** `archived_at`
+on `projects` freezes every write beneath it: `ensure_project_writable`
+(`src/store/helpers.rs`) is called at the top of every project-scoped mutation and
+returns a teaching 409 `project.archived`. It sits in the **store**, not the
+middleware, because the middleware cannot know which project a request touches
+(`POST /v1/tickets` carries it in the body, `/mcp` is one POST for every tool) —
+which is also why REST, MCP and the CLI all inherit it for free. Reads are
+untouched; the ready query and the two sweepers (schedules, question timeouts)
+filter archived projects out instead of erroring on them. Reversible by design:
+`POST /v1/projects/{p}/unarchive` restores the project because archiving changed
+nothing about it. If you add a mutating store call, add the guard —
+`project_archive_refuses_every_write_and_allows_every_read` in `tests/api.rs` is
+what notices when you don't.
+
 **State changes only through transitions** (`src/store/transition.rs`) against the per-project
 state machine (`src/workflow.rs`, format in `spec/workflow-format.md`). A transition's `requires`
 entries are `claim`, `scope:<s>`, or `guard:<id>` — guards being `no_open_children`,

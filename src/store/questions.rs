@@ -16,8 +16,8 @@
 
 use super::answer_grants::revoke_open_grants_for_question;
 use super::helpers::{
-    check_fence_for_write, clear_expired_claim, emit_event, get_ticket_required, get_workflow,
-    touch_ticket,
+    check_fence_for_write, clear_expired_claim, emit_event, ensure_project_writable,
+    get_ticket_required, get_workflow, touch_ticket,
 };
 use super::model::{Question, QuestionMessage, Ticket, MAX_BODY, MAX_TITLE};
 use super::transition::{apply_transition, MoveKind};
@@ -1113,6 +1113,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let mut t = get_ticket_required(tx, &req.ticket)?;
+            ensure_project_writable(tx, &t.project)?;
             let wf = get_workflow(tx, &t.project)?;
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
@@ -1342,6 +1343,9 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            // Answering resumes the ticket through the workflow, so it is a
+            // write like any other.
+            ensure_project_writable(tx, &q.project)?;
             // Spend the answer link before anything else this transaction does:
             // the grant row, not the question's status, is what orders
             // concurrent holders of the same link.
@@ -1587,6 +1591,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            ensure_project_writable(tx, &q.project)?;
             if q.status != "answered" {
                 return Err(ApiError::conflict(
                     "question.not_answered",
@@ -1716,6 +1721,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            ensure_project_writable(tx, &q.project)?;
             if q.status != "open" {
                 return Err(ApiError::conflict(
                     "question.not_open",
@@ -1785,6 +1791,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            ensure_project_writable(tx, &q.project)?;
             if q.status != "open" {
                 return Err(ApiError::conflict(
                     "question.not_open",
@@ -1886,6 +1893,7 @@ impl Store {
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
+            ensure_project_writable(tx, &q.project)?;
             if q.status != "open" {
                 return Err(ApiError::conflict(
                     "question.not_open",
@@ -2122,7 +2130,18 @@ impl Store {
         let now = now_ms();
         let due: Vec<String> = self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id FROM questions WHERE status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?1 ORDER BY id",
+                // Questions in an archived project are skipped rather than
+                // expired: a timeout ESCALATES or ANSWERS a question, and
+                // answering moves the ticket — exactly what the archive gate
+                // exists to stop. Filtering them out here (instead of letting
+                // `ensure_project_writable` refuse mid-sweep) keeps a frozen
+                // project from logging an error on every pass, and the deadline
+                // is not lost: it applies again the moment the project comes back.
+                "SELECT q.id FROM questions q \
+                 JOIN projects p ON p.id = q.project \
+                 WHERE q.status = 'open' AND q.expires_at IS NOT NULL AND q.expires_at <= ?1 \
+                   AND p.archived_at IS NULL \
+                 ORDER BY q.id",
             )?;
             let rows = stmt
                 .query_map(params![now], |r| r.get::<_, String>(0))?

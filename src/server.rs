@@ -118,6 +118,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(axum::routing::delete(crate::api::workflows::delete)),
         )
         .route(
+            "/v1/projects/{project}/archive",
+            post(crate::api::projects::archive),
+        )
+        .route(
+            "/v1/projects/{project}/unarchive",
+            post(crate::api::projects::unarchive),
+        )
+        .route(
             "/v1/projects/{project}/roadmap",
             get(crate::api::projects::roadmap),
         )

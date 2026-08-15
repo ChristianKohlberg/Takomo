@@ -4,7 +4,7 @@
 //! attributes carried in the free-form `meta` object. Tagging never affects
 //! claims, leases, or question routing; a tag is reference metadata only.
 
-use super::helpers::emit_event;
+use super::helpers::{emit_event, ensure_project_writable};
 use super::merge_patch;
 use super::model::{Tag, MAX_METADATA};
 use super::Store;
@@ -268,6 +268,7 @@ impl Store {
         validate_meta(&meta)?;
         let now = now_ms();
         self.with_tx(|tx| {
+            ensure_project_writable(tx, project)?;
             // 404 if the project does not exist (FK would otherwise fail opaquely).
             let project_exists: Option<String> = tx
                 .query_row("SELECT id FROM projects WHERE id = ?1", params![project], |r| r.get(0))
@@ -371,6 +372,7 @@ impl Store {
         }
         let now = now_ms();
         self.with_tx(|tx| {
+            ensure_project_writable(tx, project)?;
             let sql = format!(
                 "SELECT {TAG_COLS} FROM tags WHERE project = ?1 AND kind = ?2 AND handle = ?3"
             );
@@ -424,6 +426,7 @@ impl Store {
         let now = now_ms();
         let reference = format!("{kind}:{handle}");
         self.with_tx(|tx| {
+            ensure_project_writable(tx, project)?;
             let existed = tx.execute(
                 "DELETE FROM tags WHERE project = ?1 AND kind = ?2 AND handle = ?3",
                 params![project, kind, handle],

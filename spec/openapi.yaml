@@ -677,6 +677,73 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { description: The style guide exceeds 2000 characters }
 
+  /projects/{project}/archive:
+    post:
+      tags: [workflow]
+      summary: Archive a project — freeze every write under it (admin scope)
+      description: |
+        Archiving is a gate, not a deletion and not a status label. While it is
+        on, every mutation under the project is refused with a 409
+        `project.archived` — creating or patching a ticket, claiming, moving
+        through the workflow, commenting, asking or answering a question, tags,
+        schedules, checklist writes, and the project's own settings — and the
+        project's tickets are dropped from the ready queue, so `GET /ready` and
+        `POST /ready/claim` stop offering work an agent would then be refused
+        permission to do. Its active schedules stop materializing occurrences and
+        its question deadlines stop firing, both resuming untouched afterwards.
+
+        Everything else is unchanged. Reads answer exactly as before: the board,
+        the ticket history, the events, the export. Nothing is moved, rewritten or
+        removed, which is precisely what makes `POST
+        /projects/{project}/unarchive` a complete undo — and what makes archiving
+        the thing to reach for instead of `DELETE /projects/{project}`, which
+        cascades away every ticket, comment, question and event irreversibly.
+
+        Takes no body. Refuses with a 409 `project.active_claims` while any ticket
+        holds an unexpired lease: freezing a project under a running worker would
+        leave that worker no call it could make, not even a release. `?force=true`
+        archives anyway and releases those leases, bumping each ticket's fence so
+        the displaced worker gets the `fence.stale` 409 it already knows how to
+        read.
+
+        Idempotent: archiving an archived project keeps the original
+        `archived_at` and emits no second event.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: 'Release any active leases and archive anyway (default false)'
+      responses:
+        "200":
+          description: The archived project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: 'A ticket holds an active claim (`project.active_claims`); retry with ?force=true' }
+
+  /projects/{project}/unarchive:
+    post:
+      tags: [workflow]
+      summary: Put an archived project back to work (admin scope)
+      description: |
+        The undo for `POST /projects/{project}/archive`. Writes are accepted
+        again, the project's tickets return to the ready queue, and its schedules
+        and question deadlines resume — all exactly as they stood, because
+        archiving never changed them. Takes no body. Idempotent on a live project.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The project, now live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /projects/{project}/claim-ttl:
     put:
       tags: [workflow]
@@ -4340,6 +4407,21 @@ components:
             needs. Note this value is also the ready queue's recovery time — only
             expired leases are swept, so a crashed worker parks its ticket for
             exactly this long.
+        archived:
+          type: boolean
+          description: |
+            True while the project is archived — a GATE, not a status. Every write
+            under it is refused with a 409 `project.archived` (tickets, claims,
+            transitions, comments, questions, tags, schedules, checklist, and the
+            project's own settings), and its tickets are dropped from the ready
+            queue so no agent is handed work it would then be refused. Reads are
+            untouched. Reversible: `POST /projects/{project}/unarchive` restores
+            the project exactly as it stood, because archiving changed nothing
+            about it.
+        archived_at:
+          type: [string, "null"]
+          format: date-time
+          description: 'When the project was archived; null while it is live'
         created_at: { type: string, format: date-time }
 
     ProjectCreate:
@@ -5657,7 +5739,8 @@ x-error-codes:
   # -- projects, workflows, tokens, tags --------------------------------------
   project.id: "the project id is invalid. It becomes the ticket-id prefix, so it must match ^[a-z][a-z0-9-]{1,15}$."
   project.exists: "a project with that id already exists."
-  project.active_claims: "the project has tickets under a live lease, and deleting it would yank work out from under a worker. Wait for the leases, or re-issue with `?force=true`."
+  project.active_claims: "the project has tickets under a live lease, and archiving or deleting it would yank work out from under a worker. Wait for the leases, or re-issue with `?force=true`."
+  project.archived: "the project is archived, so it accepts no writes at all — this is a gate a human lifts, not a transient failure. Do NOT retry: read what you need (reads are unaffected) and move on, or ask an admin to POST /projects/{project}/unarchive."
   project.claim_ttl: "a claim-TTL setting is not a positive number of seconds, or the default exceeds the maximum — which would clamp every claim, so no claim would get the default set. Send null to fall back to the built-in bounds."
   project.answer_link_ttl: "`answer_link_ttl_seconds` must be a positive number of seconds no larger than the 30-day maximum, the same bound an explicit `ttl_seconds` carries."
   project.style_guide_too_long: "the project style guide is over its character limit. It rides along on every work-loop response, so it holds the few conventions that change how an agent writes; anything longer belongs in a ticket or repo docs."

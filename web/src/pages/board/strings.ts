@@ -45,6 +45,9 @@ export const STR = defineStrings({
     project: "project",
     projectSearch: "Search projects",
     projectNoMatch: "No project matches “{q}”",
+    projArchived: 'Archived',
+    projArchivedHint:
+      'This project is archived: nothing under it can be changed until an admin puts it back. Everything here still reads.',
     idle: "idle",
     loading: "loading…",
     live: "live",
@@ -160,6 +163,9 @@ export const STR = defineStrings({
     project: "Projekt",
     projectSearch: "Projekte suchen",
     projectNoMatch: "Kein Projekt passt zu „{q}“",
+    projArchived: 'Archiviert',
+    projArchivedHint:
+      'Dieses Projekt ist archiviert: Darunter lässt sich nichts ändern, bis ein Admin es zurückholt. Lesen funktioniert hier weiterhin.',
     idle: "bereit",
     loading: "lädt…",
     live: "live",

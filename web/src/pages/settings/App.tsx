@@ -62,6 +62,7 @@ import {
   type WorkflowEntry,
 } from '@/lib/workflows'
 import {
+  archiveProject,
   createProject,
   createToken,
   deleteProject,
@@ -70,6 +71,7 @@ import {
   listTokens,
   projectAllowlist,
   revokeToken,
+  unarchiveProject,
   type CreatedToken,
   type TokenRow,
 } from '@/lib/admin'
@@ -133,6 +135,11 @@ export function App() {
   const [newProject, setNewProject] = useState(false)
   const [revoking, setRevoking] = useState<TokenRow | null>(null)
   const [deleting, setDeleting] = useState<Project | null>(null)
+  // Two archive dialogs, not one with a flag: the second is a DIFFERENT question
+  // (end someone's live lease), asked only after the server has refused the
+  // first — so `force` is never the default and never silently attached.
+  const [archiving, setArchiving] = useState<Project | null>(null)
+  const [archivingForce, setArchivingForce] = useState<Project | null>(null)
   const [deletingWorkflow, setDeletingWorkflow] = useState<WorkflowEntry | null>(null)
   const [renaming, setRenaming] = useState<WorkflowEntry | null>(null)
   /** A draft waiting for a name before it goes into the library. */
@@ -257,6 +264,44 @@ export function App() {
     [toast, t],
   )
 
+  /**
+   * Archive a project, escalating to the force dialog when a worker holds a
+   * lease.
+   *
+   * The 409 is not an error to report here — it is the server asking a question
+   * this page can only answer by asking the reader. Anything else is a real
+   * failure and goes to the toast.
+   */
+  const archive = useCallback(
+    async (p: Project, force: boolean) => {
+      try {
+        await archiveProject(token, p.id, force)
+        toast(fill(t.projArchivedToast, { id: p.id }), 'success')
+        await refreshRef.current()
+      } catch (e) {
+        if (!force && (e as { code?: string })?.code === 'project.active_claims') {
+          setArchivingForce(p)
+          return
+        }
+        handleErr(e)
+      }
+    },
+    [token, toast, t, handleErr],
+  )
+
+  const unarchive = useCallback(
+    async (p: Project) => {
+      try {
+        await unarchiveProject(token, p.id)
+        toast(fill(t.projUnarchivedToast, { id: p.id }), 'success')
+        await refreshRef.current()
+      } catch (e) {
+        handleErr(e)
+      }
+    },
+    [token, toast, t, handleErr],
+  )
+
   const refresh = useCallback(async () => {
     const [ps, ts] = await Promise.all([
       listProjects(token).catch(() => [] as Project[]),
@@ -265,6 +310,11 @@ export function App() {
     setProjects(ps)
     setTokens(ts)
   }, [token])
+
+  // `archive`/`unarchive` are declared above `refresh` (they read better next to
+  // the dialogs they serve) and would otherwise capture it before it exists.
+  const refreshRef = useRef<() => Promise<void>>(async () => {})
+  refreshRef.current = refresh
 
   useEffect(() => {
     if (!token) return
@@ -598,6 +648,10 @@ export function App() {
               onSave={onSaveProject}
               onBack={() => selectProject(null)}
               onDelete={() => setDeleting(selected)}
+              onToggleArchive={() => {
+                if (selected.archived) void unarchive(selected)
+                else setArchiving(selected)
+              }}
               labels={{
                 back: t.projBack,
                 workflowLabel: t.projWorkflowLabel,
@@ -618,6 +672,10 @@ export function App() {
                 saving: t.projSaving,
                 savedMsg: t.projSaved,
                 readOnlyMsg: t.projReadOnly,
+                archived: t.projArchived,
+                archivedBanner: t.projArchivedBanner,
+                archive: t.projArchive,
+                unarchive: t.projUnarchive,
                 over: t.projOver,
                 delete: t.projDelete,
               }}
@@ -642,6 +700,7 @@ export function App() {
                         {p.name ?? ''}
                       </span>
                       {p.workflow && <Badge variant="outline">{p.workflow}</Badge>}
+                      {p.archived && <Badge variant="secondary">{t.projArchived}</Badge>}
                       <Button variant="secondary" size="sm" onClick={() => selectProject(p.id)}>
                         {t.projOpen}
                       </Button>
@@ -757,6 +816,28 @@ export function App() {
           } catch (e) {
             handleErr(e)
           }
+        }}
+      />
+      <ConfirmDialog
+        open={archiving !== null}
+        onOpenChange={(o) => !o && setArchiving(null)}
+        title={t.confirmArchiveTitle}
+        description={fill(t.confirmArchiveBody, { id: archiving?.id ?? '' })}
+        confirmLabel={t.confirmArchiveYes}
+        cancelLabel={t.cancel}
+        onConfirm={async () => {
+          if (archiving) await archive(archiving, false)
+        }}
+      />
+      <ConfirmDialog
+        open={archivingForce !== null}
+        onOpenChange={(o) => !o && setArchivingForce(null)}
+        title={t.confirmArchiveForceTitle}
+        description={fill(t.confirmArchiveForceBody, { id: archivingForce?.id ?? '' })}
+        confirmLabel={t.confirmArchiveForceYes}
+        cancelLabel={t.cancel}
+        onConfirm={async () => {
+          if (archivingForce) await archive(archivingForce, true)
         }}
       />
       <PromptDialog

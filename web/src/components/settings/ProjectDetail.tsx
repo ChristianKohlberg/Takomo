@@ -48,10 +48,14 @@ export interface ProjectDetailLabels {
   readOnlyMsg: string
   over: string
   delete: string
+  archived: string
+  archivedBanner: string
+  archive: string
+  unarchive: string
 }
 
 export interface ProjectDetailProps {
-  project: { id: string; name?: string; workflow?: string }
+  project: { id: string; name?: string; workflow?: string; archived?: boolean }
   /**
    * The workflow editor, rendered below the conventions.
    *
@@ -70,6 +74,8 @@ export interface ProjectDetailProps {
   onSave: () => void
   onBack: () => void
   onDelete: () => void
+  /** Archive the project, or — when it already is — put it back to work. */
+  onToggleArchive: () => void
   labels: ProjectDetailLabels
 }
 
@@ -85,9 +91,19 @@ export function ProjectDetail({
   onSave,
   onBack,
   onDelete,
+  onToggleArchive,
   labels,
 }: ProjectDetailProps) {
   const [pressedWhileBlocked, setPressedWhileBlocked] = useState(false)
+  // An archived project is read-only here for the same reason it is read-only
+  // everywhere: the server refuses these writes. Showing an editable form that
+  // could only fail on save would teach the reader the gate is negotiable.
+  const frozen = project.archived === true
+  // `readOnly` arrives meaning "no admin scope". Keep that distinct from the
+  // freeze: the form is read-only for either reason, but only an admin gets the
+  // buttons at all.
+  const canAdmin = !readOnly
+  readOnly = readOnly || frozen
   const reason = saveBlockReason(s, readOnly, {
     readOnly: labels.readOnlyMsg,
     over: labels.over,
@@ -110,7 +126,14 @@ export function ProjectDetail({
             {project.workflow}
           </Badge>
         )}
+        {frozen && <Badge variant="secondary">{labels.archived}</Badge>}
       </div>
+
+      {frozen && (
+        <div className="border-border-soft bg-muted text-muted-foreground rounded-xl border px-3.5 py-3 text-[13px]">
+          {labels.archivedBanner}
+        </div>
+      )}
 
       <div className="flex flex-col gap-4">
         <Field label={labels.langLabel} hint={labels.langHelp}>
@@ -221,7 +244,15 @@ export function ProjectDetail({
             {saving ? labels.saving : labels.save}
           </Button>
           <span className="grow" />
-          {!readOnly && (
+          {/* Archive sits BEFORE delete and stays available on a frozen project
+              — it is the undo. Delete is hidden while archived: reaching for the
+              irreversible one should mean leaving the gate first, deliberately. */}
+          {canAdmin && (
+            <Button variant="secondary" size="sm" onClick={onToggleArchive}>
+              {frozen ? labels.unarchive : labels.archive}
+            </Button>
+          )}
+          {canAdmin && !frozen && (
             <Button variant="destructive" size="sm" onClick={onDelete}>
               {labels.delete}
             </Button>

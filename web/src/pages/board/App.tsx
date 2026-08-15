@@ -464,6 +464,17 @@ function Board({
           localStorage.setItem(LS_LANG, l)
         }}
       >
+        {/* Why nothing on this board can be changed. The board itself only
+            reads, so the freeze would otherwise be invisible here until someone
+            tried to write from another surface and got a 409 with no context. */}
+        {currentProject?.archived === true && (
+          <span
+            title={t.projArchivedHint}
+            className="border-border text-muted-foreground rounded-lg border px-2 py-1 text-[12px] font-[650]"
+          >
+            {t.projArchived}
+          </span>
+        )}
         {/* The filter bank collapses on a phone.
             Measured: at 375px the header was 355px tall — 44% of the viewport —
             leaving 457px of board and 1.3 of 8 columns visible. Hiding these

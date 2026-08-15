@@ -204,8 +204,25 @@ export const STR = defineStrings({
     wfSavedToLibrary: 'Saved to the library.',
     confirmDeleteProjTitle: 'Delete this project?',
     confirmDeleteProjBody:
-      'Deleting {id} removes its tickets, questions, schedules and checklist data. This cannot be undone.',
+      'Deleting {id} removes its tickets, questions, schedules and checklist data. This cannot be undone. To stop work on it without losing anything, archive it instead.',
     confirmDeleteProjYes: 'Delete project',
+
+    // Archive — the reversible alternative to delete.
+    projArchived: 'Archived',
+    projArchivedBanner:
+      'This project is archived. Nothing can be changed under it — tickets, claims, transitions, comments, questions, tags, schedules — and its tickets are out of the ready queue, so no agent is offered work here. Everything is still readable, and nothing was deleted.',
+    projArchive: 'Archive project',
+    projUnarchive: 'Put back to work',
+    confirmArchiveTitle: 'Archive this project?',
+    confirmArchiveBody:
+      'Work on {id} stops: every write is refused and its tickets leave the ready queue. Nothing is deleted and every page still reads, so you can undo this at any time.',
+    confirmArchiveYes: 'Archive project',
+    confirmArchiveForceTitle: 'Someone is working on this project',
+    confirmArchiveForceBody:
+      'A worker holds a live lease on {id}. Archiving now ends that lease — the agent finds out on its next call and stops, and any work it has not written down is lost. Wait for the lease to expire, or archive anyway.',
+    confirmArchiveForceYes: 'End the lease and archive',
+    projArchivedToast: '{id} is archived. Nothing under it can change until you put it back.',
+    projUnarchivedToast: '{id} is back to work.',
 
     // Workflow library
     libTitle: 'Workflow library',
@@ -428,8 +445,24 @@ export const STR = defineStrings({
     wfSavedToLibrary: 'In der Bibliothek gespeichert.',
     confirmDeleteProjTitle: 'Dieses Projekt löschen?',
     confirmDeleteProjBody:
-      'Mit {id} werden dessen Tickets, Fragen, Zeitpläne und Checklisten-Daten entfernt. Das lässt sich nicht rückgängig machen.',
+      'Mit {id} werden dessen Tickets, Fragen, Zeitpläne und Checklisten-Daten entfernt. Das lässt sich nicht rückgängig machen. Wer die Arbeit nur beenden will, ohne etwas zu verlieren, archiviert es stattdessen.',
     confirmDeleteProjYes: 'Projekt löschen',
+
+    projArchived: 'Archiviert',
+    projArchivedBanner:
+      'Dieses Projekt ist archiviert. Darunter lässt sich nichts mehr ändern — Tickets, Claims, Übergänge, Kommentare, Fragen, Tags, Zeitpläne — und seine Tickets sind aus der Ready-Queue, es wird also keinem Agenten mehr Arbeit daraus angeboten. Lesbar bleibt alles, gelöscht wurde nichts.',
+    projArchive: 'Projekt archivieren',
+    projUnarchive: 'Wieder in Betrieb nehmen',
+    confirmArchiveTitle: 'Dieses Projekt archivieren?',
+    confirmArchiveBody:
+      'Die Arbeit an {id} endet: Jeder Schreibzugriff wird abgelehnt und seine Tickets verlassen die Ready-Queue. Gelöscht wird nichts und jede Seite bleibt lesbar — rückgängig machen lässt es sich jederzeit.',
+    confirmArchiveYes: 'Projekt archivieren',
+    confirmArchiveForceTitle: 'Jemand arbeitet gerade an diesem Projekt',
+    confirmArchiveForceBody:
+      'Auf {id} liegt ein aktiver Claim. Ein Archivieren beendet diese Lease jetzt — der Agent erfährt es beim nächsten Aufruf und hört auf; was er nicht festgehalten hat, ist verloren. Warte auf den Ablauf der Lease, oder archiviere trotzdem.',
+    confirmArchiveForceYes: 'Lease beenden und archivieren',
+    projArchivedToast: '{id} ist archiviert. Darunter ändert sich nichts, bis du es zurückholst.',
+    projUnarchivedToast: '{id} ist wieder in Betrieb.',
 
     libTitle: 'Workflow-Bibliothek',
     libSub:

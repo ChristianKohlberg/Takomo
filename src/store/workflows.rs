@@ -249,6 +249,10 @@ impl Store {
     pub fn put_workflow_layout(&self, project: &str, layout: &serde_json::Value) -> ApiResult<()> {
         let raw = layout.to_string();
         self.with_tx(|tx| {
+            // Refused on an archived project like every other write, even though
+            // this one is only cosmetic. The gate is worth more as a rule with no
+            // exceptions to remember than as a rule with one harmless hole.
+            super::helpers::ensure_project_writable(tx, project)?;
             let n = tx.execute(
                 "UPDATE projects SET workflow_layout_json = ?2 WHERE id = ?1",
                 params![project, raw],

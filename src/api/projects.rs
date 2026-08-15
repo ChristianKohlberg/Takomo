@@ -270,6 +270,64 @@ pub async fn put_claim_ttl(
     Ok(Json(project.to_json()))
 }
 
+/// POST /v1/projects/{project}/archive (admin) — freeze the project.
+///
+/// Every write under it is then refused with a 409 `project.archived` — tickets,
+/// claims, transitions, comments, questions, tags, schedules, checklist, and the
+/// project's own settings — and its tickets leave the ready queue. Reads are
+/// untouched, so the board, the history and the export all still answer.
+///
+/// `?force=true` archives even while a worker holds a lease, releasing those
+/// leases (see [`Store::set_project_archived`]). Without it, a live claim is a
+/// 409 `project.active_claims`, because archiving would otherwise freeze that
+/// worker mid-lease with no call left that it could make. Same spelling as
+/// `DELETE /v1/projects/{project}?force=true`, which overrides the same guard.
+///
+/// A POST rather than a `PUT .../archived` flag: this is an act with
+/// consequences for everyone working the project, not a field being set, and the
+/// undo is a different act with a different name. It takes no body at all — a
+/// caller with nothing to say should not have to send `{}`.
+///
+/// [`Store::set_project_archived`]: crate::store::Store::set_project_archived
+pub async fn archive(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let force = matches!(first(&pairs, "force"), Some("true" | "1"));
+    let project = state
+        .store
+        .set_project_archived(&project, true, force, &ctx.actor)?;
+    // Wakes the long-pollers so a worker parked on /v1/ready re-runs the query
+    // and stops seeing this project's tickets, instead of waiting out its poll
+    // against a queue that has already changed.
+    state.wake();
+    Ok(Json(project.to_json()))
+}
+
+/// POST /v1/projects/{project}/unarchive (admin) — put the project back to work.
+///
+/// The undo, and the reason archiving is safe to reach for: nothing was moved or
+/// deleted, so this restores the project exactly as it stood. Idempotent on a
+/// live project.
+pub async fn unarchive(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let project = state
+        .store
+        .set_project_archived(&project, false, false, &ctx.actor)?;
+    state.wake();
+    Ok(Json(project.to_json()))
+}
+
 /// DELETE /v1/projects/{project} (admin) — cascade-delete the project and every
 /// ticket, comment, dep, event, question (with its follow-up thread and answer
 /// grants), promotion, and tag registry entry under it, in one transaction.
