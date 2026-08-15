@@ -323,10 +323,38 @@ pub fn body_object(body: &Value) -> ApiResult<&serde_json::Map<String, Value>> {
     })
 }
 
+/// A NUL is the one character a JSON string can carry that a database column
+/// cannot.
+///
+/// `serde_json` decodes `"\u0000"` into a real NUL in a Rust `String`. SQLite
+/// stores it happily; Postgres rejects the whole statement with
+/// `22021 invalid byte sequence for encoding "UTF8": 0x00`, so the same request
+/// that returned 201 before the port returns an opaque 500 after it — and an
+/// existing SQLite store containing one cannot be copied into Postgres at all.
+///
+/// Rejected here, at the boundary, so BOTH engines answer the same way and the
+/// answer teaches. Not stripped: silently altering stored text is worse than
+/// refusing it.
+fn reject_nul(key: &str, s: &str) -> ApiResult<()> {
+    if s.contains('\0') {
+        return Err(ApiError::bad_request(
+            "validation.field_type",
+            format!(
+                "Field '{key}' contains a NUL character (\\u0000), which cannot be stored. \
+                 Remove it — most often it arrives from a truncated or binary-tainted string."
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn get_str(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Option<String>> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(Value::String(s)) => {
+            reject_nul(key, s)?;
+            Ok(Some(s.clone()))
+        }
         Some(_) => Err(ApiError::bad_request(
             "validation.field_type",
             format!("Field '{key}' must be a string."),

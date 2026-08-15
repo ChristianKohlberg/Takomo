@@ -857,7 +857,13 @@ fn materialize_one(
     let mut inserted = false;
     for attempt in 0..8 {
         let candidate = format!("{}-{}", sched.project, ticket_suffix(4 + attempt / 4));
-        let res = conn.execute(
+        // Inside a savepoint: this INSERT is EXPECTED to fail sometimes (an id
+        // collision retries, an occurrence collision is the exactly-once
+        // guarantee refusing a duplicate). On Postgres a failed statement aborts
+        // the whole transaction, so without the savepoint the retry below is dead
+        // code and the caught occurrence conflict silently rolls back everything
+        // the transaction had done while still reporting success.
+        let res = conn.savepoint(|| conn.execute(
             "INSERT INTO tickets (id, project, type, title, body, state, priority, labels, tags, metadata, links, schedule, occurrence, expires_at, created_by, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', '{}', ?10, ?11, ?12, ?13, ?14, ?14)",
             params![
@@ -876,7 +882,7 @@ fn materialize_one(
                 format!("schedule:{}", sched.id),
                 now,
             ],
-        );
+        ));
         match res {
             Ok(_) => {
                 ticket_id = candidate;

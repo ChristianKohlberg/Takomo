@@ -1986,7 +1986,16 @@ fn openapi_properties(schema: &str) -> Vec<String> {
 /// The `tickets` columns the running server's database actually has, i.e. list 1
 /// (SCHEMA plus whatever `migrate()` added) as SQLite sees it.
 fn tickets_table_columns(app: &TestApp) -> Vec<String> {
-    let cols = app.table_columns("tickets");
+    // `seq` is dropped here, and only here: on `tickets` it is the explicit
+    // stand-in for SQLite's implicit `rowid`, which never appears in
+    // `PRAGMA table_info` either. It is not part of the model and never reaches
+    // the wire, so counting it would make the backends disagree about a column
+    // that by design has no wire representation.
+    let cols: Vec<String> = app
+        .table_columns("tickets")
+        .into_iter()
+        .filter(|c| c != "seq")
+        .collect();
     assert!(
         cols.len() > 5,
         "tickets has {} columns — the table this guard reads is gone",
@@ -3779,6 +3788,119 @@ async fn token_admin_endpoints_require_admin_scope() {
         .unwrap()
         .iter()
         .any(|v| v == "admin"));
+}
+
+/// A NUL in a JSON string is the one character a column cannot hold: SQLite
+/// stored it, Postgres rejected the statement outright, so the same request
+/// returned 201 on one backend and an opaque 500 on the other — and any store
+/// already containing one could not be migrated. Both engines now refuse it at
+/// the boundary, with an error that says why.
+#[tokio::test]
+async fn nul_in_a_text_field_is_refused_with_a_teaching_error_on_both_backends() {
+    let app = TestApp::spawn().await;
+    for (route, body) in [
+        ("/v1/tickets", json!({"project":"tp","title":"a\u{0}b"})),
+        (
+            "/v1/tickets",
+            json!({"project":"tp","title":"ok","body":"a\u{0}b"}),
+        ),
+        ("/v1/projects", json!({"id":"nulproj","name":"a\u{0}b"})),
+    ] {
+        let (status, err) = app.post(&app.admin, route, body).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{route} accepted a NUL: {err}"
+        );
+        assert_eq!(err["code"], "validation.field_type", "{err}");
+        assert!(
+            err["message"].as_str().unwrap().contains("NUL"),
+            "the error must name the problem: {err}"
+        );
+    }
+}
+
+/// The schema-parity gate. `every_ticket_column_reaches_the_wire` covered ONE of
+/// 29 tables, which is how `schedule_approval` reached Postgres missing (and
+/// then with a default that silently flipped agent-proposed schedules from
+/// "needs a human" to "auto-active"). This compares EVERY table's column set
+/// against the SQLite schema, so the next omission fails here instead of in
+/// production.
+///
+/// SQLite-side only when running against SQLite — there is nothing to compare
+/// it with — so the assertion that matters runs in the Postgres arm.
+#[tokio::test]
+async fn every_table_has_the_same_columns_on_both_backends() {
+    let app = TestApp::spawn().await;
+    if !app.is_pg() {
+        return;
+    }
+    // The SQLite column sets, captured from a throwaway store built by the REAL
+    // code path (SCHEMA + migrate()), so this cannot drift from what ships.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db = tmp.path().join("parity.db");
+    takomo::store::Store::open(&db).expect("open sqlite");
+    let conn = rusqlite::Connection::open(&db).expect("introspect sqlite");
+
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+            .expect("list tables");
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("tables")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("tables");
+        rows
+    };
+    assert!(
+        tables.len() >= 29,
+        "expected the full schema, got {} tables",
+        tables.len()
+    );
+
+    let mut mismatches = Vec::new();
+    for table in &tables {
+        let mut want: Vec<String> = {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("table_info");
+            stmt.query_map([], |r| r.get::<_, String>(1))
+                .expect("cols")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("cols")
+        };
+        // The five tables whose SQL ordered by `rowid`; `seq` is its explicit
+        // replacement and exists only on the Postgres side there. Everywhere
+        // else — notably `events` and `releases` — `seq` is a real column in
+        // both schemas and must match like any other.
+        const ROWID_REPLACED: [&str; 5] = [
+            "tickets",
+            "promotions",
+            "case_verdicts",
+            "initiatives",
+            "initiative_entries",
+        ];
+        let mut got: Vec<String> = app
+            .table_columns(table)
+            .into_iter()
+            .filter(|c| !(c == "seq" && ROWID_REPLACED.contains(&table.as_str())))
+            .collect();
+        want.sort();
+        got.sort();
+        if want != got {
+            let missing: Vec<_> = want.iter().filter(|c| !got.contains(c)).collect();
+            let extra: Vec<_> = got.iter().filter(|c| !want.contains(c)).collect();
+            mismatches.push(format!(
+                "{table}: missing in postgres {missing:?}, extra in postgres {extra:?}"
+            ));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "SQLite and Postgres schemas disagree:\n{}",
+        mismatches.join("\n")
+    );
 }
 
 #[tokio::test]

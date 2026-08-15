@@ -138,6 +138,11 @@ CREATE UNIQUE INDEX idx_tickets_seq ON tickets(seq);
 CREATE INDEX idx_tickets_project_state ON tickets(project, state);
 CREATE INDEX idx_tickets_parent ON tickets(parent);
 CREATE INDEX idx_tickets_claim ON tickets(claim_holder) WHERE claim_holder IS NOT NULL;
+-- Added by migrate() on SQLite (src/store/mod.rs) rather than by SCHEMA, which
+-- is why it was missed the first time — the same class of omission that made
+-- schedule_approval's default wrong. Performance only: without it the default
+-- `archived_at IS NULL` filter and `archived=only` degrade to a scan.
+CREATE INDEX idx_tickets_archived ON tickets(archived_at) WHERE archived_at IS NOT NULL;
 
 CREATE TABLE deps (
   ticket     TEXT NOT NULL REFERENCES tickets(id),

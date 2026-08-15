@@ -349,11 +349,13 @@ impl TestApp {
 
     /// The columns `table` actually has, on whichever backend is live.
     ///
-    /// `seq` is filtered out on Postgres deliberately. It is the explicit
-    /// replacement for SQLite's implicit `rowid`, and `rowid` never appears in
-    /// `PRAGMA table_info` either — so including it would make the two backends
-    /// disagree about a column that, by design, is not part of the model and
-    /// never reaches the wire.
+    /// Returns the columns exactly as the live backend has them. Callers decide
+    /// what to do about `seq`, because its meaning is table-dependent: on
+    /// `events` and `releases` it is a real column in BOTH schemas, while on the
+    /// five rowid-replacement tables it exists only on Postgres. Filtering it
+    /// unconditionally here made those first two look like they had a missing
+    /// column — which is exactly what the schema-parity test caught on its
+    /// first run.
     pub fn table_columns(&self, table: &str) -> Vec<String> {
         match (&self.pg_schema, std::env::var("TAKOMO_TEST_PG")) {
             (Some(schema), Ok(url)) => {
@@ -372,7 +374,6 @@ impl TestApp {
                         .expect("information_schema")
                         .iter()
                         .map(|r| r.get::<_, String>(0))
-                        .filter(|c| c != "seq")
                         .collect()
                     })
                     .join()

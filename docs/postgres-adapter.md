@@ -224,79 +224,99 @@ Postgres as it is today.
   queue, but other multi-statement invariants in the store have not been audited
   for it.
 
-## Result: parity
+## Result: parity, and what an adversarial review found in it
 
 The same suite, unchanged, against both engines:
 
 | suite | SQLite | Postgres |
 |---|---:|---:|
-| unit (`--lib`) | 73 | 73 |
-| `src/main.rs` | 4 | 4 |
-| `tests/api.rs` | 198 | 198 |
+| unit (`--lib`) | 80 | 80 (SQLite-backed — see below) |
+| `src/main.rs` | 4 | 4 (no database) |
+| `tests/api.rs` | 200 | 200 |
 | `tests/mcp.rs` | 37 | 37 |
 | `tests/oauth.rs` | 36 | 36 |
-| **total** | **348** | **348** |
+| **total** | **357** | **357** |
+
+**Read that table carefully — an earlier version of it was misleading.** The 84
+unit and `main.rs` tests call `Store::open` unconditionally, so they are the same
+SQLite tests in both columns. Postgres genuinely exercises **273** of the 357.
+A direct consequence: `seed::dev`, the whole seeding path, has NO Postgres
+coverage.
 
 `TAKOMO_TEST_PG=postgres://... cargo test` runs the Postgres arm; without it the
-suite is SQLite as before. `clippy --all-targets -D warnings` and `fmt --check`
-clean.
+suite is SQLite as before. It also depends on undocumented infrastructure:
+`max_connections` must be well above the Postgres default of 100, because each
+`TestApp` opens one writer plus four readers.
 
-That number is the whole claim. The tests were not rewritten to accommodate
-Postgres — they drive the real HTTP surface and know nothing about the backend,
-so a green run is evidence about behaviour rather than about the port's own
-opinion of itself.
+### The number was real and its coverage was narrow
 
-## What the port found that a port is supposed to find
+Five adversarial reviews were run against this branch. Every one found defects
+that 348 green tests had not, and the most severe were in code written FOR the
+port:
 
-Five things that would each have been a silent production defect:
+- **A remote DoS.** `to_pg_dialect` looped forever on two `json_each` calls,
+  reachable on `GET /v1/tickets?label=a&label=b` with a read-only token. No test
+  passed two label filters at once.
+- **Six lost-update defects**, each proven green on SQLite and red on Postgres:
+  the workflow state machine could be bypassed, exactly-one-claimant was gone,
+  OAuth codes were replayable, refresh-token reuse went undetected, a human's
+  answer could be silently overwritten, and the ask-a-human barrier could strand
+  a ticket permanently.
+- **A torn-read regression** needing no external writer and no second instance.
 
-1. **The sync driver cannot be called from inside a tokio runtime.** The
-   `postgres` crate drives its own runtime, and `block_on` panics on a thread
-   already inside one — which every axum handler is. Connecting, querying AND
-   dropping the client all run on a scoped thread. The `Drop` case was the worst:
-   unwinding from a failed assertion drops the `Store`, the destructor panics
-   during that unwind, and the double panic aborted the test binary with SIGABRT,
-   so one ordinary failure destroyed the other 197 results.
+All are fixed, with a regression test each. The lesson worth keeping is not that
+the port was wrong but that **a green suite measures the tests, not the port** —
+the mutation experiment made this concrete: injecting faults into the Postgres
+`glob()` translator in BOTH directions left the suite green, because that code
+turned out to be unreachable.
 
-2. **`patch_ticket` was only safe because SQLite locks the whole database.** It
-   reads a ticket, merges `links` in Rust, writes it back. On SQLite nothing can
-   commit in between. On Postgres at READ COMMITTED another writer can, and the
-   merge then resurrects a key that writer just deleted — a lost update, in the
-   path whose comment says it exists to prevent exactly that.
-   `get_ticket_for_update` takes a row lock; `FOR UPDATE` is stripped on the
-   SQLite arm, which neither supports nor needs it.
+## Why the retained mutex was not the guarantee it looked like
 
-3. **A guessed default changed the security posture.** `schedule_approval` is
-   added by `migrate()` rather than by `SCHEMA`, so it was missing from the first
-   translation; added back with `DEFAULT 0`, it silently turned agent-proposed
-   schedules from "wait for a human" into "activate yourself".
+This document previously argued that keeping the writer mutex preserved "every
+concurrency property by construction". That is true only for writers **inside one
+process**, and it was wrong in two ways:
 
-4. **Postgres's stricter grouping exposed ambiguous SQL of our own.** Three
-   rollups grouped by `t.state` while a correlated subquery read `t.project`, so
-   SQLite was free to take the category from an arbitrary row. Rewritten as LEFT
-   JOINs grouped on the joined column — better SQL on both engines.
+1. This product ships external writers by design — `takomo token|project|seed`
+   operate on the database directly.
+2. `with_conn` does not take the writer mutex at all, so multi-statement reads
+   tore against ordinary in-process writes. The reader pool is now
+   `REPEATABLE READ`, which restores the one-snapshot-per-closure property
+   `with_conn`'s own doc comment calls load-bearing.
 
-5. **Two dynamic queries mixed `?1` and bare `?`.** SQLite numbered them
-   correctly by luck. The shim refuses the mix rather than guessing, which is how
-   they surfaced.
+The fix applied throughout is **not** to lock everything. It is the pattern
+`answer_grants::spend_grant` already used correctly: make the guard and the write
+one atomic step — `AND status = 'open'`, `AND used_at IS NULL`,
+`AND rotated_at IS NULL`, `AND claim_holder = ?`, `AND state = ?<from>` — and map
+zero rows onto the teaching 409 the Rust-side check already produced. Every such
+predicate is unfalsifiable on SQLite, so behaviour there is unchanged.
 
-## What is NOT done
+`FOR UPDATE` is used only where a genuine read-modify-write cannot be expressed
+as one conditional statement: `patch_ticket`'s links merge, and the answer path,
+where locking the ticket row is also what serializes the barrier count.
 
-- **The SQLite arm is still there.** The port is one-way by intent; the second
-  backend exists so the two can be compared and is deleted when this lands.
-- **`Store::snapshot_into` is SQLite-only.** It copies the database file, WAL
-  included. The Postgres equivalent is `pg_dump`/basebackup — a different
-  mechanism producing a different artifact — so `/v1/export`'s snapshot form has
-  no Postgres implementation yet, and its test stands down there.
-- **The read-modify-write audit is one deep, not exhaustive.** Finding 2 was
-  fixed where a test caught it. Every other read-then-write inside `with_tx` has
-  the same shape and has NOT been reviewed. Within one takomo process the writer
-  mutex still serializes them; the exposure is an external writer, which this
-  product has by design (`takomo token|project|seed` operate on the database
-  directly).
-- **Performance is unmeasured beyond the earlier micro-benchmark.** The suite
-  runs ~7x slower on Postgres, but that is dominated by creating a 29-table
-  schema per test, not by the store.
+## What is still NOT done
+
+- **The SQLite arm is still there.** One-way by intent; the second backend exists
+  so the two can be compared and is deleted when this lands.
+- **Postgres has no migration path.** `migrate()` is SQLite-only;
+  `connect_pg_in` creates the schema once and never alters it. A second
+  deployment of a changed schema has nothing to run.
+- **`Store::snapshot_into` is SQLite-only** — it copies the database file, WAL
+  included. `pg_dump` is the Postgres answer and is not wired up.
+- **Nine SUSPECTED lost updates remain unprobed**, all the same shape as the six
+  that were fixed: `patch_initiative` (the `patch_ticket` bug, on the one SPA
+  that writes), `patch_tag`, `patch_schedule`/`set_schedule_status` (whose
+  `If-Match` CAS is therefore decorative), `append_initiative_entry`'s byte caps,
+  and the contended-INSERT paths that surface a race as a 500 rather than a
+  teaching 409 — including `Idempotency-Key`, which stops being idempotent under
+  contention.
+- **NUL rejection is enforced at the REST boundary and backstopped in the shim**,
+  but MCP tool arguments arrive through serde-derived structs and do not pass
+  through `api::get_str`, so they hit the backstop's opaque error rather than a
+  teaching one.
+- **`impl ToSql for Value` declares `accepts(_) = true`**, so a future
+  variant/column mismatch is bound in the wrong binary format and can be silently
+  accepted rather than rejected. Every current construction site is type-correct.
 
 ## Not in scope for the spike
 

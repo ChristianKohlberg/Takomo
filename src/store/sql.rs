@@ -390,14 +390,37 @@ pub enum Backend<'a> {
     Pg(&'a dyn PgExec),
 }
 
+/// Refuse a NUL in a bound string, on BOTH engines.
+///
+/// The REST layer rejects these at the boundary with a teaching error
+/// (`api::get_str`). This is the backstop for every other path — MCP tool
+/// arguments arrive through serde-derived structs and do not pass through that
+/// funnel. Without it the two engines disagree: SQLite stores the NUL and
+/// Postgres fails the statement, so the same call succeeds on one backend and
+/// 500s on the other, and any store holding such a row cannot be migrated.
+fn reject_nul_params(params: &[Value]) -> Result<()> {
+    for v in params {
+        if let Value::Text(t) = v {
+            if t.contains('\0') {
+                return Err(Error::new(
+                    "a bound string contains a NUL character (\\u0000), which cannot be stored",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Backend<'_> {
     fn query(&self, sql: &str, params: Vec<Value>) -> Result<Vec<Row>> {
+        reject_nul_params(&params)?;
         match self {
             Backend::Sqlite(c) => sqlite_query(c, sql, params),
             Backend::Pg(t) => t.pg_query(sql, params),
         }
     }
     fn execute(&self, sql: &str, params: Vec<Value>) -> Result<usize> {
+        reject_nul_params(&params)?;
         match self {
             Backend::Sqlite(c) => sqlite_execute(c, sql, params),
             Backend::Pg(t) => t.pg_execute(sql, params),
@@ -699,6 +722,39 @@ impl<'a> Conn<'a> {
         F: FnOnce(&Row) -> Result<T>,
     {
         first_row(self.be.query(sql, params.into_values())?).and_then(|r| f(&r))
+    }
+}
+
+impl Conn<'_> {
+    /// Run `f` inside a savepoint, so an error it RETURNS does not poison the
+    /// enclosing transaction.
+    ///
+    /// Postgres aborts the whole transaction on any error: every later statement
+    /// fails `25P02`, and — worse — `COMMIT` on an aborted transaction silently
+    /// performs a ROLLBACK and reports success, so `with_tx` can return `Ok`
+    /// while everything it did was discarded. SQLite has neither behaviour,
+    /// which is why the catch-and-continue in `schedules::materialize_one` (retry
+    /// on an id collision) worked there and was dead code here.
+    ///
+    /// On the SQLite arm this is a plain call: there is nothing to protect
+    /// against, and SAVEPOINT would only add round trips.
+    pub fn savepoint<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        let Backend::Pg(_) = self.be else {
+            return f();
+        };
+        self.execute("SAVEPOINT tk_sp", [])?;
+        match f() {
+            Ok(v) => {
+                self.execute("RELEASE SAVEPOINT tk_sp", [])?;
+                Ok(v)
+            }
+            Err(e) => {
+                // Rewind to the savepoint: the transaction becomes usable again
+                // and the caller's error is returned intact.
+                self.execute("ROLLBACK TO SAVEPOINT tk_sp", [])?;
+                Err(e)
+            }
+        }
     }
 }
 
