@@ -225,8 +225,19 @@ impl Store {
             for _ in 0..READ_CONNECTIONS {
                 let mut c = postgres::Client::connect(&url_owned, postgres::NoTls)
                     .map_err(|e| ApiError::internal(format!("cannot connect reader: {e}")))?;
+                // REPEATABLE READ, not the Postgres default. `with_conn`'s doc
+                // comment says its one-snapshot-per-closure property is "not
+                // decoration" — several reads here are multi-statement (export
+                // scans tickets then queries deps and comments per ticket). On
+                // SQLite a DEFERRED transaction gives that for free; at READ
+                // COMMITTED Postgres takes a FRESH snapshot per statement, so an
+                // ordinary in-process write tears the read. That needs no
+                // external writer and no second instance — the retained writer
+                // mutex does not cover it, because with_conn does not take it.
                 c.batch_execute(&format!(
-                    "SET search_path TO {schema_owned}; SET default_transaction_read_only = on"
+                    "SET search_path TO {schema_owned}; \
+                     SET default_transaction_read_only = on; \
+                     SET default_transaction_isolation = 'repeatable read'"
                 ))
                 .map_err(|e| ApiError::internal(format!("reader setup failed: {e}")))?;
                 readers.push(Mutex::new(c));

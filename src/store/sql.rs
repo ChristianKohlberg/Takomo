@@ -753,180 +753,241 @@ impl<T> OptionalExtension<T> for Result<T> {
 
 /// Rewrite the SQLite-only constructs this store uses into Postgres.
 ///
-/// Applied together with [`to_pg_placeholders`] on every statement heading for
-/// Postgres. Each rule is here rather than at the call sites because the store
-/// is one body of SQL that has to keep reading as SQLite — the port is a change
-/// of engine, not a fork of the queries.
+/// ONE left-to-right pass. Every byte is emitted into `out` and never re-scanned,
+/// which is what makes non-termination structurally impossible.
 ///
-/// * `rowid` -> `seq`. SQLite's implicit counter, made an explicit column by
-///   `migrations/postgres/0001_init.sql`. Covers `t.rowid`, bare `rowid` and
-///   `MAX(rowid)`.
+/// The previous version re-scanned its own output and **looped forever** on any
+/// statement containing two `json_each(` calls — its replacement text contains
+/// the literal `json_each(` in the alias, so `find` kept re-locating what it had
+/// just written. That was a remote denial of service reachable on
+/// `GET /v1/tickets?label=a&label=b`, `/v1/ready`, `POST /v1/claim` and the MCP
+/// equivalents, with an ordinary read token and no write budget. The comment
+/// above that loop asserted it terminated, which is why it shipped; the whole
+/// suite stayed green because no test passes two label filters at once.
+///
+/// Rules applied, each only outside string literals, quoted identifiers and
+/// comments — text inside those is DATA, and rewriting it changes meaning:
+/// * `rowid` -> `seq`, word-boundary matched, so an identifier merely CONTAINING
+///   "rowid" is untouched.
 /// * `json_each(X)` -> `jsonb_array_elements_text((X)::jsonb) AS json_each(value)`.
-///   Aliasing the set-returning function BACK to `json_each(value)` is what lets
-///   the existing `WHERE json_each.value = ?` keep resolving, so the label and
-///   tag filters are untouched.
-/// * `A GLOB B` -> `glob(A, B)`, a function the schema defines. Postgres has no
-///   GLOB operator and no equivalent semantics in LIKE.
-/// * `INSERT OR IGNORE` -> `INSERT ... ON CONFLICT DO NOTHING`.
+///   Aliasing back to `json_each(value)` keeps the existing
+///   `WHERE json_each.value = ?` predicates resolving unchanged.
+/// * `SUM(x)` -> `(SUM(x))::bigint`, because Postgres `SUM(bigint)` returns
+///   NUMERIC and the store reads those totals as i64. Case-insensitive and
+///   word-boundary matched: the old substring match turned `CHECKSUM(x)` into
+///   `CHECK(SUM(x))` and missed lowercase `sum(`.
+/// * `INSERT OR IGNORE` -> `INSERT ... ON CONFLICT DO NOTHING`, inserted before
+///   any trailing `RETURNING` rather than appended at the end.
+///
+/// There is deliberately NO `GLOB` rule. Postgres has no GLOB operator, but no
+/// SQL in this store emits one either — checklist matching is done in Rust by
+/// `checklist::glob_matches`. The rewrite that used to live here mis-parsed
+/// every operand more complex than a bare column (`lower(p) GLOB ?1` became
+/// `lower(glob(p), $1)`), i.e. it was a broken translator with no users. A unit
+/// test below asserts the store still emits no ` GLOB `, so this cannot silently
+/// become load-bearing.
 fn to_pg_dialect(sql: &str) -> String {
-    let mut out = rewrite_outside_literals(sql, |tok| match tok {
-        "rowid" => Some("seq".to_string()),
-        _ => None,
-    });
-
-    // json_each(<expr>) — scan for the call and rewrite it with its argument.
-    while let Some(at) = out.find("json_each(") {
-        let open = at + "json_each(".len();
-        let mut depth = 1;
-        let mut i = open;
-        let bytes = out.as_bytes();
-        while i < bytes.len() && depth > 0 {
-            match bytes[i] {
-                b'(' => depth += 1,
-                b')' => depth -= 1,
-                _ => {}
-            }
-            i += 1;
-        }
-        let arg = &out[open..i - 1];
-        let replacement = format!("jsonb_array_elements_text(({arg})::jsonb) AS json_each(value)");
-        out = format!("{}{}{}", &out[..at], replacement, &out[i..]);
-        // Guard: the replacement contains no "json_each(" of its own except the
-        // alias, which has no trailing paren-arg form, so the loop terminates.
-        if !out[at + replacement.len()..].contains("json_each(") {
-            break;
-        }
-    }
-
-    // `A GLOB B` -> `glob(A, B)`. Both operands here are always a simple column
-    // or placeholder, which is what makes the narrow parse safe.
-    while let Some(at) = out.find(" GLOB ") {
-        let (lhs_start, lhs) = {
-            let before = &out[..at];
-            let start = before
-                .rfind(|c: char| c.is_whitespace() || c == '(')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            (start, before[start..].to_string())
-        };
-        let after = &out[at + " GLOB ".len()..];
-        let end = after
-            .find(|c: char| c.is_whitespace() || c == ')')
-            .unwrap_or(after.len());
-        let rhs = &after[..end];
-        let rest = &after[end..];
-        out = format!("{}glob({}, {}){}", &out[..lhs_start], lhs, rhs, rest);
-    }
-
-    // Postgres `SUM(bigint)` returns NUMERIC, and every SUM in this store is
-    // over an integer column read back as i64 (entry `chars`, `text_bytes`,
-    // `content_bytes`, and counts). Casting at the query keeps the Rust side
-    // unchanged and avoids a decimal dependency for values that are always
-    // integral. Handled here rather than in the type mapping because a NUMERIC
-    // arriving from anywhere else should still be a loud error, not a silent
-    // truncation.
-    out = wrap_calls(&out, "SUM(", "::bigint");
-
-    if let Some(rest) = out.strip_prefix("INSERT OR IGNORE") {
-        out = format!("INSERT{rest} ON CONFLICT DO NOTHING");
-    }
-    out
-}
-
-/// Wrap every `name(...)` call in parentheses and append `suffix`, e.g.
-/// `SUM(x)` -> `(SUM(x))::bigint`. Paren-matched so nested calls survive.
-fn wrap_calls(sql: &str, open_tok: &str, suffix: &str) -> String {
-    let mut out = sql.to_string();
-    let mut from = 0usize;
-    while let Some(rel) = out[from..].find(open_tok) {
-        let at = from + rel;
-        let open = at + open_tok.len();
-        let b = out.as_bytes();
-        let mut depth = 1;
-        let mut i = open;
-        while i < b.len() && depth > 0 {
-            match b[i] {
-                b'(' => depth += 1,
-                b')' => depth -= 1,
-                _ => {}
-            }
-            i += 1;
-        }
-        if depth != 0 {
-            break; // unbalanced; leave the statement alone
-        }
-        let call = &out[at..i];
-        let replacement = format!("({call}){suffix}");
-        let next = at + replacement.len();
-        out = format!("{}{}{}", &out[..at], replacement, &out[i..]);
-        from = next;
-    }
-    out
-}
-
-/// Apply `f` to each bare word outside string literals, quoted identifiers and
-/// comments. Shares the scanner discipline of [`to_pg_placeholders`]: a word
-/// inside a literal is data.
-fn rewrite_outside_literals(sql: &str, f: impl Fn(&str) -> Option<String>) -> String {
     let b = sql.as_bytes();
-    let mut out = String::with_capacity(sql.len());
+    let mut out = String::with_capacity(sql.len() + 64);
     let mut i = 0;
+
     while i < b.len() {
-        match b[i] as char {
-            '\'' => {
-                out.push('\'');
-                i += 1;
-                while i < b.len() {
-                    if b[i] == b'\'' {
-                        if i + 1 < b.len() && b[i + 1] == b'\'' {
-                            out.push_str("''");
-                            i += 2;
-                            continue;
-                        }
-                        out.push('\'');
-                        i += 1;
-                        break;
-                    }
-                    out.push(b[i] as char);
-                    i += 1;
-                }
-            }
-            '"' => {
-                out.push('"');
-                i += 1;
-                while i < b.len() {
-                    out.push(b[i] as char);
-                    let end = b[i] == b'"';
-                    i += 1;
-                    if end {
-                        break;
-                    }
-                }
-            }
-            '-' if i + 1 < b.len() && b[i + 1] == b'-' => {
-                while i < b.len() && b[i] != b'\n' {
-                    out.push(b[i] as char);
-                    i += 1;
-                }
-            }
-            c if c.is_alphanumeric() || c == '_' => {
+        match b[i] {
+            b'\'' => copy_delimited(sql, &mut out, &mut i, b'\'', true),
+            b'"' => copy_delimited(sql, &mut out, &mut i, b'"', false),
+            b'-' if b.get(i + 1) == Some(&b'-') => {
                 let start = i;
-                while i < b.len() && ((b[i] as char).is_alphanumeric() || b[i] == b'_') {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                out.push_str(&sql[start..i]);
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let start = i;
+                i += 2;
+                while i < b.len() && !(b[i] == b'*' && b.get(i + 1) == Some(&b'/')) {
+                    i += 1;
+                }
+                i = (i + 2).min(b.len());
+                out.push_str(&sql[start..i]);
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
                 let word = &sql[start..i];
-                match f(word) {
-                    Some(r) => out.push_str(&r),
-                    None => out.push_str(word),
+                let after = skip_ws(b, i);
+                let call_open = (b.get(after) == Some(&b'(')).then_some(after);
+
+                match (word, call_open) {
+                    (w, Some(open)) if w.eq_ignore_ascii_case("json_each") => {
+                        match matching_paren(b, open) {
+                            Some(close) => {
+                                out.push_str(&format!(
+                                    "jsonb_array_elements_text(({})::jsonb) AS json_each(value)",
+                                    &sql[open + 1..close]
+                                ));
+                                i = close + 1;
+                            }
+                            // Unbalanced: emit verbatim and let Postgres report
+                            // it, rather than guessing and eating a character.
+                            None => out.push_str(word),
+                        }
+                    }
+                    (w, Some(open)) if w.eq_ignore_ascii_case("sum") => {
+                        match matching_paren(b, open) {
+                            Some(close) => {
+                                out.push('(');
+                                out.push_str(&sql[start..=close]);
+                                out.push_str(")::bigint");
+                                i = close + 1;
+                            }
+                            None => out.push_str(word),
+                        }
+                    }
+                    (w, _) if w.eq_ignore_ascii_case("rowid") => out.push_str("seq"),
+                    _ => out.push_str(word),
                 }
             }
-            c => {
-                out.push(c);
-                i += 1;
+            _ => {
+                // Copy one whole UTF-8 character. `bytes[i] as char` was the old
+                // bug: it turned each byte of a multi-byte sequence into its own
+                // char and re-encoded it, so the em-dash in the ready-queue
+                // comment (claims.rs) went out as mojibake on every /v1/ready.
+                let len = utf8_len(b[i]).min(b.len() - i);
+                out.push_str(&sql[i..i + len]);
+                i += len;
             }
         }
     }
-    out
+
+    rewrite_insert_or_ignore(&out)
+}
+
+/// `INSERT OR IGNORE ...` -> `INSERT ... ON CONFLICT DO NOTHING`.
+///
+/// Tolerant of leading whitespace and case, and it places the clause BEFORE any
+/// trailing `RETURNING` — appending at the very end produced invalid SQL the
+/// moment such a statement returned anything.
+fn rewrite_insert_or_ignore(sql: &str) -> String {
+    const PREFIX: &str = "INSERT OR IGNORE";
+    let lead_len = sql.len() - sql.trim_start().len();
+    let (lead, body) = sql.split_at(lead_len);
+    if body.len() < PREFIX.len() || !body[..PREFIX.len()].eq_ignore_ascii_case(PREFIX) {
+        return sql.to_string();
+    }
+    let rest = &body[PREFIX.len()..];
+    match find_returning(rest) {
+        Some(at) => format!(
+            "{lead}INSERT{} ON CONFLICT DO NOTHING {}",
+            rest[..at].trim_end(),
+            &rest[at..]
+        ),
+        None => format!("{lead}INSERT{rest} ON CONFLICT DO NOTHING"),
+    }
+}
+
+/// Index of a top-level `RETURNING` keyword, ignoring string literals.
+fn find_returning(sql: &str) -> Option<usize> {
+    let b = sql.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\'' {
+            let mut j = i + 1;
+            while j < b.len() {
+                if b[j] == b'\'' {
+                    if b.get(j + 1) == Some(&b'\'') {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            i = j + 1;
+            continue;
+        }
+        if (b[i].is_ascii_alphabetic() || b[i] == b'_')
+            && sql[i..].len() >= 9
+            && sql[i..i + 9].eq_ignore_ascii_case("RETURNING")
+            && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_'))
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Copy a `'...'` literal or a `"..."` identifier through verbatim, honouring
+/// SQL's doubled-quote escape when `doubling` is set.
+fn copy_delimited(sql: &str, out: &mut String, i: &mut usize, q: u8, doubling: bool) {
+    let b = sql.as_bytes();
+    let start = *i;
+    *i += 1;
+    while *i < b.len() {
+        if b[*i] == q {
+            if doubling && b.get(*i + 1) == Some(&q) {
+                *i += 2;
+                continue;
+            }
+            *i += 1;
+            break;
+        }
+        *i += 1;
+    }
+    out.push_str(&sql[start..*i]);
+}
+
+fn utf8_len(first: u8) -> usize {
+    match first {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    }
+}
+
+fn skip_ws(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && (b[i] as char).is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Index of the `)` matching the `(` at `open`, or None if unbalanced. Parens
+/// inside string literals do not count.
+fn matching_paren(b: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'\'' => {
+                i += 1;
+                while i < b.len() {
+                    if b[i] == b'\'' {
+                        if b.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Rewrite SQLite placeholders into Postgres ones.
@@ -1062,6 +1123,129 @@ pub fn to_pg_placeholders(sql: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- to_pg_dialect: every case below is a defect found by adversarial
+    // ---- review, and every one of them shipped green through 348 tests.
+
+    /// The remote DoS. Two `json_each` calls in one statement made the old
+    /// rewriter re-scan its own output forever, because the replacement it
+    /// writes contains the literal `json_each(` in its alias. Reachable on
+    /// `GET /v1/tickets?label=a&label=b` with a plain read token.
+    #[test]
+    fn two_json_each_calls_terminate_and_are_both_rewritten() {
+        let sql = "SELECT 1 FROM t WHERE \
+                   EXISTS (SELECT 1 FROM json_each(t.labels) WHERE json_each.value = ?) AND \
+                   EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?)";
+        let out = to_pg_dialect(sql);
+        assert_eq!(out.matches("jsonb_array_elements_text").count(), 2);
+        // The alias must survive so `json_each.value` still resolves.
+        assert_eq!(out.matches("AS json_each(value)").count(), 2);
+        assert!(!out.contains("FROM json_each(t."));
+    }
+
+    /// Non-ASCII must survive. The old scanner did `bytes[i] as char`, so every
+    /// multi-byte sequence became Latin-1 mojibake — live on every /v1/ready,
+    /// because the ready-queue SQL carries an em-dash in a comment.
+    #[test]
+    fn non_ascii_survives_the_rewrite() {
+        let sql = "-- claimable BY ID — only the queue stops offering it\nSELECT 'café' FROM t";
+        assert_eq!(to_pg_dialect(sql), sql);
+    }
+
+    /// `SUM(` was matched as a bare substring.
+    #[test]
+    fn sum_is_word_bounded_case_insensitive_and_skips_literals() {
+        assert_eq!(
+            to_pg_dialect("SELECT SUM(x) FROM t"),
+            "SELECT (SUM(x))::bigint FROM t"
+        );
+        assert_eq!(
+            to_pg_dialect("SELECT sum(x) FROM t"),
+            "SELECT (sum(x))::bigint FROM t"
+        );
+        // CHECKSUM must not become CHECK(SUM(...)).
+        assert_eq!(
+            to_pg_dialect("SELECT CHECKSUM(x) FROM t"),
+            "SELECT CHECKSUM(x) FROM t"
+        );
+        assert_eq!(
+            to_pg_dialect("SELECT 'SUM(x)' FROM t"),
+            "SELECT 'SUM(x)' FROM t"
+        );
+    }
+
+    /// `rowid` is a word, not a substring, and not data inside a literal.
+    #[test]
+    fn rowid_is_word_bounded_and_not_rewritten_inside_literals() {
+        assert_eq!(
+            to_pg_dialect("ORDER BY t.rowid DESC"),
+            "ORDER BY t.seq DESC"
+        );
+        assert_eq!(
+            to_pg_dialect("SELECT my_rowid, rowid_x FROM t"),
+            "SELECT my_rowid, rowid_x FROM t"
+        );
+        assert_eq!(
+            to_pg_dialect("SELECT 'rowid' FROM t"),
+            "SELECT 'rowid' FROM t"
+        );
+    }
+
+    /// ON CONFLICT must precede RETURNING, and the prefix match must tolerate
+    /// leading whitespace and case.
+    #[test]
+    fn insert_or_ignore_is_placed_before_returning() {
+        assert_eq!(
+            to_pg_dialect("INSERT OR IGNORE INTO deps (a,b) VALUES (?1,?2) RETURNING a"),
+            "INSERT INTO deps (a,b) VALUES (?1,?2) ON CONFLICT DO NOTHING RETURNING a"
+        );
+        assert_eq!(
+            to_pg_dialect("  insert or ignore INTO deps (a) VALUES (?1)"),
+            "  INSERT INTO deps (a) VALUES (?1) ON CONFLICT DO NOTHING"
+        );
+    }
+
+    /// Unbalanced parens must not panic or eat a character.
+    #[test]
+    fn unbalanced_parens_are_left_alone() {
+        assert_eq!(
+            to_pg_dialect("SELECT 1 FROM json_each(abc"),
+            "SELECT 1 FROM json_each(abc"
+        );
+        assert_eq!(
+            to_pg_dialect("SELECT 1 FROM json_each(t.lé"),
+            "SELECT 1 FROM json_each(t.lé"
+        );
+        assert_eq!(to_pg_dialect("SELECT SUM(x FROM t"), "SELECT SUM(x FROM t");
+    }
+
+    /// The GLOB rewrite was deleted because it mis-parsed every non-trivial
+    /// operand and had zero call sites. This test is what stops it becoming
+    /// load-bearing again by accident: if anyone writes ` GLOB ` in store SQL,
+    /// it will reach Postgres untranslated and this fails first.
+    #[test]
+    fn the_store_emits_no_glob_operator() {
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            if path.file_name().and_then(|f| f.to_str()) == Some("sql.rs") {
+                continue; // this file names GLOB in prose
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            if text.contains(" GLOB ") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "SQL-level GLOB has no Postgres translation (the rewrite was removed as \
+             broken-and-unused). Match in Rust with checklist::glob_matches instead. \
+             Offending files: {offenders:?}"
+        );
+    }
 
     #[test]
     fn numbered_placeholders_map_directly_and_may_repeat() {

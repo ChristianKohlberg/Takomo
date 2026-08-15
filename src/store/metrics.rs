@@ -18,6 +18,9 @@ impl Store {
             // project filter clause reused across queries.
             let (proj_clause, proj_params): (String, Vec<SqlValue>) = match allowed_projects {
                 None => (String::new(), Vec::new()),
+                // Empty allowlist: see the note in claims.rs — `IN ()` is a
+                // Postgres syntax error where SQLite reads it as always-false.
+                Some([]) => (String::from(" AND FALSE"), Vec::new()),
                 Some(list) => {
                     let mut clause = String::from(" AND t.project IN (");
                     let mut ps = Vec::new();

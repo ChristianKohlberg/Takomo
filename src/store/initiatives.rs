@@ -612,15 +612,25 @@ impl Store {
                 params_vec.push(SqlValue::Text(p.clone()));
             }
             if let Some(allowed) = &filter.allowed_projects {
-                sql.push_str(" AND project IN (");
-                for (i, p) in allowed.iter().enumerate() {
-                    if i > 0 {
-                        sql.push(',');
+                // An EMPTY allowlist means "no projects at all". SQLite accepts
+                // `IN ()` and reads it as always-false; Postgres rejects it as a
+                // syntax error, so a token minted with an empty project list
+                // (reachable via `takomo token create --projects ""`, which the CLI
+                // does not guard the way the REST path does) turned every list route
+                // into a 500. `FALSE` is the same answer, spelled portably.
+                if allowed.is_empty() {
+                    sql.push_str(" AND FALSE");
+                } else {
+                    sql.push_str(" AND project IN (");
+                    for (i, p) in allowed.iter().enumerate() {
+                        if i > 0 {
+                            sql.push(',');
+                        }
+                        sql.push('?');
+                        params_vec.push(SqlValue::Text(p.clone()));
                     }
-                    sql.push('?');
-                    params_vec.push(SqlValue::Text(p.clone()));
+                    sql.push(')');
                 }
-                sql.push(')');
             }
             if let Some(s) = &filter.status {
                 sql.push_str(" AND status = ?");

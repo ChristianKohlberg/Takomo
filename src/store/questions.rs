@@ -2048,15 +2048,25 @@ impl Store {
             } else {
                 filter.statuses.clone()
             };
-            sql.push_str(" AND status IN (");
-            for (i, s) in statuses.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
+            // An EMPTY allowlist means "no projects at all". SQLite accepts
+            // `IN ()` and reads it as always-false; Postgres rejects it as a
+            // syntax error, so a token minted with an empty project list
+            // (reachable via `takomo token create --projects ""`, which the CLI
+            // does not guard the way the REST path does) turned every list route
+            // into a 500. `FALSE` is the same answer, spelled portably.
+            if statuses.is_empty() {
+                sql.push_str(" AND FALSE");
+            } else {
+                sql.push_str(" AND status IN (");
+                for (i, s) in statuses.iter().enumerate() {
+                    if i > 0 {
+                        sql.push(',');
+                    }
+                    sql.push('?');
+                    p.push(SqlValue::Text(s.clone()));
                 }
-                sql.push('?');
-                p.push(SqlValue::Text(s.clone()));
+                sql.push(')');
             }
-            sql.push(')');
             if let Some(pr) = &filter.project {
                 sql.push_str(" AND project = ?");
                 p.push(SqlValue::Text(pr.clone()));
@@ -2066,15 +2076,25 @@ impl Store {
                 p.push(SqlValue::Text(t.clone()));
             }
             if let Some(allowed) = &filter.allowed_projects {
-                sql.push_str(" AND project IN (");
-                for (i, pr) in allowed.iter().enumerate() {
-                    if i > 0 {
-                        sql.push(',');
+                // An EMPTY allowlist means "no projects at all". SQLite accepts
+                // `IN ()` and reads it as always-false; Postgres rejects it as a
+                // syntax error, so a token minted with an empty project list
+                // (reachable via `takomo token create --projects ""`, which the CLI
+                // does not guard the way the REST path does) turned every list route
+                // into a 500. `FALSE` is the same answer, spelled portably.
+                if allowed.is_empty() {
+                    sql.push_str(" AND FALSE");
+                } else {
+                    sql.push_str(" AND project IN (");
+                    for (i, pr) in allowed.iter().enumerate() {
+                        if i > 0 {
+                            sql.push(',');
+                        }
+                        sql.push('?');
+                        p.push(SqlValue::Text(pr.clone()));
                     }
-                    sql.push('?');
-                    p.push(SqlValue::Text(pr.clone()));
+                    sql.push(')');
                 }
-                sql.push(')');
             }
             // Expertise: match any tag via a JSON-array overlap check.
             for tag in &filter.expertise {
