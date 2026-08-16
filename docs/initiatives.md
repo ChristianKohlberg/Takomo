@@ -52,10 +52,18 @@ together.
 
 ## Three surfaces
 
-`/initiatives` is the page. A list on the left with each collection's rollup, one initiative open on
-the right: its counts, its entries newest-first with markdown rendered by the same renderer `/board`
-and `/inbox` use, and a composer at the top. Title and summary are edited in place; status is a
-dropdown; a file picker attaches a document. It is the only SPA in this repo that **writes**.
+`/initiatives` is the page: **an explorer, a document, and what you can do with a passage**. A folder
+tree on the left over every document in the project; one document rendered in the middle as a single
+scrolling surface; a pane on the right that turns a highlight into an action. Title, summary and
+folder are edited in place; status is a dropdown; a file picker attaches a document. It is the only
+SPA in this repo that **writes**.
+
+**Folders are `metadata.path`, and nothing else.** Initiatives stay flat in the store — `metadata`
+was already a free-form JSON object on every one of them, so nesting needed no migration, no folder
+table and no orphaned-directory problem. A folder exists because a document names it, which means the
+last document leaving takes the folder with it. Moving one is a `metadata_merge` of its path.
+`web/src/lib/initiative-tree.ts` derives the tree on every read, the same never-stored rule the
+`rollup` and the document follow.
 
 Initiatives are usually created and fed over **MCP**, because the thing that produces one is an
 agent in a conversation, not a form.
@@ -69,7 +77,10 @@ agent in a conversation, not a form.
 | `takomo_initiative_show` | *(read)* one initiative, its rollup, and a page of entries |
 
 REST is what the page drives — reads, plus the three writes the page needs, since a browser cannot
-call an MCP tool:
+call an MCP tool. Note what is **not** here: the overhaul added no route. Folders are `metadata_merge`
+on the existing PATCH, every document action is an append through the existing entry route, and
+filing a passage as work or a question uses `POST /v1/tickets` and `POST /v1/questions`, which
+already existed.
 
 ```
 GET   /v1/initiatives?project=&status=&q=&label=&tag=&limit=&cursor=
@@ -107,9 +118,37 @@ been a free-form slug and `meta` a free-form JSON object on every entry.
 |---|---|---|
 | `view` | `{ pane, cites: [entryId, …] }` | one pane's prose. `pane` is `business`, `technical` or `verification` |
 | `view` | `+ proposed: true` | an **amendment** — offered as a diff, never live until someone accepts |
-| `thread` | `{ pane, para, state?, ticket?, supersedes? }` | a margin note anchored to a paragraph. `state` is `open` (default), `running` or `resolved` |
+| `view` | `+ proposed: true` + an anchor | a **suggestion** scoped to one highlighted range |
+| `thread` | `{ pane, state?, ticket?, supersedes? }` + an anchor | a note on a passage. `state` is `open` (default), `running` or `resolved` |
 | `decision` | `{ accepts \| rejects: <proposalId> }` | a human's verdict on an amendment |
 | *(any)* | `origin: true` | the words the idea **arrived** in — quoted above every pane |
+
+## Anchors: how a note stays attached to its words
+
+An **anchor** is `{ quote, prefix, suffix, para }` on the entry's `meta` — the highlighted words plus
+32 characters of context on each side. Resolution searches the *current* prose for them and reports
+how it found them:
+
+| | |
+|---|---|
+| **exact** | prefix + quote + suffix still adjacent — certainly the same passage |
+| **moved** | the quote survived but its surroundings changed; it may have drifted in meaning |
+| **orphaned** | the words are gone. The note is listed under the prose, struck through, never hidden |
+
+Four passes, weakest last, first hit wins: full context, then one side of it, then the bare quote
+**only where it occurs once**, then whitespace-insensitively for prose that was merely reflowed. An
+ambiguous quote with no surviving context orphans rather than highlighting a coin flip — a confident
+highlight on the wrong sentence is worse than admitting the note came loose.
+
+This replaces anchoring to a paragraph *index*, which was clamped into range on read: a note whose
+paragraph disappeared silently slid onto a paragraph it was never about, and nothing could tell that
+it had. Entries written before anchors existed still carry only `para` and still work — they are
+paragraph notes, and `anchor` is null on them.
+
+`web/src/lib/initiative-anchor.ts` is the whole of it, pure and offset-based, with one DOM helper
+that converts a browser selection into plain-text offsets. A citation mark displays a bare number
+while the prose says `[3]`, so that helper substitutes each mark's source form — which is what keeps
+selection coordinates in the same space as the prose, the anchors and the diff.
 
 Everything else — `transcript`, `sample-data`, `code-research`, `research`, `note` — is **evidence**:
 citable from a pane, and listed in the lineage footer.
@@ -122,9 +161,28 @@ the current text still readable:
 | doing this | appends |
 |---|---|
 | revising a pane | a new `view` for that pane; the old one stays |
-| acting on a margin note | a ticket, plus a `thread` carrying `supersedes` and the ticket id |
-| accepting an amendment | the proposed prose as a real `view`, **plus** a `decision` naming it |
-| rejecting an amendment | a `decision` alone — the live pane is untouched |
+| commenting on a passage | a `thread` carrying the anchor |
+| suggesting different words | a proposed `view` carrying the anchor and the replacement |
+| acting on a note | a ticket, plus a `thread` carrying `supersedes` and the ticket id |
+| asking a person | a ticket, an **advisory question** on it, plus that same `thread` |
+| attaching a source | a new `view` with the mark spliced in after the words it supports |
+| accepting a suggestion | the amended prose as a real `view`, **plus** a `decision` naming it |
+| rejecting one | a `decision` alone — the live prose is untouched |
+
+Accepting a **range-scoped** suggestion is still a plain append of complete prose: the replacement is
+spliced into the live pane, the paragraphs are re-serialized with citation marks renumbered from
+scratch, and the result is appended as an ordinary `view`. Renumbering matters — a mark caught inside
+a replaced range is dropped, because the words it supported are the words being replaced, and a hole
+in the numbering would make every later mark point one source too far.
+
+Several suggestions can be pending at once, because two readers highlighting two different sentences
+have not collided. A pane-scoped proposal remains single: it is a take-it-or-leave-it rewrite of the
+whole argument, and stacking those was never useful.
+
+**Asking a person is a question on a ticket**, not a fifth mechanism. A question hangs off a ticket by
+design — a decision nobody can route to a piece of work is a decision that never comes back — so the
+passage is filed as a ticket and the question routed against it `advisory`, recording the decision
+without parking work nobody has claimed.
 
 Accepting is deliberately two entries rather than one. The `view` is what makes the wording live;
 the `decision` records who agreed and keeps the proposal from being offered a second time. A
@@ -163,7 +221,14 @@ earlier revision is still there.
 
 `web/src/lib/initiative-doc.ts` is the whole derivation, and it is pure — `buildDoc(entries)` with
 no I/O, which is why it is unit-tested rather than driven through a browser. The page falls back to
-the plain entry log when no pane has been written, and the log is always reachable as a fourth tab.
+the plain entry log when no pane has been written, and the log stays reachable below the document —
+the document is a reduction of it, and a reduction you cannot check against its source is a summary
+you have to take on faith.
+
+The three panes render as **sections of one scrolling document** rather than as tabs. That is what
+makes highlighting a single gesture: a reader drags across a sentence without first deciding which
+pane owns it, and the anchor records the pane afterwards from where the selection landed. Tabs made
+the pane a mode you had to be in; sections make it a place you scroll to.
 
 One limitation worth knowing: pane prose renders as **plain paragraphs**, not markdown. Citation
 marks are parsed into real elements, so the text cannot go through the markdown renderer without

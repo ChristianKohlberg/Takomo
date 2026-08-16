@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildDoc, threadsFor, type Pane } from './initiative-doc'
+import {
+  amendedView,
+  buildDoc,
+  insertRunAt,
+  orphanedThreads,
+  serializeParagraphs,
+  spliceRuns,
+  threadsFor,
+  type Pane,
+} from './initiative-doc'
 import type { Entry } from './initiatives'
 
 let seq = 0
@@ -214,8 +223,8 @@ describe('amendments', () => {
     ])
     // The live pane is untouched until somebody accepts.
     expect(doc.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'The live position.' }])
-    expect(doc.panes.business.pending?.entry.id).toBe('prop-1')
-    expect(doc.panes.business.pending?.paragraphs[0]?.runs).toEqual([
+    expect(doc.panes.business.pending[0]?.entry.id).toBe('prop-1')
+    expect(doc.panes.business.pending[0]?.paragraphs[0]?.runs).toEqual([
       { text: 'The proposed position.' },
     ])
   })
@@ -228,7 +237,7 @@ describe('amendments', () => {
         meta: { pane: 'business', cites: [], proposed: true },
       }),
     ])
-    expect(doc.panes.business.pending?.diff).toEqual([
+    expect(doc.panes.business.pending[0]?.diff).toEqual([
       { kind: 'same', text: 'Kept.' },
       { kind: 'changed', text: 'New wording.', was: 'Old wording.' },
       { kind: 'removed', text: 'Dropped.' },
@@ -243,7 +252,7 @@ describe('amendments', () => {
         meta: { pane: 'business', cites: [], proposed: true },
       }),
     ])
-    expect(doc.panes.business.pending?.diff[1]).toEqual({ kind: 'added', text: 'Two.' })
+    expect(doc.panes.business.pending[0]?.diff[1]).toEqual({ kind: 'added', text: 'Two.' })
   })
 
   it('drops a proposal once it has been decided, either way', () => {
@@ -258,7 +267,7 @@ describe('amendments', () => {
       proposal,
       entry('decision', { id: 'dec-1', meta: { rejects: 'prop-1' } }),
     ])
-    expect(rejected.panes.business.pending).toBeNull()
+    expect(rejected.panes.business.pending).toEqual([])
     expect(rejected.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'Live.' }])
 
     const accepted = buildDoc([
@@ -269,7 +278,7 @@ describe('amendments', () => {
       // it live, not the decision entry itself.
       view('business', 'Proposed.', [], { id: 'v-new', created_at: '2026-08-09T00:00:00.000Z' }),
     ])
-    expect(accepted.panes.business.pending).toBeNull()
+    expect(accepted.panes.business.pending).toEqual([])
     expect(accepted.panes.business.paragraphs[0]?.runs).toEqual([{ text: 'Proposed.' }])
   })
 
@@ -283,7 +292,7 @@ describe('amendments', () => {
         meta: { pane: 'business', cites: ['ent-new-src'], proposed: true },
       }),
     ])
-    const runs = doc.panes.business.pending?.paragraphs[0]?.runs
+    const runs = doc.panes.business.pending[0]?.paragraphs[0]?.runs
     expect(runs).toEqual([
       { text: 'Now with a source' },
       { cite: 1, entry: src },
@@ -301,6 +310,276 @@ describe('amendments', () => {
       }),
     ])
     expect(doc.panes.technical.entry).toBeNull()
-    expect(doc.panes.technical.pending?.diff).toEqual([{ kind: 'added', text: 'First draft.' }])
+    expect(doc.panes.technical.pending[0]?.diff).toEqual([{ kind: 'added', text: 'First draft.' }])
+  })
+})
+
+// ---- range anchors ------------------------------------------------------
+//
+// The half of the document model that makes highlighting mean something: a note
+// or a suggestion attached to WORDS rather than to a paragraph number.
+
+const PROSE = 'We charge a flat fee per seat, which the enterprise tier resents.'
+
+/** A thread anchored to a quote inside `PROSE`. */
+function anchored(quote: string, over: Partial<Entry> = {}): Entry {
+  const at = PROSE.indexOf(quote)
+  return entry('thread', {
+    text: `About "${quote}"`,
+    meta: {
+      pane: 'business',
+      para: 0,
+      quote,
+      prefix: PROSE.slice(Math.max(0, at - 32), at),
+      suffix: PROSE.slice(at + quote.length, at + quote.length + 32),
+    },
+    ...over,
+  })
+}
+
+describe('anchored threads', () => {
+  it('places a note on the words it was written against', () => {
+    const doc = buildDoc([view('business', PROSE), anchored('flat fee per seat')])
+    const th = doc.panes.business.threads[0]!
+    expect(th.orphaned).toBe(false)
+    expect(th.placed?.how).toBe('exact')
+    expect(PROSE.slice(th.placed!.start, th.placed!.end)).toBe('flat fee per seat')
+  })
+
+  it('follows its words when the prose is revised around them', () => {
+    const revised = 'Today we still charge a flat fee per seat and nobody likes it.'
+    const doc = buildDoc([
+      view('business', PROSE),
+      anchored('flat fee per seat'),
+      view('business', revised, [], { id: 'v2', created_at: '2026-08-09T00:00:00.000Z' }),
+    ])
+    const th = doc.panes.business.threads[0]!
+    expect(th.orphaned).toBe(false)
+    expect(th.placed?.how).toBe('moved')
+    expect(revised.slice(th.placed!.start, th.placed!.end)).toBe('flat fee per seat')
+  })
+
+  it('orphans a note whose words were written away, and never hides it', () => {
+    const doc = buildDoc([
+      view('business', PROSE),
+      anchored('flat fee per seat'),
+      view('business', 'We meter every request now.', [], {
+        id: 'v2',
+        created_at: '2026-08-09T00:00:00.000Z',
+      }),
+    ])
+    const th = doc.panes.business.threads[0]!
+    expect(th.orphaned).toBe(true)
+    expect(th.placed).toBeNull()
+    expect(orphanedThreads(doc.panes.business)).toHaveLength(1)
+  })
+
+  it('leaves a legacy paragraph-only note working as it always did', () => {
+    const doc = buildDoc([
+      view('business', 'One.\n\nTwo.'),
+      entry('thread', { text: 'old note', meta: { pane: 'business', para: 1 } }),
+    ])
+    const th = doc.panes.business.threads[0]!
+    expect(th.anchor).toBeNull()
+    expect(th.orphaned).toBe(false)
+    expect(th.para).toBe(1)
+    expect(threadsFor(doc.panes.business, 1)).toHaveLength(1)
+  })
+
+  it('clamps a legacy note whose paragraph is gone rather than dropping it', () => {
+    const doc = buildDoc([
+      view('business', 'Only one paragraph now.'),
+      entry('thread', { text: 'old note', meta: { pane: 'business', para: 9 } }),
+    ])
+    expect(doc.panes.business.threads[0]?.para).toBe(0)
+  })
+})
+
+describe('range amendments', () => {
+  /** A suggestion replacing `quote` with `replacement`. */
+  function suggestion(quote: string, replacement: string, over: Partial<Entry> = {}): Entry {
+    const at = PROSE.indexOf(quote)
+    return entry('view', {
+      text: replacement,
+      meta: {
+        pane: 'business',
+        cites: [],
+        proposed: true,
+        quote,
+        prefix: PROSE.slice(Math.max(0, at - 32), at),
+        suffix: PROSE.slice(at + quote.length, at + quote.length + 32),
+      },
+      ...over,
+    })
+  }
+
+  it('is scoped to a range and does not touch the live pane', () => {
+    const doc = buildDoc([view('business', PROSE), suggestion('flat fee per seat', 'metered rate')])
+    const am = doc.panes.business.pending[0]!
+    expect(am.scope).toBe('range')
+    expect(am.replacement).toBe('metered rate')
+    expect(am.orphaned).toBe(false)
+    expect(doc.panes.business.paragraphs[0]?.runs).toEqual([{ text: PROSE }])
+  })
+
+  it('holds several suggestions at once, newest first', () => {
+    const doc = buildDoc([
+      view('business', PROSE),
+      suggestion('flat fee per seat', 'metered rate', { id: 'p1' }),
+      suggestion('enterprise tier', 'largest accounts', { id: 'p2' }),
+    ])
+    expect(doc.panes.business.pending.map((a) => a.entry.id)).toEqual(['p2', 'p1'])
+  })
+
+  it('applies to the live prose when accepted, as an ordinary append', () => {
+    const doc = buildDoc([view('business', PROSE), suggestion('flat fee per seat', 'metered rate')])
+    const next = amendedView(doc.panes.business, doc.panes.business.pending[0]!)!
+    expect(next.text).toBe('We charge a metered rate, which the enterprise tier resents.')
+    expect(next.cites).toEqual([])
+  })
+
+  it('refuses to apply a suggestion whose words are gone', () => {
+    const doc = buildDoc([
+      view('business', PROSE),
+      suggestion('flat fee per seat', 'metered rate'),
+      view('business', 'Rewritten entirely.', [], {
+        id: 'v2',
+        created_at: '2026-08-09T00:00:00.000Z',
+      }),
+    ])
+    const am = doc.panes.business.pending[0]!
+    expect(am.orphaned).toBe(true)
+    expect(amendedView(doc.panes.business, am)).toBeNull()
+  })
+
+  it('still takes a pane-scoped proposal verbatim', () => {
+    const doc = buildDoc([
+      view('business', 'Live.'),
+      view('business', 'Whole new argument.', ['ent-x'], {
+        id: 'p1',
+        meta: { pane: 'business', cites: ['ent-x'], proposed: true },
+      }),
+    ])
+    const am = doc.panes.business.pending[0]!
+    expect(am.scope).toBe('pane')
+    expect(amendedView(doc.panes.business, am)).toEqual({
+      text: 'Whole new argument.',
+      cites: ['ent-x'],
+    })
+  })
+})
+
+describe('spliceRuns', () => {
+  it('replaces a span inside one text run', () => {
+    expect(spliceRuns([{ text: 'abcdef' }], 2, 4, 'XY')).toEqual([
+      { text: 'ab' },
+      { text: 'XY' },
+      { text: 'ef' },
+    ])
+  })
+
+  it('inserts at a zero-width point', () => {
+    expect(spliceRuns([{ text: 'abcd' }], 2, 2, '--')).toEqual([
+      { text: 'ab' },
+      { text: '--' },
+      { text: 'cd' },
+    ])
+  })
+
+  it('deletes without inserting when the replacement is empty', () => {
+    expect(spliceRuns([{ text: 'abcdef' }], 2, 4, '')).toEqual([{ text: 'ab' }, { text: 'ef' }])
+  })
+
+  it('drops a citation mark caught inside the replaced range', () => {
+    const src = entry('research', { id: 'src-1' })
+    // "ab" + "[1]" + "cd"  →  replacing offsets 1..6 covers the mark.
+    const runs = spliceRuns([{ text: 'ab' }, { cite: 1, entry: src }, { text: 'cd' }], 1, 6, 'Z')
+    expect(runs).toEqual([{ text: 'a' }, { text: 'Z' }, { text: 'd' }])
+  })
+
+  it('leaves a mark outside the range alone', () => {
+    const src = entry('research', { id: 'src-2' })
+    const runs = spliceRuns([{ text: 'abcd' }, { cite: 1, entry: src }], 0, 2, 'Z')
+    expect(runs).toEqual([{ text: 'Z' }, { text: 'cd' }, { cite: 1, entry: src }])
+  })
+
+  it('appends when the range starts past the end', () => {
+    expect(spliceRuns([{ text: 'ab' }], 9, 9, '!')).toEqual([{ text: 'ab' }, { text: '!' }])
+  })
+})
+
+describe('serializeParagraphs', () => {
+  it('renumbers marks from scratch so a dropped citation leaves no hole', () => {
+    const a = entry('research', { id: 'src-a' })
+    const b = entry('research', { id: 'src-b' })
+    const out = serializeParagraphs([
+      { runs: [{ text: 'One ' }, { cite: 7, entry: b }, { text: '.' }], uncited: false },
+      { runs: [{ text: 'Two ' }, { cite: 3, entry: a }, { text: '.' }], uncited: false },
+    ])
+    expect(out.text).toBe('One [1].\n\nTwo [2].')
+    expect(out.cites).toEqual(['src-b', 'src-a'])
+  })
+
+  it('gives one source one number however often it is cited', () => {
+    const a = entry('research', { id: 'src-a' })
+    const out = serializeParagraphs([
+      { runs: [{ cite: 4, entry: a }, { text: ' and ' }, { cite: 4, entry: a }], uncited: false },
+    ])
+    expect(out.text).toBe('[1] and [1]')
+    expect(out.cites).toEqual(['src-a'])
+  })
+
+  it('drops paragraphs left empty', () => {
+    const out = serializeParagraphs([
+      { runs: [{ text: 'kept' }], uncited: true },
+      { runs: [{ text: '   ' }], uncited: true },
+    ])
+    expect(out.text).toBe('kept')
+  })
+})
+
+describe('insertRunAt', () => {
+  const src = entry('research', { id: 'src-c' })
+
+  it('inserts inside a text run, splitting it', () => {
+    expect(insertRunAt([{ text: 'abcd' }], 2, { cite: 1, entry: src })).toEqual([
+      { text: 'ab' },
+      { cite: 1, entry: src },
+      { text: 'cd' },
+    ])
+  })
+
+  it('inserts at the very end', () => {
+    expect(insertRunAt([{ text: 'abcd' }], 4, { text: '!' })).toEqual([
+      { text: 'abcd' },
+      { text: '!' },
+    ])
+  })
+
+  it('inserts at the very start', () => {
+    expect(insertRunAt([{ text: 'abcd' }], 0, { text: '!' })).toEqual([
+      { text: '!' },
+      { text: 'abcd' },
+    ])
+  })
+
+  it('never cuts an existing mark in half', () => {
+    // The mark spans offsets 0..3; an offset of 1 lands inside it.
+    const runs = insertRunAt([{ cite: 1, entry: src }, { text: 'x' }], 1, { text: '!' })
+    expect(runs).toEqual([{ cite: 1, entry: src }, { text: '!' }, { text: 'x' }])
+  })
+
+  it('appends when the offset is past the end rather than dropping the run', () => {
+    expect(insertRunAt([{ text: 'ab' }], 99, { text: '!' })).toEqual([
+      { text: 'ab' },
+      { text: '!' },
+    ])
+  })
+
+  it('round-trips through serialization as a real citation', () => {
+    const runs = insertRunAt([{ text: 'They re-key it by hand.' }], 15, { cite: 9, entry: src })
+    const out = serializeParagraphs([{ runs, uncited: false }])
+    expect(out.text).toBe('They re-key it [1]by hand.')
+    expect(out.cites).toEqual(['src-c'])
   })
 })
