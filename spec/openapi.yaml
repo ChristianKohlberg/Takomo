@@ -453,7 +453,22 @@ paths:
         non-epic ancestors, or a parent id pointing at a row that no longer
         exists. Without it, work outside every epic would be invisible while the
         per-epic percentages read as complete.
-      parameters: [ { $ref: "#/components/parameters/project" } ]
+
+        `epic` narrows the report to a single epic. `unparented` is then OMITTED
+        rather than returned empty — it is a project-wide statement about work no
+        epic owns, and repeating it under a single-epic view would read as "this
+        epic has no unparented work", which is not a thing an epic can have. The
+        response echoes the filter back as `epic`.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - name: epic
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Narrow the report to one epic's DESCENDANT SUBTREE. A value that is not an epic of
+            this project is a 404, not an empty report: a typo, the wrong project and naming a
+            task are indistinguishable in an empty list and all three are worth reporting.
       responses:
         "200":
           description: OK
@@ -557,7 +572,22 @@ paths:
         zero. A blocker may live in another project (dependencies cross project
         boundaries) while the work it holds is in this one; it is still reported,
         because the point is to name the ticket worth closing.
-      parameters: [ { $ref: "#/components/parameters/project" } ]
+
+        `epic` narrows the WORK counted to that epic's subtree — `blocked_total`
+        and every `unblocks` are then subtree-relative. It deliberately does NOT
+        narrow the blockers considered: a ticket outside the epic, or outside the
+        project, that holds the epic up is exactly what this view exists to name.
+        The response echoes the filter back as `epic`.
+      parameters:
+        - { $ref: "#/components/parameters/project" }
+        - name: epic
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Narrow the report to one epic's DESCENDANT SUBTREE. A value that is not an epic of
+            this project is a 404, not an empty report: a typo, the wrong project and naming a
+            task are indistinguishable in an empty list and all three are worth reporting.
       responses:
         "200":
           description: OK
@@ -986,6 +1016,7 @@ paths:
         - { name: tag, in: query, schema: { type: string }, description: 'exact `kind:handle` tag reference; repeatable, AND semantics' }
         - { name: tag_kind, in: query, schema: { type: string }, description: 'match any tag of this kind (e.g. person); repeatable, AND semantics' }
         - { name: parent, in: query, schema: { type: string }, description: direct children of this id }
+        - { name: epic, in: query, schema: { type: string }, description: "every descendant at any depth (the whole subtree); the ticket itself is excluded, unlike `parent` which matches one level" }
         - { name: q, in: query, schema: { type: string }, description: full-text over title+body }
         - { name: claimed_by, in: query, schema: { type: string } }
         - { name: fields, in: query, schema: { type: string }, description: comma list for sparse responses }
@@ -5863,6 +5894,7 @@ x-error-codes:
   # -- for, so this family grows with the addressable kinds. -------------------
   notfound.ticket: "no ticket with that id."
   notfound.project: "no project with that id. GET /projects lists them."
+  notfound.epic: "the `epic` filter names no epic of that project — it may be a typo, a ticket in another project, or a ticket that is not of type `epic`. `GET /projects/{project}/roadmap` with no filter lists the epics."
   notfound.question: "no question with that id."
   notfound.token: "no token with that id."
   notfound.tag: "no tag with that `kind:handle` in the project."

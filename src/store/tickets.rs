@@ -167,6 +167,12 @@ pub struct TicketListFilter {
     /// AND semantics across multiple kinds.
     pub tag_kinds: Vec<String>,
     pub parent: Option<String>,
+    /// Every DESCENDANT of this ticket, at any depth — the whole subtree, not
+    /// the one level `parent` matches. Named `epic` because that is what a
+    /// caller means by "the work under X", but it accepts any container; the
+    /// ticket itself is excluded, matching how the roadmap rollup treats an
+    /// epic as the container rather than a member of its own subtree.
+    pub epic: Option<String>,
     pub q: Option<String>,
     pub claimed_by: Option<String>,
     /// Token project scoping. None = unrestricted.
@@ -732,6 +738,19 @@ impl Store {
                     " AND EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value LIKE ?)",
                 );
                 params_vec.push(SqlValue::Text(format!("{kind}:%")));
+            }
+            if let Some(e) = &filter.epic {
+                // `UNION` (not `UNION ALL`) so a malformed `parent` cycle
+                // terminates instead of hanging the list endpoint — the same
+                // guard the roadmap rollups use.
+                sql.push_str(
+                    " AND t.id IN (WITH RECURSIVE sub(id) AS (
+                        SELECT id FROM tickets WHERE parent = ?
+                        UNION
+                        SELECT c.id FROM tickets c JOIN sub ON c.parent = sub.id
+                      ) SELECT id FROM sub)",
+                );
+                params_vec.push(SqlValue::Text(e.clone()));
             }
             if let Some(p) = &filter.parent {
                 sql.push_str(" AND t.parent = ?");

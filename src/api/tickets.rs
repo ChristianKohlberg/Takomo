@@ -127,6 +127,7 @@ pub async fn list(
         tags: all(&pairs, "tag"),
         tag_kinds: all(&pairs, "tag_kind"),
         parent: first(&pairs, "parent").map(str::to_string),
+        epic: first(&pairs, "epic").map(str::to_string),
         q: first(&pairs, "q").map(str::to_string),
         claimed_by: first(&pairs, "claimed_by").map(str::to_string),
         allowed_projects: ctx.allowed_projects_vec(),

@@ -359,13 +359,15 @@ pub async fn roadmap(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
     ctx.require_project(&project)?;
+    let epic = first(&query_pairs(raw.as_deref()), "epic").map(str::to_string);
     // A rollup per epic over its whole descendant subtree: a scan, off the
     // runtime (see `blocking_read`).
     let state = state.clone();
-    let out = blocking_read(move || state.store.roadmap(&project)).await?;
+    let out = blocking_read(move || state.store.roadmap(&project, epic.as_deref())).await?;
     Ok(Json(out))
 }
 
@@ -380,13 +382,15 @@ pub async fn impact(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
+    RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
     ctx.require_project(&project)?;
+    let epic = first(&query_pairs(raw.as_deref()), "epic").map(str::to_string);
     // One recursive blocked-set walk per candidate blocker: a scan, off the
     // runtime (see `blocking_read`), same as `roadmap`.
     let state = state.clone();
-    let out = blocking_read(move || state.store.impact(&project)).await?;
+    let out = blocking_read(move || state.store.impact(&project, epic.as_deref())).await?;
     Ok(Json(out))
 }
 
