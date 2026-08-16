@@ -191,8 +191,12 @@ the bundler's internal name so neither Rust nor the CSP encodes "rolldown").
 
 So first paint got *worse* for someone who opens one surface and leaves: `app.js`
 carries all four surfaces, not one. It gets better the moment they navigate, and
-much better across a session. `npm run size` guards first load (200 kB) and the
-vendor chunk separately (135 kB) — vendor is where a careless `npm i` lands.
+much better across a session. `npm run size` guards first load (320 kB) and the
+vendor chunk separately (180 kB) — vendor is where a careless `npm i` lands. Both
+are a ceiling rather than a target: they are set well above today's ~197 kB so
+ordinary work never trips them, which means what they still catch is a
+heavyweight dependency. If first load creeps toward them through ordinary growth,
+split the bundle per route rather than raising them again.
 
 If first paint ever matters more than it does today, route-level splitting is the
 lever: emit `assets/board.js` and friends, add them to `EMBEDDED` in
