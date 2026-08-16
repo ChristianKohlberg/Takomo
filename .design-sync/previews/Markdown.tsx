@@ -50,10 +50,10 @@ export function CodeBlock() {
     <div style={wrap}>
       <Markdown
         text={[
-          'Point the detectors at the fork point instead:',
+          'Verify the branch in a clean worktree instead:',
           '',
           '```sh',
-          'HR_BASE=origin/main handrail run route-test-pairing openapi-current',
+          'CARGO_TARGET_DIR=/tmp/verify-target cargo test --release',
           '```',
         ].join('\n')}
       />

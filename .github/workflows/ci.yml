@@ -76,15 +76,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # shellcheck is preinstalled on GitHub-hosted ubuntu runners.
-      # .handrail/*.sh was outside this list until takomo-u2k4: the gate scripts
-      # are the repo's own norm detectors, and a syntax slip in one of them
-      # degrades to a silent skip rather than a visible failure. -x follows the
-      # `source=` directive into .handrail/hr-changed.sh. scripts/ is globbed
-      # rather than listed file by file, so the next script added there is
-      # covered by existing, rather than by remembering.
+      # shellcheck is preinstalled on GitHub-hosted ubuntu runners. scripts/ is
+      # globbed rather than listed file by file, so the next script added there
+      # is covered by existing, rather than by remembering.
       - name: ShellCheck
-        run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*.sh .handrail/adapters/*.sh
+        run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
 
   copies:
     name: Duplicated files stay in sync

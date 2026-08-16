@@ -157,7 +157,7 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 - [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, the follow-up thread, expertise routing, and email/Slack notifications.
 - [docs/promotions.md](docs/promotions.md) — recording that a ticket's work reached a stage (staging/production/published/…), domain-agnostic.
 - [docs/hosting.md](docs/hosting.md) — self-hosting depth: local build, TLS, and off-box backups (Litestream).
-- [docs/development.md](docs/development.md) — building, testing, linting, and the `backlot`/`handrail` dev loop.
+- [docs/development.md](docs/development.md) — building, testing, linting, and the `backlot` dev loop.
 - [spec/openapi.yaml](spec/openapi.yaml) — the full v1 HTTP API (tickets, workflows, claims/leases, tokens, event log, `/mcp`).
 - [spec/workflow-format.md](spec/workflow-format.md) — the per-project state-machine format.
 - [spec/auth.md](spec/auth.md) — tokens, scopes, and the auth model.
