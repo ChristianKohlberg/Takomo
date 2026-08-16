@@ -11,7 +11,7 @@ use serde_json::Value;
 pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.body, t.state, \
     COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS state_category, \
     t.priority, t.labels, t.tags, t.metadata, t.links, t.claim_holder, t.claim_expires_at, \
-    t.lapsed_claim_holder, t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, \
+    t.claim_since, t.lapsed_claim_holder, t.fence_seq, t.version, t.created_by, t.created_at, t.updated_at, \
     t.archived_at, t.schedule, t.occurrence, t.expires_at";
 
 pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
@@ -36,6 +36,7 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         blocked_by: Vec::new(), // filled by load_blocked_by
         claim_holder: row.get("claim_holder")?,
         claim_expires_at: row.get("claim_expires_at")?,
+        claim_since: row.get("claim_since")?,
         lapsed_claim_holder: row.get("lapsed_claim_holder")?,
         fence_seq: row.get("fence_seq")?,
         version: row.get("version")?,
@@ -175,7 +176,7 @@ pub fn clear_expired_claim(conn: &Connection, ticket: &Ticket, now: i64) -> ApiR
     if let (Some(holder), Some(exp)) = (&ticket.claim_holder, ticket.claim_expires_at) {
         if exp <= now {
             conn.execute(
-                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, lapsed_claim_holder = ?3, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL, lapsed_claim_holder = ?3, version = version + 1, updated_at = ?2 WHERE id = ?1",
                 params![ticket.id, now, holder],
             )?;
             emit_event(
@@ -235,6 +236,19 @@ pub fn touch_ticket(conn: &Connection, id: &str, now: i64) -> ApiResult<i64> {
         |r| r.get(0),
     )?;
     Ok(v)
+}
+
+/// How long a claim lasts, for error messages: "until <iso>" for a leased
+/// claim, or the no-expiry phrasing for an epic claim held until released.
+/// One place, because every "claimed by X …" message has to agree on what a
+/// missing expiry means.
+pub fn held_phrase(expires: Option<i64>) -> String {
+    match expires {
+        Some(exp) => format!("until {}", iso(exp)),
+        None => "with no expiry (an epic claim, held until the holder releases it or an admin \
+                 force-releases it)"
+            .to_string(),
+    }
 }
 
 /// Teaching 409 for a fencing token that does not match the current fence.
@@ -305,13 +319,13 @@ pub fn check_fence_for_write(
         Some((holder, expires)) if holder != actor => Err(ApiError::conflict(
             "claim.held",
             format!(
-                "Ticket '{}' is claimed by '{holder}' until {}. Only the lease holder may {what} while the ticket is claimed. Add a comment instead (POST /v1/tickets/{}/comments), or wait for the lease to expire.",
+                "Ticket '{}' is claimed by '{holder}' {}. Only the lease holder may {what} while the ticket is claimed. Add a comment instead (POST /v1/tickets/{}/comments), or wait for the claim to end.",
                 ticket.id,
-                iso(expires),
+                held_phrase(expires),
                 ticket.id
             ),
         )
-        .details(serde_json::json!({ "holder": holder, "expires_at": iso(expires) }))),
+        .details(serde_json::json!({ "holder": holder, "expires_at": expires.map(iso) }))),
         Some(_) => match fence {
             None => Err(ApiError::conflict(
                 "fence.required",

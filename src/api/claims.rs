@@ -43,6 +43,22 @@ pub async fn claim(
     Ok(Json(out))
 }
 
+/// GET the claim on a ticket: who holds it, since when, whether it expires —
+/// and, while held, what has moved in its subtree since the grant. The read
+/// that makes an indefinite epic claim judgeable: with no TTL to wait out, the
+/// caller decides "mid-flight or abandoned" from the movement, and an admin
+/// force-releases the abandoned ones.
+pub async fn claim_status(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    load_visible(&state, &ctx, &id)?;
+    let status = state.store.claim_status(&id)?;
+    Ok(Json(status.to_json()))
+}
+
 pub async fn heartbeat(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

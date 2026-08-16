@@ -905,7 +905,7 @@ fn override_state(
     let had_claim = t.active_claim(now).is_some();
     if had_claim {
         conn.execute(
-            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL WHERE id = ?1",
+            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL WHERE id = ?1",
             params![t.id],
         )?;
     }
@@ -1118,6 +1118,7 @@ impl Store {
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
                 t.claim_expires_at = None;
+                t.claim_since = None;
             }
             // A blocking asker must be able to write to the ticket (hold the
             // lease and echo the fence, or find it unclaimed). Advisory questions
@@ -1181,7 +1182,7 @@ impl Store {
                 } else if t.active_claim(now).is_some() {
                     // Already blocked but still leased: release so it can be re-picked.
                     tx.execute(
-                        "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
+                        "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL, version = version + 1, updated_at = ?2 WHERE id = ?1",
                         params![t.id, now],
                     )?;
                     emit_event(
@@ -1425,6 +1426,7 @@ impl Store {
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
                 t.claim_expires_at = None;
+                t.claim_since = None;
             }
 
             // Barrier: a ticket resumes only when every open BLOCKING question on
@@ -1624,6 +1626,7 @@ impl Store {
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
                 t.claim_expires_at = None;
+                t.claim_since = None;
             }
 
             let mut reblocked_to: Option<String> = None;

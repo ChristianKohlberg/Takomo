@@ -31,7 +31,9 @@ pub use checklist::{
     ReleasePush, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_LANES_PAGE, MAX_LANE_GLOBS,
     MAX_RELEASE_PATHS,
 };
-pub use claims::{ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS};
+pub use claims::{
+    ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
+};
 pub use events::EventFilter;
 pub use initiatives::{
     EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch, INITIATIVE_STATUSES,
@@ -568,6 +570,14 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if !columns.iter().any(|c| c == "expires_at") {
         conn.execute("ALTER TABLE tickets ADD COLUMN expires_at INTEGER", [])?;
     }
+    // tickets.claim_since: when the current lease was granted, so "how long has
+    // this been held" is answerable — the question an indefinite epic claim is
+    // judged by, since it has no expiry to read. Nullable; NULL on old rows
+    // means "granted before the column existed", which the status endpoint
+    // reports as unknown rather than inventing a timestamp.
+    if !columns.iter().any(|c| c == "claim_since") {
+        conn.execute("ALTER TABLE tickets ADD COLUMN claim_since INTEGER", [])?;
+    }
     // Created after the columns are guaranteed to exist. This index IS the
     // exactly-once guarantee, so it is added on an old database too.
     conn.execute(
@@ -630,7 +640,14 @@ CREATE TABLE IF NOT EXISTS tickets (
   metadata         TEXT NOT NULL DEFAULT '{}',
   links            TEXT NOT NULL DEFAULT '{}',
   claim_holder     TEXT,
+  -- When the current lease expires, or NULL while claim_holder is set for a
+  -- claim with NO expiry — an epic claim taken without a TTL, held until
+  -- released (or force-released). The sweeper's `<= now` predicate skips NULL
+  -- naturally, which is exactly the point: nothing expires it.
   claim_expires_at INTEGER,
+  -- When the current lease was granted. Cleared with the claim; what the
+  -- claim-status endpoint reads to answer "held for how long".
+  claim_since      INTEGER,
   -- The actor whose lease on this ticket ended by *expiry*, kept so the lapsed
   -- holder can resume it in place instead of walking the ticket back through the
   -- ready queue (takomo-jb5i). Set when an expired claim is cleared; cleared

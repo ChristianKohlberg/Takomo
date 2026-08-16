@@ -214,6 +214,7 @@ pub(super) fn apply_transition(
         // than walk the ticket back through the ready queue.
         t.lapsed_claim_holder = t.claim_holder.take();
         t.claim_expires_at = None;
+        t.claim_since = None;
     }
     let allowed = allowed_from(&wf, &t.state);
 
@@ -328,7 +329,8 @@ pub(super) fn apply_transition(
         });
 
     // (3) Claim / fence — amended by finding A's human override.
-    let active_claim: Option<(String, i64)> = t.active_claim(now).map(|(h, e)| (h.to_string(), e));
+    let active_claim: Option<(String, Option<i64>)> =
+        t.active_claim(now).map(|(h, e)| (h.to_string(), e));
     let has_active_claim = active_claim.is_some();
     let caller_holds_claim = match &active_claim {
         Some((holder, expires)) => {
@@ -340,11 +342,11 @@ pub(super) fn apply_transition(
                 return Err(ApiError::conflict(
                     "claim.held",
                     format!(
-                        "Ticket '{id}' is claimed by '{holder}' until {}. Only the lease holder may transition a claimed ticket. Ask the holder to release it (POST /v1/tickets/{id}/release), wait for the lease to expire, or work something else via POST /v1/ready/claim.",
-                        iso(*expires)
+                        "Ticket '{id}' is claimed by '{holder}' {}. Only the lease holder may transition a claimed ticket. Ask the holder to release it (POST /v1/tickets/{id}/release), wait for the claim to end, or work something else via POST /v1/ready/claim.",
+                        super::helpers::held_phrase(*expires)
                     ),
                 )
-                .details(json!({ "holder": holder, "expires_at": iso(*expires) }))
+                .details(json!({ "holder": holder, "expires_at": expires.map(iso) }))
                 .current_state(t.state.clone())
                 .allowed_transitions(allowed));
             } else {
@@ -464,7 +466,7 @@ pub(super) fn apply_transition(
     };
     if do_release {
         tx.execute(
-            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL WHERE id = ?1",
+            "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL WHERE id = ?1",
             params![id],
         )?;
     }

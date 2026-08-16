@@ -32,7 +32,12 @@ pub struct Ticket {
     pub links: Value,
     pub blocked_by: Vec<String>,
     pub claim_holder: Option<String>,
+    /// When the lease expires — or None while `claim_holder` is set, for an
+    /// epic claim taken without a TTL: held until released, never expiring.
     pub claim_expires_at: Option<i64>,
+    /// When the current lease was granted; cleared with the claim. None on a
+    /// claim granted before the column existed.
+    pub claim_since: Option<i64>,
     /// The actor whose lease here ended by expiry, when nothing has claimed,
     /// released or revoked one since. Read [`Ticket::lapsed_holder`] rather than
     /// this field: between the expiry and the sweep the same fact is still
@@ -66,9 +71,12 @@ pub struct Ticket {
 
 impl Ticket {
     /// Whether the claim is active at `now` (expired leases read as unclaimed).
-    pub fn active_claim(&self, now: i64) -> Option<(&str, i64)> {
+    /// A `None` expiry on an active claim means it never expires — an epic
+    /// claim taken without a TTL, held until released.
+    pub fn active_claim(&self, now: i64) -> Option<(&str, Option<i64>)> {
         match (&self.claim_holder, self.claim_expires_at) {
-            (Some(h), Some(exp)) if exp > now => Some((h.as_str(), exp)),
+            (Some(h), Some(exp)) if exp > now => Some((h.as_str(), Some(exp))),
+            (Some(h), None) => Some((h.as_str(), None)),
             _ => None,
         }
     }
@@ -94,7 +102,16 @@ impl Ticket {
     pub fn to_json(&self, now: i64) -> Value {
         let claim = self
             .active_claim(now)
-            .map(|(h, exp)| json!({ "holder": h, "expires_at": iso(exp) }))
+            .map(|(h, exp)| {
+                // `expires_at: null` = a claim with no expiry (an epic claim
+                // held until released), not a missing field. `since` is when it
+                // was granted — null only on rows that predate the column.
+                json!({
+                    "holder": h,
+                    "expires_at": exp.map(iso),
+                    "since": self.claim_since.map(iso),
+                })
+            })
             .unwrap_or(Value::Null);
         json!({
             "id": self.id,
@@ -301,7 +318,8 @@ pub struct Lease {
     pub ticket: String,
     pub holder: String,
     pub fence: i64,
-    pub expires_at: i64,
+    /// None = the lease never expires: an epic claim taken without a TTL.
+    pub expires_at: Option<i64>,
     /// True when this lease was **resumed in place** after the holder's previous
     /// one expired — a claim taken in a state the workflow does not mark
     /// claimable, which only the lapsed holder can do and only while nobody else
@@ -316,7 +334,10 @@ impl Lease {
             "ticket": self.ticket,
             "holder": self.holder,
             "fence": self.fence,
-            "expires_at": iso(self.expires_at),
+            // null = never expires (an epic claim without a TTL). Kept as an
+            // explicit null rather than an absent field so a caller that reads
+            // expires_at sees "none" instead of its own default.
+            "expires_at": self.expires_at.map(iso),
         });
         // Additive and only when true: a `"resumed": false` on every lease would
         // read as a field worth checking, when the answer is almost always no.
