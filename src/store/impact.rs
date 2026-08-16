@@ -46,12 +46,19 @@ use std::collections::HashSet;
 /// every edge whose blocker is `b`, which is what "if b closed" means to the
 /// ready queue.
 ///
+/// `epic` narrows the counted set to that epic's descendant subtree. It scopes
+/// the WORK counted, never the blockers considered: a ticket outside the epic —
+/// or outside the project — that holds the epic up is exactly what this view
+/// exists to name, so it is still reported, with a count of what it releases
+/// INSIDE the subtree.
+///
 /// Mirrors the ready queue's own CTE (`store::claims`) including the `UNION`
 /// that makes a `parent` cycle terminate.
 fn blocked_set(
     conn: &Connection,
     project: &str,
     exclude: Option<&str>,
+    epic: Option<&str>,
 ) -> ApiResult<HashSet<String>> {
     let sql = r#"
         WITH RECURSIVE blocked(id) AS (
@@ -63,15 +70,21 @@ fn blocked_set(
               AND (?2 IS NULL OR d.blocked_by <> ?2)
             UNION
             SELECT c.id FROM tickets c JOIN blocked ON c.parent = blocked.id
+        ),
+        sub(id) AS (
+            SELECT id FROM tickets WHERE ?3 IS NOT NULL AND parent = ?3
+            UNION
+            SELECT t.id FROM tickets t JOIN sub ON t.parent = sub.id
         )
         SELECT b.id
         FROM blocked b
         JOIN tickets t ON t.id = b.id
         WHERE t.project = ?1 AND t.archived_at IS NULL
+          AND (?3 IS NULL OR b.id IN (SELECT id FROM sub))
     "#;
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt
-        .query_map(params![project, exclude], |r| r.get::<_, String>(0))?
+        .query_map(params![project, exclude, epic], |r| r.get::<_, String>(0))?
         .collect::<Result<HashSet<_>, _>>()?;
     Ok(rows)
 }
@@ -83,7 +96,10 @@ impl Store {
     ///
     /// Ties break on id so the order is stable between calls — a ranking that
     /// reshuffled on every poll would be unreadable in a dashboard.
-    pub fn impact(&self, project: &str) -> ApiResult<Value> {
+    ///
+    /// `epic` narrows the counted work to that epic's subtree; see
+    /// [`blocked_set`] for why it does not narrow the blockers themselves.
+    pub fn impact(&self, project: &str, epic: Option<&str>) -> ApiResult<Value> {
         let now = now_ms();
         self.with_conn(|conn| {
             let exists: Option<i64> = conn
@@ -96,8 +112,20 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", project));
             }
+            if let Some(e) = epic {
+                let ok: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM tickets WHERE id = ?1 AND project = ?2 AND type = 'epic'",
+                        params![e, project],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if ok.is_none() {
+                    return Err(ApiError::not_found("epic", e));
+                }
+            }
 
-            let base = blocked_set(conn, project, None)?;
+            let base = blocked_set(conn, project, None, epic)?;
 
             // Candidate blockers: non-terminal tickets that actually block
             // something in this project. Restricting to those that block
@@ -135,7 +163,7 @@ impl Store {
 
             let mut out: Vec<(i64, String, Value)> = Vec::with_capacity(candidates.len());
             for (id, proj, title, state, priority, ty) in candidates {
-                let without = blocked_set(conn, project, Some(&id))?;
+                let without = blocked_set(conn, project, Some(&id), epic)?;
                 // Everything that leaves the blocked set when `id` closes.
                 let released: Vec<&String> = base.difference(&without).collect();
                 if released.is_empty() {
@@ -171,14 +199,20 @@ impl Store {
             out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             let blockers: Vec<Value> = out.into_iter().map(|(_, _, v)| v).collect();
 
-            Ok(json!({
+            let mut body = json!({
                 "project": project,
                 "generated_at": iso(now),
-                // How many tickets in this project are blocked right now, so a
-                // reader can see what share the top blocker accounts for.
+                // Blocked right now within the counted scope — the project, or
+                // the epic subtree when one is named — so a reader can see what
+                // share the top blocker accounts for.
                 "blocked_total": base.len() as i64,
                 "blockers": blockers,
-            }))
+            });
+            if let Some(e) = epic {
+                // Echo the filter so a stored response says what it is a view of.
+                body["epic"] = json!(e);
+            }
+            Ok(body)
         })
     }
 }

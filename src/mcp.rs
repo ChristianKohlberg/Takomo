@@ -344,6 +344,11 @@ pub struct DepsArgs {
 pub struct ProjectArgs {
     /// Project id.
     pub project: String,
+    /// Optional epic id — narrow the report to that epic's descendant subtree.
+    /// Only `takomo_roadmap` and `takomo_impact` read it; the other tools taking
+    /// these args ignore it.
+    #[serde(default)]
+    pub epic: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1111,14 +1116,15 @@ impl TakomoMcp {
         splits its claimable work into `ready` (what the ready queue would hand out) and \
         `backlog` (claimable but blocked or already claimed), and carries \
         `awaiting_answer` — tickets holding an open question, which is an OVERLAY on the \
-        state counts, not a separate bucket."
+        state counts, not a separate bucket. Pass `epic` to report on ONE epic's subtree; \
+        the project-wide `unparented` bucket is then omitted rather than returned empty."
     )]
     async fn takomo_roadmap(
         &self,
         Parameters(a): Parameters<ProjectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_roadmap(&require_auth(&ctx)?, &a.project))
+        respond(self.do_roadmap(&require_auth(&ctx)?, &a.project, a.epic.as_deref()))
     }
 
     #[tool(
@@ -1128,14 +1134,16 @@ impl TakomoMcp {
         `direct` (they hold the blocked_by edge) and `downstream` (they inherit it from an \
         ancestor). Counterfactual, not reachability: a ticket held by two blockers counts \
         towards neither alone, and closing a blocker does not release what its own \
-        dependents block. Use it to pick the single close that buys the most."
+        dependents block. Use it to pick the single close that buys the most. Pass `epic` \
+        to count only work inside that epic's subtree — blockers OUTSIDE it are still \
+        reported, since an external ticket holding the epic up is the thing worth naming."
     )]
     async fn takomo_impact(
         &self,
         Parameters(a): Parameters<ProjectArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_impact(&require_auth(&ctx)?, &a.project))
+        respond(self.do_impact(&require_auth(&ctx)?, &a.project, a.epic.as_deref()))
     }
 
     #[tool(
@@ -1881,6 +1889,7 @@ impl TakomoMcp {
             expired: None,
             schedule: None,
             parent: None,
+            epic: None,
             q: a.q,
             claimed_by: None,
             allowed_projects: auth.allowed_projects_vec(),
@@ -2835,17 +2844,17 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_roadmap(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
+    fn do_roadmap(&self, auth: &AuthCtx, project: &str, epic: Option<&str>) -> ApiResult<Value> {
         auth.require_scope("read")?;
         auth.require_project(project)?;
-        let roadmap = self.state.store.roadmap(project)?;
+        let roadmap = self.state.store.roadmap(project, epic)?;
         Ok(json!({ "ok": true, "roadmap": roadmap }))
     }
 
-    fn do_impact(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
+    fn do_impact(&self, auth: &AuthCtx, project: &str, epic: Option<&str>) -> ApiResult<Value> {
         auth.require_scope("read")?;
         auth.require_project(project)?;
-        let impact = self.state.store.impact(project)?;
+        let impact = self.state.store.impact(project, epic)?;
         Ok(json!({ "ok": true, "impact": impact }))
     }
 

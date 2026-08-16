@@ -500,7 +500,7 @@ PY
 }
 
 cmd_ls() {
-  local project="" state="" q="" mine="" archived="" limit="100" cursor=""
+  local project="" state="" q="" mine="" archived="" limit="100" cursor="" epic=""
   local -a labels=()
   local -a tags=()
   local -a tag_kinds=()
@@ -508,6 +508,7 @@ cmd_ls() {
     case "$1" in
       --project) project=$2; shift 2 ;;
       --state)   state=$2; shift 2 ;;
+      --epic)    epic=$2; shift 2 ;;
       --label)   labels+=("$2"); shift 2 ;;
       --tag)     tags+=("$2"); shift 2 ;;
       --tag-kind) tag_kinds+=("$2"); shift 2 ;;
@@ -526,6 +527,7 @@ cmd_ls() {
   [ -n "$project" ] && qs="$qs&project=$(urlenc "$project")"
   [ -z "$project" ] && [ -n "${TAKOMO_PROJECT:-}" ] && qs="$qs&project=$(urlenc "$TAKOMO_PROJECT")"
   [ -n "$state" ] && qs="$qs&state=$(urlenc "$state")"
+  [ -n "$epic" ] && qs="$qs&epic=$(urlenc "$epic")"
   [ -n "$archived" ] && qs="$qs&archived=only"
   [ -n "$q" ] && qs="$qs&q=$(urlenc "$q")"
   for l in "${labels[@]+"${labels[@]}"}"; do qs="$qs&label=$(urlenc "$l")"; done
@@ -592,16 +594,17 @@ PY
 }
 
 cmd_roadmap() {
-  local project=""
+  local project="" epic=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=$2; shift 2 ;;
+      --epic) epic=$2; shift 2 ;;
       -*) die "roadmap: unknown flag $1" ;;
       *) die "roadmap: unexpected argument '$1'" ;;
     esac
   done
   project=$(resolve_project "$project")
-  api GET "/v1/projects/$(urlenc "$project")/roadmap" >/dev/null
+  api GET "/v1/projects/$(urlenc "$project")/roadmap${epic:+?epic=$(urlenc "$epic")}" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -647,17 +650,18 @@ PY
 }
 
 cmd_impact() {
-  local project="" limit=""
+  local project="" limit="" epic=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=$2; shift 2 ;;
+      --epic) epic=$2; shift 2 ;;
       --limit) limit=$2; shift 2 ;;
       -*) die "impact: unknown flag $1" ;;
       *) die "impact: unexpected argument '$1'" ;;
     esac
   done
   project=$(resolve_project "$project")
-  api GET "/v1/projects/$(urlenc "$project")/impact" >/dev/null
+  api GET "/v1/projects/$(urlenc "$project")/impact${epic:+?epic=$(urlenc "$epic")}" >/dev/null
   python3 - "$REQ_OUT" "${limit:-0}" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -2744,15 +2748,16 @@ Project administration (admin scope):
 Finding & creating work:
   takomo new [--project P] [--type task|bug|epic|spike] [--priority critical|high|normal|low]
          [--parent ID] [--label L]... [--body TEXT] TITLE
-  takomo ls  [--project P] [--state S] [--label L]... [--mine] [--archived] [-q TEXT]
+  takomo ls  [--project P] [--state S] [--epic ID] [--label L]... [--mine] [--archived] [-q TEXT]
              [--limit N] [--cursor C]   page size (default 100) and the next page
   takomo ready [--project P] [--limit N]
-  takomo impact  [--project P] [--limit N]
+  takomo impact  [--project P] [--epic ID] [--limit N]
          open blockers ranked by how much closing ONE of them would release:
          `unblocks` counts the tickets that would leave the blocked set, split
          into direct (they hold the edge) and downstream (inherited from an
          ancestor). A ticket held by two blockers counts towards neither alone.
-  takomo roadmap [--project P]   epic progress rollup: a bar + child counts per epic,
+  takomo roadmap [--project P] [--epic ID]
+         epic progress rollup: a bar + child counts per epic,
                                  contradiction flags, and a "(no epic)" bucket
   takomo show ID
 

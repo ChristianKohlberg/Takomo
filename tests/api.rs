@@ -13573,3 +13573,116 @@ async fn workflow_layout_round_trips_without_emitting_an_event() {
         "a layout write must not read as a workflow change: {kinds:?}"
     );
 }
+
+// `--epic` on all three read surfaces. The subtree walk is the point: an epic's
+// work nests, so a one-level `parent` filter would miss most of it.
+#[tokio::test]
+async fn epic_filter_scopes_roadmap_impact_and_list_to_the_subtree() {
+    let app = TestApp::spawn().await;
+
+    // mine:  child -> grandchild        (two levels, so `parent` alone misses one)
+    // other: a second epic that must never appear under mine's filter
+    let mine = app.create_typed("Mine", "epic", None).await;
+    let child = app.create_typed("Child", "task", Some(&mine)).await;
+    let grandchild = app.create_typed("Grandchild", "task", Some(&child)).await;
+    let other = app.create_typed("Other", "epic", None).await;
+    let outsider = app.create_typed("Outsider", "task", Some(&other)).await;
+
+    // One blocker OUTSIDE mine, holding one ticket INSIDE it — the case the
+    // filter must not hide, because that is the ticket worth closing.
+    let external = app.create_typed("External blocker", "task", None).await;
+    for (ticket, blocker) in [(&child, &external), (&outsider, &external)] {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                &format!("/v1/tickets/{ticket}/deps"),
+                json!({ "blocked_by": blocker }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "dep add failed: {b}");
+    }
+
+    // roadmap?epic= -> that epic alone, and NO project-wide unparented bucket.
+    let (status, body) = app
+        .get(&app.admin, &format!("/v1/projects/tp/roadmap?epic={mine}"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let epics = body["epics"].as_array().expect("epics array");
+    assert_eq!(epics.len(), 1, "one epic when filtered: {body}");
+    assert_eq!(epics[0]["id"], mine.as_str());
+    assert_eq!(epics[0]["total"], 2, "child + grandchild: {body}");
+    assert_eq!(body["epic"], mine.as_str(), "filter echoed: {body}");
+    assert!(
+        body.get("unparented").is_none(),
+        "unparented is project-wide and must be omitted under an epic filter: {body}"
+    );
+
+    // impact?epic= -> counts only work inside the subtree, but still names the
+    // OUTSIDE blocker holding it.
+    let (status, body) = app
+        .get(&app.admin, &format!("/v1/projects/tp/impact?epic={mine}"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["blocked_total"], 2,
+        "child + grandchild blocked inside the subtree; outsider excluded: {body}"
+    );
+    let top = &body["blockers"][0];
+    assert_eq!(
+        top["id"],
+        external.as_str(),
+        "external blocker named: {body}"
+    );
+    assert_eq!(
+        top["unblocks"], 2,
+        "counts only what it releases INSIDE the epic, not `outsider`: {top}"
+    );
+
+    // Unfiltered, the same blocker releases the outsider too — proving the
+    // filter narrowed the count rather than the assertion being vacuous.
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/impact").await;
+    assert_eq!(
+        body["blockers"][0]["unblocks"], 3,
+        "unfiltered count includes the outsider: {body}"
+    );
+
+    // ls?epic= -> the whole subtree, not just direct children, and the epic
+    // itself is the container rather than a member.
+    let (status, body) = app
+        .get(&app.admin, &format!("/v1/tickets?epic={mine}&limit=50"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|t| t["id"].as_str().expect("id"))
+        .collect();
+    assert!(
+        ids.contains(&child.as_str()),
+        "direct child listed: {ids:?}"
+    );
+    assert!(
+        ids.contains(&grandchild.as_str()),
+        "GRANDchild listed — a one-level parent filter would miss it: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&mine.as_str()),
+        "epic itself excluded: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&outsider.as_str()),
+        "another epic's work excluded: {ids:?}"
+    );
+
+    // A filter naming a non-epic, or an epic of another project, is a 404 — an
+    // empty report cannot tell a typo from a legitimately empty epic.
+    let (status, _) = app
+        .get(&app.admin, &format!("/v1/projects/tp/roadmap?epic={child}"))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a task is not an epic");
+    let (status, _) = app
+        .get(&app.admin, "/v1/projects/tp/impact?epic=tp-nope")
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown epic");
+}

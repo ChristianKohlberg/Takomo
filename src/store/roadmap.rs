@@ -242,7 +242,13 @@ impl Store {
     /// Roadmap rollup for every epic in `project`, plus the `unparented` bucket
     /// for work no epic owns. Returns a 404 for an unknown project. Each epic
     /// carries its own metadata, a subtree rollup, and contradiction `flags`.
-    pub fn roadmap(&self, project: &str) -> ApiResult<Value> {
+    /// `epic` narrows the report to ONE epic. The `unparented` bucket is then
+    /// omitted rather than returned empty: it is a project-wide statement about
+    /// work no epic owns, and repeating it under a single-epic view would read
+    /// as "this epic has no unparented work", which is not a thing an epic can
+    /// have. An unknown epic 404s instead of returning an empty list, for the
+    /// same reason an unknown project does.
+    pub fn roadmap(&self, project: &str, epic: Option<&str>) -> ApiResult<Value> {
         let now = now_ms();
         self.with_conn(|conn| {
             // 404 for an unknown project, so a scoped caller gets a clean error
@@ -258,6 +264,23 @@ impl Store {
                 return Err(ApiError::not_found("project", project));
             }
 
+            // A filter naming a ticket that is not an epic OF THIS PROJECT is a
+            // 404, not an empty report — the three ways to get it wrong (typo,
+            // wrong project, naming a task) are indistinguishable in an empty
+            // list and all of them are worth telling the caller about.
+            if let Some(e) = epic {
+                let ok: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM tickets WHERE id = ?1 AND project = ?2 AND type = 'epic'",
+                        params![e, project],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if ok.is_none() {
+                    return Err(ApiError::not_found("epic", e));
+                }
+            }
+
             let mut stmt = conn.prepare(
                 r#"
                 SELECT t.id, t.title, t.state, t.priority,
@@ -265,11 +288,12 @@ impl Store {
                                  WHERE ws.project = t.project AND ws.state = t.state), '') AS category
                 FROM tickets t
                 WHERE t.project = ?1 AND t.type = 'epic'
+                  AND (?2 IS NULL OR t.id = ?2)
                 ORDER BY t.created_at ASC, t.rowid ASC
                 "#,
             )?;
             let epics = stmt
-                .query_map(params![project], |r| {
+                .query_map(params![project, epic], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -303,13 +327,17 @@ impl Store {
                 }));
             }
 
-            let u = rollup_unparented(conn, project, now)?;
-
-            Ok(json!({
+            let mut body = json!({
                 "project": project,
                 "generated_at": iso(now),
                 "epics": out,
-                "unparented": {
+            });
+            if let Some(e) = epic {
+                // Echo the filter so a stored response says what it is a view of.
+                body["epic"] = json!(e);
+            } else {
+                let u = rollup_unparented(conn, project, now)?;
+                body["unparented"] = json!({
                     "total": u.total,
                     "done": u.done,
                     "percent": u.percent(),
@@ -318,8 +346,9 @@ impl Store {
                     "awaiting_answer": u.awaiting_answer,
                     "by_state": Value::Object(u.by_state),
                     "by_category": Value::Object(u.by_category),
-                },
-            }))
+                });
+            }
+            Ok(body)
         })
     }
 }
