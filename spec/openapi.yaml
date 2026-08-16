@@ -1462,6 +1462,19 @@ paths:
         never resumable; and an admin `force-release` clears the right to resume
         along with the claim. What makes it safe is that a new claim by anyone
         else — the only thing that creates a competing writer — ends it.
+
+        **Claiming an epic reserves its whole subtree.** While any claim on an
+        epic is active, no other actor can claim a ticket anywhere under it
+        (409 `claim.epic_held`) and the ready queue stops offering the subtree —
+        the holder keeps working children by id with ordinary leased claims. An
+        epic claimed **without** `ttl_seconds` gets no expiry at all: the lease
+        comes back with `expires_at: null` and is held until released (or
+        force-released; there is no TTL to wait out — judge it by
+        `GET /tickets/{id}/claim` instead). An explicit `ttl_seconds` bounds an
+        epic claim like any other. The reservation never displaces live work: a
+        fresh epic claim is refused (`claim.children_held`) while anyone else
+        holds an active claim inside the subtree, and the ready queue likewise
+        never hands out such an epic.
       parameters: [ { $ref: "#/components/parameters/id" } ]
       requestBody:
         content:
@@ -1469,7 +1482,13 @@ paths:
             schema:
               type: object
               properties:
-                ttl_seconds: { type: integer, default: 900, maximum: 3600 }
+                ttl_seconds:
+                  type: integer
+                  default: 900
+                  maximum: 3600
+                  description: >-
+                    Lease length. On an epic, omitting it means NO expiry (held
+                    until released) rather than the default.
       responses:
         "200":
           description: Claimed
@@ -1482,17 +1501,52 @@ paths:
         "409":
           description: |
             Already claimed by another holder (`claim.held`), blocked
-            (`claim.blocked`), or the state is not claimable and this caller is not
+            (`claim.blocked`), the state is not claimable and this caller is not
             the holder whose lease lapsed there (`claim.state` — `details`
-            carries `claimable_states` and `lapsed_holder`).
+            carries `claimable_states` and `lapsed_holder`), under an epic
+            someone else has claimed (`claim.epic_held` — `details` names the
+            epic, holder, and `held_since`), or an epic whose subtree carries
+            someone else's live claims (`claim.children_held` — `details.held`
+            lists them).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [claims]
+      summary: Inspect the claim on a ticket, with movement since it was granted
+      description: |
+        Who holds the ticket, since when, and whether the claim expires — plus,
+        while it is held, what has **moved in its subtree since the grant**:
+        tickets created, tickets closed (event-based, so a later reopen does not
+        un-count it), tickets currently in progress, currently blocked (a
+        blocked-category state or an open dependency), still open, and the time
+        of the last movement.
+
+        This read is what makes an indefinite epic claim safe to offer: with no
+        TTL to wait out, "held five hours, ten created, five closed, movement
+        two minutes ago" reads as an agent mid-flight, while the same five hours
+        with `idle_seconds` close to `held_for_seconds` reads as an abandoned
+        lock — an admin `force-release` away. Works on any ticket; on one with
+        no descendants the movement counts are simply zero. `movement` is null
+        when the ticket is unclaimed (no anchor to count from), or when the
+        claim predates the server recording grant times.
+      parameters: [ { $ref: "#/components/parameters/id" } ]
+      responses:
+        "200":
+          description: The claim and its movement report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClaimStatus" }
 
   /tickets/{id}/heartbeat:
     post:
       tags: [claims]
       summary: Renew the lease (harness/orchestrator responsibility, not the model's)
+      description: |
+        On a claim with no expiry (an epic claimed without a TTL) the beat is a
+        no-op that returns the lease as it stands, `expires_at: null` included —
+        it never writes a TTL, so a routine beat cannot quietly convert "held
+        until released" into a 15-minute lease.
       parameters: [ { $ref: "#/components/parameters/id" } ]
       requestBody:
         required: true
@@ -4879,7 +4933,18 @@ components:
           type: [object, "null"]
           properties:
             holder: { type: string, description: actor name from token }
-            expires_at: { type: string, format: date-time }
+            expires_at:
+              type: [string, "null"]
+              format: date-time
+              description: >-
+                null on an active claim = it never expires: an epic claim taken
+                without a TTL, held until released or force-released.
+            since:
+              type: [string, "null"]
+              format: date-time
+              description: >-
+                when the claim was granted (null only for claims from before
+                this field existed).
         version: { type: integer, description: monotonic per ticket; ETag value }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
@@ -5170,13 +5235,50 @@ components:
         ticket: { type: string }
         holder: { type: string }
         fence: { type: integer, description: echo in every mutating call while claimed }
-        expires_at: { type: string, format: date-time }
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            null = the lease never expires — an epic claimed without
+            `ttl_seconds`, held until released. Everything else always carries
+            a timestamp.
         resumed:
           type: boolean
           description: >-
             Present and true only when this claim resumed the holder's own lapsed
             lease in a state the workflow does not mark claimable. Absent on an
             ordinary claim, a renewal, and every heartbeat.
+
+    ClaimStatus:
+      type: object
+      description: >-
+        The claim on a ticket as a judgeable fact: who, for how long, and what
+        has moved beneath it since the grant.
+      properties:
+        ticket: { type: string }
+        type: { type: string, description: the ticket's type; epic is the one whose claim reserves the subtree }
+        holder: { type: [string, "null"], description: null = unclaimed }
+        held_since: { type: [string, "null"], format: date-time }
+        held_for_seconds: { type: [integer, "null"] }
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: null while held = never expires (an epic claim without a TTL)
+        indefinite: { type: boolean, description: true for an active claim with no expiry }
+        movement:
+          type: [object, "null"]
+          description: >-
+            What moved in the subtree since the claim. Null when unclaimed, or
+            when the claim predates grant-time recording.
+          properties:
+            since: { type: string, format: date-time, description: the claim grant — the anchor every count is relative to }
+            created: { type: integer, description: subtree tickets created since the claim }
+            closed: { type: integer, description: distinct subtree tickets that entered a terminal state since the claim }
+            in_progress: { type: integer, description: currently in an in_progress-category state }
+            blocked: { type: integer, description: currently in a blocked-category state or carrying an open dependency }
+            open: { type: integer, description: currently non-terminal and not archived }
+            last_activity_at: { type: [string, "null"], format: date-time, description: "newest subtree event since the claim, if any" }
+            idle_seconds: { type: integer, description: "seconds since the last movement, anchored at the claim when nothing has moved" }
 
     AnswerGrant:
       type: object
@@ -5820,6 +5922,8 @@ x-error-codes:
   claim.none: "the ticket holds no claim and no lapsed one, so there is nothing to release or force-release."
   claim.state: "the ticket's state is not claimable in this project's workflow. The message lists the claimable states and the route back to one."
   claim.blocked: "the ticket has open blockers, so it never enters the ready queue. Finish or cancel the blockers first."
+  claim.epic_held: "the ticket sits under an epic someone else has claimed, which reserves the whole subtree for that holder. Check the claim's age and movement with GET /v1/tickets/{epic}/claim; if it looks abandoned, an admin can force-release the epic."
+  claim.children_held: "the epic cannot be claimed while other workers hold live claims inside its subtree — the reservation never displaces a lease already granted. Wait, coordinate, or (admin) force-release the listed claims."
   fence.required: "the ticket is claimed by you and this call mutates it, so it must echo the lease's fencing token. Send the `fence` from the claim or heartbeat response."
   fence.stale: "the fence presented was superseded by a later claim, or the lease is simply gone. Stop writing — work in flight may duplicate another worker's. Re-claim if the work is still yours."
   fence.invalid: "the fence presented is higher than any this ticket has reached, so it was never issued. A client bug: the value was fabricated, hand-incremented, or belongs to another ticket."

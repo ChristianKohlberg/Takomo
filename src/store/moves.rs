@@ -281,7 +281,8 @@ impl Store {
                 .filter_map(|id| rows.get(id))
                 .filter(|r| {
                     r.project != req.to_project
-                        && matches!((&r.claim_holder, r.claim_expires_at), (Some(_), Some(exp)) if exp > now)
+                        && r.claim_holder.is_some()
+                        && r.claim_expires_at.is_none_or(|exp| exp > now)
                 })
                 .collect();
             if let Some(first) = held.first() {

@@ -91,6 +91,7 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// A name that is not listed counts as a write, so a tool added later is
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
+    "takomo_claim_status",
     "takomo_coverage",
     "takomo_deps",
     "takomo_gate",
@@ -871,7 +872,11 @@ impl TakomoMcp {
     #[tool(
         description = "Claim a specific ticket by id, taking its lease. Later \
         start/transition/done/release calls resolve the fencing token automatically. \
-        The lease expires (default 900s, max 3600) — keep it with `takomo_heartbeat`."
+        The lease expires (default 900s, max 3600) — keep it with `takomo_heartbeat`. \
+        Claiming an EPIC reserves its whole subtree: nobody else can claim tickets under \
+        it and the ready queue stops offering them. An epic claimed without ttl_seconds \
+        never expires — it is held until you release it (expires_at comes back null); \
+        check on one with `takomo_claim_status`."
     )]
     async fn takomo_claim(
         &self,
@@ -879,6 +884,21 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_claim(&require_auth(&ctx)?, &a.id, a.ttl_seconds))
+    }
+
+    #[tool(
+        description = "Inspect the claim on a ticket: holder, held-for, expiry (null = an \
+        epic claim held until released) and — while held — what moved in its subtree since \
+        the claim: tickets created, closed, in progress, blocked, and how long since the \
+        last movement. How you judge whether an epic claim is live work or abandoned; an \
+        abandoned one is an admin force-release away."
+    )]
+    async fn takomo_claim_status(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_claim_status(&require_auth(&ctx)?, &a.id))
     }
 
     #[tool(
@@ -2265,6 +2285,12 @@ impl TakomoMcp {
         let mut out = json!({ "ok": true, "lease": lease.to_json() });
         self.attach_conventions(&mut out, &ticket.project);
         Ok(out)
+    }
+
+    fn do_claim_status(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        load_visible(&self.state, auth, id)?;
+        Ok(self.state.store.claim_status(id)?.to_json())
     }
 
     /// Renew a lease this caller holds. The fence is resolved the same way

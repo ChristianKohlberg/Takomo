@@ -277,7 +277,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .post(crate::api::tickets::add_dep)
                 .delete(crate::api::tickets::remove_dep),
         )
-        .route("/v1/tickets/{id}/claim", post(crate::api::claims::claim))
+        .route(
+            "/v1/tickets/{id}/claim",
+            get(crate::api::claims::claim_status).post(crate::api::claims::claim),
+        )
         .route(
             "/v1/tickets/{id}/heartbeat",
             post(crate::api::claims::heartbeat),

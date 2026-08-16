@@ -685,7 +685,7 @@ impl Store {
             // Archiving: refuse under a live lease unless forced.
             let mut stmt = tx.prepare(
                 "SELECT id, claim_holder, fence_seq FROM tickets \
-                 WHERE project = ?1 AND claim_holder IS NOT NULL AND claim_expires_at > ?2 \
+                 WHERE project = ?1 AND claim_holder IS NOT NULL AND (claim_expires_at IS NULL OR claim_expires_at > ?2) \
                  ORDER BY id",
             )?;
             let claimed: Vec<(String, String, i64)> = stmt
@@ -709,7 +709,7 @@ impl Store {
             }
             for (ticket, holder, fence) in &claimed {
                 tx.execute(
-                    "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, \
+                    "UPDATE tickets SET claim_holder = NULL, claim_expires_at = NULL, claim_since = NULL, \
                      lapsed_claim_holder = NULL, fence_seq = fence_seq + 1, \
                      version = version + 1, updated_at = ?2 WHERE id = ?1",
                     params![ticket, now],
@@ -781,7 +781,7 @@ impl Store {
             // Guard: refuse while any ticket holds an active (unexpired) lease,
             // unless the caller forces it.
             let active_claims: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM tickets WHERE project = ?1 AND claim_holder IS NOT NULL AND claim_expires_at > ?2",
+                "SELECT COUNT(*) FROM tickets WHERE project = ?1 AND claim_holder IS NOT NULL AND (claim_expires_at IS NULL OR claim_expires_at > ?2)",
                 params![id, now],
                 |r| r.get(0),
             )?;

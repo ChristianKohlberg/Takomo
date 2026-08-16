@@ -769,7 +769,9 @@ impl Store {
                 }
             }
             if let Some(holder) = &filter.claimed_by {
-                sql.push_str(" AND t.claim_holder = ? AND t.claim_expires_at > ?");
+                sql.push_str(
+                    " AND t.claim_holder = ? AND (t.claim_expires_at IS NULL OR t.claim_expires_at > ?)",
+                );
                 params_vec.push(SqlValue::Text(holder.clone()));
                 params_vec.push(SqlValue::Integer(now_ms()));
             }
@@ -815,6 +817,7 @@ impl Store {
             if clear_expired_claim(tx, &t, now)? {
                 t.claim_holder = None;
                 t.claim_expires_at = None;
+                t.claim_since = None;
             }
             ensure_ticket_writable(tx, &t)?;
 
@@ -832,11 +835,11 @@ impl Store {
                         return Err(ApiError::conflict(
                             "claim.held",
                             format!(
-                                "Ticket '{id}' is claimed by '{holder}' until {}. While claimed, non-holders may only merge non-empty metadata under their own namespace ('{ns}<key>') or add comments (POST /v1/tickets/{id}/comments). For other changes, wait for the lease to expire or coordinate with the holder.",
-                                crate::ids::iso(expires)
+                                "Ticket '{id}' is claimed by '{holder}' {}. While claimed, non-holders may only merge non-empty metadata under their own namespace ('{ns}<key>') or add comments (POST /v1/tickets/{id}/comments). For other changes, wait for the claim to end or coordinate with the holder.",
+                                super::helpers::held_phrase(expires)
                             ),
                         )
-                        .details(json!({ "holder": holder, "expires_at": crate::ids::iso(expires) })));
+                        .details(json!({ "holder": holder, "expires_at": expires.map(crate::ids::iso) })));
                     }
                 }
                 // Holder must echo a current fence; an unclaimed ticket still

@@ -352,6 +352,7 @@ interchangeable), and coverage is of the *declared* surface: hand-written globs,
 with orphan detection so the rot stays visible. See `docs/checklist.md`.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/checklist.md`, `docs/initiatives.md`,
-`docs/promotions.md`,
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/checklist.md`, `docs/epic-claims.md`
+(claiming an epic reserves its subtree; no-TTL claims judged by movement),
+`docs/initiatives.md`, `docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

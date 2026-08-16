@@ -1916,7 +1916,7 @@ async fn write_rate_limit_returns_429_with_retry_after() {
 // ---------------------------------------------------------------------------
 
 /// Columns of `tickets` that deliberately never appear in the ticket JSON.
-const COLUMNS_OFF_THE_WIRE: [(&str, &str); 4] = [
+const COLUMNS_OFF_THE_WIRE: [(&str, &str); 5] = [
     (
         "claim_holder",
         "folded into the `claim` object by Ticket::to_json",
@@ -1924,6 +1924,10 @@ const COLUMNS_OFF_THE_WIRE: [(&str, &str); 4] = [
     (
         "claim_expires_at",
         "folded into the `claim` object by Ticket::to_json",
+    ),
+    (
+        "claim_since",
+        "folded into the `claim` object by Ticket::to_json (as `claim.since`)",
     ),
     (
         "lapsed_claim_holder",
@@ -1942,7 +1946,10 @@ const KEYS_WITHOUT_A_COLUMN: [(&str, &str); 3] = [
         "joined from workflow_states by TICKET_COLS",
     ),
     ("blocked_by", "read from the deps table by load_blocked_by"),
-    ("claim", "derived from claim_holder + claim_expires_at"),
+    (
+        "claim",
+        "derived from claim_holder + claim_expires_at + claim_since",
+    ),
 ];
 
 /// Ticket JSON keys no client may set, and why. Everything else on the wire has
@@ -13685,4 +13692,385 @@ async fn epic_filter_scopes_roadmap_impact_and_list_to_the_subtree() {
         .get(&app.admin, "/v1/projects/tp/impact?epic=tp-nope")
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "unknown epic");
+}
+
+// ---------------------------------------------------------------------------
+// Epic claims: claiming an epic reserves its whole subtree for the holder.
+
+/// The core shape: no `ttl_seconds` on an epic = a claim with no expiry, other
+/// actors bounce off every ticket underneath (`claim.epic_held`), the holder
+/// works children with ordinary leased claims, and a fenced release lifts the
+/// reservation.
+#[tokio::test]
+async fn epic_claim_without_ttl_never_expires_and_reserves_subtree() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Payments revamp", "epic", None).await;
+    let c1 = app
+        .create_typed("Migrate charges", "task", Some(&epic))
+        .await;
+    let c2 = app
+        .create_typed("Migrate refunds", "task", Some(&epic))
+        .await;
+    app.to_ready(&epic).await;
+    app.to_ready(&c1).await;
+    app.to_ready(&c2).await;
+
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    assert!(
+        lease["expires_at"].is_null(),
+        "an epic claimed without a TTL must not expire: {lease}"
+    );
+    let fence = lease["fence"].as_i64().expect("fence");
+
+    let (_, t) = app.get(&app.worker, &format!("/v1/tickets/{epic}")).await;
+    assert_eq!(t["claim"]["holder"], "agent:w1", "{t}");
+    assert!(t["claim"]["expires_at"].is_null(), "{t}");
+    assert!(t["claim"]["since"].is_string(), "{t}");
+
+    // Another worker cannot claim anywhere in the subtree.
+    let (s, err) = app
+        .post(&app.worker2, &format!("/v1/tickets/{c1}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["code"], "claim.epic_held", "{err}");
+    assert_eq!(err["details"]["epic"], json!(epic), "{err}");
+    assert_eq!(err["details"]["holder"], "agent:w1", "{err}");
+    assert!(err["details"]["held_since"].is_string(), "{err}");
+
+    // The holder keeps working children with ordinary leased claims.
+    let (s, child_lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{c1}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{child_lease}");
+    assert!(
+        child_lease["expires_at"].is_string(),
+        "a child claim stays leased even under an indefinite epic claim: {child_lease}"
+    );
+
+    // A fenced release ends the reservation.
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{epic}/release"),
+            json!({ "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+    app.claim_as(&app.worker2, &c2).await;
+}
+
+/// An explicit TTL bounds an epic claim like any other claim, and the project
+/// maximum still applies.
+#[tokio::test]
+async fn epic_claim_with_explicit_ttl_stays_leased() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Bounded lock", "epic", None).await;
+    app.to_ready(&epic).await;
+
+    let (s, err) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{epic}/claim"),
+            json!({ "ttl_seconds": 4000 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "validation.ttl", "{err}");
+
+    let (s, lease) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{epic}/claim"),
+            json!({ "ttl_seconds": 60 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    assert!(lease["expires_at"].is_string(), "{lease}");
+}
+
+/// A heartbeat on an indefinite claim answers with the lease as it stands and
+/// never writes a TTL — a harness that beats on a schedule must not quietly
+/// convert "held until released" into a 15-minute lease.
+#[tokio::test]
+async fn heartbeat_on_an_indefinite_epic_claim_is_a_noop() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Long hold", "epic", None).await;
+    app.to_ready(&epic).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    let fence = lease["fence"].as_i64().expect("fence");
+
+    for body in [
+        json!({ "fence": fence }),
+        json!({ "fence": fence, "ttl_seconds": 60 }),
+    ] {
+        let (s, beat) = app
+            .post(&app.worker, &format!("/v1/tickets/{epic}/heartbeat"), body)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{beat}");
+        assert!(
+            beat["expires_at"].is_null(),
+            "a beat must not add an expiry: {beat}"
+        );
+    }
+    let (_, t) = app.get(&app.worker, &format!("/v1/tickets/{epic}")).await;
+    assert!(t["claim"]["expires_at"].is_null(), "{t}");
+}
+
+/// The reservation never displaces live work: while anyone else holds a claim
+/// inside the subtree, a fresh epic claim is refused and the ready queue does
+/// not offer the epic either.
+#[tokio::test]
+async fn epic_claim_never_displaces_live_work_inside() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Contested epic", "epic", None).await;
+    let child = app.create_typed("Live work", "task", Some(&epic)).await;
+    app.to_ready(&epic).await;
+    app.to_ready(&child).await;
+    let child_fence = app.claim_as(&app.worker2, &child).await;
+
+    let (s, err) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["code"], "claim.children_held", "{err}");
+    assert_eq!(err["details"]["held"][0]["ticket"], json!(child), "{err}");
+    assert_eq!(err["details"]["held"][0]["holder"], "agent:w2", "{err}");
+
+    // The queue agrees with the claim: what the claim-by-id path refuses, the
+    // queue must not hand out.
+    let (_, peek) = app
+        .get(&app.worker, "/v1/ready?project=tp&type=epic&limit=200")
+        .await;
+    assert_eq!(peek["total"], json!(0), "{peek}");
+
+    let (s, b) = app
+        .post(
+            &app.worker2,
+            &format!("/v1/tickets/{child}/release"),
+            json!({ "fence": child_fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+}
+
+/// The shared ready queue stops offering a claimed epic's subtree — and the
+/// total stays consistent with the page, so "n of m" never counts tickets the
+/// page would refuse to hand out.
+#[tokio::test]
+async fn ready_queue_stops_offering_a_claimed_epics_subtree() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Reserved epic", "epic", None).await;
+    let c1 = app
+        .create_typed("Reserved child 1", "task", Some(&epic))
+        .await;
+    let c2 = app
+        .create_typed("Reserved child 2", "task", Some(&epic))
+        .await;
+    let other = app.create_ticket("Unrelated ready work").await;
+    for id in [&epic, &c1, &c2, &other] {
+        app.to_ready(id).await;
+    }
+
+    let (_, before) = app.get(&app.worker, "/v1/ready?project=tp&limit=200").await;
+    assert_eq!(before["total"], json!(4), "{before}");
+
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    let fence = lease["fence"].as_i64().expect("fence");
+
+    let (_, during) = app.get(&app.worker, "/v1/ready?project=tp&limit=200").await;
+    assert_eq!(
+        during["total"],
+        json!(1),
+        "epic + subtree must leave the queue: {during}"
+    );
+    assert_eq!(during["items"][0]["id"], json!(other), "{during}");
+
+    // ready/claim hands out the unrelated ticket, then nothing — never a
+    // reserved child.
+    let (s, got) = app
+        .post(&app.worker2, "/v1/ready/claim", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(got["id"], json!(other), "{got}");
+    let (s, _) = app
+        .post(&app.worker2, "/v1/ready/claim", json!({ "project": "tp" }))
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // Release: the subtree returns.
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{epic}/release"),
+            json!({ "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, after) = app.get(&app.worker, "/v1/ready?project=tp&limit=200").await;
+    assert_eq!(after["total"], json!(3), "{after}");
+}
+
+/// Admin force-release is the escape hatch for an abandoned indefinite claim:
+/// it displaces the holder, bumps the fence, and frees the subtree.
+#[tokio::test]
+async fn force_release_displaces_an_epic_claim_and_frees_the_subtree() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Abandoned epic", "epic", None).await;
+    let child = app.create_typed("Waiting work", "task", Some(&epic)).await;
+    app.to_ready(&epic).await;
+    app.to_ready(&child).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+
+    let (s, err) = app
+        .post(
+            &app.worker2,
+            &format!("/v1/tickets/{child}/claim"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+
+    let (s, forced) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{epic}/force-release"),
+            json!({ "reason": "no movement for hours" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{forced}");
+    assert_eq!(forced["previous_holder"], "agent:w1", "{forced}");
+    assert_eq!(
+        forced["lease_expired"],
+        json!(false),
+        "an indefinite claim is displaced live, never 'already lapsed': {forced}"
+    );
+
+    app.claim_as(&app.worker2, &child).await;
+}
+
+/// Entering a terminal-category state auto-releases the claim — an epic driven
+/// to done can never stay locked.
+#[tokio::test]
+async fn epic_claim_auto_releases_on_terminal_entry() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Finished epic", "epic", None).await;
+    app.to_ready(&epic).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+    let fence = lease["fence"].as_i64().expect("fence");
+
+    for to in ["implementing", "review"] {
+        let (s, b) = app
+            .post(
+                &app.worker,
+                &format!("/v1/tickets/{epic}/transition"),
+                json!({ "to": to, "fence": fence }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "->{to} failed: {b}");
+    }
+    let (s, b) = app.transition(&app.human, &epic, "done").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let (_, t) = app.get(&app.worker, &format!("/v1/tickets/{epic}")).await;
+    assert!(t["claim"].is_null(), "terminal entry must release: {t}");
+}
+
+/// GET /v1/tickets/{id}/claim: who holds it, for how long, and what moved in
+/// the subtree since — created / closed are since-the-claim counts, in_progress
+/// / blocked are current snapshots, and idle_seconds is the liveness signal an
+/// indefinite claim is judged by.
+#[tokio::test]
+async fn claim_status_reports_movement_since_the_epic_claim() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Watched epic", "epic", None).await;
+    let done_child = app
+        .create_typed("Will be closed", "task", Some(&epic))
+        .await;
+    let wip_child = app
+        .create_typed("Will be in progress", "task", Some(&epic))
+        .await;
+    let blocked_child = app
+        .create_typed("Will be blocked", "task", Some(&epic))
+        .await;
+    let blocker = app.create_ticket("External blocker, stays open").await;
+    let (s, _) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{blocked_child}/deps"),
+            json!({ "blocked_by": blocker }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    app.to_ready(&epic).await;
+
+    // Unclaimed: nobody, and no movement — there is no anchor to count from.
+    let (s, st) = app
+        .get(&app.worker, &format!("/v1/tickets/{epic}/claim"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert!(st["holder"].is_null(), "{st}");
+    assert!(st["movement"].is_null(), "{st}");
+
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+
+    // Movement after the claim: one ticket created, one closed, one driven to
+    // in-progress; the dep-blocked one just sits there.
+    let _created_after = app
+        .create_typed("Split out after the claim", "task", Some(&epic))
+        .await;
+    app.drive_to_done(&done_child).await;
+    app.to_implementing(&wip_child).await;
+
+    let (s, st) = app
+        .get(&app.worker, &format!("/v1/tickets/{epic}/claim"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert_eq!(st["ticket"], json!(epic), "{st}");
+    assert_eq!(st["type"], "epic", "{st}");
+    assert_eq!(st["holder"], "agent:w1", "{st}");
+    assert_eq!(st["indefinite"], json!(true), "{st}");
+    assert!(st["expires_at"].is_null(), "{st}");
+    assert!(st["held_since"].is_string(), "{st}");
+    assert!(
+        st["held_for_seconds"].as_i64().expect("held_for") >= 0,
+        "{st}"
+    );
+
+    let m = &st["movement"];
+    assert_eq!(m["created"], json!(1), "one ticket created since: {st}");
+    assert_eq!(m["closed"], json!(1), "one ticket closed since: {st}");
+    assert_eq!(
+        m["in_progress"],
+        json!(1),
+        "one currently in progress: {st}"
+    );
+    assert_eq!(m["blocked"], json!(1), "one currently dep-blocked: {st}");
+    assert_eq!(
+        m["open"],
+        json!(3),
+        "wip + blocked + created-after are still open: {st}"
+    );
+    assert!(m["last_activity_at"].is_string(), "{st}");
+    assert!(m["idle_seconds"].as_i64().expect("idle") >= 0, "{st}");
 }
