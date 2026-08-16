@@ -66,7 +66,13 @@ last document leaving takes the folder with it. Moving one is a `metadata_merge`
 `rollup` and the document follow.
 
 Initiatives are usually created and fed over **MCP**, because the thing that produces one is an
-agent in a conversation, not a form.
+agent in a conversation, not a form. But not exclusively: a person can write a pane in the browser
+too, and needs to be able to — a document surface whose first paragraph can only be written by an
+agent is one a person can never start. The pane editor edits the pane's SOURCE, where `[1]` indexes
+that pane's own `cites` array, and shows a legend of what each local number points at. The reader
+sees numbers assigned across the whole document instead, so without that legend an author has no way
+to know what `[2]` currently cites. Saving appends a new `view` and carries the existing `cites`
+over unchanged rather than renumbering behind the author.
 
 | tool | |
 |---|---|
@@ -96,7 +102,8 @@ Both surfaces go through the same `Store` methods and share `decode_attachment` 
 `parse_rfc3339_ms`, so neither can drift into accepting what the other refuses.
 
 Note what the page cannot do: **edit or delete an entry**. Entries are append-only, and no route
-exposes otherwise. The accumulated record is the point.
+exposes otherwise — revising a pane appends a new `view`, it does not rewrite the old one. The
+accumulated record is the point.
 
 One browser detail worth knowing if you touch the page: the attachment route needs the bearer token,
 so a plain `<a href>` cannot fetch it — the browser would send an unauthenticated request and get a

@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { splitList } from '@/lib/format'
+import { normalizePath } from '@/lib/initiative-tree'
 import type { CreateFields } from '@/lib/initiatives'
 
 export interface CreateDialogProps {
@@ -32,6 +33,8 @@ export interface CreateDialogProps {
     fLabelsPh: string
     fTags: string
     fTagsPh: string
+    fFolder: string
+    fFolderPh: string
     create: string
     cancel: string
     needTitle: string
@@ -50,12 +53,14 @@ export function CreateDialog({
   const [summary, setSummary] = useState('')
   const [labelsCsv, setLabelsCsv] = useState('')
   const [tagsCsv, setTagsCsv] = useState('')
+  const [folder, setFolder] = useState('')
 
   function reset() {
     setTitle('')
     setSummary('')
     setLabelsCsv('')
     setTagsCsv('')
+    setFolder('')
   }
 
   function submit() {
@@ -67,6 +72,11 @@ export function CreateDialog({
     if (summary.trim()) fields.summary = summary.trim()
     if (splitList(labelsCsv).length) fields.labels = splitList(labelsCsv)
     if (splitList(tagsCsv).length) fields.tags = splitList(tagsCsv)
+    // Filed at creation rather than moved afterwards. Normalised here as well as
+    // on the move path, so a trailing slash or a stray `..` cannot open a folder
+    // that the tree would then render under a different name.
+    const path = normalizePath(folder)
+    if (path) fields.metadata = { path }
     onCreate(fields)
     reset()
   }
@@ -130,6 +140,16 @@ export function CreateDialog({
               )}
             </Field>
           </div>
+          <Field label={labels.fFolder} hint={labels.fFolderPh}>
+            {(id) => (
+              <Input
+                id={id}
+                placeholder={labels.fFolderPh}
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+              />
+            )}
+          </Field>
         </div>
 
         <DialogFooter>

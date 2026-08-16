@@ -176,6 +176,17 @@ export const STR = defineStrings({
     asked: 'Question routed to the inbox',
     orphanRefused: 'That passage has changed; the suggestion cannot be applied.',
     docEmptyForOp: 'Write a pane first — there is no prose to attach this to.',
+
+    // ---- writing a pane ----
+    writePane: 'Write',
+    revisePane: 'Revise',
+    paneEditorHint:
+      'Blank line between paragraphs. A [1] mark cites the first source below — the reader sees a different number, assigned across the whole document.',
+    paneCites: 'What this pane cites',
+    paneCitesHint: 'Use these numbers in the text.',
+    paneNoCites: 'Nothing cited yet. Highlight a passage and attach a source to add one.',
+    paneSave: 'Save',
+    paneSaved: 'Saved — the earlier wording is still in the log.',
   },
   de: {
     initiatives: 'Initiativen',
@@ -345,6 +356,16 @@ export const STR = defineStrings({
     asked: 'Frage an den Posteingang geleitet',
     orphanRefused: 'Diese Stelle hat sich geändert; der Vorschlag lässt sich nicht anwenden.',
     docEmptyForOp: 'Schreibe zuerst einen Abschnitt — es gibt noch keinen Text dafür.',
+
+    writePane: 'Schreiben',
+    revisePane: 'Überarbeiten',
+    paneEditorHint:
+      'Leerzeile zwischen Absätzen. Eine [1]-Marke zitiert die erste Quelle unten — Lesende sehen eine andere Nummer, die über das ganze Dokument vergeben wird.',
+    paneCites: 'Was dieser Abschnitt zitiert',
+    paneCitesHint: 'Verwende diese Nummern im Text.',
+    paneNoCites: 'Noch nichts zitiert. Markiere eine Stelle und hänge eine Quelle an.',
+    paneSave: 'Speichern',
+    paneSaved: 'Gespeichert — der frühere Wortlaut steht weiterhin im Verlauf.',
   },
 })
 

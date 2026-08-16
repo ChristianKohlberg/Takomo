@@ -40,6 +40,7 @@ import { resolveAnchor, type Anchor } from '@/lib/initiative-anchor'
 import {
   amendedView,
   buildDoc,
+  citesOf,
   insertRunAt,
   paneText,
   serializeParagraphs,
@@ -129,6 +130,7 @@ export function App() {
   // The live highlight, the note or suggestion opened from one, and the source
   // open in the inspector. All three are about the document being READ, so they
   // are cleared together when the selection changes.
+  const [editingPane, setEditingPane] = useState<Pane | null>(null)
   const [anchor, setAnchor] = useState<Anchor | null>(null)
   const [focus, setFocus] = useState<{ pane: Pane; id: string } | null>(null)
   const [cite, setCite] = useState<{ entry: Entry; n: number } | null>(null)
@@ -237,6 +239,7 @@ export function App() {
   }, [token, project, status])
 
   const clearReadingState = useCallback(() => {
+    setEditingPane(null)
     setAnchor(null)
     setFocus(null)
     setCite(null)
@@ -478,6 +481,39 @@ export function App() {
       }
     },
     [selected, selectedId, anchor, guardWrite, doc, token, actor, t, toast, entries, fetchEntries, handleErr],
+  )
+
+  /**
+   * Write or revise a pane.
+   *
+   * An append like every other document action: the new `view` supersedes the
+   * old one for that pane and the earlier wording stays readable. The existing
+   * `cites` are carried over unchanged, because the editor edits the pane's
+   * SOURCE — where `[1]` indexes that array — and silently renumbering behind
+   * the author would re-attribute their sentences to different sources.
+   */
+  const doSavePane = useCallback(
+    async (pane: Pane, text: string) => {
+      if (!selectedId || !guardWrite()) return
+      const live = doc.panes[pane].entry
+      setBusy(true)
+      try {
+        await appendEntry(token, selectedId, {
+          kind: VIEW_KIND,
+          source: actor,
+          text,
+          meta: { pane, cites: live ? citesOf(live) : [] },
+        })
+        setEditingPane(null)
+        await fetchEntries(selectedId, true)
+        toast(t.paneSaved, 'success')
+      } catch (e) {
+        handleErr(e)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [selectedId, guardWrite, doc, token, actor, t, fetchEntries, toast, handleErr],
   )
 
   /** File a ticket for an existing note, then supersede it as `running`. */
@@ -893,10 +929,23 @@ export function App() {
                 labels={{ heading: t.originHdr, wrote: t.wrote }}
               />
 
-              {doc.hasDocument ? (
+              {/* Rendered even when no pane exists yet: this is where a person
+                  STARTS a document, and a surface that only appears once an
+                  agent has written one is a surface a person can never begin. */}
+              {(doc.hasDocument || canWrite) && (
                 <>
                   <DocumentBody
                     doc={doc}
+                    canWrite={canWrite}
+                    editing={editingPane}
+                    busy={busy}
+                    onStartEdit={(pane) => {
+                      setAnchor(null)
+                      setFocus(null)
+                      setEditingPane(pane)
+                    }}
+                    onCancelEdit={() => setEditingPane(null)}
+                    onSavePane={(pane, text) => void doSavePane(pane, text)}
                     focusedSpan={focus?.id ?? null}
                     selectedSourceId={cite?.entry.id ?? null}
                     onSelect={(a) => {
@@ -921,6 +970,15 @@ export function App() {
                       orphanHeading: t.orphanHeading,
                       orphanHint: t.orphanHint,
                       suggestionMark: t.suggestionMark,
+                      writePane: t.writePane,
+                      revisePane: t.revisePane,
+                      hint: t.paneEditorHint,
+                      citesHeading: t.paneCites,
+                      citesHint: t.paneCitesHint,
+                      noCites: t.paneNoCites,
+                      save: t.paneSave,
+                      cancel: t.cancel,
+                      working: t.working,
                     }}
                   />
                   {cite && (
@@ -940,16 +998,14 @@ export function App() {
                       }}
                     />
                   )}
-                  <SourcesFooter
-                    sources={doc.sources}
-                    onSelect={(entry, n) => setCite({ entry, n })}
-                    labels={{ heading: t.lineageHdr, wrote: t.wrote, landed: t.landed }}
-                  />
+                  {doc.sources.length > 0 && (
+                    <SourcesFooter
+                      sources={doc.sources}
+                      onSelect={(entry, n) => setCite({ entry, n })}
+                      labels={{ heading: t.lineageHdr, wrote: t.wrote, landed: t.landed }}
+                    />
+                  )}
                 </>
-              ) : (
-                <p className="text-muted-foreground mt-6 text-[13.5px] italic">
-                  {t.paneUnwrittenHint}
-                </p>
               )}
 
               {/* The entry log stays reachable: the document is a reduction of
@@ -1109,6 +1165,8 @@ export function App() {
           fLabelsPh: t.fLabelsPh,
           fTags: t.fTags,
           fTagsPh: t.fTagsPh,
+          fFolder: t.folder,
+          fFolderPh: t.folderPh,
           create: t.create,
           cancel: t.cancel,
           needTitle: t.needTitle,

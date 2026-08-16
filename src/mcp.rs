@@ -591,6 +591,12 @@ pub struct InitiativeNewArgs {
     /// handles are registered on the fly.
     pub tags: Option<Vec<String>>,
     /// Free-form JSON object for anything structured this initiative carries.
+    ///
+    /// One key is read by /initiatives: `path` is the FOLDER the document is
+    /// filed in, slash-separated (`"product/billing"`). Folders exist only
+    /// because a document names one, so there is nothing to create first and
+    /// nothing left behind when the last document moves out. Omit it and the
+    /// document sits at the root.
     pub metadata: Option<Value>,
 }
 
@@ -608,7 +614,9 @@ pub struct InitiativeUpdateArgs {
     pub labels: Option<Vec<String>>,
     /// Replace the tag references outright. Omit to keep.
     pub tags: Option<Vec<String>>,
-    /// Merge into `metadata` (RFC 7386: a null value removes that key).
+    /// Merge into `metadata` (RFC 7386: a null value removes that key). Moving a
+    /// document between folders is `{"path": "product/billing"}`; `{"path": null}`
+    /// returns it to the root.
     pub metadata_merge: Option<Value>,
 }
 
@@ -643,7 +651,9 @@ pub struct InitiativeAppendArgs {
     pub mime: Option<String>,
     /// The attachment's filename. Required unless `mime` is given.
     pub filename: Option<String>,
-    /// Free-form JSON object for anything structured about this entry.
+    /// Free-form JSON object for anything structured about this entry. This is
+    /// where the document lives: `pane`, `cites`, `proposed`, `origin`, and the
+    /// `quote`/`prefix`/`suffix` anchor. See this tool's description.
     pub meta: Option<Value>,
 }
 
@@ -1635,12 +1645,23 @@ impl TakomoMcp {
         one pane's prose. A `[n]` mark in the text cites the n-th id in YOUR cites array (1-based), \
         so you only need local numbering. Cite every assertion you can: an uncited paragraph is \
         rendered as flagged opinion, which is what it is.\n\
-        • the same, plus meta.proposed = true — an AMENDMENT. Use this whenever a finding changes \
-        what an existing pane says rather than merely adding to it. It is shown to a human as a \
-        diff to accept or reject; it never silently replaces the live pane.\n\
-        • kind 'thread', meta { pane, para } — a margin note anchored to paragraph `para` \
-        (0-based) of that pane. Use it for a doubt, a question, or something only a human can \
-        answer, next to the sentence that provoked it.\n\
+        • the same, plus meta.proposed = true — an AMENDMENT of the WHOLE pane. Use it when a \
+        finding changes the shape of the argument. It is shown to a human as a diff to accept or \
+        reject; it never silently replaces the live pane. Only the newest undecided one per pane \
+        is offered, so this is a take-it-or-leave-it rewrite.\n\
+        • kind 'view', meta { pane, cites: [], proposed: true, quote, prefix, suffix, para } with \
+        the `text` being just the replacement words — a SUGGESTION scoped to one passage, the same \
+        anchor shape as a thread. Prefer this when you want to change a sentence rather than the \
+        argument: several can be pending at once without colliding, and accepting one splices it \
+        into the live prose and renumbers the citations.\n\
+        • kind 'thread', meta { pane, quote, prefix, suffix, para } — a note anchored to the WORDS \
+        it is about. `quote` is the exact passage from the live pane; `prefix` and `suffix` are up \
+        to 32 characters either side of it, which is what disambiguates a sentence that appears \
+        twice. Use it for a doubt, a question, or something only a human can answer, next to the \
+        words that provoked it. Anchor to words rather than to a paragraph number: the pane WILL be \
+        revised, and a note carrying only `para` slides onto a paragraph it was never about. When \
+        the quoted words later disappear the note is shown as orphaned rather than silently \
+        re-pointed, which is the honest outcome. Keep `para` too, as a fallback hint.\n\
         • meta.origin = true on any entry — the words the idea ARRIVED in (a customer quote, the \
         original request). Quoted above every pane.\n\n\
         Revise by appending, never by rewriting: a new 'view' supersedes the old one for its pane \
