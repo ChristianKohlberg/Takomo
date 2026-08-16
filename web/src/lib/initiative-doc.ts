@@ -132,7 +132,8 @@ function paneOf(entry: Entry): Pane | null {
   return isPane(p) ? p : null
 }
 
-function citesOf(entry: Entry): string[] {
+/** The entry ids a pane cites, in the author's own local order. */
+export function citesOf(entry: Entry): string[] {
   const c = meta(entry).cites
   return Array.isArray(c) ? c.filter((x): x is string => typeof x === 'string') : []
 }

@@ -2531,3 +2531,53 @@ async fn archived_project_refuses_mcp_writes_but_not_reads() {
         "the freeze is visible to agents: {tp}"
     );
 }
+
+/// The append tool's own description is what makes agents write range anchors,
+/// and it is the only thing that does — nothing validates `meta`, so an agent
+/// that is not told about `quote`/`prefix`/`suffix` keeps anchoring notes to a
+/// paragraph number that a later revision silently invalidates.
+///
+/// This exists because that drift already happened once: the document model
+/// grew range anchors and folders, `docs/initiatives.md` was updated, and the
+/// prompt that actually drives the behaviour was not. A doc nobody reads at
+/// runtime cannot enforce a convention; this test can.
+#[tokio::test]
+async fn the_initiative_tools_teach_the_document_model_they_expect() {
+    let app = TestApp::spawn().await;
+    let list = app.ok_call(&app.worker, "tools/list", json!({})).await;
+    let tools = list["tools"].as_array().expect("tools array");
+
+    let describe = |name: &str| -> String {
+        tools
+            .iter()
+            .find(|t| t["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("tools/list missing {name}"))
+            .to_string()
+    };
+
+    // `quote` alone does not discriminate — the description has always mentioned
+    // "a customer quote" for `meta.origin`. It is `prefix`/`suffix`/`orphaned`
+    // that are only there if the anchor is really being taught, so do not thin
+    // this list down to the obvious word.
+    let append = describe("takomo_initiative_append");
+    for token in ["quote", "prefix", "suffix", "orphaned"] {
+        assert!(
+            append.contains(token),
+            "takomo_initiative_append must teach the range anchor: missing '{token}'"
+        );
+    }
+    assert!(
+        append.contains("pane") && append.contains("cites") && append.contains("proposed"),
+        "takomo_initiative_append must still teach panes, citations and amendments"
+    );
+
+    // Folders are the other thing an agent cannot discover by inspecting a
+    // schema: `metadata` is a free-form object, so only prose names the key.
+    for name in ["takomo_initiative_new", "takomo_initiative_update"] {
+        let tool = describe(name);
+        assert!(
+            tool.contains("path"),
+            "{name} must document metadata.path — the folder a document is filed in"
+        );
+    }
+}

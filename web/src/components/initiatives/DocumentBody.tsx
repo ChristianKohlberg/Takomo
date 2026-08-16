@@ -1,7 +1,10 @@
 import { useCallback, useRef } from 'react'
 import { CitationMark } from './CitationMark'
+import { PaneEditor, type PaneEditorLabels } from './PaneEditor'
+import { Button } from '@/components/ui/button'
 import { makeAnchor, plainOffsetIn, type Anchor } from '@/lib/initiative-anchor'
 import {
+  citesOf,
   PANES,
   paneText,
   type Doc,
@@ -13,7 +16,9 @@ import { decorate, topSpan, type Span } from '@/lib/initiative-highlight'
 import type { Entry } from '@/lib/initiatives'
 import { cn } from '@/lib/utils'
 
-export interface DocumentBodyLabels {
+export interface DocumentBodyLabels extends PaneEditorLabels {
+  writePane: string
+  revisePane: string
   citation: string
   uncited: string
   unwritten: string
@@ -35,6 +40,13 @@ export interface DocumentBodyProps {
   onOpenSpan: (pane: Pane, id: string) => void
   onSelectSource: (entry: Entry, n: number) => void
   selectedSourceId: string | null
+  /** Writing a pane is the one document action a reader can start without a highlight. */
+  canWrite: boolean
+  editing: Pane | null
+  onStartEdit: (pane: Pane) => void
+  onCancelEdit: () => void
+  onSavePane: (pane: Pane, text: string) => void
+  busy: boolean
 }
 
 /**
@@ -57,6 +69,12 @@ export function DocumentBody({
   onOpenSpan,
   onSelectSource,
   selectedSourceId,
+  canWrite,
+  editing,
+  onStartEdit,
+  onCancelEdit,
+  onSavePane,
+  busy,
 }: DocumentBodyProps) {
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -100,21 +118,53 @@ export function DocumentBody({
     <div ref={rootRef} onMouseUp={readSelection} onTouchEnd={readSelection}>
       {PANES.map((p) => (
         <section key={p} className="mt-7 first:mt-4">
-          <h2 className="text-muted-foreground m-0 mb-2 text-[11.5px] font-bold tracking-[0.08em] uppercase">
-            {paneLabel(p)}
-          </h2>
-          <PaneSection
-            pane={doc.panes[p]}
-            labels={labels}
-            focusedSpan={focusedSpan}
-            onOpenSpan={(id) => onOpenSpan(p, id)}
-            onSelectSource={onSelectSource}
-            selectedSourceId={selectedSourceId}
-          />
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-muted-foreground m-0 mb-2 text-[11.5px] font-bold tracking-[0.08em] uppercase">
+              {paneLabel(p)}
+            </h2>
+            {canWrite && editing !== p && (
+              <Button variant="ghost" size="sm" onClick={() => onStartEdit(p)}>
+                {doc.panes[p].entry ? labels.revisePane : labels.writePane}
+              </Button>
+            )}
+          </div>
+          {editing === p ? (
+            <PaneEditor
+              key={doc.panes[p].entry?.id ?? `empty:${p}`}
+              initialText={doc.panes[p].entry?.text ?? ''}
+              cites={citesEntriesOf(doc, p)}
+              busy={busy}
+              labels={labels}
+              onSave={(text) => onSavePane(p, text)}
+              onCancel={onCancelEdit}
+            />
+          ) : (
+            <PaneSection
+              pane={doc.panes[p]}
+              labels={labels}
+              focusedSpan={focusedSpan}
+              onOpenSpan={(id) => onOpenSpan(p, id)}
+              onSelectSource={onSelectSource}
+              selectedSourceId={selectedSourceId}
+            />
+          )}
         </section>
       ))}
     </div>
   )
+}
+
+/**
+ * The entries a pane cites, in the AUTHOR's local order — which is what `[1]`
+ * means in the source, as opposed to the global number a reader sees.
+ */
+function citesEntriesOf(doc: Doc, pane: Pane): Entry[] {
+  const entry = doc.panes[pane].entry
+  if (!entry) return []
+  const byId = new Map(doc.sources.map((e) => [e.id, e]))
+  return citesOf(entry)
+    .map((id) => byId.get(id))
+    .filter((e): e is Entry => e !== undefined)
 }
 
 /** Walk up to the paragraph element a DOM node sits in, or null if outside one. */
