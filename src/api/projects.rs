@@ -369,6 +369,27 @@ pub async fn roadmap(
     Ok(Json(out))
 }
 
+/// GET /v1/projects/{project}/impact (read scope) — the project's open blockers
+/// ranked by how much work each one releases. For every non-terminal ticket
+/// blocking something here, `unblocks` is how many of the project's tickets
+/// would leave the blocked set if that one ticket closed, split into `direct`
+/// (they hold the edge themselves) and `downstream` (they inherit it from an
+/// ancestor). Counterfactual, not reachability: a ticket held by two blockers
+/// counts towards neither alone.
+pub async fn impact(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    // One recursive blocked-set walk per candidate blocker: a scan, off the
+    // runtime (see `blocking_read`), same as `roadmap`.
+    let state = state.clone();
+    let out = blocking_read(move || state.store.impact(&project)).await?;
+    Ok(Json(out))
+}
+
 pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,

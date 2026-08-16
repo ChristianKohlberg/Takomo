@@ -29,11 +29,68 @@ use crate::ids::{iso, now_ms};
 use rusqlite::{params, Connection, Statement};
 use serde_json::{json, Map, Value};
 
+/// The blocked-set CTE, verbatim from the ready queue (`store::claims`):
+/// a ticket is blocked if it, or any ancestor, has a `blocked_by` edge to a
+/// non-terminal ticket. Shared as a string constant rather than re-typed per
+/// query so `ready` here can never drift from the queue that actually hands
+/// work out — a rollup that disagreed with `takomo ready` would be worse than
+/// no rollup at all.
+///
+/// `UNION` (not `UNION ALL`) again: it stops at an already-visited id, so a
+/// malformed `parent` cycle terminates instead of hanging.
+const BLOCKED_CTE: &str = r#"
+        blocked(id) AS (
+            SELECT DISTINCT d.ticket
+            FROM deps d
+            JOIN tickets b ON b.id = d.blocked_by
+            JOIN workflow_states bs ON bs.project = b.project AND bs.state = b.state
+            WHERE bs.terminal = 0
+            UNION
+            SELECT c.id FROM tickets c JOIN blocked ON c.parent = blocked.id
+        )"#;
+
+/// The two per-ticket predicates every rollup query selects alongside its
+/// counts. `?{n}` is the `now` millis bound for the lease check.
+///
+/// `ready` mirrors the ready queue exactly: claimable state, not archived,
+/// unclaimed or lease-expired, and not in the blocked set.
+///
+/// `awaiting` counts a ticket carrying at least one OPEN question, in ANY mode.
+/// Advisory questions are included deliberately: the number answers "is a
+/// decision outstanding here", which is what makes a queue entry misleading to
+/// pick up, and a `blocking` question has already moved its ticket out of a
+/// claimable state anyway — so restricting to blocking would report ~0 on the
+/// very tickets this count exists to surface.
+fn rollup_selects(now_param: usize) -> String {
+    format!(
+        // Column ORDER is the contract with `collect_rollup`, which reads by
+        // index: 3 = ready, 4 = awaiting, 5 = claimable_state.
+        r#",
+               SUM(CASE WHEN ws.claimable = 1
+                         AND t.archived_at IS NULL
+                         AND (t.claim_holder IS NULL OR t.claim_expires_at <= ?{now_param})
+                         AND t.id NOT IN (SELECT id FROM blocked)
+                        THEN 1 ELSE 0 END) AS ready,
+               SUM(CASE WHEN EXISTS (SELECT 1 FROM questions q
+                                      WHERE q.ticket = t.id AND q.status = 'open')
+                        THEN 1 ELSE 0 END) AS awaiting,
+               COALESCE(MAX(ws.claimable), 0) AS claimable_state"#
+    )
+}
+
 /// Aggregate over a set of tickets (an epic's descendant subtree, or the
 /// unparented bucket).
 struct Rollup {
     total: i64,
     done: i64,
+    /// Claimable, unclaimed and unblocked — what `takomo ready` would hand out.
+    ready: i64,
+    /// In a claimable state but NOT ready: blocked by a dep, or already claimed.
+    /// `ready + backlog` is the whole claimable category, so the two split it.
+    backlog: i64,
+    /// Carrying at least one open question. An OVERLAY, not a partition — such a
+    /// ticket is also counted in its own state, and may or may not be `ready`.
+    awaiting_answer: i64,
     by_state: Map<String, Value>,
     by_category: Map<String, Value>,
 }
@@ -49,8 +106,8 @@ impl Rollup {
     }
 }
 
-/// Fold `(state, category, count)` rows — the shape every rollup query below
-/// returns — into a `Rollup`.
+/// Fold `(state, category, count, ready, awaiting, claimable)` rows — the shape
+/// every rollup query below returns — into a `Rollup`.
 fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiResult<Rollup> {
     let rows = stmt
         .query_map(args, |r| {
@@ -58,20 +115,35 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut total = 0i64;
     let mut done = 0i64;
+    let mut ready = 0i64;
+    let mut claimable = 0i64;
+    let mut awaiting_answer = 0i64;
     let mut by_state: Map<String, Value> = Map::new();
     let mut by_category: Map<String, Value> = Map::new();
-    for (st, cat, n) in rows {
+    for (st, cat, n, rdy, awaiting, is_claimable) in rows {
         total += n;
         by_state.insert(st, json!(n));
         if cat == "done" {
             done += n;
         }
+        // The CLAIMABLE flag, not the `todo` CATEGORY: `draft` is category
+        // `todo` and deliberately not claimable, so counting the category would
+        // put an un-pickable draft in the backlog and make ready+backlog
+        // disagree with what the queue can actually hand out.
+        if is_claimable == 1 {
+            claimable += n;
+        }
+        ready += rdy;
+        awaiting_answer += awaiting;
         if !cat.is_empty() {
             let prev = by_category.get(&cat).and_then(Value::as_i64).unwrap_or(0);
             by_category.insert(cat, json!(prev + n));
@@ -80,6 +152,11 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
     Ok(Rollup {
         total,
         done,
+        ready,
+        // Never negative: `ready` is a subset of the claimable rows by
+        // construction (its CASE requires `ws.claimable = 1`).
+        backlog: (claimable - ready).max(0),
+        awaiting_answer,
         by_state,
         by_category,
     })
@@ -89,23 +166,27 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
 /// count the whole subtree beneath the epic (the epic itself is the container,
 /// not counted). `done` is the number of descendants whose state category is
 /// `done`; `percent` is `done/total` rounded to a whole percent (0 when empty).
-fn rollup_for_epic(conn: &Connection, epic_id: &str) -> ApiResult<Rollup> {
-    let mut stmt = conn.prepare(
+fn rollup_for_epic(conn: &Connection, epic_id: &str, now: i64) -> ApiResult<Rollup> {
+    let sql = format!(
         r#"
-        WITH RECURSIVE sub(id) AS (
+        WITH RECURSIVE{BLOCKED_CTE},
+        sub(id) AS (
             SELECT id FROM tickets WHERE parent = ?1
             UNION
             SELECT t.id FROM tickets t JOIN sub ON t.parent = sub.id
         )
         SELECT t.state,
-               COALESCE((SELECT ws.category FROM workflow_states ws
-                         WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
-               COUNT(*) AS n
-        FROM sub JOIN tickets t ON t.id = sub.id
+               COALESCE(ws.category, '') AS category,
+               COUNT(*) AS n{selects}
+        FROM sub
+        JOIN tickets t ON t.id = sub.id
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
         GROUP BY t.state
         "#,
-    )?;
-    collect_rollup(&mut stmt, params![epic_id])
+        selects = rollup_selects(2)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    collect_rollup(&mut stmt, params![epic_id, now])
 }
 
 /// Rollup over the project's non-epic tickets that no epic owns: the recursive
@@ -113,10 +194,11 @@ fn rollup_for_epic(conn: &Connection, epic_id: &str) -> ApiResult<Rollup> {
 /// outer select keeps everything else. A ticket is excluded exactly when its
 /// `parent` chain reaches an epic, so a NULL parent, an all-non-epic ancestor
 /// chain, and a dangling parent id all land in the bucket.
-fn rollup_unparented(conn: &Connection, project: &str) -> ApiResult<Rollup> {
-    let mut stmt = conn.prepare(
+fn rollup_unparented(conn: &Connection, project: &str, now: i64) -> ApiResult<Rollup> {
+    let sql = format!(
         r#"
-        WITH RECURSIVE owned(id) AS (
+        WITH RECURSIVE{BLOCKED_CTE},
+        owned(id) AS (
             SELECT t.id FROM tickets t
               JOIN tickets p ON t.parent = p.id
              WHERE t.project = ?1 AND p.type = 'epic'
@@ -124,17 +206,19 @@ fn rollup_unparented(conn: &Connection, project: &str) -> ApiResult<Rollup> {
             SELECT t.id FROM tickets t JOIN owned ON t.parent = owned.id
         )
         SELECT t.state,
-               COALESCE((SELECT ws.category FROM workflow_states ws
-                         WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
-               COUNT(*) AS n
+               COALESCE(ws.category, '') AS category,
+               COUNT(*) AS n{selects}
         FROM tickets t
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
         WHERE t.project = ?1
           AND t.type <> 'epic'
           AND t.id NOT IN (SELECT id FROM owned)
         GROUP BY t.state
         "#,
-    )?;
-    collect_rollup(&mut stmt, params![project])
+        selects = rollup_selects(2)
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    collect_rollup(&mut stmt, params![project, now])
 }
 
 /// Contradiction codes for an epic whose own state disagrees with its subtree.
@@ -198,7 +282,7 @@ impl Store {
 
             let mut out = Vec::with_capacity(epics.len());
             for (id, title, st, priority, category) in epics {
-                let r = rollup_for_epic(conn, &id)?;
+                let r = rollup_for_epic(conn, &id, now)?;
                 let flags = epic_flags(&category, &r);
                 let percent = r.percent();
                 out.push(json!({
@@ -210,13 +294,16 @@ impl Store {
                     "total": r.total,
                     "done": r.done,
                     "percent": percent,
+                    "ready": r.ready,
+                    "backlog": r.backlog,
+                    "awaiting_answer": r.awaiting_answer,
                     "by_state": Value::Object(r.by_state),
                     "by_category": Value::Object(r.by_category),
                     "flags": flags,
                 }));
             }
 
-            let u = rollup_unparented(conn, project)?;
+            let u = rollup_unparented(conn, project, now)?;
 
             Ok(json!({
                 "project": project,
@@ -226,6 +313,9 @@ impl Store {
                     "total": u.total,
                     "done": u.done,
                     "percent": u.percent(),
+                    "ready": u.ready,
+                    "backlog": u.backlog,
+                    "awaiting_answer": u.awaiting_answer,
                     "by_state": Value::Object(u.by_state),
                     "by_category": Value::Object(u.by_category),
                 },
