@@ -477,6 +477,29 @@ paths:
                         total: { type: integer, description: descendants in the subtree }
                         done: { type: integer, description: descendants in a done-category state }
                         percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                        ready:
+                          type: integer
+                          description: |
+                            Descendants the ready QUEUE would hand out right now: a claimable
+                            state, not archived, unclaimed or lease-expired, and not blocked.
+                            Computed from the same CTE as `GET /ready`, so the two cannot drift.
+                        backlog:
+                          type: integer
+                          description: |
+                            Descendants in a claimable state that are NOT ready — blocked by a
+                            dependency, or already claimed. `ready + backlog` is the whole
+                            claimable set, so the pair partitions it. Keyed on the workflow's
+                            `claimable` flag, not the `todo` category: a state can be claimable
+                            and categorised `in_progress`, and a `todo` state can be
+                            non-claimable.
+                        awaiting_answer:
+                          type: integer
+                          description: |
+                            Descendants carrying at least one OPEN question, in any mode. An
+                            OVERLAY on the counts above, not a bucket — such a ticket is still
+                            counted in its own state and may or may not be `ready`. It exists
+                            because a queue entry with an unanswered decision on it looks
+                            claimable and is not worth picking up.
                         by_state: { type: object, additionalProperties: { type: integer } }
                         by_category: { type: object, additionalProperties: { type: integer } }
                         flags:
@@ -502,8 +525,73 @@ paths:
                       total: { type: integer }
                       done: { type: integer }
                       percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                      ready: { type: integer, description: what the ready queue would hand out }
+                      backlog: { type: integer, description: claimable but blocked or already claimed }
+                      awaiting_answer: { type: integer, description: "holding an open question (an overlay, not a bucket)" }
                       by_state: { type: object, additionalProperties: { type: integer } }
                       by_category: { type: object, additionalProperties: { type: integer } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /projects/{project}/impact:
+    get:
+      tags: [workflow]
+      summary: Open blockers ranked by the work each one releases (read scope)
+      description: |
+        Answers "if I close exactly one thing, what buys the most?".
+
+        For every non-terminal ticket that blocks something in this project,
+        `unblocks` is how many of the project's tickets would leave the blocked
+        set if that ONE ticket closed, split into `direct` (they hold the
+        `blocked_by` edge themselves) and `downstream` (they inherit it from an
+        ancestor, the same propagation the ready queue applies).
+
+        The count is a COUNTERFACTUAL, not a reachability walk, and two
+        consequences follow. A ticket held by two blockers counts towards
+        neither alone, because closing either one leaves it blocked. And a chain
+        does not cascade: if `B` blocks `X` and `X` blocks `Y`, closing `B`
+        releases `X` but not `Y` — `X` is claimable now but still not terminal,
+        so it goes on blocking `Y`. The numbers are therefore smaller than a
+        graph walk would give, and they are what a reader can act on.
+
+        Blockers that would release nothing are omitted rather than listed as a
+        zero. A blocker may live in another project (dependencies cross project
+        boundaries) while the work it holds is in this one; it is still reported,
+        because the point is to name the ticket worth closing.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project: { type: string }
+                  generated_at: { type: string, format: date-time }
+                  blocked_total:
+                    type: integer
+                    description: |
+                      Tickets in this project blocked right now, so a reader can see what share
+                      the top blocker accounts for.
+                  blockers:
+                    type: array
+                    description: Most impactful first; ties break on id so the order is stable between calls.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        project: { type: string, description: may differ from the queried project }
+                        title: { type: string }
+                        state: { type: string }
+                        priority: { type: string }
+                        type: { type: string }
+                        unblocks: { type: integer, description: tickets released if this one closed }
+                        direct: { type: integer, description: released tickets holding the edge themselves }
+                        downstream: { type: integer, description: released tickets inheriting it from an ancestor }
+                        unblocks_ids:
+                          type: array
+                          description: The released ticket ids, sorted — so a caller can act without a second request.
+                          items: { type: string }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /projects/{project}/language:

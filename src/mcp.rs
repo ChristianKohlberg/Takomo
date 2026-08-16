@@ -94,6 +94,7 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_coverage",
     "takomo_deps",
     "takomo_gate",
+    "takomo_impact",
     "takomo_initiative_list",
     "takomo_initiative_show",
     "takomo_lane",
@@ -1106,7 +1107,11 @@ impl TakomoMcp {
         description = "Show a project's roadmap: epics with their child tickets and progress, \
         each with `flags` for epics whose own state contradicts their children \
         (done_with_open_children, open_with_all_children_done, empty_epic), plus an \
-        `unparented` rollup over the non-epic tickets no epic owns."
+        `unparented` rollup over the non-epic tickets no epic owns. Every rollup also \
+        splits its claimable work into `ready` (what the ready queue would hand out) and \
+        `backlog` (claimable but blocked or already claimed), and carries \
+        `awaiting_answer` — tickets holding an open question, which is an OVERLAY on the \
+        state counts, not a separate bucket."
     )]
     async fn takomo_roadmap(
         &self,
@@ -1114,6 +1119,23 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_roadmap(&require_auth(&ctx)?, &a.project))
+    }
+
+    #[tool(
+        description = "Rank a project's open blockers by how much work each one releases. \
+        For every non-terminal ticket blocking something in the project, `unblocks` is how \
+        many tickets would leave the blocked set if that ONE ticket closed, split into \
+        `direct` (they hold the blocked_by edge) and `downstream` (they inherit it from an \
+        ancestor). Counterfactual, not reachability: a ticket held by two blockers counts \
+        towards neither alone, and closing a blocker does not release what its own \
+        dependents block. Use it to pick the single close that buys the most."
+    )]
+    async fn takomo_impact(
+        &self,
+        Parameters(a): Parameters<ProjectArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_impact(&require_auth(&ctx)?, &a.project))
     }
 
     #[tool(
@@ -2818,6 +2840,13 @@ impl TakomoMcp {
         auth.require_project(project)?;
         let roadmap = self.state.store.roadmap(project)?;
         Ok(json!({ "ok": true, "roadmap": roadmap }))
+    }
+
+    fn do_impact(&self, auth: &AuthCtx, project: &str) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        auth.require_project(project)?;
+        let impact = self.state.store.impact(project)?;
+        Ok(json!({ "ok": true, "impact": impact }))
     }
 
     /// Attach the project's writing conventions (`language_hint` / `style_hint`)

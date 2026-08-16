@@ -5206,6 +5206,183 @@ async fn roadmap_flags_epic_state_contradictions() {
     );
 }
 
+// The rollup splits claimable work into `ready` and `backlog`, and `ready` must
+// mean exactly what the ready QUEUE means — a rollup that disagreed with the
+// thing that actually hands work out would be worse than no rollup.
+//
+// The split keys on the workflow's `claimable` FLAG, not the `todo` category,
+// and this workflow is why that matters: `brief` is category `todo` and NOT
+// claimable, while `spec` is claimable and categorised `in_progress`. A
+// category-based split gets both wrong, in opposite directions.
+#[tokio::test]
+async fn roadmap_splits_claimable_work_into_ready_and_backlog() {
+    let app = TestApp::spawn().await;
+
+    let epic = app.create_typed("Ship the widget", "epic", None).await;
+    // brief: category todo, NOT claimable -> neither ready nor backlog.
+    let _briefed = app.create_typed("Still a brief", "task", Some(&epic)).await;
+    // ready + unblocked + unclaimed -> ready.
+    let free = app
+        .create_typed("Free to pick up", "task", Some(&epic))
+        .await;
+    app.to_ready(&free).await;
+    // ready but blocked by an open ticket -> backlog.
+    let blocked = app.create_typed("Held by a dep", "task", Some(&epic)).await;
+    app.to_ready(&blocked).await;
+    // The blocker itself is claimable and unblocked, so it is READY — closing it
+    // is precisely the work that releases the other one.
+    let blocker = app.create_typed("The blocker", "task", Some(&epic)).await;
+    app.to_ready(&blocker).await;
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/tickets/{blocked}/deps"),
+            json!({ "blocked_by": blocker }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "dep add failed: {b}");
+    // ready but already claimed -> backlog (someone holds the lease).
+    let taken = app
+        .create_typed("Already claimed", "task", Some(&epic))
+        .await;
+    app.to_ready(&taken).await;
+    app.claim(&taken).await;
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let e = &body["epics"][0];
+
+    // `free` and `blocker` are the two the queue would hand out — `blocker` is
+    // itself unblocked, which is the whole point of it being the blocker.
+    assert_eq!(e["ready"], 2, "ready: {e}");
+    // `blocked` (dep) + `taken` (claimed). `briefed` is NOT here: it sits in a
+    // non-claimable state, so it is neither ready nor backlog.
+    assert_eq!(e["backlog"], 2, "backlog: {e}");
+
+    // The assertion this whole split exists for: `ready` must equal what the
+    // ready QUEUE actually hands out. Both read the same CTE by construction
+    // (BLOCKED_CTE is shared), and this pins that they cannot drift apart.
+    let (s, queue) = app.get(&app.admin, "/v1/ready?project=tp").await;
+    assert_eq!(s, StatusCode::OK, "{queue}");
+    let queue_len = queue["items"].as_array().expect("ready items").len() as i64;
+    assert_eq!(
+        e["ready"].as_i64().expect("ready count"),
+        queue_len,
+        "rollup `ready` must equal /v1/ready: {e} vs {queue}"
+    );
+}
+
+// `awaiting_answer` is an OVERLAY on the state counts, not a bucket: a ticket
+// with an open question is still counted in its own state. It exists because a
+// queue entry carrying an unanswered decision looks claimable and is not worth
+// picking up.
+#[tokio::test]
+async fn roadmap_counts_tickets_awaiting_an_answer() {
+    let app = TestApp::spawn().await;
+
+    let epic = app.create_typed("Needs decisions", "epic", None).await;
+    let asked = app
+        .create_typed("Has a question", "task", Some(&epic))
+        .await;
+    let _quiet = app.create_typed("No question", "task", Some(&epic)).await;
+
+    let fence = app.to_implementing(&asked).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": asked,
+                "kind": "choose",
+                "title": "Which way?",
+                "options": ["left", "right"],
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "ask failed: {b}");
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let e = &body["epics"][0];
+    assert_eq!(e["awaiting_answer"], 1, "awaiting_answer: {e}");
+    // Overlay, not a partition: the ticket is still counted in its own state, so
+    // the subtree total is untouched by the question.
+    assert_eq!(e["total"], 2, "total unchanged by the question: {e}");
+}
+
+// Impact ranks blockers by how much closing ONE of them would release. The
+// count is a counterfactual, and the cases below are exactly the ones a naive
+// reachability walk gets wrong.
+#[tokio::test]
+async fn impact_ranks_blockers_by_what_closing_one_would_release() {
+    let app = TestApp::spawn().await;
+
+    // root blocks `held`, and `held` has a child that inherits the block.
+    let root = app.create_typed("Root blocker", "task", None).await;
+    let held = app.create_typed("Held directly", "task", None).await;
+    let inherited = app.create_typed("Child of held", "task", Some(&held)).await;
+    // `shared` is held by TWO blockers, so neither one alone releases it.
+    let other = app.create_typed("Second blocker", "task", None).await;
+    let shared = app.create_typed("Held by two", "task", None).await;
+
+    for (ticket, blocker) in [(&held, &root), (&shared, &root), (&shared, &other)] {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                &format!("/v1/tickets/{ticket}/deps"),
+                json!({ "blocked_by": blocker }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "dep add failed: {b}");
+    }
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/impact").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // held + inherited + shared are blocked right now.
+    assert_eq!(body["blocked_total"], 3, "{body}");
+
+    let blockers = body["blockers"].as_array().expect("blockers array");
+    let top = &blockers[0];
+    assert_eq!(top["id"], root.as_str(), "root ranks first: {body}");
+    // Closing `root` releases `held` (direct) and `inherited` (downstream) — but
+    // NOT `shared`, which `other` still holds. That exclusion is the whole
+    // reason this is a counterfactual rather than a graph walk.
+    assert_eq!(top["unblocks"], 2, "unblocks: {top}");
+    assert_eq!(top["direct"], 1, "direct: {top}");
+    assert_eq!(top["downstream"], 1, "downstream: {top}");
+    let ids = top["unblocks_ids"].as_array().expect("unblocks_ids");
+    assert!(
+        ids.iter().any(|v| v == &json!(held))
+            && ids.iter().any(|v| v == &json!(inherited))
+            && !ids.iter().any(|v| v == &json!(shared)),
+        "released set names held + inherited and excludes shared: {top}"
+    );
+
+    // `other` alone releases nothing — its only dependent is also held by root.
+    // A blocker that frees nothing is omitted rather than listed as a zero.
+    assert!(
+        !blockers.iter().any(|b| b["id"] == other.as_str()),
+        "a blocker that releases nothing is not listed: {body}"
+    );
+
+    // Closing the root for real drops it out of the ranking.
+    app.drive_to_done(&root).await;
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/impact").await;
+    assert!(
+        !body["blockers"]
+            .as_array()
+            .expect("blockers array")
+            .iter()
+            .any(|b| b["id"] == root.as_str()),
+        "a terminal ticket is no longer a blocker: {body}"
+    );
+
+    // Unknown project -> 404, like roadmap: an empty list would hide a typo.
+    let (status, body) = app.get(&app.admin, "/v1/projects/nope/impact").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
 #[tokio::test]
 async fn deps_reverse_and_transitive_are_cycle_safe() {
     let app = TestApp::spawn().await;

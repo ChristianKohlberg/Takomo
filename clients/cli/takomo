@@ -619,6 +619,19 @@ def rollup(r, label="children by state", indent="  "):
     bs = r.get("by_state") or {}
     if bs:
         print(f"{indent}{label}: " + ", ".join(f"{k}={v}" for k, v in sorted(bs.items())))
+    # The claimable half, split into what the queue would actually hand out and
+    # what it would not. Printed only when there IS claimable work, so a
+    # finished epic does not carry a line of zeroes.
+    ready = r.get("ready", 0); backlog = r.get("backlog", 0)
+    awaiting = r.get("awaiting_answer", 0)
+    if ready or backlog or awaiting:
+        parts = [f"ready={ready}", f"backlog={backlog}"]
+        # An overlay on the counts above, not a bucket of its own — flagged with
+        # `!` because a ticket waiting on an answer is not work anyone can pick
+        # up, however claimable it looks.
+        if awaiting:
+            parts.append(f"!awaiting answer={awaiting}")
+        print(f"{indent}claimable: " + ", ".join(parts))
 if not epics:
     print("(no epics)")
 for e in epics:
@@ -630,6 +643,44 @@ for e in epics:
 # an empty bucket reads as "all accounted for" rather than as a missing row.
 print(f"\n(no epic)  {unparented.get('total', 0)} ticket(s) outside every epic")
 rollup(unparented, "tickets by state")
+PY
+}
+
+cmd_impact() {
+  local project="" limit=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --limit) limit=$2; shift 2 ;;
+      -*) die "impact: unknown flag $1" ;;
+      *) die "impact: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/impact" >/dev/null
+  python3 - "$REQ_OUT" "${limit:-0}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+limit = int(sys.argv[2] or 0)
+blockers = d.get("blockers", [])
+total = d.get("blocked_total", 0)
+print(f"blocker impact for {d.get('project','')}  ({total} ticket(s) blocked)")
+if not blockers:
+    # Two very different worlds, and a bare empty list cannot tell them apart.
+    print("(nothing is blocked)" if total == 0 else
+          "(everything blocked is held by a ticket outside this project)")
+    sys.exit(0)
+shown = blockers[:limit] if limit > 0 else blockers
+width = max(len(b["id"]) for b in shown)
+for b in shown:
+    n = b.get("unblocks", 0)
+    # direct vs downstream is the SHAPE of the hold: a flat fan-out reads
+    # differently from one ticket pinning whole subtrees.
+    detail = f"({b.get('direct',0)} direct, {b.get('downstream',0)} downstream)"
+    state = b.get("state", "")
+    print(f"  {b['id']:<{width}}  unblocks {n:>3}  {detail:<28} [{state}]  {b.get('title','')}")
+if limit > 0 and len(blockers) > limit:
+    print(f"  … {len(blockers) - limit} more (raise --limit to see them)")
 PY
 }
 
@@ -2696,6 +2747,11 @@ Finding & creating work:
   takomo ls  [--project P] [--state S] [--label L]... [--mine] [--archived] [-q TEXT]
              [--limit N] [--cursor C]   page size (default 100) and the next page
   takomo ready [--project P] [--limit N]
+  takomo impact  [--project P] [--limit N]
+         open blockers ranked by how much closing ONE of them would release:
+         `unblocks` counts the tickets that would leave the blocked set, split
+         into direct (they hold the edge) and downstream (inherited from an
+         ancestor). A ticket held by two blockers counts towards neither alone.
   takomo roadmap [--project P]   epic progress rollup: a bar + child counts per epic,
                                  contradiction flags, and a "(no epic)" bucket
   takomo show ID
@@ -2824,6 +2880,7 @@ main() {
     ls|list) cmd_ls "$@" ;;
     ready)   cmd_ready "$@" ;;
     roadmap) cmd_roadmap "$@" ;;
+    impact) cmd_impact "$@" ;;
     show)    cmd_show "$@" ;;
     claim)   cmd_claim "$@" ;;
     next)    cmd_next "$@" ;;

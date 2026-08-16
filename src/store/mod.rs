@@ -8,6 +8,7 @@ mod checklist;
 mod claims;
 mod events;
 mod helpers;
+mod impact;
 mod initiatives;
 mod metrics;
 mod model;
