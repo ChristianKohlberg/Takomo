@@ -55,7 +55,7 @@ cargo test --release --test api <substring> -- --nocapture
 cargo test --release --lib <substring>                    # ONE unit test
 cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
-shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh .handrail/*.sh .handrail/adapters/*.sh
+shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
 (cd clients/mcp && npm ci && npm run build)               # MCP typecheck
 (cd web && npm ci && npm run check && npm test)           # the four surfaces
 (cd web && npm run build)                                 # then cargo build — see below
@@ -76,23 +76,11 @@ four tokens (`admin`/`human`/`worker`/`worker2`), and serves on an ephemeral por
 the real HTTP surface over `reqwest`. Only `src/workflow.rs` and `src/seed.rs` carry `#[cfg(test)]`
 units — anything touching the HTTP surface belongs in `tests/`.
 
-`.handrail/` gates surface project norms in-session via hooks in `.claude/settings.json`; they
-guide, CI is the wall. Run `handrail run --changed` before wrapping up (`handrail list` for the
-menu: `fmt`, `clippy`, `route-test-pairing`, `openapi-current`, `openapi-valid`). When no changed
-file maps to a gate — a clean tree, or a docs-only edit — `--changed` reports "no gates selected"
-and they stay `stale`. `stale` means "not evaluated against this tree", not "failing"; a `git pull`
-invalidates every earlier verdict the same way. Name them explicitly to evaluate them:
-`handrail run fmt clippy openapi-valid`. The two detectors then report `skipped` (exit 2) rather
-than green, because they compare a changed HTTP surface against its companion and there is none.
-
-**Checking a branch you have already committed:** the detectors diff the working tree, so on a
-committed tree they see nothing and skip. Point them at the fork point instead —
-`HR_BASE=origin/main handrail run route-test-pairing openapi-current` — and they compare
-`merge-base(origin/main, HEAD)` against the working tree, i.e. everything the branch changed plus
-anything still uncommitted, without picking up what landed on `main` underneath you. Read their
-`skipped` output rather than assuming: `SKIP[not-in-scope]` means your change did not touch that
-surface, `SKIP[no-changes-visible]` means the detector saw nothing at all and checked nothing —
-that one is not a pass. A bogus `HR_BASE` exits 3 (red) rather than silently reporting "no changes".
+**There is no in-session gate runner. CI is the only wall**, so run the commands above yourself
+before wrapping up — `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --release`,
+and the `web/` gates. Two conventions that used to have their own detectors are now yours to keep:
+a new or changed HTTP route ships with an integration test, and with an `spec/openapi.yaml` update.
+Nothing will remind you.
 
 ### Verify a branch in a worktree, not in a dirty tree
 

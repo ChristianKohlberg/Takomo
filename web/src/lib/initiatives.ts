@@ -46,6 +46,13 @@ export interface Initiative {
   tags?: string[]
   updated_at?: string
   rollup?: Rollup
+  /**
+   * Free-form JSON on the initiative itself, stored and returned by the server
+   * since it existed. The explorer is its first reader: `metadata.path` is the
+   * folder a document is filed in, which is why nesting needed no schema change.
+   * See lib/initiative-tree.ts.
+   */
+  metadata?: unknown
 }
 
 export interface Entry {
@@ -154,6 +161,8 @@ export interface CreateFields {
   summary?: string
   labels?: string[]
   tags?: string[]
+  /** `{ path }` files the new document into a folder as it is created. */
+  metadata?: Record<string, unknown>
 }
 
 export function createInitiative(token: string, fields: CreateFields): Promise<Initiative> {
@@ -164,7 +173,15 @@ export function createInitiative(token: string, fields: CreateFields): Promise<I
   })
 }
 
-export type PatchFields = Partial<Pick<Initiative, 'title' | 'summary' | 'status'>>
+export type PatchFields = Partial<Pick<Initiative, 'title' | 'summary' | 'status'>> & {
+  /**
+   * Merged into the initiative's metadata rather than replacing it — a key set
+   * to null is removed. This is how a document is moved between folders, and
+   * merging is what keeps a move from discarding metadata some other writer put
+   * there.
+   */
+  metadata_merge?: Record<string, unknown>
+}
 
 export function patchInitiative(
   token: string,
@@ -214,6 +231,26 @@ export async function createTicket(
     body: JSON.stringify(body),
   })
   return res.id
+}
+
+/**
+ * Ask a human about a passage.
+ *
+ * A question hangs off a TICKET — that is the store's model, not an accident of
+ * this page: a decision nobody can route to a piece of work is a decision that
+ * never comes back. So asking from the margin of a document files the passage as
+ * a ticket first and routes the question against it, `advisory` so it records a
+ * decision without parking work nobody has claimed.
+ */
+export function createQuestion(
+  token: string,
+  body: { ticket: string; kind: string; mode: string; title: string; body?: string },
+): Promise<{ id: string }> {
+  return api<{ id: string }>(token, '/questions', {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify(body),
+  })
 }
 
 /**

@@ -102,8 +102,8 @@ orchestrators ◀──SSE event stream (?since=seq) ──── └───�
 > hand-rolled alongside them in `debit_write_budget`. tower stayed a declared dependency with zero call sites until
 > `takomo-v7ha` removed it; it remains only as a transitive dependency of axum.
 > *Not utoipa* — it was never a dependency and no generation step was ever written. `spec/openapi.yaml` is
-> hand-maintained and defended instead: handrail's `openapi-current` detector pairs an HTTP-surface change with a
-> spec change, and CI checks the document is valid OpenAPI 3.1.
+> hand-maintained: the convention is that an HTTP-surface change ships with a spec change, and CI checks the
+> document is valid OpenAPI 3.1.
 
 **Database: SQLite (or libsql) behind a repository trait; Postgres as optional later backend.**
 

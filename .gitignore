@@ -2,8 +2,6 @@
 *.db
 *.db-wal
 *.db-shm
-.handrail/.state/
-.handrail/reports/
 
 # Takomo agent token (secret) — config is committed, token is not
 .takomo/token

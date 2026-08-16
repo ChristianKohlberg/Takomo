@@ -11,8 +11,7 @@ cargo build --release                              # build the binary (takomo)
 cargo test --release                               # integration suite (spawns real servers on ephemeral ports)
 cargo clippy --all-targets -- -D warnings          # lint, warnings-as-errors
 cargo fmt                                           # format (rustfmt.toml); CI runs --check
-shellcheck -x clients/cli/takomo clients/cli/install.sh .handrail/*.sh   # shell lint (CI adds scripts/ and .handrail/adapters/)
-./scripts/lint-spa.sh                               # eslint over the inline <script> of both SPAs
+shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh    # shell lint
 (cd clients/mcp && npm ci && npm run build)         # MCP typecheck
 ```
 
@@ -61,13 +60,9 @@ seeded `approve` question gates on (a plain `human` token is refused there, by d
 The hook prints the bare plaintext on stdout, because backlot takes stdout verbatim as the
 token.
 
-## In-session quality gates — handrail
-
-[handrail](https://github.com/ChristianKohlberg/handrail) gates in [`.handrail/`](../.handrail/) surface project norms *in-session* — they guide, they don't enforce (CI is the wall): new/changed HTTP routes should ship with an integration test, `spec/openapi.yaml` should track route changes *and stay a valid document*, and `cargo fmt`/`clippy` stay clean. With `handrail` installed: `handrail list`, `handrail run --changed`.
-
 ## Conventions
 
 - Every new/changed HTTP route ships with an integration test and an `spec/openapi.yaml` update.
-- The spec must stay a *valid* OpenAPI 3.1 document, not merely parseable YAML. CI runs `redocly lint` against [`spec/redocly.yaml`](../spec/redocly.yaml); `.handrail/openapi-sane.sh` is the instant offline version. Two traps, both invisible to a human reader: a comma inside an unquoted description in a flow mapping silently truncates the sentence and turns its tail into a junk key, and `nullable: true` is 3.0 syntax that 3.1 tooling ignores (write `type: [string, "null"]`).
+- The spec must stay a *valid* OpenAPI 3.1 document, not merely parseable YAML. CI runs `redocly lint` against [`spec/redocly.yaml`](../spec/redocly.yaml). Two traps, both invisible to a human reader: a comma inside an unquoted description in a flow mapping silently truncates the sentence and turns its tail into a junk key, and `nullable: true` is 3.0 syntax that 3.1 tooling ignores (write `type: [string, "null"]`).
 - Errors are part of the contract: reject with a stable `code`, a `message` written for an LLM reader, and (for transitions) `allowed_transitions` + a `remedy`. Never fail silently.
 - Keep the CLI shellcheck-clean and the MCP typecheck green.

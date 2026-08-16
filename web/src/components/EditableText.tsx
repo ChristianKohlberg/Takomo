@@ -12,6 +12,7 @@
 // `onCommit` returns a promise; if it rejects, the text is put back — the same
 // revert-on-failure the page had.
 import { useEffect, useRef } from 'react'
+import { cn } from '@/lib/utils'
 
 export interface EditableTextProps {
   value: string
@@ -20,6 +21,12 @@ export interface EditableTextProps {
   onCommit: (next: string) => Promise<unknown>
   /** Blank is refused and reverts (a title cannot be empty). */
   required?: boolean
+  /**
+   * Shown while the field is empty. Rendered through CSS rather than as text, so
+   * it can never be committed as a value — a placeholder that saves itself the
+   * first time somebody clicks past it is worse than no placeholder.
+   */
+  placeholder?: string
   className?: string
   as?: 'h1' | 'p'
   'aria-label'?: string
@@ -30,6 +37,7 @@ export function EditableText({
   editable,
   onCommit,
   required = false,
+  placeholder,
   className,
   as = 'p',
   'aria-label': ariaLabel,
@@ -49,7 +57,12 @@ export function EditableText({
     <Tag
       ref={ref as never}
       aria-label={ariaLabel}
-      className={className}
+      data-placeholder={placeholder}
+      className={cn(
+        placeholder &&
+          'empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)]',
+        className,
+      )}
       contentEditable={editable}
       suppressContentEditableWarning
       onBlur={() => {
