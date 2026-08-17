@@ -274,6 +274,7 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         &palette,
         agent,
         "Folder rail and list pane done; reading pane next.",
+        None,
     )?;
 
     // --- `review`, claimed, and blocked by the rate-limit work --------------

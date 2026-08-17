@@ -7,8 +7,8 @@ use super::helpers::{
     row_to_ticket, touch_ticket, TICKET_COLS,
 };
 use super::model::{
-    Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_METADATA, MAX_TITLE, PRIORITIES,
-    TICKET_TYPES,
+    Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_LINKS, MAX_LINKS_SIZE, MAX_LINK_KEY,
+    MAX_LINK_VALUE, MAX_METADATA, MAX_TITLE, PRIORITIES, TICKET_TYPES,
 };
 use super::tags::{check_tag_count, ensure_tags_exist, normalize_tag_set};
 use super::Store;
@@ -272,6 +272,58 @@ fn validate_metadata_size(metadata: &Value) -> ApiResult<()> {
     Ok(())
 }
 
+/// Validate a `links` object before merge or storage.
+fn validate_links_map(links: &serde_json::Map<String, Value>) -> ApiResult<()> {
+    if links.len() > MAX_LINKS {
+        return Err(ApiError::validation(
+            "validation.links",
+            format!(
+                "links has {} keys; the cap is {MAX_LINKS}. Delete unused keys (set them to null) or move bulk content into the ticket body or a comment.",
+                links.len()
+            ),
+        ));
+    }
+    for (k, v) in links {
+        if k.is_empty() || k.len() > MAX_LINK_KEY {
+            return Err(ApiError::validation(
+                "validation.links",
+                format!("links keys must be 1-{MAX_LINK_KEY} characters."),
+            ));
+        }
+        if let Some(s) = v.as_str() {
+            if s.len() > MAX_LINK_VALUE {
+                return Err(ApiError::validation(
+                    "validation.links",
+                    format!(
+                        "links.{k} is {} bytes; each value may be at most {MAX_LINK_VALUE}. Put longer content in the ticket body or a comment.",
+                        s.len()
+                    ),
+                ));
+            }
+        }
+    }
+    let size = serde_json::to_string(&Value::Object(links.clone()))
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if size > MAX_LINKS_SIZE {
+        return Err(ApiError::validation(
+            "validation.links_size",
+            format!(
+                "links is {size} bytes serialized; the cap is {MAX_LINKS_SIZE}. Trim values or delete unused keys (set them to null)."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn ticket_create_fingerprint(req: &TicketCreate) -> String {
+    sha256_hex(serde_json::to_string(req).unwrap_or_default().as_bytes())
+}
+
+fn comment_body_fingerprint(body: &str) -> String {
+    sha256_hex(body.as_bytes())
+}
+
 /// Would setting `child`'s parent to `new_parent` create a cycle in the tree?
 fn parent_cycle(conn: &Connection, child: &str, new_parent: &str) -> ApiResult<bool> {
     let mut cursor = Some(new_parent.to_string());
@@ -491,14 +543,24 @@ impl Store {
 
             // Idempotent replay?
             if let Some(key) = idempotency_key {
-                let existing: Option<String> = tx
+                let fingerprint = ticket_create_fingerprint(req);
+                let existing: Option<(String, Option<String>)> = tx
                     .query_row(
-                        "SELECT ticket FROM idempotency WHERE actor = ?1 AND key = ?2",
+                        "SELECT ticket, body_hash FROM idempotency WHERE actor = ?1 AND key = ?2",
                         params![actor, key],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
-                if let Some(tid) = existing {
+                if let Some((tid, stored_hash)) = existing {
+                    if let Some(h) = stored_hash {
+                        if h != fingerprint {
+                            return Err(ApiError::conflict(
+                                "conflict.idempotency_key",
+                                "This Idempotency-Key was already used with a different request body. Use a fresh key for a different create, or retry with the same body.",
+                            )
+                            .details(json!({ "key": key })));
+                        }
+                    }
                     let ticket = get_ticket_required(tx, &tid)?;
                     let similar =
                         open_similar(tx, &ticket.project, &ticket.title, &ticket.ty, &ticket.id)?;
@@ -578,8 +640,8 @@ impl Store {
             }
             if let Some(key) = idempotency_key {
                 tx.execute(
-                    "INSERT INTO idempotency (actor, key, ticket, created_at) VALUES (?1, ?2, ?3, ?4)",
-                    params![actor, key, id, now],
+                    "INSERT INTO idempotency (actor, key, ticket, body_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![actor, key, id, ticket_create_fingerprint(req), now],
                 )?;
             }
             emit_event(
@@ -1002,6 +1064,7 @@ impl Store {
                         ));
                     }
                 }
+                validate_links_map(&merged)?;
                 let merged = Value::Object(merged);
                 tx.execute(
                     "UPDATE tickets SET links = ?2 WHERE id = ?1",
@@ -1091,7 +1154,13 @@ impl Store {
         })
     }
 
-    pub fn add_comment(&self, ticket_id: &str, actor: &str, body: &str) -> ApiResult<Comment> {
+    pub fn add_comment(
+        &self,
+        ticket_id: &str,
+        actor: &str,
+        body: &str,
+        idempotency_key: Option<&str>,
+    ) -> ApiResult<(Comment, bool)> {
         if body.is_empty() || body.len() > MAX_COMMENT {
             return Err(ApiError::validation(
                 "validation.comment",
@@ -1099,7 +1168,43 @@ impl Store {
             ));
         }
         let now = now_ms();
+        let fingerprint = comment_body_fingerprint(body);
         self.with_tx(|tx| {
+            if let Some(key) = idempotency_key {
+                let existing: Option<(String, Option<String>)> = tx
+                    .query_row(
+                        "SELECT comment, body_hash FROM comment_idempotency WHERE actor = ?1 AND key = ?2",
+                        params![actor, key],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((cid, stored_hash)) = existing {
+                    if let Some(h) = stored_hash {
+                        if h != fingerprint {
+                            return Err(ApiError::conflict(
+                                "conflict.idempotency_key",
+                                "This Idempotency-Key was already used with a different comment body. Use a fresh key for a different comment, or retry with the same body.",
+                            )
+                            .details(json!({ "key": key })));
+                        }
+                    }
+                    let comment = tx.query_row(
+                        "SELECT id, ticket, author, body, created_at FROM comments WHERE id = ?1",
+                        params![cid],
+                        |r| {
+                            Ok(Comment {
+                                id: r.get(0)?,
+                                ticket: r.get(1)?,
+                                author: r.get(2)?,
+                                body: r.get(3)?,
+                                created_at: r.get(4)?,
+                            })
+                        },
+                    )?;
+                    return Ok((comment, true));
+                }
+            }
+
             let t = get_ticket_required(tx, ticket_id)?;
             ensure_ticket_writable(tx, &t)?;
             let comment = Comment {
@@ -1113,6 +1218,12 @@ impl Store {
                 "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![comment.id, comment.ticket, comment.author, comment.body, now],
             )?;
+            if let Some(key) = idempotency_key {
+                tx.execute(
+                    "INSERT INTO comment_idempotency (actor, key, comment, body_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![actor, key, comment.id, fingerprint, now],
+                )?;
+            }
             emit_event(
                 tx,
                 Some(&t.id),
@@ -1122,7 +1233,7 @@ impl Store {
                 json!({ "comment": comment.id }),
                 now,
             )?;
-            Ok(comment)
+            Ok((comment, false))
         })
     }
 

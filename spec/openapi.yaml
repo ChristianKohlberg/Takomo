@@ -1112,6 +1112,8 @@ paths:
       description: |
         `Idempotency-Key` is required for agent clients: retries with the same
         key return the original ticket (200) instead of creating a twin (201).
+        Reusing a key with a different request body is refused (409). The key is
+        matched on a fingerprint of the full create payload, not the key alone.
         The response includes `similar` — existing open tickets with matching
         title keywords — so a client can notice a semantic duplicate.
       parameters:
@@ -1132,6 +1134,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TicketCreated" }
+        "409":
+          description: Idempotency-Key reused with a different request body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422":
           description: Validation failure (unknown project, bad parent, cycle)
           content:
@@ -1303,7 +1310,13 @@ paths:
     post:
       tags: [tickets]
       summary: Append a comment (always allowed, commutative)
-      parameters: [ { $ref: "#/components/parameters/id" } ]
+      description: |
+        `Idempotency-Key` is supported so a retry after an ambiguous failure
+        returns the original comment (200) instead of appending a twin (201).
+        Reusing a key with a different body is refused (409).
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string, maxLength: 128 } }
       requestBody:
         required: true
         content:
@@ -1319,6 +1332,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Comment" }
+        "200":
+          description: Idempotent replay of a prior comment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comment" }
+        "409":
+          description: Idempotency-Key reused with a different body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /tickets/{id}/deps:
     get:
@@ -6064,6 +6087,7 @@ x-error-codes:
 
   # -- optimistic concurrency, on whole-body replacement only -----------------
   conflict.if_match_required: "replacing `body` needs `If-Match: \"<version>\"`, the value of the ticket's ETag. Field sets and `metadata_merge` never need it."
+  conflict.idempotency_key: "this `Idempotency-Key` was already used with a different request body. Use a fresh key for a different write, or retry with the same body."
   conflict.version: "the `If-Match` version is not the current one, so the body changed since you read it. Re-read the ticket, re-apply your edit to the fresh body, retry."
 
   # -- workflow transitions ---------------------------------------------------
@@ -6169,6 +6193,7 @@ x-error-codes:
   validation.blocked_by: "a `blocked_by` entry names a ticket that does not exist."
   validation.dep_cycle: "adding that dependency would create a cycle — the would-be blocker already depends on this ticket, directly or transitively."
   validation.links: "`links` must be a JSON object of string values, with null to delete a key."
+  validation.links_size: "the serialized `links` object exceeds its byte cap. Trim values or delete unused keys (set them to null)."
   validation.metadata: "`metadata` must be a JSON object with namespaced keys, e.g. `myagent.run_id`."
   validation.metadata_merge: "`metadata_merge` must be a JSON object (RFC 7386 merge-patch; null deletes a key)."
   validation.metadata_size: "serialized `metadata` is over its cap. Trim keys by setting them to null via `metadata_merge`, or move bulk content into the body or a comment."

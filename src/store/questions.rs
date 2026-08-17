@@ -2243,11 +2243,28 @@ fn expire_with_recommendation(conn: &Connection, q: &Question, now: i64) -> ApiR
     };
     let normalized = match validate_answer(&q.kind, &q.options, &rec_value, q.multi) {
         Ok(v) => v,
-        Err(_) => {
-            // Recommendation is not a valid answer; fall back to flagging.
+        Err(e) => {
+            // Legacy rows can carry a recommendation that no longer passes
+            // validate_answer (the ask path now refuses them). Expire rather than
+            // apply a bogus answer, but still emit the event — state and log must
+            // not drift.
             conn.execute(
                 "UPDATE questions SET status = 'expired', version = version + 1, updated_at = ?2 WHERE id = ?1",
                 params![q.id, now],
+            )?;
+            emit_event(
+                conn,
+                Some(&q.ticket),
+                Some(&q.project),
+                "system",
+                "question_expired",
+                json!({
+                    "question": q.id,
+                    "on_timeout": "recommended",
+                    "reason": "recommendation_invalid",
+                    "validation": e.body.code,
+                }),
+                now,
             )?;
             return Ok(());
         }

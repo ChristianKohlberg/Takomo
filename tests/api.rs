@@ -1494,6 +1494,68 @@ async fn idempotent_create_replays() {
 }
 
 #[tokio::test]
+async fn idempotent_create_refuses_key_reuse_with_different_body() {
+    let app = TestApp::spawn().await;
+    let (s, _) = app
+        .post_with(
+            &app.admin,
+            "/v1/tickets",
+            &[("Idempotency-Key", "create-body-bound")],
+            json!({ "project": "tp", "title": "First body" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    let (s, err) = app
+        .post_with(
+            &app.admin,
+            "/v1/tickets",
+            &[("Idempotency-Key", "create-body-bound")],
+            json!({ "project": "tp", "title": "Different body" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["code"], "conflict.idempotency_key");
+}
+
+#[tokio::test]
+async fn idempotent_comment_replays() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Comment idempotency").await;
+    let body = json!({ "body": "verified by this note" });
+
+    let (s, first) = app
+        .post_with(
+            &app.admin,
+            &format!("/v1/tickets/{id}/comments"),
+            &[("Idempotency-Key", "comment-once")],
+            body.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{first}");
+
+    let (s, second) = app
+        .post_with(
+            &app.admin,
+            &format!("/v1/tickets/{id}/comments"),
+            &[("Idempotency-Key", "comment-once")],
+            body,
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "replay must be 200, not a twin 201: {second}"
+    );
+    assert_eq!(first["id"], second["id"]);
+
+    let (_, detail) = app
+        .get(&app.admin, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    assert_eq!(detail["comments"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn blocked_tickets_never_ready_including_inherited() {
     let app = TestApp::spawn().await;
     let blocker = app.create_ticket("The blocker nobody finished").await;
@@ -1731,6 +1793,41 @@ async fn has_link_guard_requires_proof_before_done() {
     let (s, body) = app.transition(&app.admin, &id, "done").await;
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "done");
+}
+
+#[tokio::test]
+async fn has_link_guard_rejects_whitespace_around_the_key_at_upload() {
+    let app = TestApp::spawn().await;
+    let (s, body) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({
+                "id": "spc",
+                "name": "Whitespace guard",
+                "workflow": {
+                    "name": "spc-wf",
+                    "initial": "ready",
+                    "states": [
+                        { "id": "ready", "category": "todo", "claimable": true },
+                        { "id": "done", "category": "done", "terminal": true }
+                    ],
+                    "transitions": [
+                        { "from": "ready", "to": "done", "requires": ["guard:has_link: commit"] }
+                    ]
+                }
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "workflow.invalid");
+    let problems = body["details"]["problems"].as_array().unwrap();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("whitespace")),
+        "must teach about the whitespace trap: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3990,6 +4087,23 @@ async fn links_patch_merges_per_key() {
             &app.admin,
             &format!("/v1/tickets/{id}"),
             json!({ "links": { "pr": 5 } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["code"], "validation.links");
+}
+
+#[tokio::test]
+async fn links_are_capped_like_other_free_form_fields() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Link cap test").await;
+
+    let huge = "x".repeat(9_000);
+    let (s, b) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{id}"),
+            json!({ "links": { "pr": huge } }),
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
@@ -8174,6 +8288,72 @@ async fn question_expiry_applies_recommendation() {
     }
 }
 
+/// When a legacy row carries a recommendation that no longer passes
+/// `validate_answer`, the timeout fallback must still emit `question_expired`
+/// so the event log does not drift from state.
+#[tokio::test]
+async fn timeout_fallback_emits_question_expired_when_recommendation_is_invalid() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Legacy bad recommendation").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Pick one",
+                "options": ["a", "b"],
+                "recommended": "a",
+                "expires_in_seconds": 3600,
+                "on_timeout": "recommended",
+                "fence": fence,
+            }),
+        )
+        .await;
+
+    // Simulate a row written before ask-side validation: recommendation no
+    // longer matches the option set.
+    {
+        let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let past = takomo::ids::now_ms() - 1000;
+        let n = conn
+            .execute(
+                "UPDATE questions SET recommended = ?2, expires_at = ?3 WHERE id = ?1",
+                rusqlite::params![qid, "\"c\"", past],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, q) = app.get(&app.admin, &format!("/v1/questions/{qid}")).await;
+        if q["status"] == "expired" {
+            let (_, events) = app
+                .get(
+                    &app.admin,
+                    &format!("/v1/events?since=0&ticket={id}&kind=question_expired"),
+                )
+                .await;
+            assert!(
+                events["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["payload"]["question"] == qid),
+                "question_expired must be logged: {events}"
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "question was not swept: {q}");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
 #[tokio::test]
 async fn project_question_language_surfaces_to_agents() {
     let app = TestApp::spawn().await;
@@ -8342,6 +8522,32 @@ async fn project_create_rejects_oversized_style_guide_before_creating() {
         .await;
     assert_eq!(s, StatusCode::CREATED, "{made}");
     assert_eq!(made["style_guide"], "Terse. Imperative mood.");
+}
+
+#[tokio::test]
+async fn project_create_applies_optional_settings_atomically() {
+    let app = TestApp::spawn().await;
+    let (s, made) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({
+                "id": "atom",
+                "name": "Atomic",
+                "question_language": "German",
+                "style_guide": "Short sentences.",
+                "answer_link_ttl_seconds": 604_800,
+                "claim_ttl_seconds": 3_600,
+                "max_claim_ttl_seconds": 7_200
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    assert_eq!(made["question_language"], "German");
+    assert_eq!(made["style_guide"], "Short sentences.");
+    assert_eq!(made["answer_link_ttl_seconds"], 604_800);
+    assert_eq!(made["claim_ttl_seconds"], 3_600);
+    assert_eq!(made["max_claim_ttl_seconds"], 7_200);
 }
 
 #[tokio::test]

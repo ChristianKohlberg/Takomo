@@ -11,6 +11,14 @@ pub const MAX_TITLE: usize = 300;
 pub const MAX_BODY: usize = 131_072;
 pub const MAX_COMMENT: usize = 65_536;
 pub const MAX_METADATA: usize = 65_536;
+/// Per-key cap on `links` keys (same bound as labels).
+pub const MAX_LINK_KEY: usize = 100;
+/// Per-value cap on `links` values — long enough for a URL, not a document.
+pub const MAX_LINK_VALUE: usize = 8_192;
+/// How many link keys a ticket may carry at once.
+pub const MAX_LINKS: usize = 32;
+/// Serialized `links` object size cap (same shape as `metadata`).
+pub const MAX_LINKS_SIZE: usize = MAX_METADATA;
 
 #[derive(Debug, Clone)]
 pub struct Ticket {

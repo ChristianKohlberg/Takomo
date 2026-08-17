@@ -83,8 +83,13 @@ impl Requirement {
                     Err(format!(
                         "guard '{guard}' in requirement '{raw}' names no link key; write the key it must prove, e.g. 'guard:{GUARD_HAS_LINK}commit'"
                     ))
+                } else if key != key.trim() {
+                    Err(format!(
+                        "guard '{guard}' in requirement '{raw}' has leading or trailing whitespace around the link key; write it without spaces, e.g. 'guard:{GUARD_HAS_LINK}{}'",
+                        key.trim()
+                    ))
                 } else {
-                    Ok(Requirement::Guard(guard.to_string()))
+                    Ok(Requirement::Guard(format!("{GUARD_HAS_LINK}{key}")))
                 }
             } else {
                 Err(format!(
@@ -452,6 +457,12 @@ mod tests {
             let err = Requirement::parse(raw).unwrap_err();
             assert!(err.contains("names no link key"), "{raw}: {err}");
         }
+    }
+
+    #[test]
+    fn rejects_has_link_key_with_surrounding_whitespace() {
+        let err = Requirement::parse("guard:has_link: commit").unwrap_err();
+        assert!(err.contains("whitespace"), "{err}");
     }
 
     #[test]

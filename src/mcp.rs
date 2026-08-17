@@ -2506,7 +2506,9 @@ impl TakomoMcp {
         auth.require_scope("write")?;
         load_visible(&self.state, auth, &a.id)?;
         if let Some(comment) = &a.comment {
-            self.state.store.add_comment(&a.id, &auth.actor, comment)?;
+            self.state
+                .store
+                .add_comment(&a.id, &auth.actor, comment, None)?;
             self.state.wake();
         }
         self.advance(auth, &a.id, "blocked", a.fence)
@@ -2515,7 +2517,7 @@ impl TakomoMcp {
     fn do_comment(&self, auth: &AuthCtx, id: &str, body: &str) -> ApiResult<Value> {
         auth.require_scope("write")?;
         load_visible(&self.state, auth, id)?;
-        let comment = self.state.store.add_comment(id, &auth.actor, body)?;
+        let (comment, _) = self.state.store.add_comment(id, &auth.actor, body, None)?;
         self.state.wake();
         Ok(json!({ "ok": true, "comment": comment.to_json() }))
     }
