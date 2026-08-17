@@ -28,6 +28,8 @@ import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
+import { PeopleList } from '@/components/settings/PeopleList'
+import { listUsers, setUserDisabled, type User } from '@/lib/users'
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
@@ -80,7 +82,7 @@ import { STR } from './strings'
 const LS_LANG = 'takomo.lang'
 const LS_SECTION = 'takomo.settings.section'
 
-type SectionKey = 'overview' | 'data' | 'access' | 'projects' | 'library'
+type SectionKey = 'overview' | 'data' | 'access' | 'people' | 'projects' | 'library'
 
 /** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
 function fill(template: string, values: Record<string, string>): string {
@@ -114,6 +116,10 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsLoadErr, setProjectsLoadErr] = useState('')
   const [tokens, setTokens] = useState<TokenRow[]>([])
+  // The people directory. Beside the credentials because they answer the two
+  // halves of one question: what may be done, and who work can be addressed to.
+  const [people, setPeople] = useState<User[]>([])
+  const [peopleBusy, setPeopleBusy] = useState('')
 
   // Which project's detail is open, and its editable settings. `?project=<id>`
   // is what the board's gear links to, so a deep link opens straight on the
@@ -240,6 +246,7 @@ export function App() {
     { key: 'overview', label: t.navOverview, hint: t.navOverviewHint },
     { key: 'data', label: t.navData, hint: t.navDataHint },
     { key: 'access', label: t.navAccess, hint: t.navAccessHint },
+    { key: 'people', label: t.navPeople, hint: t.navPeopleHint },
     { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
     { key: 'library', label: t.navLibrary, hint: t.navLibraryHint },
   ]
@@ -312,8 +319,14 @@ export function App() {
       setProjectsLoadErr((e as Error).message || t.requestFailed)
     }
     const ts = await listTokens(token).catch(() => [] as TokenRow[])
+    // Disabled people included, deliberately: this is the surface where somebody
+    // is put back, so hiding them here would hide the only control that undoes it.
+    const us = await listUsers(token, { includeDisabled: true, limit: 200 })
+      .then((page) => page.items)
+      .catch(() => [] as User[])
     setProjects(ps)
     setTokens(ts)
+    setPeople(us)
   }, [token, t])
 
   // `archive`/`unarchive` are declared above `refresh` (they read better next to
@@ -513,6 +526,35 @@ export function App() {
                     thisToken: t.tokThisToken,
                   }}
                   onRevoke={setRevoking}
+                />
+              )}
+            </Section>
+          ) : section === 'people' ? (
+            <Section title={t.peopleTitle} description={t.peopleSub}>
+              {people.length === 0 ? (
+                <EmptyState>{t.peopleEmpty}</EmptyState>
+              ) : (
+                <PeopleList
+                  people={people}
+                  busyHandle={peopleBusy}
+                  labels={{
+                    person: t.peoplePerson,
+                    projects: t.peopleProjects,
+                    noProjects: t.peopleNoProjects,
+                    status: t.peopleStatus,
+                    active: t.peopleActive,
+                    disabled: t.peopleDisabled,
+                    disable: t.peopleDisable,
+                    enable: t.peopleEnable,
+                    disableHint: t.peopleDisableHint,
+                  }}
+                  onSetDisabled={(person, disabled) => {
+                    setPeopleBusy(person.handle)
+                    setUserDisabled(token, person.handle, disabled)
+                      .then(() => refresh())
+                      .catch(handleErr)
+                      .finally(() => setPeopleBusy(''))
+                  }}
                 />
               )}
             </Section>

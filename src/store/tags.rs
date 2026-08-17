@@ -80,17 +80,32 @@ pub fn validate_tag_kind(kind: &str) -> ApiResult<()> {
     ))
 }
 
+/// Does `handle` have the shape of a handle: 1-64 chars, `^[a-z0-9][a-z0-9._-]*$`?
+///
+/// The predicate is separate from [`validate_tag_handle`] because
+/// `super::users` needs the same *rule* with a different error: a user handle
+/// must be a legal tag handle so `person:<handle>` keeps parsing, which is what
+/// makes the tag convention and the user directory converge on one identity
+/// instead of drifting into two. Sharing the message instead would tell someone
+/// naming a person about 'label' and tags.
+pub(crate) fn handle_shape_ok(handle: &str) -> bool {
+    let b = handle.as_bytes();
+    (1..=MAX_HANDLE).contains(&b.len())
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b[1..].iter().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(*c, b'.' | b'_' | b'-')
+        })
+}
+
+/// The maximum length of a handle, shared with the user directory for the same
+/// reason [`handle_shape_ok`] is.
+pub(crate) const HANDLE_MAX: usize = MAX_HANDLE;
+
 /// Validate a tag `handle` slug: 1-64 chars, `^[a-z0-9][a-z0-9._-]*$`. The
 /// handle is the free-form identity — two tags are the same iff their
 /// (project, kind, handle) match exactly.
 fn validate_tag_handle(handle: &str) -> ApiResult<()> {
-    let b = handle.as_bytes();
-    let ok = (1..=MAX_HANDLE).contains(&b.len())
-        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b[1..].iter().all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(*c, b'.' | b'_' | b'-')
-        });
-    if ok {
+    if handle_shape_ok(handle) {
         return Ok(());
     }
     Err(ApiError::validation(

@@ -215,6 +215,20 @@ limiting all work by the machinery that already existed. Two rules worth knowing
 checks come first so an error is never redirected to an unvalidated URI. `spec/auth.md` has the
 design, `docs/hosted-mcp-clients.md` the per-product wiring.
 
+**A user is a person, and still not a credential** (`src/store/users.rs`, `docs/users.md`). The
+directory is global with per-project membership, and it authenticates nothing: **a user says who
+work is waiting on, a scope says what a credential may do.** So the four paths above stay four.
+The one deliberate exception is that a question's named `assignee` may answer an `approve` — which
+makes `tokens.user` an *authorization* fact, admin-set at mint, and puts four guards around it.
+Identity is carried on `AuthCtx.user` and passed explicitly as `Answerer`, **never as a scope
+string**: scopes are free-form (`expert:<tag>` proves it), so a `user:usr-…` scope would be a
+forgeable identity — `a_user_scope_string_cannot_forge_assignee_identity` in `tests/api.rs` is the
+guard. Relaying an approval stays refused, an answer link for a person-gated approval is only
+mintable by that person, and disabling them closes the route. `may_approve` in
+`src/store/questions.rs` is the only place that decides, because it is asked from four.
+A user handle is validated by the **tag** handle rule, so `person:<handle>` stays a legal reference
+to the same person and the convention that predates the directory converges on it.
+
 **Concurrency is the load-bearing design.** `Store::with_tx` runs every mutation as one SQLite
 `IMMEDIATE` transaction behind a process-wide `Mutex<Connection>`; that single-writer
 serialization *is* the exactly-one-claimant guarantee for the ready queue. Layered on top:
@@ -353,7 +367,7 @@ schema batch: `CREATE TABLE IF NOT EXISTS checks` would otherwise create an empt
 populated one.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/checklist.md`, `docs/epic-claims.md`
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
 `docs/initiatives.md`, `docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

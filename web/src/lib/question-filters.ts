@@ -21,8 +21,21 @@ export interface QuestionQuery {
   urgency?: string[]
   /** `blocking` parks a ticket, `advisory` records a decision. '' = both. */
   mode?: 'blocking' | 'advisory' | ''
-  /** Only questions routed to one of the reader's `expert:<tag>` scopes. */
+  /**
+   * Everything waiting on the reader, in both senses this board has: addressed
+   * to them by name, OR covered by one of their `expert:<tag>` scopes.
+   *
+   * A union, not an intersection. Requiring both would hide a question aimed
+   * straight at somebody because it carried no routing tag — the very question
+   * they most owe an answer on.
+   */
   mine?: boolean
+  /**
+   * One person's queue, by user handle — including somebody else's, which is the
+   * point of a shared board. `'none'` is the triage read: what nobody has been
+   * asked yet.
+   */
+  assignee?: string
   /** Drop questions bounced back to the agent — they are not waiting on you. */
   hideAwaitingAgent?: boolean
   /** Only questions whose `expires_at` falls inside SOON_MS. */
@@ -36,6 +49,8 @@ export interface FilterContext {
   index?: TicketIndex
   /** The reader's expertise tags, from their `expert:<tag>` scopes. */
   expertise?: string[]
+  /** The reader's own user handle, from `whoami`. Absent = a machine token. */
+  handle?: string
   /** Injected so the "expiring soon" window is testable. */
   now?: number
 }
@@ -56,6 +71,10 @@ function haystack(q: Question): string {
     q.asked_by ?? '',
     q.kind,
     q.urgency ?? '',
+    // Both spellings of the person: somebody searching for "ada" and somebody
+    // searching for "Ada Lovelace" are looking for the same queue.
+    q.assignee?.handle ?? '',
+    q.assignee?.name ?? '',
     ...(q.expertise ?? []),
     ...(q.options ?? []),
   ]
@@ -109,9 +128,20 @@ export function filterQuestions(
   if (query.mode) out = out.filter((q) => q.mode === query.mode)
   if (query.mine) {
     const mine = new Set(ctx.expertise ?? [])
-    // No expertise at all means nothing is routed to you — an empty list is the
-    // honest answer, and the bar disables the toggle rather than showing it.
-    out = out.filter((q) => (q.expertise ?? []).some((e) => mine.has(e)))
+    // Either sense of waiting-on-you. Being nobody and covering nothing means an
+    // empty list is the honest answer, and the bar disables the toggle rather
+    // than showing it.
+    out = out.filter(
+      (q) =>
+        (ctx.handle !== undefined && q.assignee?.handle === ctx.handle) ||
+        (q.expertise ?? []).some((e) => mine.has(e)),
+    )
+  }
+  if (query.assignee) {
+    out =
+      query.assignee === 'none'
+        ? out.filter((q) => !q.assignee)
+        : out.filter((q) => q.assignee?.handle === query.assignee)
   }
   if (query.hideAwaitingAgent) out = out.filter((q) => q.awaiting !== 'agent')
   if (query.expiringSoon) out = out.filter((q) => isExpiringSoon(q, now))
@@ -128,6 +158,7 @@ export function activeFilterCount(query: QuestionQuery): number {
     (query.urgency?.length ? 1 : 0) +
     (query.mode ? 1 : 0) +
     (query.mine ? 1 : 0) +
+    (query.assignee ? 1 : 0) +
     (query.hideAwaitingAgent ? 1 : 0) +
     (query.expiringSoon ? 1 : 0) +
     (query.askedBy ? 1 : 0)

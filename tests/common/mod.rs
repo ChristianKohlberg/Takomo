@@ -75,6 +75,7 @@ impl TestApp {
                 None,
                 10_000,
                 None,
+                None,
             )
             .unwrap();
         let (_, human) = store
@@ -83,6 +84,7 @@ impl TestApp {
                 &scope_vec(&["read", "write", "human"]),
                 None,
                 10_000,
+                None,
                 None,
             )
             .unwrap();
@@ -93,6 +95,7 @@ impl TestApp {
                 None,
                 10_000,
                 None,
+                None,
             )
             .unwrap();
         let (_, worker2) = store
@@ -101,6 +104,7 @@ impl TestApp {
                 &scope_vec(&["read", "write"]),
                 None,
                 10_000,
+                None,
                 None,
             )
             .unwrap();
@@ -332,9 +336,50 @@ impl TestApp {
                 projects.as_deref(),
                 rate_limit,
                 None,
+                None,
             )
             .expect("mint token");
         plaintext
+    }
+
+    /// [`TestApp::mint`] for a credential that belongs to a person in the
+    /// directory.
+    ///
+    /// Its own helper because that binding is the difference between a token which
+    /// merely holds scopes and one the server can say *is* somebody — which is what
+    /// an `approve` addressed to that person turns on, and what `mine` reads.
+    pub fn mint_as_user(&self, actor: &str, scope_list: &[&str], user: &str) -> String {
+        let store = self.open_store();
+        let (_, plaintext) = store
+            .create_token(
+                actor,
+                &scope_vec(scope_list),
+                None,
+                10_000,
+                None,
+                Some(user),
+            )
+            .expect("mint token bound to a user");
+        plaintext
+    }
+
+    /// Add a person to the directory, optionally as a member of `project`, and
+    /// return their `usr-…` id.
+    pub fn add_user(&self, handle: &str, project: Option<&str>) -> String {
+        let store = self.open_store();
+        let user = store
+            .create_user(
+                &takomo::store::UserCreate {
+                    handle: handle.to_string(),
+                    name: Some(format!("{handle} the tester")),
+                    email: None,
+                    meta: None,
+                    projects: project.map(|p| vec![p.to_string()]).unwrap_or_default(),
+                },
+                "test:setup",
+            )
+            .expect("create user");
+        user.id
     }
 
     /// Bulk-insert `n` extra tickets straight into the running server's DB in a

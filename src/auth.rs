@@ -24,6 +24,17 @@ pub struct AuthCtx {
     /// MCP, where the operation's name lives inside the JSON-RPC body — can
     /// debit the same window (see [`debit_write_budget`]).
     pub rate_limit: i64,
+    /// Which person in the directory holds this credential (a `usr-…` id), or
+    /// None for a machine token. See `store::users`.
+    ///
+    /// **This is identity, and it is deliberately NOT a scope.** A named assignee
+    /// may answer an `approve` question, so if identity were carried as a scope
+    /// string it would be forgeable: scopes are free-form (`expert:<tag>` proves
+    /// it), so an admin minting `user:usr-abc` would be minting the right to
+    /// decide as that person. It lives here, set only from the token row's
+    /// admin-written `user` column, and is passed explicitly to the store calls
+    /// that need it.
+    pub user: Option<String>,
 }
 
 impl AuthCtx {
@@ -195,6 +206,7 @@ async fn authenticate(
         scopes: row.scopes.into_iter().collect(),
         projects: row.projects.map(|p| p.into_iter().collect()),
         rate_limit: row.rate_limit,
+        user: row.user,
     };
 
     // Per-token sliding-window write rate limit (contains runaway agent loops).
@@ -426,6 +438,11 @@ pub struct AnswerCtx {
     pub project: String,
     /// Actor recorded as the answerer.
     pub actor: String,
+    /// The directory person this link was minted for, if any — the identity that
+    /// lets a link satisfy an `approve` addressed to that person. `None` for a link
+    /// handed to an outside expert, which still answers on the question's
+    /// expertise.
+    pub user: Option<String>,
     pub expires_at: i64,
 }
 
@@ -481,6 +498,7 @@ pub async fn answer_auth_middleware(
         question: grant.question,
         project: grant.project,
         actor: grant.actor,
+        user: grant.user,
         expires_at: grant.expires_at,
     };
     request.extensions_mut().insert(ctx);

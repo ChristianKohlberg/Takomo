@@ -1367,6 +1367,7 @@ async fn an_expired_consenting_token_leaves_the_connector_running() {
             None,
             10_000,
             Some(takomo::ids::now_ms() + 60_000),
+            None,
         )
         .expect("mint an expiring token");
 
@@ -2121,4 +2122,74 @@ async fn the_consent_csp_allows_the_navigation_approving_actually_makes() {
         csp.contains("form-action 'self'") && !csp.contains("attacker.example"),
         "a refused request must not name its own rejected target: {csp}"
     );
+}
+
+/// A connection approved by Ada is still Ada.
+///
+/// The consent snapshot copies the actor, the scopes and the project allowlist,
+/// so it must copy the *person* too — otherwise a hosted client (claude.ai,
+/// ChatGPT) would connect as an anonymous holder of her scopes, and every
+/// question addressed to her by name would be unanswerable from the one surface
+/// she actually reads. Inherited, never granted: consent can narrow what a client
+/// may do, but it cannot attach an identity the consenting credential lacked.
+#[tokio::test]
+async fn an_issued_token_inherits_the_consenting_person() {
+    let app = TestApp::spawn_with_oauth().await;
+    let store = app.open_store();
+    let ada = store
+        .create_user(
+            &takomo::store::UserCreate {
+                handle: "ada".to_string(),
+                name: Some("Ada Lovelace".to_string()),
+                email: None,
+                meta: None,
+                projects: vec!["tp".to_string()],
+            },
+            "test:setup",
+        )
+        .expect("create user");
+    let (_, consenting) = store
+        .create_token(
+            "human:ada",
+            &["read".to_string(), "write".to_string(), "human".to_string()],
+            None,
+            10_000,
+            None,
+            Some("ada"),
+        )
+        .expect("mint a token bound to Ada");
+
+    let client_id = app.register_client("Test Client", &[REDIRECT]).await;
+    let code = app.authorization_code(&client_id, &consenting).await;
+    let (status, issued) = app
+        .token_call(&[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("client_id", &client_id),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "exchange failed: {issued}");
+    let access = issued["access_token"].as_str().unwrap().to_string();
+    let refresh = issued["refresh_token"].as_str().unwrap().to_string();
+
+    let (status, me) = app.get(&access, "/v1/whoami").await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["user"]["handle"], "ada", "the connection is Ada: {me}");
+    assert_eq!(me["user"]["id"], ada.id, "{me}");
+
+    // And it survives rotation, which is what makes the connection hers a month
+    // later rather than only in the first hour.
+    let (status, rotated) = app
+        .token_call(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", &client_id),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "{rotated}");
+    let rotated_access = rotated["access_token"].as_str().unwrap().to_string();
+    let (_, still_her) = app.get(&rotated_access, "/v1/whoami").await;
+    assert_eq!(still_her["user"]["handle"], "ada", "{still_her}");
 }

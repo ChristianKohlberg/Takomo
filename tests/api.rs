@@ -15035,3 +15035,754 @@ async fn claim_status_reports_movement_since_the_epic_claim() {
     assert!(m["last_activity_at"].is_string(), "{st}");
     assert!(m["idle_seconds"].as_i64().expect("idle") >= 0, "{st}");
 }
+
+// ---------------------------------------------------------------------------
+// The people directory, and addressing a decision to a person.
+//
+// The load-bearing tests here are the authority ones. A named assignee may
+// answer an `approve`, which makes the token→person binding an authorization
+// fact rather than a display name — so what must be proven is not only that the
+// right person can approve, but that nobody else can arrive at that authority by
+// another road: not by forging a scope, not by relaying, not by minting somebody
+// else's answer link, and not after being disabled.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn user_directory_crud_and_disable_is_a_gate_not_a_delete() {
+    let app = TestApp::spawn().await;
+
+    // Adding a person needs admin: this is the directory assignment draws from.
+    let (s, denied) = app
+        .post(&app.human, "/v1/users", json!({ "handle": "ada" }))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "auth.scope");
+
+    let (s, ada) = app
+        .post(
+            &app.admin,
+            "/v1/users",
+            json!({ "handle": "ada", "name": "Ada Lovelace", "email": "ada@example.com", "projects": ["tp"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{ada}");
+    assert!(ada["id"].as_str().unwrap().starts_with("usr-"), "{ada}");
+    assert_eq!(ada["projects"], json!(["tp"]), "{ada}");
+    // The handle doubles as a tag reference — that shared rule is what keeps
+    // `person:ada` on a ticket pointing at this row.
+    assert_eq!(ada["ref"], "person:ada", "{ada}");
+
+    // A second row for the same person is a conflict, not a silent duplicate.
+    let (s, dup) = app
+        .post(&app.admin, "/v1/users", json!({ "handle": "ada" }))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{dup}");
+    assert_eq!(dup["code"], "user.exists");
+
+    // A handle that could not be a tag reference is refused, with the rule.
+    let (s, bad) = app
+        .post(&app.admin, "/v1/users", json!({ "handle": "Ada Lovelace" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.user_handle");
+
+    // Reads are open to any valid token: a name has to be renderable by whoever
+    // is looking at a question.
+    let (s, one) = app.get(&app.worker, "/v1/users/ada").await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    assert_eq!(one["name"], "Ada Lovelace");
+
+    // Rename, and clear the email with an explicit null.
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            "/v1/users/ada",
+            json!({ "name": "Ada L.", "email": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["name"], "Ada L.");
+    assert!(patched["email"].is_null(), "{patched}");
+
+    // Disabling hides her from the default listing but keeps every record
+    // resolvable — there is no delete, because `answered_by: ada` must not
+    // become unreadable after the fact.
+    let (s, disabled) = app
+        .post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{disabled}");
+    assert_eq!(disabled["disabled"], json!(true), "{disabled}");
+
+    let (_, list) = app.get(&app.admin, "/v1/users").await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 0, "{list}");
+    let (_, all) = app.get(&app.admin, "/v1/users?include_disabled=1").await;
+    assert_eq!(all["items"].as_array().unwrap().len(), 1, "{all}");
+    let (s, still_there) = app.get(&app.worker, "/v1/users/ada").await;
+    assert_eq!(s, StatusCode::OK, "a disabled person still resolves");
+    assert_eq!(still_there["handle"], "ada", "{still_there}");
+
+    let (s, back) = app
+        .post(&app.admin, "/v1/users/ada/enable", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert_eq!(back["disabled"], json!(false), "{back}");
+}
+
+#[tokio::test]
+async fn user_is_never_created_implicitly_unlike_a_tag() {
+    // Tagging a ticket `person:nobody` registers a stub tag on the fly. The
+    // directory deliberately does not do that: an assignable person conjured from
+    // a typo looks exactly like a real one, and work would sit waiting on them.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Typo target").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (s, missing) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "clarify", "title": "Who?", "assignee": "nobdy", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["code"], "notfound.user");
+    assert!(
+        missing["remedy"]
+            .as_str()
+            .unwrap()
+            .contains("POST /v1/users"),
+        "the refusal must name how to add the person: {missing}"
+    );
+}
+
+#[tokio::test]
+async fn users_list_is_a_bounded_envelope() {
+    let app = TestApp::spawn().await;
+    for i in 0..5 {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                "/v1/users",
+                json!({ "handle": format!("p{i}"), "projects": ["tp"] }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{b}");
+    }
+    let (s, page) = app.get(&app.admin, "/v1/users?limit=2").await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 2, "{page}");
+    assert_eq!(
+        page["total"],
+        json!(5),
+        "the count is the whole match: {page}"
+    );
+    assert_eq!(page["limit"], json!(2), "{page}");
+    assert!(
+        page["note"].as_str().unwrap().contains("Showing 2 of 5"),
+        "a short page must say so in prose: {page}"
+    );
+    // Ordering is by handle, so an offset is a stable continuation.
+    let (_, second) = app.get(&app.admin, "/v1/users?limit=2&offset=2").await;
+    assert_eq!(second["items"][0]["handle"], "p2", "{second}");
+    // A whole page carries no note to mistake for one.
+    let (_, whole) = app.get(&app.admin, "/v1/users").await;
+    assert!(whole["note"].is_null(), "{whole}");
+}
+
+#[tokio::test]
+async fn assignment_requires_an_active_member_of_the_project() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Address me").await;
+    let fence = app.to_implementing(&id).await;
+
+    // In the directory, but not on this project: membership is what says who may
+    // be handed work here.
+    app.add_user("outsider", None);
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "clarify", "title": "Which key?", "assignee": "outsider", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "user.not_member");
+
+    // A member works, and the question comes back with the person resolved
+    // rather than as an opaque id.
+    app.add_user("ada", Some("tp"));
+    let (qid, body) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "clarify", "title": "Which key?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+    assert_eq!(body["question"]["assignee"]["handle"], "ada", "{body}");
+    assert_eq!(
+        body["question"]["assignee"]["label"], "ada the tester",
+        "the inbox needs a name, not an id: {body}"
+    );
+
+    // A disabled person cannot be newly addressed.
+    app.post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+    let (s, gone) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({ "assignee": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{gone}");
+    assert_eq!(gone["code"], "user.disabled");
+}
+
+#[tokio::test]
+async fn assigning_is_routing_not_a_lock() {
+    // The reason assignment is deliberately not exclusive: a decision must never
+    // be stranded because the person it was addressed to is away. Any `human`
+    // token can still answer the three ordinary kinds.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Routing only").await;
+    let fence = app.to_implementing(&id).await;
+    app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Drop it?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    let (s, ok) = app.answer(&app.human, &qid, json!(true)).await;
+    assert_eq!(s, StatusCode::OK, "a colleague may still answer: {ok}");
+    assert_eq!(ok["ticket"]["state"], "ready", "{ok}");
+
+    // And the decision is on the ticket thread, where a resuming agent reads it.
+    let (_, detail) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let thread = detail["comments"].as_array().unwrap();
+    assert!(
+        thread
+            .iter()
+            .any(|c| c["body"].as_str().unwrap().contains("Human answered")),
+        "{detail}"
+    );
+}
+
+#[tokio::test]
+async fn assign_after_the_ask_is_the_usual_case_and_only_while_open() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Triage later").await;
+    let fence = app.to_implementing(&id).await;
+    app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "clarify", "title": "Which key?", "fence": fence }),
+        )
+        .await;
+
+    // An absent field is refused rather than guessed at: unassign and "you forgot
+    // the value" must not look the same.
+    let (s, bad) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.assignee");
+
+    let (s, assigned) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({ "assignee": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{assigned}");
+    assert_eq!(assigned["question"]["assignee"]["handle"], "ada");
+
+    // The handover is mirrored onto the ticket and recorded as an event.
+    let (_, events) = app
+        .get(&app.admin, &format!("/v1/events?since=0&ticket={id}"))
+        .await;
+    let assign_event = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "question_assigned")
+        .cloned()
+        .expect("a question_assigned event");
+    assert_eq!(assign_event["payload"]["assignee"], "ada", "{assign_event}");
+    let (_, thread) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    assert!(
+        thread["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["body"].as_str().unwrap().contains("addressed")),
+        "the handover belongs in the thread a resuming agent reads: {thread}"
+    );
+
+    // Back to the open pool.
+    let (s, cleared) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({ "assignee": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{cleared}");
+    assert!(cleared["question"]["assignee"].is_null(), "{cleared}");
+
+    // Once decided, who it was waiting on is part of the record.
+    app.answer(&app.human, &qid, json!("the original")).await;
+    let (s, settled) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({ "assignee": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{settled}");
+    assert_eq!(settled["code"], "question.not_open");
+}
+
+#[tokio::test]
+async fn approve_must_name_expertise_or_an_assignee() {
+    // An approval has to name something that gates it. With neither, it is a
+    // `confirm` wearing a stronger word, and the audit trail would record
+    // authority nobody held.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Ungated approve").await;
+    let fence = app.to_implementing(&id).await;
+
+    let (s, bad) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({ "ticket": id, "kind": "approve", "title": "Sign off?", "fence": fence }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.expertise");
+    assert!(
+        bad["message"].as_str().unwrap().contains("assignee"),
+        "the refusal must name both gates: {bad}"
+    );
+
+    // Naming only a person is enough — that is the new second gate.
+    app.add_user("ada", Some("tp"));
+    let (_, ok) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "approve", "title": "Sign off?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+    assert_eq!(ok["question"]["assignee"]["handle"], "ada", "{ok}");
+}
+
+#[tokio::test]
+async fn the_named_assignee_may_approve_and_a_plain_human_may_not() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Named approval").await;
+    let fence = app.to_implementing(&id).await;
+    let ada = app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "approve", "title": "Ship it?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    // A colleague with `human` — even an admin — is not the person who was asked.
+    for token in [&app.human, &app.admin] {
+        let (s, denied) = app.answer(token, &qid, json!(true)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+        assert_eq!(denied["code"], "question.approve_expertise");
+        assert!(
+            denied["message"].as_str().unwrap().contains("addressed to"),
+            "the refusal must say which door to knock on: {denied}"
+        );
+    }
+
+    // A credential bound to Ada is Ada, and that is the whole authority here —
+    // note it carries no expert scope at all.
+    let ada_token = app.mint_as_user("human:ada", &["read", "write", "human"], &ada);
+    let (s, ok) = app.answer(&ada_token, &qid, json!(true)).await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+    assert_eq!(ok["ticket"]["state"], "ready", "{ok}");
+    assert_eq!(ok["question"]["answered_by"], "human:ada", "{ok}");
+}
+
+#[tokio::test]
+async fn a_user_scope_string_cannot_forge_assignee_identity() {
+    // The trap this design has to survive. Scopes are free-form — `expert:<tag>`
+    // proves it — so an admin can mint a token carrying literally `user:usr-…`.
+    // If identity were read from the scope set, that string would BE Ada, and
+    // minting it would hand out her approval authority. Identity is carried
+    // separately (`tokens.user`, admin-set) for exactly this reason.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Forged identity").await;
+    let fence = app.to_implementing(&id).await;
+    let ada = app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "approve", "title": "Ship it?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    let forged = app.mint(
+        "human:impostor",
+        &[
+            "read",
+            "write",
+            "human",
+            // Both spellings someone might reach for.
+            &format!("user:{ada}"),
+            "user:ada",
+        ],
+        None,
+    );
+    let (s, denied) = app.answer(&forged, &qid, json!(true)).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a scope string must never be an identity: {denied}"
+    );
+    assert_eq!(denied["code"], "question.approve_expertise");
+
+    // And the question is still open for the person who was actually asked.
+    let (_, q) = app.get(&app.admin, &format!("/v1/questions/{qid}")).await;
+    assert_eq!(q["status"], "open", "{q}");
+}
+
+#[tokio::test]
+async fn a_disabled_assignee_loses_approve_authority_but_past_answers_resolve() {
+    let app = TestApp::spawn().await;
+    let ada = app.add_user("ada", Some("tp"));
+    let ada_token = app.mint_as_user("human:ada", &["read", "write", "human"], &ada);
+
+    // First, an approval she gives while active — the record we must not lose.
+    let first = app.create_ticket("Before").await;
+    let fence = app.to_implementing(&first).await;
+    let (q1, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": first, "kind": "approve", "title": "Ship one?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+    let (s, ok) = app.answer(&ada_token, &q1, json!(true)).await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+
+    // A second, still open, when she is disabled.
+    let second = app.create_ticket("After").await;
+    let fence2 = app.to_implementing(&second).await;
+    let (q2, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": second, "kind": "approve", "title": "Ship two?", "assignee": "ada", "fence": fence2 }),
+        )
+        .await;
+    app.post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+
+    // Her token still authenticates — disabling is not revocation — but the
+    // authority that came from being the named person is gone.
+    let (s, denied) = app.answer(&ada_token, &q2, json!(true)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "question.approve_expertise");
+
+    // The earlier decision still reads back, with her name on it: this is why
+    // there is no delete.
+    let (s, settled) = app.get(&app.worker, &format!("/v1/questions/{q1}")).await;
+    assert_eq!(s, StatusCode::OK, "{settled}");
+    assert_eq!(settled["answered_by"], "human:ada", "{settled}");
+    assert_eq!(settled["assignee"]["handle"], "ada", "{settled}");
+    assert_eq!(settled["assignee"]["disabled"], json!(true), "{settled}");
+}
+
+#[tokio::test]
+async fn relaying_an_approve_stays_refused_when_a_person_gates_it() {
+    // A relay records a decision made out of band, so the name in it is a claim
+    // the relayer is making rather than one the server can vouch for. That is
+    // exactly what an `approve` may not accept — including when the gate is a
+    // person rather than a domain.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Relayed approval").await;
+    let fence = app.to_implementing(&id).await;
+    let ada = app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "approve", "title": "Ship it?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    // Even a relayer whose own credential is bound to Ada cannot relay it: the
+    // channel is the problem, not the identity.
+    let relayer = app.mint_as_user("orch:main", &["read", "write", "answer:relay"], &ada);
+    let (s, denied) = app
+        .post(
+            &relayer,
+            &format!("/v1/questions/{qid}/answer"),
+            json!({ "answer": true, "on_behalf_of": "human:ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "answer.relay_approve");
+}
+
+#[tokio::test]
+async fn an_answer_link_for_a_person_gated_approve_is_only_mintable_by_them() {
+    // You can only delegate authority you hold, and whoever holds the link string
+    // can spend it — so a colleague minting "Ada's" link would be approving as
+    // Ada. Admin is not a way round it either: in this codebase admin has never
+    // stood in for the authority a gate names.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Delegated approval").await;
+    let fence = app.to_implementing(&id).await;
+    let ada = app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "approve", "title": "Ship it?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    for token in [&app.human, &app.admin] {
+        let (s, denied) = app
+            .post(
+                token,
+                &format!("/v1/questions/{qid}/answer-link"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+        assert_eq!(denied["code"], "question.approve_expertise");
+    }
+
+    // Ada mints her own link — to answer from a phone — and it carries her
+    // identity, which is what satisfies the gate when there is no expertise tag
+    // to synthesize a scope from.
+    let ada_token = app.mint_as_user("human:ada", &["read", "write", "human"], &ada);
+    let (s, link) = app
+        .post(
+            &ada_token,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    assert_eq!(link["user"], ada, "the grant carries her identity: {link}");
+    assert_eq!(link["actor"], "ada", "attributed to her, not to the link");
+
+    let grant = link["token"].as_str().unwrap().to_string();
+    let (s, answered) = app
+        .post(&grant, "/v1/answer/self", json!({ "answer": true }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["ticket"]["state"], "ready", "{answered}");
+}
+
+#[tokio::test]
+async fn mine_unions_the_person_asked_and_the_expertise_covered() {
+    // "Waiting on me" has two senses on this board and a person owes an answer on
+    // either, so they are ORed. Requiring both would hide a question aimed
+    // straight at someone because it happened to carry no tag.
+    let app = TestApp::spawn().await;
+    let ada = app.add_user("ada", Some("tp"));
+
+    let addressed = app.create_ticket("Addressed to her").await;
+    let f1 = app.to_implementing(&addressed).await;
+    app.ask(
+        &app.worker,
+        json!({ "ticket": addressed, "kind": "clarify", "title": "Addressed", "assignee": "ada", "fence": f1 }),
+    )
+    .await;
+
+    let by_domain = app.create_ticket("In her domain").await;
+    let f2 = app.to_implementing(&by_domain).await;
+    app.ask(
+        &app.worker,
+        json!({ "ticket": by_domain, "kind": "clarify", "title": "Domain", "expertise": ["domain:billing"], "fence": f2 }),
+    )
+    .await;
+
+    let neither = app.create_ticket("Nobody's").await;
+    let f3 = app.to_implementing(&neither).await;
+    app.ask(
+        &app.worker,
+        json!({ "ticket": neither, "kind": "clarify", "title": "Unowned", "fence": f3 }),
+    )
+    .await;
+
+    let ada_token = app.mint_as_user(
+        "human:ada",
+        &["read", "write", "human", "expert:domain:billing"],
+        &ada,
+    );
+    let (s, mine) = app.get(&ada_token, "/v1/questions?mine=true").await;
+    assert_eq!(s, StatusCode::OK, "{mine}");
+    let titles: Vec<&str> = mine["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"Addressed"), "{mine}");
+    assert!(titles.contains(&"Domain"), "{mine}");
+    assert!(!titles.contains(&"Unowned"), "{mine}");
+
+    // One person's queue, by name — including somebody else's, which is the
+    // point of a shared board.
+    let (_, hers) = app.get(&app.human, "/v1/questions?assignee=ada").await;
+    let hers_titles: Vec<&str> = hers["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(hers_titles, vec!["Addressed"], "{hers}");
+
+    // And the triage read: what nobody has been asked yet.
+    let (_, open_pool) = app.get(&app.human, "/v1/questions?assignee=none").await;
+    let pool_titles: Vec<&str> = open_pool["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["title"].as_str().unwrap())
+        .collect();
+    assert!(pool_titles.contains(&"Domain"), "{open_pool}");
+    assert!(pool_titles.contains(&"Unowned"), "{open_pool}");
+    assert!(!pool_titles.contains(&"Addressed"), "{open_pool}");
+
+    // A token that is nobody and covers nothing is told so, rather than shown an
+    // empty queue it might read as "all clear".
+    let (_, nothing) = app.get(&app.worker, "/v1/questions?mine=true").await;
+    assert!(
+        nothing["note"]
+            .as_str()
+            .unwrap()
+            .contains("not bound to a person"),
+        "{nothing}"
+    );
+}
+
+#[tokio::test]
+async fn whoami_reports_the_person_behind_the_credential() {
+    let app = TestApp::spawn().await;
+    let ada = app.add_user("ada", Some("tp"));
+    let bound = app.mint_as_user("human:ada", &["read", "human"], &ada);
+
+    let (s, me) = app.get(&bound, "/v1/whoami").await;
+    assert_eq!(s, StatusCode::OK, "{me}");
+    assert_eq!(me["user"]["handle"], "ada", "{me}");
+    assert_eq!(me["actor"], "human:ada", "actor stays what it was: {me}");
+
+    // A machine token is nobody, and says so rather than omitting the field.
+    let (_, machine) = app.get(&app.worker, "/v1/whoami").await;
+    assert!(machine["user"].is_null(), "{machine}");
+
+    // Binding is admin-only — it is an authorization act — and refuses an unknown
+    // or disabled person rather than storing a dangling string.
+    let (s, bad) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:ghost", "scopes": ["read"], "user": "nobody" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{bad}");
+    assert_eq!(bad["code"], "notfound.user");
+
+    app.post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+    let (s, refused) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "human:ada2", "scopes": ["read"], "user": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "user.disabled");
+}
+
+#[tokio::test]
+async fn archiving_a_project_freezes_memberships_but_not_the_directory() {
+    // Users are global, so the archive gate applies to the membership edge rather
+    // than to the person: the directory stays readable and editable, while who may
+    // be handed work in a frozen project cannot change.
+    let app = TestApp::spawn().await;
+    app.add_user("ada", Some("tp"));
+    app.post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+
+    let (s, frozen) = app
+        .post(
+            &app.admin,
+            "/v1/users/ada/projects",
+            json!({ "project": "tp" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{frozen}");
+    assert_eq!(frozen["code"], "project.archived");
+
+    let (s, removal) = app.delete(&app.admin, "/v1/users/ada/projects/tp").await;
+    assert_eq!(s, StatusCode::CONFLICT, "{removal}");
+    assert_eq!(removal["code"], "project.archived");
+
+    // The person is untouched: readable, renameable, and still resolvable from
+    // every record that names them.
+    let (s, still) = app.get(&app.worker, "/v1/users/ada").await;
+    assert_eq!(s, StatusCode::OK, "{still}");
+    let (s, renamed) = app
+        .patch(&app.admin, "/v1/users/ada", json!({ "name": "Ada L." }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{renamed}");
+}
+
+#[tokio::test]
+async fn membership_removal_leaves_an_open_question_addressed_to_them() {
+    // Retracting an open decision silently would leave it with nobody looking at
+    // it. They simply cannot be handed anything new.
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Still theirs").await;
+    let fence = app.to_implementing(&id).await;
+    app.add_user("ada", Some("tp"));
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "clarify", "title": "Which key?", "assignee": "ada", "fence": fence }),
+        )
+        .await;
+
+    let (s, removed) = app.delete(&app.admin, "/v1/users/ada/projects/tp").await;
+    assert_eq!(s, StatusCode::OK, "{removed}");
+
+    let (_, q) = app.get(&app.worker, &format!("/v1/questions/{qid}")).await;
+    assert_eq!(q["assignee"]["handle"], "ada", "still waiting on her: {q}");
+
+    // But nothing new can be addressed to her here.
+    let (s, refused) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/assign"),
+            json!({ "assignee": "ada" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "user.not_member");
+
+    // A second membership removal is a 404, not a silent success.
+    let (s, again) = app.delete(&app.admin, "/v1/users/ada/projects/tp").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{again}");
+    assert_eq!(again["code"], "notfound.membership");
+}

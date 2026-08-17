@@ -706,6 +706,10 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
         scopes: granted,
         projects: row.projects.clone(),
         rate_limit: row.rate_limit,
+        // Copied from the consenting token, never read off the request: consent can
+        // narrow what a client may do, but it cannot attach an identity the human's
+        // own credential did not already carry.
+        user: row.user.clone(),
         scope: scope_out.join(" "),
         granted_by: row.id.clone(),
     };

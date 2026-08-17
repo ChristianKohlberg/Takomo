@@ -1183,16 +1183,207 @@ PY
 
 # person: ergonomic alias over the `person` tag kind. `takomo person add ada`
 # is just `takomo tag new --kind person --handle ada`; ls/rm mirror it.
+# `person` is sugar over the project TAG registry — `person:<handle>` reference
+# metadata you attach to a ticket. It is NOT the people directory: that is
+# `takomo user`, where somebody can be handed a decision and a name means a person
+# the server can vouch for. The two share one handle rule on purpose, so
+# `person:ada` and user `ada` are the same spelling of the same person.
 cmd_person() {
   local sub=${1:-}
-  [ -n "$sub" ] || die "person: usage: takomo person add HANDLE [--label ...] [--meta k=v]  |  person ls  |  person rm HANDLE"
+  [ -n "$sub" ] || die "person: usage: takomo person add HANDLE [--label ...] [--meta k=v]  |  person ls  |  person rm HANDLE
+person manages 'person:<handle>' TAGS on this project (reference metadata). To add
+somebody a question can be addressed to, use: takomo user new HANDLE"
   shift
   case "$sub" in
     add)              cmd_person_add "$@" ;;
     ls|list)          cmd_tag_ls --kind person "$@" ;;
     rm|remove|delete) cmd_person_rm "$@" ;;
-    *) die "person: unknown subcommand '$sub' (add|ls|rm)" ;;
+    *) die "person: unknown subcommand '$sub' (add|ls|rm). For the directory of people a question can be addressed to, see: takomo user" ;;
   esac
+}
+
+# --- the people directory: who work can be addressed to ----------------------
+#
+# A user is not a login and grants nothing on its own; scopes are still what a
+# credential may do. What it adds is addressing — a question waiting on Ada rather
+# than on whoever holds expert:domain:billing. See docs/users.md.
+cmd_user() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "user: usage: takomo user ls [--project P] [-q TEXT] [--all]
+       takomo user show HANDLE
+       takomo user new HANDLE [--name \"Full Name\"] [--email a@b.c] [--project P]...
+       takomo user set HANDLE [--name ...] [--email ...|--no-email]
+       takomo user disable HANDLE   |   takomo user enable HANDLE
+       takomo user member HANDLE PROJECT   |   takomo user unmember HANDLE PROJECT"
+  shift
+  case "$sub" in
+    ls|list)  cmd_user_ls "$@" ;;
+    show)     cmd_user_show "$@" ;;
+    new|add)  cmd_user_new "$@" ;;
+    set)      cmd_user_set "$@" ;;
+    disable)  cmd_user_gate disable "$@" ;;
+    enable)   cmd_user_gate enable "$@" ;;
+    member)   cmd_user_member "$@" ;;
+    unmember) cmd_user_unmember "$@" ;;
+    *) die "user: unknown subcommand '$sub' (ls|show|new|set|disable|enable|member|unmember)" ;;
+  esac
+}
+
+cmd_user_ls() {
+  local project="" q="" all=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -q|--query) q=$2; shift 2 ;;
+      --all) all=1; shift ;;
+      -*) die "user ls: unknown flag $1" ;;
+      *) die "user ls: unexpected argument '$1'" ;;
+    esac
+  done
+  local qs="" sep="?"
+  [ -n "$project" ] && { qs="$qs${sep}project=$(urlenc "$project")"; sep="&"; }
+  [ -n "$q" ] && { qs="$qs${sep}q=$(urlenc "$q")"; sep="&"; }
+  [ -n "$all" ] && { qs="$qs${sep}include_disabled=1"; sep="&"; }
+  api GET "/v1/users$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print("(nobody yet; add someone with: takomo user new HANDLE --name \"Full Name\")")
+    sys.exit()
+print(f"{'HANDLE':<16} {'NAME':<24} {'STATUS':<9} PROJECTS")
+for u in items:
+    status = "disabled" if u.get("disabled") else "active"
+    print(f"{u.get('handle',''):<16} {u.get('label',''):<24} {status:<9} {','.join(u.get('projects') or []) or '-'}")
+# The envelope's own note when the page left somebody out. A short listing that
+# looked complete is exactly what this surface must not print.
+if d.get("note"):
+    print()
+    print(d["note"])
+PY
+}
+
+cmd_user_show() {
+  local handle=${1:-}; [ -n "$handle" ] || die "user show: HANDLE is required"
+  api GET "/v1/users/$(urlenc "$handle")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+u = json.load(open(sys.argv[1]))
+print(f"id:        {u.get('id','')}")
+print(f"handle:    {u.get('handle','')}")
+print(f"name:      {u.get('label','')}")
+print(f"tag:       {u.get('ref','')}")
+print(f"email:     {u.get('email') or '-'}")
+print(f"status:    {'disabled' if u.get('disabled') else 'active'}")
+print(f"projects:  {','.join(u.get('projects') or []) or '-'}")
+PY
+}
+
+cmd_user_new() {
+  local handle="" name="" email=""
+  # Named `memberships` rather than `projects`: `cmd_token_create` keeps a string
+  # local by that name, and one identifier used as both in one file is exactly the
+  # confusion shellcheck refuses to let pass.
+  local -a memberships=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name=$2; shift 2 ;;
+      --email) email=$2; shift 2 ;;
+      --project) memberships+=("$2"); shift 2 ;;
+      -*) die "user new: unknown flag $1" ;;
+      *) if [ -z "$handle" ]; then handle=$1; shift; else die "user new: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$handle" ] || die "user new: HANDLE is required (e.g. ada); the display name goes in --name"
+  local data; data=$(TS_HANDLE="$handle" TS_NAME="$name" TS_EMAIL="$email" \
+    TS_PROJECTS="$(printf '%s\n' "${memberships[@]+"${memberships[@]}"}")" python3 <<'PY'
+import json, os
+d = {"handle": os.environ["TS_HANDLE"]}
+if os.environ.get("TS_NAME",""): d["name"] = os.environ["TS_NAME"]
+if os.environ.get("TS_EMAIL",""): d["email"] = os.environ["TS_EMAIL"]
+ps = [p for p in os.environ.get("TS_PROJECTS","").splitlines() if p.strip()]
+if ps: d["projects"] = ps
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/users" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+u = json.load(open(sys.argv[1]))
+print(f"added {u.get('handle')}  {u.get('label','')}")
+projects = u.get("projects") or []
+if projects:
+    print(f"member of: {','.join(projects)}")
+else:
+    print("member of nothing yet — work can only be addressed to them on a project they belong to:")
+    print(f"  takomo user member {u.get('handle')} <project>")
+print()
+print("To let them answer work addressed to them, bind a credential to them:")
+print(f"  takomo token create --actor {u.get('handle')} --scopes read,write,human --user {u.get('handle')}")
+PY
+}
+
+cmd_user_set() {
+  local handle="" name="" email="" clear_email=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name=$2; shift 2 ;;
+      --email) email=$2; shift 2 ;;
+      --no-email) clear_email=1; shift ;;
+      -*) die "user set: unknown flag $1" ;;
+      *) if [ -z "$handle" ]; then handle=$1; shift; else die "user set: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$handle" ] || die "user set: HANDLE is required"
+  [ -n "$name$email$clear_email" ] || die "user set: nothing to change (--name, --email, --no-email)"
+  local data; data=$(TS_NAME="$name" TS_EMAIL="$email" TS_CLEAR="$clear_email" python3 <<'PY'
+import json, os
+d = {}
+if os.environ.get("TS_NAME",""): d["name"] = os.environ["TS_NAME"]
+# Absent and null mean different things on this endpoint: one leaves the address
+# alone, the other clears it.
+if os.environ.get("TS_CLEAR",""): d["email"] = None
+elif os.environ.get("TS_EMAIL",""): d["email"] = os.environ["TS_EMAIL"]
+print(json.dumps(d))
+PY
+)
+  api PATCH "/v1/users/$(urlenc "$handle")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+u = json.load(open(sys.argv[1]))
+print(f"updated {u.get('handle')}  {u.get('label','')}")
+PY
+}
+
+cmd_user_gate() {
+  local action=$1; shift
+  local handle=${1:-}; [ -n "$handle" ] || die "user $action: HANDLE is required"
+  api POST "/v1/users/$(urlenc "$handle")/$action" '{}' >/dev/null
+  if [ "$action" = disable ]; then
+    echo "$handle is disabled: no new work can be addressed to them."
+    echo "Their past answers and decisions are unchanged, and their credentials still work — revoke those to end access."
+  else
+    echo "$handle is active again."
+  fi
+}
+
+cmd_user_member() {
+  local handle=${1:-} project=${2:-}
+  [ -n "$handle" ] || die "user member: HANDLE is required"
+  [ -n "$project" ] || die "user member: PROJECT is required"
+  local data; data=$(TS_P="$project" python3 -c 'import json,os;print(json.dumps({"project":os.environ["TS_P"]}))')
+  api POST "/v1/users/$(urlenc "$handle")/projects" "$data" >/dev/null
+  echo "$handle is a member of $project"
+}
+
+cmd_user_unmember() {
+  local handle=${1:-} project=${2:-}
+  [ -n "$handle" ] || die "user unmember: HANDLE is required"
+  [ -n "$project" ] || die "user unmember: PROJECT is required"
+  api DELETE "/v1/users/$(urlenc "$handle")/projects/$(urlenc "$project")" >/dev/null
+  echo "$handle is no longer a member of $project"
+  echo "Questions already addressed to them stay that way; nothing new can be."
 }
 
 cmd_person_add() {
@@ -1713,7 +1904,7 @@ PY
 
 cmd_ask() {
   local id=${1:-}; [ -n "$id" ] || die "ask: usage: takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory] [--body B] [--option O]... [--option-desc D]... [--expertise TAG]... [--urgency U] [--multi] [--rec-multi OPT]... [--recommend R] [--rec-note WHY] [--confidence 1-4] [--summary S] [--expires-in SECS] [--on-timeout recommended|escalate|cancel]"; shift
-  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode="" recnote="" summary="" confidence="" multi=""
+  local kind="confirm" title="" body="" urgency="" recommend="" expires="" ontimeout="" mode="" recnote="" summary="" confidence="" multi="" assignee=""
   local -a options=() expertise=() optdescs=() recmulti=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1726,6 +1917,7 @@ cmd_ask() {
       --multi)      multi=1; shift ;;
       --rec-multi)  recmulti+=("$2"); shift 2 ;;
       --expertise)  expertise+=("$2"); shift 2 ;;
+      --assignee)   assignee=$2; shift 2 ;;
       --urgency)    urgency=$2; shift 2 ;;
       --recommend)  recommend=$2; shift 2 ;;
       --rec-note)   recnote=$2; shift 2 ;;
@@ -1740,6 +1932,7 @@ cmd_ask() {
   local fence; fence=$(fence_load "$id")
   local data; data=$(TS_ID="$id" TS_KIND="$kind" TS_TITLE="$title" TS_BODY="$body" \
     TS_URG="$urgency" TS_REC="$recommend" TS_EXP="$expires" TS_OT="$ontimeout" TS_FENCE="$fence" TS_MODE="$mode" \
+    TS_ASSIGNEE="$assignee" \
     TS_RECNOTE="$recnote" TS_SUMMARY="$summary" TS_CONF="$confidence" TS_MULTI="$multi" \
     TS_OPTS="$(printf '%s\n' "${options[@]:-}")" TS_EXPERT="$(printf '%s\n' "${expertise[@]:-}")" \
     TS_OPTDESCS="$(printf '%s\n' "${optdescs[@]:-}")" TS_RECMULTI="$(printf '%s\n' "${recmulti[@]:-}")" \
@@ -1769,6 +1962,7 @@ if opts:
         d["options"] = opts
 expert = [l for l in os.environ.get("TS_EXPERT","").splitlines() if l]
 if expert: d["expertise"] = expert
+if os.environ.get("TS_ASSIGNEE"): d["assignee"] = os.environ["TS_ASSIGNEE"]
 print(json.dumps(d))
 PY
 )
@@ -1834,13 +2028,16 @@ PY
 }
 
 cmd_questions() {
-  local project="" ticket="" status="" mine=""
+  local project="" ticket="" status="" mine="" assignee=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project=$2; shift 2 ;;
       --ticket)  ticket=$2; shift 2 ;;
       --status)  status=$2; shift 2 ;;
       --mine)    mine=1; shift ;;
+      # One person's queue, or `none` for what nobody has been asked yet.
+      --assignee) assignee=$2; shift 2 ;;
+      --unassigned) assignee=none; shift ;;
       *) die "questions: unknown flag $1" ;;
     esac
   done
@@ -1849,6 +2046,7 @@ cmd_questions() {
   [ -n "$ticket" ]  && q="${q}ticket=$(urlenc "$ticket")&"
   [ -n "$status" ]  && q="${q}status=$(urlenc "$status")&"
   [ -n "$mine" ]    && q="${q}mine=true&"
+  [ -n "$assignee" ] && q="${q}assignee=$(urlenc "$assignee")&"
   api GET "${q%&}" >/dev/null
   python3 - "$REQ_OUT" <<'PY'
 import json, sys
@@ -1857,10 +2055,36 @@ items = d.get("items", [])
 if d.get("note"): print(d["note"])
 if not items:
     print("no questions"); sys.exit(0)
-print(f"{'ID':<12} {'URGENCY':<9} {'KIND':<8} {'TICKET':<12} EXPERTISE / TITLE")
+print(f"{'ID':<12} {'URGENCY':<9} {'KIND':<8} {'TICKET':<12} {'WAITING ON':<14} EXPERTISE / TITLE")
 for q in items:
     exp = ",".join(q.get("expertise") or []) or "-"
-    print(f"{q.get('id',''):<12} {q.get('urgency',''):<9} {q.get('kind',''):<8} {q.get('ticket',''):<12} [{exp}] {q.get('title','')}")
+    who = (q.get("assignee") or {}).get("handle") or "-"
+    print(f"{q.get('id',''):<12} {q.get('urgency',''):<9} {q.get('kind',''):<8} {q.get('ticket',''):<12} {who:<14} [{exp}] {q.get('title','')}")
+PY
+}
+
+# Address an open question to a person, or hand it back to the queue. The usual
+# case is after the ask: the agent that raised it rarely knows who owns it.
+cmd_assign() {
+  local qid=${1:-}; [ -n "$qid" ] || die "assign: usage: takomo assign QID HANDLE  |  takomo assign QID --none"
+  shift
+  local who=${1:-}
+  [ -n "$who" ] || die "assign: HANDLE is required (or --none to return it to the queue)"
+  local data
+  if [ "$who" = "--none" ] || [ "$who" = "none" ]; then
+    data='{"assignee":null}'
+  else
+    data=$(TS_A="$who" python3 -c 'import json,os;print(json.dumps({"assignee":os.environ["TS_A"]}))')
+  fi
+  api POST "/v1/questions/$(urlenc "$qid")/assign" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+q = json.load(open(sys.argv[1])).get("question", {})
+who = (q.get("assignee") or {}).get("handle")
+if who:
+    print(f"{q.get('id')} is now waiting on {who}")
+else:
+    print(f"{q.get('id')} is back in the queue — anyone with the expertise can take it")
 PY
 }
 
@@ -3080,12 +3304,27 @@ you should check with `takomo show ID` before re-running it.
 Onboarding & identity:
   takomo init [PROJECT] [--workflow simple|FILE] [--url URL] [--actor NAME]
          create/prepare a project for THIS git repo and write .takomo/ config
-  takomo whoami              show this token's actor, scopes, and projects
+  takomo whoami              show this token's actor, scopes, projects, and person
 
 Token administration (admin scope):
   takomo token create --actor NAME [--scopes read,write] [--projects P] [--expires 90d]
+                      [--user HANDLE]   bind this credential to a person, so work
+                                        addressed to them can be answered from it
   takomo token ls
   takomo token revoke ID
+
+People — who work can be addressed to (writes need admin scope):
+  takomo user ls [--project P] [-q TEXT] [--all]
+  takomo user show HANDLE
+  takomo user new HANDLE [--name "Full Name"] [--email a@b.c] [--project P]...
+  takomo user set HANDLE [--name ...] [--email ...|--no-email]
+  takomo user disable HANDLE | enable HANDLE
+  takomo user member HANDLE PROJECT | unmember HANDLE PROJECT
+         A user is not a login and grants no access — scopes are still what a
+         credential may do. It is how a question stops being routed to "whoever
+         holds expert:domain:billing" and starts waiting on Ada. Membership says
+         who may be handed work in a project. Nobody is ever deleted; disable
+         them, and every past decision still reads back with their name on it.
 
 Project administration (admin scope):
   takomo project rm ID [--force]
@@ -3137,8 +3376,8 @@ Claiming & progressing (the fence is remembered locally after a claim):
 Ask a human (block on a human decision, then resume):
   takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory]
          [--body B] [--option O]... [--option-desc D]... [--multi] [--rec-multi O]...
-         [--expertise TAG]... [--urgency U] [--recommend R] [--rec-note R]
-         [--confidence 1..4] [--summary S]
+         [--expertise TAG]... [--assignee HANDLE] [--urgency U] [--recommend R]
+         [--rec-note R] [--confidence 1..4] [--summary S]
          [--expires-in SECS] [--on-timeout recommended|escalate|cancel]
          park the ticket in a blocked state, release your lease, and post a
          question for a human; resume after every open question is answered.
@@ -3148,8 +3387,19 @@ Ask a human (block on a human decision, then resume):
          strength, --summary a one-line preview; --multi lets the human pick
          several options (--rec-multi pre-selects). The response returns `hints`
          naming any field that would sharpen the inbox card (never fails).
+         --assignee addresses it to one person (takomo user ls) instead of, or
+         as well as, a domain — the difference between "someone who knows
+         billing" and "Ada". They must be a member of the ticket's project.
   takomo questions [--project P] [--ticket T] [--status S] [--mine]
-         the inbox: open questions (--mine routes by your expert:<tag> scopes)
+         [--assignee HANDLE] [--unassigned]
+         the inbox: open questions. --mine is everything waiting on you, in both
+         senses — addressed to you by name, or covered by your expert:<tag>
+         scopes. --unassigned is the triage read: what nobody has been asked yet.
+  takomo assign QID HANDLE | QID --none   (human scope)
+         address an open question to a person, or hand it back to the queue. The
+         usual case, since the agent that asked rarely knows who owns the
+         decision. Routing only: anyone with the authority can still answer, so
+         nothing waits on somebody who is away.
   takomo answer QID ANSWER [--note N] [--resume-to STATE]   (needs human scope)
   takomo reply QID MESSAGE   (write scope) answer a human's follow-up request
          with the research they asked for; the question stays parked, awaiting
@@ -3287,6 +3537,7 @@ main() {
     link)    cmd_link "$@" ;;
     tag)     cmd_tag "$@" ;;
     person)  cmd_person "$@" ;;
+    user)    cmd_user "$@" ;;
     dep)     cmd_dep "$@" ;;
     deps)    cmd_deps "$@" ;;
     archive) cmd_archive "$@" ;;
@@ -3298,6 +3549,7 @@ main() {
     answer)      cmd_answer "$@" ;;
     answer-link) cmd_answer_link "$@" ;;
     questions)   cmd_questions "$@" ;;
+    assign)      cmd_assign "$@" ;;
     withdraw)    cmd_withdraw "$@" ;;
     reopen)      cmd_reopen "$@" ;;
     reply)       cmd_reply "$@" ;;

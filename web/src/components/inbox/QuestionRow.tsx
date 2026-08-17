@@ -15,7 +15,7 @@ export interface QuestionRowProps {
   selected: boolean
   /** Just answered in this tab: tinted while its undo window runs. */
   landed?: boolean
-  labels: { advisory: string; askedBy: string; waitingAgent: string }
+  labels: { advisory: string; askedBy: string; waitingAgent: string; forPerson: string }
   onSelect: (id: string) => void
 }
 
@@ -54,6 +54,19 @@ export function QuestionRow({
         {/* Bounced back for more research: it is not waiting on the reader. */}
         {q.awaiting === 'agent' && (
           <span className="text-warn">{labels.waitingAgent}</span>
+        )}
+        {/* Who it is waiting on, ahead of the expertise tags and visually apart
+            from them: a name is a stronger claim on a reader's attention than a
+            domain, and the two answer different questions. `label` falls back to
+            the handle and then to the id, so an unresolved person still reads as
+            somebody rather than as nobody. */}
+        {q.assignee && (
+          <span
+            title={labels.forPerson.replace('{who}', q.assignee.label)}
+            className="bg-secondary text-secondary-foreground rounded-[5px] px-1.5 font-[650]"
+          >
+            {q.assignee.label}
+          </span>
         )}
         {q.expertise?.map((e) => (
           <span key={e} className="bg-muted rounded-[5px] px-1.5">

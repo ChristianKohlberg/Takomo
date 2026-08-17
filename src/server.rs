@@ -80,6 +80,27 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/tokens/{id}",
             axum::routing::delete(crate::api::tokens::revoke),
         )
+        // The people directory. Global, like /v1/tokens and unlike the tag
+        // registry: a person is not per-project, so these are not nested under
+        // /v1/projects/{project}. Membership is what scopes them to one.
+        .route(
+            "/v1/users",
+            get(crate::api::users::list).post(crate::api::users::create),
+        )
+        .route(
+            "/v1/users/{handle}",
+            get(crate::api::users::get_one).merge(patch(crate::api::users::patch)),
+        )
+        .route("/v1/users/{handle}/disable", post(crate::api::users::disable))
+        .route("/v1/users/{handle}/enable", post(crate::api::users::enable))
+        .route(
+            "/v1/users/{handle}/projects",
+            post(crate::api::users::add_member),
+        )
+        .route(
+            "/v1/users/{handle}/projects/{project}",
+            axum::routing::delete(crate::api::users::remove_member),
+        )
         .route(
             "/v1/projects",
             get(crate::api::projects::list).post(crate::api::projects::create),
@@ -300,6 +321,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::questions::list).post(crate::api::questions::create),
         )
         .route("/v1/questions/{id}", get(crate::api::questions::get_one))
+        .route(
+            "/v1/questions/{id}/assign",
+            post(crate::api::questions::assign),
+        )
         .route(
             "/v1/questions/{id}/answer",
             post(crate::api::questions::answer),

@@ -30,6 +30,7 @@ import { modeFor } from '@/lib/board-mode'
 import { countWaiting, listInitiatives, listProjects, whoami, type Project } from '@/lib/initiatives'
 import { epicOf, inSubtree, indexById } from '@/lib/tickets'
 import { fetchRoadmap, laneTitles, type Roadmap } from '@/lib/roadmap'
+import { listUsers } from '@/lib/users'
 import { cn } from '@/lib/utils'
 import {
   getEvents,
@@ -130,6 +131,12 @@ function Board({
   // the board silently converted someone's "All projects" inbox into a
   // single-project one.
   const effectiveProject = project || projects[0]?.id || ''
+  /**
+   * People this project can address a question to, for the ask drawer. Empty on an
+   * instance with no directory, which hides the control and leaves asking exactly
+   * as it was.
+   */
+  const [askPeople, setAskPeople] = useState<{ handle: string; label: string }[]>([])
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [cursor, setCursor] = useState<number | string>(0)
@@ -254,6 +261,26 @@ function Board({
     if (!token || !effectiveProject) return
     load().catch(handleErr)
   }, [token, effectiveProject, load, handleErr])
+
+  // Who a question raised here can be addressed to. A failed read leaves the list
+  // empty, which hides the control rather than offering names the server refuses.
+  useEffect(() => {
+    if (!token || !effectiveProject) {
+      setAskPeople([])
+      return
+    }
+    let cancelled = false
+    listUsers(token, { project: effectiveProject, limit: 200 })
+      .then((page) => {
+        if (!cancelled) setAskPeople(page.items.map((u) => ({ handle: u.handle, label: u.label })))
+      })
+      .catch(() => {
+        if (!cancelled) setAskPeople([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, effectiveProject])
 
   // Live updates by polling the event log. `EventSource` cannot set an
   // Authorization header, which is why this is a poll and not the SSE stream.
@@ -911,6 +938,7 @@ function Board({
         onOpenChange={setAsking}
         ticket={detail?.id ?? ''}
         languageHint={(currentProject?.question_language as string | undefined) ?? undefined}
+        people={askPeople}
         onAsk={async (fields) => {
           await askQuestion(token, fields)
           setAsking(false)
@@ -930,6 +958,9 @@ function Board({
           fOptionsHint: t.taAnyOf,
           fExpertise: t.tagsHdr,
           fExpertiseHint: t.taAddMore,
+          fAssignee: t.askAssignee,
+          fAssigneeHint: t.askAssigneeHint,
+          fAssigneeAnyone: t.askAssigneeAnyone,
           blocking: t.blocking,
           advisory: t.advisory,
           blockingHint: t.answeringResumes,

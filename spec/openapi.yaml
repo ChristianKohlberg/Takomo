@@ -33,6 +33,7 @@ tags:
   - { name: identity }
   - { name: shares }
   - { name: tags }
+  - { name: users }
   - { name: checklist }
   - { name: oauth }
   - { name: initiatives }
@@ -42,11 +43,17 @@ paths:
   /whoami:
     get:
       tags: [identity]
-      summary: Who am I — echo the calling token's actor, scopes, and projects
+      summary: Who am I — the calling token's actor, scopes, projects, and person
       description: |
         Any valid token may call this; it removes the need for a client-side
         TAKOMO_ACTOR env var by letting the caller ask the store for its own
         identity (used by `takomo whoami` and by `ls --mine`-style filters).
+
+        `user` is the person in the directory this credential belongs to, or null
+        for a machine token. That is a different thing from `actor`: `actor` is a
+        free-form string the credential carries, while `user` is somebody the
+        server can vouch for — it is what `?mine=true` on the inbox reads, and the
+        second of the two authorities that can answer an `approve`.
       responses:
         "200":
           description: OK
@@ -885,6 +892,202 @@ paths:
                   ok: { type: boolean }
                   still_referenced: { type: integer, description: 'tickets still carrying this kind:handle reference' }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /users:
+    get:
+      tags: [users]
+      summary: The people directory (read scope)
+      description: |
+        Who work can be addressed to. Global to the server rather than nested under
+        a project — a person is not per-project — with `project` filtering to the
+        members of one, which is who may be handed work there.
+
+        A bounded envelope: `items` plus `total` counted with the same predicate,
+        the `limit` applied, and a prose `note` when the page left someone out.
+        Ordering is by handle and therefore stable, so `offset` is a safe
+        continuation.
+
+        Readable by any valid token, because a name has to be renderable by whoever
+        is looking at a question. Every write here needs `admin`.
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: 'case-insensitive substring match on handle, name or email' }
+        - { name: project, in: query, schema: { type: string }, description: 'only members of this project' }
+        - { name: include_disabled, in: query, schema: { type: boolean }, description: 'include people who can no longer be assigned work' }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: One page of the directory.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/User" } }
+                  total: { type: integer, description: 'how many matched, ignoring the page size' }
+                  limit: { type: integer }
+                  note: { type: string, description: 'present only when the page left someone out' }
+        "403": { description: Token lacks the read scope or the named project }
+    post:
+      tags: [users]
+      summary: Add a person to the directory (admin scope)
+      description: |
+        Admin, not `write`, because this is the directory assignment draws from and
+        assignment is the one route by which a name confers authority (a named
+        assignee may answer an `approve`).
+
+        There is no lazy creation anywhere: unlike a tag, an unknown handle is a 404
+        rather than a new row, because a directory that grows from a typo makes the
+        typo assignable and it looks real.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserCreate" }
+      responses:
+        "201":
+          description: The person, with any memberships created alongside them.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "That handle is already taken (`user.exists`)" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /users/{handle}:
+    parameters:
+      - { name: handle, in: path, required: true, schema: { type: string }, description: 'the handle, or the usr- id — both resolve' }
+    get:
+      tags: [users]
+      summary: One person, with their memberships (read scope)
+      responses:
+        "200":
+          description: The person.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [users]
+      summary: Update a person's name, email or meta (admin scope)
+      description: |
+        The handle is deliberately not patchable: it is what every
+        `person:<handle>` reference and every stored assignment resolves through,
+        so renaming it would orphan them silently. A person whose name changes gets
+        a new `name`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserPatch" }
+      responses:
+        "200":
+          description: The updated person.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /users/{handle}/disable:
+    parameters:
+      - { name: handle, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [users]
+      summary: Stop new work being addressed to this person (admin scope)
+      description: |
+        A gate, in the same idiom as archiving a project — and deliberately neither
+        a delete nor a revocation.
+
+        What stops: being assignable, and with it the assignee route to answering an
+        `approve`. What does not: every record naming them stays readable (deleting
+        the row would make an answered question's `answered_by` unreadable after the
+        fact), and their tokens keep working, because what a credential may do is its
+        scopes. Revoke the token to end access.
+
+        Reversible with `/enable`, because disabling changes nothing else about them.
+      responses:
+        "200":
+          description: The person, now disabled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users/{handle}/enable:
+    parameters:
+      - { name: handle, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [users]
+      summary: Put a disabled person back in the directory (admin scope)
+      responses:
+        "200":
+          description: The person, active again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "403": { description: Token lacks the admin scope }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users/{handle}/projects:
+    parameters:
+      - { name: handle, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [users]
+      summary: Make a person a member of a project (admin scope)
+      description: |
+        Membership says who may be *handed work* in a project. It is not access
+        control — a token's own `projects` allowlist still decides what that
+        credential may read or write — but because a named assignee may answer an
+        `approve`, it is a second fence in front of that authority.
+
+        Idempotent: re-adding a member is the state the caller asked for, not a 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project]
+              properties:
+                project: { type: string }
+      responses:
+        "201":
+          description: The membership.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserMembership" }
+        "403": { description: Token lacks the admin scope or the named project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "The project is archived, so its memberships are frozen too" }
+
+  /users/{handle}/projects/{project}:
+    parameters:
+      - { name: handle, in: path, required: true, schema: { type: string } }
+      - { $ref: "#/components/parameters/project" }
+    delete:
+      tags: [users]
+      summary: End a project membership (admin scope)
+      description: |
+        Questions already addressed to this person stay addressed to them: silently
+        retracting an open decision would leave it with nobody looking at it. They
+        simply cannot be handed anything new here.
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "403": { description: Token lacks the admin scope or the named project }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /projects/{project}/style:
     put:
       tags: [workflow]
@@ -2882,9 +3085,19 @@ paths:
       summary: List questions on the ask-a-human board (the inbox read-model)
       description: |
         Open questions by default, ordered by urgency then age. Filter by
-        `project`, `ticket`, or `status` (comma-separated). `mine=true` scopes
-        the list to the caller's own expertise, derived from its `expert:<tag>`
-        scopes; `expertise` (repeatable) filters by explicit tags.
+        `project`, `ticket`, or `status` (comma-separated).
+
+        Two ways to ask "who is this waiting on". `assignee=<handle>` reads one
+        person's queue — including somebody else's, which is the point of a shared
+        board — and `assignee=none` is the triage read: what nobody has been asked
+        yet. `expertise` (repeatable) filters by explicit routing tags.
+
+        `mine=true` is everything waiting on *you*, in both senses this board has:
+        addressed to the person your token belongs to, OR covered by your
+        `expert:<tag>` scopes. They are ORed deliberately — requiring both would
+        hide a question aimed straight at you because it happened to carry no tag.
+        A token with neither a person nor an expert scope gets an empty list and a
+        note saying so.
 
         The result is paginated: `limit` (clamped 1..500, default 500) bounds a
         page and `cursor` (an opaque row offset) fetches the next one. When more
@@ -2900,7 +3113,8 @@ paths:
         - { name: project, in: query, schema: { type: string } }
         - { name: ticket, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string }, description: "Comma-separated: open (default), answered, withdrawn, expired" }
-        - { name: mine, in: query, schema: { type: boolean }, description: "Only questions routed to your expert:<tag> scopes" }
+        - { name: mine, in: query, schema: { type: boolean }, description: "Only questions waiting on you: addressed to your person, or covered by your expert:<tag> scopes" }
+        - { name: assignee, in: query, schema: { type: string }, description: "One person's queue by handle, or 'none' for the questions nobody has been asked yet" }
         - { name: expertise, in: query, schema: { type: string }, description: Repeatable tag filter (match any) }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 500 }, description: Max questions per page }
         - { name: cursor, in: query, schema: { type: integer, minimum: 0 }, description: Row offset from a previous next_cursor }
@@ -2976,6 +3190,15 @@ paths:
                   type: array
                   items: { type: string }
                   description: Routing tags, e.g. ["domain:billing"]
+                assignee:
+                  type: string
+                  description: |
+                    Address this question to one person, by handle (`GET /v1/users`).
+                    They must be a member of the ticket's project. Omit it and the
+                    question goes to the open queue, where anyone with the expertise
+                    can take it — and `POST /v1/questions/{id}/assign` can address it
+                    later, which is the usual case, since the agent asking rarely
+                    knows who owns the decision.
                 urgency: { type: string, enum: [critical, high, normal, low] }
                 expires_in_seconds: { type: integer, description: Auto-expire deadline }
                 on_timeout: { type: string, enum: [recommended, escalate, cancel] }
@@ -3003,7 +3226,8 @@ paths:
         "422":
           description: |
             Invalid value: bad kind/urgency/on_timeout, choose with < 2 options,
-            an `approve` question with no expertise tag, `on_timeout=recommended`
+            an `approve` question naming neither an expertise tag nor an assignee
+            (it must name something that gates it), `on_timeout=recommended`
             with a window under the required minimum, or a `recommended` /
             `recommended_multi` that is not among `options`
             (`validation.recommended`, `validation.recommended_multi`) — the same
@@ -3034,6 +3258,65 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Question" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /questions/{id}/assign:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [questions]
+      summary: Address an open question to a person, or return it to the queue (human scope)
+      description: |
+        A separate operation from asking, because the agent that raised the question
+        usually cannot know who should decide it — it knows a billing question when
+        it writes one, not which colleague owns billing this month. Triage is a human
+        act that happens afterwards.
+
+        **Assignment is routing, not a lock.** Any `human` token may still answer the
+        three ordinary kinds, so a decision is never stranded because the assignee is
+        away; what assignment changes is who the inbox sorts it to, and what `mine`
+        means. The single exception is an `approve`, where being the named person is
+        one of the two authorities that can answer it.
+
+        Only while the question is open: reassigning a settled one would rewrite who
+        a recorded decision was waiting on. The handover is mirrored onto the ticket
+        thread and recorded as a `question_assigned` event.
+
+        Send `{"assignee": null}` to return it to the open queue. An absent field is
+        refused rather than guessed at.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignee]
+              properties:
+                assignee:
+                  type: [string, "null"]
+                  description: 'the person''s handle (or usr- id), or null for the open queue'
+      responses:
+        "200":
+          description: The question, with its assignee resolved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question: { $ref: "#/components/schemas/Question" }
+        "403": { description: Token lacks the human scope or the question's project }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            The question is no longer open (`question.not_open`), the person is
+            disabled (`user.disabled`), or they are not a member of this project
+            (`user.not_member`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
 
   /questions/{id}/answer:
     post:
@@ -4809,6 +5092,96 @@ components:
         label: { type: string, description: 'display name; defaults to the handle' }
         meta: { type: object }
 
+    UserRef:
+      type: object
+      description: |
+        A person, as *referenced* rather than listed — a question's `assignee`,
+        `whoami`'s `user`. Enough to render a name without a second request.
+      properties:
+        id: { type: string, description: 'e.g. "usr-9f3ka2xz"' }
+        handle: { type: string }
+        name: { type: string }
+        label: { type: string, description: 'what to show a human: the name, falling back to the handle' }
+        ref: { type: string, description: 'the canonical person:<handle> tag reference for this person' }
+        disabled: { type: boolean }
+
+    User:
+      type: object
+      description: |
+        A person: the directory entry work can be addressed to.
+
+        **A user says who work is waiting on; a scope says what a credential may
+        do.** This is not a login and grants nothing on its own — takomo has four
+        independent token paths and no password anywhere. What it adds is
+        addressing: a question can be waiting on Ada rather than on whoever holds
+        `expert:domain:billing`.
+
+        Global to the server, unlike a `Tag`, so every `answered_by` and `assignee`
+        reference resolves to the same human from anywhere; `projects` (membership)
+        is what bounds where they can be handed work.
+
+        `handle` is validated by the *tag* handle rule, which is what keeps
+        `person:<handle>` a legal reference to this person and stops the tag
+        convention that predates the directory forking away from it.
+
+        There is no delete — see `/users/{handle}/disable`.
+      properties:
+        id: { type: string, description: 'e.g. "usr-9f3ka2xz"' }
+        handle: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$" }
+        name: { type: string }
+        label: { type: string, description: 'name, falling back to the handle; sanitized for terminal display' }
+        ref: { type: string, description: 'the canonical person:<handle> tag reference' }
+        email: { type: [string, "null"], description: 'for a human reader — takomo never sends mail' }
+        meta: { type: object, description: 'free-form attributes; 64 KiB cap' }
+        disabled: { type: boolean, description: 'true = cannot be assigned new work; every past record still resolves' }
+        disabled_at: { type: [string, "null"], format: date-time }
+        projects:
+          type: array
+          items: { type: string }
+          description: |
+            Project memberships, ascending. Present only on a read that joined them
+            (`GET /v1/users`, `GET /v1/users/{handle}`) — absent rather than empty
+            elsewhere, so it never claims "member of nothing".
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UserCreate:
+      type: object
+      required: [handle]
+      properties:
+        handle: { type: string, pattern: "^[a-z0-9][a-z0-9._-]{0,63}$", description: 'lowercase identity, e.g. "ada" or "j.chen". The real name goes in `name`.' }
+        name: { type: string }
+        email: { type: string }
+        meta: { type: object }
+        projects:
+          type: array
+          items: { type: string }
+          description: 'memberships to create alongside the person, in one transaction'
+
+    UserPatch:
+      type: object
+      description: |
+        The handle is deliberately absent: it is what every reference resolves
+        through. Send `email: null` to clear the address — absent and null mean
+        different things here.
+      properties:
+        name: { type: string }
+        email: { type: [string, "null"] }
+        meta_merge: { type: object, description: 'RFC 7386 merge into `meta`; a null value deletes a key' }
+
+    UserMembership:
+      type: object
+      description: |
+        One person's membership of one project: who may be *handed work* there.
+        Directory scoping, not access control — a token's `projects` allowlist
+        still decides what that credential may read or write.
+      properties:
+        user: { type: string, description: 'the usr- id' }
+        project: { type: string }
+        added_by: { type: string }
+        created_at: { type: string, format: date-time }
+
     TagPatch:
       type: object
       description: At least one of label / meta_merge is required
@@ -4872,6 +5245,16 @@ components:
           oneOf:
             - { type: string, const: "*" }
             - { type: array, items: { type: string } }
+        user:
+          description: |
+            The person in the directory this credential belongs to, or null for a
+            machine token. Distinct from `actor`, which is a free-form string the
+            credential carries: this one the server can vouch for, which is why it
+            is what `?mine=true` reads and one of the two authorities that can
+            answer an `approve`.
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/UserRef" }
 
     Token:
       type: object
@@ -4886,6 +5269,13 @@ components:
             - { type: string, const: "*" }
             - { type: array, items: { type: string } }
         rate_limit: { type: integer, description: per-minute write budget }
+        user:
+          type: [string, "null"]
+          description: |
+            The `usr-` id of the person this credential belongs to, or null for a
+            machine token. Set only at mint, by an admin: a named assignee may answer
+            an `approve`, so binding a token to a person grants authority rather than
+            labelling a row.
         created_at: { type: string, format: date-time }
         expires_at: { type: [string, "null"], format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
@@ -4927,6 +5317,18 @@ components:
             - { type: array, items: { type: string }, minItems: 1 }
         expires_seconds: { type: integer, description: optional TTL in seconds from now }
         rate_limit: { type: integer, default: 120, description: per-minute write budget }
+        user:
+          type: string
+          description: |
+            Bind this credential to a person in the directory, by handle or `usr-` id.
+            An unknown or disabled person is refused rather than stored as a dangling
+            string.
+
+            This is an authorization act: it is what makes the caller *be* that
+            person, so an `approve` addressed to them can be answered, and what
+            `?mine=true` reads. Identity deliberately lives here rather than in a
+            scope — scopes are free-form, so a `user:usr-…` scope would be a forgeable
+            identity. Omit it for a machine token.
 
     TokenCreated:
       allOf:
@@ -5486,6 +5888,19 @@ components:
         confidence: { type: [integer, "null"], minimum: 1, maximum: 4, description: Recommendation strength (1 tentative … 4 very strong) }
         summary: { type: [string, "null"], description: One-line list-preview summary }
         expertise: { type: array, items: { type: string }, description: 'Routing tags, e.g. ["domain:billing"]' }
+        assignee:
+          description: |
+            The person this decision is waiting on, resolved, or null for the open
+            queue. Orthogonal to `expertise` and both may be set: expertise says
+            what a qualified answerer must be, this says who was actually asked.
+
+            An object carrying only `id` and `label` means the row names somebody a
+            read did not resolve — degraded display, never "unassigned", because
+            reading it as null would leave the decision sitting in an open pool
+            while its person waited to be asked.
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/UserRef" }
         urgency: { type: string, enum: [critical, high, normal, low] }
         status: { type: string, enum: [open, answered, withdrawn, expired] }
         answer: { description: 'The recorded human answer ({ value, note? }), or null while open' }
@@ -6125,7 +6540,8 @@ x-error-codes:
   question.resume_claim: "the resume edge requires an active claim, which nobody holds while a question is open. Choose a `resume_to` that is not claim-gated, or claim the ticket and transition it normally."
   question.resume_guard: "the resume edge is guarded. Satisfy the guard and transition explicitly; the recorded answer stays on the ticket."
   question.answer_scope: "resuming into the chosen state needs a scope the answerer's token lacks. Have someone holding it answer, or pass a `resume_to` this token can reach."
-  question.approve_expertise: "an `approve` question names required `expertise`, so answering it — or minting an answer link for it — needs a matching `expert:<tag>` scope. A general `human` token is not sufficient; you can only delegate authority you hold."
+  question.approve_expertise: "approving is gated, and this caller holds neither key. Two things can approve an `approve`: a matching `expert:<tag>` scope, or being the person the question is addressed to (a token bound to them with `user`). The same pair governs reopening one, and minting an answer link for one — where being the assignee means minting your OWN link, since whoever holds the link can spend it. `admin` is not a substitute for either; you can only delegate authority you hold."
+  validation.assignee: "`assignee` must be a user handle (or `usr-` id) to address the question to, or null to return it to the open queue. A missing field is refused rather than guessed at."
   question.reopen_archived: "the ticket is archived, so the answer is settled. Re-ask instead of reopening."
   question.reopen_claimed: "a worker holds the ticket and is relying on the answer, so it cannot be reversed. Reopen only while the ticket is free."
   question.reopen_moved: "the ticket has moved on since the answer resumed it, so the answer is already in use. Re-ask if you need a new decision."
@@ -6155,7 +6571,7 @@ x-error-codes:
   token.expires_seconds: "`expires_seconds` must be a positive integer number of seconds."
   tag.exists: "that `kind:handle` is already registered in the project. PATCH the tag to change its label or meta."
   answer.relay_self: "the relaying actor is the one that ASKED this question, so it cannot also relay the answer. Relaying records a decision a human made; relaying your own question would let an agent request approval and grant it to itself. Have the human answer it, or relay from an actor that did not ask it."
-  answer.relay_approve: "an 'approve' question is never relayable. It is gated on an expert:<tag> scope precisely so the answer is evidence that a named expert exercised their authority, and a relayed name is a claim about who decided rather than proof of it. Answer it from a token holding the scope, or mint that person a single-use answer link."
+  answer.relay_approve: "an 'approve' question is never relayable. It is gated precisely so the answer is evidence that the authority was exercised, and a relayed name is a claim about who decided rather than proof of it — which is also why a relaying credential's own `user` binding does not unlock the assignee route. Answer it from a token holding the expert scope or bound to the named person, or mint that person a single-use answer link."
   answer.relay_redundant: "this token holds the 'human' scope, so it should answer as itself rather than relay — drop 'on_behalf_of'. Relaying exists for a caller that cannot answer, and a human relaying would make 'answered_by' a claim instead of a fact."
   answer.relay_actor: "'on_behalf_of' must name the human who made the decision — it is what 'answered_by' records and what a later reader will hold someone to. Empty or whitespace would file the decision under nobody."
   tag.too_many: "too many tag references in one request, or the patch would leave the ticket over the cap. `details` carries `count` and `max`. Send fewer, or use `tags` to replace the whole set with one under the limit. The cap exists because attaching tags is per-reference work inside the single-writer transaction every claim and transition waits on."
@@ -6174,6 +6590,8 @@ x-error-codes:
   notfound.question: "no question with that id."
   notfound.token: "no token with that id."
   notfound.tag: "no tag with that `kind:handle` in the project."
+  notfound.user: "nobody in the directory with that handle or `usr-` id. `GET /v1/users` lists the people; a user is never created implicitly, because a directory that grows from a typo makes the typo assignable."
+  notfound.membership: "that person is not a member of that project, so there is no membership to remove."
   notfound.share: "no share with that id."
   notfound.answer-link: "no answer-link grant with that id."
   notfound.initiative: "no initiative with that id. GET /v1/initiatives lists them; the id shape is `ini-…`."
@@ -6245,6 +6663,16 @@ x-error-codes:
   validation.tag_label: "a tag label is over its length limit."
   validation.tag_meta: "tag `meta`, or `meta_merge`, must be a JSON object."
   validation.tag_meta_size: "serialized tag `meta` is over its cap."
+
+  # -- the people directory: who work can be addressed to ----------------------
+  validation.user_handle: "a user handle must match ^[a-z0-9][a-z0-9._-]*$ within its length bound — deliberately the same rule as a tag handle, so `person:<handle>` stays a legal reference to that person. The real name goes in `name`."
+  validation.user_name: "a display name is over its length limit."
+  validation.user_email: "the email is over its length limit, or has no `@`. The check is shallow on purpose: takomo never sends mail, so the address is a note for a human reader. Send null to clear it."
+  validation.user_meta: "user `meta`, or `meta_merge`, must be a JSON object."
+  validation.user_meta_size: "serialized user `meta` is over its cap."
+  user.exists: "someone already holds that handle. PATCH the person instead of adding a second row for them."
+  user.disabled: "that person is disabled, so new work cannot be addressed to them and no credential can be bound to them. Their past answers and decisions are untouched. Re-enable them, or pick someone else."
+  user.not_member: "that person is not a member of the project, so work there cannot be addressed to them. Membership says who may be handed work; it is separate from what their token may read or write."
 
   # -- initiatives and their entries ------------------------------------------
   validation.initiative_title: "an initiative needs a title, and it may not be cleared by an update — it is the quick name the idea goes by."

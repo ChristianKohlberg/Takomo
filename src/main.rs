@@ -4,7 +4,9 @@
 
 use clap::{Parser, Subcommand};
 use takomo::ids::{iso, now_ms};
-use takomo::store::{normalize_style_guide, Store};
+use takomo::store::{
+    normalize_style_guide, Store, UserCreate, UserListFilter, UserPatch, MAX_USERS_PAGE,
+};
 use takomo::workflow::Workflow;
 
 #[derive(Parser)]
@@ -41,6 +43,15 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
+    },
+    /// Manage the people directory: who work can be addressed to.
+    ///
+    /// A user is not a login and grants no access — scopes are what a credential
+    /// may do. It is how a question stops being routed to "whoever holds
+    /// expert:domain:billing" and starts being addressed to Ada. See docs/users.md.
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
     },
     /// Operate on a single ticket's claim (recovery, not day-to-day work).
     Ticket {
@@ -85,6 +96,13 @@ enum TokenCommand {
         /// Write budget per minute (sliding window).
         #[arg(long, default_value_t = 120)]
         rate_limit: i64,
+        /// Bind this credential to a person in the directory (handle or usr- id).
+        ///
+        /// An authorization act, not a label: a question can be addressed to a
+        /// person, and a named assignee may answer an `approve`, so this is what
+        /// proves the caller IS that person. Omit it for a machine token.
+        #[arg(long)]
+        user: Option<String>,
         /// Print one JSON object (including the plaintext `token`) instead of
         /// the human-readable block — for scripts and provisioning hooks.
         #[arg(long)]
@@ -94,6 +112,72 @@ enum TokenCommand {
     List,
     /// Revoke a token by its id (see `token list`).
     Revoke { id: String },
+}
+
+/// The people directory, on the database directly.
+///
+/// Here as well as over HTTP because of a bootstrap: the first person must exist
+/// before any credential can be bound to them, and `POST /v1/users` needs an admin
+/// token to call. Shell access is the root of trust (spec/auth.md), so a fresh
+/// instance starts here.
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Add a person to the directory.
+    New {
+        /// Handle: lowercase, e.g. 'ada' or 'j.chen'. Their stable identity, and
+        /// usable as a 'person:<handle>' tag. The real name goes in --name.
+        handle: String,
+        /// Display name, e.g. "Ada Lovelace".
+        #[arg(long)]
+        name: Option<String>,
+        /// Email, for a human reader — takomo never sends mail.
+        #[arg(long)]
+        email: Option<String>,
+        /// Projects to make them a member of, comma separated. Membership is what
+        /// says who may be handed work in a project.
+        #[arg(long, default_value = "")]
+        projects: String,
+    },
+    /// List the directory.
+    Ls {
+        /// Only members of this project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Include people who have been disabled.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show one person, with their memberships.
+    Show { handle: String },
+    /// Change a person's display name or email.
+    Set {
+        handle: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+    },
+    /// Stop new work being addressed to this person.
+    ///
+    /// Not a delete and not a revocation: every record naming them stays readable,
+    /// and their tokens keep working — what a credential may do is its scopes.
+    /// Revoke the token to end access.
+    Disable { handle: String },
+    /// Put a disabled person back in the directory.
+    Enable { handle: String },
+    /// Add a project membership.
+    Member {
+        handle: String,
+        /// Project id.
+        project: String,
+    },
+    /// Remove a project membership. Questions already addressed to them stay that
+    /// way — retracting an open decision nobody is then looking at is worse.
+    Unmember {
+        handle: String,
+        /// Project id.
+        project: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,6 +352,7 @@ fn main() {
             .block_on(takomo::server::serve(&bind, &cli.db, sweep_seconds)),
         Command::Token { command } => run_token(&cli.db, command),
         Command::Project { command } => run_project(&cli.db, command),
+        Command::User { command } => run_user(&cli.db, command),
         Command::Ticket { command } => run_ticket(&cli.db, command),
         Command::Schedule { command } => run_schedule(&cli.db, command),
         Command::Seed { preset } => run_seed(&cli.db, &preset),
@@ -291,6 +376,7 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
             projects,
             expires,
             rate_limit,
+            user,
             json,
         } => {
             let scopes: Vec<String> = scopes
@@ -319,6 +405,7 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                     projects_opt.as_deref(),
                     rate_limit,
                     expires_at,
+                    user.as_deref(),
                 )
                 .map_err(|e| e.into_message())?;
             if json {
@@ -331,6 +418,7 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                     "projects": row.projects,
                     "expires_at": row.expires_at.map(iso),
                     "rate_limit": row.rate_limit,
+                    "user": row.user,
                     "token": plaintext,
                 });
                 println!("{out}");
@@ -350,6 +438,9 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                 row.expires_at.map(iso).unwrap_or_else(|| "never".into())
             );
             println!("rate:      {}/min writes", row.rate_limit);
+            if let Some(user) = &row.user {
+                println!("user:      {user}");
+            }
             println!();
             println!("{plaintext}");
             println!();
@@ -413,6 +504,180 @@ fn run_token(db: &str, command: TokenCommand) -> Result<(), String> {
                 Err(format!(
                     "no active token with id '{id}' (see: takomo token list)"
                 ))
+            }
+        }
+    }
+}
+
+fn run_user(db: &str, command: UserCommand) -> Result<(), String> {
+    let store = open_store(db)?;
+    // Every write here is attributed to the shell, not to a person: an operator at
+    // the database is exactly who this actor names, and inventing a human's name
+    // for it would put a claim in the event log nothing backs up.
+    const ACTOR: &str = "cli:admin";
+    match command {
+        UserCommand::New {
+            handle,
+            name,
+            email,
+            projects,
+        } => {
+            let projects: Vec<String> = projects
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            let req = UserCreate {
+                handle,
+                name,
+                email,
+                meta: None,
+                projects,
+            };
+            let user = store
+                .create_user(&req, ACTOR)
+                .map_err(|e| e.into_message())?;
+            println!("user id:   {}", user.id);
+            println!("handle:    {}", user.handle);
+            println!("name:      {}", user.label());
+            if let Some(email) = &user.email {
+                println!("email:     {email}");
+            }
+            println!(
+                "projects:  {}",
+                if user.projects.is_empty() {
+                    "none — add one with: takomo user member <handle> <project>".to_string()
+                } else {
+                    user.projects.join(",")
+                }
+            );
+            println!();
+            println!(
+                "Bind a credential to them with: takomo token create --actor {} --scopes read,write,human --user {}",
+                user.handle, user.handle
+            );
+            Ok(())
+        }
+        UserCommand::Ls { project, all } => {
+            let filter = UserListFilter {
+                q: None,
+                project,
+                include_disabled: all,
+                limit: MAX_USERS_PAGE,
+                offset: 0,
+            };
+            let (users, total) = store.list_users(&filter).map_err(|e| e.into_message())?;
+            if users.is_empty() {
+                println!("no people yet; add one with: takomo user new <handle> --name \"<name>\"");
+                return Ok(());
+            }
+            println!(
+                "{:<16} {:<24} {:<28} {:<10} PROJECTS",
+                "HANDLE", "NAME", "EMAIL", "STATUS"
+            );
+            for u in &users {
+                println!(
+                    "{:<16} {:<24} {:<28} {:<10} {}",
+                    u.handle,
+                    u.label(),
+                    u.email.clone().unwrap_or_else(|| "-".into()),
+                    if u.active() { "active" } else { "disabled" },
+                    if u.projects.is_empty() {
+                        "-".to_string()
+                    } else {
+                        u.projects.join(",")
+                    }
+                );
+            }
+            // Same honesty the API envelope owes a reader: say when the listing is
+            // a page rather than the directory.
+            if total > users.len() as i64 {
+                println!();
+                println!("showing {} of {total}", users.len());
+            }
+            Ok(())
+        }
+        UserCommand::Show { handle } => {
+            let user = store
+                .get_user(&handle)
+                .map_err(|e| e.into_message())?
+                .ok_or_else(|| format!("no user '{handle}' (see: takomo user ls)"))?;
+            println!("id:        {}", user.id);
+            println!("handle:    {}", user.handle);
+            println!("name:      {}", user.label());
+            println!("tag:       {}", user.tag_reference());
+            println!(
+                "email:     {}",
+                user.email.clone().unwrap_or_else(|| "-".into())
+            );
+            println!(
+                "status:    {}",
+                if user.active() { "active" } else { "disabled" }
+            );
+            println!(
+                "projects:  {}",
+                if user.projects.is_empty() {
+                    "-".to_string()
+                } else {
+                    user.projects.join(",")
+                }
+            );
+            Ok(())
+        }
+        UserCommand::Set {
+            handle,
+            name,
+            email,
+        } => {
+            if name.is_none() && email.is_none() {
+                return Err("nothing to change; pass --name and/or --email".to_string());
+            }
+            let patch = UserPatch {
+                name,
+                email: email.map(Some),
+                meta_merge: None,
+            };
+            let user = store
+                .patch_user(&handle, &patch, ACTOR)
+                .map_err(|e| e.into_message())?;
+            println!("updated {} ({})", user.handle, user.label());
+            Ok(())
+        }
+        UserCommand::Disable { handle } => {
+            let user = store
+                .set_user_disabled(&handle, true, ACTOR)
+                .map_err(|e| e.into_message())?;
+            println!(
+                "{} is disabled: no new work can be addressed to them.",
+                user.handle
+            );
+            println!("Their past answers and decisions are unchanged, and their tokens still work — revoke those to end access.");
+            Ok(())
+        }
+        UserCommand::Enable { handle } => {
+            let user = store
+                .set_user_disabled(&handle, false, ACTOR)
+                .map_err(|e| e.into_message())?;
+            println!("{} is active again.", user.handle);
+            Ok(())
+        }
+        UserCommand::Member { handle, project } => {
+            let m = store
+                .add_member(&handle, &project, ACTOR)
+                .map_err(|e| e.into_message())?;
+            println!("{handle} is a member of {}", m.project);
+            Ok(())
+        }
+        UserCommand::Unmember { handle, project } => {
+            let removed = store
+                .remove_member(&handle, &project, ACTOR)
+                .map_err(|e| e.into_message())?;
+            if removed {
+                println!("{handle} is no longer a member of {project}");
+                Ok(())
+            } else {
+                Err(format!("{handle} was not a member of {project}"))
             }
         }
     }

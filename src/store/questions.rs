@@ -28,7 +28,7 @@ use crate::workflow::{Requirement, Workflow};
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The question kinds. Each renders a distinct answer control on the board and
 /// carries a distinct answer shape (see `validate_answer`).
@@ -57,9 +57,9 @@ const MAX_EXPERTISE: usize = 10;
 const MAX_EXPERTISE_LEN: usize = 100;
 
 const QUESTION_COLS: &str = "id, project, ticket, asked_by, mode, kind, title, body, options, \
-    recommended, expertise, urgency, status, answer, answered_by, answered_at, resolved_to, \
-    expires_at, on_timeout, awaiting, confidence, recommended_note, summary, option_notes, \
-    multi, recommended_multi, created_at, updated_at, version";
+    recommended, expertise, assignee, urgency, status, answer, answered_by, answered_at, \
+    resolved_to, expires_at, on_timeout, awaiting, confidence, recommended_note, summary, \
+    option_notes, multi, recommended_multi, created_at, updated_at, version";
 
 /// Max length of a single follow-up message body. Generous on purpose: a
 /// follow-up reply is an agent handing over real research (source excerpts,
@@ -126,6 +126,10 @@ pub struct AskRequest {
     /// One-line list summary, or None.
     pub summary: Option<String>,
     pub expertise: Vec<String>,
+    /// The person to address this decision to (a handle or a `usr-…` id), or None
+    /// for the open pool. Checked against the directory and the project's
+    /// membership before it is stored.
+    pub assignee: Option<String>,
     pub urgency: Option<String>,
     /// Milliseconds since epoch when the question times out, or None.
     pub expires_at: Option<i64>,
@@ -164,6 +168,21 @@ pub struct QuestionFilter {
     pub statuses: Vec<String>,
     /// Match questions carrying ANY of these expertise tags; empty = no filter.
     pub expertise: Vec<String>,
+    /// Match questions addressed to any of these people (`users.id`); empty = no
+    /// filter.
+    ///
+    /// A list rather than one id because the inbox's "for me" is a union: what is
+    /// addressed to me, plus what my expertise covers. Composed with `expertise`
+    /// as OR when [`Self::assignee_or_expertise`] is set, and as AND otherwise —
+    /// "Ada's queue" and "billing decisions" are different questions from "mine".
+    pub assignee: Vec<String>,
+    /// Only questions in the open pool (no assignee). The triage read: what has
+    /// nobody's name on it.
+    pub unassigned: bool,
+    /// Treat `assignee` and `expertise` as alternatives rather than as two filters
+    /// that must both hold. Set by `?mine=true`, which means "waiting on me" in
+    /// both of the senses this board has.
+    pub assignee_or_expertise: bool,
     /// Token project scoping. None = unrestricted.
     pub allowed_projects: Option<Vec<String>>,
     /// Max rows to return; `None` applies the server cap. Always clamped to
@@ -204,6 +223,10 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
         confidence: r.get("confidence")?,
         summary: r.get("summary")?,
         expertise: serde_json::from_str(&expertise_raw).unwrap_or_default(),
+        assignee: r.get("assignee")?,
+        // Filled by `resolve_question_people` on the read paths; a Row mapper
+        // cannot join.
+        assignee_person: None,
         urgency: r.get("urgency")?,
         status: r.get("status")?,
         answer: answer_raw
@@ -221,11 +244,53 @@ fn row_to_question(r: &Row) -> rusqlite::Result<Question> {
     })
 }
 
+/// Load one question by id, with its assignee resolved.
+///
+/// The resolution is here rather than at the call sites because this is what every
+/// write path returns to its caller — asking, answering, withdrawing, revising,
+/// assigning. Resolving per call site meant the ask response came back naming a
+/// `usr-…` id, which is the deliberately-degraded shape for a read that did not
+/// join, showing up on a path that trivially could.
 fn get_question_row(conn: &Connection, id: &str) -> ApiResult<Question> {
     let sql = format!("SELECT {QUESTION_COLS} FROM questions WHERE id = ?1");
-    conn.query_row(&sql, params![id], row_to_question)
+    let mut question = conn
+        .query_row(&sql, params![id], row_to_question)
         .optional()?
-        .ok_or_else(|| ApiError::not_found("question", id))
+        .ok_or_else(|| ApiError::not_found("question", id))?;
+    resolve_assignee(conn, &mut question)?;
+    Ok(question)
+}
+
+/// Fill in `assignee_person` so a reader gets a name instead of a `usr-…` id.
+///
+/// Separate from [`row_to_question`] because a `Row` mapper cannot join, and
+/// applied by every path that returns a question to a caller. One statement per
+/// distinct person, which for a page of an inbox is a handful — the alternative, a
+/// LEFT JOIN in `QUESTION_COLS`, would collide with `row_to_question`'s
+/// read-by-name on `id`, `created_at` and `updated_at`, the exact hazard
+/// `TOKEN_COLS_JOINED` documents.
+fn resolve_assignee(conn: &Connection, question: &mut Question) -> ApiResult<()> {
+    if let Some(id) = question.assignee.clone() {
+        question.assignee_person = super::users::lookup_user(conn, &id)?;
+    }
+    Ok(())
+}
+
+/// [`resolve_assignee`] for a page, looking each distinct person up once — an
+/// inbox page is usually a handful of people holding many questions.
+fn resolve_assignees(conn: &Connection, questions: &mut [Question]) -> ApiResult<()> {
+    let mut cache: HashMap<String, Option<super::model::User>> = HashMap::new();
+    for question in questions.iter_mut() {
+        let Some(id) = question.assignee.clone() else {
+            continue;
+        };
+        if !cache.contains_key(&id) {
+            let looked_up = super::users::lookup_user(conn, &id)?;
+            cache.insert(id.clone(), looked_up);
+        }
+        question.assignee_person = cache.get(&id).cloned().flatten();
+    }
+    Ok(())
 }
 
 /// Validate an option set, its parallel descriptions, and the recommendation that
@@ -952,6 +1017,132 @@ pub enum AnswerVia<'a> {
     Relay(&'a str),
 }
 
+/// May this caller approve `q`? The whole authority rule for `approve`, in one
+/// place because it is asked from four (answering, reopening, minting an answer
+/// link, and the MCP surface) and a fifth caller must not be able to invent a
+/// looser version.
+///
+/// Two proofs, either sufficient:
+///
+/// 1. **A matching `expert:<tag>` scope.** The original rule: the credential
+///    carries the domain authority, whoever holds it.
+/// 2. **Being the named assignee.** The question was addressed to this person and
+///    the credential is bound to them (`tokens.user`, admin-set), so the server
+///    can vouch that the caller *is* who was asked.
+///
+/// The second is why `Answerer` exists and why identity is never a scope string:
+/// scopes are free-form, so `user:usr-abc` in a scope set would be a forged
+/// identity, and this check would honour it.
+///
+/// A disabled person fails the second proof. Disabling is precisely the withdrawal
+/// of "work may be addressed to them", and approving on the strength of their name
+/// is the sharpest form of that.
+fn may_approve(conn: &Connection, q: &Question, answerer: Answerer<'_>) -> ApiResult<bool> {
+    if q.expertise
+        .iter()
+        .any(|t| answerer.scopes.contains(&format!("expert:{t}")))
+    {
+        return Ok(true);
+    }
+    let (Some(assignee), Some(caller)) = (&q.assignee, answerer.user) else {
+        return Ok(false);
+    };
+    if assignee != caller {
+        return Ok(false);
+    }
+    Ok(super::users::lookup_user(conn, assignee)?
+        .map(|person| person.active())
+        .unwrap_or(false))
+}
+
+/// The refusal [`may_approve`] earns, naming every route that would have worked so
+/// the caller is not left guessing which of two doors to knock on.
+fn cannot_approve_error(q: &Question) -> ApiError {
+    let scopes = q
+        .expertise
+        .iter()
+        .map(|t| format!("expert:{t}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut message =
+        String::from("Approving this needs authority a general 'human' answer does not carry. ");
+    // The remedy is written per case rather than listing every route, because two
+    // of them do not apply to a person-gated approval: an answer link for one is
+    // mintable only by that person, so offering it to a caller who has just been
+    // refused would send them at a second refusal.
+    let remedy = match (q.expertise.is_empty(), q.assignee.is_some()) {
+        (false, false) => {
+            message.push_str(&format!(
+                "Your token must hold one of {scopes} (an expert:<tag> scope)."
+            ));
+            "Answer from a token that holds the scope, have an operator mint one, or ask an expert to mint that person a single-use answer link (POST /v1/questions/{id}/answer-link)."
+        }
+        (false, true) => {
+            message.push_str(&format!(
+                "Either hold one of {scopes} (an expert:<tag> scope), or answer from the credential bound to the person this question is addressed to."
+            ));
+            "Answer from a token holding the scope, or from that person's own credential — an operator binds one with: takomo token create --user <handle>."
+        }
+        (true, _) => {
+            message.push_str(
+                "This question is addressed to a specific person: answer it from the credential bound to them.",
+            );
+            "Have that person answer from their own credential; an operator binds one with: takomo token create --user <handle>. Nobody else can answer or delegate this, which is the point of addressing an approval to a person."
+        }
+    };
+    ApiError::new(
+        axum::http::StatusCode::FORBIDDEN,
+        "question.approve_expertise",
+        message,
+    )
+    .remedy(remedy)
+}
+
+/// Who is answering: the whole identity an authority check may look at.
+///
+/// One type rather than three parameters, because these three travel together
+/// through every answering path and two of them (`actor`, and a bare
+/// `Option<&str>` user) would sit next to same-typed neighbours like `resume_to`
+/// — a silent swap at a call site would decide who may approve a decision.
+///
+/// It also keeps the rule visible in one place: the person is carried HERE, never
+/// as a scope string. Scopes are free-form and admin-mintable (`expert:<tag>`
+/// proves it), so a `user:usr-abc` scope would be a forgeable identity, and
+/// [`may_approve`] would honour it.
+#[derive(Debug, Clone, Copy)]
+pub struct Answerer<'a> {
+    /// Recorded as `answered_by`. A free-form string the credential carries — a
+    /// claim about a name, which is why it is never what an authority check reads.
+    pub actor: &'a str,
+    /// What the credential may do.
+    pub scopes: &'a HashSet<String>,
+    /// The directory person behind the credential (`tokens.user`), or the person
+    /// an answer link was minted for. `None` for a machine token or an
+    /// outside-expert link, which is why it can only ever *add* a route to
+    /// answering and never take one away.
+    pub user: Option<&'a str>,
+}
+
+impl<'a> Answerer<'a> {
+    pub fn new(actor: &'a str, scopes: &'a HashSet<String>, user: Option<&'a str>) -> Self {
+        Answerer {
+            actor,
+            scopes,
+            user,
+        }
+    }
+
+    /// The same credential, with the person deliberately dropped.
+    ///
+    /// The relay path is the one caller: it records a decision made out of band,
+    /// so the identity in it is a claim the relayer is making rather than one the
+    /// server can vouch for, and it must not unlock the assignee route to
+    /// approving. Spelled as a method so that intent is stated at the call site.
+    pub fn without_person(self) -> Self {
+        Answerer { user: None, ..self }
+    }
+}
+
 impl<'a> AnswerVia<'a> {
     fn grant(self) -> Option<&'a str> {
         match self {
@@ -1077,10 +1268,14 @@ impl Store {
         // it must name the domain(s) that must sign off, and it can never be
         // auto-resolved on timeout — an approval requires a real expert.
         if req.kind == "approve" {
-            if req.expertise.is_empty() {
+            // An approval must name SOMETHING that gates it — a domain to sign off,
+            // or the person who must. Without either it is a `confirm` wearing a
+            // stronger word, and the audit trail would record authority nobody
+            // held.
+            if req.expertise.is_empty() && req.assignee.is_none() {
                 return Err(ApiError::validation(
                     "validation.expertise",
-                    "An 'approve' question must name at least one expertise tag: approval is gated to a domain expert holding the matching expert:<tag> scope. Use 'confirm' for a yes/no any human can answer.",
+                    "An 'approve' question must name at least one expertise tag or an assignee: approval is gated either to a domain expert holding the matching expert:<tag> scope, or to the named person whose credential is bound to them. Use 'confirm' for a yes/no any human can answer.",
                 ));
             }
             if req.on_timeout == Some(TimeoutAction::Recommended) {
@@ -1197,10 +1392,19 @@ impl Store {
                 }
             }
 
+            // Who this is addressed to, if anyone. Resolved through the one gate
+            // every assignment goes through, inside this transaction, so a
+            // question cannot be created naming someone who was removed from the
+            // project a moment ago.
+            let assignee = match &req.assignee {
+                None => None,
+                Some(raw) => Some(Self::assignable_user(tx, raw, &t.project)?),
+            };
+
             let id = question_id();
             tx.execute(
-                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, urgency, status, expires_at, on_timeout, confidence, recommended_note, summary, option_notes, multi, recommended_multi, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'open', ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?21)",
+                "INSERT INTO questions (id, project, ticket, asked_by, mode, kind, title, body, options, recommended, expertise, assignee, urgency, status, expires_at, on_timeout, confidence, recommended_note, summary, option_notes, multi, recommended_multi, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'open', ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?22)",
                 params![
                     id,
                     t.project,
@@ -1213,6 +1417,7 @@ impl Store {
                     serde_json::to_string(&req.options).unwrap(),
                     if req.recommended.is_null() { None } else { Some(req.recommended.to_string()) },
                     serde_json::to_string(&req.expertise).unwrap(),
+                    assignee.as_ref().map(|u| u.id.clone()),
                     urgency,
                     req.expires_at,
                     req.on_timeout.map(|a| a.as_str()),
@@ -1237,6 +1442,7 @@ impl Store {
                     "kind": req.kind,
                     "title": req.title,
                     "expertise": req.expertise,
+                    "assignee": assignee.as_ref().map(|u| u.handle.clone()),
                     "urgency": urgency,
                 }),
                 now,
@@ -1247,17 +1453,91 @@ impl Store {
         })
     }
 
+    /// Address an open question to a person, or return it to the open pool with
+    /// `assignee: None`.
+    ///
+    /// A separate operation from asking rather than only a field on it, because
+    /// the agent that raises a question usually cannot know who should decide it —
+    /// it knows a billing question when it writes one, not which colleague owns
+    /// billing this month. Triage is a human act that happens after the ask.
+    ///
+    /// Only while the question is open: reassigning an answered one would rewrite
+    /// who a settled decision was waiting on, and the event log has that history
+    /// anyway.
+    pub fn assign_question(
+        &self,
+        id: &str,
+        assignee: Option<&str>,
+        actor: &str,
+    ) -> ApiResult<Question> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let q = get_question_row(tx, id)?;
+            ensure_project_writable(tx, &q.project)?;
+            if q.status != "open" {
+                return Err(ApiError::conflict(
+                    "question.not_open",
+                    format!(
+                        "Question '{id}' is '{}', so it is no longer waiting on anyone. Who it was addressed to when it was decided is part of the record and does not change.",
+                        q.status
+                    ),
+                ));
+            }
+            let person = match assignee {
+                None => None,
+                Some(raw) => Some(Self::assignable_user(tx, raw, &q.project)?),
+            };
+            let previous = q.assignee.clone();
+            let next = person.as_ref().map(|u| u.id.clone());
+            if previous == next {
+                // Nothing moved. Return the question rather than emitting an event
+                // that reads as a handover which never happened.
+                return get_question_row(tx, id);
+            }
+            tx.execute(
+                "UPDATE questions SET assignee = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1",
+                params![id, next, now],
+            )?;
+            // Mirrored onto the ticket like every other question mutation, so a
+            // resuming agent reading the thread sees who was asked without having
+            // to fetch the question.
+            let comment = crate::ids::comment_id();
+            let comment_body = match &person {
+                Some(u) => format!("{actor} addressed {id} to {}.", u.handle),
+                None => format!("{actor} returned {id} to the open pool."),
+            };
+            tx.execute(
+                "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![comment, q.ticket, actor, comment_body, now],
+            )?;
+            emit_event(
+                tx,
+                Some(&q.ticket),
+                Some(&q.project),
+                actor,
+                "question_assigned",
+                json!({
+                    "question": id,
+                    "assignee": person.as_ref().map(|u| u.handle.clone()),
+                    "previous": previous,
+                    "comment": comment,
+                }),
+                now,
+            )?;
+            get_question_row(tx, id)
+        })
+    }
+
     /// Record a human's answer and resume the parked ticket via its human-gated
     /// transition. `resume_to` overrides the default resume state. One tx.
     pub fn answer_question(
         &self,
         id: &str,
-        actor: &str,
-        scopes: &HashSet<String>,
+        answerer: Answerer<'_>,
         answer: &Value,
         resume_to: Option<&str>,
     ) -> ApiResult<AnswerOutcome> {
-        self.answer_question_inner(id, actor, scopes, answer, resume_to, AnswerVia::Direct)
+        self.answer_question_inner(id, answerer, answer, resume_to, AnswerVia::Direct)
     }
 
     /// Record an answer a human made **out of band**, on their behalf
@@ -1285,15 +1565,17 @@ impl Store {
         &self,
         id: &str,
         relayer: &str,
-        on_behalf_of: &str,
-        scopes: &HashSet<String>,
+        answerer: Answerer<'_>,
         answer: &Value,
         resume_to: Option<&str>,
     ) -> ApiResult<AnswerOutcome> {
         self.answer_question_inner(
             id,
-            on_behalf_of,
-            scopes,
+            // The named human is recorded as the answerer, and the person is
+            // dropped whatever the relaying credential is bound to: a relay is a
+            // transcription, so the name in it is a claim rather than an identity
+            // the server can vouch for, and it must not unlock the assignee route.
+            answerer.without_person(),
             answer,
             resume_to,
             AnswerVia::Relay(relayer),
@@ -1314,31 +1596,27 @@ impl Store {
     pub fn answer_question_via_grant(
         &self,
         id: &str,
-        actor: &str,
-        scopes: &HashSet<String>,
+        answerer: Answerer<'_>,
         answer: &Value,
         resume_to: Option<&str>,
         grant_id: &str,
     ) -> ApiResult<AnswerOutcome> {
-        self.answer_question_inner(
-            id,
-            actor,
-            scopes,
-            answer,
-            resume_to,
-            AnswerVia::Grant(grant_id),
-        )
+        self.answer_question_inner(id, answerer, answer, resume_to, AnswerVia::Grant(grant_id))
     }
 
     fn answer_question_inner(
         &self,
         id: &str,
-        actor: &str,
-        scopes: &HashSet<String>,
+        answerer: Answerer<'_>,
         answer: &Value,
         resume_to: Option<&str>,
         via: AnswerVia<'_>,
     ) -> ApiResult<AnswerOutcome> {
+        // Unpacked once: the rest of this function records `actor` and satisfies
+        // workflow `scope:` requirements with `scopes`, while only the approve gate
+        // looks at the person.
+        let actor = answerer.actor;
+        let scopes = answerer.scopes;
         let grant_id = via.grant();
         let relayed_by = via.relayed_by();
         let now = now_ms();
@@ -1384,40 +1662,33 @@ impl Store {
                         axum::http::StatusCode::FORBIDDEN,
                         "answer.relay_approve",
                         format!(
-                            "Question '{id}' is an 'approve', which is never relayable: it is gated on an expert:<tag> scope precisely so the answer is PROOF that a named expert exercised their authority. A relayed name is a claim about who decided, not evidence of it. This must be answered directly from a token holding one of {}.",
-                            q.expertise
-                                .iter()
-                                .map(|t| format!("expert:{t}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            "Question '{id}' is an 'approve', which is never relayable: it is gated precisely so the answer is PROOF that the authority was exercised, not a claim that it was. A relayed name is a claim. Answer it directly, from a token holding one of {} (an expert:<tag> scope){}.",
+                            if q.expertise.is_empty() {
+                                "—".to_string()
+                            } else {
+                                q.expertise
+                                    .iter()
+                                    .map(|t| format!("expert:{t}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            },
+                            if q.assignee.is_some() {
+                                ", or from the credential bound to the person it is addressed to"
+                            } else {
+                                ""
+                            }
                         ),
                     )
                     .remedy(
-                        "Have the expert answer it directly, or mint them a single-use answer link (POST /v1/questions/{id}/answer-link).",
+                        "Have the expert (or the named person) answer it directly, or mint them a single-use answer link (POST /v1/questions/{id}/answer-link).",
                     ));
                 }
             }
-            // `approve` has teeth: only a matching domain expert may answer it
-            // (the `human` scope alone is enough for every other kind).
-            if q.kind == "approve" {
-                let has_expert = q
-                    .expertise
-                    .iter()
-                    .any(|t| scopes.contains(&format!("expert:{t}")));
-                if !has_expert {
-                    return Err(ApiError::new(
-                        axum::http::StatusCode::FORBIDDEN,
-                        "question.approve_expertise",
-                        format!(
-                            "Approving this needs a domain expert: your token must hold one of {} (an expert:<tag> scope). A general human answer is not sufficient for an 'approve' question — an operator can mint a token with the scope, or answer from one that has it.",
-                            q.expertise
-                                .iter()
-                                .map(|t| format!("expert:{t}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    ));
-                }
+            // `approve` has teeth: the `human` scope alone is enough for every
+            // other kind, but an approval must come from someone the server can
+            // show had the authority. There are exactly two such proofs.
+            if q.kind == "approve" && !may_approve(tx, &q, answerer)? {
+                return Err(cannot_approve_error(&q));
             }
             let normalized = validate_answer(&q.kind, &q.options, answer, q.multi)?;
 
@@ -1587,9 +1858,9 @@ impl Store {
     pub fn reopen_question(
         &self,
         id: &str,
-        actor: &str,
-        scopes: &HashSet<String>,
+        answerer: Answerer<'_>,
     ) -> ApiResult<(Question, Ticket)> {
+        let actor = answerer.actor;
         let now = now_ms();
         self.with_tx(|tx| {
             let q = get_question_row(tx, id)?;
@@ -1603,22 +1874,11 @@ impl Store {
                     ),
                 ));
             }
-            // Reopening an approval decision needs the same domain expert that
-            // could have answered it.
-            if q.kind == "approve"
-                && !q
-                    .expertise
-                    .iter()
-                    .any(|t| scopes.contains(&format!("expert:{t}")))
-            {
-                return Err(ApiError::new(
-                    axum::http::StatusCode::FORBIDDEN,
-                    "question.approve_expertise",
-                    format!(
-                        "Reopening this approval needs a domain expert holding one of {} (an expert:<tag> scope).",
-                        q.expertise.iter().map(|t| format!("expert:{t}")).collect::<Vec<_>>().join(", ")
-                    ),
-                ));
+            // Reopening an approval needs the same authority that could have given
+            // it — the identical two-proof rule, because undoing a decision is as
+            // strong an act as making it.
+            if q.kind == "approve" && !may_approve(tx, &q, answerer)? {
+                return Err(cannot_approve_error(&q));
             }
 
             let mut t = get_ticket_required(tx, &q.ticket)?;
@@ -2017,9 +2277,16 @@ impl Store {
     pub fn get_question(&self, id: &str) -> ApiResult<Option<Question>> {
         self.with_conn(|conn| {
             let sql = format!("SELECT {QUESTION_COLS} FROM questions WHERE id = ?1");
-            conn.query_row(&sql, params![id], row_to_question)
-                .optional()
-                .map_err(ApiError::from)
+            let found = conn
+                .query_row(&sql, params![id], row_to_question)
+                .optional()?;
+            match found {
+                None => Ok(None),
+                Some(mut question) => {
+                    resolve_assignee(conn, &mut question)?;
+                    Ok(Some(question))
+                }
+            }
         })
     }
 
@@ -2034,9 +2301,12 @@ impl Store {
                  ORDER BY CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at ASC, id ASC"
             );
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
+            let mut rows = stmt
                 .query_map(params![ticket], row_to_question)?
                 .collect::<Result<Vec<_>, _>>()?;
+            // A resuming agent reads these to learn what it is waiting on, so it
+            // should see who was asked, not an opaque id.
+            resolve_assignees(conn, &mut rows)?;
             Ok(rows)
         })
     }
@@ -2087,12 +2357,56 @@ impl Store {
                 }
                 sql.push(')');
             }
-            // Expertise: match any tag via a JSON-array overlap check.
-            for tag in &filter.expertise {
+            // Expertise and assignee. Normally two independent filters ANDed with
+            // everything else; under `assignee_or_expertise` (the inbox's "for me")
+            // they become one OR group, because "waiting on me" means either sense
+            // and requiring both would show a person only the questions that are
+            // addressed to them AND in their domain — a strict subset of what they
+            // owe an answer on.
+            let expertise_clause = |sql: &mut String, p: &mut Vec<SqlValue>, tag: &String| {
                 sql.push_str(
-                    " AND EXISTS (SELECT 1 FROM json_each(questions.expertise) WHERE json_each.value = ?)",
+                    "EXISTS (SELECT 1 FROM json_each(questions.expertise) WHERE json_each.value = ?)",
                 );
                 p.push(SqlValue::Text(tag.clone()));
+            };
+            if filter.assignee_or_expertise && !(filter.assignee.is_empty() && filter.expertise.is_empty()) {
+                sql.push_str(" AND (");
+                let mut first = true;
+                for id in &filter.assignee {
+                    if !first {
+                        sql.push_str(" OR ");
+                    }
+                    first = false;
+                    sql.push_str("assignee = ?");
+                    p.push(SqlValue::Text(id.clone()));
+                }
+                for tag in &filter.expertise {
+                    if !first {
+                        sql.push_str(" OR ");
+                    }
+                    first = false;
+                    expertise_clause(&mut sql, &mut p, tag);
+                }
+                sql.push(')');
+            } else {
+                for tag in &filter.expertise {
+                    sql.push_str(" AND ");
+                    expertise_clause(&mut sql, &mut p, tag);
+                }
+                if !filter.assignee.is_empty() {
+                    sql.push_str(" AND assignee IN (");
+                    for (i, id) in filter.assignee.iter().enumerate() {
+                        if i > 0 {
+                            sql.push(',');
+                        }
+                        sql.push('?');
+                        p.push(SqlValue::Text(id.clone()));
+                    }
+                    sql.push(')');
+                }
+            }
+            if filter.unassigned {
+                sql.push_str(" AND assignee IS NULL");
             }
             // `sql` is the shared scope — FROM and WHERE only. The count reads it
             // as-is; the page appends its own ordering and window.
@@ -2116,9 +2430,10 @@ impl Store {
             p.push(SqlValue::Integer(limit));
             p.push(SqlValue::Integer(offset));
             let mut stmt = conn.prepare(&page)?;
-            let rows = stmt
+            let mut rows = stmt
                 .query_map(rusqlite::params_from_iter(p), row_to_question)?
                 .collect::<Result<Vec<_>, _>>()?;
+            resolve_assignees(conn, &mut rows)?;
             Ok((rows, total))
         })
     }

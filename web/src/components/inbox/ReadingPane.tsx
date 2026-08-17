@@ -36,6 +36,10 @@ export interface ReadingPaneLabels extends AnswerAreaLabels {
   waitingAgentPrefix: string
   waitingAgentSuffix: string
   noReply: string
+  /** The assignee control: "Waiting on", its empty option, and its tooltip. */
+  assignTo: string
+  assignNobody: string
+  assignHint: string
 }
 
 export interface ReadingPaneProps {
@@ -56,6 +60,14 @@ export interface ReadingPaneProps {
   onShare: () => void
   /** Optimistic answer still in the undo window — Reopen must stay hidden. */
   answerPending?: boolean
+  /**
+   * People this question can be addressed to: the members of its project. Empty
+   * (or absent) hides the control — on an instance with no directory, or for a
+   * reader who cannot assign, there is nothing to offer.
+   */
+  assignable?: { handle: string; label: string }[]
+  /** `null` returns the question to the queue. */
+  onAssign?: (handle: string | null) => void
 }
 
 export function ReadingPane({
@@ -73,6 +85,8 @@ export function ReadingPane({
   onReopen,
   onShare,
   answerPending = false,
+  assignable,
+  onAssign,
 }: ReadingPaneProps) {
   const [composing, setComposing] = useState(false)
   const [followText, setFollowText] = useState('')
@@ -115,6 +129,32 @@ export function ReadingPane({
             </span>
           )}
         </div>
+
+        {/* Who it is waiting on. A select rather than a typeahead: the list is
+            one project's members, and the reader is choosing a colleague, not
+            searching a directory. Only while the question is open — reassigning a
+            settled one would rewrite who a recorded decision was waiting on, and
+            the server refuses it. */}
+        {!closed && onAssign && assignable && assignable.length > 0 && (
+          <label
+            title={labels.assignHint}
+            className="text-muted-foreground mt-2 flex flex-wrap items-center gap-2 text-[12.5px] font-[650]"
+          >
+            {labels.assignTo}
+            <select
+              value={q.assignee?.handle ?? ''}
+              onChange={(e) => onAssign(e.target.value || null)}
+              className="bg-muted text-foreground border-border max-w-full cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
+            >
+              <option value="">{labels.assignNobody}</option>
+              {assignable.map((p) => (
+                <option key={p.handle} value={p.handle}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <h1 className="mt-2 mb-0 text-[19px] font-[720] tracking-[-0.02em]">{q.title}</h1>
         {q.body && <Markdown text={q.body} className="mt-3 text-[13.6px]" />}
