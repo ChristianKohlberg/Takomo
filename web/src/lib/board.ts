@@ -105,9 +105,31 @@ export function getTicket(token: string, id: string): Promise<Ticket> {
   return api<Ticket>(token, `/tickets/${encodeURIComponent(id)}?include=comments,deps,promotions`)
 }
 
+/**
+ * A page of the event log, shaped as the server actually sends it.
+ *
+ * The array is `events`, and the sequence number is `seq` — see `/events` in
+ * `spec/openapi.yaml`. This said `items` once, which typed a field the server has
+ * never sent: `api<EventPage>` is an unchecked cast of a JSON body, so nothing
+ * failed. The poll simply read `undefined` every time, concluded nothing had
+ * happened, and the board stopped live-updating entirely while still showing a
+ * green "live" dot — silently stale, which is the one failure the poll's own
+ * error handling goes out of its way to avoid.
+ */
 export interface EventPage {
-  items: { id?: number; kind?: string; ticket?: string }[]
+  // `ticket` is null — not absent — on everything that is not about a ticket,
+  // which is every initiative and schedule event in the log.
+  events: { seq?: number; kind?: string; ticket?: string | null; project?: string | null }[]
   cursor?: number | string | null
+}
+
+/**
+ * Did this page carry anything? The board's whole refresh path hangs off this
+ * one question, and getting it wrong is silent in both directions — so it is a
+ * named function with a test rather than an inline truthiness check.
+ */
+export function hasEvents(page: EventPage | undefined): boolean {
+  return (page?.events?.length ?? 0) > 0
 }
 
 /**

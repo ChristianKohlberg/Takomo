@@ -27,7 +27,7 @@ import { SharePage } from './SharePage'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { modeFor } from '@/lib/board-mode'
-import { listProjects, whoami, type Project } from '@/lib/initiatives'
+import { countWaiting, listInitiatives, listProjects, whoami, type Project } from '@/lib/initiatives'
 import { epicOf, inSubtree, indexById } from '@/lib/tickets'
 import { fetchRoadmap, laneTitles, type Roadmap } from '@/lib/roadmap'
 import { cn } from '@/lib/utils'
@@ -35,6 +35,7 @@ import {
   getEvents,
   getTicket,
   getWorkflow,
+  hasEvents,
   listTickets,
   type Ticket,
   type Workflow,
@@ -189,6 +190,7 @@ function Board({
 
   const [detail, setDetail] = useState<Ticket | null>(null)
   const [questions, setQuestions] = useState<Question[]>([])
+  const [initiativesWaiting, setInitiativesWaiting] = useState(0)
   const [asking, setAsking] = useState(false)
 
   // The live indicator. `idle` before the first load, `live` once the event
@@ -262,7 +264,7 @@ function Board({
         .then((page) => {
           if (page.cursor != null) setCursor(page.cursor)
           setConn('live')
-          if ((page.items?.length ?? 0) > 0) {
+          if (hasEvents(page)) {
             void load()
             setEpoch((n) => n + 1)
           }
@@ -330,6 +332,21 @@ function Board({
       .then(setQuestions)
       .catch(() => setQuestions([]))
   }, [token, effectiveProject, tickets])
+
+  // How many initiatives want a person — the rail's badge, and the only thing
+  // the board reads from that surface.
+  //
+  // Keyed on `epoch` rather than on a timer of its own: appending a note or
+  // deciding an amendment emits an event, so the poll that already runs is the
+  // signal, and a quiet board makes no requests for this at all. A failure
+  // clears the badge instead of freezing the last number — a stale count would
+  // send someone looking for work that is already done.
+  useEffect(() => {
+    if (!token || !effectiveProject) return
+    listInitiatives(token, { project: effectiveProject, limit: 200 })
+      .then((page) => setInitiativesWaiting(countWaiting(page.items ?? [])))
+      .catch(() => setInitiativesWaiting(0))
+  }, [token, effectiveProject, epoch])
 
   const questionsByTicket = useMemo(() => {
     const m = new Map<string, { count: number; blocking: number; advisory: number; conv: number }>()
@@ -464,7 +481,10 @@ function Board({
         },
         // The board already loads this project's open questions for its own
         // inbox drawer, so the rail can badge /inbox without a second request.
-        badges: { inbox: questions.length },
+        // Initiatives are a second request, and worth one: a document waiting on
+        // a decision is invisible from here otherwise, and the board is where a
+        // day starts.
+        badges: { inbox: questions.length, initiatives: initiativesWaiting },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
           id,
           name,
