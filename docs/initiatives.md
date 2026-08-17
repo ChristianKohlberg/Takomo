@@ -67,7 +67,7 @@ last document leaving takes the folder with it. Moving one is a `metadata_merge`
 
 Initiatives are usually created and fed over **MCP**, because the thing that produces one is an
 agent in a conversation, not a form. But not exclusively: a person can write a pane in the browser
-too, and needs to be able to — a document surface whose first paragraph can only be written by an
+too, or open and feed one from a shell with `takomo initiative` (below), and needs to be able to — a document surface whose first paragraph can only be written by an
 agent is one a person can never start. The pane editor edits the pane's SOURCE, where `[1]` indexes
 that pane's own `cites` array, and shows a legend of what each local number points at. The reader
 sees numbers assigned across the whole document instead, so without that legend an author has no way
@@ -100,6 +100,25 @@ GET   /v1/initiatives/{id}/entries/{entry}/content
 
 Both surfaces go through the same `Store` methods and share `decode_attachment` and
 `parse_rfc3339_ms`, so neither can drift into accepting what the other refuses.
+
+The **CLI** is a third caller of those same REST routes, for the reader who is already in a repo:
+
+```
+takomo initiative new TITLE [--summary S] [--status open|parked|distilled] [--label L]... [--tag T]...
+takomo initiative append ID --kind K --source S [--text T | --text-file FILE|-] [--origin]
+                              [--title T] [--source-uri U] [--origin-at RFC3339]
+                              [--attach FILE] [--mime M] [--filename N]
+takomo initiative ls   [--project P] [--status S] [--label L] [--tag T] [-q TEXT]
+takomo initiative show ID
+takomo initiative set  ID [--title T] [--summary S] [--status S] [--label L]... [--tag T]...
+```
+
+It is deliberately **not** parity with the other two. Writing a pane is absent: prose typed through
+shell flags is what the pane editor exists to avoid, and citation marks need the legend the editor
+draws. What the CLI has instead are the two things a shell does better than a textarea — `--text-file`
+(or `-` for stdin) pipes prose in without fighting quoting, and `--attach` uploads a document that is
+already on disk, named after the file unless `--filename` overrides it. `--origin` marks the words an
+idea arrived in, which is often a transcript you already have in a file.
 
 Note what the page cannot do: **edit or delete an entry**. Entries are append-only, and no route
 exposes otherwise — revising a pane appends a new `view`, it does not rewrite the old one. The

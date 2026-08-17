@@ -1372,6 +1372,334 @@ cmd_release() {
   echo "released $id"
 }
 
+# --- initiatives -------------------------------------------------------------
+# An initiative is the one thing in the store that is NOT work: an idea being
+# nurtured — a product direction, the residue of a good conversation — fed by
+# appending entries over time, each recording where it came from. No claim, no
+# lease, no ready queue; `status` is a label (open|parked|distilled), not a state
+# machine, and entries are append-only on every surface.
+#
+# These verbs are deliberately not parity with the other two surfaces. MCP came
+# first because the thing that produces an initiative is an agent in a
+# conversation, and the browser owns the document: /initiatives renders three
+# panes from `view` entries and has an editor that knows about citation marks.
+# Prose written through shell flags is exactly what that editor exists to avoid,
+# so writing a pane stays there. What is left is the subset a repo-bound human
+# reaches for — open one, feed it, find it, read it — plus the two things a shell
+# does better than a textarea: piping prose in from a file, and attaching a
+# document that is already on disk.
+cmd_initiative() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "initiative: usage: takomo initiative new|append|ls|show|set ..."
+  shift
+  case "$sub" in
+    new|open)   cmd_initiative_new "$@" ;;
+    append|add) cmd_initiative_append "$@" ;;
+    ls|list)    cmd_initiative_ls "$@" ;;
+    show)       cmd_initiative_show "$@" ;;
+    set)        cmd_initiative_set "$@" ;;
+    *) die "initiative: unknown subcommand '$sub' (new|append|ls|show|set)" ;;
+  esac
+}
+
+cmd_initiative_new() {
+  local project="" summary="" status="" title=""
+  local -a labels=()
+  local -a tags=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --summary) summary=$2; shift 2 ;;
+      --status)  status=$2; shift 2 ;;
+      --label)   labels+=("$2"); shift 2 ;;
+      --tag)     tags+=("$2"); shift 2 ;;
+      --) shift; break ;;
+      -*) die "initiative new: unknown flag $1" ;;
+      *) title=$1; shift ;;
+    esac
+  done
+  [ -n "$title" ] || die "initiative new: TITLE is required"
+  project=$(resolve_project "$project")
+  local data
+  data=$(TS_PROJECT="$project" TS_TITLE="$title" TS_SUMMARY="$summary" TS_STATUS="$status" \
+    TS_LABELS="$(printf '%s\n' "${labels[@]+"${labels[@]}"}")" \
+    TS_TAGS="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 <<'PY'
+import json, os
+d = {"project": os.environ["TS_PROJECT"], "title": os.environ["TS_TITLE"]}
+for env, key in (("TS_SUMMARY", "summary"), ("TS_STATUS", "status")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+labels = [l for l in os.environ.get("TS_LABELS", "").splitlines() if l.strip()]
+if labels: d["labels"] = labels
+tags = [t for t in os.environ.get("TS_TAGS", "").splitlines() if t.strip()]
+if tags: d["tags"] = tags
+print(json.dumps(d))
+PY
+)
+  api POST /v1/initiatives "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"opened {d['id']}  [{d.get('status','')}]  {d.get('title','')}")
+print(f"\nfeed it, and say where each contribution came from:")
+print(f"  takomo initiative append {d['id']} --kind research --source 'WHERE THIS CAME FROM' --text '…'")
+PY
+}
+
+# Append one contribution. --source is required for the same reason it is on the
+# MCP tool: an entry whose origin nobody recorded is text nobody can weigh later.
+#
+# The body arrives as --text, or from a file (or stdin) with --text-file, which
+# is how a shell escapes writing prose in flags. --attach uploads bytes already
+# on disk; JSON cannot carry them, so they go up base64-encoded and the server
+# decodes before measuring, meaning its caps bound the real payload.
+cmd_initiative_append() {
+  local id=${1:-}
+  [ -n "$id" ] || die "initiative append: usage: takomo initiative append ID --kind K --source S [--text T | --text-file F] [--title T] [--source-uri U] [--origin-at RFC3339] [--origin] [--attach FILE] [--mime M] [--filename N]"
+  shift
+  local kind="" title="" text="" textfile="" source="" source_uri="" origin_at="" origin=""
+  local attach="" mime="" filename="" have_text=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind)       kind=$2; shift 2 ;;
+      --title)      title=$2; shift 2 ;;
+      --text)       text=$2; have_text=1; shift 2 ;;
+      --text-file)  textfile=$2; shift 2 ;;
+      --source)     source=$2; shift 2 ;;
+      --source-uri) source_uri=$2; shift 2 ;;
+      --origin-at)  origin_at=$2; shift 2 ;;
+      --origin)     origin=1; shift ;;
+      --attach)     attach=$2; shift 2 ;;
+      --mime)       mime=$2; shift 2 ;;
+      --filename)   filename=$2; shift 2 ;;
+      *) die "initiative append: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$kind" ] || die "initiative append: --kind is required (note, research, feedback, transcript, document — the vocabulary is open; pick a word that says what kind of input this is)"
+  [ -n "$source" ] || die "initiative append: --source is required; an entry whose origin nobody recorded is text nobody can weigh later"
+  [ -n "$have_text" ] && [ -n "$textfile" ] && die "initiative append: give either --text or --text-file, not both"
+  [ -n "$have_text" ] || [ -n "$textfile" ] || [ -n "$attach" ] || \
+    die "initiative append: nothing to append; give --text, --text-file, or --attach"
+
+  # Both bodies are read by python from a path rather than passed as an argument:
+  # a document is not bounded by what fits in an environment variable, and reading
+  # the file preserves it exactly, trailing newline included.
+  local tmptext=""
+  if [ "$textfile" = "-" ]; then
+    tmptext=$(mktemp); cat > "$tmptext"; textfile=$tmptext
+  elif [ -n "$textfile" ]; then
+    [ -r "$textfile" ] || die "initiative append: cannot read --text-file '$textfile'"
+  fi
+  [ -z "$attach" ] || [ -r "$attach" ] || die "initiative append: cannot read --attach '$attach'"
+
+  local data
+  data=$(TS_KIND="$kind" TS_TITLE="$title" TS_TEXT="$text" TS_TEXTFILE="$textfile" \
+    TS_SOURCE="$source" TS_SOURCE_URI="$source_uri" TS_ORIGIN_AT="$origin_at" \
+    TS_ORIGIN="$origin" TS_ATTACH="$attach" TS_MIME="$mime" TS_FILENAME="$filename" \
+    python3 <<'PY'
+import base64, json, os
+d = {"kind": os.environ["TS_KIND"], "source": os.environ["TS_SOURCE"]}
+tf = os.environ.get("TS_TEXTFILE", "")
+if tf:
+    d["text"] = open(tf, encoding="utf-8").read()
+elif os.environ.get("TS_TEXT", ""):
+    d["text"] = os.environ["TS_TEXT"]
+for env, key in (("TS_TITLE", "title"), ("TS_SOURCE_URI", "source_uri"),
+                 ("TS_ORIGIN_AT", "origin_at"), ("TS_MIME", "mime")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+att = os.environ.get("TS_ATTACH", "")
+if att:
+    d["content_base64"] = base64.b64encode(open(att, "rb").read()).decode()
+    # The server keeps whatever name it is told; default to the file's own rather
+    # than making the caller retype it.
+    d["filename"] = os.environ.get("TS_FILENAME", "").strip() or os.path.basename(att)
+elif os.environ.get("TS_FILENAME", "").strip():
+    d["filename"] = os.environ["TS_FILENAME"].strip()
+if os.environ.get("TS_ORIGIN", ""):
+    d["meta"] = {"origin": True}
+print(json.dumps(d))
+PY
+)
+  [ -n "$tmptext" ] && rm -f "$tmptext"
+  api POST "/v1/initiatives/$(urlenc "$id")/entries" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+e, ini = d.get("entry") or {}, d.get("initiative") or {}
+r = ini.get("rollup") or {}
+first = (e.get("text") or "").strip().split("\n")[0]
+if len(first) > 60: first = first[:59] + "…"
+what = e.get("title") or first or e.get("filename", "")
+print(f"appended {e.get('id')}  [{e.get('kind')}]  {what}")
+print(f"  source: {e.get('source','')}")
+if e.get("has_content"):
+    print(f"  attached: {e.get('filename','')}  {e.get('content_bytes',0)} bytes  {e.get('mime') or '(no mime)'}")
+print(f"  {ini.get('id')} now holds {r.get('entries',0)} entr{'y' if r.get('entries')==1 else 'ies'}, {r.get('chars',0)} chars")
+PY
+}
+
+cmd_initiative_ls() {
+  local project="" status="" q="" label="" tag="" limit="" cursor=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --status)  status=$2; shift 2 ;;
+      --label)   label=$2; shift 2 ;;
+      --tag)     tag=$2; shift 2 ;;
+      --limit)   limit=$2; shift 2 ;;
+      --cursor)  cursor=$2; shift 2 ;;
+      -q)        q=$2; shift 2 ;;
+      *) die "initiative ls: unknown flag $1" ;;
+    esac
+  done
+  [ -z "$limit" ] || is_uint "$limit" || die "initiative ls: --limit must be a positive integer"
+  local qs="?"
+  # Unlike `ls`, an initiative list without a project is legitimate — a token may
+  # legitimately span projects and the store filters to what it is allowed to see.
+  [ -z "$project" ] && [ -n "${TAKOMO_PROJECT:-}" ] && project=$TAKOMO_PROJECT
+  [ -n "$project" ] && qs="$qs&project=$(urlenc "$project")"
+  [ -n "$status" ] && qs="$qs&status=$(urlenc "$status")"
+  [ -n "$q" ] && qs="$qs&q=$(urlenc "$q")"
+  [ -n "$label" ] && qs="$qs&label=$(urlenc "$label")"
+  [ -n "$tag" ] && qs="$qs&tag=$(urlenc "$tag")"
+  [ -n "$limit" ] && qs="$qs&limit=$limit"
+  [ -n "$cursor" ] && qs="$qs&cursor=$(urlenc "$cursor")"
+  api GET "/v1/initiatives$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items") or []
+if not items:
+    print("(no initiatives)")
+    raise SystemExit(0)
+def trunc(s, n):
+    s = s or ""
+    return s if len(s) <= n else s[: n - 1] + "…"
+for i in items:
+    r = i.get("rollup") or {}
+    last = (r.get("last_entry_at") or "")[:10]
+    meta = f"{r.get('entries', 0)} entr{'y' if r.get('entries') == 1 else 'ies'}"
+    if last: meta += f", last {last}"
+    print(f"{i['id']}  [{i.get('status','')}]  {trunc(i.get('title',''), 52)}")
+    print(f"    {meta}")
+if d.get("next_cursor"):
+    print(f"\nmore: --cursor {d['next_cursor']}")
+PY
+}
+
+# Read one: the description, then the collection newest first. Entry text is
+# printed whole — the point of reading an initiative is the prose, and a
+# collection you can only see the first line of is the pile the panes exist to
+# escape. Attachment bytes are not fetched; the content route serves those.
+cmd_initiative_show() {
+  local id=${1:-}
+  [ -n "$id" ] || die "initiative show: usage: takomo initiative show ID [--limit N] [--cursor C]"
+  shift
+  local limit="" cursor=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)  limit=$2; shift 2 ;;
+      --cursor) cursor=$2; shift 2 ;;
+      *) die "initiative show: unknown flag $1" ;;
+    esac
+  done
+  [ -z "$limit" ] || is_uint "$limit" || die "initiative show: --limit must be a positive integer"
+  api GET "/v1/initiatives/$(urlenc "$id")" >/dev/null
+  local ini_file; ini_file=$(mktemp); cp "$REQ_OUT" "$ini_file"
+  local qs="?"
+  [ -n "$limit" ] && qs="$qs&limit=$limit"
+  [ -n "$cursor" ] && qs="$qs&cursor=$(urlenc "$cursor")"
+  api GET "/v1/initiatives/$(urlenc "$id")/entries$qs" >/dev/null
+  python3 - "$ini_file" "$REQ_OUT" <<'PY'
+import json, sys, textwrap
+ini = json.load(open(sys.argv[1]))
+ent = json.load(open(sys.argv[2]))
+r = ini.get("rollup") or {}
+print(f"{ini['id']}  [{ini.get('status','')}]  {ini.get('title','')}")
+print(f"project: {ini.get('project','')}   opened by {ini.get('created_by','')} on {(ini.get('created_at') or '')[:10]}")
+if ini.get("summary"):
+    print("\n" + "\n".join(textwrap.wrap(ini["summary"], 78)))
+bits = []
+if ini.get("labels"): bits.append(" ".join(ini["labels"]))
+if ini.get("tags"): bits.append(" ".join("#" + t for t in ini["tags"]))
+if bits: print("\n" + "   ".join(bits))
+print(f"\n--- {r.get('entries', 0)} entr{'y' if r.get('entries') == 1 else 'ies'}, "
+      f"{r.get('chars', 0)} chars, {r.get('attachments', 0)} attachment(s) ---")
+for e in ent.get("items") or []:
+    head = f"\n{e['id']}  [{e.get('kind','')}]"
+    if e.get("title"): head += f"  {e['title']}"
+    print(head)
+    origin = (e.get("meta") or {}).get("origin") if isinstance(e.get("meta"), dict) else None
+    pane = (e.get("meta") or {}).get("pane") if isinstance(e.get("meta"), dict) else None
+    marks = []
+    if origin: marks.append("the words it arrived in")
+    if pane: marks.append(f"{pane} pane")
+    line = f"  {e.get('author','')} on {(e.get('created_at') or '')[:10]}   source: {e.get('source','')}"
+    if marks: line += "   (" + ", ".join(marks) + ")"
+    print(line)
+    if e.get("source_uri"): print(f"  {e['source_uri']}")
+    if e.get("has_content"):
+        print(f"  attached: {e.get('filename','')}  {e.get('content_bytes',0)} bytes  {e.get('mime') or '(no mime)'}")
+    # rstrip so a file that ends in a newline — which every well-formed one does —
+    # does not print a trailing blank line under its entry.
+    for para in (e.get("text") or "").rstrip().split("\n"):
+        print("\n".join(textwrap.wrap(para, 76, initial_indent="  ", subsequent_indent="  ")) if para.strip() else "")
+if ent.get("next_cursor"):
+    print(f"\nmore: --cursor {ent['next_cursor']}")
+PY
+  rm -f "$ini_file"
+}
+
+# Edit how an initiative is DESCRIBED — never its entries, which are append-only
+# on every surface. Parking one, or marking it distilled once its substance became
+# tickets, is the lifecycle move a shell actually wants.
+cmd_initiative_set() {
+  local id=${1:-}
+  [ -n "$id" ] || die "initiative set: usage: takomo initiative set ID [--title T] [--summary S] [--status open|parked|distilled] [--label L]... [--tag T]..."
+  shift
+  local title="" summary="" status="" have_labels="" have_tags=""
+  local -a labels=()
+  local -a tags=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title)   title=$2; shift 2 ;;
+      --summary) summary=$2; shift 2 ;;
+      --status)  status=$2; shift 2 ;;
+      --label)   labels+=("$2"); have_labels=1; shift 2 ;;
+      --tag)     tags+=("$2"); have_tags=1; shift 2 ;;
+      *) die "initiative set: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$title$summary$status$have_labels$have_tags" ] || \
+    die "initiative set: give at least one of --title --summary --status --label --tag"
+  # labels and tags are whole-list replaces, as they are on the API; repeat the
+  # flag to give the full set you want.
+  local data
+  data=$(TS_TITLE="$title" TS_SUMMARY="$summary" TS_STATUS="$status" \
+    TS_HAVE_LABELS="$have_labels" TS_HAVE_TAGS="$have_tags" \
+    TS_LABELS="$(printf '%s\n' "${labels[@]+"${labels[@]}"}")" \
+    TS_TAGS="$(printf '%s\n' "${tags[@]+"${tags[@]}"}")" python3 <<'PY'
+import json, os
+d = {}
+for env, key in (("TS_TITLE", "title"), ("TS_SUMMARY", "summary"), ("TS_STATUS", "status")):
+    v = os.environ.get(env, "")
+    if v.strip(): d[key] = v
+if os.environ.get("TS_HAVE_LABELS", ""):
+    d["labels"] = [l for l in os.environ.get("TS_LABELS", "").splitlines() if l.strip()]
+if os.environ.get("TS_HAVE_TAGS", ""):
+    d["tags"] = [t for t in os.environ.get("TS_TAGS", "").splitlines() if t.strip()]
+print(json.dumps(d))
+PY
+)
+  api PATCH "/v1/initiatives/$(urlenc "$id")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"{d['id']}  [{d.get('status','')}]  {d.get('title','')}")
+PY
+}
+
 # --- ask-a-human board -------------------------------------------------------
 
 cmd_ask() {
@@ -2881,6 +3209,29 @@ Archiving (hides tickets from default list/ready/board/metrics views):
          record that the work reached a stage (e.g. staging, production,
          published) — free-form target; history kept, latest shown on the board
 
+Initiatives (an idea being nurtured — not work: no claim, no lease, no queue):
+  takomo initiative new TITLE [--project P] [--summary S] [--status open|parked|distilled]
+         [--label L]... [--tag T]...
+  takomo initiative append ID --kind K --source S [--text T | --text-file FILE|-]
+         [--title T] [--source-uri U] [--origin-at RFC3339] [--origin]
+         [--attach FILE] [--mime M] [--filename N]
+         one contribution: a note, a research finding, a colleague's feedback, a
+         transcript, a document. --source is required — an entry whose origin
+         nobody recorded is text nobody can weigh later. --text-file (or `-` for
+         stdin) is how prose gets in without fighting shell quoting; --origin
+         marks the words the idea ARRIVED in, quoted above every pane on the page.
+  takomo initiative ls [--project P] [--status S] [--label L] [--tag T] [-q TEXT]
+         [--limit N] [--cursor C]
+  takomo initiative show ID [--limit N] [--cursor C]   description, then entries
+  takomo initiative set ID [--title T] [--summary S] [--status S] [--label L]... [--tag T]...
+         edit how it is DESCRIBED; entries are append-only on every surface.
+         Repeating --label/--tag replaces the whole list.
+         `parked` is set aside; `distilled` means its substance became tickets.
+
+  Writing the three-pane document — the panes, their citations, and the threads
+  anchored in them — stays in /initiatives, where the editor knows about citation
+  marks. `takomo roadmap` shows initiatives as the lanes their epics ship in.
+
 Portability & observability:
   takomo export [--project P] [--out FILE]   JSONL of tickets + comments + deps
   takomo import --from takomo|beads|beans PATH [--project P]
@@ -2930,6 +3281,7 @@ main() {
     unarchive) cmd_unarchive "$@" ;;
     promote) cmd_promote "$@" ;;
     release) cmd_release "$@" ;;
+    initiative|ini) cmd_initiative "$@" ;;
     ask)         cmd_ask "$@" ;;
     answer)      cmd_answer "$@" ;;
     answer-link) cmd_answer_link "$@" ;;
