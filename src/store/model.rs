@@ -923,8 +923,8 @@ pub enum OauthExchange {
     Rejected(GrantRejection),
 }
 
-pub const LANE_LAYERS: [&str; 3] = ["ui", "api", "other"];
-pub const LANE_SEVERITIES: [&str; 3] = ["blocking", "advisory", "low"];
+pub const CHECK_LAYERS: [&str; 3] = ["ui", "api", "other"];
+pub const CHECK_SEVERITIES: [&str; 3] = ["blocking", "advisory", "low"];
 pub const VERIFICATION_LEVELS: [&str; 3] = ["agent", "human", "agent_then_human"];
 pub const CASE_VERDICTS: [&str; 4] = ["pass", "fail", "blocked", "unreachable"];
 
@@ -965,26 +965,26 @@ impl Release {
 #[derive(Debug, Clone, Default)]
 pub struct ReleaseImpact {
     pub stale_cases: i64,
-    pub stale_lanes: Vec<String>,
-    pub expired_lanes: Vec<String>,
-    pub orphaned_lanes: Vec<String>,
+    pub stale_checks: Vec<String>,
+    pub expired_checks: Vec<String>,
+    pub orphaned_checks: Vec<String>,
 }
 
 impl ReleaseImpact {
     pub fn to_json(&self) -> Value {
         json!({
             "stale_cases": self.stale_cases,
-            "stale_lanes": self.stale_lanes,
-            "expired_lanes": self.expired_lanes,
-            "orphaned_lanes": self.orphaned_lanes,
+            "stale_checks": self.stale_checks,
+            "expired_checks": self.expired_checks,
+            "orphaned_checks": self.orphaned_checks,
         })
     }
 }
 
-/// How many of a lane's live cases sit in each state. Counted, never derived
+/// How many of a check's live cases sit in each state. Counted, never derived
 /// twice: `total` is the sum of the rest.
 #[derive(Debug, Clone, Default)]
-pub struct LaneCounts {
+pub struct CheckCounts {
     pub total: i64,
     pub approved: i64,
     pub verified: i64,
@@ -994,7 +994,7 @@ pub struct LaneCounts {
     pub never: i64,
 }
 
-impl LaneCounts {
+impl CheckCounts {
     pub fn to_json(&self) -> Value {
         json!({
             "total": self.total,
@@ -1020,8 +1020,8 @@ impl LaneCounts {
     }
 }
 
-/// The policy actually in force for a lane, after resolving project → epic →
-/// lane. `verification_from` / `expiry_from` name the level that supplied the
+/// The policy actually in force for a check, after resolving project → epic →
+/// check. `verification_from` / `expiry_from` name the level that supplied the
 /// value so a reader can see why, which is the whole point of an inherited
 /// setting.
 #[derive(Debug, Clone)]
@@ -1053,7 +1053,7 @@ impl ResolvedPolicy {
 /// One action with one entry precondition at one layer. `body` is free-form
 /// prose an agent or a human follows; there is deliberately no step model.
 #[derive(Debug, Clone)]
-pub struct Lane {
+pub struct Check {
     pub id: String,
     pub project: String,
     pub epic: Option<String>,
@@ -1074,14 +1074,14 @@ pub struct Lane {
     pub updated_at: i64,
     pub archived_at: Option<i64>,
     pub globs: Vec<String>,
-    pub counts: LaneCounts,
+    pub counts: CheckCounts,
     /// Globs that matched nothing in the most recent release — coverage claimed
     /// over code that is not there.
     pub orphan_globs: Vec<String>,
     pub policy: Option<ResolvedPolicy>,
 }
 
-impl Lane {
+impl Check {
     pub fn to_json(&self) -> Value {
         let mut v = json!({
             "id": self.id,
@@ -1114,12 +1114,12 @@ impl Lane {
     }
 }
 
-/// A lane crossed with one parameter assignment: the unit that actually gets
+/// A check crossed with one parameter assignment: the unit that actually gets
 /// executed. `key` is stable across regeneration so history survives.
 #[derive(Debug, Clone)]
 pub struct Case {
     pub id: String,
-    pub lane: String,
+    pub check: String,
     pub key: String,
     pub label: String,
     pub assignment: Value,
@@ -1192,7 +1192,7 @@ impl Case {
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
-            "lane": self.lane,
+            "check": self.check,
             "key": self.key,
             "label": self.label,
             "assignment": self.assignment,

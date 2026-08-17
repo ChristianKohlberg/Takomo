@@ -15,14 +15,23 @@ agent should follow is the `takomo-checklist` skill
 
 ```
 project
-└── epic            a ticket of type `epic` — same vocabulary tickets use
-    └── lane        ONE action, ONE entry precondition, ONE layer
-        └── case    the lane crossed with one parameter assignment
+└── epic           a ticket of type `epic` — same vocabulary tickets use
+    └── check      ONE action, ONE entry precondition, ONE layer
+        └── case   the check crossed with one parameter assignment
 ```
 
-The **case** is what gets executed. One lane routinely produces dozens: a pairwise
+**A check used to be called a lane.** The word was already taken: on the roadmap and
+in `/initiatives`, a lane is the *initiative* a feature is worked in — it spans
+versions and never closes. One product cannot carry two lanes, so the verification
+one became a check. Tables are `checks` and `check_globs`, the case's column is
+`check_id` (bare `CHECK` is a SQL keyword), routes live under `/v1/checks`, and the
+MCP tools are `takomo_check*`. Checks created before the rename keep their `lane-…`
+ids: an id is opaque, and rewriting primary keys is the one part of a rename that can
+lose data.
+
+The **case** is what gets executed. One check routinely produces dozens: a pairwise
 model over a large real form measured 76. So the roadmap cannot treat a 76-case
-lane like a 1-case lane, and a person cannot be handed "case 41 of 76" without the
+check like a 1-case check, and a person cannot be handed "case 41 of 76" without the
 assignment that makes it reproducible.
 
 ## Takomo stores; the agent computes
@@ -35,31 +44,31 @@ history.
 A wrong model is therefore stored faithfully. That is accepted: the alternative is
 Takomo growing an opinion about every application under test.
 
-## Lane boundaries are state transitions, not screens
+## Check boundaries are state transitions, not screens
 
 If something needs a persisted record, has its own permission gate, or is only
-reachable from another lane's terminal state, it is a **separate lane**. A create
+reachable from another check's terminal state, it is a **separate check**. A create
 form, a finalize step, a print action, a send action and a cancel action are five
-lanes, not one.
+checks, not one.
 
 Cross-action coupling does not merge them. A value captured during create that
-changes a document produced later at print time means the *print* lane carries that
-value as a parameter of its own. This is also why lanes need no dependency graph —
+changes a document produced later at print time means the *print* check carries that
+value as a parameter of its own. This is also why checks need no dependency graph —
 the precondition is a statement about data state, which keeps them independently
 runnable.
 
-**A lane covers one layer.** A rule enforced only in a frontend passes at the HTTP
+**A check covers one layer.** A rule enforced only in a frontend passes at the HTTP
 layer while the UI would have blocked it, so a UI verdict and an API verdict are
-not interchangeable in either direction. A lane spanning both is two lanes.
+not interchangeable in either direction. A check spanning both is two checks.
 
 ## Coverage is of the *declared* surface
 
-A lane claims paths of the application under test as hand-written globs
+A check claims paths of the application under test as hand-written globs
 (`src/claims/**`). This is simple, understandable, and **will rot** — that trade
 was made deliberately. Two consequences are built in rather than hoped away:
 
 - **Orphan detection.** The agent pushing a release also reports which globs
-  matched **zero files** in that tree. Those lanes are flagged and stop counting
+  matched **zero files** in that tree. Those checks are flagged and stop counting
   toward coverage. An orphaned glob reading as "still covered" is the worst failure
   mode this feature has, because it inflates confidence exactly where confidence is
   unwarranted.
@@ -103,7 +112,7 @@ arithmetic. A `ref` is immutable: pushing one twice is a 409.
 
 ## Policy: inherited, overridable
 
-Two settings resolve **project → epic → lane**, each level overriding the one above,
+Two settings resolve **project → epic → check**, each level overriding the one above,
 and every resolved value reports which level supplied it (`verification_from`,
 `expiry_from`) — an inherited setting nobody can trace is worse than no setting.
 
@@ -129,7 +138,7 @@ approval must come through `POST /v1/cases/{id}/verdict`.
 
 Human time is the scarce resource: a hundred cases cost an agent minutes and cost a
 person most of a day. So `GET /v1/projects/{project}/checklist/worklist` splits by
-*who can clear it*, not by lane.
+*who can clear it*, not by check.
 
 A stale case under `agent_then_human` appears on the **agent** list until it has a
 fresh agent verdict, so it never sits in a person's queue waiting for work only an
@@ -138,13 +147,13 @@ agent can do.
 ## The gate
 
 `GET /v1/projects/{project}/checklist/gate` answers "is verification good enough to
-ship". Only `blocking` severity blocks; advisory and low lanes nag. A gate that
+ship". Only `blocking` severity blocks; advisory and low checks nag. A gate that
 fires on everything gets overridden out of habit and stops meaning anything.
 
 ## The agent loop over MCP
 
 ```
-takomo_lane_file      declare a lane
+takomo_check_file      declare a check
 takomo_cases_file     file the generated case set (upsert by key)
 takomo_worklist       what needs re-verifying, and who can clear it
 takomo_verdict        record what you observed
@@ -153,7 +162,7 @@ takomo_coverage       the rollup, per epic
 takomo_gate           can this ship
 ```
 
-`takomo_coverage`, `takomo_gate`, `takomo_lane`, `takomo_lanes`, `takomo_releases`
+`takomo_coverage`, `takomo_gate`, `takomo_check`, `takomo_checks`, `takomo_releases`
 and `takomo_worklist` are reads and are not charged against the write budget.
 
 ## Case identity, and regeneration over time
@@ -180,5 +189,5 @@ existing verdict or none. Stable identity ships now so those remain answerable.
   is deliberately left possible.
 - **A `/checklist` web surface.** The REST and MCP surfaces are complete; the human
   page is not built.
-- **Subsumption and next-best-lane ranking.** The data is there (globs, costs,
+- **Subsumption and next-best-check ranking.** The data is there (globs, costs,
   counts); the analysis is not.

@@ -28,8 +28,8 @@ mod workflows;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use checklist::{
-    glob_matches, CaseFileOutcome, CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput,
-    ReleasePush, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_LANES_PAGE, MAX_LANE_GLOBS,
+    glob_matches, CaseFileOutcome, CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput,
+    ReleasePush, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_CHECKS_PAGE, MAX_CHECK_GLOBS,
     MAX_RELEASE_PATHS,
 };
 pub use claims::{
@@ -118,6 +118,12 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // BEFORE the schema, not after. `CREATE TABLE IF NOT EXISTS checks`
+        // would cheerfully create an empty `checks` beside a populated `lanes`,
+        // and the rename could then never run — the database would carry both,
+        // with every row in the one nothing reads. This is the only migration
+        // step that has to precede the schema batch.
+        rename_lanes_to_checks(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         // After the schema and the migrations, before any reader opens: the
@@ -373,11 +379,80 @@ fn is_private_db(path: &Path) -> bool {
     }
 }
 
+/// Does this database already have a table (or view) by this name?
+fn has_table(conn: &Connection, name: &str) -> ApiResult<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Does this table carry this column?
+fn has_column(conn: &Connection, table: &str, column: &str) -> ApiResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Rename the checklist `lanes` concept to `checks`, on a database that predates
+/// the rename. Runs BEFORE the schema batch — see `Store::open`.
+///
+/// Why the concept was renamed at all: `lane` already meant "the initiative a
+/// feature is worked in" on the roadmap and in `/initiatives`, so one product
+/// carried two unrelated lanes. The verification one became `check`.
+///
+/// The column is `check_id`, not `check`, because `CHECK` is a SQL keyword.
+///
+/// Each step is guarded on "the old name is here and the new one is not", so
+/// this is a no-op on a fresh database and on every boot after the first. Ids
+/// are deliberately NOT rewritten: an existing row keeps its `lane-…` primary
+/// key, because an id is opaque and rewriting primary keys to make a prefix
+/// pretty is the one part of this rename that could lose data.
+fn rename_lanes_to_checks(conn: &Connection) -> ApiResult<()> {
+    if has_table(conn, "lanes")? && !has_table(conn, "checks")? {
+        // SQLite updates the REFERENCES clauses in other tables for us, so
+        // `cases.lane REFERENCES lanes(id)` follows the table to its new name.
+        conn.execute("ALTER TABLE lanes RENAME TO checks", [])?;
+    }
+    if has_table(conn, "lane_globs")? && !has_table(conn, "check_globs")? {
+        conn.execute("ALTER TABLE lane_globs RENAME TO check_globs", [])?;
+    }
+    if has_table(conn, "check_globs")?
+        && has_column(conn, "check_globs", "lane")?
+        && !has_column(conn, "check_globs", "check_id")?
+    {
+        conn.execute("ALTER TABLE check_globs RENAME COLUMN lane TO check_id", [])?;
+    }
+    if has_table(conn, "cases")?
+        && has_column(conn, "cases", "lane")?
+        && !has_column(conn, "cases", "check_id")?
+    {
+        conn.execute("ALTER TABLE cases RENAME COLUMN lane TO check_id", [])?;
+    }
+    // The old indexes survive a table rename under their old names, and the
+    // schema batch is about to create identically-shaped ones under the new
+    // names. Drop the old names rather than carry two indexes over one column.
+    for stale in ["idx_lanes_project", "idx_lanes_epic", "idx_cases_lane"] {
+        conn.execute(&format!("DROP INDEX IF EXISTS {stale}"), [])?;
+    }
+    Ok(())
+}
+
 /// Idempotent, additive, non-destructive startup migrations. Runs after the
 /// `CREATE TABLE IF NOT EXISTS` schema on every open. It only ever ADDs missing
 /// columns/indexes on a database that predates them — it never drops, rewrites,
 /// or recreates existing data, so it is safe to run against a populated live DB
 /// on every boot.
+///
+/// The one step that does not fit that description is `rename_lanes_to_checks`,
+/// which is why it lives in its own function and runs before the schema.
 fn migrate(conn: &Connection) -> ApiResult<()> {
     // archived_at (nullable) separates archived tickets from active ones. Older
     // databases predate the column; add it only when PRAGMA table_info shows it
@@ -1077,7 +1152,7 @@ CREATE TABLE IF NOT EXISTS releases (
 CREATE INDEX IF NOT EXISTS idx_releases_project_seq ON releases(project, seq);
 
 -- The paths the release's diff touched. Supplied by the pusher (it has the tree
--- checked out; the server does not clone anything) and intersected against lane
+-- checked out; the server does not clone anything) and intersected against check
 -- globs to decide what went stale.
 CREATE TABLE IF NOT EXISTS release_paths (
   release TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -1085,7 +1160,7 @@ CREATE TABLE IF NOT EXISTS release_paths (
   PRIMARY KEY (release, path)
 ) WITHOUT ROWID;
 
--- Lane globs that matched NO file in this release's tree. An orphaned glob is the
+-- Check globs that matched NO file in this release's tree. An orphaned glob is the
 -- feature's worst failure mode — it reads as "still covered" while covering
 -- nothing — so it is recorded per release and excluded from coverage rather than
 -- counted.
@@ -1096,7 +1171,7 @@ CREATE TABLE IF NOT EXISTS release_orphan_globs (
 ) WITHOUT ROWID;
 
 -- Inherited checklist policy. `epic = ''` is the project-level default; a row with
--- an epic ticket id overrides it for that epic's lanes. Empty string rather than
+-- an epic ticket id overrides it for that epic's checks. Empty string rather than
 -- NULL because SQLite treats NULLs as distinct in a UNIQUE index, which would
 -- allow two project-level defaults.
 CREATE TABLE IF NOT EXISTS checklist_policies (
@@ -1110,11 +1185,11 @@ CREATE TABLE IF NOT EXISTS checklist_policies (
   UNIQUE(project, epic)
 );
 
--- A lane is one action with one entry precondition at one layer. `body` is
+-- A check is one action with one entry precondition at one layer. `body` is
 -- free-form prose an agent or a human can follow — there is deliberately no step
 -- model and no dependency graph, because the precondition is a statement about
--- data state, which is what keeps lanes independently runnable.
-CREATE TABLE IF NOT EXISTS lanes (
+-- data state, which is what keeps checks independently runnable.
+CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   epic TEXT,
@@ -1135,25 +1210,25 @@ CREATE TABLE IF NOT EXISTS lanes (
   updated_at INTEGER NOT NULL,
   archived_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_lanes_project ON lanes(project);
-CREATE INDEX IF NOT EXISTS idx_lanes_epic ON lanes(epic) WHERE epic IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_checks_project ON checks(project);
+CREATE INDEX IF NOT EXISTS idx_checks_epic ON checks(epic) WHERE epic IS NOT NULL;
 
--- Which paths of the application under test a lane claims to exercise. Declared by
+-- Which paths of the application under test a check claims to exercise. Declared by
 -- hand and known to rot; `release_orphan_globs` is how the rot becomes visible.
-CREATE TABLE IF NOT EXISTS lane_globs (
-  lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS check_globs (
+  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
   glob TEXT NOT NULL,
-  PRIMARY KEY (lane, glob)
+  PRIMARY KEY (check_id, glob)
 ) WITHOUT ROWID;
 
--- One executable case: a lane crossed with one parameter assignment. `key` is a
+-- One executable case: a check crossed with one parameter assignment. `key` is a
 -- stable identity derived from that assignment, so regenerating a model after
 -- adding a parameter matches surviving cases and keeps their history instead of
 -- orphaning it. A case dropped by regeneration is `retired_at`-stamped, never
 -- deleted, so its verdicts remain auditable.
 CREATE TABLE IF NOT EXISTS cases (
   id TEXT PRIMARY KEY,
-  lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
   key TEXT NOT NULL,
   label TEXT NOT NULL DEFAULT '',
   assignment TEXT NOT NULL DEFAULT '{}',
@@ -1170,10 +1245,10 @@ CREATE TABLE IF NOT EXISTS cases (
   retired_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  UNIQUE(lane, key)
+  UNIQUE(check_id, key)
 );
-CREATE INDEX IF NOT EXISTS idx_cases_lane ON cases(lane);
-CREATE INDEX IF NOT EXISTS idx_cases_live ON cases(lane) WHERE retired_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_cases_check ON cases(check_id);
+CREATE INDEX IF NOT EXISTS idx_cases_live ON cases(check_id) WHERE retired_at IS NULL;
 
 -- Append-only verdict history. The `cases` row carries the LAST agent verdict and
 -- the LAST human verdict as separate columns because they are separate facts — a

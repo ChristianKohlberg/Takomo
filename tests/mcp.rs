@@ -1903,7 +1903,7 @@ async fn initiative_tools_are_discoverable_and_classified() {
     assert!(!takomo::mcp::READ_TOOLS.contains(&"takomo_initiative_append"));
 }
 
-/// The whole checklist loop an agent actually runs, over MCP: file a lane, file
+/// The whole checklist loop an agent actually runs, over MCP: file a check, file
 /// its generated cases, record a verdict, push the release you merged, then read
 /// what that invalidated. This is the surface the feature exists to serve — a
 /// human never has to touch any of it.
@@ -1911,10 +1911,10 @@ async fn initiative_tools_are_discoverable_and_classified() {
 async fn mcp_drives_the_full_checklist_loop() {
     let app = TestApp::spawn().await;
 
-    let (lane, is_err) = app
+    let (check, is_err) = app
         .tool(
             &app.worker,
-            "takomo_lane_file",
+            "takomo_check_file",
             json!({
                 "project": "tp",
                 "title": "Create a claim",
@@ -1925,16 +1925,16 @@ async fn mcp_drives_the_full_checklist_loop() {
             }),
         )
         .await;
-    assert!(!is_err, "lane_file failed: {lane}");
-    let lane_id = lane["id"].as_str().expect("lane id").to_string();
-    assert_eq!(lane["policy"]["verification"], "agent");
+    assert!(!is_err, "check_file failed: {check}");
+    let check_id = check["id"].as_str().expect("check id").to_string();
+    assert_eq!(check["policy"]["verification"], "agent");
 
     let (filed, is_err) = app
         .tool(
             &app.worker,
             "takomo_cases_file",
             json!({
-                "lane": lane_id,
+                "check": check_id,
                 "cases": [
                     { "key": "happy", "label": "happy path", "seeded": true,
                       "assignment": { "guardian": "none" } },
@@ -1993,7 +1993,7 @@ async fn mcp_drives_the_full_checklist_loop() {
         .await;
     assert_eq!(
         gate["blocked"], true,
-        "a blocking lane is unverified: {gate}"
+        "a blocking check is unverified: {gate}"
     );
 
     let (cov, _) = app
@@ -2011,19 +2011,19 @@ async fn mcp_drives_the_full_checklist_loop() {
 #[tokio::test]
 async fn mcp_verdicts_are_always_agent_verdicts() {
     let app = TestApp::spawn().await;
-    let (lane, _) = app
+    let (check, _) = app
         .tool(
             &app.worker,
-            "takomo_lane_file",
+            "takomo_check_file",
             json!({ "project": "tp", "title": "Create a claim",
                     "verification": "agent_then_human" }),
         )
         .await;
-    let lane_id = lane["id"].as_str().unwrap().to_string();
+    let check_id = check["id"].as_str().unwrap().to_string();
     app.tool(
         &app.worker,
         "takomo_cases_file",
-        json!({ "lane": lane_id, "cases": [{ "key": "only" }] }),
+        json!({ "check": check_id, "cases": [{ "key": "only" }] }),
     )
     .await;
     let (wl, _) = app
@@ -2077,7 +2077,7 @@ async fn checklist_read_tools_are_not_write_charged() {
     for name in [
         "takomo_coverage",
         "takomo_gate",
-        "takomo_lanes",
+        "takomo_checks",
         "takomo_releases",
         "takomo_worklist",
     ] {

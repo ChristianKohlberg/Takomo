@@ -67,9 +67,9 @@ pub fn release_id() -> String {
     format!("rel-{}", random_chars(BASE36, 8))
 }
 
-/// Checklist lane id, e.g. "lane-9f3ka2xz".
-pub fn lane_id() -> String {
-    format!("lane-{}", random_chars(BASE36, 8))
+/// Checklist check id, e.g. "check-9f3ka2xz".
+pub fn check_id() -> String {
+    format!("check-{}", random_chars(BASE36, 8))
 }
 
 /// Checklist case id, e.g. "case-9f3ka2xz".

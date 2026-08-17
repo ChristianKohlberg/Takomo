@@ -334,13 +334,23 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   HTTP and expects TLS in front.
 
 **Checklist** (`src/store/checklist.rs`, `src/api/checklist.rs`) is how a "done" claim becomes a
-*verified* one: releases, lanes, the cases generated beneath them, and the verdicts recorded
+*verified* one: releases, checks, the cases generated beneath them, and the verdicts recorded
 against those cases. The rule that shapes every part of it is **Takomo stores, the agent
 computes** — nothing server-side generates a combinatorial model, validates one, or judges
-whether a coverage claim is true. A lane is ONE action with ONE entry precondition at ONE layer
+whether a coverage claim is true. A check is ONE action with ONE entry precondition at ONE layer
 (a rule enforced only in a frontend passes at the API layer, so those verdicts are not
 interchangeable), and coverage is of the *declared* surface: hand-written globs, known to rot,
 with orphan detection so the rot stays visible. See `docs/checklist.md`.
+
+**A check used to be called a lane, and `lane` still means something else.** On the roadmap and
+in `/initiatives` a lane is the *initiative* a feature is worked in — it spans versions and never
+closes. One product cannot carry two lanes, so the verification one is a **check**: tables
+`checks` / `check_globs`, `cases.check_id` (the column is `check_id` because `CHECK` is a SQL
+keyword), routes under `/v1/checks`, and MCP `takomo_check*`. Existing rows keep their `lane-…`
+ids — an id is opaque, and rewriting primary keys is the one part of a rename that can lose data.
+`rename_lanes_to_checks` in `src/store/mod.rs` migrates an older database, and runs **before** the
+schema batch: `CREATE TABLE IF NOT EXISTS checks` would otherwise create an empty table beside the
+populated one.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
 `spec/auth.md`, `docs/ask-a-human.md`, `docs/checklist.md`, `docs/epic-claims.md`

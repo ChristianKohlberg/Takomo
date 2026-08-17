@@ -91,6 +91,8 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// A name that is not listed counts as a write, so a tool added later is
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
+    "takomo_check",
+    "takomo_checks",
     "takomo_claim_status",
     "takomo_coverage",
     "takomo_deps",
@@ -98,8 +100,6 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_impact",
     "takomo_initiative_list",
     "takomo_initiative_show",
-    "takomo_lane",
-    "takomo_lanes",
     "takomo_list",
     "takomo_projects",
     "takomo_questions",
@@ -697,11 +697,11 @@ pub struct ReleasePushArgs {
     /// Optional note about the release.
     pub note: Option<String>,
     /// Paths the release's diff touched. You have the tree checked out; Takomo
-    /// clones nothing. Any lane claiming a glob that matches one of these has its
+    /// clones nothing. Any check claiming a glob that matches one of these has its
     /// cases marked stale.
     pub touched_paths: Option<Vec<String>>,
-    /// Lane globs that matched NO file in this tree. An orphaned glob reads as
-    /// "still covered" while covering nothing, so report them and those lanes stop
+    /// Check globs that matched NO file in this tree. An orphaned glob reads as
+    /// "still covered" while covering nothing, so report them and those checks stop
     /// counting toward coverage.
     pub orphan_globs: Option<Vec<String>>,
 }
@@ -713,10 +713,10 @@ pub struct ChecklistProjectArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LanesArgs {
+pub struct ChecksArgs {
     /// Project id.
     pub project: String,
-    /// Narrow to one epic's lanes, or "none" for lanes nobody grouped.
+    /// Narrow to one epic's checks, or "none" for checks nobody grouped.
     pub epic: Option<String>,
     /// Narrow by severity: blocking, advisory, low.
     pub severity: Option<String>,
@@ -728,34 +728,34 @@ pub struct LanesArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LaneShowArgs {
-    /// Lane id.
+pub struct CheckShowArgs {
+    /// Check id.
     pub id: String,
-    /// Include the lane's cases in the response.
+    /// Include the check's cases in the response.
     pub cases: Option<bool>,
     /// With `cases`: how many to return, 1..=500 (default 500). `case_total`
-    /// always reports how many the lane holds.
+    /// always reports how many the check holds.
     pub limit: Option<i64>,
     /// With `cases`: skip this many, for reading past the first page.
     pub offset: Option<i64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LaneFileArgs {
-    /// Project the lane belongs to.
+pub struct CheckFileArgs {
+    /// Project the check belongs to.
     pub project: String,
-    /// The one action this lane verifies, e.g. "Create a claim".
+    /// The one action this check verifies, e.g. "Create a claim".
     pub title: String,
     /// Epic ticket id to group under. Omit to leave it ungrouped.
     pub epic: Option<String>,
     /// Free-form traversal an agent or a human follows. No step model, no DAG —
     /// prose is the content.
     pub body: Option<String>,
-    /// The data state and permissions needed before this lane can start.
+    /// The data state and permissions needed before this check can start.
     pub precondition: Option<String>,
-    /// Which layer this lane exercises: ui, api, other. A rule enforced only in
+    /// Which layer this check exercises: ui, api, other. A rule enforced only in
     /// the interface passes at the API layer, so the two are NOT interchangeable —
-    /// one lane covers one layer.
+    /// one check covers one layer.
     pub layer: Option<String>,
     /// blocking, advisory or low. Only blocking severity blocks a release gate.
     pub severity: Option<String>,
@@ -769,15 +769,15 @@ pub struct LaneFileArgs {
     pub cost_agent_minutes: Option<i64>,
     /// Rough human cost for one case, in minutes.
     pub cost_human_minutes: Option<i64>,
-    /// Paths of the application under test this lane claims to exercise, e.g.
+    /// Paths of the application under test this check claims to exercise, e.g.
     /// ["src/claims/**"].
     pub globs: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CaseFileArgs {
-    /// Lane id the cases belong to.
-    pub lane: String,
+    /// Check id the cases belong to.
+    pub check: String,
     /// The generated case set. Each entry needs a `key` derived from its parameter
     /// assignment so regeneration matches existing cases and keeps their history.
     pub cases: Vec<CaseArg>,
@@ -1149,8 +1149,8 @@ impl TakomoMcp {
         state counts, not a separate bucket. `initiatives` is the same rollup per \
         INITIATIVE — the long-lived lane a feature is worked in, which never closes — over \
         every ticket tagged `initiative:<id>` and everything beneath it, with `epics` \
-        naming the versions filed under that lane; `uninitiated` covers work no lane owns. \
-        Lane rollups MAY OVERLAP and must not be summed. Pass `epic` to report on ONE \
+        naming the versions filed under that check; `uninitiated` covers work no check owns. \
+        Check rollups MAY OVERLAP and must not be summed. Pass `epic` to report on ONE \
         epic's subtree; the project-wide `unparented`, `initiatives` and `uninitiated` \
         sections are then omitted rather than returned empty."
     )]
@@ -1300,9 +1300,9 @@ impl TakomoMcp {
 
     #[tool(
         description = "Record a release you just merged, and learn what it invalidated. Send the \
-        tag or FULL sha as `ref`, the paths the diff touched, and any lane globs that matched NO \
-        file in the tree. Every lane claiming a touched path has its cases marked stale; globs that \
-        matched nothing are flagged so those lanes stop counting as covered. There is no direct \
+        tag or FULL sha as `ref`, the paths the diff touched, and any check globs that matched NO \
+        file in the tree. Every check claiming a touched path has its cases marked stale; globs that \
+        matched nothing are flagged so those checks stop counting as covered. There is no direct \
         integration by design — the agent that merged the work is what tells Takomo a release \
         happened."
     )]
@@ -1324,45 +1324,45 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "List a project's checklist lanes with their case counts, resolved policy \
-        and any orphaned globs. A lane is one action with one entry precondition at one layer."
+        description = "List a project's checklist checks with their case counts, resolved policy \
+        and any orphaned globs. A check is one action with one entry precondition at one layer."
     )]
-    async fn takomo_lanes(
+    async fn takomo_checks(
         &self,
-        Parameters(a): Parameters<LanesArgs>,
+        Parameters(a): Parameters<ChecksArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_lanes(&require_auth(&ctx)?, a))
+        respond(self.do_checks(&require_auth(&ctx)?, a))
     }
 
     #[tool(
-        description = "Show one lane: its traversal body, precondition, claimed globs, resolved \
+        description = "Show one check: its traversal body, precondition, claimed globs, resolved \
         policy and case counts. Pass cases=true to include every case with its verdicts."
     )]
-    async fn takomo_lane(
+    async fn takomo_check(
         &self,
-        Parameters(a): Parameters<LaneShowArgs>,
+        Parameters(a): Parameters<CheckShowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_lane(&require_auth(&ctx)?, a))
+        respond(self.do_check(&require_auth(&ctx)?, a))
     }
 
     #[tool(
-        description = "Declare a checklist lane. Draw its boundary at a state transition, not a \
+        description = "Declare a checklist check. Draw its boundary at a state transition, not a \
         screen: if something needs a persisted record, has its own permission gate, or is only \
-        reachable from another lane's terminal state, it is a SEPARATE lane. Takomo stores what you \
+        reachable from another check's terminal state, it is a SEPARATE check. Takomo stores what you \
         file and does not judge whether the model is right."
     )]
-    async fn takomo_lane_file(
+    async fn takomo_check_file(
         &self,
-        Parameters(a): Parameters<LaneFileArgs>,
+        Parameters(a): Parameters<CheckFileArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_lane_file(&require_auth(&ctx)?, a))
+        respond(self.do_check_file(&require_auth(&ctx)?, a))
     }
 
     #[tool(
-        description = "File the generated case set for a lane. Upsert is by `key`, so derive each \
+        description = "File the generated case set for a check. Upsert is by `key`, so derive each \
         key from its parameter assignment: a case still present keeps its verdict history, one that \
         vanished is retired rather than deleted, one that returns is revived. A large real form \
         yields around 76 pairwise cases — if you have thousands, most of your parameters are \
@@ -1420,7 +1420,7 @@ impl TakomoMcp {
 
     #[tool(
         description = "Is this project's verification good enough to ship? Only blocking-severity \
-        lanes block; advisory and low ones nag, because a gate that fires on everything gets \
+        checks block; advisory and low ones nag, because a gate that fires on everything gets \
         overridden out of habit and stops meaning anything."
     )]
     async fn takomo_gate(
@@ -2694,14 +2694,14 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_lanes(&self, auth: &AuthCtx, a: LanesArgs) -> ApiResult<Value> {
+    fn do_checks(&self, auth: &AuthCtx, a: ChecksArgs) -> ApiResult<Value> {
         auth.require_scope("read")?;
         auth.require_project(&a.project)?;
         let epic = match a.epic.as_deref() {
             Some("none") => Some(String::new()),
             other => other.map(str::to_string),
         };
-        let filter = crate::store::LaneFilter {
+        let filter = crate::store::CheckFilter {
             project: a.project.clone(),
             epic,
             severity: a.severity,
@@ -2712,29 +2712,29 @@ impl TakomoMcp {
         };
         let limit = a
             .limit
-            .unwrap_or(crate::store::MAX_LANES_PAGE)
-            .clamp(1, crate::store::MAX_LANES_PAGE);
-        let (lanes, total) = self.state.store.list_lanes(&filter)?;
+            .unwrap_or(crate::store::MAX_CHECKS_PAGE)
+            .clamp(1, crate::store::MAX_CHECKS_PAGE);
+        let (checks, total) = self.state.store.list_checks(&filter)?;
         let mut out = json!({
             "ok": true,
-            "lanes": lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+            "checks": checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
             "total": total,
             "limit": limit,
         });
-        if total > lanes.len() as i64 {
+        if total > checks.len() as i64 {
             out["note"] = json!(format!(
-                "Showing {} of {total} lane(s). Raise `limit` (max 200) or narrow with epic/severity/layer.",
-                lanes.len()
+                "Showing {} of {total} check(s). Raise `limit` (max 200) or narrow with epic/severity/layer.",
+                checks.len()
             ));
         }
         Ok(out)
     }
 
-    fn do_lane(&self, auth: &AuthCtx, a: LaneShowArgs) -> ApiResult<Value> {
+    fn do_check(&self, auth: &AuthCtx, a: CheckShowArgs) -> ApiResult<Value> {
         auth.require_scope("read")?;
-        let lane = self.state.store.get_lane(&a.id)?;
-        auth.require_project(&lane.project)?;
-        let mut out = lane.to_json();
+        let check = self.state.store.get_check(&a.id)?;
+        auth.require_project(&check.project)?;
+        let mut out = check.to_json();
         out["ok"] = json!(true);
         if a.cases.unwrap_or(false) {
             let (cases, total) = self
@@ -2754,10 +2754,10 @@ impl TakomoMcp {
         Ok(out)
     }
 
-    fn do_lane_file(&self, auth: &AuthCtx, a: LaneFileArgs) -> ApiResult<Value> {
+    fn do_check_file(&self, auth: &AuthCtx, a: CheckFileArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         auth.require_project(&a.project)?;
-        let req = crate::store::LaneCreate {
+        let req = crate::store::CheckCreate {
             project: a.project.clone(),
             epic: a.epic,
             title: a.title,
@@ -2773,17 +2773,17 @@ impl TakomoMcp {
             globs: a.globs.unwrap_or_default(),
             metadata: None,
         };
-        let lane = self.state.store.create_lane(&req, &auth.actor)?;
+        let check = self.state.store.create_check(&req, &auth.actor)?;
         self.state.wake();
-        let mut out = lane.to_json();
+        let mut out = check.to_json();
         out["ok"] = json!(true);
         Ok(out)
     }
 
     fn do_cases_file(&self, auth: &AuthCtx, a: CaseFileArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        let lane = self.state.store.get_lane(&a.lane)?;
-        auth.require_project(&lane.project)?;
+        let check = self.state.store.get_check(&a.check)?;
+        auth.require_project(&check.project)?;
         let cases: Vec<crate::store::CaseInput> = a
             .cases
             .into_iter()
@@ -2797,19 +2797,19 @@ impl TakomoMcp {
         let outcome =
             self.state
                 .store
-                .file_cases(&a.lane, &cases, a.prune.unwrap_or(true), &auth.actor)?;
+                .file_cases(&a.check, &cases, a.prune.unwrap_or(true), &auth.actor)?;
         self.state.wake();
         let mut out = outcome.to_json();
         out["ok"] = json!(true);
-        out["lane"] = json!(a.lane);
+        out["check"] = json!(a.check);
         Ok(out)
     }
 
     fn do_verdict(&self, auth: &AuthCtx, a: VerdictArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         let (case, _) = self.state.store.get_case(&a.case)?;
-        let lane = self.state.store.get_lane(&case.lane)?;
-        auth.require_project(&lane.project)?;
+        let check = self.state.store.get_check(&case.check)?;
+        auth.require_project(&check.project)?;
         // Deliberately no actor_kind parameter: over MCP an agent records an agent
         // verdict. "A person approved this" is a claim only a human-scoped token
         // may make, and it is made through /v1/cases/{id}/verdict.

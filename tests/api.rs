@@ -11303,18 +11303,18 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
 }
 
 // ---------------------------------------------------------------------------
-// Checklist: releases, lanes, cases, verdicts, policy, coverage, gate
+// Checklist: releases, checks, cases, verdicts, policy, coverage, gate
 // ---------------------------------------------------------------------------
 
-/// Create a lane and return its id.
-async fn lane(app: &TestApp, body: Value) -> String {
-    let (status, b) = app.post(&app.admin, "/v1/projects/tp/lanes", body).await;
-    assert_eq!(status, StatusCode::CREATED, "lane create failed: {b}");
-    b["id"].as_str().expect("lane id").to_string()
+/// Create a check and return its id.
+async fn check(app: &TestApp, body: Value) -> String {
+    let (status, b) = app.post(&app.admin, "/v1/projects/tp/checks", body).await;
+    assert_eq!(status, StatusCode::CREATED, "check create failed: {b}");
+    b["id"].as_str().expect("check id").to_string()
 }
 
-/// File a set of `(key, label)` cases on a lane, replacing whatever was there.
-async fn file_cases(app: &TestApp, lane_id: &str, keys: &[&str]) -> Value {
+/// File a set of `(key, label)` cases on a check, replacing whatever was there.
+async fn file_cases(app: &TestApp, check_id: &str, keys: &[&str]) -> Value {
     let cases: Vec<Value> = keys
         .iter()
         .map(|k| json!({ "key": k, "label": format!("case {k}"), "assignment": { "k": k } }))
@@ -11322,7 +11322,7 @@ async fn file_cases(app: &TestApp, lane_id: &str, keys: &[&str]) -> Value {
     let (status, b) = app
         .put(
             &app.admin,
-            &format!("/v1/lanes/{lane_id}/cases"),
+            &format!("/v1/checks/{check_id}/cases"),
             json!({ "cases": cases }),
         )
         .await;
@@ -11330,9 +11330,9 @@ async fn file_cases(app: &TestApp, lane_id: &str, keys: &[&str]) -> Value {
     b
 }
 
-async fn case_ids(app: &TestApp, lane_id: &str) -> Vec<(String, String)> {
+async fn case_ids(app: &TestApp, check_id: &str) -> Vec<(String, String)> {
     let (_, b) = app
-        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases"))
+        .get(&app.admin, &format!("/v1/checks/{check_id}/cases"))
         .await;
     b["items"]
         .as_array()
@@ -11400,19 +11400,19 @@ async fn releases_are_ordered_and_a_ref_cannot_be_pushed_twice() {
     assert_eq!(refs, vec!["v1.1.0", "v1.0.0"]);
 }
 
-/// The whole point of the glob claim: a release invalidates the lanes that claim
+/// The whole point of the glob claim: a release invalidates the checks that claim
 /// the code it touched, and leaves the others alone. Getting this wrong either
 /// invalidates everything (and the feature becomes noise) or nothing (and it
 /// becomes a lie).
 #[tokio::test]
-async fn a_release_stales_only_the_lanes_claiming_a_touched_path() {
+async fn a_release_stales_only_the_checks_claiming_a_touched_path() {
     let app = TestApp::spawn().await;
-    let claims = lane(
+    let claims = check(
         &app,
         json!({ "title": "Create a claim", "globs": ["src/claims/**"] }),
     )
     .await;
-    let reports = lane(
+    let reports = check(
         &app,
         json!({ "title": "Monthly report", "globs": ["src/reporting/**"] }),
     )
@@ -11421,8 +11421,8 @@ async fn a_release_stales_only_the_lanes_claiming_a_touched_path() {
     file_cases(&app, &reports, &["a"]).await;
 
     // Verify everything first, so "stale" is a real transition and not just "never".
-    for lane_id in [&claims, &reports] {
-        for (_, cid) in case_ids(&app, lane_id).await {
+    for check_id in [&claims, &reports] {
+        for (_, cid) in case_ids(&app, check_id).await {
             let (status, b) = app
                 .post(
                     &app.admin,
@@ -11447,19 +11447,19 @@ async fn a_release_stales_only_the_lanes_claiming_a_touched_path() {
         "both claims cases go stale"
     );
     assert_eq!(
-        rel["impact"]["stale_lanes"].as_array().unwrap().len(),
+        rel["impact"]["stale_checks"].as_array().unwrap().len(),
         1,
-        "only the lane claiming src/claims/** is affected: {rel}"
+        "only the check claiming src/claims/** is affected: {rel}"
     );
 
-    let (_, claims_lane) = app.get(&app.admin, &format!("/v1/lanes/{claims}")).await;
-    assert_eq!(claims_lane["cases"]["stale"], 2);
-    assert_eq!(claims_lane["cases"]["verified"], 0);
+    let (_, claims_check) = app.get(&app.admin, &format!("/v1/checks/{claims}")).await;
+    assert_eq!(claims_check["cases"]["stale"], 2);
+    assert_eq!(claims_check["cases"]["verified"], 0);
 
-    let (_, reports_lane) = app.get(&app.admin, &format!("/v1/lanes/{reports}")).await;
+    let (_, reports_check) = app.get(&app.admin, &format!("/v1/checks/{reports}")).await;
     assert_eq!(
-        reports_lane["cases"]["verified"], 1,
-        "an untouched lane keeps its verdicts: {reports_lane}"
+        reports_check["cases"]["verified"], 1,
+        "an untouched check keeps its verdicts: {reports_check}"
     );
 }
 
@@ -11469,7 +11469,7 @@ async fn a_release_stales_only_the_lanes_claiming_a_touched_path() {
 #[tokio::test]
 async fn refiling_cases_preserves_history_and_retires_the_absent() {
     let app = TestApp::spawn().await;
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     let out = file_cases(&app, &id, &["k1", "k2"]).await;
     assert_eq!(out["added"], 2);
 
@@ -11496,7 +11496,10 @@ async fn refiling_cases_preserves_history_and_retires_the_absent() {
 
     // k2 survives as history, and is refused for new work.
     let (_, with_retired) = app
-        .get(&app.admin, &format!("/v1/lanes/{id}/cases?retired=include"))
+        .get(
+            &app.admin,
+            &format!("/v1/checks/{id}/cases?retired=include"),
+        )
         .await;
     let k2 = with_retired["items"]
         .as_array()
@@ -11528,7 +11531,7 @@ async fn refiling_cases_preserves_history_and_retires_the_absent() {
 #[tokio::test]
 async fn agent_and_human_verdicts_are_separate_facts() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({ "title": "Create a claim", "verification": "agent_then_human" }),
     )
@@ -11601,7 +11604,7 @@ async fn agent_and_human_verdicts_are_separate_facts() {
 #[tokio::test]
 async fn verdict_history_is_newest_first_within_a_single_millisecond() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({ "title": "Create a claim", "verification": "agent_then_human" }),
     )
@@ -11654,7 +11657,7 @@ async fn verdict_history_is_newest_first_within_a_single_millisecond() {
 #[tokio::test]
 async fn a_human_verdict_needs_the_human_scope() {
     let app = TestApp::spawn().await;
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     file_cases(&app, &id, &["only"]).await;
     let cid = case_ids(&app, &id).await[0].1.clone();
 
@@ -11687,7 +11690,7 @@ async fn a_human_verdict_needs_the_human_scope() {
 #[tokio::test]
 async fn a_fail_verdict_requires_a_note() {
     let app = TestApp::spawn().await;
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     file_cases(&app, &id, &["only"]).await;
     let cid = case_ids(&app, &id).await[0].1.clone();
 
@@ -11712,15 +11715,15 @@ async fn a_fail_verdict_requires_a_note() {
     assert_eq!(ok["state"], "failed");
 }
 
-/// Policy resolves project → epic → lane, and each level says where its value
+/// Policy resolves project → epic → check, and each level says where its value
 /// came from — an inherited setting nobody can trace is worse than no setting.
 #[tokio::test]
-async fn policy_resolves_project_then_epic_then_lane() {
+async fn policy_resolves_project_then_epic_then_check() {
     let app = TestApp::spawn().await;
     let epic = app.create_typed("Claims", "epic", None).await;
 
-    let plain = lane(&app, json!({ "title": "Ungrouped" })).await;
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{plain}")).await;
+    let plain = check(&app, json!({ "title": "Ungrouped" })).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{plain}")).await;
     assert_eq!(l["policy"]["verification"], "agent", "built-in default");
     assert_eq!(l["policy"]["verification_from"], "default");
 
@@ -11733,7 +11736,7 @@ async fn policy_resolves_project_then_epic_then_lane() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{plain}")).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{plain}")).await;
     assert_eq!(l["policy"]["verification"], "human");
     assert_eq!(l["policy"]["verification_from"], "project");
     assert_eq!(l["policy"]["expiry_releases"], 5);
@@ -11745,41 +11748,41 @@ async fn policy_resolves_project_then_epic_then_lane() {
         json!({ "epic": epic, "verification": "agent_then_human" }),
     )
     .await;
-    let grouped = lane(&app, json!({ "title": "In the epic", "epic": epic })).await;
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    let grouped = check(&app, json!({ "title": "In the epic", "epic": epic })).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{grouped}")).await;
     assert_eq!(l["policy"]["verification"], "agent_then_human");
     assert_eq!(l["policy"]["verification_from"], "epic");
 
-    // Lane override beats both.
+    // Check override beats both.
     app.patch(
         &app.admin,
-        &format!("/v1/lanes/{grouped}"),
+        &format!("/v1/checks/{grouped}"),
         json!({ "verification": "agent" }),
     )
     .await;
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{grouped}")).await;
     assert_eq!(l["policy"]["verification"], "agent");
-    assert_eq!(l["policy"]["verification_from"], "lane");
+    assert_eq!(l["policy"]["verification_from"], "check");
 
     // Explicit null clears the override and inheritance resumes. This is why the
     // wire format has to distinguish absent from null.
     app.patch(
         &app.admin,
-        &format!("/v1/lanes/{grouped}"),
+        &format!("/v1/checks/{grouped}"),
         json!({ "verification": null }),
     )
     .await;
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{grouped}")).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{grouped}")).await;
     assert_eq!(l["policy"]["verification"], "agent_then_human");
     assert_eq!(l["policy"]["verification_from"], "epic");
 }
 
 /// Release-count expiry: verified at r1 with a limit of 1 release, so pushing r2
-/// ages it out even though nothing in the diff touched the lane.
+/// ages it out even though nothing in the diff touched the check.
 #[tokio::test]
 async fn release_count_expiry_stales_a_case_without_a_touching_diff() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({ "title": "Create a claim", "globs": ["src/claims/**"], "expiry_releases": 1 }),
     )
@@ -11811,9 +11814,9 @@ async fn release_count_expiry_stales_a_case_without_a_touching_diff() {
         .await;
     assert_eq!(
         r2["impact"]["stale_cases"], 1,
-        "the policy clock ran out even though the diff missed the lane: {r2}"
+        "the policy clock ran out even though the diff missed the check: {r2}"
     );
-    assert_eq!(r2["impact"]["expired_lanes"].as_array().unwrap().len(), 1);
+    assert_eq!(r2["impact"]["expired_checks"].as_array().unwrap().len(), 1);
 
     let (_, wl) = app
         .get(&app.admin, "/v1/projects/tp/checklist/worklist")
@@ -11826,7 +11829,7 @@ async fn release_count_expiry_stales_a_case_without_a_touching_diff() {
 #[tokio::test]
 async fn time_based_expiry_puts_a_case_back_on_the_worklist() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({ "title": "Create a claim", "expiry_days": 30 }),
     )
@@ -11862,7 +11865,7 @@ async fn time_based_expiry_puts_a_case_back_on_the_worklist() {
 async fn coverage_counts_unreachable_apart_and_reports_orphaned_globs() {
     let app = TestApp::spawn().await;
     let epic = app.create_typed("Claims", "epic", None).await;
-    let id = lane(
+    let id = check(
         &app,
         json!({
             "title": "Create a claim",
@@ -11899,9 +11902,9 @@ async fn coverage_counts_unreachable_apart_and_reports_orphaned_globs() {
     // project below 100% forever with no action that could close the gap.
     assert_eq!(cov["percent"], 66, "{cov}");
     assert_eq!(cov["epics"][0]["epic"], epic);
-    assert_eq!(cov["epics"][0]["lanes"], 1);
+    assert_eq!(cov["epics"][0]["checks"], 1);
 
-    // An orphaned glob is flagged rather than counted, because a lane claiming
+    // An orphaned glob is flagged rather than counted, because a check claiming
     // code that is not there reads as covered while covering nothing.
     app.post(
         &app.admin,
@@ -11913,21 +11916,21 @@ async fn coverage_counts_unreachable_apart_and_reports_orphaned_globs() {
         }),
     )
     .await;
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{id}")).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{id}")).await;
     assert_eq!(
         l["orphan_globs"],
         json!(["src/claims/legacy/**"]),
-        "the empty glob is surfaced on the lane: {l}"
+        "the empty glob is surfaced on the check: {l}"
     );
 }
 
-/// The gate blocks on `blocking` severity only. Advisory and low lanes nag: a
+/// The gate blocks on `blocking` severity only. Advisory and low checks nag: a
 /// gate that fires on everything gets overridden out of habit and stops meaning
 /// anything.
 #[tokio::test]
 async fn the_gate_blocks_on_blocking_severity_and_nags_on_the_rest() {
     let app = TestApp::spawn().await;
-    let advisory = lane(
+    let advisory = check(
         &app,
         json!({ "title": "Print documents", "severity": "advisory" }),
     )
@@ -11941,7 +11944,7 @@ async fn the_gate_blocks_on_blocking_severity_and_nags_on_the_rest() {
     );
     assert_eq!(gate["advisory_outstanding"], 1);
 
-    let blocking = lane(
+    let blocking = check(
         &app,
         json!({ "title": "Create a claim", "severity": "blocking" }),
     )
@@ -11970,7 +11973,7 @@ async fn the_gate_blocks_on_blocking_severity_and_nags_on_the_rest() {
 #[tokio::test]
 async fn the_worklist_routes_agent_first_work_away_from_humans() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({
             "title": "Create a claim",
@@ -12031,26 +12034,26 @@ async fn the_worklist_routes_agent_first_work_away_from_humans() {
     assert_eq!(wl["human"]["cases"], 0);
 }
 
-/// Lanes group under a `type: epic` ticket so the vocabulary matches tickets.
+/// Checks group under a `type: epic` ticket so the vocabulary matches tickets.
 /// Anything else is a typo worth a loud refusal rather than a silent orphan.
 #[tokio::test]
-async fn a_lane_refuses_a_parent_that_is_not_an_epic() {
+async fn a_check_refuses_a_parent_that_is_not_an_epic() {
     let app = TestApp::spawn().await;
     let task = app.create_typed("Just a task", "task", None).await;
     let (status, refused) = app
         .post(
             &app.admin,
-            "/v1/projects/tp/lanes",
+            "/v1/projects/tp/checks",
             json!({ "title": "Create a claim", "epic": task }),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
-    assert_eq!(refused["code"], "validation.lane_epic");
+    assert_eq!(refused["code"], "validation.check_epic");
 
     let (status, refused) = app
         .post(
             &app.admin,
-            "/v1/projects/tp/lanes",
+            "/v1/projects/tp/checks",
             json!({ "title": "Create a claim", "epic": "nope-9999" }),
         )
         .await;
@@ -12060,18 +12063,18 @@ async fn a_lane_refuses_a_parent_that_is_not_an_epic() {
 /// Enum and shape validation is part of the contract: a typo must be a loud 4xx
 /// carrying the legal values, never a silently dropped field.
 #[tokio::test]
-async fn lane_and_case_input_is_validated_with_teaching_errors() {
+async fn check_and_case_input_is_validated_with_teaching_errors() {
     let app = TestApp::spawn().await;
 
     let (status, bad) = app
         .post(
             &app.admin,
-            "/v1/projects/tp/lanes",
+            "/v1/projects/tp/checks",
             json!({ "title": "X", "layer": "gui" }),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
-    assert_eq!(bad["code"], "validation.lane_layer");
+    assert_eq!(bad["code"], "validation.check_layer");
     assert!(
         bad["message"].as_str().unwrap().contains("ui"),
         "the error names the legal values: {bad}"
@@ -12080,7 +12083,7 @@ async fn lane_and_case_input_is_validated_with_teaching_errors() {
     let (status, bad) = app
         .post(
             &app.admin,
-            "/v1/projects/tp/lanes",
+            "/v1/projects/tp/checks",
             json!({ "title": "X", "sevrity": "blocking" }),
         )
         .await;
@@ -12090,11 +12093,11 @@ async fn lane_and_case_input_is_validated_with_teaching_errors() {
         "a typo'd field is loud: {bad}"
     );
 
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     let (status, bad) = app
         .put(
             &app.admin,
-            &format!("/v1/lanes/{id}/cases"),
+            &format!("/v1/checks/{id}/cases"),
             json!({ "cases": [{ "key": "dup" }, { "key": "dup" }] }),
         )
         .await;
@@ -12107,7 +12110,7 @@ async fn lane_and_case_input_is_validated_with_teaching_errors() {
     let (status, bad) = app
         .put(
             &app.admin,
-            &format!("/v1/lanes/{id}/cases"),
+            &format!("/v1/checks/{id}/cases"),
             json!({ "cases": [{ "label": "no key" }] }),
         )
         .await;
@@ -12116,37 +12119,37 @@ async fn lane_and_case_input_is_validated_with_teaching_errors() {
     assert!(bad["message"].as_str().unwrap().contains("key"), "{bad}");
 }
 
-/// Archiving keeps the evidence. A lane no longer worth running is still a record
+/// Archiving keeps the evidence. A check no longer worth running is still a record
 /// of what was once verified, so it leaves coverage without deleting history.
 #[tokio::test]
-async fn archiving_a_lane_drops_it_from_coverage_but_keeps_its_cases() {
+async fn archiving_a_check_drops_it_from_coverage_but_keeps_its_cases() {
     let app = TestApp::spawn().await;
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     file_cases(&app, &id, &["a"]).await;
 
     let (_, cov) = app
         .get(&app.admin, "/v1/projects/tp/checklist/coverage")
         .await;
-    assert_eq!(cov["lanes"], 1);
+    assert_eq!(cov["checks"], 1);
 
-    let (status, archived) = app.delete(&app.admin, &format!("/v1/lanes/{id}")).await;
+    let (status, archived) = app.delete(&app.admin, &format!("/v1/checks/{id}")).await;
     assert_eq!(status, StatusCode::OK, "{archived}");
     assert!(!archived["archived_at"].is_null());
 
     let (_, cov) = app
         .get(&app.admin, "/v1/projects/tp/checklist/coverage")
         .await;
-    assert_eq!(cov["lanes"], 0, "archived lanes leave coverage: {cov}");
+    assert_eq!(cov["checks"], 0, "archived checks leave coverage: {cov}");
 
-    let (_, lanes) = app.get(&app.admin, "/v1/projects/tp/lanes").await;
-    assert_eq!(lanes["items"].as_array().unwrap().len(), 0);
-    let (_, lanes) = app
-        .get(&app.admin, "/v1/projects/tp/lanes?archived=include")
+    let (_, checks) = app.get(&app.admin, "/v1/projects/tp/checks").await;
+    assert_eq!(checks["items"].as_array().unwrap().len(), 0);
+    let (_, checks) = app
+        .get(&app.admin, "/v1/projects/tp/checks?archived=include")
         .await;
-    assert_eq!(lanes["items"].as_array().unwrap().len(), 1);
+    assert_eq!(checks["items"].as_array().unwrap().len(), 1);
 
     // The cases and their history are still reachable.
-    let (status, cases) = app.get(&app.admin, &format!("/v1/lanes/{id}/cases")).await;
+    let (status, cases) = app.get(&app.admin, &format!("/v1/checks/{id}/cases")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(cases["items"].as_array().unwrap().len(), 1, "{cases}");
 }
@@ -12156,7 +12159,7 @@ async fn archiving_a_lane_drops_it_from_coverage_but_keeps_its_cases() {
 #[tokio::test]
 async fn a_verdict_cannot_cite_an_unknown_release() {
     let app = TestApp::spawn().await;
-    let id = lane(&app, json!({ "title": "Create a claim" })).await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
     file_cases(&app, &id, &["a"]).await;
     let cid = case_ids(&app, &id).await[0].1.clone();
 
@@ -12176,7 +12179,7 @@ async fn a_verdict_cannot_cite_an_unknown_release() {
 #[tokio::test]
 async fn a_release_does_not_stale_a_case_that_was_never_verified() {
     let app = TestApp::spawn().await;
-    let id = lane(
+    let id = check(
         &app,
         json!({ "title": "Create a claim", "globs": ["src/claims/**"] }),
     )
@@ -12208,7 +12211,7 @@ async fn a_release_does_not_stale_a_case_that_was_never_verified() {
         "only the verified case goes stale: {rel}"
     );
 
-    let (_, l) = app.get(&app.admin, &format!("/v1/lanes/{id}")).await;
+    let (_, l) = app.get(&app.admin, &format!("/v1/checks/{id}")).await;
     assert_eq!(l["cases"]["stale"], 1);
     assert_eq!(
         l["cases"]["never"], 1,
@@ -12228,6 +12231,149 @@ async fn a_release_does_not_stale_a_case_that_was_never_verified() {
         .collect();
     assert!(reasons.contains(&"stale"), "{wl}");
     assert!(reasons.contains(&"never"), "{wl}");
+}
+
+/// A database written before the rename opens as `checks`, with every row intact.
+///
+/// The rename is the one migration step that runs BEFORE the schema batch, and
+/// the reason is worth pinning with a test rather than a comment: with the usual
+/// ordering, `CREATE TABLE IF NOT EXISTS checks` creates an EMPTY `checks` beside
+/// the populated `lanes`, the rename can then never run, and the database quietly
+/// carries both — every existing row in the table nothing reads. That failure is
+/// invisible on a fresh install and total on a real one.
+///
+/// Ids are deliberately not rewritten, so a pre-rename `lane-…` id still resolves.
+#[tokio::test]
+async fn a_pre_rename_database_opens_as_checks_with_its_verdicts_intact() {
+    use rusqlite::params;
+    use takomo::store::Store;
+
+    // The checklist tables exactly as they were before the rename: table `lanes`,
+    // table `lane_globs`, and `cases.lane`. Everything else the store needs is
+    // created by the current schema batch, which is the point.
+    const OLD_SCHEMA: &str = r#"
+    CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, workflow_json TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE workflow_states (project TEXT NOT NULL, state TEXT NOT NULL, category TEXT NOT NULL, claimable INTEGER NOT NULL DEFAULT 0, terminal INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (project, state));
+    CREATE TABLE lanes (
+      id TEXT PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, epic TEXT,
+      title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', precondition TEXT NOT NULL DEFAULT '',
+      layer TEXT NOT NULL DEFAULT 'api', severity TEXT NOT NULL DEFAULT 'advisory', verification TEXT,
+      expiry_days INTEGER, expiry_releases INTEGER, cost_agent_minutes INTEGER, cost_human_minutes INTEGER,
+      metadata TEXT NOT NULL DEFAULT 'null', version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER);
+    CREATE INDEX idx_lanes_project ON lanes(project);
+    CREATE INDEX idx_lanes_epic ON lanes(epic) WHERE epic IS NOT NULL;
+    CREATE TABLE lane_globs (lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, glob TEXT NOT NULL, PRIMARY KEY (lane, glob)) WITHOUT ROWID;
+    CREATE TABLE cases (
+      id TEXT PRIMARY KEY, lane TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, key TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '', assignment TEXT NOT NULL DEFAULT '{}', seeded INTEGER NOT NULL DEFAULT 0,
+      agent_verdict TEXT, agent_at INTEGER, agent_by TEXT, agent_release TEXT,
+      human_verdict TEXT, human_at INTEGER, human_by TEXT, human_release TEXT,
+      stale_since TEXT, retired_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(lane, key));
+    CREATE INDEX idx_cases_lane ON cases(lane);
+    CREATE TABLE case_verdicts (id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+      actor_kind TEXT NOT NULL, actor TEXT NOT NULL, verdict TEXT NOT NULL, note TEXT, release TEXT, at INTEGER NOT NULL);
+    "#;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("pre-rename.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(OLD_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id,name,workflow_json,created_at) VALUES ('lp','Legacy','{}',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lanes (id,project,epic,title,body,precondition,layer,severity,metadata,version,created_by,created_at,updated_at) \
+             VALUES ('lane-legacy1','lp',NULL,'Finalize an invoice','','a draft invoice','api','blocking','null',1,'seed',1,2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lane_globs (lane,glob) VALUES ('lane-legacy1','src/billing/**')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cases (id,lane,key,label,assignment,seeded,agent_verdict,agent_at,agent_by,created_at,updated_at) \
+             VALUES ('case-legacy1','lane-legacy1','vat=19','VAT 19','{}',0,'pass',5,'agent:old',1,2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO case_verdicts (id,case_id,actor_kind,actor,verdict,note,at) \
+             VALUES (?1,'case-legacy1','agent','agent:old','pass','looked right',5)",
+            params!["cv-legacy1"],
+        )
+        .unwrap();
+    }
+
+    // Opening with the current binary performs the rename.
+    let store = Store::open(&db_path).unwrap();
+
+    // The check is reachable by the id it has always had.
+    let check = store.get_check("lane-legacy1").unwrap();
+    assert_eq!(check.title, "Finalize an invoice");
+    assert_eq!(check.severity, "blocking");
+    assert_eq!(
+        check.globs,
+        vec!["src/billing/**".to_string()],
+        "the glob followed its check through the rename: {:?}",
+        check.globs
+    );
+
+    // The case and its verdict history survived, still reporting `verified`.
+    let (case, history) = store.get_case("case-legacy1").unwrap();
+    assert_eq!(case.check, "lane-legacy1");
+    assert_eq!(case.agent_verdict.as_deref(), Some("pass"));
+    assert_eq!(case.state(), "verified", "state after the rename");
+    assert_eq!(history.len(), 1, "verdict history is not a casualty");
+    assert_eq!(history[0].note.as_deref(), Some("looked right"));
+
+    // And the coverage rollup counts it, which is the end-to-end proof that the
+    // renamed table is the one every query now reads.
+    let coverage = store.checklist_coverage("lp").unwrap();
+    assert_eq!(coverage["checks"], 1, "{coverage}");
+    assert_eq!(coverage["cases"]["verified"], 1, "{coverage}");
+
+    // The old names are gone rather than shadowed, and the stale indexes with
+    // them — two indexes over one column is the cost of skipping that step.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let names: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index')")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        for gone in ["lanes", "lane_globs", "idx_lanes_project", "idx_cases_lane"] {
+            assert!(
+                !names.iter().any(|n| n == gone),
+                "'{gone}' should not survive the rename: {names:?}"
+            );
+        }
+        for present in ["checks", "check_globs"] {
+            assert!(
+                names.iter().any(|n| n == present),
+                "'{present}' should exist: {names:?}"
+            );
+        }
+    }
+
+    // Idempotent: a second open is a no-op, not a second rename attempt.
+    drop(store);
+    let store2 = Store::open(&db_path).unwrap();
+    assert_eq!(
+        store2.get_check("lane-legacy1").unwrap().title,
+        "Finalize an invoice",
+        "reopening an already-renamed database changes nothing"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -13179,26 +13325,26 @@ async fn ready_reports_the_whole_queue_alongside_the_page() {
     );
 }
 
-/// Lanes and cases are bounded, and report the count they were bounded from.
+/// Checks and cases are bounded, and report the count they were bounded from.
 ///
 /// Cases are the sharp case: they are *generated*, so one PICT model can land
-/// thousands under a single lane — all of which this used to return in one
+/// thousands under a single check — all of which this used to return in one
 /// reply.
 #[tokio::test]
-async fn lane_and_case_lists_are_bounded_and_say_so() {
+async fn check_and_case_lists_are_bounded_and_say_so() {
     let app = TestApp::spawn().await;
-    let lane_id = lane(
+    let check_id = check(
         &app,
         json!({ "title": "checkout", "layer": "api", "severity": "blocking" }),
     )
     .await;
     let keys: Vec<String> = (0..7).map(|i| format!("k{i}")).collect();
     let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-    file_cases(&app, &lane_id, &key_refs).await;
+    file_cases(&app, &check_id, &key_refs).await;
 
     // Whole set: total equals what came back, and nothing claims to be partial.
     let (status, all) = app
-        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases"))
+        .get(&app.admin, &format!("/v1/checks/{check_id}/cases"))
         .await;
     assert_eq!(status, StatusCode::OK, "{all}");
     assert_eq!(all["items"].as_array().unwrap().len(), 7);
@@ -13208,7 +13354,7 @@ async fn lane_and_case_lists_are_bounded_and_say_so() {
     // A page, and the offset that reads the next one. Cases order by `key`, so
     // the pages are stable and must not overlap.
     let (_, first) = app
-        .get(&app.admin, &format!("/v1/lanes/{lane_id}/cases?limit=3"))
+        .get(&app.admin, &format!("/v1/checks/{check_id}/cases?limit=3"))
         .await;
     assert_eq!(first["items"].as_array().unwrap().len(), 3);
     assert_eq!(first["total"], 7, "total ignores the page size: {first}");
@@ -13224,7 +13370,7 @@ async fn lane_and_case_lists_are_bounded_and_say_so() {
     let (_, second) = app
         .get(
             &app.admin,
-            &format!("/v1/lanes/{lane_id}/cases?limit=3&offset=3"),
+            &format!("/v1/checks/{check_id}/cases?limit=3&offset=3"),
         )
         .await;
     let page1: Vec<&str> = first["items"]
@@ -13246,21 +13392,21 @@ async fn lane_and_case_lists_are_bounded_and_say_so() {
         "the next page, disjoint from the first"
     );
 
-    // Lanes: same envelope.
+    // Checks: same envelope.
     for i in 0..3 {
-        lane(
+        check(
             &app,
-            json!({ "title": format!("lane {i}"), "layer": "ui", "severity": "advisory" }),
+            json!({ "title": format!("check {i}"), "layer": "ui", "severity": "advisory" }),
         )
         .await;
     }
-    let (_, lanes) = app.get(&app.admin, "/v1/projects/tp/lanes?limit=2").await;
-    assert_eq!(lanes["items"].as_array().unwrap().len(), 2);
+    let (_, checks) = app.get(&app.admin, "/v1/projects/tp/checks?limit=2").await;
+    assert_eq!(checks["items"].as_array().unwrap().len(), 2);
     assert_eq!(
-        lanes["total"], 4,
-        "one blocking lane plus three advisory: {lanes}"
+        checks["total"], 4,
+        "one blocking check plus three advisory: {checks}"
     );
-    assert!(lanes["note"].is_string(), "{lanes}");
+    assert!(checks["note"].is_string(), "{checks}");
 
     // The page size applies AFTER the severity filter, not as a SQL LIMIT before
     // it — otherwise narrowing would return a page short for a reason the caller
@@ -13268,7 +13414,7 @@ async fn lane_and_case_lists_are_bounded_and_say_so() {
     let (_, filtered) = app
         .get(
             &app.admin,
-            "/v1/projects/tp/lanes?severity=advisory&limit=3",
+            "/v1/projects/tp/checks?severity=advisory&limit=3",
         )
         .await;
     assert_eq!(filtered["items"].as_array().unwrap().len(), 3);

@@ -1,4 +1,4 @@
-//! Checklist: the verification surface. Releases, lanes, the cases generated
+//! Checklist: the verification surface. Releases, checks, the cases generated
 //! beneath them, and the verdicts recorded against those cases.
 //!
 //! The division of labour is deliberate and load-bearing: **Takomo stores, the
@@ -10,12 +10,12 @@
 
 use super::helpers::{emit_event, ensure_project_writable};
 use super::model::{
-    Case, CaseVerdict, Lane, LaneCounts, Release, ReleaseImpact, ResolvedPolicy, CASE_VERDICTS,
-    LANE_LAYERS, LANE_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE, VERIFICATION_LEVELS,
+    Case, CaseVerdict, Check, CheckCounts, Release, ReleaseImpact, ResolvedPolicy, CASE_VERDICTS,
+    CHECK_LAYERS, CHECK_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE, VERIFICATION_LEVELS,
 };
 use super::Store;
 use crate::error::{ApiError, ApiResult};
-use crate::ids::{case_id, checklist_policy_id, lane_id, now_ms, release_id, verdict_id};
+use crate::ids::{case_id, check_id, checklist_policy_id, now_ms, release_id, verdict_id};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -28,9 +28,9 @@ use std::collections::{HashMap, HashSet};
 /// answer there is "retest everything", not "enumerate 200k paths".
 pub const MAX_RELEASE_PATHS: usize = 20_000;
 
-/// Ceiling on globs one lane may claim. A lane covers one action; a handful of
-/// path patterns describes it. Anything needing fifty is really several lanes.
-pub const MAX_LANE_GLOBS: usize = 50;
+/// Ceiling on globs one check may claim. A check covers one action; a handful of
+/// path patterns describes it. Anything needing fifty is really several checks.
+pub const MAX_CHECK_GLOBS: usize = 50;
 
 /// Ceiling on cases filed in one call. The measured pairwise model for a large
 /// real form produced 76; 3-way produced 503. 5000 leaves room for a pathological
@@ -38,12 +38,12 @@ pub const MAX_LANE_GLOBS: usize = 50;
 pub const MAX_CASES_PER_FILE: usize = 5_000;
 
 /// Page ceilings for the two checklist lists that grow with the work rather
-/// than with the project. Both used to return everything they had: a lane per
-/// action per layer, and up to [`MAX_CASES_PER_FILE`] cases *per lane* — so a
+/// than with the project. Both used to return everything they had: a check per
+/// action per layer, and up to [`MAX_CASES_PER_FILE`] cases *per check* — so a
 /// single unfiltered read could hand an agent a five-thousand-row reply that
 /// buries whatever it was actually looking for. The counts are still reported in
 /// full, so a capped read is visible as one rather than looking complete.
-pub const MAX_LANES_PAGE: i64 = 200;
+pub const MAX_CHECKS_PAGE: i64 = 200;
 pub const MAX_CASES_PAGE: i64 = 500;
 
 const MAX_KEY: usize = 200;
@@ -119,12 +119,12 @@ pub struct ReleasePush {
     pub note: Option<String>,
     /// Paths the release's diff touched, supplied by the pusher.
     pub touched_paths: Vec<String>,
-    /// Lane globs that matched NO file in this tree.
+    /// Check globs that matched NO file in this tree.
     pub orphan_globs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct LaneCreate {
+pub struct CheckCreate {
     pub project: String,
     pub epic: Option<String>,
     pub title: String,
@@ -141,11 +141,11 @@ pub struct LaneCreate {
     pub metadata: Option<Value>,
 }
 
-/// A lane patch. The doubly-wrapped fields are override slots: `None` means "not
+/// A check patch. The doubly-wrapped fields are override slots: `None` means "not
 /// mentioned", `Some(None)` means "clear it and inherit again". Collapsing those
 /// two into one would make an inherited policy impossible to restore.
 #[derive(Debug, Clone, Default)]
-pub struct LanePatch {
+pub struct CheckPatch {
     pub title: Option<String>,
     pub body: Option<String>,
     pub precondition: Option<String>,
@@ -200,22 +200,22 @@ pub struct PolicyInput {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct LaneFilter {
+pub struct CheckFilter {
     pub project: String,
     pub epic: Option<String>,
     pub severity: Option<String>,
     pub layer: Option<String>,
     pub include_archived: bool,
     pub with_policy: bool,
-    /// Page size; `None` means [`MAX_LANES_PAGE`], which is also the ceiling.
+    /// Page size; `None` means [`MAX_CHECKS_PAGE`], which is also the ceiling.
     pub limit: Option<i64>,
 }
 
 /// One thing that needs re-verifying, and why.
 #[derive(Debug, Clone)]
 pub struct WorkItem {
-    pub lane: String,
-    pub lane_title: String,
+    pub check: String,
+    pub check_title: String,
     pub severity: String,
     pub layer: String,
     pub case: String,
@@ -229,8 +229,8 @@ pub struct WorkItem {
 impl WorkItem {
     pub fn to_json(&self) -> Value {
         json!({
-            "lane": self.lane,
-            "lane_title": self.lane_title,
+            "check": self.check,
+            "check_title": self.check_title,
             "severity": self.severity,
             "layer": self.layer,
             "case": self.case,
@@ -282,7 +282,7 @@ fn msg_negative(field: &str, value: i64) -> (String, String) {
 // hide the code from it — and a code the scan cannot read is one that can quietly
 // drift out of the documented vocabulary.
 
-fn check_release_ref(value: &str) -> ApiResult<()> {
+fn validate_release_ref(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_REF {
         let (m, r) = msg_too_long("ref", n, MAX_REF);
@@ -291,7 +291,7 @@ fn check_release_ref(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_release_note(value: &str) -> ApiResult<()> {
+fn validate_release_note(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_NOTE {
         let (m, r) = msg_too_long("note", n, MAX_NOTE);
@@ -300,43 +300,43 @@ fn check_release_note(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_lane_title(value: &str) -> ApiResult<()> {
+fn validate_check_title(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_TITLE {
         let (m, r) = msg_too_long("title", n, MAX_TITLE);
-        return Err(ApiError::validation("validation.lane_title", m).remedy(r));
+        return Err(ApiError::validation("validation.check_title", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_lane_body(value: &str) -> ApiResult<()> {
+fn validate_check_body(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_BODY {
         let (m, r) = msg_too_long("body", n, MAX_BODY);
-        return Err(ApiError::validation("validation.lane_body", m).remedy(r));
+        return Err(ApiError::validation("validation.check_body", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_lane_precondition(value: &str) -> ApiResult<()> {
+fn validate_check_precondition(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_BODY {
         let (m, r) = msg_too_long("precondition", n, MAX_BODY);
-        return Err(ApiError::validation("validation.lane_precondition", m).remedy(r));
+        return Err(ApiError::validation("validation.check_precondition", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_glob_len(value: &str) -> ApiResult<()> {
+fn validate_glob_len(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_GLOB {
         let (m, r) = msg_too_long("glob", n, MAX_GLOB);
-        return Err(ApiError::validation("validation.lane_globs", m).remedy(r));
+        return Err(ApiError::validation("validation.check_globs", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_case_key_len(value: &str) -> ApiResult<()> {
+fn validate_case_key_len(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_KEY {
         let (m, r) = msg_too_long("key", n, MAX_KEY);
@@ -345,7 +345,7 @@ fn check_case_key_len(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_case_label(value: &str) -> ApiResult<()> {
+fn validate_case_label(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_LABEL {
         let (m, r) = msg_too_long("label", n, MAX_LABEL);
@@ -354,7 +354,7 @@ fn check_case_label(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_verdict_note(value: &str) -> ApiResult<()> {
+fn validate_verdict_note(value: &str) -> ApiResult<()> {
     let n = value.chars().count();
     if n > MAX_NOTE {
         let (m, r) = msg_too_long("note", n, MAX_NOTE);
@@ -363,25 +363,25 @@ fn check_verdict_note(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_layer(value: &str) -> ApiResult<()> {
-    let allowed: &[&str] = &LANE_LAYERS;
+fn validate_layer(value: &str) -> ApiResult<()> {
+    let allowed: &[&str] = &CHECK_LAYERS;
     if !allowed.contains(&value) {
         let (m, r) = msg_bad_enum("layer", value, allowed);
-        return Err(ApiError::validation("validation.lane_layer", m).remedy(r));
+        return Err(ApiError::validation("validation.check_layer", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_severity(value: &str) -> ApiResult<()> {
-    let allowed: &[&str] = &LANE_SEVERITIES;
+fn validate_severity(value: &str) -> ApiResult<()> {
+    let allowed: &[&str] = &CHECK_SEVERITIES;
     if !allowed.contains(&value) {
         let (m, r) = msg_bad_enum("severity", value, allowed);
-        return Err(ApiError::validation("validation.lane_severity", m).remedy(r));
+        return Err(ApiError::validation("validation.check_severity", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_verification(value: &str) -> ApiResult<()> {
+fn validate_verification(value: &str) -> ApiResult<()> {
     let allowed: &[&str] = &VERIFICATION_LEVELS;
     if !allowed.contains(&value) {
         let (m, r) = msg_bad_enum("verification", value, allowed);
@@ -390,7 +390,7 @@ fn check_verification(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_verdict(value: &str) -> ApiResult<()> {
+fn validate_verdict(value: &str) -> ApiResult<()> {
     let allowed: &[&str] = &CASE_VERDICTS;
     if !allowed.contains(&value) {
         let (m, r) = msg_bad_enum("verdict", value, allowed);
@@ -399,7 +399,7 @@ fn check_verdict(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_actor_kind(value: &str) -> ApiResult<()> {
+fn validate_actor_kind(value: &str) -> ApiResult<()> {
     let allowed: &[&str] = &["agent", "human"];
     if !allowed.contains(&value) {
         let (m, r) = msg_bad_enum("actor_kind", value, allowed);
@@ -408,15 +408,15 @@ fn check_actor_kind(value: &str) -> ApiResult<()> {
     Ok(())
 }
 
-fn check_lane_number(field: &str, value: i64) -> ApiResult<()> {
+fn validate_check_number(field: &str, value: i64) -> ApiResult<()> {
     if value < 0 {
         let (m, r) = msg_negative(field, value);
-        return Err(ApiError::validation("validation.lane_numbers", m).remedy(r));
+        return Err(ApiError::validation("validation.check_numbers", m).remedy(r));
     }
     Ok(())
 }
 
-fn check_policy_number(field: &str, value: i64) -> ApiResult<()> {
+fn validate_policy_number(field: &str, value: i64) -> ApiResult<()> {
     if value < 0 {
         let (m, r) = msg_negative(field, value);
         return Err(ApiError::validation("validation.policy_numbers", m).remedy(r));
@@ -425,17 +425,17 @@ fn check_policy_number(field: &str, value: i64) -> ApiResult<()> {
 }
 
 fn normalize_globs(globs: &[String]) -> ApiResult<Vec<String>> {
-    if globs.len() > MAX_LANE_GLOBS {
+    if globs.len() > MAX_CHECK_GLOBS {
         return Err(ApiError::validation(
-            "validation.lane_globs",
+            "validation.check_globs",
             format!(
-                "A lane claims {} globs; the maximum is {MAX_LANE_GLOBS}.",
+                "A check claims {} globs; the maximum is {MAX_CHECK_GLOBS}.",
                 globs.len()
             ),
         )
         .remedy(
-            "A lane covers one action, which a handful of path patterns describes. \
-             Split it into several lanes."
+            "A check covers one action, which a handful of path patterns describes. \
+             Split it into several checks."
                 .to_string(),
         ));
     }
@@ -445,12 +445,12 @@ fn normalize_globs(globs: &[String]) -> ApiResult<Vec<String>> {
         let g = g.trim();
         if g.is_empty() {
             return Err(ApiError::validation(
-                "validation.lane_globs",
-                "A lane glob cannot be empty.",
+                "validation.check_globs",
+                "A check glob cannot be empty.",
             )
             .remedy("Drop the empty entry, or send a pattern like 'src/claims/**'."));
         }
-        check_glob_len(g)?;
+        validate_glob_len(g)?;
         if seen.insert(g.to_string()) {
             out.push(g.to_string());
         }
@@ -476,7 +476,7 @@ fn project_exists(conn: &Connection, project: &str) -> ApiResult<()> {
 /// An epic parent must exist, live in the same project, and actually be an epic.
 /// Checklist reuses `type: epic` tickets for grouping so the vocabulary matches
 /// tickets and the roadmap rollup keeps working.
-fn check_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> {
+fn validate_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> {
     let row: Option<(String, String)> = conn
         .query_row(
             "SELECT project, type FROM tickets WHERE id = ?1",
@@ -487,24 +487,24 @@ fn check_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> {
     match row {
         None => Err(ApiError::not_found("ticket", epic)),
         Some((p, _)) if p != project => Err(ApiError::validation(
-            "validation.lane_epic",
+            "validation.check_epic",
             format!("Ticket '{epic}' belongs to project '{p}', not '{project}'."),
         )
         .remedy("Pick an epic in this project, or omit 'epic'.".to_string())),
         Some((_, ty)) if ty != "epic" => Err(ApiError::validation(
-            "validation.lane_epic",
+            "validation.check_epic",
             format!(
-                "Ticket '{epic}' has type '{ty}'; a lane groups under a ticket of type 'epic'."
+                "Ticket '{epic}' has type '{ty}'; a check groups under a ticket of type 'epic'."
             ),
         )
-        .remedy("Pass an epic's id, or omit 'epic' to leave the lane ungrouped.".to_string())),
+        .remedy("Pass an epic's id, or omit 'epic' to leave the check ungrouped.".to_string())),
         Some(_) => Ok(()),
     }
 }
 
-fn row_to_lane(row: &Row) -> rusqlite::Result<Lane> {
+fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
     let metadata_raw: String = row.get("metadata")?;
-    Ok(Lane {
+    Ok(Check {
         id: row.get("id")?,
         project: row.get("project")?,
         epic: row.get("epic")?,
@@ -525,7 +525,7 @@ fn row_to_lane(row: &Row) -> rusqlite::Result<Lane> {
         updated_at: row.get("updated_at")?,
         archived_at: row.get("archived_at")?,
         globs: Vec::new(),
-        counts: LaneCounts::default(),
+        counts: CheckCounts::default(),
         orphan_globs: Vec::new(),
         policy: None,
     })
@@ -536,7 +536,8 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
     let seeded: i64 = row.get("seeded")?;
     Ok(Case {
         id: row.get("id")?,
-        lane: row.get("lane")?,
+        // The column is `check_id`; `CHECK` is a SQL keyword.
+        check: row.get("check_id")?,
         key: row.get("key")?,
         label: row.get("label")?,
         assignment: serde_json::from_str(&assignment_raw).unwrap_or(Value::Null),
@@ -556,44 +557,45 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
     })
 }
 
-const LANE_COLS: &str = "id, project, epic, title, body, precondition, layer, severity, \
+const CHECK_COLS: &str = "id, project, epic, title, body, precondition, layer, severity, \
     verification, expiry_days, expiry_releases, cost_agent_minutes, cost_human_minutes, \
     metadata, version, created_by, created_at, updated_at, archived_at";
 
-const CASE_COLS: &str = "id, lane, key, label, assignment, seeded, agent_verdict, agent_at, \
+const CASE_COLS: &str = "id, check_id, key, label, assignment, seeded, agent_verdict, agent_at, \
     agent_by, agent_release, human_verdict, human_at, human_by, human_release, stale_since, \
     retired_at, created_at, updated_at";
 
-fn load_globs(conn: &Connection, lane: &str) -> ApiResult<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT glob FROM lane_globs WHERE lane = ?1 ORDER BY glob")?;
+fn load_globs(conn: &Connection, check: &str) -> ApiResult<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT glob FROM check_globs WHERE check_id = ?1 ORDER BY glob")?;
     let out = stmt
-        .query_map(params![lane], |r| r.get::<_, String>(0))?
+        .query_map(params![check], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(out)
 }
 
-/// Live cases of a lane, counted by state.
-fn load_counts(conn: &Connection, lane: &str) -> ApiResult<LaneCounts> {
+/// Live cases of a check, counted by state.
+fn load_counts(conn: &Connection, check: &str) -> ApiResult<CheckCounts> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {CASE_COLS} FROM cases WHERE lane = ?1 AND retired_at IS NULL"
+        "SELECT {CASE_COLS} FROM cases WHERE check_id = ?1 AND retired_at IS NULL"
     ))?;
     let cases = stmt
-        .query_map(params![lane], row_to_case)?
+        .query_map(params![check], row_to_case)?
         .collect::<Result<Vec<_>, _>>()?;
-    let mut counts = LaneCounts::default();
+    let mut counts = CheckCounts::default();
     for c in &cases {
         counts.add(c.state());
     }
     Ok(counts)
 }
 
-/// Globs of this lane that matched nothing in the newest release. Reported by the
-/// pusher, stored per release; surfaced on the lane so the rot is visible where
+/// Globs of this check that matched nothing in the newest release. Reported by the
+/// pusher, stored per release; surfaced on the check so the rot is visible where
 /// the claim is made.
-fn load_orphan_globs(conn: &Connection, project: &str, lane: &str) -> ApiResult<Vec<String>> {
+fn load_orphan_globs(conn: &Connection, project: &str, check: &str) -> ApiResult<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT g.glob FROM lane_globs g
-         WHERE g.lane = ?1
+        "SELECT g.glob FROM check_globs g
+         WHERE g.check_id = ?1
            AND EXISTS (
              SELECT 1 FROM release_orphan_globs o
              JOIN releases r ON r.id = o.release
@@ -603,7 +605,7 @@ fn load_orphan_globs(conn: &Connection, project: &str, lane: &str) -> ApiResult<
          ORDER BY g.glob",
     )?;
     let out = stmt
-        .query_map(params![lane, project], |r| r.get::<_, String>(0))?
+        .query_map(params![check, project], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(out)
 }
@@ -611,15 +613,15 @@ fn load_orphan_globs(conn: &Connection, project: &str, lane: &str) -> ApiResult<
 /// One stored policy row's three override slots, each independently unset.
 type PolicyRow = (Option<String>, Option<i64>, Option<i64>);
 
-/// Resolve verification + expiry down project → epic → lane.
-fn resolve_policy(conn: &Connection, lane: &Lane) -> ApiResult<ResolvedPolicy> {
+/// Resolve verification + expiry down project → epic → check.
+fn resolve_policy(conn: &Connection, check: &Check) -> ApiResult<ResolvedPolicy> {
     let load = |epic: &str| -> ApiResult<Option<PolicyRow>> {
         let mut s = conn.prepare(
             "SELECT verification, expiry_days, expiry_releases FROM checklist_policies
              WHERE project = ?1 AND epic = ?2",
         )?;
         let row = s
-            .query_row(params![lane.project, epic], |r| {
+            .query_row(params![check.project, epic], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .optional()?;
@@ -627,7 +629,7 @@ fn resolve_policy(conn: &Connection, lane: &Lane) -> ApiResult<ResolvedPolicy> {
     };
 
     let project_policy = load("")?;
-    let epic_policy = match &lane.epic {
+    let epic_policy = match &check.epic {
         Some(e) => load(e)?,
         None => None,
     };
@@ -651,14 +653,14 @@ fn resolve_policy(conn: &Connection, lane: &Lane) -> ApiResult<ResolvedPolicy> {
             }
         }
     }
-    if let Some(v) = &lane.verification {
+    if let Some(v) = &check.verification {
         verification = v.clone();
-        verification_from = "lane";
+        verification_from = "check";
     }
-    if lane.expiry_days.is_some() || lane.expiry_releases.is_some() {
-        expiry_days = lane.expiry_days;
-        expiry_releases = lane.expiry_releases;
-        expiry_from = "lane";
+    if check.expiry_days.is_some() || check.expiry_releases.is_some() {
+        expiry_days = check.expiry_days;
+        expiry_releases = check.expiry_releases;
+        expiry_from = "check";
     }
 
     Ok(ResolvedPolicy {
@@ -726,9 +728,9 @@ impl Store {
     // Releases
     // -----------------------------------------------------------------------
 
-    /// Record a release and apply its consequences: cases whose lane claims a
+    /// Record a release and apply its consequences: cases whose check claims a
     /// touched path go stale, and globs the pusher found empty are recorded so
-    /// those lanes stop counting as covered.
+    /// those checks stop counting as covered.
     ///
     /// The pusher supplies the diff and the empty globs because it has the tree
     /// checked out — the server clones nothing. That is the cheapest possible
@@ -747,9 +749,9 @@ impl Store {
             )
             .remedy("Send {\"ref\": \"v1.4.0\"} or the full sha.".to_string()));
         }
-        check_release_ref(&reference)?;
+        validate_release_ref(&reference)?;
         if let Some(note) = &req.note {
-            check_release_note(note)?;
+            validate_release_note(note)?;
         }
         if req.touched_paths.len() > MAX_RELEASE_PATHS {
             return Err(ApiError::validation(
@@ -761,7 +763,7 @@ impl Store {
             )
             .remedy(
                 "A diff that large is a repository-wide sweep. Push the release without \
-                 'touched_paths' and retest every lane instead."
+                 'touched_paths' and retest every check instead."
                     .to_string(),
             ));
         }
@@ -831,27 +833,27 @@ impl Store {
                 )?;
             }
 
-            // Which lanes does this diff touch? One pass over the project's globs
+            // Which checks does this diff touch? One pass over the project's globs
             // rather than a query per path.
-            let mut lane_stmt = tx.prepare(&format!(
-                "SELECT {LANE_COLS} FROM lanes WHERE project = ?1 AND archived_at IS NULL"
+            let mut check_stmt = tx.prepare(&format!(
+                "SELECT {CHECK_COLS} FROM checks WHERE project = ?1 AND archived_at IS NULL"
             ))?;
-            let lanes = lane_stmt
-                .query_map(params![project], row_to_lane)?
+            let checks = check_stmt
+                .query_map(params![project], row_to_check)?
                 .collect::<Result<Vec<_>, _>>()?;
-            drop(lane_stmt);
+            drop(check_stmt);
 
             let orphan_set: HashSet<&str> = orphans.iter().map(String::as_str).collect();
             let mut impact = ReleaseImpact::default();
             let release_seq = self.release_seq_map(tx, &project)?;
 
-            for lane in &lanes {
-                let globs = load_globs(tx, &lane.id)?;
+            for check in &checks {
+                let globs = load_globs(tx, &check.id)?;
                 let touched = globs
                     .iter()
                     .any(|g| paths.iter().any(|p| glob_matches(g, p)));
                 if !globs.is_empty() && globs.iter().all(|g| orphan_set.contains(g.as_str())) {
-                    impact.orphaned_lanes.push(lane.id.clone());
+                    impact.orphaned_checks.push(check.id.clone());
                 }
                 if touched {
                     // Only something previously verified can go stale. A case that
@@ -861,26 +863,26 @@ impl Store {
                     // show.
                     let n = tx.execute(
                         "UPDATE cases SET stale_since = ?1, updated_at = ?2
-                         WHERE lane = ?3 AND retired_at IS NULL AND stale_since IS NULL
+                         WHERE check_id = ?3 AND retired_at IS NULL AND stale_since IS NULL
                            AND (agent_verdict IS NOT NULL OR human_verdict IS NOT NULL)",
-                        params![id, now, lane.id],
+                        params![id, now, check.id],
                     )?;
                     if n > 0 {
                         impact.stale_cases += n as i64;
-                        impact.stale_lanes.push(lane.id.clone());
+                        impact.stale_checks.push(check.id.clone());
                     }
                     continue;
                 }
                 // Not touched by the diff, but its policy clock may have run out.
-                let policy = resolve_policy(tx, lane)?;
+                let policy = resolve_policy(tx, check)?;
                 if policy.expiry_days.is_none() && policy.expiry_releases.is_none() {
                     continue;
                 }
                 let mut stmt = tx.prepare(&format!(
-                    "SELECT {CASE_COLS} FROM cases WHERE lane = ?1 AND retired_at IS NULL"
+                    "SELECT {CASE_COLS} FROM cases WHERE check_id = ?1 AND retired_at IS NULL"
                 ))?;
                 let cases = stmt
-                    .query_map(params![lane.id], row_to_case)?
+                    .query_map(params![check.id], row_to_case)?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
                 let expired: Vec<&Case> = cases
@@ -898,7 +900,7 @@ impl Store {
                         )?;
                     }
                     impact.stale_cases += expired.len() as i64;
-                    impact.expired_lanes.push(lane.id.clone());
+                    impact.expired_checks.push(check.id.clone());
                 }
             }
 
@@ -981,30 +983,30 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // Lanes
+    // Checks
     // -----------------------------------------------------------------------
 
-    pub fn create_lane(&self, req: &LaneCreate, actor: &str) -> ApiResult<Lane> {
+    pub fn create_check(&self, req: &CheckCreate, actor: &str) -> ApiResult<Check> {
         let title = req.title.trim().to_string();
         if title.is_empty() {
             return Err(ApiError::validation(
-                "validation.lane_title",
-                "A lane needs a 'title' naming the one action it verifies.",
+                "validation.check_title",
+                "A check needs a 'title' naming the one action it verifies.",
             )
             .remedy("Send {\"title\": \"Create a claim\"}.".to_string()));
         }
-        check_lane_title(&title)?;
-        check_lane_body(&req.body)?;
-        check_lane_precondition(&req.precondition)?;
+        validate_check_title(&title)?;
+        validate_check_body(&req.body)?;
+        validate_check_precondition(&req.precondition)?;
         let layer = req.layer.clone().unwrap_or_else(|| "api".to_string());
-        check_layer(&layer)?;
+        validate_layer(&layer)?;
         let severity = req
             .severity
             .clone()
             .unwrap_or_else(|| "advisory".to_string());
-        check_severity(&severity)?;
+        validate_severity(&severity)?;
         if let Some(v) = &req.verification {
-            check_verification(v)?;
+            validate_verification(v)?;
         }
         for (f, v) in [
             ("expiry_days", req.expiry_days),
@@ -1013,7 +1015,7 @@ impl Store {
             ("cost_human_minutes", req.cost_human_minutes),
         ] {
             if let Some(v) = v {
-                check_lane_number(f, v)?;
+                validate_check_number(f, v)?;
             }
         }
         let globs = normalize_globs(&req.globs)?;
@@ -1021,17 +1023,17 @@ impl Store {
         let metadata_raw = metadata.to_string();
         if metadata_raw.len() > MAX_METADATA {
             return Err(ApiError::validation(
-                "validation.lane_metadata_size",
+                "validation.check_metadata_size",
                 format!(
                     "'metadata' is {} bytes; the maximum is {MAX_METADATA}.",
                     metadata_raw.len()
                 ),
             )
-            .remedy("Move the bulk into the lane 'body'.".to_string()));
+            .remedy("Move the bulk into the check 'body'.".to_string()));
         }
 
         let now = now_ms();
-        let id = lane_id();
+        let id = check_id();
         let project = req.project.clone();
         let epic = req.epic.clone();
 
@@ -1039,10 +1041,10 @@ impl Store {
             project_exists(tx, &project)?;
             ensure_project_writable(tx, &project)?;
             if let Some(e) = &epic {
-                check_epic(tx, &project, e)?;
+                validate_epic(tx, &project, e)?;
             }
             tx.execute(
-                "INSERT INTO lanes (id, project, epic, title, body, precondition, layer, severity,
+                "INSERT INTO checks (id, project, epic, title, body, precondition, layer, severity,
                     verification, expiry_days, expiry_releases, cost_agent_minutes,
                     cost_human_minutes, metadata, version, created_by, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16,?16)",
@@ -1067,7 +1069,7 @@ impl Store {
             )?;
             for g in &globs {
                 tx.execute(
-                    "INSERT OR IGNORE INTO lane_globs (lane, glob) VALUES (?1, ?2)",
+                    "INSERT OR IGNORE INTO check_globs (check_id, glob) VALUES (?1, ?2)",
                     params![id, g],
                 )?;
             }
@@ -1076,39 +1078,39 @@ impl Store {
                 epic.as_deref(),
                 Some(&project),
                 actor,
-                "checklist.lane_created",
-                json!({ "lane": id, "title": title, "layer": layer, "severity": severity }),
+                "checklist.check_created",
+                json!({ "check": id, "title": title, "layer": layer, "severity": severity }),
                 now,
             )?;
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
-            let mut lane = stmt.query_row(params![id], row_to_lane)?;
-            lane.globs = globs.clone();
-            lane.policy = Some(resolve_policy(tx, &lane)?);
-            Ok(lane)
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
+            let mut check = stmt.query_row(params![id], row_to_check)?;
+            check.globs = globs.clone();
+            check.policy = Some(resolve_policy(tx, &check)?);
+            Ok(check)
         })
     }
 
-    /// Lanes for a project, plus how many matched before the page size applied.
+    /// Checks for a project, plus how many matched before the page size applied.
     ///
-    /// The cap is not paranoia: a project accumulates a lane per action per
+    /// The cap is not paranoia: a project accumulates a check per action per
     /// layer, each hydrated below with three further queries, and the whole set
     /// used to be returned and hydrated however large it grew.
     ///
     /// `severity` and `layer` are filtered in Rust rather than SQL (they live
-    /// behind `row_to_lane`), so the page size is applied *after* that filter and
+    /// behind `row_to_check`), so the page size is applied *after* that filter and
     /// not as a `LIMIT` on the query — a `LIMIT` would cap the rows before
     /// narrowing them and hand back a page shorter than the caller asked for,
     /// with no way to tell that from the end of the list. Hydration then runs
-    /// only over the rows actually returned, so asking for ten lanes out of two
-    /// hundred costs ten lanes' worth of queries instead of two hundred.
-    pub fn list_lanes(&self, filter: &LaneFilter) -> ApiResult<(Vec<Lane>, i64)> {
+    /// only over the rows actually returned, so asking for ten checks out of two
+    /// hundred costs ten checks' worth of queries instead of two hundred.
+    pub fn list_checks(&self, filter: &CheckFilter) -> ApiResult<(Vec<Check>, i64)> {
         let limit = filter
             .limit
-            .unwrap_or(MAX_LANES_PAGE)
-            .clamp(1, MAX_LANES_PAGE);
+            .unwrap_or(MAX_CHECKS_PAGE)
+            .clamp(1, MAX_CHECKS_PAGE);
         self.with_conn(|conn| {
             project_exists(conn, &filter.project)?;
-            let mut sql = format!("SELECT {LANE_COLS} FROM lanes WHERE project = ?1");
+            let mut sql = format!("SELECT {CHECK_COLS} FROM checks WHERE project = ?1");
             if !filter.include_archived {
                 sql.push_str(" AND archived_at IS NULL");
             }
@@ -1121,72 +1123,73 @@ impl Store {
             }
             sql.push_str(" ORDER BY COALESCE(epic, ''), title");
             let mut stmt = conn.prepare(&sql)?;
-            let mut lanes: Vec<Lane> = match &filter.epic {
+            let mut checks: Vec<Check> = match &filter.epic {
                 Some(e) if !e.is_empty() => stmt
-                    .query_map(params![filter.project, e], row_to_lane)?
+                    .query_map(params![filter.project, e], row_to_check)?
                     .collect::<Result<Vec<_>, _>>()?,
                 _ => stmt
-                    .query_map(params![filter.project], row_to_lane)?
+                    .query_map(params![filter.project], row_to_check)?
                     .collect::<Result<Vec<_>, _>>()?,
             };
-            lanes.retain(|l| {
+            checks.retain(|l| {
                 filter.severity.as_deref().is_none_or(|s| s == l.severity)
                     && filter.layer.as_deref().is_none_or(|s| s == l.layer)
             });
-            let total = lanes.len() as i64;
-            lanes.truncate(limit as usize);
-            for lane in &mut lanes {
-                lane.globs = load_globs(conn, &lane.id)?;
-                lane.counts = load_counts(conn, &lane.id)?;
-                lane.orphan_globs = load_orphan_globs(conn, &filter.project, &lane.id)?;
+            let total = checks.len() as i64;
+            checks.truncate(limit as usize);
+            for check in &mut checks {
+                check.globs = load_globs(conn, &check.id)?;
+                check.counts = load_counts(conn, &check.id)?;
+                check.orphan_globs = load_orphan_globs(conn, &filter.project, &check.id)?;
                 if filter.with_policy {
-                    lane.policy = Some(resolve_policy(conn, lane)?);
+                    check.policy = Some(resolve_policy(conn, check)?);
                 }
             }
-            Ok((lanes, total))
+            Ok((checks, total))
         })
     }
 
-    pub fn get_lane(&self, id: &str) -> ApiResult<Lane> {
+    pub fn get_check(&self, id: &str) -> ApiResult<Check> {
         self.with_conn(|conn| {
-            let mut stmt = conn.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
-            let mut lane = stmt
-                .query_row(params![id], row_to_lane)
+            let mut stmt =
+                conn.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
+            let mut check = stmt
+                .query_row(params![id], row_to_check)
                 .optional()?
-                .ok_or_else(|| ApiError::not_found("lane", id))?;
-            lane.globs = load_globs(conn, id)?;
-            lane.counts = load_counts(conn, id)?;
-            lane.orphan_globs = load_orphan_globs(conn, &lane.project, id)?;
-            lane.policy = Some(resolve_policy(conn, &lane)?);
-            Ok(lane)
+                .ok_or_else(|| ApiError::not_found("check", id))?;
+            check.globs = load_globs(conn, id)?;
+            check.counts = load_counts(conn, id)?;
+            check.orphan_globs = load_orphan_globs(conn, &check.project, id)?;
+            check.policy = Some(resolve_policy(conn, &check)?);
+            Ok(check)
         })
     }
 
-    pub fn patch_lane(&self, id: &str, patch: &LanePatch, actor: &str) -> ApiResult<Lane> {
+    pub fn patch_check(&self, id: &str, patch: &CheckPatch, actor: &str) -> ApiResult<Check> {
         if let Some(t) = &patch.title {
             if t.trim().is_empty() {
                 return Err(ApiError::validation(
-                    "validation.lane_title",
-                    "'title' cannot be blanked; a lane must name the action it verifies.",
+                    "validation.check_title",
+                    "'title' cannot be blanked; a check must name the action it verifies.",
                 )
                 .remedy("Send a non-empty title, or omit the field.".to_string()));
             }
-            check_lane_title(t)?;
+            validate_check_title(t)?;
         }
         if let Some(b) = &patch.body {
-            check_lane_body(b)?;
+            validate_check_body(b)?;
         }
         if let Some(p) = &patch.precondition {
-            check_lane_precondition(p)?;
+            validate_check_precondition(p)?;
         }
         if let Some(l) = &patch.layer {
-            check_layer(l)?;
+            validate_layer(l)?;
         }
         if let Some(s) = &patch.severity {
-            check_severity(s)?;
+            validate_severity(s)?;
         }
         if let Some(Some(v)) = &patch.verification {
-            check_verification(v)?;
+            validate_verification(v)?;
         }
         let globs = match &patch.globs {
             Some(g) => Some(normalize_globs(g)?),
@@ -1196,23 +1199,23 @@ impl Store {
         let now = now_ms();
         let id = id.to_string();
         self.with_tx(|tx| {
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
             let existing = stmt
-                .query_row(params![id], row_to_lane)
+                .query_row(params![id], row_to_check)
                 .optional()?
-                .ok_or_else(|| ApiError::not_found("lane", &id))?;
+                .ok_or_else(|| ApiError::not_found("check", &id))?;
             drop(stmt);
             ensure_project_writable(tx, &existing.project)?;
 
             if let Some(Some(e)) = &patch.epic {
-                check_epic(tx, &existing.project, e)?;
+                validate_epic(tx, &existing.project, e)?;
             }
 
             macro_rules! set_plain {
                 ($field:ident, $col:literal) => {
                     if let Some(v) = &patch.$field {
                         tx.execute(
-                            concat!("UPDATE lanes SET ", $col, " = ?1 WHERE id = ?2"),
+                            concat!("UPDATE checks SET ", $col, " = ?1 WHERE id = ?2"),
                             params![v, id],
                         )?;
                     }
@@ -1228,7 +1231,7 @@ impl Store {
                 ($field:ident, $col:literal) => {
                     if let Some(v) = &patch.$field {
                         tx.execute(
-                            concat!("UPDATE lanes SET ", $col, " = ?1 WHERE id = ?2"),
+                            concat!("UPDATE checks SET ", $col, " = ?1 WHERE id = ?2"),
                             params![v, id],
                         )?;
                     }
@@ -1247,30 +1250,30 @@ impl Store {
                 let raw = merged.to_string();
                 if raw.len() > MAX_METADATA {
                     return Err(ApiError::validation(
-                        "validation.lane_metadata_size",
+                        "validation.check_metadata_size",
                         format!(
                             "'metadata' would be {} bytes; the maximum is {MAX_METADATA}.",
                             raw.len()
                         ),
                     )
-                    .remedy("Move the bulk into the lane 'body'.".to_string()));
+                    .remedy("Move the bulk into the check 'body'.".to_string()));
                 }
                 tx.execute(
-                    "UPDATE lanes SET metadata = ?1 WHERE id = ?2",
+                    "UPDATE checks SET metadata = ?1 WHERE id = ?2",
                     params![raw, id],
                 )?;
             }
             if let Some(globs) = &globs {
-                tx.execute("DELETE FROM lane_globs WHERE lane = ?1", params![id])?;
+                tx.execute("DELETE FROM check_globs WHERE check_id = ?1", params![id])?;
                 for g in globs {
                     tx.execute(
-                        "INSERT OR IGNORE INTO lane_globs (lane, glob) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO check_globs (check_id, glob) VALUES (?1, ?2)",
                         params![id, g],
                     )?;
                 }
             }
             tx.execute(
-                "UPDATE lanes SET version = version + 1, updated_at = ?1 WHERE id = ?2",
+                "UPDATE checks SET version = version + 1, updated_at = ?1 WHERE id = ?2",
                 params![now, id],
             )?;
             emit_event(
@@ -1278,36 +1281,36 @@ impl Store {
                 None,
                 Some(&existing.project),
                 actor,
-                "checklist.lane_updated",
-                json!({ "lane": id }),
+                "checklist.check_updated",
+                json!({ "check": id }),
                 now,
             )?;
 
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
-            let mut lane = stmt.query_row(params![id], row_to_lane)?;
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
+            let mut check = stmt.query_row(params![id], row_to_check)?;
             drop(stmt);
-            lane.globs = load_globs(tx, &id)?;
-            lane.counts = load_counts(tx, &id)?;
-            lane.policy = Some(resolve_policy(tx, &lane)?);
-            Ok(lane)
+            check.globs = load_globs(tx, &id)?;
+            check.counts = load_counts(tx, &id)?;
+            check.policy = Some(resolve_policy(tx, &check)?);
+            Ok(check)
         })
     }
 
-    /// Archive a lane. Its cases and their verdict history stay: a lane that is no
+    /// Archive a check. Its cases and their verdict history stay: a check that is no
     /// longer worth running is still evidence of what was once verified.
-    pub fn archive_lane(&self, id: &str, actor: &str) -> ApiResult<Lane> {
+    pub fn archive_check(&self, id: &str, actor: &str) -> ApiResult<Check> {
         let now = now_ms();
         let id = id.to_string();
         self.with_tx(|tx| {
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
             let existing = stmt
-                .query_row(params![id], row_to_lane)
+                .query_row(params![id], row_to_check)
                 .optional()?
-                .ok_or_else(|| ApiError::not_found("lane", &id))?;
+                .ok_or_else(|| ApiError::not_found("check", &id))?;
             drop(stmt);
             ensure_project_writable(tx, &existing.project)?;
             tx.execute(
-                "UPDATE lanes SET archived_at = ?1, updated_at = ?1, version = version + 1
+                "UPDATE checks SET archived_at = ?1, updated_at = ?1, version = version + 1
                  WHERE id = ?2 AND archived_at IS NULL",
                 params![now, id],
             )?;
@@ -1316,16 +1319,16 @@ impl Store {
                 None,
                 Some(&existing.project),
                 actor,
-                "checklist.lane_archived",
-                json!({ "lane": id }),
+                "checklist.check_archived",
+                json!({ "check": id }),
                 now,
             )?;
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
-            let mut lane = stmt.query_row(params![id], row_to_lane)?;
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
+            let mut check = stmt.query_row(params![id], row_to_check)?;
             drop(stmt);
-            lane.globs = load_globs(tx, &id)?;
-            lane.counts = load_counts(tx, &id)?;
-            Ok(lane)
+            check.globs = load_globs(tx, &id)?;
+            check.counts = load_counts(tx, &id)?;
+            Ok(check)
         })
     }
 
@@ -1333,7 +1336,7 @@ impl Store {
     // Cases
     // -----------------------------------------------------------------------
 
-    /// File the generated case set for a lane.
+    /// File the generated case set for a check.
     ///
     /// Upsert by `key`, which the agent derives from the parameter assignment. A
     /// case still present keeps its id and its verdicts; one that disappeared is
@@ -1345,7 +1348,7 @@ impl Store {
     /// is extending a set rather than replacing it.
     pub fn file_cases(
         &self,
-        lane: &str,
+        check: &str,
         cases: &[CaseInput],
         prune: bool,
         actor: &str,
@@ -1379,15 +1382,15 @@ impl Store {
                         .to_string(),
                 ));
             }
-            check_case_key_len(key)?;
-            check_case_label(&c.label)?;
+            validate_case_key_len(key)?;
+            validate_case_label(&c.label)?;
             if !seen.insert(key.to_string()) {
                 return Err(ApiError::validation(
                     "validation.case_key",
                     format!("Case key '{key}' appears more than once in this call."),
                 )
                 .remedy(
-                    "Keys identify a case within its lane, so they must be unique. Two \
+                    "Keys identify a case within its check, so they must be unique. Two \
                      identical assignments are one case."
                         .to_string(),
                 ));
@@ -1395,20 +1398,21 @@ impl Store {
         }
 
         let now = now_ms();
-        let lane = lane.to_string();
+        let check = check.to_string();
         self.with_tx(|tx| {
-            let mut stmt = tx.prepare(&format!("SELECT {LANE_COLS} FROM lanes WHERE id = ?1"))?;
-            let lane_row = stmt
-                .query_row(params![lane], row_to_lane)
+            let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
+            let check_row = stmt
+                .query_row(params![check], row_to_check)
                 .optional()?
-                .ok_or_else(|| ApiError::not_found("lane", &lane))?;
-            ensure_project_writable(tx, &lane_row.project)?;
+                .ok_or_else(|| ApiError::not_found("check", &check))?;
+            ensure_project_writable(tx, &check_row.project)?;
             drop(stmt);
 
             let mut existing: HashMap<String, (String, Option<i64>)> = HashMap::new();
             {
-                let mut s = tx.prepare("SELECT key, id, retired_at FROM cases WHERE lane = ?1")?;
-                for row in s.query_map(params![lane], |r| {
+                let mut s =
+                    tx.prepare("SELECT key, id, retired_at FROM cases WHERE check_id = ?1")?;
+                for row in s.query_map(params![check], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -1444,12 +1448,12 @@ impl Store {
                     }
                     None => {
                         tx.execute(
-                            "INSERT INTO cases (id, lane, key, label, assignment, seeded,
+                            "INSERT INTO cases (id, check_id, key, label, assignment, seeded,
                                  created_at, updated_at)
                              VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
                             params![
                                 case_id(),
-                                lane,
+                                check,
                                 key,
                                 c.label,
                                 assignment_raw,
@@ -1476,28 +1480,28 @@ impl Store {
             }
 
             out.live = tx.query_row(
-                "SELECT COUNT(*) FROM cases WHERE lane = ?1 AND retired_at IS NULL",
-                params![lane],
+                "SELECT COUNT(*) FROM cases WHERE check_id = ?1 AND retired_at IS NULL",
+                params![check],
                 |r| r.get(0),
             )?;
 
             emit_event(
                 tx,
                 None,
-                Some(&lane_row.project),
+                Some(&check_row.project),
                 actor,
                 "checklist.cases_filed",
-                json!({ "lane": lane, "outcome": out.to_json() }),
+                json!({ "check": check, "outcome": out.to_json() }),
                 now,
             )?;
             Ok(out)
         })
     }
 
-    /// One page of a lane's cases, plus how many the lane holds in total.
+    /// One page of a check's cases, plus how many the check holds in total.
     ///
     /// Bounded because cases are *generated*: a PICT model over a form of any
-    /// size lands up to [`MAX_CASES_PER_FILE`] rows under one lane, and this used
+    /// size lands up to [`MAX_CASES_PER_FILE`] rows under one check, and this used
     /// to return all of them. `limit` is `None` for the full page size, which is
     /// also the ceiling ([`MAX_CASES_PAGE`]); `offset` pages through the rest.
     ///
@@ -1506,7 +1510,7 @@ impl Store {
     /// other agents work, so page 2 means the same thing on the second read.
     pub fn list_cases(
         &self,
-        lane: &str,
+        check: &str,
         include_retired: bool,
         limit: Option<i64>,
         offset: Option<i64>,
@@ -1515,12 +1519,12 @@ impl Store {
         let offset = offset.unwrap_or(0).max(0);
         self.with_conn(|conn| {
             let exists: Option<i64> = conn
-                .query_row("SELECT 1 FROM lanes WHERE id = ?1", params![lane], |r| {
+                .query_row("SELECT 1 FROM checks WHERE id = ?1", params![check], |r| {
                     r.get(0)
                 })
                 .optional()?;
             if exists.is_none() {
-                return Err(ApiError::not_found("lane", lane));
+                return Err(ApiError::not_found("check", check));
             }
             let retired_clause = if include_retired {
                 ""
@@ -1528,17 +1532,17 @@ impl Store {
                 " AND retired_at IS NULL"
             };
             let total: i64 = conn.query_row(
-                &format!("SELECT COUNT(*) FROM cases WHERE lane = ?1{retired_clause}"),
-                params![lane],
+                &format!("SELECT COUNT(*) FROM cases WHERE check_id = ?1{retired_clause}"),
+                params![check],
                 |r| r.get(0),
             )?;
             let sql = format!(
-                "SELECT {CASE_COLS} FROM cases WHERE lane = ?1{retired_clause} \
+                "SELECT {CASE_COLS} FROM cases WHERE check_id = ?1{retired_clause} \
                  ORDER BY key LIMIT ?2 OFFSET ?3"
             );
             let mut stmt = conn.prepare(&sql)?;
             let out = stmt
-                .query_map(params![lane, limit, offset], row_to_case)?
+                .query_map(params![check, limit, offset], row_to_case)?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok((out, total))
         })
@@ -1600,10 +1604,10 @@ impl Store {
         note: Option<&str>,
         release: Option<&str>,
     ) -> ApiResult<Case> {
-        check_verdict(verdict)?;
-        check_actor_kind(actor_kind)?;
+        validate_verdict(verdict)?;
+        validate_actor_kind(actor_kind)?;
         if let Some(n) = note {
-            check_verdict_note(n)?;
+            validate_verdict_note(n)?;
         }
         if verdict == "fail" && note.map(str::trim).unwrap_or("").is_empty() {
             return Err(ApiError::validation(
@@ -1626,11 +1630,11 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("case", &case))?;
             drop(stmt);
-            // A case names its lane, and the lane names the project — the only
+            // A case names its check, and the check names the project — the only
             // hop between a verdict and the gate it has to pass.
             let case_project: String = tx.query_row(
-                "SELECT project FROM lanes WHERE id = ?1",
-                params![existing.lane],
+                "SELECT project FROM checks WHERE id = ?1",
+                params![existing.check],
                 |r| r.get(0),
             )?;
             ensure_project_writable(tx, &case_project)?;
@@ -1642,14 +1646,14 @@ impl Store {
                     ),
                 )
                 .remedy(
-                    "File the current case set for this lane and record verdicts against \
+                    "File the current case set for this check and record verdicts against \
                      a live case."
                         .to_string(),
                 ));
             }
             let project: String = tx.query_row(
-                "SELECT project FROM lanes WHERE id = ?1",
-                params![existing.lane],
+                "SELECT project FROM checks WHERE id = ?1",
+                params![existing.check],
                 |r| r.get(0),
             )?;
             if let Some(rel) = release {
@@ -1691,7 +1695,7 @@ impl Store {
                 "checklist.verdict",
                 json!({
                     "case": case,
-                    "lane": existing.lane,
+                    "check": existing.check,
                     "actor_kind": actor_kind,
                     "verdict": verdict,
                     "release": release,
@@ -1717,14 +1721,14 @@ impl Store {
         actor: &str,
     ) -> ApiResult<Value> {
         if let Some(Some(v)) = &input.verification {
-            check_verification(v)?;
+            validate_verification(v)?;
         }
         for (f, v) in [
             ("expiry_days", &input.expiry_days),
             ("expiry_releases", &input.expiry_releases),
         ] {
             if let Some(Some(v)) = v {
-                check_policy_number(f, *v)?;
+                validate_policy_number(f, *v)?;
             }
         }
         let now = now_ms();
@@ -1734,7 +1738,7 @@ impl Store {
             project_exists(tx, &project)?;
             ensure_project_writable(tx, &project)?;
             if !scope.is_empty() {
-                check_epic(tx, &project, &scope)?;
+                validate_epic(tx, &project, &scope)?;
             }
             let existing: Option<String> = tx
                 .query_row(
@@ -1833,17 +1837,17 @@ impl Store {
         self.with_conn(|conn| {
             project_exists(conn, project)?;
             let mut stmt = conn.prepare(&format!(
-                "SELECT {LANE_COLS} FROM lanes WHERE project = ?1 AND archived_at IS NULL"
+                "SELECT {CHECK_COLS} FROM checks WHERE project = ?1 AND archived_at IS NULL"
             ))?;
-            let mut lanes = stmt
-                .query_map(params![project], row_to_lane)?
+            let mut checks = stmt
+                .query_map(params![project], row_to_check)?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
-            for lane in &mut lanes {
-                lane.globs = load_globs(conn, &lane.id)?;
-                lane.counts = load_counts(conn, &lane.id)?;
-                lane.orphan_globs = load_orphan_globs(conn, project, &lane.id)?;
-                lane.policy = Some(resolve_policy(conn, lane)?);
+            for check in &mut checks {
+                check.globs = load_globs(conn, &check.id)?;
+                check.counts = load_counts(conn, &check.id)?;
+                check.orphan_globs = load_orphan_globs(conn, project, &check.id)?;
+                check.policy = Some(resolve_policy(conn, check)?);
             }
 
             let latest: Option<(String, String, i64)> = conn
@@ -1854,32 +1858,32 @@ impl Store {
                 )
                 .optional()?;
 
-            let mut total = LaneCounts::default();
-            let mut by_epic: HashMap<String, (LaneCounts, i64, Vec<String>)> = HashMap::new();
-            for lane in &lanes {
-                let key = lane.epic.clone().unwrap_or_default();
-                let slot = by_epic.entry(key).or_insert((LaneCounts::default(), 0, Vec::new()));
+            let mut total = CheckCounts::default();
+            let mut by_epic: HashMap<String, (CheckCounts, i64, Vec<String>)> = HashMap::new();
+            for check in &checks {
+                let key = check.epic.clone().unwrap_or_default();
+                let slot = by_epic.entry(key).or_insert((CheckCounts::default(), 0, Vec::new()));
                 slot.1 += 1;
-                slot.0.total += lane.counts.total;
-                slot.0.approved += lane.counts.approved;
-                slot.0.verified += lane.counts.verified;
-                slot.0.stale += lane.counts.stale;
-                slot.0.failed += lane.counts.failed;
-                slot.0.unreachable += lane.counts.unreachable;
-                slot.0.never += lane.counts.never;
-                slot.2.extend(lane.orphan_globs.iter().cloned());
-                total.total += lane.counts.total;
-                total.approved += lane.counts.approved;
-                total.verified += lane.counts.verified;
-                total.stale += lane.counts.stale;
-                total.failed += lane.counts.failed;
-                total.unreachable += lane.counts.unreachable;
-                total.never += lane.counts.never;
+                slot.0.total += check.counts.total;
+                slot.0.approved += check.counts.approved;
+                slot.0.verified += check.counts.verified;
+                slot.0.stale += check.counts.stale;
+                slot.0.failed += check.counts.failed;
+                slot.0.unreachable += check.counts.unreachable;
+                slot.0.never += check.counts.never;
+                slot.2.extend(check.orphan_globs.iter().cloned());
+                total.total += check.counts.total;
+                total.approved += check.counts.approved;
+                total.verified += check.counts.verified;
+                total.stale += check.counts.stale;
+                total.failed += check.counts.failed;
+                total.unreachable += check.counts.unreachable;
+                total.never += check.counts.never;
             }
 
             let mut epics: Vec<Value> = by_epic
                 .into_iter()
-                .map(|(epic, (counts, lane_count, orphans))| {
+                .map(|(epic, (counts, check_count, orphans))| {
                     let title: Option<String> = if epic.is_empty() {
                         None
                     } else {
@@ -1895,7 +1899,7 @@ impl Store {
                     json!({
                         "epic": if epic.is_empty() { Value::Null } else { json!(epic) },
                         "title": title,
-                        "lanes": lane_count,
+                        "checks": check_count,
                         "cases": counts.to_json(),
                         "percent": percent(&counts),
                         "orphan_globs": orphans,
@@ -1912,11 +1916,11 @@ impl Store {
             Ok(json!({
                 "project": project,
                 "release": latest.as_ref().map(|(id, r, seq)| json!({ "id": id, "ref": r, "seq": seq })),
-                "lanes": lanes.len(),
+                "checks": checks.len(),
                 "cases": total.to_json(),
                 "percent": percent(&total),
                 "epics": epics,
-                "lane_detail": lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+                "check_detail": checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
             }))
         })
     }
@@ -1930,10 +1934,10 @@ impl Store {
         self.with_conn(|conn| {
             project_exists(conn, project)?;
             let mut stmt = conn.prepare(&format!(
-                "SELECT {LANE_COLS} FROM lanes WHERE project = ?1 AND archived_at IS NULL"
+                "SELECT {CHECK_COLS} FROM checks WHERE project = ?1 AND archived_at IS NULL"
             ))?;
-            let mut lanes = stmt
-                .query_map(params![project], row_to_lane)?
+            let mut checks = stmt
+                .query_map(params![project], row_to_check)?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(stmt);
 
@@ -1950,13 +1954,13 @@ impl Store {
 
             let mut agent_items = Vec::new();
             let mut human_items = Vec::new();
-            for lane in &mut lanes {
-                let policy = resolve_policy(conn, lane)?;
+            for check in &mut checks {
+                let policy = resolve_policy(conn, check)?;
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT {CASE_COLS} FROM cases WHERE lane = ?1 AND retired_at IS NULL ORDER BY key"
+                    "SELECT {CASE_COLS} FROM cases WHERE check_id = ?1 AND retired_at IS NULL ORDER BY key"
                 ))?;
                 let cases = stmt
-                    .query_map(params![lane.id], row_to_case)?
+                    .query_map(params![check.id], row_to_case)?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
                 for case in &cases {
@@ -1986,19 +1990,19 @@ impl Store {
                             || case.agent_verdict.as_deref() != Some("pass"));
                     let to_human = policy.needs_human() && !needs_agent_first;
                     let item = WorkItem {
-                        lane: lane.id.clone(),
-                        lane_title: lane.title.clone(),
-                        severity: lane.severity.clone(),
-                        layer: lane.layer.clone(),
+                        check: check.id.clone(),
+                        check_title: check.title.clone(),
+                        severity: check.severity.clone(),
+                        layer: check.layer.clone(),
                         case: case.id.clone(),
                         case_key: case.key.clone(),
                         case_label: case.label.clone(),
                         reason,
                         verification: policy.verification.clone(),
                         cost_minutes: if to_human {
-                            lane.cost_human_minutes
+                            check.cost_human_minutes
                         } else {
-                            lane.cost_agent_minutes
+                            check.cost_agent_minutes
                         },
                     };
                     if to_human {
@@ -2018,7 +2022,7 @@ impl Store {
                 list.sort_by(|a, b| {
                     rank(&a.severity)
                         .cmp(&rank(&b.severity))
-                        .then_with(|| a.lane_title.cmp(&b.lane_title))
+                        .then_with(|| a.check_title.cmp(&b.check_title))
                         .then_with(|| a.case_key.cmp(&b.case_key))
                 });
             }
@@ -2042,7 +2046,7 @@ impl Store {
 
     /// Is the project's verification good enough to ship?
     ///
-    /// Only `blocking` severity blocks. Advisory and low lanes nag: an unverified
+    /// Only `blocking` severity blocks. Advisory and low checks nag: an unverified
     /// low-severity flow should not stop a release, or the gate gets overridden
     /// out of habit and stops meaning anything.
     pub fn checklist_gate(&self, project: &str) -> ApiResult<Value> {
@@ -2102,7 +2106,7 @@ fn sum_minutes(items: &[WorkItem]) -> Option<i64> {
 /// in would cap a fully-verified project below 100% forever with no action that
 /// could ever close the gap, and a ceiling nobody can reach is a number people
 /// learn to ignore. The count itself stays on the report as its own finding.
-fn percent(counts: &LaneCounts) -> i64 {
+fn percent(counts: &CheckCounts) -> i64 {
     let verifiable = counts.total - counts.unreachable;
     if verifiable <= 0 {
         return 0;
@@ -2130,7 +2134,7 @@ mod glob_tests {
     }
 
     /// A prefix must not leak into a sibling directory: this is the difference
-    /// between invalidating one lane and invalidating the wrong one.
+    /// between invalidating one check and invalidating the wrong one.
     #[test]
     fn prefixes_do_not_bleed_across_directories() {
         assert!(!glob_matches("src/claims/**", "src/claimsx/mod.rs"));
