@@ -26,6 +26,22 @@ export const STR = defineStrings({
     navProjectsHint: 'Create and remove projects',
     navLibrary: 'Workflows',
     navLibraryHint: 'Reusable state machines',
+    navPeople: 'People',
+    navPeopleHint: 'Who work can be addressed to',
+    peopleTitle: 'People',
+    peopleSub:
+      'Who a decision can be addressed to. A person is not a login and grants no access — what a credential may do is its scopes. Adding someone is how a question stops going to "whoever has the expertise" and starts waiting on them.',
+    peopleEmpty: 'Nobody yet. Add someone with: takomo user new <handle> --name "Full Name"',
+    peoplePerson: 'Person',
+    peopleProjects: 'Can be handed work in',
+    peopleNoProjects: 'no project yet — add one to make them assignable',
+    peopleStatus: 'Status',
+    peopleActive: 'Active',
+    peopleDisabled: 'Disabled',
+    peopleDisable: 'Disable',
+    peopleEnable: 'Enable',
+    peopleDisableHint:
+      'Stops new work being addressed to them. Not a delete and not a revocation: every past decision keeps their name on it, and their credentials keep working — revoke those to end access.',
 
     signOut: 'Sign out',
     navExpand: 'Expand navigation',
@@ -268,6 +284,23 @@ export const STR = defineStrings({
     navProjectsHint: 'Projekte anlegen und entfernen',
     navLibrary: 'Workflows',
     navLibraryHint: 'Wiederverwendbare Zustandsautomaten',
+    navPeople: 'Personen',
+    navPeopleHint: 'An wen Arbeit gerichtet werden kann',
+    peopleTitle: 'Personen',
+    peopleSub:
+      'An wen eine Entscheidung gerichtet werden kann. Eine Person ist kein Login und gew\u00e4hrt keinen Zugriff — was eine Zugangsberechtigung darf, sind ihre Scopes. Mit einer Person h\u00f6rt eine Frage auf, an \u201eirgendwen mit der Expertise\u201c zu gehen, und wartet auf sie.',
+    peopleEmpty:
+      'Noch niemand. Person anlegen mit: takomo user new <handle> --name "Vollst\u00e4ndiger Name"',
+    peoplePerson: 'Person',
+    peopleProjects: 'Kann Arbeit erhalten in',
+    peopleNoProjects: 'noch kein Projekt — ohne Mitgliedschaft nicht adressierbar',
+    peopleStatus: 'Status',
+    peopleActive: 'Aktiv',
+    peopleDisabled: 'Deaktiviert',
+    peopleDisable: 'Deaktivieren',
+    peopleEnable: 'Aktivieren',
+    peopleDisableHint:
+      'Verhindert, dass neue Arbeit an sie gerichtet wird. Kein L\u00f6schen und kein Widerruf: jede fr\u00fchere Entscheidung beh\u00e4lt ihren Namen, und ihre Zugangsberechtigungen funktionieren weiter — diese widerrufen, um den Zugriff zu beenden.',
 
     signOut: 'Abmelden',
     navExpand: 'Navigation ausklappen',

@@ -6,7 +6,9 @@
 //! spec/auth.md for the deliberate posture shift this represents (token minting
 //! is no longer SSH-only — admin scope can mint over HTTP).
 
-use super::{body_object, get_i64, get_string_array, reject_unknown, require_str, ApiJson};
+use super::{
+    body_object, get_i64, get_str, get_string_array, reject_unknown, require_str, ApiJson,
+};
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::now_ms;
@@ -22,22 +24,43 @@ use std::sync::Arc;
 /// (matches the `token create` CLI default).
 const DEFAULT_RATE_LIMIT: i64 = 120;
 
-/// GET /v1/whoami — echo the caller's own identity (actor, scopes, projects).
-/// Any valid token may call this; it removes the need for a TAKOMO_ACTOR env
-/// var since a client can just ask the store who it is.
-pub async fn whoami(Extension(ctx): Extension<AuthCtx>) -> Json<Value> {
+/// GET /v1/whoami — echo the caller's own identity (actor, scopes, projects, and
+/// the person this credential belongs to). Any valid token may call this; it
+/// removes the need for a TAKOMO_ACTOR env var since a client can just ask the
+/// store who it is.
+///
+/// `user` is the directory person, resolved so a caller gets a name rather than a
+/// `usr-…` id, and `null` for a machine token. It is what `/inbox` reads to know
+/// whose queue "for me" means, and the difference between `actor` (a free-form
+/// string the credential carries) and a person the server can vouch for.
+pub async fn whoami(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> ApiResult<Json<Value>> {
     let mut scopes: Vec<String> = ctx.scopes.iter().cloned().collect();
     scopes.sort();
     let projects = match ctx.allowed_projects_vec() {
         None => json!("*"),
         Some(list) => json!(list),
     };
-    Json(json!({
+    // A bound user that no longer resolves means the row was hand-deleted (the API
+    // has no delete). Report null rather than failing the call: whoami is what a
+    // client boots on, and it should still answer who the credential is.
+    let user = match &ctx.user {
+        None => Value::Null,
+        Some(id) => state
+            .store
+            .get_user(id)?
+            .map(|u| u.to_ref_json())
+            .unwrap_or(Value::Null),
+    };
+    Ok(Json(json!({
         "token_id": ctx.token_id,
         "actor": ctx.actor,
         "scopes": scopes,
         "projects": projects,
-    }))
+        "user": user,
+    })))
 }
 
 /// POST /v1/tokens (admin) — mint a token; the plaintext is returned ONCE and
@@ -57,6 +80,7 @@ pub async fn create(
             "projects",
             "rate_limit",
             "expires_seconds",
+            "user",
         ],
     )?;
 
@@ -124,10 +148,21 @@ pub async fn create(
         }
     };
 
-    let (row, plaintext) =
-        state
-            .store
-            .create_token(&actor, &scopes, projects.as_deref(), rate_limit, expires_at)?;
+    // Binding the credential to a directory person. Admin-only by virtue of this
+    // whole route being admin-only, which is the point: a named assignee may
+    // answer an `approve`, so saying "this token is Ada" is granting authority,
+    // not labelling a row. The store resolves the handle and refuses an unknown or
+    // disabled person.
+    let user = get_str(obj, "user")?;
+
+    let (row, plaintext) = state.store.create_token(
+        &actor,
+        &scopes,
+        projects.as_deref(),
+        rate_limit,
+        expires_at,
+        user.as_deref(),
+    )?;
 
     let mut out = row.to_json();
     if let Value::Object(map) = &mut out {

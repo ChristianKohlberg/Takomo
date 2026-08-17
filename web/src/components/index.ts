@@ -134,6 +134,9 @@ export type { UndoSnackbarProps } from './inbox/UndoSnackbar'
 export { AnswerLinkDialog } from './inbox/AnswerLinkDialog'
 export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
+export { PeopleList } from './settings/PeopleList'
+export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'
+
 // ---- shared ----
 export { Typeahead } from './Typeahead'
 export type { TypeaheadProps, TypeaheadOption } from './Typeahead'

@@ -77,11 +77,41 @@ Kinds:
 | `confirm` | Yes / No           | boolean           | any `human`-scoped token                |
 | `choose`  | one of `--option`s | the option string | any `human`-scoped token                |
 | `clarify` | free text          | the explanation   | any `human`-scoped token                |
-| `approve` | Approve / Reject   | boolean           | **only a matching domain expert** (see below) |
+| `approve` | Approve / Reject   | boolean           | **a matching domain expert, or the named person** (see below) |
 
-`approve` is the strong gate: it *must* name at least one `--expertise` tag, and
-only a token holding the matching `expert:<tag>` scope can answer it — a general
-human is refused. Use `confirm` for a lightweight yes/no any human can make.
+`approve` is the strong gate: it *must* name something that gates it — at least
+one `--expertise` tag, or an `--assignee` — and a general human is refused. Two
+proofs satisfy it, either one sufficient: a token holding the matching
+`expert:<tag>` scope, or a token **bound to the person the question is addressed
+to** (`takomo token create --user ada`). Use `confirm` for a lightweight yes/no
+any human can make.
+
+That second proof is why binding a credential to a person is an admin act rather
+than a display name. `docs/users.md` has the boundary and the four rules that hold
+it: a `user:` scope string is not an identity, relaying an approval stays refused,
+an answer link for a person-gated approval is only mintable by that person, and
+disabling them closes the route.
+
+## Addressing a question to a person
+
+`--expertise` says what a qualified answerer must *be*. `--assignee` says who was
+actually asked:
+
+```sh
+takomo ask rvp-x7k2 --title "Which idempotency key?" --kind clarify --assignee ada
+takomo assign q-9f3ka2xz ada        # or: takomo assign q-9f3ka2xz --none
+```
+
+Both may be set, and assigning *after* the ask is the usual case — the agent
+raising a question knows a billing question when it writes one, not which
+colleague owns billing this month. The person must be a member of the ticket's
+project (`takomo user member ada demo`); see `docs/users.md`.
+
+**Assignment is routing, not a lock.** Any `human` token may still answer the
+three ordinary kinds, so a decision is never stranded because the assignee is
+away — what changes is where the inbox sorts it, and what "mine" means. The
+handover is mirrored onto the ticket thread and recorded as a `question_assigned`
+event, so a resuming agent sees who was asked without a second request.
 
 A ticket can carry **several open questions at once** — e.g. two decisions for
 two different domain experts, asked in parallel before you end your run. The
@@ -111,7 +141,8 @@ follow them, and the bar says how many questions survive:
 | **search** | Free text over title, body, summary, ticket, asker, kind, urgency and expertise. The body is the point: the list row renders neither, so a phrase you remember from the question itself used to find nothing. |
 | **urgency** | Multi-select `critical / high / normal / low` — the same rank that colours each row's left rule. |
 | **blocking / advisory** | One is parking a ticket and holding up an agent; the other is a note. |
-| **mine** | Only questions routed to your `expert:<tag>` scopes. Shown only to a reader who holds one. |
+| **mine** | Everything waiting on you, in both senses: addressed to you by name, or covered by your `expert:<tag>` scopes. The two are ORed — requiring both would hide a question aimed straight at you because it happened to carry no tag. Shown only to a reader who is somebody or holds a scope. |
+| **assignee** | One person's queue, including somebody else's — which is the point of a shared board. Also `none`: the triage read, what nobody has been asked yet. |
 | **hide bounced back** | Drops questions you sent back to the agent (`awaiting: agent`) — they are not waiting on you. |
 | **expiring soon** | Only questions that auto-resolve (`on_timeout`) within 24 hours. The most urgent thing in the inbox, and previously invisible in the list. |
 | **asked by** | One agent's questions. |
@@ -121,7 +152,7 @@ count; the folded set persists, and `j`/`k` walk only what is on screen rather
 than stepping invisibly through a collapsed group. Grouping is not a filter — it
 hides nothing, so it survives "clear filters".
 
-The whole view is a **URL**: `/inbox?folder=answered&ticket=TKM-42&urgency=critical,high&mine=1&group=1`,
+The whole view is a **URL**: `/inbox?folder=answered&ticket=TKM-42&urgency=critical,high&assignee=ada&group=1`,
 with the open question as `#q=<id>`. So "everything still critical on TKM-42" is
 something you can bookmark and send. The nav badge is the one count that does
 NOT follow the filters: it counts what is open, unfiltered, because a search

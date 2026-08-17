@@ -9,6 +9,7 @@
 //
 // Shapes verified against a running server.
 import { api } from './api'
+import type { UserRef } from './users'
 
 export type QuestionKind = 'confirm' | 'choose' | 'clarify' | 'approve'
 export type QuestionMode = 'blocking' | 'advisory'
@@ -48,6 +49,13 @@ export interface Question {
   /** `human` = waiting on a person; `agent` = bounced back for more research. */
   awaiting?: 'human' | 'agent' | null
   expertise: string[]
+  /**
+   * The person this decision is waiting on, resolved, or null for the open queue.
+   *
+   * Orthogonal to `expertise`, and both may be set: expertise says what a
+   * qualified answerer must *be*, this says who was actually asked.
+   */
+  assignee?: UserRef | null
   urgency?: string | null
   confidence?: number | null
   on_timeout?: string | null
@@ -170,6 +178,26 @@ export function sendFollowup(token: string, id: string, text: string): Promise<u
   })
 }
 
+/**
+ * Address an open question to a person, or pass `null` to hand it back to the
+ * queue. Needs the `human` scope.
+ *
+ * The usual case is *after* the ask: the agent that raised the question rarely
+ * knows who owns the decision. Assignment is routing, not a lock — anyone with the
+ * authority can still answer, so nothing waits on somebody who is away.
+ */
+export function assignQuestion(
+  token: string,
+  id: string,
+  assignee: string | null,
+): Promise<{ question: Question }> {
+  return api<{ question: Question }>(token, `/questions/${encodeURIComponent(id)}/assign`, {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify({ assignee }),
+  })
+}
+
 export function withdrawQuestion(token: string, id: string, reason?: string): Promise<unknown> {
   return api(token, `/questions/${encodeURIComponent(id)}/withdraw`, {
     method: 'POST',
@@ -265,6 +293,8 @@ export interface AskFields {
   body?: string
   options?: string[]
   expertise?: string[]
+  /** A user handle to address the question to; they must be a project member. */
+  assignee?: string
 }
 
 /**

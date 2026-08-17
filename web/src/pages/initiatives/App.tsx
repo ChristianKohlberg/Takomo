@@ -58,6 +58,7 @@ import { buildTree, normalizePath, pathOf, pruneTree } from '@/lib/initiative-tr
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { localInputToRfc3339 } from '@/lib/format'
+import { listUsers } from '@/lib/users'
 import { cn } from '@/lib/utils'
 import {
   STATUSES,
@@ -446,9 +447,35 @@ export function App() {
     suffix: a.suffix,
   })
 
+  /**
+   * The people a question raised in this collection can be addressed to: the
+   * members of its project. Empty on an instance with no directory, which hides
+   * the picker and leaves "Ask a person" behaving as it did before.
+   */
+  const [people, setPeople] = useState<{ handle: string; label: string }[]>([])
+  const peopleProject = selected?.project ?? ''
+  useEffect(() => {
+    if (!token || !peopleProject) {
+      setPeople([])
+      return
+    }
+    let cancelled = false
+    listUsers(token, { project: peopleProject, limit: 200 })
+      .then((page) => {
+        if (cancelled) return
+        setPeople(page.items.map((u) => ({ handle: u.handle, label: u.label })))
+      })
+      .catch(() => {
+        if (!cancelled) setPeople([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, peopleProject])
+
   /** Run one of the five operations against the live highlight. */
   const runOp = useCallback(
-    async (op: Operation, text: string, evidenceId?: string) => {
+    async (op: Operation, text: string, evidenceId?: string, assignee?: string) => {
       const ini = selected
       if (!selectedId || !ini || !anchor || !guardWrite()) return
       const pane = anchor.pane as Pane
@@ -489,6 +516,9 @@ export function App() {
               mode: 'advisory',
               title: text.slice(0, 120),
               body: `About “${anchor.quote}” in ${ini.title}.`,
+              // "Ask a person" becomes literal when one is named. Left unset it
+              // goes to the open queue exactly as it always did.
+              ...(assignee ? { assignee } : {}),
             })
           }
           await appendEntry(token, selectedId, {
@@ -1233,6 +1263,7 @@ export function App() {
                 const pane = paneOfEntry(am.entry.id)
                 if (pane) setFocus({ pane, id: am.entry.id })
               }}
+              people={people}
               onDispatch={doDispatch}
               onResolve={doResolve}
               onAccept={doAccept}
@@ -1255,6 +1286,8 @@ export function App() {
                 suggestPh: t.opSuggestPh,
                 ticketPh: t.opTicketPh,
                 askPh: t.opAskPh,
+                askWho: t.opAskWho,
+                askAnyone: t.opAskAnyone,
                 citePh: t.opCitePh,
                 submit: t.opSubmit,
                 cancel: t.cancel,

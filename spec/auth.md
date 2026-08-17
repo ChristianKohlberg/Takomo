@@ -20,6 +20,23 @@ tk_<22 chars base62>            # ~128 bits of randomness
 
 Naming convention: `human:alice`, `orch:main`, `agent:runner-1`, `svc:github-webhook`.
 
+### A user is not a credential
+
+A token may additionally be **bound to a person** in the people directory
+(`user`, set at mint; see [docs/users.md](../docs/users.md)). That is a different
+kind of fact from `actor`: `actor` is a free-form string the credential carries,
+while `user` names a row the server can vouch for. Adding somebody to the
+directory authenticates nothing and grants nothing — there is no login here, and
+this is deliberately not a fifth credential type.
+
+Binding one, however, **is** an authorization act, and that is why it is
+admin-only and stated rather than inferred from `actor`: a question can be
+addressed to a person, and for an `approve`, being that person is one of the two
+proofs that can answer it (the other is a matching `expert:<tag>` scope). Identity
+is carried on the auth context and passed explicitly, never as a scope string —
+scopes are free-form, so a `user:usr-…` scope would be a forgeable identity, and
+an admin minting one would be handing out that person's approval authority.
+
 ## Scopes
 
 | scope     | grants |

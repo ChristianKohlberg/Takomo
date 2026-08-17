@@ -149,6 +149,7 @@ fn row_to_grant(row: &Row) -> rusqlite::Result<GrantedAccess> {
         scopes: csv_to_vec(&scopes),
         projects: projects_from_raw(&projects),
         rate_limit: row.get("rate_limit")?,
+        user: row.get("user")?,
         scope: row.get("scope")?,
         granted_by: row.get("granted_by")?,
     })
@@ -215,8 +216,9 @@ impl Store {
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO oauth_codes (code_hash, client_id, redirect_uri, code_challenge, \
-                 resource, actor, scopes, projects, rate_limit, scope, granted_by, created_at, \
-                 expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 resource, actor, scopes, projects, rate_limit, \"user\", scope, granted_by, \
+                 created_at, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     hash,
                     client_id,
@@ -227,6 +229,7 @@ impl Store {
                     scopes_raw,
                     projects_raw,
                     grant.rate_limit,
+                    grant.user,
                     grant.scope,
                     grant.granted_by,
                     now,
@@ -266,7 +269,7 @@ impl Store {
             )) = tx
                 .query_row(
                     "SELECT client_id, redirect_uri, code_challenge, used_at, issued_family, \
-                     expires_at, actor, scopes, projects, rate_limit, scope, granted_by \
+                     expires_at, actor, scopes, projects, rate_limit, \"user\", scope, granted_by \
                      FROM oauth_codes WHERE code_hash = ?1",
                     params![hash],
                     |row| {
@@ -348,7 +351,7 @@ impl Store {
             let Some((row_client, family, rotated_at, revoked_at, expires_at, grant)) = tx
                 .query_row(
                     "SELECT client_id, family, rotated_at, revoked_at, expires_at, \
-                     actor, scopes, projects, rate_limit, scope, granted_by \
+                     actor, scopes, projects, rate_limit, \"user\", scope, granted_by \
                      FROM oauth_refresh WHERE token_hash = ?1",
                     params![hash],
                     |row| {
@@ -497,14 +500,20 @@ fn mint_grant(
         grant.projects.as_deref(),
         grant.rate_limit,
         Some(now + ACCESS_TOKEN_TTL_SECONDS * 1000),
+        // The consent snapshot's person, so the issued credential is the same human
+        // rather than an anonymous copy of their scopes. Passed as the stored id,
+        // which `insert_token` re-checks against the directory — if that person was
+        // disabled since consenting, the exchange refuses instead of minting them a
+        // fresh hour of assignee authority.
+        grant.user.as_deref(),
     )?;
 
     let refresh_plaintext = oauth_refresh_plaintext();
     let refresh_hash = token_hash(&refresh_plaintext);
     tx.execute(
         "INSERT INTO oauth_refresh (token_hash, family, client_id, actor, scopes, projects, \
-         rate_limit, scope, granted_by, created_at, expires_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         rate_limit, \"user\", scope, granted_by, created_at, expires_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             refresh_hash,
             family,
@@ -513,6 +522,7 @@ fn mint_grant(
             grant.scopes.join(","),
             projects_to_raw(grant.projects.as_deref()),
             grant.rate_limit,
+            grant.user,
             grant.scope,
             grant.granted_by,
             now,

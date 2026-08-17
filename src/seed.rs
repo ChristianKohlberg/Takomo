@@ -101,6 +101,33 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
     let agent2 = "agent:runner-2";
     let day = 86_400_000;
 
+    // --- the people a question can be addressed to --------------------------
+    //
+    // Two of them, because one person cannot show the difference between "waiting
+    // on me" and "waiting on somebody else": `ada` owns billing and has the
+    // clarify addressed to her, while most of the queue stays in the open pool. So
+    // /inbox's assignee filter, its "for me" view and its unassigned triage view
+    // all have something to show without hand-setup.
+    //
+    // `ada` is deliberately the handle the seeded initiative's `person:ada` tag
+    // already used — that reference now resolves to a real person, which is the
+    // whole point of sharing the handle rule with the tag registry.
+    for (handle, name, email) in [
+        ("ada", "Ada Lovelace", "ada@example.com"),
+        ("sam", "Sam Okonkwo", "sam@example.com"),
+    ] {
+        store.create_user(
+            &crate::store::UserCreate {
+                handle: handle.to_string(),
+                name: Some(name.to_string()),
+                email: Some(email.to_string()),
+                meta: None,
+                projects: vec![PROJECT.to_string()],
+            },
+            SEEDER,
+        )?;
+    }
+
     // --- an epic in `spec`, carrying the advisory (epic-level) question ------
     let epic = add(
         store,
@@ -227,6 +254,10 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
                    a per-attempt key and reconcile after?"
                     .to_string(),
             expertise: vec!["domain:billing".to_string()],
+            // Addressed to a person as well as a domain: this one is waiting on Ada
+            // specifically, which is what the inbox's assignee chip and "for me"
+            // filter have to have something to render.
+            assignee: Some("ada".to_string()),
             urgency: Some("critical".to_string()),
             ..Default::default()
         },

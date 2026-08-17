@@ -49,6 +49,10 @@ export interface FilterBarLabels {
   soonHint: string
   allAskers: string
   asker: string
+  /** Assignee picker: who a question is waiting on. */
+  anyAssignee: string
+  assignee: string
+  unassigned: string
   groupEpic: string
   /** Result count: `{n}` questions. */
   count: string
@@ -76,6 +80,14 @@ export interface FilterBarProps {
   askers: string[]
   askedBy: string
   onAskedBy: (actor: string) => void
+  /**
+   * People a question in this view is waiting on, by handle. Empty = the control
+   * is hidden: on an instance with no directory it could only ever narrow to
+   * nothing.
+   */
+  assignees: { handle: string; label: string }[]
+  assignee: string
+  onAssignee: (handle: string) => void
   group: boolean
   onGroup: (on: boolean) => void
   /** How many questions survive the filters, across every folder. */
@@ -111,6 +123,9 @@ export function FilterBar({
   askers,
   askedBy,
   onAskedBy,
+  assignees,
+  assignee,
+  onAssignee,
   group,
   onGroup,
   matched,
@@ -241,9 +256,29 @@ export function FilterBar({
           </select>
         )}
 
-        {/* Only for a reader who HAS expertise: routed-to-me is meaningless
-            without an `expert:` scope, and a toggle that can only ever empty the
-            list is worse than no toggle. */}
+        {/* Who it is waiting on. `none` earns its place beside the people: the
+            open queue is the one bucket a triaging reader most needs to find, and
+            it is invisible in a list where most rows carry no name either. */}
+        {assignees.length > 0 && (
+          <select
+            aria-label={labels.assignee}
+            value={assignee}
+            onChange={(e) => onAssignee(e.target.value)}
+            className="bg-muted text-foreground border-border max-w-45 cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
+          >
+            <option value="">{labels.anyAssignee}</option>
+            <option value="none">{labels.unassigned}</option>
+            {assignees.map((p) => (
+              <option key={p.handle} value={p.handle}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {/* Only for a reader the board can route to: "for me" is meaningless
+            without either an `expert:` scope or a person behind the credential,
+            and a toggle that can only ever empty the list is worse than none. */}
         {mine !== undefined && onMine && (
           <label
             title={labels.mineHint}

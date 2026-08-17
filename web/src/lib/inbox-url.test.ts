@@ -15,11 +15,19 @@ describe('readView / writeView', () => {
       urgency: ['critical', 'high'],
       mode: 'blocking',
       mine: true,
+      assignee: 'ada',
       hideAwaitingAgent: true,
       expiringSoon: true,
       askedBy: 'agent:runner-2',
     }
     expect(readView(writeView(v))).toEqual(v)
+  })
+
+  it('carries one person\'s queue, and the open one, in the URL', () => {
+    // The whole point of putting filters in the query string: "everything still
+    // waiting on Ada" is something you can bookmark and send.
+    expect(writeView({ folder: 'open', group: false, assignee: 'ada' })).toBe('?assignee=ada')
+    expect(readView('?assignee=none').assignee).toBe('none')
   })
 
   it('falls back rather than rendering a dead view', () => {

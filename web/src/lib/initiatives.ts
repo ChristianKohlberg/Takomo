@@ -8,6 +8,7 @@
 // Entries are append-only on every surface, so there is deliberately no update
 // or delete here either.
 import { api } from './api'
+import type { UserRef } from './users'
 
 export type InitiativeStatus = 'open' | 'parked' | 'distilled'
 
@@ -156,6 +157,13 @@ export interface Whoami {
    * of 1, so a truthy-plus-length guard sails straight past it too.
    */
   projects?: '*' | string[]
+  /**
+   * The person in the directory this credential belongs to, or null for a machine
+   * token. A different kind of fact from `actor`, which is a free-form string the
+   * credential carries: this one the server can vouch for, which is why it is what
+   * "for me" reads on /inbox.
+   */
+  user?: UserRef | null
 }
 
 const json = { 'Content-Type': 'application/json' }

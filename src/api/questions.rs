@@ -13,8 +13,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use crate::server::AppState;
 use crate::store::{
-    AskRequest, Question, QuestionFilter, Ticket, TimeoutAction, DEFAULT_ANSWER_TTL_SECONDS,
-    MAX_ANSWER_TTL_SECONDS,
+    Answerer, AskRequest, Question, QuestionFilter, Ticket, TimeoutAction,
+    DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS,
 };
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-const ASK_FIELDS: [&str; 17] = [
+const ASK_FIELDS: [&str; 18] = [
     "ticket",
     "mode",
     "kind",
@@ -39,6 +39,7 @@ const ASK_FIELDS: [&str; 17] = [
     "confidence",
     "summary",
     "expertise",
+    "assignee",
     "urgency",
     "expires_in_seconds",
     "on_timeout",
@@ -204,19 +205,40 @@ pub async fn list(
         ctx.require_project(p)?;
     }
 
-    // `mine=true` scopes the inbox to the caller's own expertise tags.
-    let expertise = if matches!(first(&pairs, "mine"), Some("true" | "1")) {
+    // `mine=true` is "waiting on me", which this board now means in two senses:
+    // what is addressed to me by name, and what my expertise covers. They are
+    // ORed, because a person owes an answer on either — requiring both would
+    // silently hide a question aimed straight at them.
+    let mine = matches!(first(&pairs, "mine"), Some("true" | "1"));
+    let mut assignee: Vec<String> = Vec::new();
+    let expertise = if mine {
         let tags = my_expertise(&ctx);
-        if tags.is_empty() {
-            // No expert scopes: nothing is "mine".
+        if let Some(user) = &ctx.user {
+            assignee.push(user.clone());
+        }
+        if tags.is_empty() && assignee.is_empty() {
+            // Neither route: nothing can be "mine".
             return Ok(Json(
-                json!({ "items": [], "note": "Your token carries no expert:<tag> scopes, so no questions are routed to you. Drop ?mine=true to see the whole queue." }),
+                json!({ "items": [], "note": "Your token carries no expert:<tag> scopes and is not bound to a person, so nothing is routed to you. Drop ?mine=true to see the whole queue, or have an operator bind this token to a user (takomo token create --user <handle>)." }),
             ));
         }
         tags
     } else {
+        // An explicit `?assignee=` reads one person's queue — including someone
+        // else's, which is the point of a shared board. `none` is the triage read:
+        // what has nobody's name on it.
+        if let Some(raw) = first(&pairs, "assignee") {
+            if raw != "none" {
+                let person = state
+                    .store
+                    .get_user(raw)?
+                    .ok_or_else(|| ApiError::not_found("user", raw))?;
+                assignee.push(person.id);
+            }
+        }
         all(&pairs, "expertise")
     };
+    let unassigned = !mine && matches!(first(&pairs, "assignee"), Some("none"));
 
     // Bound the page: `limit` clamped to the server cap, `cursor` = row offset.
     let limit = parse_i64_param(&pairs, "limit")?
@@ -237,6 +259,9 @@ pub async fn list(
             })
             .unwrap_or_default(),
         expertise,
+        assignee,
+        unassigned,
+        assignee_or_expertise: mine,
         allowed_projects: ctx.allowed_projects_vec(),
         limit: Some(limit),
         offset: Some(offset),
@@ -323,6 +348,7 @@ pub async fn create(
         confidence: get_i64(obj, "confidence")?,
         summary: get_str(obj, "summary")?,
         expertise: get_string_array(obj, "expertise")?.unwrap_or_default(),
+        assignee: get_str(obj, "assignee")?,
         urgency: get_str(obj, "urgency")?,
         expires_at,
         on_timeout,
@@ -421,10 +447,12 @@ pub async fn answer(
     let resume_to = get_str(obj, "resume_to")?;
 
     let outcome = match &on_behalf_of {
+        // Who the server can vouch this caller is. For an `approve` addressed to a
+        // person, being them is the second of the two authorities that can answer
+        // it; for every other kind the person changes nothing.
         None => state.store.answer_question(
             &id,
-            &ctx.actor,
-            &ctx.scopes,
+            Answerer::new(&ctx.actor, &ctx.scopes, ctx.user.as_deref()),
             &answer,
             resume_to.as_deref(),
         )?,
@@ -439,8 +467,10 @@ pub async fn answer(
             state.store.answer_question_relayed(
                 &id,
                 &ctx.actor,
-                decider,
-                &ctx.scopes,
+                // The named human is the answerer of record; the store drops the
+                // relaying credential's own person, because a relayed name is a
+                // claim rather than proof.
+                Answerer::new(decider, &ctx.scopes, ctx.user.as_deref()),
                 &answer,
                 resume_to.as_deref(),
             )?
@@ -468,12 +498,61 @@ pub async fn reopen(
         .get_question(&id)?
         .ok_or_else(|| ApiError::not_found("question", &id))?;
     ctx.require_project(&q.project)?;
-    let (question, ticket) = state.store.reopen_question(&id, &ctx.actor, &ctx.scopes)?;
+    let (question, ticket) = state.store.reopen_question(
+        &id,
+        Answerer::new(&ctx.actor, &ctx.scopes, ctx.user.as_deref()),
+    )?;
     state.wake();
     Ok(Json(json!({
         "question": question.to_json(),
         "ticket": ticket.to_json(now_ms()),
     })))
+}
+
+/// POST /v1/questions/{id}/assign (human scope) — address an open question to a
+/// person, or return it to the open pool with `{"assignee": null}`.
+///
+/// Separate from asking because the agent that raised the question usually cannot
+/// know who should decide it. Assignment is routing: any `human` token may still
+/// answer the ordinary kinds, so nothing is stranded when the assignee is away. The
+/// one thing it does confer is the second route to answering an `approve`.
+pub async fn assign(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("human")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["assignee"])?;
+    // `assignee: null` unassigns; a missing key is a caller who forgot which
+    // operation they wanted, and guessing either way would be a surprise.
+    let assignee = match obj.get("assignee") {
+        Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        Some(Value::String(_)) | None => {
+            return Err(ApiError::validation(
+                "validation.assignee",
+                "Field 'assignee' is required: a user handle (or usr- id) to address this question to, or null to return it to the open pool.",
+            ))
+        }
+        Some(_) => {
+            return Err(ApiError::validation(
+                "validation.assignee",
+                "Field 'assignee' must be a string (a user handle) or null.",
+            ))
+        }
+    };
+    let q = state
+        .store
+        .get_question(&id)?
+        .ok_or_else(|| ApiError::not_found("question", &id))?;
+    ctx.require_project(&q.project)?;
+    let question = state
+        .store
+        .assign_question(&id, assignee.as_deref(), &ctx.actor)?;
+    state.wake();
+    Ok(Json(json!({ "question": question.to_json() })))
 }
 
 pub async fn withdraw(
@@ -676,20 +755,52 @@ pub(crate) fn mint_answer_link(
             ),
         ));
     }
-    // Can't delegate an approval you couldn't give yourself.
+    // Can't delegate an approval you couldn't give yourself. Two ways to hold the
+    // authority the link would carry, matching the two that can answer:
+    //
+    // 1. A matching `expert:<tag>` scope — the original rule.
+    // 2. Being the assignee, minting your OWN link (to answer from a phone, say).
+    //
+    // Deliberately NOT allowed: any other `human` token minting a link *for* the
+    // assignee — that is the escalation this feature could have shipped, since
+    // whoever holds the link string can spend it, so a colleague could mint
+    // "Ada's" link and approve as Ada. `admin` is not a route either, because in
+    // this codebase admin has never stood in for domain expertise; the admin act
+    // that reaches a person with no credential is binding them one
+    // (`takomo token create --user <handle>`), which is explicit and auditable
+    // where a silently-mintable link would not be.
     if q.kind == "approve" {
         let has_expert = q
             .expertise
             .iter()
             .any(|t| ctx.scopes.contains(&format!("expert:{t}")));
-        if !has_expert {
+        let is_assignee = match (&q.assignee, &ctx.user) {
+            (Some(assignee), Some(caller)) => assignee == caller,
+            _ => false,
+        };
+        if !has_expert && !is_assignee {
+            let scopes = q
+                .expertise
+                .iter()
+                .map(|t| format!("expert:{t}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut message = String::from(
+                "Minting an answer link for this 'approve' question needs the authority the link would carry — you can only delegate authority you hold. ",
+            );
+            if q.expertise.is_empty() {
+                message.push_str(
+                    "It is addressed to a specific person, so only they can mint it, from the credential bound to them.",
+                );
+            } else {
+                message.push_str(&format!(
+                    "It needs a matching domain expert scope ({scopes}), or the credential of the person it is addressed to."
+                ));
+            }
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
                 "question.approve_expertise",
-                format!(
-                    "Minting an answer link for this 'approve' question needs a matching domain expert scope ({}) — you can only delegate authority you hold.",
-                    q.expertise.iter().map(|t| format!("expert:{t}")).collect::<Vec<_>>().join(", ")
-                ),
+                message,
             ));
         }
     }
@@ -713,14 +824,36 @@ pub(crate) fn mint_answer_link(
             None => (DEFAULT_ANSWER_TTL_SECONDS, "default"),
         },
     };
-    // Who the answer is attributed to; defaults to a link-scoped actor.
-    let actor = actor.unwrap_or_else(|| format!("human:link:{question_id}"));
+    // The identity this link carries. A question addressed to a person mints a
+    // link *for that person*, so their name — not a link-scoped placeholder — is
+    // what `answered_by` records, and so the grant can satisfy an approval
+    // addressed to them. An unassigned question mints an anonymous link exactly as
+    // before, which is still the outside-expert case.
+    //
+    // Only the assignee, never a caller-supplied name: the authority check above
+    // has already established who may mint this, and reading a person off the
+    // request would let it name someone else.
+    let link_user = q.assignee.clone();
+    let assignee_handle = q
+        .assignee_person
+        .as_ref()
+        .map(|person| person.handle.clone());
+
+    // Who the answer is attributed to; defaults to the named person, else a
+    // link-scoped actor.
+    let actor = actor
+        .or(assignee_handle)
+        .unwrap_or_else(|| format!("human:link:{question_id}"));
 
     let expires_at = now_ms() + ttl * 1000;
-    let (row, plaintext) =
-        state
-            .store
-            .create_answer_grant(question_id, &q.project, &actor, expires_at, &ctx.actor)?;
+    let (row, plaintext) = state.store.create_answer_grant(
+        question_id,
+        &q.project,
+        &actor,
+        expires_at,
+        &ctx.actor,
+        link_user.as_deref(),
+    )?;
 
     let mut out = row.to_json();
     if let Value::Object(map) = &mut out {
@@ -862,10 +995,13 @@ pub async fn self_answer(
     // ONE transaction spends the link and records the answer, so single-use is
     // the transaction itself rather than a follow-up write that a concurrent
     // holder could slip past (or a crash could lose).
+    // A link minted for a named person carries that person's identity, which is how
+    // it satisfies an approval addressed to them — an approval with no expertise tag
+    // has no scope to synthesize, so identity is the only proof there is. The mint
+    // path is what guarantees only they could have created it.
     let outcome = state.store.answer_question_via_grant(
         &grant.question,
-        &grant.actor,
-        &scopes,
+        Answerer::new(&grant.actor, &scopes, grant.user.as_deref()),
         &answer,
         resume_to.as_deref(),
         &grant.grant_id,

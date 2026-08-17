@@ -91,6 +91,11 @@ describe('activeFilterCount', () => {
       activeFilterCount({ urgency: ['critical'], mode: 'blocking', mine: true, expiringSoon: true }),
     ).toBe(4)
   })
+
+  it('counts the assignee filter, so the badge matches what is filtering', () => {
+    expect(activeFilterCount({ assignee: 'ada' })).toBe(1)
+    expect(activeFilterCount({ assignee: 'none', mine: true })).toBe(2)
+  })
 })
 
 // The tree the inbox now carries so it can filter by an epic and group by one.
@@ -147,6 +152,45 @@ describe('the rest of the filters', () => {
       filterQuestions(list, { mine: true }, { expertise: ['domain:billing'] }).map((x) => x.id),
     ).toEqual(['a'])
     expect(filterQuestions(list, { mine: true }, { expertise: [] })).toEqual([])
+  })
+
+  it('"mine" UNIONS being asked by name with covering the domain', () => {
+    // The reason it is a union: a question addressed straight at somebody and
+    // carrying no routing tag is the one they most owe an answer on, and an
+    // intersection would hide exactly that.
+    const list = [
+      q({ id: 'named', assignee: { id: 'usr-1', handle: 'ada', label: 'Ada' } }),
+      q({ id: 'domain', expertise: ['domain:billing'] }),
+      q({ id: 'someone-else', assignee: { id: 'usr-2', handle: 'sam', label: 'Sam' } }),
+      q({ id: 'nobody' }),
+    ]
+    expect(
+      filterQuestions(list, { mine: true }, { handle: 'ada', expertise: ['domain:billing'] }).map(
+        (x) => x.id,
+      ),
+    ).toEqual(['named', 'domain'])
+    // A machine token — nobody, and covering nothing — matches nothing at all.
+    expect(filterQuestions(list, { mine: true }, {})).toEqual([])
+    // Being somebody is enough on its own, with no expert scope.
+    expect(filterQuestions(list, { mine: true }, { handle: 'ada' }).map((x) => x.id)).toEqual([
+      'named',
+    ])
+  })
+
+  it('filters to one person\'s queue, and "none" is the open queue', () => {
+    const list = [
+      q({ id: 'a', assignee: { id: 'usr-1', handle: 'ada', label: 'Ada' } }),
+      q({ id: 'b', assignee: { id: 'usr-2', handle: 'sam', label: 'Sam' } }),
+      q({ id: 'c' }),
+    ]
+    expect(filterQuestions(list, { assignee: 'ada' }).map((x) => x.id)).toEqual(['a'])
+    expect(filterQuestions(list, { assignee: 'none' }).map((x) => x.id)).toEqual(['c'])
+  })
+
+  it('searches both spellings of the person a question waits on', () => {
+    const x = q({ assignee: { id: 'usr-1', handle: 'ada', label: 'Ada Lovelace', name: 'Ada Lovelace' } })
+    expect(matchesSearch(x, 'ada')).toBe(true)
+    expect(matchesSearch(x, 'lovelace')).toBe(true)
   })
 
   it('hides questions bounced back to the agent', () => {

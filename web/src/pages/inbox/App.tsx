@@ -38,11 +38,13 @@ import { indexById } from '@/lib/tickets'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
+import { listUsers } from '@/lib/users'
 import { answerPayloadFor, displayValue, type Draft } from '@/lib/answers'
 import { undoInto } from '@/lib/undo-queue'
 import {
   FOLDERS,
   answerQuestion,
+  assignQuestion,
   getThread,
   listQuestions,
   listTicketRefs,
@@ -81,7 +83,7 @@ export function App() {
   const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
-  const [me, setMe] = useState({ actor: '', scopes: [] as string[] })
+  const [me, setMe] = useState({ actor: '', scopes: [] as string[], handle: '' })
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
   const [questions, setQuestions] = useState<Question[]>([])
@@ -163,7 +165,13 @@ export function App() {
           listProjects(token).catch(() => [] as Project[]),
         ])
         if (cancelled) return
-        setMe({ actor: who.actor ?? '', scopes: who.scopes ?? [] })
+        setMe({
+          actor: who.actor ?? '',
+          scopes: who.scopes ?? [],
+          // The person behind the credential. '' for a machine token, which is
+          // what makes "for me" fall back to expertise alone.
+          handle: who.user?.handle ?? '',
+        })
         setProjects(ps)
       } catch (e) {
         if (!cancelled) handleErr(e)
@@ -219,8 +227,13 @@ export function App() {
   // counts both read from it, so a filtered-out question cannot be counted in a
   // folder it is not listed in.
   const visible = useMemo(
-    () => filterQuestions(questions, view, { index, expertise }),
-    [questions, view, index, expertise],
+    () =>
+      filterQuestions(questions, view, {
+        index,
+        expertise,
+        handle: me.handle || undefined,
+      }),
+    [questions, view, index, expertise, me.handle],
   )
   const inFolder = useMemo(
     () => sortForFolder(visible.filter((q) => q.status === folder), folder),
@@ -252,6 +265,31 @@ export function App() {
     () => [...new Set(questions.map((q) => q.asked_by ?? '').filter(Boolean))].sort(),
     [questions],
   )
+  /**
+   * Whether this reader can be routed to at all — by name, or by expertise. What
+   * decides whether the "for me" toggle is offered: to a machine token with no
+   * expert scope it could only ever empty the list.
+   */
+  const routable = expertise.length > 0 || me.handle !== ''
+  /**
+   * The people some question in view is waiting on, for the assignee picker.
+   *
+   * Derived from the questions already loaded rather than from `GET /v1/users`,
+   * deliberately: the useful filter is "whose queue, among the ones with work
+   * here", and a directory of fifty people where three have open questions makes
+   * the reader hunt. Directory-wide assignment is the reading pane's job, and it
+   * fetches for that.
+   */
+  const assignees = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const q of questions) {
+      const who = q.assignee
+      if (who?.handle && !seen.has(who.handle)) seen.set(who.handle, who.label)
+    }
+    return [...seen].map(([handle, label]) => ({ handle, label })).sort((a, b) =>
+      a.label.localeCompare(b.label),
+    )
+  }, [questions])
   const active = activeFilterCount(view)
   // The nav badge counts what is OPEN, unfiltered. The folder counts follow the
   // filters — they describe this view — but the badge is a claim about the
@@ -270,6 +308,37 @@ export function App() {
     () => inFolder.find((q) => q.id === selectedId) ?? walkable[0] ?? null,
     [inFolder, walkable, selectedId],
   )
+
+  /**
+   * Who the selected question can be addressed to: the members of ITS project,
+   * not of the page's project filter — the filter may be empty (every project)
+   * while a question always belongs to exactly one, and the server refuses a
+   * non-member.
+   *
+   * Fetched per project rather than once for the whole directory, because
+   * membership is the thing being offered. A failure leaves the list empty, which
+   * hides the control: better than offering names the server will refuse.
+   */
+  const [members, setMembers] = useState<{ handle: string; label: string }[]>([])
+  const memberProject = selected?.project ?? ''
+  useEffect(() => {
+    if (!token || !memberProject) {
+      setMembers([])
+      return
+    }
+    let cancelled = false
+    listUsers(token, { project: memberProject, limit: 200 })
+      .then((page) => {
+        if (cancelled) return
+        setMembers(page.items.map((u) => ({ handle: u.handle, label: u.label })))
+      })
+      .catch(() => {
+        if (!cancelled) setMembers([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, memberProject])
 
   // Deep-linkable: #q=<id> opens that question, and selecting one writes it back
   // so the URL is shareable and bookmarkable.
@@ -428,6 +497,9 @@ export function App() {
     waitingAgentPrefix: t.waitingAgent,
     waitingAgentSuffix: t.waitingAgent2,
     noReply: t.noReply,
+    assignTo: t.assignTo,
+    assignNobody: t.assignNobody,
+    assignHint: t.assignHint,
   }
 
   return (
@@ -504,8 +576,8 @@ export function App() {
         onUrgency={(levels) => updateView({ urgency: levels.length ? levels : undefined })}
         mode={view.mode ?? ''}
         onMode={(m) => updateView({ mode: m || undefined })}
-        mine={expertise.length ? (view.mine ?? false) : undefined}
-        onMine={expertise.length ? (on) => updateView({ mine: on || undefined }) : undefined}
+        mine={routable ? (view.mine ?? false) : undefined}
+        onMine={routable ? (on) => updateView({ mine: on || undefined }) : undefined}
         hideAwaitingAgent={view.hideAwaitingAgent ?? false}
         onHideAwaitingAgent={(on) => updateView({ hideAwaitingAgent: on || undefined })}
         expiringSoon={view.expiringSoon ?? false}
@@ -513,6 +585,9 @@ export function App() {
         askers={askers}
         askedBy={view.askedBy ?? ''}
         onAskedBy={(a) => updateView({ askedBy: a || undefined })}
+        assignees={assignees}
+        assignee={view.assignee ?? ''}
+        onAssignee={(h) => updateView({ assignee: h || undefined })}
         group={group}
         onGroup={(on) => updateView({ group: on })}
         matched={visible.length}
@@ -547,6 +622,9 @@ export function App() {
           soonHint: t.soonHint,
           allAskers: t.allAskers,
           asker: t.askerHdr,
+          anyAssignee: t.anyAssignee,
+          assignee: t.assigneeHdr,
+          unassigned: t.unassigned,
           groupEpic: t.groupEpic,
           count: t.taQCount,
           count1: t.taQCount1,
@@ -665,7 +743,7 @@ export function App() {
                         question={q}
                         selected={q.id === selected?.id}
                         landed={queue.pending.some((p) => p.qid === q.id)}
-                        labels={{ advisory: t.advTag, askedBy: t.askedBy, waitingAgent: t.stallTag }}
+                        labels={{ advisory: t.advTag, askedBy: t.askedBy, waitingAgent: t.stallTag, forPerson: t.forPerson }}
                         onSelect={setSelectedId}
                       />
                     ))}
@@ -679,7 +757,7 @@ export function App() {
                 question={q}
                 selected={q.id === selected?.id}
                 landed={queue.pending.some((p) => p.qid === q.id)}
-                labels={{ advisory: t.advTag, askedBy: t.askedBy, waitingAgent: t.stallTag }}
+                labels={{ advisory: t.advTag, askedBy: t.askedBy, waitingAgent: t.stallTag, forPerson: t.forPerson }}
                 onSelect={setSelectedId}
               />
             ))
@@ -731,6 +809,19 @@ export function App() {
                 .catch(handleErr)
             }
             answerPending={queue.pending.some((p) => p.qid === selected.id)}
+            assignable={canAnswer ? members : []}
+            onAssign={(handle) =>
+              assignQuestion(token, selected.id, handle)
+                .then((r) => {
+                  const who = r.question.assignee?.label
+                  toast(
+                    who ? t.assigned.replace('{who}', who) : t.unassignedDone,
+                    'success',
+                  )
+                  return fetchAll()
+                })
+                .catch(handleErr)
+            }
           />
         ) : (
           <div className="text-muted-foreground px-6 py-14 text-center">

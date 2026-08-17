@@ -213,6 +213,24 @@ pub struct Question {
     pub summary: Option<String>,
     /// Routing tags, e.g. ["domain:billing"].
     pub expertise: Vec<String>,
+    /// The person this decision is waiting on ([`User::id`]), or None for the open
+    /// pool.
+    ///
+    /// Orthogonal to `expertise`, and both may be set: expertise says what a
+    /// qualified answerer must *be*, this says who was actually asked. It is the
+    /// difference between "someone who knows billing" and "Ada".
+    ///
+    /// Assignment is routing — any `human` token may still answer the three
+    /// ordinary kinds, so a decision is never stranded because the assignee is
+    /// away — with one exception that makes it load-bearing: for an `approve`, a
+    /// token bound to this person may answer *in place of* the expertise scope.
+    /// See `store::questions::answer_question_inner`.
+    pub assignee: Option<String>,
+    /// The assignee, resolved for display. Filled by the reads that joined it (see
+    /// `Store::resolve_question_people`); `None` on a path that did not, which is
+    /// why the wire shape falls back to naming the raw id rather than reporting
+    /// the question as unassigned.
+    pub assignee_person: Option<User>,
     pub urgency: String,
     /// open | answered | withdrawn | expired.
     pub status: String,
@@ -236,6 +254,22 @@ pub struct Question {
 }
 
 impl Question {
+    /// The assignee as the wire sees it: the resolved person, `null` when the
+    /// question is in the open pool, or — if the row names someone a read did not
+    /// resolve — an object carrying the id alone.
+    ///
+    /// That last case degrades to showing an id rather than to `null`, because
+    /// `null` would be a lie a reader acts on: it reads as "nobody has this", and
+    /// the decision would sit in the open pool of an inbox while its person waited
+    /// to be asked.
+    fn assignee_json(&self) -> Value {
+        match (&self.assignee, &self.assignee_person) {
+            (_, Some(person)) => person.to_ref_json(),
+            (Some(id), None) => json!({ "id": id, "label": id }),
+            (None, None) => Value::Null,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -255,6 +289,7 @@ impl Question {
             "confidence": self.confidence,
             "summary": self.summary,
             "expertise": self.expertise,
+            "assignee": self.assignee_json(),
             "urgency": self.urgency,
             "status": self.status,
             "answer": self.answer,
@@ -464,6 +499,14 @@ pub struct AnswerGrantRow {
     pub project: String,
     /// Actor recorded as the answerer when this grant is used.
     pub actor: String,
+    /// The directory person this link was minted for ([`User::id`]), or None for an
+    /// outside expert who is only a free-form `actor`.
+    ///
+    /// When set, the grant carries that person's *identity*, which is what lets it
+    /// answer an `approve` addressed to them. Minting one for someone else is
+    /// therefore restricted (`api::questions::mint_answer_link`) — the holder of
+    /// the link is whoever holds the string.
+    pub user: Option<String>,
     pub expires_at: i64,
     pub created_by: String,
     pub created_at: i64,
@@ -479,6 +522,7 @@ impl AnswerGrantRow {
             "question": self.question,
             "project": self.project,
             "actor": self.actor,
+            "user": self.user,
             "expires_at": iso(self.expires_at),
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
@@ -717,6 +761,131 @@ impl Tag {
     }
 }
 
+/// A person, global to the server: the directory entry work can be addressed to.
+///
+/// **A user says who work is waiting on; a scope says what a credential may do.**
+/// This is not a login and not a fifth credential type — nothing here
+/// authenticates. It is how a question stops meaning "whoever holds
+/// `expert:domain:billing`" and starts meaning Ada.
+///
+/// Global rather than project-scoped, like `tokens` and unlike [`Tag`]: a person
+/// is not per-project, so `answered_by` resolves to the same human everywhere.
+/// [`UserMembership`] is what bounds where they can be handed work.
+///
+/// `handle` is validated by the *tag* handle rule (`store::tags::handle_shape_ok`),
+/// which is what keeps `person:ada` a legal reference to user `ada`.
+///
+/// There is no delete. `disabled_at` is a gate in the `projects.archived_at`
+/// idiom: a disabled person cannot be newly assigned and cannot exercise
+/// assignee authority, while every record naming them keeps resolving — deleting
+/// the row would make `answered_by: ada` unreadable after the fact, which is the
+/// one thing an audit trail may not do.
+#[derive(Debug, Clone)]
+pub struct User {
+    pub id: String,
+    pub handle: String,
+    pub name: String,
+    pub email: Option<String>,
+    pub meta: Value,
+    pub disabled_at: Option<i64>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// Projects this person is a member of, ascending. Filled by the reads that
+    /// were asked for it (`get_user`, and `list_users` when the caller wants it);
+    /// an empty vec on a read that did not join, which is why the JSON omits the
+    /// key rather than claiming "member of nothing".
+    pub projects: Vec<String>,
+}
+
+impl User {
+    /// The canonical `person:<handle>` tag reference for this user, so a caller
+    /// tagging a ticket or an initiative with a directory person has one spelling
+    /// to use rather than assembling the string itself.
+    pub fn tag_reference(&self) -> String {
+        format!("person:{}", self.handle)
+    }
+
+    pub fn active(&self) -> bool {
+        self.disabled_at.is_none()
+    }
+
+    /// What to show a human: their name, falling back to the handle. Sanitized
+    /// with [`display_hostile`] for the same reason [`OauthConnection::label`] is
+    /// — one sink is `takomo user ls` in a terminal, and a name carrying an escape
+    /// sequence could forge a row an operator then acts on.
+    pub fn label(&self) -> String {
+        let raw = if self.name.trim().is_empty() {
+            &self.handle
+        } else {
+            &self.name
+        };
+        raw.chars()
+            .map(|c| if display_hostile(c) { '?' } else { c })
+            .collect()
+    }
+
+    /// The compact shape embedded wherever a person is *referenced* rather than
+    /// listed — a question's `assignee`, `whoami`'s `user`. Enough to render a
+    /// name without a second request, and never the membership list.
+    pub fn to_ref_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "handle": self.handle,
+            "name": self.name,
+            "label": self.label(),
+            "ref": self.tag_reference(),
+            "disabled": !self.active(),
+        })
+    }
+
+    pub fn to_json(&self) -> Value {
+        let mut out = json!({
+            "id": self.id,
+            "handle": self.handle,
+            "name": self.name,
+            "label": self.label(),
+            "ref": self.tag_reference(),
+            "email": self.email,
+            "meta": self.meta,
+            "disabled": !self.active(),
+            "disabled_at": self.disabled_at.map(iso),
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+        });
+        if !self.projects.is_empty() {
+            out["projects"] = json!(self.projects);
+        }
+        out
+    }
+}
+
+/// One person's membership of one project: who is assignable where.
+///
+/// Directory scoping, **not** access control. A token's `projects` allowlist
+/// remains the only thing deciding what a credential may read or write; this
+/// decides who work may be addressed to, and — because a named assignee may
+/// answer an `approve` — is a second fence in front of that authority.
+#[derive(Debug, Clone)]
+pub struct UserMembership {
+    pub user: String,
+    pub project: String,
+    pub added_by: String,
+    pub created_at: i64,
+}
+
+impl UserMembership {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "user": self.user,
+            "project": self.project,
+            "added_by": self.added_by,
+            "created_at": iso(self.created_at),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TokenRow {
     pub id: String,
@@ -725,6 +894,15 @@ pub struct TokenRow {
     /// None = all projects (`*`).
     pub projects: Option<Vec<String>>,
     pub rate_limit: i64,
+    /// The directory person this credential belongs to ([`User::id`]), or None for
+    /// a machine token.
+    ///
+    /// **Binding a token to a user is an authorization act**, not a display
+    /// nicety: a named assignee may answer an `approve` question, and this column
+    /// is the only proof that the caller *is* that person. So it is set by an
+    /// admin at mint time and is never inferred from `actor`, which is a
+    /// free-form string anyone with `write` can put anything in.
+    pub user: Option<String>,
     pub created_at: i64,
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -811,6 +989,7 @@ impl TokenRow {
                 Some(list) => json!(list),
             },
             "rate_limit": self.rate_limit,
+            "user": self.user,
             "created_at": iso(self.created_at),
             "expires_at": self.expires_at.map(iso),
             "revoked_at": self.revoked_at.map(iso),
@@ -880,6 +1059,13 @@ pub struct GrantedAccess {
     /// None = all projects (`*`), same convention as [`TokenRow`].
     pub projects: Option<Vec<String>>,
     pub rate_limit: i64,
+    /// The directory person the consenting credential belonged to, carried through
+    /// the consent snapshot so an OAuth-issued token stays the *same person*.
+    ///
+    /// Inherited, never granted: consent can narrow scopes but cannot attach an
+    /// identity the consenting token did not already have, which is why this is
+    /// copied from the token row and never read off the request.
+    pub user: Option<String>,
     /// The OAuth scope string exactly as granted (space separated). Echoed back
     /// on the token response, because it may be *narrower* than what the client
     /// asked for — the human can uncheck scopes on the consent screen.

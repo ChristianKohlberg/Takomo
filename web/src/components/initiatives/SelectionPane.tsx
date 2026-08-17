@@ -22,6 +22,9 @@ export interface SelectionPaneLabels {
   suggestPh: string
   ticketPh: string
   askPh: string
+  /** The person picker on `ask`: its label and its "anyone" option. */
+  askWho: string
+  askAnyone: string
   citePh: string
   submit: string
   cancel: string
@@ -57,7 +60,13 @@ export interface SelectionPaneProps {
   pending: Amendment[]
   /** Entries citable as evidence — anything that is not part of the document. */
   evidence: Entry[]
-  onRun: (op: Operation, text: string, evidenceId?: string) => void
+  onRun: (op: Operation, text: string, evidenceId?: string, assignee?: string) => void
+  /**
+   * People a question raised here can be addressed to: the members of this
+   * collection's project. Absent or empty hides the picker, and asking behaves as
+   * it did before the directory existed.
+   */
+  people?: { handle: string; label: string }[]
   onOpenThread: (t: Thread) => void
   onOpenAmendment: (a: Amendment) => void
   onDispatch: (t: Thread) => void
@@ -80,6 +89,7 @@ export function SelectionPane(props: SelectionPaneProps) {
   const [op, setOp] = useState<Operation | null>(null)
   const [text, setText] = useState('')
   const [evidenceId, setEvidenceId] = useState('')
+  const [assignee, setAssignee] = useState('')
 
   // A new highlight is a new question being asked, so the half-typed answer to
   // the previous one must not be carried into it.
@@ -122,9 +132,30 @@ export function SelectionPane(props: SelectionPaneProps) {
             className="mt-3"
             onSubmit={(e) => {
               e.preventDefault()
-              props.onRun(op, text.trim(), evidenceId || undefined)
+              props.onRun(op, text.trim(), evidenceId || undefined, assignee || undefined)
             }}
           >
+            {/* Asking a person becomes literal: pick who, and the question is
+                addressed to them rather than dropped in the open queue for
+                whoever holds the right expertise. Left on "anyone" it behaves
+                exactly as it did before there was a directory. */}
+            {op === 'ask' && props.people && props.people.length > 0 && (
+              <label className="text-muted-foreground mb-2 flex flex-wrap items-center gap-2 text-[12.5px] font-[650]">
+                {labels.askWho}
+                <select
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  className="border-border bg-card text-foreground max-w-full rounded-md border px-2 py-1.5 text-[13px]"
+                >
+                  <option value="">{labels.askAnyone}</option>
+                  {props.people.map((p) => (
+                    <option key={p.handle} value={p.handle}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {op === 'cite' ? (
               props.evidence.length === 0 ? (
                 <p className="text-muted-foreground text-[12.5px]">{labels.noEvidence}</p>

@@ -24,6 +24,7 @@ mod tags;
 mod tickets;
 mod tokens;
 mod transition;
+mod users;
 mod workflows;
 
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
@@ -52,7 +53,7 @@ pub use projects::{
     DeletedCounts, ProjectCreateSettings, MAX_STYLE_GUIDE_CHARS,
 };
 pub use questions::{
-    question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
+    question_quality_hints, AnswerOutcome, Answerer, AskRequest, QuestionFilter, ResumeBlocked,
     ReviseOptionsRequest, TimeoutAction, MAX_QUESTIONS_PAGE, QUESTION_KINDS,
 };
 pub use schedules::{
@@ -64,6 +65,7 @@ pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, T
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
 };
+pub use users::{validate_user_handle, UserCreate, UserListFilter, UserPatch, MAX_USERS_PAGE};
 
 use crate::error::{ApiError, ApiResult};
 use rusqlite::{Connection, OpenFlags};
@@ -681,6 +683,67 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_occurrence ON tickets(schedule, occurrence) WHERE schedule IS NOT NULL",
         [],
     )?;
+    // tokens.user: the directory person this credential belongs to (src/store/users.rs).
+    // Nullable, and NULL is exactly right for every existing row — a database that
+    // predates the directory has no people in it, and an unbound token behaves
+    // precisely as it always did. The `users` table itself is in SCHEMA
+    // (CREATE TABLE IF NOT EXISTS), so it appears on an old DB automatically.
+    let token_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(tokens)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !token_cols.is_empty() && !token_cols.iter().any(|c| c == "user") {
+        conn.execute("ALTER TABLE tokens ADD COLUMN \"user\" TEXT", [])?;
+    }
+    // The consent snapshot carries the person too, so an OAuth-issued token is the
+    // same human as the credential it was approved with rather than an anonymous
+    // copy of their scopes.
+    for table in ["oauth_codes", "oauth_refresh"] {
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let cols = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            cols
+        };
+        if !cols.is_empty() && !cols.iter().any(|c| c == "user") {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN \"user\" TEXT"), [])?;
+        }
+    }
+    // answer_grants.user: which person an answer link was minted FOR. Nullable —
+    // an older grant, and any grant handed to an outside expert, carries only its
+    // free-form `actor`. Non-NULL is what lets the grant satisfy an assignee-gated
+    // approval by identity instead of a synthesized scope.
+    let grant_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(answer_grants)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !grant_cols.is_empty() && !grant_cols.iter().any(|c| c == "user") {
+        conn.execute("ALTER TABLE answer_grants ADD COLUMN \"user\" TEXT", [])?;
+    }
+    // questions.assignee: the person this decision is waiting on. Nullable, and
+    // NULL on every existing row is right — they were routed by expertise alone.
+    let question_assignee_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(questions)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !question_assignee_cols.is_empty() && !question_assignee_cols.iter().any(|c| c == "assignee")
+    {
+        conn.execute("ALTER TABLE questions ADD COLUMN assignee TEXT", [])?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_questions_assignee ON questions(assignee) WHERE assignee IS NOT NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -807,6 +870,10 @@ CREATE TABLE IF NOT EXISTS questions (
   options      TEXT NOT NULL DEFAULT '[]',
   recommended  TEXT,
   expertise    TEXT NOT NULL DEFAULT '[]',
+  -- The person this decision is waiting on (users.id), or NULL for the open pool.
+  -- Orthogonal to `expertise`: that says what a qualified answerer must be, this
+  -- says who was asked. Both may be set.
+  assignee     TEXT REFERENCES users(id),
   urgency      TEXT NOT NULL DEFAULT 'normal',
   status       TEXT NOT NULL DEFAULT 'open',
   answer       TEXT,
@@ -849,6 +916,54 @@ CREATE TABLE IF NOT EXISTS tags (
 );
 CREATE INDEX IF NOT EXISTS idx_tags_project_kind ON tags(project, kind);
 
+-- The people directory: one row per human, global to the server. What makes
+-- "this decision is waiting on Ada" expressible, where `expertise` could only say
+-- "waiting on whoever holds expert:domain:billing".
+--
+-- Global, not project-scoped like `tags` above, for the same reason `tokens` is:
+-- a person is not per-project, so every `answered_by`/`assignee` reference
+-- resolves to the same human from anywhere. `user_projects` bounds where they can
+-- be handed work.
+--
+-- `handle` is validated by the TAG handle rule (store::tags::handle_shape_ok), so
+-- `person:<handle>` stays a legal tag reference and the convention that already
+-- exists on tickets and initiatives converges on this row instead of forking from
+-- it.
+--
+-- NOT a credential. Nothing here authenticates; scopes remain what a token may
+-- do. See docs/users.md for the one place that boundary deliberately bends.
+--
+-- No DELETE, ever: `disabled_at` is a gate in the `projects.archived_at` idiom.
+-- A disabled person cannot be newly assigned and cannot exercise assignee
+-- authority, while every past record naming them still resolves — dropping the
+-- row would make an answered question's `answered_by` unreadable, which is the
+-- one thing an audit trail may not do.
+CREATE TABLE IF NOT EXISTS users (
+  id          TEXT PRIMARY KEY,
+  handle      TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL DEFAULT '',
+  email       TEXT,
+  meta        TEXT NOT NULL DEFAULT '{}',
+  disabled_at INTEGER,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+-- Who is assignable where. Directory scoping, NOT access control: a token's
+-- `projects` allowlist is still the only thing that decides what a credential may
+-- read or write. Because a named assignee may answer an `approve`, this is also a
+-- second fence in front of that authority — you cannot hand a decision to
+-- someone who was never put on the project.
+CREATE TABLE IF NOT EXISTS user_projects (
+  "user"     TEXT NOT NULL REFERENCES users(id),
+  project    TEXT NOT NULL REFERENCES projects(id),
+  added_by   TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY ("user", project)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_user_projects_project ON user_projects(project);
+
 -- The follow-up thread on a question: a human can bounce a question back to the
 -- asking agent for more research (role='human'), and the agent replies
 -- (role='agent'), before the human answers. Append-only.
@@ -890,6 +1005,10 @@ CREATE TABLE IF NOT EXISTS tokens (
   scopes       TEXT NOT NULL,
   projects     TEXT NOT NULL DEFAULT '*',
   rate_limit   INTEGER NOT NULL DEFAULT 120,
+  -- Which person holds this credential (users.id), NULL for a machine token.
+  -- An authorization fact, not a label: it is the proof that satisfies an
+  -- assignee-gated approval, so only an admin sets it, and only at mint.
+  "user"       TEXT REFERENCES users(id),
   created_at   INTEGER NOT NULL,
   expires_at   INTEGER,
   revoked_at   INTEGER,
@@ -947,6 +1066,11 @@ CREATE TABLE IF NOT EXISTS answer_grants (
   question    TEXT NOT NULL REFERENCES questions(id),
   project     TEXT NOT NULL,
   actor       TEXT NOT NULL,
+  -- The directory person this link was minted FOR (users.id), or NULL for the
+  -- outside-expert case where only the free-form `actor` names the answerer.
+  -- Non-NULL is what lets the grant satisfy an assignee-gated approval by
+  -- identity rather than by a synthesized expert scope.
+  "user"      TEXT REFERENCES users(id),
   expires_at  INTEGER NOT NULL,
   created_by  TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
@@ -1119,6 +1243,9 @@ CREATE TABLE IF NOT EXISTS oauth_codes (
   scopes         TEXT NOT NULL,
   projects       TEXT NOT NULL DEFAULT '*',
   rate_limit     INTEGER NOT NULL,
+  -- The person who consented, carried so the issued token is the same human and
+  -- not an anonymous copy of their scopes. Inherited, never granted.
+  "user"         TEXT,
   scope          TEXT NOT NULL,
   granted_by     TEXT NOT NULL,
   created_at     INTEGER NOT NULL,
@@ -1139,6 +1266,9 @@ CREATE TABLE IF NOT EXISTS oauth_refresh (
   scopes     TEXT NOT NULL,
   projects   TEXT NOT NULL DEFAULT '*',
   rate_limit INTEGER NOT NULL,
+  -- Same consent snapshot as oauth_codes: the person survives every rotation, so
+  -- a connection approved by Ada keeps answering as Ada a month later.
+  "user"     TEXT,
   scope      TEXT NOT NULL,
   granted_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,

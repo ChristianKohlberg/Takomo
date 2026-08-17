@@ -57,6 +57,15 @@ pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))
 }
 
+/// User (a person in the directory) id, e.g. "usr-9f3ka2xz".
+///
+/// Distinct from [`tag_id`] on purpose. A `person:ada` tag is reference metadata
+/// scoped to one project; a user is the person themselves, global to the server,
+/// and work can be addressed to them. See src/store/users.rs.
+pub fn user_id() -> String {
+    format!("usr-{}", random_chars(BASE36, 8))
+}
+
 /// Workflow library entry id, e.g. "wf-9f3ka2xz".
 pub fn workflow_entry_id() -> String {
     format!("wf-{}", random_chars(BASE36, 8))

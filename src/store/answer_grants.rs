@@ -71,8 +71,8 @@ pub const DEFAULT_ANSWER_TTL_SECONDS: i64 = 7 * 86_400;
 /// can never express a lifetime a per-call `--ttl` would be refused.
 pub const MAX_ANSWER_TTL_SECONDS: i64 = 30 * 86_400;
 
-const GRANT_COLS: &str =
-    "id, question, project, actor, expires_at, created_by, created_at, used_at, revoked_at";
+const GRANT_COLS: &str = "id, question, project, actor, \"user\", expires_at, created_by, \
+     created_at, used_at, revoked_at";
 
 fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
     Ok(AnswerGrantRow {
@@ -80,6 +80,7 @@ fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
         question: row.get("question")?,
         project: row.get("project")?,
         actor: row.get("actor")?,
+        user: row.get("user")?,
         expires_at: row.get("expires_at")?,
         created_by: row.get("created_by")?,
         created_at: row.get("created_at")?,
@@ -91,6 +92,11 @@ fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
 impl Store {
     /// Mint an answer grant for one question. Returns (row, plaintext) — the
     /// plaintext `tka_` token is shown once.
+    /// `user` binds the link to a person in the directory, which is what lets it
+    /// satisfy an `approve` addressed to them by *identity* rather than by a
+    /// synthesized expert scope. Who may mint such a link is decided one layer up
+    /// (`api::questions::mint_answer_link`), because it is an authority question
+    /// rather than a storage one.
     pub fn create_answer_grant(
         &self,
         question: &str,
@@ -98,6 +104,7 @@ impl Store {
         actor: &str,
         expires_at: i64,
         created_by: &str,
+        user: Option<&str>,
     ) -> ApiResult<(AnswerGrantRow, String)> {
         let plaintext = answer_grant_token_plaintext();
         let hash = token_hash(&plaintext);
@@ -110,9 +117,9 @@ impl Store {
             // anyone finds out.
             super::helpers::ensure_project_writable(tx, project)?;
             tx.execute(
-                "INSERT INTO answer_grants (id, token_hash, question, project, actor, expires_at, created_by, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id, hash, question, project, actor, expires_at, created_by, now],
+                "INSERT INTO answer_grants (id, token_hash, question, project, actor, \"user\", expires_at, created_by, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![id, hash, question, project, actor, user, expires_at, created_by, now],
             )?;
             Ok(())
         })?;
@@ -122,6 +129,7 @@ impl Store {
                 question: question.to_string(),
                 project: project.to_string(),
                 actor: actor.to_string(),
+                user: user.map(str::to_string),
                 expires_at,
                 created_by: created_by.to_string(),
                 created_at: now,

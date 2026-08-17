@@ -41,6 +41,7 @@ export function readView(search: string): InboxView {
     urgency: urgency.length ? urgency : undefined,
     mode: mode === 'blocking' || mode === 'advisory' ? mode : undefined,
     mine: bool(p.get('mine')) || undefined,
+    assignee: p.get('assignee') ?? undefined,
     hideAwaitingAgent: bool(p.get('waiting')) || undefined,
     expiringSoon: bool(p.get('soon')) || undefined,
     askedBy: p.get('asked_by') ?? undefined,
@@ -60,6 +61,7 @@ export function writeView(v: InboxView): string {
   if (v.urgency?.length) p.set('urgency', v.urgency.join(','))
   if (v.mode) p.set('mode', v.mode)
   if (v.mine) p.set('mine', '1')
+  if (v.assignee) p.set('assignee', v.assignee)
   if (v.hideAwaitingAgent) p.set('waiting', '1')
   if (v.expiringSoon) p.set('soon', '1')
   if (v.askedBy) p.set('asked_by', v.askedBy)

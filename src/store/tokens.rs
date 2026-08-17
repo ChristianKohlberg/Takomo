@@ -29,6 +29,7 @@ fn row_to_token(row: &Row) -> rusqlite::Result<TokenRow> {
             )
         },
         rate_limit: row.get("rate_limit")?,
+        user: row.get("user")?,
         created_at: row.get("created_at")?,
         expires_at: row.get("expires_at")?,
         revoked_at: row.get("revoked_at")?,
@@ -55,8 +56,8 @@ fn row_to_listed_token(row: &Row) -> rusqlite::Result<TokenRow> {
     Ok(token)
 }
 
-const TOKEN_COLS: &str =
-    "id, actor, scopes, projects, rate_limit, created_at, expires_at, revoked_at, last_used_at";
+const TOKEN_COLS: &str = "id, actor, scopes, projects, rate_limit, \"user\", created_at, \
+     expires_at, revoked_at, last_used_at";
 
 /// The same columns, aliased for the listing join.
 ///
@@ -64,7 +65,8 @@ const TOKEN_COLS: &str =
 /// has a `created_at`, and `row_to_token` reads columns by name — an ambiguous name
 /// would silently hand it the client's timestamp.
 const TOKEN_COLS_JOINED: &str = "t.id AS id, t.actor AS actor, t.scopes AS scopes, \
-     t.projects AS projects, t.rate_limit AS rate_limit, t.created_at AS created_at, \
+     t.projects AS projects, t.rate_limit AS rate_limit, t.\"user\" AS user, \
+     t.created_at AS created_at, \
      t.expires_at AS expires_at, t.revoked_at AS revoked_at, t.last_used_at AS last_used_at";
 
 /// Insert one token row inside an existing transaction. Returns (row, plaintext).
@@ -75,6 +77,13 @@ const TOKEN_COLS_JOINED: &str = "t.id AS id, t.actor AS actor, t.scopes AS scope
 /// authorization code spent and minting the access token it paid for have to
 /// commit together, or a crash in between leaves a burnt code with no token —
 /// unrecoverable for the client, since a code is single-use by design.
+///
+/// `user` binds the credential to a person in the directory (by id or handle),
+/// and is resolved here rather than at the call sites because **it is an
+/// authorization fact**: a named assignee may answer an `approve` question, and
+/// this column is the only proof the caller is that person. So there is one door,
+/// it takes the id or the handle a human would type, and an unknown or disabled
+/// person is refused instead of stored as a dangling string.
 pub(super) fn insert_token(
     tx: &rusqlite::Transaction,
     actor: &str,
@@ -82,6 +91,7 @@ pub(super) fn insert_token(
     projects: Option<&[String]>,
     rate_limit: i64,
     expires_at: Option<i64>,
+    user: Option<&str>,
 ) -> ApiResult<(TokenRow, String)> {
     if actor.trim().is_empty() {
         return Err(ApiError::validation(
@@ -95,6 +105,22 @@ pub(super) fn insert_token(
             "at least one scope is required",
         ));
     }
+    let user_id: Option<String> = match user {
+        None => None,
+        Some(raw) => {
+            let person = super::users::require_user(tx, raw)?;
+            if !person.active() {
+                return Err(ApiError::conflict(
+                    "user.disabled",
+                    format!(
+                        "'{}' is disabled, so a credential cannot be bound to them. Binding a token to a person is what lets them answer work addressed to them, which is exactly what disabling withdraws.",
+                        person.handle
+                    ),
+                ));
+            }
+            Some(person.id)
+        }
+    };
     let plaintext = token_plaintext();
     let hash = token_hash(&plaintext);
     let id = token_id();
@@ -105,9 +131,9 @@ pub(super) fn insert_token(
         Some(list) => list.join(","),
     };
     tx.execute(
-        "INSERT INTO tokens (id, hash, actor, scopes, projects, rate_limit, created_at, expires_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id, hash, actor, scopes_raw, projects_raw, rate_limit, now, expires_at],
+        "INSERT INTO tokens (id, hash, actor, scopes, projects, rate_limit, created_at, expires_at, \"user\") \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, hash, actor, scopes_raw, projects_raw, rate_limit, now, expires_at, user_id],
     )?;
     Ok((
         TokenRow {
@@ -116,6 +142,7 @@ pub(super) fn insert_token(
             scopes: scopes.to_vec(),
             projects: projects.map(|p| p.to_vec()),
             rate_limit,
+            user: user_id,
             created_at: now,
             expires_at,
             revoked_at: None,
@@ -135,8 +162,9 @@ impl Store {
         projects: Option<&[String]>,
         rate_limit: i64,
         expires_at: Option<i64>,
+        user: Option<&str>,
     ) -> ApiResult<(TokenRow, String)> {
-        self.with_tx(|tx| insert_token(tx, actor, scopes, projects, rate_limit, expires_at))
+        self.with_tx(|tx| insert_token(tx, actor, scopes, projects, rate_limit, expires_at, user))
     }
 
     /// Every token's metadata, each carrying the OAuth connection it belongs to.

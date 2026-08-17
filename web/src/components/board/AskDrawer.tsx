@@ -30,6 +30,8 @@ export interface AskFields {
   body?: string
   options?: string[]
   expertise?: string[]
+  /** A user handle to address the question to; they must be a project member. */
+  assignee?: string
 }
 
 export interface AskDrawerProps {
@@ -38,6 +40,11 @@ export interface AskDrawerProps {
   ticket: string
   /** The project's question language, when it sets one. */
   languageHint?: string
+  /**
+   * People this project can address work to. Empty hides the control, so an
+   * instance with no directory asks exactly as it did before.
+   */
+  people?: { handle: string; label: string }[]
   onAsk: (fields: AskFields) => Promise<unknown>
   labels: {
     title: string
@@ -50,6 +57,9 @@ export interface AskDrawerProps {
     fOptions: string
     fOptionsHint: string
     fExpertise: string
+    fAssignee: string
+    fAssigneeHint: string
+    fAssigneeAnyone: string
     fExpertiseHint: string
     blocking: string
     advisory: string
@@ -71,6 +81,7 @@ export function AskDrawer({
   languageHint,
   onAsk,
   labels,
+  people,
 }: AskDrawerProps) {
   const [kind, setKind] = useState<QuestionKind>('confirm')
   const [mode, setMode] = useState<QuestionMode>('blocking')
@@ -78,6 +89,7 @@ export function AskDrawer({
   const [body, setBody] = useState('')
   const [options, setOptions] = useState('')
   const [expertise, setExpertise] = useState('')
+  const [assignee, setAssignee] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -107,6 +119,7 @@ export function AskDrawer({
     if (body.trim()) fields.body = body.trim()
     if (kind === 'choose' && splitList(options).length) fields.options = splitList(options)
     if (splitList(expertise).length) fields.expertise = splitList(expertise)
+    if (assignee) fields.assignee = assignee
 
     setBusy(true)
     setErr('')
@@ -201,6 +214,30 @@ export function AskDrawer({
               <Input id={id} value={expertise} onChange={(e) => setExpertise(e.target.value)} />
             )}
           </Field>
+
+          {/* Expertise says what a qualified answerer must be; this says who was
+              asked. A select of the project's members rather than a free-text
+              handle, because a typo here would be refused on submit — and for an
+              `approve` this is the gate. */}
+          {people && people.length > 0 && (
+            <Field label={labels.fAssignee} hint={labels.fAssigneeHint}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={assignee}
+                  onChange={(e) => setAssignee(e.target.value)}
+                  className="border-border bg-card text-foreground w-full rounded-md border px-2 py-1.5 text-[13px]"
+                >
+                  <option value="">{labels.fAssigneeAnyone}</option>
+                  {people.map((p) => (
+                    <option key={p.handle} value={p.handle}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+          )}
 
           <div className="text-destructive min-h-4 text-[12.5px]">{err}</div>
         </div>

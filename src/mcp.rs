@@ -108,6 +108,7 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_roadmap",
     "takomo_schedules",
     "takomo_show",
+    "takomo_users",
     "takomo_whoami",
     "takomo_workflow",
     "takomo_worklist",
@@ -400,6 +401,11 @@ pub struct AskArgs {
     pub summary: Option<String>,
     /// Routing tags for the human queue, e.g. ["domain:billing"].
     pub expertise: Option<Vec<String>>,
+    /// Address this question to one person, by their handle (see takomo_users).
+    /// Use it when you know who owns the decision; leave it out and the question
+    /// goes to the queue, where anyone with the expertise can pick it up. They must
+    /// be a member of the ticket's project.
+    pub assignee: Option<String>,
     /// Urgency: critical, high, normal (default), or low.
     pub urgency: Option<String>,
     /// Auto-expire the question after this many seconds (see on_timeout).
@@ -443,13 +449,42 @@ pub struct QuestionsArgs {
     pub ticket: Option<String>,
     /// Statuses to include (comma-separated); default open.
     pub status: Option<String>,
-    /// Only questions routed to your token's expert:<tag> scopes.
+    /// Only questions waiting on you: addressed to the person this token belongs
+    /// to, or covered by its expert:<tag> scopes.
     pub mine: Option<bool>,
+    /// Only questions addressed to this person (a user handle), or the string
+    /// "none" for the ones nobody has been asked yet.
+    pub assignee: Option<String>,
     /// How many to return, 1..=500 (default 500). `total` always reports how
     /// many matched, so a capped read is visible as one.
     pub limit: Option<i64>,
     /// Skip this many — pass the previous reply's `next_cursor` to continue.
     pub cursor: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UsersArgs {
+    /// Only people who are members of this project — the ones work here can be
+    /// addressed to.
+    pub project: Option<String>,
+    /// Case-insensitive substring match on handle, name or email.
+    pub q: Option<String>,
+    /// Include people who have been disabled (they cannot be assigned new work).
+    pub include_disabled: Option<bool>,
+    /// How many to return, 1..=200 (default 100). `total` always reports how many
+    /// matched, so a capped read is visible as one.
+    pub limit: Option<i64>,
+    /// Skip this many — the listing is ordered by handle, so offsets are stable.
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AssignArgs {
+    /// Question id (from takomo_questions or the question_asked event).
+    pub id: String,
+    /// The person's handle (see takomo_users), or null to return the question to
+    /// the open queue.
+    pub assignee: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1241,7 +1276,9 @@ impl TakomoMcp {
 
     #[tool(
         description = "List open questions on the ask-a-human board (the inbox). Filter by \
-        project/ticket/status, or `mine` to see only questions routed to your expert:<tag> scopes."
+        project/ticket/status, by `assignee` (a person's handle, or \"none\" for the ones nobody has \
+        been asked yet), or `mine` for everything waiting on you — addressed to you by name, or \
+        covered by your expert:<tag> scopes."
     )]
     async fn takomo_questions(
         &self,
@@ -1249,6 +1286,36 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_questions(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Who the people are: the directory of humans a question can be addressed to. \
+        Filter by `project` for the ones who are members of it (only they can be assigned work \
+        there), or `q` to search handle, name and email. Read this before setting `assignee` on \
+        takomo_ask or takomo_assign — a handle that is not in the directory is refused, because a \
+        person is never created implicitly."
+    )]
+    async fn takomo_users(
+        &self,
+        Parameters(a): Parameters<UsersArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_users(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Address an open question to one person, or pass `assignee: null` to return it \
+        to the open queue. Use it when you learn who owns a decision after asking — the usual case, \
+        since the agent raising a question rarely knows who should take it. Assignment is routing: \
+        any human can still answer the ordinary kinds, so nothing waits on someone who is away. It \
+        needs the human scope, and the person must be a member of the ticket's project."
+    )]
+    async fn takomo_assign(
+        &self,
+        Parameters(a): Parameters<AssignArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_assign(&require_auth(&ctx)?, a))
     }
 
     #[tool(
@@ -1440,8 +1507,9 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Identify the caller behind the current token: actor, scopes, and \
-        project access."
+        description = "Identify the caller behind the current token: actor, scopes, project \
+        access, and the person this credential belongs to (`user`, null for a machine token). That \
+        person is who `mine` means on takomo_questions."
     )]
     async fn takomo_whoami(
         &self,
@@ -1454,6 +1522,15 @@ impl TakomoMcp {
             None => json!("*"),
             Some(list) => json!(list),
         };
+        // A bound person who no longer resolves reports null rather than failing:
+        // whoami is what a client boots on.
+        let user = match &auth.user {
+            None => Value::Null,
+            Some(id) => match self.state.store.get_user(id) {
+                Ok(Some(person)) => person.to_ref_json(),
+                _ => Value::Null,
+            },
+        };
         respond(Ok(json!({
             "ok": true,
             "whoami": {
@@ -1461,6 +1538,7 @@ impl TakomoMcp {
                 "actor": auth.actor,
                 "scopes": scopes,
                 "projects": projects,
+                "user": user,
             }
         })))
     }
@@ -2048,6 +2126,7 @@ impl TakomoMcp {
             confidence: a.confidence,
             summary: a.summary,
             expertise: a.expertise.unwrap_or_default(),
+            assignee: a.assignee,
             urgency: a.urgency,
             expires_at,
             on_timeout,
@@ -2113,8 +2192,7 @@ impl TakomoMcp {
             let outcome = self.state.store.answer_question_relayed(
                 &a.id,
                 &auth.actor,
-                decider,
-                &auth.scopes,
+                crate::store::Answerer::new(decider, &auth.scopes, auth.user.as_deref()),
                 &answer,
                 a.resume_to.as_deref(),
             )?;
@@ -2129,8 +2207,7 @@ impl TakomoMcp {
         }
         let outcome = self.state.store.answer_question(
             &a.id,
-            &auth.actor,
-            &auth.scopes,
+            crate::store::Answerer::new(&auth.actor, &auth.scopes, auth.user.as_deref()),
             &answer,
             a.resume_to.as_deref(),
         )?;
@@ -2143,6 +2220,53 @@ impl TakomoMcp {
         }))
     }
 
+    fn do_users(&self, auth: &AuthCtx, a: UsersArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        if let Some(project) = &a.project {
+            auth.require_project(project)?;
+        }
+        let limit = a
+            .limit
+            .unwrap_or(100)
+            .clamp(1, crate::store::MAX_USERS_PAGE);
+        let offset = a.offset.unwrap_or(0).max(0);
+        let filter = crate::store::UserListFilter {
+            q: a.q,
+            project: a.project,
+            include_disabled: a.include_disabled.unwrap_or(false),
+            limit,
+            offset,
+        };
+        let (users, total) = self.state.store.list_users(&filter)?;
+        let shown = users.len() as i64;
+        Ok(json!({
+            "ok": true,
+            "items": users.iter().map(|u| u.to_json()).collect::<Vec<_>>(),
+            "total": total,
+            "limit": limit,
+            "next_offset": (offset + shown < total).then_some(offset + limit),
+        }))
+    }
+
+    fn do_assign(&self, auth: &AuthCtx, a: AssignArgs) -> ApiResult<Value> {
+        auth.require_scope("human")?;
+        let q = self
+            .state
+            .store
+            .get_question(&a.id)?
+            .ok_or_else(|| ApiError::not_found("question", &a.id))?;
+        auth.require_project(&q.project)?;
+        let question =
+            self.state
+                .store
+                .assign_question(&a.id, a.assignee.as_deref(), &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "question": question.to_json(),
+        }))
+    }
+
     fn do_reopen(&self, auth: &AuthCtx, id: &str) -> ApiResult<Value> {
         auth.require_scope("human")?;
         let q = self
@@ -2151,10 +2275,10 @@ impl TakomoMcp {
             .get_question(id)?
             .ok_or_else(|| ApiError::not_found("question", id))?;
         auth.require_project(&q.project)?;
-        let (question, ticket) = self
-            .state
-            .store
-            .reopen_question(id, &auth.actor, &auth.scopes)?;
+        let (question, ticket) = self.state.store.reopen_question(
+            id,
+            crate::store::Answerer::new(&auth.actor, &auth.scopes, auth.user.as_deref()),
+        )?;
         self.state.wake();
         Ok(json!({
             "ok": true,
@@ -2173,26 +2297,44 @@ impl TakomoMcp {
             .unwrap_or(crate::store::MAX_QUESTIONS_PAGE)
             .clamp(1, crate::store::MAX_QUESTIONS_PAGE);
         let offset = a.cursor.unwrap_or(0).max(0);
-        let expertise = if a.mine.unwrap_or(false) {
+        // `mine` is both senses of waiting-on-me, ORed: addressed to this
+        // credential's person, or covered by its expertise. Same rule as REST.
+        let mine = a.mine.unwrap_or(false);
+        let mut assignee: Vec<String> = Vec::new();
+        let expertise = if mine {
             let tags: Vec<String> = auth
                 .scopes
                 .iter()
                 .filter_map(|s| s.strip_prefix("expert:").map(str::to_string))
                 .collect();
-            if tags.is_empty() {
+            if let Some(user) = &auth.user {
+                assignee.push(user.clone());
+            }
+            if tags.is_empty() && assignee.is_empty() {
                 return Ok(json!({
                     "ok": true,
                     "items": [],
                     "total": 0,
                     "limit": limit,
                     "next_cursor": Value::Null,
-                    "note": "Your token carries no expert:<tag> scopes, so no questions route to you. Drop `mine` to see the whole queue.",
+                    "note": "Your token carries no expert:<tag> scopes and is not bound to a person, so no questions route to you. Drop `mine` to see the whole queue.",
                 }));
             }
             tags
         } else {
+            if let Some(raw) = a.assignee.as_deref() {
+                if raw != "none" {
+                    let person = self
+                        .state
+                        .store
+                        .get_user(raw)?
+                        .ok_or_else(|| ApiError::not_found("user", raw))?;
+                    assignee.push(person.id);
+                }
+            }
             Vec::new()
         };
+        let unassigned = !mine && a.assignee.as_deref() == Some("none");
         let filter = crate::store::QuestionFilter {
             project: a.project,
             ticket: a.ticket,
@@ -2207,6 +2349,9 @@ impl TakomoMcp {
                 })
                 .unwrap_or_default(),
             expertise,
+            assignee,
+            unassigned,
+            assignee_or_expertise: mine,
             allowed_projects: auth.allowed_projects_vec(),
             limit: Some(limit),
             offset: Some(offset),
