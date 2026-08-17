@@ -512,6 +512,8 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
+          verification: t.verification,
+          environments: t.environments,
         },
         badges: { inbox: openTotal },
         projects: projects.map(({ id, name, archived, archived_at }) => ({

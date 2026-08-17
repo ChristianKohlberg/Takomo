@@ -59,6 +59,8 @@ async fn inbox_and_board_pages_served_unauthenticated() {
         "takomo · initiatives",
         "takomo · schedules",
         "takomo · settings",
+        "takomo · verification",
+        "takomo · environments",
     ] {
         assert!(bundle.contains(title), "no document title for `{title}`");
     }
@@ -331,6 +333,8 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
 /// What each route still owes the caller is the shell contract below.
 const PAGE_ROUTES: &[&str] = &[
     "/board",
+    "/verification",
+    "/environments",
     "/inbox",
     "/initiatives",
     "/schedules",
@@ -14006,10 +14010,50 @@ async fn every_spa_links_to_the_schedules_page() {
         "/initiatives",
         "/schedules",
         "/settings",
+        "/verification",
+        "/environments",
     ] {
         assert!(
             bundle.contains(href),
             "the shared header has no link to {href} — a reader would have to know the URL"
+        );
+    }
+}
+
+/// The two verification surfaces are served, and their clients ship in the bundle.
+///
+/// The page markup is one shared shell on every route, so asserting on the HTML
+/// would assert on something identical everywhere. What this layer can still
+/// prove is that each surface's vocabulary reached the bundle at all — a page
+/// whose API client got tree-shaken away serves a 200 and does nothing.
+#[tokio::test]
+async fn the_verification_surfaces_are_served_and_carry_their_clients() {
+    let app = TestApp::spawn().await;
+
+    for path in ["/verification", "/environments"] {
+        let resp = app.request(Method::GET, path).send().await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path} should serve");
+        let headers = resp.headers().clone();
+        // The same defense-in-depth as every page route: these hold a bearer
+        // token in localStorage.
+        assert_eq!(headers["x-frame-options"], "DENY", "{path}");
+        assert!(headers["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'"));
+        assert_app_shell(path, &resp.text().await.unwrap());
+    }
+
+    let bundle = app.app_bundle().await;
+    for fragment in [
+        "/checklist/worklist",
+        "/checklist/gate",
+        "/environments",
+        "/verdict",
+    ] {
+        assert!(
+            bundle.contains(fragment),
+            "the verification client is missing `{fragment}` — the page would render empty"
         );
     }
 }

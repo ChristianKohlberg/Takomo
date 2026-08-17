@@ -20,6 +20,8 @@ const NAV = {
   inbox: 'Inbox',
   initiatives: 'Initiatives',
   schedules: 'Schedules',
+  verification: 'Verification',
+  environments: 'Environments',
 }
 
 function mount(props: Partial<NavRailProps> = {}) {
@@ -44,7 +46,7 @@ function mount(props: Partial<NavRailProps> = {}) {
 const accountTrigger = () => screen.getByRole('button', { name: 'Account' })
 
 describe('NavRail', () => {
-  it('links to the other three surfaces and not to the current one', () => {
+  it('links to the other surfaces and not to the current one', () => {
     mount()
     expect(screen.getByRole('link', { name: 'Inbox' })).toHaveProperty(
       'pathname',
@@ -61,9 +63,9 @@ describe('NavRail', () => {
 
   it('keeps every destination reachable by name when collapsed', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
-    // it and a collapsed rail is four unlabelled glyphs to a screen reader.
+    // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Inbox', 'Initiatives', 'Schedules']) {
+    for (const name of ['Inbox', 'Initiatives', 'Schedules', 'Verification', 'Environments']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })

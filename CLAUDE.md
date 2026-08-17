@@ -57,7 +57,7 @@ cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
 (cd clients/mcp && npm ci && npm run build)               # MCP typecheck
-(cd web && npm ci && npm run check && npm test)           # the four surfaces
+(cd web && npm ci && npm run check && npm test)           # the six surfaces
 (cd web && npm run build)                                 # then cargo build — see below
 ```
 
@@ -177,14 +177,14 @@ link, which is exactly the part that dominates here; measure before adopting it.
 
 ## Architecture
 
-**One binary, five surfaces** (`src/server.rs` assembles them):
+**One binary, five surface kinds** (`src/server.rs` assembles them):
 
 | Surface | Notes |
 |---|---|
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox`, `/initiatives`, `/schedules` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). All four routes serve the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus four fixed assets (`assets/{app,vendor,runtime}.js`, `assets/app.css`) by name — not a static-file handler, so nothing to traverse. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives` and `/schedules` are the ones that WRITE. See `web/README.md`. |
+| `/board`, `/inbox`, `/initiatives`, `/schedules`, `/verification`, `/environments` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). Every route serves the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus four fixed assets (`assets/{app,vendor,runtime}.js`, `assets/app.css`) by name — not a static-file handler, so nothing to traverse. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives`, `/schedules`, `/verification` and `/environments` are the ones that WRITE. See `web/README.md`. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the

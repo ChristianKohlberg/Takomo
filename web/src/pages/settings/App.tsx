@@ -396,6 +396,8 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
+          verification: t.verification,
+          environments: t.environments,
         },
         labels: {
           expand: t.navExpand,

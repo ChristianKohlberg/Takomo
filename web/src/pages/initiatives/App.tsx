@@ -845,6 +845,8 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
+          verification: t.verification,
+          environments: t.environments,
         },
         // Free here — the page already knows, having counted the documents it is
         // showing. Carried on the current entry too so the number does not appear

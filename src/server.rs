@@ -490,6 +490,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/inbox", get(crate::api::inbox))
         .route("/initiatives", get(crate::api::initiatives_page))
         .route("/schedules", get(crate::api::schedules_page))
+        .route("/verification", get(crate::api::verification_page))
+        .route("/environments", get(crate::api::environments_page))
         .route("/settings", get(crate::api::settings_page))
         // The app's assets. Fixed paths, not a static-file handler: the binary
         // embeds exactly these four by name (see src/api/mod.rs), so there is no

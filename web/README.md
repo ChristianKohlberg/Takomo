@@ -12,9 +12,13 @@ consumed as components with a props contract, not as a bundled application —
 and keeping it green is a constraint with teeth: a component that cannot be
 built there is one that reached into page state instead of taking props.
 
-## Status: complete — all four surfaces are built from here
+## Status: complete — every surface is built from here
 
-`src/api/mod.rs` serves all four pages from `web/dist/`. Every hand-written page is
+Six routes now: `/board`, `/inbox`, `/initiatives`, `/schedules`, `/verification`
+and `/environments`. They are one bundle behind a router, so a route costs
+nothing at first load — the size budget measures FIRST LOAD for that reason.
+
+`src/api/mod.rs` serves every page from `web/dist/`. Every hand-written page is
 gone, and with them `src/spa-common.js`, `scripts/lint-spa.sh`,
 `scripts/spa-eslint.config.mjs` and the `spa-lint` gate — they existed only to
 read and guard the JavaScript inside those files.
@@ -65,7 +69,7 @@ npm run dev          # vite on :5173, /v1 proxied — NO Rust rebuild in the loo
 npm test             # vitest (113 tests)
 npm run check        # tsc --noEmit
 npm run lint         # eslint, defect rules only
-npm run build        # the four pages
+npm run build        # every page
 npm run size         # gzip budget: first load, and the vendor chunk
 npm run build:lib    # the component library + .d.ts
 ```
