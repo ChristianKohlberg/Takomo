@@ -53,7 +53,7 @@ fn parse_options(obj: &serde_json::Map<String, Value>) -> ApiResult<(Vec<String>
         None | Some(Value::Null) => return Ok((Vec::new(), Vec::new())),
         Some(Value::Array(a)) => a,
         Some(_) => {
-            return Err(ApiError::bad_request(
+            return Err(ApiError::validation(
                 "validation.options",
                 "Field 'options' must be an array of strings or of {value, desc} objects.",
             ))
@@ -74,7 +74,7 @@ fn parse_options(obj: &serde_json::Map<String, Value>) -> ApiResult<(Vec<String>
                     .or_else(|| m.get("label"))
                     .and_then(|x| x.as_str())
                     .ok_or_else(|| {
-                        ApiError::bad_request(
+                        ApiError::validation(
                             "validation.options",
                             "each option object needs a string 'value' (the choice text).",
                         )
@@ -91,7 +91,7 @@ fn parse_options(obj: &serde_json::Map<String, Value>) -> ApiResult<(Vec<String>
                 notes.push(d.to_string());
             }
             _ => {
-                return Err(ApiError::bad_request(
+                return Err(ApiError::validation(
                     "validation.options",
                     "each option must be a string or a {value, desc} object.",
                 ))
