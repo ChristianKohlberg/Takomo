@@ -1,9 +1,9 @@
 ---
 name: takomo-checklist
-description: Author a Checklist lane and the test cases beneath it for an application under test — deciding lane boundaries, reducing a large form to a combinatorial model, generating cases with Microsoft PICT, and filing them into Takomo with coverage claims and verification policy. Use when asked to add test coverage for a flow, to work out how many cases a flow needs, or to record verification evidence against a release.
+description: Author a Checklist check and the test cases beneath it for an application under test — deciding check boundaries, reducing a large form to a combinatorial model, generating cases with Microsoft PICT, and filing them into Takomo with coverage claims and verification policy. Use when asked to add test coverage for a flow, to work out how many cases a flow needs, or to record verification evidence against a release.
 ---
 
-# Authoring a Checklist lane
+# Authoring a check
 
 Checklist is Takomo's verification surface: a durable description of what "working" means for an
 application, that you execute and record verdicts into. This skill is the authoring process.
@@ -12,29 +12,29 @@ application, that you execute and record verdicts into. This skill is the author
 and does not check whether your coverage claim is true. You own the recipe and its correctness. That
 split is deliberate — it keeps the store simple and keeps the intelligence where the context is.
 
-> The `takomo` verbs for filing lanes and cases ship with the Checklist implementation. Until then,
+> The `takomo` verbs for filing checks and cases ship with the Checklist implementation. Until then,
 > the method below is the deliverable and the filing step describes *what must be recorded*.
 > See `docs/design/12-checklist.md`.
 
-## 1. Draw the lane boundary at a state transition, not a screen
+## 1. Draw the check boundary at a state transition, not a screen
 
-A lane is **one action with one entry precondition**. It is not "the complaint page".
+A check is **one action with one entry precondition**. It is not "the complaint page".
 
 Getting this wrong is the most common and most expensive mistake, because it silently welds
-unrelated behaviour into one unmanageable model. Signals that you are looking at a *separate* lane:
+unrelated behaviour into one unmanageable model. Signals that you are looking at a *separate* check:
 
 - it needs a **persisted record** to exist (it takes an id)
 - it has its **own permission gate**
-- it is reachable only from a **terminal state** of another lane (e.g. only after finalize)
+- it is reachable only from a **terminal state** of another check (e.g. only after finalize)
 
 So a create form, a finalize step, a print action, a send-email action and a cancel action are
-**five lanes**, not one. Each declares its own entry precondition ("a persisted record in status
-*final*, plus right N"). Lanes have **no ordering and no dependency graph** — the precondition is a
+**five checks**, not one. Each declares its own entry precondition ("a persisted record in status
+*final*, plus right N"). Checks have **no ordering and no dependency graph** — the precondition is a
 statement about data state, which is what makes them independently runnable.
 
 Watch for **cross-action coupling** and write it down when you find it: a value entered during
 create can change the output of a later, separate action (an age captured at create suppressing a
-document at print time). That does not merge the lanes. It means the print lane's model must carry
+document at print time). That does not merge the checks. It means the print check's model must carry
 that value as a parameter of its own.
 
 ### Model the lifecycle as a state axis, not a call sequence
@@ -107,7 +107,7 @@ A parameter that makes every other parameter irrelevant — "no permission ⇒ 4
 runs" — must **not** be crossed with the rest. PICT will warn (`all or no values satisfy relation`)
 and the cases it produces are waste.
 
-File each kill switch as its own **standalone negative lane** with a single case. It is generated
+File each kill switch as its own **standalone negative check** with a single case. It is generated
 once and never needs combining.
 
 ## 5. Write the impossible combinations as constraints
@@ -134,11 +134,11 @@ pict model.pict /e:seed.txt            # seed known cases (tab-separated, header
 
 Rules that came out of measuring this, not from the docs:
 
-- **One model per lane.** Splitting a model into two costs *more*, because each sub-model re-pays
+- **One model per check.** Splitting a model into two costs *more*, because each sub-model re-pays
   its own pairwise floor (measured: 70 + 30 = 100 vs 76 combined).
 - **Seed the happy path.** Write it by hand, seed it, let pairwise fill the rest. It is guaranteed
   present instead of hopefully present, and the total went *down* (76 → 69).
-- **2-way is the default answer.** 3-way is for a lane whose severity justifies it; it is
+- **2-way is the default answer.** 3-way is for a check whose severity justifies it; it is
   agent-runnable, not human-reviewable.
 - **Read stderr.** Constraint warnings mean a degenerate constraint or a kill switch you failed to
   lift out.
@@ -149,11 +149,11 @@ Rules that came out of measuring this, not from the docs:
 Expect roughly **60 parameters → ~76 pairwise cases** for a large form, against a full enumeration
 of ~10²³. If your numbers are wildly different, re-check step 2 before believing them.
 
-## 7. File the lane and its cases
+## 7. File the check and its cases
 
-Record on the **lane**:
+Record on the **check**:
 
-- where it sits in `project → epic → lane`
+- where it sits in `project → epic → check`
 - its **entry precondition** — the data state and permissions required to start
 - **free-form body**: the traversal an agent or human follows. No step model, no DAG — prose.
 - **glob claims**: which paths of the app under test this exercises (`src/claims/**`). Hand-declared
@@ -167,7 +167,7 @@ Record on the **lane**:
   inherited, overridable, and resolved against severity at release time
 
 Record each generated **case** as its own persisted row — the executable unit is
-(lane × parameter assignment), and one lane can be 76 of them:
+(check × parameter assignment), and one check can be 76 of them:
 
 - its full parameter assignment, and a **stable identity derived from that assignment** so that
   regenerating the model after adding a parameter matches existing cases instead of orphaning their
@@ -177,13 +177,13 @@ Record each generated **case** as its own persisted row — the executable unit 
   case can carry both
 - the release it was last verified against
 
-Keep the model file itself alongside the lane. Cases are the durable record; the model is how you
+Keep the model file itself alongside the check. Cases are the durable record; the model is how you
 regenerate them when the application's configuration surface changes.
 
 ## 8. Report the gaps
 
 Uncovered combinations are a **first-class output, not an absence of output**. State plainly what
-the model does not cover and why — combinations excluded for cost, parameters left out, a lane
+the model does not cover and why — combinations excluded for cost, parameters left out, a check
 covered at the API layer only. A coverage number without its gaps is the failure mode this whole
 feature exists to prevent.
 

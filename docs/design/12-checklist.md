@@ -3,6 +3,12 @@
 Design conversation, 2026-07-31. Not yet implemented; no tickets filed. This file is the
 record so the context survives the session.
 
+> **Vocabulary note, added later.** Everything below calls the leaf grouping a **lane**. It is
+> now called a **check**: `lane` already meant "the initiative a feature is worked in" on the
+> roadmap, and one product cannot carry two lanes. The original prose stands as written, because
+> this is the record of a conversation rather than current documentation — read `lane` here as
+> `check`. `docs/checklist.md` is the current documentation.
+
 The design was driven by a real application under test, but that application is a client system
 and its specifics are deliberately **not** in this repo — Takomo is public. The worked example
 below is a neutral stand-in with the same shape. Sizing evidence (parameter counts, generated

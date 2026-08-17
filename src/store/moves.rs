@@ -24,9 +24,9 @@
 //! - **Questions and promotions** carry a denormalized `project` column, which
 //!   is updated with the ticket. Their history is not rewritten — the event log
 //!   keeps recording the project each event happened in.
-//! - **Checklist lanes** are filed under a project and may point at an epic in
-//!   it. An epic that leaves takes no lanes with it (they cover the old
-//!   project's surface), so those lanes are detached — `epic` cleared — and any
+//! - **Checklist checks** are filed under a project and may point at an epic in
+//!   it. An epic that leaves takes no checks with it (they cover the old
+//!   project's surface), so those checks are detached — `epic` cleared — and any
 //!   epic-level checklist policy override is dropped. Both are reported.
 //!
 //! Dependency edges are deliberately left alone: `deps` never required both ends
@@ -89,8 +89,8 @@ pub struct MoveOutcome {
     /// Tickets left behind whose parent moved away, so their `parent` was
     /// cleared. Only ever non-empty with `descendants: false`.
     pub orphaned: Vec<String>,
-    /// Checklist lanes whose epic left the project, so their `epic` was cleared.
-    pub lanes_detached: Vec<String>,
+    /// Checklist checks whose epic left the project, so their `epic` was cleared.
+    pub checks_detached: Vec<String>,
     /// Epic-level checklist policy overrides dropped with the departing epic.
     pub policies_dropped: Vec<String>,
 }
@@ -115,10 +115,10 @@ impl MoveOutcome {
                 self.orphaned.len()
             ));
         }
-        if !self.lanes_detached.is_empty() {
+        if !self.checks_detached.is_empty() {
             note.push(format!(
-                "{} checklist lane(s) lost their epic, which left the project; the lanes themselves did not move.",
-                self.lanes_detached.len()
+                "{} checklist check(s) lost their epic, which left the project; the checks themselves did not move.",
+                self.checks_detached.len()
             ));
         }
         let mut out = json!({
@@ -127,7 +127,7 @@ impl MoveOutcome {
             "total": self.moved.len(),
             "unchanged": self.unchanged,
             "orphaned": self.orphaned,
-            "lanes_detached": self.lanes_detached,
+            "checks_detached": self.checks_detached,
             "policies_dropped": self.policies_dropped,
         });
         if !note.is_empty() {
@@ -208,7 +208,7 @@ impl Store {
     /// Move tickets into another project, optionally with their subtrees.
     ///
     /// One transaction: either every ticket lands in the target project with its
-    /// parent links, tags, questions, promotions and lanes reconciled, or nothing
+    /// parent links, tags, questions, promotions and checks reconciled, or nothing
     /// moves. See the module docs for what each of those means.
     pub fn move_tickets(&self, req: &MoveRequest, actor: &str) -> ApiResult<MoveOutcome> {
         if req.tickets.is_empty() {
@@ -324,7 +324,7 @@ impl Store {
                 moved: Vec::new(),
                 unchanged: Vec::new(),
                 orphaned: Vec::new(),
-                lanes_detached: Vec::new(),
+                checks_detached: Vec::new(),
                 policies_dropped: Vec::new(),
             };
 
@@ -397,19 +397,19 @@ impl Store {
                     params![id, req.to_project],
                 )?;
 
-                // Lanes stay with the project whose surface they cover; only
+                // Checks stay with the project whose surface they cover; only
                 // their pointer at a departed epic goes.
-                let mut stmt = tx.prepare("SELECT id FROM lanes WHERE epic = ?1")?;
-                let lanes = stmt
+                let mut stmt = tx.prepare("SELECT id FROM checks WHERE epic = ?1")?;
+                let checks = stmt
                     .query_map(params![id], |r| r.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
-                if !lanes.is_empty() {
+                if !checks.is_empty() {
                     tx.execute(
-                        "UPDATE lanes SET epic = NULL, updated_at = ?2 WHERE epic = ?1",
+                        "UPDATE checks SET epic = NULL, updated_at = ?2 WHERE epic = ?1",
                         params![id, now],
                     )?;
-                    out.lanes_detached.extend(lanes);
+                    out.checks_detached.extend(checks);
                 }
                 let dropped = tx.execute(
                     "DELETE FROM checklist_policies WHERE epic = ?1",

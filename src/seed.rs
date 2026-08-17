@@ -631,7 +631,7 @@ fn initiative(store: &Store) -> ApiResult<()> {
          included; a split cannot be issued against a closed ledger row; Nordwind's March invoice reproduces \
          from the real ledger row[1]; invoices with no split rows render byte-identically to today.\n\n\
          Each names the layer it holds at, because a rule enforced only in the UI is not the same claim as one \
-         enforced in the API. On distil these become a Checklist lane rather than a blank page.",
+         enforced in the API. On distil these become a Checklist check rather than a blank page.",
         vec![&invoice, &scan],
     )?;
 

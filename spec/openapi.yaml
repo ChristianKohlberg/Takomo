@@ -1465,9 +1465,9 @@ paths:
         - **Questions, promotions, answer grants and subtree shares** carry a
           denormalized project and follow the ticket. Past events are not
           rewritten: the log records the project each event happened in.
-        - **Checklist lanes** cover a project's surface, so they do not move. A
-          lane pointing at a departing epic has its `epic` cleared and is listed
-          in `lanes_detached`; an epic-level checklist policy override is dropped.
+        - **Checklist checks** cover a project's surface, so they do not move. A
+          check pointing at a departing epic has its `epic` cleared and is listed
+          in `checks_detached`; an epic-level checklist policy override is dropped.
 
         Dependency edges are left alone — `deps` never required both ends to
         share a project.
@@ -3969,10 +3969,10 @@ paths:
         integration: the pusher supplies `touched_paths` and `orphan_globs`
         because it has the tree checked out, and the server clones nothing.
 
-        Every lane claiming a glob that matches a touched path has its verified
+        Every check claiming a glob that matches a touched path has its verified
         cases marked stale. A case that was NEVER verified stays `never` — calling
         it stale would report re-testing for work nobody has done once. Globs
-        listed in `orphan_globs` matched no file, so those lanes are flagged and
+        listed in `orphan_globs` matched no file, so those checks are flagged and
         stop counting toward coverage.
 
         A `ref` is immutable: pushing one twice is a 409, not an update.
@@ -3993,19 +3993,19 @@ paths:
         "409": { description: "That ref is already recorded for this project" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /projects/{project}/lanes:
+  /projects/{project}/checks:
     get:
       tags: [checklist]
-      summary: List the project's checklist lanes (read scope)
+      summary: List the project's checklist checks (read scope)
       description: |
-        Each lane carries its case counts, its resolved policy, and any globs that
+        Each check carries its case counts, its resolved policy, and any globs that
         matched nothing in the newest release.
       parameters:
         - { $ref: "#/components/parameters/project" }
-        - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped lanes' }
+        - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped checks' }
         - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
         - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
-        - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived lanes' }
+        - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived checks' }
         - name: limit
           in: query
           schema: { type: integer, default: 200, minimum: 1, maximum: 200 }
@@ -4016,7 +4016,7 @@ paths:
       responses:
         "200":
           description: |
-            The lanes. Bounded since 0.4 — this used to return every lane a
+            The checks. Bounded since 0.4 — this used to return every check a
             project had, each hydrated with three further queries. `total`
             reports how many matched, so a capped read is visible as one.
           content:
@@ -4025,20 +4025,20 @@ paths:
                 type: object
                 required: [items, total, limit]
                 properties:
-                  items: { type: array, items: { $ref: "#/components/schemas/Lane" } }
-                  total: { type: integer, description: 'Lanes matching the filter, ignoring limit.' }
+                  items: { type: array, items: { $ref: "#/components/schemas/Check" } }
+                  total: { type: integer, description: 'Checks matching the filter, ignoring limit.' }
                   limit: { type: integer }
-                  note: { type: string, description: 'Present only when the page left lanes out.' }
+                  note: { type: string, description: 'Present only when the page left checks out.' }
         "403": { description: Token lacks the read scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [checklist]
-      summary: Declare a checklist lane (write scope)
+      summary: Declare a checklist check (write scope)
       description: |
-        A lane is ONE action with ONE entry precondition at ONE layer. Draw the
+        A check is ONE action with ONE entry precondition at ONE layer. Draw the
         boundary at a state transition rather than a screen: if something needs a
         persisted record, has its own permission gate, or is reachable only from
-        another lane's terminal state, it is a separate lane.
+        another check's terminal state, it is a separate check.
 
         Takomo stores what you file and does not judge whether the model is right.
       parameters: [ { $ref: "#/components/parameters/project" } ]
@@ -4046,34 +4046,34 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/LaneCreate" }
+            schema: { $ref: "#/components/schemas/CheckCreate" }
       responses:
         "201":
-          description: The created lane.
+          description: The created check.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Lane" }
+              schema: { $ref: "#/components/schemas/Check" }
         "403": { description: Token lacks the write scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /lanes/{id}:
+  /checks/{id}:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     get:
       tags: [checklist]
-      summary: One lane, with its resolved policy and case counts (read scope)
+      summary: One check, with its resolved policy and case counts (read scope)
       responses:
         "200":
-          description: The lane.
+          description: The check.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Lane" }
+              schema: { $ref: "#/components/schemas/Check" }
         "403": { description: Token lacks the read scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [checklist]
-      summary: Update a lane (write scope)
+      summary: Update a check (write scope)
       description: |
         Send an override field as `null` to clear it so inheritance resumes. That
         is why the wire format distinguishes absent from null: collapsing them
@@ -4082,38 +4082,38 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/LanePatch" }
+            schema: { $ref: "#/components/schemas/CheckPatch" }
       responses:
         "200":
-          description: The updated lane.
+          description: The updated check.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Lane" }
+              schema: { $ref: "#/components/schemas/Check" }
         "403": { description: Token lacks the write scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
     delete:
       tags: [checklist]
-      summary: Archive a lane (write scope)
+      summary: Archive a check (write scope)
       description: |
-        Archiving removes the lane from coverage and from the default list, and
-        keeps its cases and their verdict history: a lane no longer worth running
+        Archiving removes the check from coverage and from the default list, and
+        keeps its cases and their verdict history: a check no longer worth running
         is still evidence of what was once verified.
       responses:
         "200":
-          description: The archived lane.
+          description: The archived check.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Lane" }
+              schema: { $ref: "#/components/schemas/Check" }
         "403": { description: Token lacks the write scope or the project }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /lanes/{id}/cases:
+  /checks/{id}/cases:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     get:
       tags: [checklist]
-      summary: A lane's cases (read scope)
+      summary: A check's cases (read scope)
       parameters:
         - { name: retired, in: query, schema: { type: string, enum: [include] }, description: 'include cases retired by a later regeneration' }
         - name: limit
@@ -4131,16 +4131,16 @@ paths:
         "200":
           description: |
             The cases. Bounded since 0.4: cases are generated, and a PICT model can
-            land thousands under a single lane, all of which this used to return.
+            land thousands under a single check, all of which this used to return.
           content:
             application/json:
               schema:
                 type: object
                 required: [items, total, limit]
                 properties:
-                  lane: { type: string }
+                  check: { type: string }
                   items: { type: array, items: { $ref: "#/components/schemas/Case" } }
-                  total: { type: integer, description: 'Cases in the lane, ignoring limit and offset.' }
+                  total: { type: integer, description: 'Cases in the check, ignoring limit and offset.' }
                   limit: { type: integer }
                   offset: { type: integer }
                   note: { type: string, description: 'Present only when cases remain beyond this page.' }
@@ -4148,7 +4148,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [checklist]
-      summary: File the generated case set for a lane (write scope)
+      summary: File the generated case set for a check (write scope)
       description: |
         Upsert is by `key`, which you derive from the parameter assignment. A case
         still present keeps its id and its verdicts; one that vanished is retired
@@ -4201,7 +4201,7 @@ paths:
         scope: an agent may record what it observed, but only a person's token may
         assert that a person approved a case.
 
-        `unreachable` is not a failure. It says the lane's declared layer gives no
+        `unreachable` is not a failure. It says the check's declared layer gives no
         way to reach this configuration, which is a finding worth reporting, and it
         is counted apart from both covered and uncovered.
       parameters:
@@ -4228,7 +4228,7 @@ paths:
       summary: The project's checklist policies (read scope)
       description: |
         One row per scope. The row whose `epic` is null is the project-level
-        default; a row with an epic id overrides it for that epic's lanes.
+        default; a row with an epic id overrides it for that epic's checks.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       responses:
         "200":
@@ -4245,7 +4245,7 @@ paths:
       tags: [checklist]
       summary: Set the project default or an epic override (write scope)
       description: |
-        Policy resolves project then epic then lane, and every resolved value says
+        Policy resolves project then epic then check, and every resolved value says
         which level supplied it — an inherited setting nobody can trace is worse
         than no setting. Send a field as `null` to clear the override.
       parameters: [ { $ref: "#/components/parameters/project" } ]
@@ -4320,7 +4320,7 @@ paths:
       tags: [checklist]
       summary: Is verification good enough to ship (read scope)
       description: |
-        Only `blocking` severity blocks. Advisory and low lanes nag: a gate that
+        Only `blocking` severity blocks. Advisory and low checks nag: a gate that
         fires on everything gets overridden out of habit and stops meaning
         anything.
       parameters: [ { $ref: "#/components/parameters/project" } ]
@@ -5374,17 +5374,17 @@ components:
           type: array
           items: { type: string }
           description: Tickets left behind whose parent moved away, so their parent was cleared.
-        lanes_detached:
+        checks_detached:
           type: array
           items: { type: string }
-          description: Checklist lanes whose epic left the project; the lanes stayed.
+          description: Checklist checks whose epic left the project; the checks stayed.
         policies_dropped:
           type: array
           items: { type: string }
           description: Epics whose epic-level checklist policy override was dropped with them.
         note:
           type: string
-          description: Prose for anything the move had to reconcile — state resets, orphans, detached lanes.
+          description: Prose for anything the move had to reconcile — state resets, orphans, detached checks.
 
     Promotion:
       type: object
@@ -5709,7 +5709,7 @@ components:
         orphan_globs:
           type: array
           items: { type: string }
-          description: 'lane globs that matched no file in this tree'
+          description: 'check globs that matched no file in this tree'
 
     ReleasePush:
       type: object
@@ -5727,18 +5727,18 @@ components:
           type: array
           items: { type: string }
           description: |
-            Lane globs that matched NO file in this tree. An orphaned glob reads as
+            Check globs that matched NO file in this tree. An orphaned glob reads as
             "still covered" while covering nothing, which is this feature's worst
-            failure mode, so reporting them takes those lanes out of coverage.
+            failure mode, so reporting them takes those checks out of coverage.
 
     ReleaseImpact:
       type: object
       description: What the push invalidated, returned so the pusher needs no second call.
       properties:
         stale_cases: { type: integer }
-        stale_lanes: { type: array, items: { type: string } }
-        expired_lanes: { type: array, items: { type: string }, description: 'lanes whose policy clock ran out at this release' }
-        orphaned_lanes: { type: array, items: { type: string }, description: 'lanes whose every glob matched nothing' }
+        stale_checks: { type: array, items: { type: string } }
+        expired_checks: { type: array, items: { type: string }, description: 'checks whose policy clock ran out at this release' }
+        orphaned_checks: { type: array, items: { type: string }, description: 'checks whose every glob matched nothing' }
 
     ReleaseWithImpact:
       allOf:
@@ -5747,10 +5747,10 @@ components:
           properties:
             impact: { $ref: "#/components/schemas/ReleaseImpact" }
 
-    LaneCounts:
+    CheckCounts:
       type: object
       description: |
-        A lane's live cases by state. `total` is the sum of the rest. `unreachable`
+        A check's live cases by state. `total` is the sum of the rest. `unreachable`
         is deliberately its own bucket rather than folded into covered or uncovered.
       properties:
         total: { type: integer }
@@ -5764,27 +5764,27 @@ components:
     ResolvedPolicy:
       type: object
       description: |
-        The policy in force for a lane after resolving project then epic then lane.
+        The policy in force for a check after resolving project then epic then check.
         The `*_from` fields name the level that supplied the value, because an
         inherited setting nobody can trace is worse than no setting.
       properties:
         verification: { type: string, enum: [agent, human, agent_then_human] }
-        verification_from: { type: string, enum: [default, project, epic, lane] }
+        verification_from: { type: string, enum: [default, project, epic, check] }
         expiry_days: { type: [integer, "null"] }
         expiry_releases: { type: [integer, "null"] }
-        expiry_from: { type: string, enum: [default, project, epic, lane] }
+        expiry_from: { type: string, enum: [default, project, epic, check] }
 
-    Lane:
+    Check:
       type: object
       description: |
         ONE action with ONE entry precondition at ONE layer. `body` is free-form
         prose an agent or a human follows — there is deliberately no step model and
         no dependency graph, because the precondition is a statement about data
-        state, which is what keeps lanes independently runnable.
+        state, which is what keeps checks independently runnable.
       properties:
         id: { type: string }
         project: { type: string }
-        epic: { type: [string, "null"], description: 'a ticket of type epic this lane groups under' }
+        epic: { type: [string, "null"], description: 'a ticket of type epic this check groups under' }
         title: { type: string }
         body: { type: string, description: 'the traversal to follow' }
         precondition: { type: string, description: 'the data state and permissions needed to start' }
@@ -5800,19 +5800,19 @@ components:
         globs:
           type: array
           items: { type: string }
-          description: 'paths of the app under test this lane claims, e.g. src/claims/**'
+          description: 'paths of the app under test this check claims, e.g. src/claims/**'
         orphan_globs:
           type: array
           items: { type: string }
           description: 'of those globs, the ones that matched nothing in the newest release'
-        cases: { $ref: "#/components/schemas/LaneCounts" }
+        cases: { $ref: "#/components/schemas/CheckCounts" }
         policy: { $ref: "#/components/schemas/ResolvedPolicy" }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         archived_at: { type: [string, "null"], format: date-time }
 
-    LaneCreate:
+    CheckCreate:
       type: object
       required: [title]
       properties:
@@ -5830,7 +5830,7 @@ components:
         globs: { type: array, items: { type: string } }
         metadata: { type: object }
 
-    LanePatch:
+    CheckPatch:
       type: object
       description: |
         Every override field accepts `null` to clear it so inheritance resumes.
@@ -5853,12 +5853,12 @@ components:
     Case:
       type: object
       description: |
-        A lane crossed with one parameter assignment: the unit that actually gets
-        executed. One lane can be dozens of these. `key` is stable across
+        A check crossed with one parameter assignment: the unit that actually gets
+        executed. One check can be dozens of these. `key` is stable across
         regeneration so history survives.
       properties:
         id: { type: string }
-        lane: { type: string }
+        check: { type: string }
         key: { type: string, description: 'stable identity derived from the assignment' }
         label: { type: string, description: 'what makes this case different from its siblings' }
         assignment: { type: object, description: 'the setup a person or agent must reproduce' }
@@ -5980,8 +5980,8 @@ components:
       properties:
         project: { type: string }
         release: { type: [object, "null"], description: 'the newest release, if any' }
-        lanes: { type: integer }
-        cases: { $ref: "#/components/schemas/LaneCounts" }
+        checks: { type: integer }
+        cases: { $ref: "#/components/schemas/CheckCounts" }
         percent: { type: integer, description: 'verified or approved, over verifiable cases — unreachable is excluded from both sides' }
         epics:
           type: array
@@ -5990,19 +5990,19 @@ components:
             properties:
               epic: { type: [string, "null"] }
               title: { type: [string, "null"] }
-              lanes: { type: integer }
-              cases: { $ref: "#/components/schemas/LaneCounts" }
+              checks: { type: integer }
+              cases: { $ref: "#/components/schemas/CheckCounts" }
               percent: { type: integer }
               orphan_globs: { type: array, items: { type: string } }
-        lane_detail:
+        check_detail:
           type: array
-          items: { $ref: "#/components/schemas/Lane" }
+          items: { $ref: "#/components/schemas/Check" }
 
     WorkItem:
       type: object
       properties:
-        lane: { type: string }
-        lane_title: { type: string }
+        check: { type: string }
+        check_title: { type: string }
         severity: { type: string, enum: [blocking, advisory, low] }
         layer: { type: string, enum: [ui, api, other] }
         case: { type: string }
@@ -6262,29 +6262,29 @@ x-error-codes:
   validation.entry_mime: "the attachment's media type is not a bare `type/subtype`. It is served back as the attachment's `Content-Type`, so it is restricted to what a header may hold — no parameters, no whitespace."
   validation.origin_at: "`origin_at` is not an RFC 3339 timestamp. It states when the content was written, as opposed to when it landed here; a wrong provenance date is worse than a missing one, so it is refused rather than dropped."
 
-  # -- checklist: releases, lanes, cases, verdicts ----------------------------
+  # -- checklist: releases, checks, cases, verdicts ----------------------------
   notfound.release: "no release with that id in this project. A verdict may only cite a release the project actually has."
-  notfound.lane: "no checklist lane with that id."
+  notfound.check: "no checklist check with that id."
   notfound.case: "no checklist case with that id."
   conflict.release_exists: "that `ref` is already recorded for the project. A release is an immutable marker, not a mutable record — push the next ref rather than re-pushing this one."
   conflict.case_retired: "the case was retired by a later regeneration, so it is history rather than work. File the current case set and record verdicts against a live case."
   forbidden.human_scope: "recording a verdict with `actor_kind: human` needs the `human` scope. An agent may record what it observed as `agent`; only a person's token may assert that a person approved a case."
   validation.release_ref: "`ref` is required and within its length bound — the tag or FULL commit sha the release stands for. Short shas are ambiguous."
   validation.release_note: "the release note is over its length limit."
-  validation.release_paths: "more touched paths than one push may carry. A diff that large is a repository-wide sweep: push without `touched_paths` and retest every lane instead of enumerating it."
-  validation.lane_title: "a lane needs a non-empty `title`, within its length bound, naming the one action it verifies."
-  validation.lane_body: "the lane body is over its length limit. It is free-form prose an agent or a human follows."
-  validation.lane_precondition: "the lane precondition is over its length limit."
-  validation.lane_layer: "`layer` must be `ui`, `api` or `other`. A lane covers ONE layer: a rule enforced only in the interface passes at the API layer, so the two verdicts are not interchangeable."
-  validation.lane_severity: "`severity` must be `blocking`, `advisory` or `low`. Only `blocking` blocks a release gate."
-  validation.lane_epic: "the `epic` given is not a ticket of type `epic`, or belongs to another project. Lanes group under epics so the vocabulary matches tickets."
-  validation.lane_globs: "a lane glob is empty, over its length bound, or there are more than one lane may claim. A lane covers one action, which a handful of path patterns describes."
-  validation.lane_numbers: "an expiry or cost field on a lane is negative. Send a non-negative number, or null to inherit."
-  validation.lane_metadata_size: "serialized lane `metadata` is over its cap. The bulk belongs in the lane body."
+  validation.release_paths: "more touched paths than one push may carry. A diff that large is a repository-wide sweep: push without `touched_paths` and retest every check instead of enumerating it."
+  validation.check_title: "a check needs a non-empty `title`, within its length bound, naming the one action it verifies."
+  validation.check_body: "the check body is over its length limit. It is free-form prose an agent or a human follows."
+  validation.check_precondition: "the check precondition is over its length limit."
+  validation.check_layer: "`layer` must be `ui`, `api` or `other`. A check covers ONE layer: a rule enforced only in the interface passes at the API layer, so the two verdicts are not interchangeable."
+  validation.check_severity: "`severity` must be `blocking`, `advisory` or `low`. Only `blocking` blocks a release gate."
+  validation.check_epic: "the `epic` given is not a ticket of type `epic`, or belongs to another project. Checks group under epics so the vocabulary matches tickets."
+  validation.check_globs: "a check glob is empty, over its length bound, or there are more than one check may claim. A check covers one action, which a handful of path patterns describes."
+  validation.check_numbers: "an expiry or cost field on a check is negative. Send a non-negative number, or null to inherit."
+  validation.check_metadata_size: "serialized check `metadata` is over its cap. The bulk belongs in the check body."
   validation.verification: "`verification` must be `agent`, `human` or `agent_then_human`. `agent_then_human` needs BOTH verdicts, which is why they are stored as separate facts."
   validation.policy_numbers: "an expiry field on a checklist policy is negative. Send a non-negative number, or null to clear the override."
   validation.cases: "`cases` is required and must be an array of objects, each with a `key`."
-  validation.case_key: "every case needs a `key`, unique within its lane and within its length bound. Derive it from the parameter assignment so regenerating the model matches existing cases instead of orphaning their history."
+  validation.case_key: "every case needs a `key`, unique within its check and within its length bound. Derive it from the parameter assignment so regenerating the model matches existing cases instead of orphaning their history."
   validation.case_label: "a case label is over its length limit."
   validation.case_count: "more cases in one call than the cap allows. A pairwise model for a large form lands near 76 — thousands means most of the parameters are inert fields that do not belong in the model."
   validation.verdict: "`verdict` must be `pass`, `fail`, `blocked` or `unreachable`. `unreachable` is not a failure: it says the declared layer gives no way to reach this configuration, and it is counted apart from both covered and uncovered."

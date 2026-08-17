@@ -1,5 +1,5 @@
 //! Checklist — the verification surface: `/v1/projects/{project}/releases`,
-//! `/v1/projects/{project}/lanes`, `/v1/lanes/{id}/cases`, `/v1/cases/{id}` and
+//! `/v1/projects/{project}/checks`, `/v1/checks/{id}/cases`, `/v1/cases/{id}` and
 //! the derived coverage / worklist / gate reports.
 //!
 //! Takomo stores; the agent computes. Nothing here generates a combinatorial
@@ -16,8 +16,8 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
 use crate::store::{
-    CaseInput, LaneCreate, LaneFilter, LanePatch, PolicyInput, ReleasePush, MAX_CASES_PAGE,
-    MAX_LANES_PAGE,
+    CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput, ReleasePush, MAX_CASES_PAGE,
+    MAX_CHECKS_PAGE,
 };
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RELEASE_FIELDS: [&str; 4] = ["ref", "note", "touched_paths", "orphan_globs"];
-const LANE_CREATE_FIELDS: [&str; 13] = [
+const CHECK_CREATE_FIELDS: [&str; 13] = [
     "epic",
     "title",
     "body",
@@ -42,7 +42,7 @@ const LANE_CREATE_FIELDS: [&str; 13] = [
     "globs",
     "metadata",
 ];
-const LANE_PATCH_FIELDS: [&str; 13] = [
+const CHECK_PATCH_FIELDS: [&str; 13] = [
     "epic",
     "title",
     "body",
@@ -152,11 +152,11 @@ pub async fn list_releases(
 }
 
 // ---------------------------------------------------------------------------
-// Lanes
+// Checks
 // ---------------------------------------------------------------------------
 
-/// POST /v1/projects/{project}/lanes (write) — declare a lane.
-pub async fn create_lane(
+/// POST /v1/projects/{project}/checks (write) — declare a check.
+pub async fn create_check(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
@@ -165,8 +165,8 @@ pub async fn create_lane(
     ctx.require_scope("write")?;
     ctx.require_project(&project)?;
     let obj = body_object(&body)?;
-    reject_unknown(obj, &LANE_CREATE_FIELDS)?;
-    let req = LaneCreate {
+    reject_unknown(obj, &CHECK_CREATE_FIELDS)?;
+    let req = CheckCreate {
         project: project.clone(),
         epic: get_str(obj, "epic")?,
         title: require_str(obj, "title")?,
@@ -182,17 +182,17 @@ pub async fn create_lane(
         globs: get_string_array(obj, "globs")?.unwrap_or_default(),
         metadata: obj.get("metadata").filter(|v| !v.is_null()).cloned(),
     };
-    let lane = state.store.create_lane(&req, &ctx.actor)?;
+    let check = state.store.create_check(&req, &ctx.actor)?;
     state.wake();
-    Ok((StatusCode::CREATED, Json(lane.to_json())))
+    Ok((StatusCode::CREATED, Json(check.to_json())))
 }
 
-/// GET /v1/projects/{project}/lanes?epic=&severity=&layer=&archived= (read).
+/// GET /v1/projects/{project}/checks?epic=&severity=&layer=&archived= (read).
 ///
-/// `epic=none` narrows to ungrouped lanes, which is how you find work nobody
+/// `epic=none` narrows to ungrouped checks, which is how you find work nobody
 /// filed under an epic — the same gap the roadmap's `unparented` bucket exists
 /// for.
-pub async fn list_lanes(
+pub async fn list_checks(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(project): Path<String>,
@@ -205,7 +205,7 @@ pub async fn list_lanes(
         Some("none") => Some(String::new()),
         other => other.map(str::to_string),
     };
-    let filter = LaneFilter {
+    let filter = CheckFilter {
         project: project.clone(),
         epic,
         severity: first(&pairs, "severity").map(str::to_string),
@@ -216,43 +216,43 @@ pub async fn list_lanes(
     };
     let limit = filter
         .limit
-        .unwrap_or(MAX_LANES_PAGE)
-        .clamp(1, MAX_LANES_PAGE);
-    let (lanes, total) = state.store.list_lanes(&filter)?;
+        .unwrap_or(MAX_CHECKS_PAGE)
+        .clamp(1, MAX_CHECKS_PAGE);
+    let (checks, total) = state.store.list_checks(&filter)?;
     Ok(Json(super::paged(
-        lanes.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+        checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
         total,
         limit,
         "Raise the page size with ?limit=N (max 200), or narrow with ?epic=/?severity=/?layer=.",
     )))
 }
 
-/// GET /v1/lanes/{id} (read) — the lane plus its resolved policy and case counts.
-pub async fn get_lane(
+/// GET /v1/checks/{id} (read) — the check plus its resolved policy and case counts.
+pub async fn get_check(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let lane = state.store.get_lane(&id)?;
-    ctx.require_project(&lane.project)?;
-    Ok(Json(lane.to_json()))
+    let check = state.store.get_check(&id)?;
+    ctx.require_project(&check.project)?;
+    Ok(Json(check.to_json()))
 }
 
-/// PATCH /v1/lanes/{id} (write). Send an override as null to clear it and inherit
+/// PATCH /v1/checks/{id} (write). Send an override as null to clear it and inherit
 /// again.
-pub async fn patch_lane(
+pub async fn patch_check(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let existing = state.store.get_lane(&id)?;
+    let existing = state.store.get_check(&id)?;
     ctx.require_project(&existing.project)?;
     let obj = body_object(&body)?;
-    reject_unknown(obj, &LANE_PATCH_FIELDS)?;
-    let patch = LanePatch {
+    reject_unknown(obj, &CHECK_PATCH_FIELDS)?;
+    let patch = CheckPatch {
         title: get_str(obj, "title")?,
         body: get_str(obj, "body")?,
         precondition: get_str(obj, "precondition")?,
@@ -267,31 +267,31 @@ pub async fn patch_lane(
         metadata_merge: obj.get("metadata_merge").cloned(),
         epic: override_str(obj, "epic")?,
     };
-    let lane = state.store.patch_lane(&id, &patch, &ctx.actor)?;
+    let check = state.store.patch_check(&id, &patch, &ctx.actor)?;
     state.wake();
-    Ok(Json(lane.to_json()))
+    Ok(Json(check.to_json()))
 }
 
-/// DELETE /v1/lanes/{id} (write) — archive it. Cases and verdict history survive:
-/// a lane no longer worth running is still evidence of what was once verified.
-pub async fn archive_lane(
+/// DELETE /v1/checks/{id} (write) — archive it. Cases and verdict history survive:
+/// a check no longer worth running is still evidence of what was once verified.
+pub async fn archive_check(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let existing = state.store.get_lane(&id)?;
+    let existing = state.store.get_check(&id)?;
     ctx.require_project(&existing.project)?;
-    let lane = state.store.archive_lane(&id, &ctx.actor)?;
+    let check = state.store.archive_check(&id, &ctx.actor)?;
     state.wake();
-    Ok(Json(lane.to_json()))
+    Ok(Json(check.to_json()))
 }
 
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
 
-/// PUT /v1/lanes/{id}/cases (write) — file the generated case set.
+/// PUT /v1/checks/{id}/cases (write) — file the generated case set.
 ///
 /// Upsert by `key`. A case still present keeps its verdicts; one that vanished is
 /// retired, not deleted; one that returns is revived. That is what makes
@@ -304,8 +304,8 @@ pub async fn file_cases(
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let lane = state.store.get_lane(&id)?;
-    ctx.require_project(&lane.project)?;
+    let check = state.store.get_check(&id)?;
+    ctx.require_project(&check.project)?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &CASES_FIELDS)?;
     let prune = match obj.get("prune") {
@@ -344,7 +344,7 @@ pub async fn file_cases(
     Ok(Json(outcome.to_json()))
 }
 
-/// GET /v1/lanes/{id}/cases?retired=include (read).
+/// GET /v1/checks/{id}/cases?retired=include (read).
 pub async fn list_cases(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -352,8 +352,8 @@ pub async fn list_cases(
     RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let lane = state.store.get_lane(&id)?;
-    ctx.require_project(&lane.project)?;
+    let check = state.store.get_check(&id)?;
+    ctx.require_project(&check.project)?;
     let pairs = query_pairs(raw.as_deref());
     let include_retired = first(&pairs, "retired") == Some("include");
     let limit_arg = parse_i64_param(&pairs, "limit")?;
@@ -373,7 +373,7 @@ pub async fn list_cases(
             offset + limit
         ),
     );
-    out["lane"] = json!(id);
+    out["check"] = json!(id);
     out["offset"] = json!(offset);
     Ok(Json(out))
 }
@@ -386,8 +386,8 @@ pub async fn get_case(
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
     let (case, history) = state.store.get_case(&id)?;
-    let lane = state.store.get_lane(&case.lane)?;
-    ctx.require_project(&lane.project)?;
+    let check = state.store.get_check(&case.check)?;
+    ctx.require_project(&check.project)?;
     let mut out = case.to_json();
     out["history"] = json!(history.iter().map(|v| v.to_json()).collect::<Vec<_>>());
     Ok(Json(out))
@@ -407,8 +407,8 @@ pub async fn record_verdict(
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
     let (case, _) = state.store.get_case(&id)?;
-    let lane = state.store.get_lane(&case.lane)?;
-    ctx.require_project(&lane.project)?;
+    let check = state.store.get_check(&case.check)?;
+    ctx.require_project(&check.project)?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &VERDICT_FIELDS)?;
     let verdict = require_str(obj, "verdict")?;
