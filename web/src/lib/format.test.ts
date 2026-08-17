@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmtAge, fmtBytes, splitList, localInputToRfc3339 } from './format'
+import { fmtAge, fmtBytes, fmtDuration, splitList, localInputToRfc3339 } from './format'
 
 describe('fmtAge', () => {
   const now = Date.parse('2026-08-08T12:00:00Z')
@@ -63,5 +63,27 @@ describe('localInputToRfc3339', () => {
     expect(localInputToRfc3339('')).toBeNull()
     expect(localInputToRfc3339('   ')).toBeNull()
     expect(localInputToRfc3339('yesterday')).toBeNull()
+  })
+})
+
+describe('fmtDuration', () => {
+  it('uses the same buckets as fmtAge, from seconds', () => {
+    expect(fmtDuration(45)).toBe('45s')
+    expect(fmtDuration(60)).toBe('1m')
+    expect(fmtDuration(3599)).toBe('59m')
+    expect(fmtDuration(3600)).toBe('1h')
+    expect(fmtDuration(86_399)).toBe('23h')
+    expect(fmtDuration(86_400)).toBe('1d')
+    expect(fmtDuration(9 * 86_400)).toBe('9d')
+  })
+
+  // The server computes these, so no browser clock is involved and a negative
+  // value can only be nonsense — clamp rather than print "-3s".
+  it('clamps a negative duration and dashes a missing one', () => {
+    expect(fmtDuration(-5)).toBe('0s')
+    expect(fmtDuration(0)).toBe('0s')
+    expect(fmtDuration(null)).toBe('—')
+    expect(fmtDuration(undefined)).toBe('—')
+    expect(fmtDuration(Number.NaN)).toBe('—')
   })
 })

@@ -18,6 +18,7 @@ import { Typeahead } from '@/components/Typeahead'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Column } from '@/components/board/Column'
+import { EpicsView } from '@/components/board/EpicsView'
 import { AskDrawer } from '@/components/board/AskDrawer'
 import { DetailPanel } from '@/components/board/DetailPanel'
 import { InboxDrawer } from '@/components/board/InboxDrawer'
@@ -28,6 +29,7 @@ import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { modeFor } from '@/lib/board-mode'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
 import { epicOf, inSubtree, indexById } from '@/lib/tickets'
+import { fetchRoadmap, laneTitles, type Roadmap } from '@/lib/roadmap'
 import { cn } from '@/lib/utils'
 import {
   getEvents,
@@ -147,6 +149,15 @@ function Board({
   const [epicFilter, setEpicFilter] = useState('')
   const [labelFilter, setLabelFilter] = useState('')
   const [groupByEpic, setGroupByEpic] = useState(false)
+  // Which altitude the reader is at. `epics` is NOT the board grouped by epic —
+  // that stays a ticket board and answers where each ticket is. This answers
+  // where each epic is, who holds it, and whether it is moving.
+  const [view, setView] = useState<'board' | 'epics'>('board')
+  const [roadmap, setRoadmap] = useState<Roadmap | undefined>(undefined)
+  // Bumped when the event poll actually finds something, so the epics view
+  // refreshes on real change rather than on every four-second tick — it is one
+  // query per epic and does not belong on a timer.
+  const [epoch, setEpoch] = useState(0)
   const [showArchived, setShowArchived] = useState(false)
   const [mineOnly, setMineOnly] = useState(false)
 
@@ -251,7 +262,10 @@ function Board({
         .then((page) => {
           if (page.cursor != null) setCursor(page.cursor)
           setConn('live')
-          if ((page.items?.length ?? 0) > 0) void load()
+          if ((page.items?.length ?? 0) > 0) {
+            void load()
+            setEpoch((n) => n + 1)
+          }
         })
         // A failed poll is not an error to shout about, but the board must stop
         // claiming to be live — silently stale is the failure worth surfacing.
@@ -270,6 +284,28 @@ function Board({
     }, POLL_MS)
     return () => window.clearInterval(id)
   }, [token, effectiveProject, cursor, load, handleErr])
+
+  // The roadmap, fetched only while the epics view is open: it runs a query per
+  // epic, so a reader on the board should not pay for it. Soft on failure — the
+  // view says it has nothing rather than throwing the board into an error state.
+  useEffect(() => {
+    if (!token || !effectiveProject || view !== 'epics') return
+    let cancelled = false
+    fetchRoadmap(token, effectiveProject)
+      .then((rm) => {
+        if (!cancelled) setRoadmap(rm)
+      })
+      .catch((e) => {
+        if (isAuthError(e)) {
+          handleErr(e)
+          return
+        }
+        if (!cancelled) setRoadmap(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token, effectiveProject, view, epoch, handleErr])
 
   // The open drawer refreshes with the board.
   //
@@ -499,6 +535,31 @@ function Board({
             filtersOpen ? 'flex w-full md:w-auto' : 'hidden md:flex',
           )}
         >
+        {/* Altitude first, because it changes what every control below means:
+            the filters shape the ticket board, and the epics view is a different
+            question rather than a filtered answer to the same one. */}
+        <div
+          className="border-border flex shrink-0 overflow-hidden rounded-lg border"
+          role="group"
+          aria-label={t.viewLabel}
+        >
+          {(['board', 'epics'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={view === v}
+              onClick={() => setView(v)}
+              className={cn(
+                'cursor-pointer px-2.5 py-1.5 text-[12.5px] font-[650]',
+                view === v
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground',
+              )}
+            >
+              {v === 'board' ? t.viewBoard : t.viewEpics}
+            </button>
+          ))}
+        </div>
         <Typeahead
           id="tickfilter"
           options={tickets.map((x) => ({ id: x.id, title: x.title }))}
@@ -675,7 +736,28 @@ function Board({
         {/* Filtered to nothing: the board used to render its normal columns all
             reading 0, with no statement that a filter caused it and no way to
             undo them together. */}
-        {visible.length === 0 && tickets.length > 0 && activeFilterCount > 0 ? (
+        {view === 'epics' ? (
+          <EpicsView
+            epics={roadmap?.epics ?? []}
+            laneTitles={laneTitles(roadmap)}
+            onOpen={openTicket}
+            labels={{
+              held: t.epHeld,
+              stalled: t.epStalled,
+              awaiting: t.epAwaiting,
+              flagged: t.epFlagged,
+              ready: t.epReady,
+              backlog: t.epBacklog,
+              heldBy: t.epHeldBy,
+              idle: t.epIdle,
+              indefinite: t.epIndefinite,
+              noLane: t.epNoLane,
+              empty: t.epEmpty,
+              emptyHint: t.epEmptyHint,
+              progress: t.epProgress,
+            }}
+          />
+        ) : visible.length === 0 && tickets.length > 0 && activeFilterCount > 0 ? (
           <div className="text-muted-foreground px-2 py-14 text-center">
             <div className="text-[13.5px]">{t.noMatchFilters}</div>
             <button

@@ -84,6 +84,36 @@ simply zero), and over MCP as `takomo_claim_status`. `movement` is `null` when
 the ticket is unclaimed — there is no anchor to count from — or when the claim
 predates the server recording grant times (`tickets.claim_since`).
 
+### Scanning many epics at once
+
+That route is one epic per request, and it walks the event log to do it. For a
+LIST — "which of this project's epics are held, and is anything moving" — the
+roadmap carries a cheap summary on every epic instead:
+
+```json
+"claim": {
+  "holder": "agent:w1",
+  "held_since": "2026-08-16T09:12:00Z", "held_for_seconds": 18000,
+  "indefinite": true, "expires_at": null,
+  "last_activity_at": "2026-08-16T13:58:41Z", "idle_seconds": 132
+}
+```
+
+`null` when there is no ACTIVE claim, so an expired lease reads as unheld rather
+than as an object of nulls. It is derived from row timestamps rather than from
+events — free, because the rollup already aggregates those rows — which makes
+`idle_seconds` a near-equivalent of this route's number and not the identical
+one. Close enough to sort a list by; come here for the precise answer on one, and
+for the created/closed/in_progress/blocked breakdown, which the summary does not
+carry at all.
+
+`/board`'s **epics view** is what reads it: one row per epic with its progress,
+the lanes it belongs to, and who is holding it, plus a counted strip saying how
+many are held, stalled, awaiting an answer or flagged. A held epic with nothing
+moving under it is invisible on a ticket board, and with no TTL nothing will
+lapse and hand it back — so that view exists to make the reservation visible to
+the person who has to decide about it.
+
 ## Bits worth knowing before touching the code
 
 - `Ticket::active_claim` returns `(holder, Option<expiry>)`; `None` expiry =

@@ -5318,6 +5318,438 @@ async fn roadmap_counts_tickets_awaiting_an_answer() {
     assert_eq!(e["total"], 2, "total unchanged by the question: {e}");
 }
 
+/// Open an initiative over HTTP and return its id.
+async fn new_initiative(app: &TestApp, title: &str, status: &str) -> String {
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": title, "status": status }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "initiative create failed: {b}");
+    b["id"].as_str().expect("initiative id").to_string()
+}
+
+/// Create a ticket carrying one `initiative:<id>` tag.
+async fn create_tagged(app: &TestApp, title: &str, ty: &str, tag: &str) -> String {
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": title, "type": ty, "tags": [tag] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "tagged create failed: {b}");
+    b["id"].as_str().expect("ticket id").to_string()
+}
+
+// An epic closes; an initiative does not. So a feature shipping as v1 then v2 is
+// ONE initiative with one epic per version, and the roadmap has to report both
+// readings at once: per-version progress from `epics`, lane-lifetime progress
+// from `initiatives`. This is the whole point of the initiative rollup.
+#[tokio::test]
+async fn roadmap_rolls_up_an_initiative_across_its_version_epics() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Billing", "open").await;
+    let tag = format!("initiative:{ini}");
+
+    // v1: two tasks, both done — the version that shipped.
+    let v1 = create_tagged(&app, "Billing v1", "epic", &tag).await;
+    let v1_a = app.create_typed("Charge card", "task", Some(&v1)).await;
+    let v1_b = app.create_typed("Send receipt", "task", Some(&v1)).await;
+    app.drive_to_done(&v1_a).await;
+    app.drive_to_done(&v1_b).await;
+
+    // v2: two tasks, one done. A grandchild proves the walk goes all the way
+    // down from the tagged epic rather than stopping at its children.
+    let v2 = create_tagged(&app, "Billing v2", "epic", &tag).await;
+    let v2_a = app.create_typed("Proration", "task", Some(&v2)).await;
+    let v2_deep = app.create_typed("Rounding", "task", Some(&v2_a)).await;
+    let _v2_b = app.create_typed("Invoices", "task", Some(&v2)).await;
+    app.drive_to_done(&v2_deep).await;
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let lanes = body["initiatives"].as_array().expect("initiatives array");
+    assert_eq!(lanes.len(), 1, "one initiative expected: {body}");
+    let lane = &lanes[0];
+    assert_eq!(lane["id"], ini.as_str());
+    assert_eq!(lane["title"], "Billing");
+    assert_eq!(lane["status"], "open");
+
+    // The lane spans both versions: 2 (v1) + 3 (v2 subtree) = 5 tickets, 3 done.
+    // The epics themselves are containers and are not counted.
+    assert_eq!(lane["total"], 5, "lane spans both version epics: {lane}");
+    assert_eq!(lane["done"], 3, "lane done count: {lane}");
+    assert_eq!(lane["percent"], 60, "round(3/5*100): {lane}");
+    assert_eq!(lane["by_category"]["done"], 3, "{lane}");
+    assert_eq!(lane["by_category"]["todo"], 2, "{lane}");
+    assert!(
+        lane["flags"].as_array().unwrap().is_empty(),
+        "a fed, open lane is consistent: {lane}"
+    );
+
+    // The versions are named, in creation order, so a client can join them to
+    // the per-epic rollups in the same response.
+    assert_eq!(
+        lane["epics"],
+        json!([v1.as_str(), v2.as_str()]),
+        "versions filed under the lane: {lane}"
+    );
+
+    // And the per-version reading is untouched: v1 is complete, v2 is not.
+    let epics = body["epics"].as_array().expect("epics array");
+    let e1 = epics.iter().find(|e| e["id"] == v1.as_str()).expect("v1");
+    let e2 = epics.iter().find(|e| e["id"] == v2.as_str()).expect("v2");
+    assert_eq!(e1["percent"], 100, "v1 shipped: {e1}");
+    assert_eq!(e2["total"], 3, "v2 subtree: {e2}");
+    assert_eq!(e2["done"], 1, "v2 partly done: {e2}");
+
+    // Everything is inside the lane, so nothing is left over.
+    assert_eq!(body["uninitiated"]["total"], 0, "{body}");
+}
+
+// The initiative-side twin of the `unparented` bucket. It has to catch the same
+// shapes, including the one that is easy to lose: a tag naming an initiative
+// that does not exist. Such a ticket belongs to no lane, so it must land here
+// rather than vanish from every bucket.
+#[tokio::test]
+async fn roadmap_uninitiated_bucket_covers_work_no_lane_owns() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Owned lane", "open").await;
+    let tag = format!("initiative:{ini}");
+
+    // Owned: a tagged task plus a child that inherits the lane.
+    let owned = create_tagged(&app, "Owned task", "task", &tag).await;
+    let _owned_child = app.create_typed("Owned child", "task", Some(&owned)).await;
+
+    // 1. No initiative tag at all, and not under anything that has one.
+    let loose = app.create_typed("Loose task", "task", None).await;
+    app.drive_to_done(&loose).await;
+    // 2. Under an epic, but the epic carries no initiative tag either.
+    let orphan_epic = app.create_typed("Unfiled epic", "epic", None).await;
+    let _under_epic = app
+        .create_typed("Task under unfiled epic", "task", Some(&orphan_epic))
+        .await;
+    // 3. A tag pointing at an initiative that does not exist.
+    let _dangling = create_tagged(&app, "Stale lane ref", "task", "initiative:ini-nosuchid").await;
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let lane = &body["initiatives"][0];
+    assert_eq!(lane["total"], 2, "tagged task + its child: {lane}");
+
+    let u = &body["uninitiated"];
+    // loose + under_epic + dangling = 3. The epics themselves never count.
+    assert_eq!(u["total"], 3, "uninitiated total: {body}");
+    assert_eq!(u["done"], 1, "only the loose task is done: {body}");
+    assert_eq!(u["percent"], 33, "round(1/3*100): {body}");
+    assert!(
+        u.get("id").is_none() && u.get("title").is_none() && u.get("status").is_none(),
+        "the bucket is not an initiative: {u}"
+    );
+
+    // Coherence: with one flat lane, every non-epic ticket is counted exactly
+    // once across the lane and the uninitiated bucket.
+    let (_, list) = app
+        .get(&app.admin, "/v1/tickets?project=tp&limit=200")
+        .await;
+    let non_epics = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["type"] != "epic")
+        .count() as i64;
+    assert_eq!(
+        lane["total"].as_i64().unwrap() + u["total"].as_i64().unwrap(),
+        non_epics,
+        "every non-epic ticket counted exactly once: {body}"
+    );
+}
+
+// An initiative's status is a LABEL, not a state machine, so its flags are not
+// the epic's. `distilled` with open work is correct, not a contradiction —
+// distilled means the substance became tickets. What is worth surfacing is a
+// lane deliberately set aside whose tickets the queue is still handing out.
+#[tokio::test]
+async fn roadmap_flags_initiative_status_contradictions() {
+    let app = TestApp::spawn().await;
+
+    // Filed ahead of its work: a flag, not an error.
+    let _empty = new_initiative(&app, "Nothing filed yet", "open").await;
+
+    // Parked, but a ticket under it is sitting in the ready queue.
+    let parked = new_initiative(&app, "Set aside", "parked").await;
+    let parked_work = create_tagged(
+        &app,
+        "Still claimable",
+        "task",
+        &format!("initiative:{parked}"),
+    )
+    .await;
+    app.to_ready(&parked_work).await;
+
+    // Distilled with open work — the expected shape, and not flagged.
+    let distilled = new_initiative(&app, "Became tickets", "distilled").await;
+    let _distilled_work = create_tagged(
+        &app,
+        "Filed from a passage",
+        "task",
+        &format!("initiative:{distilled}"),
+    )
+    .await;
+
+    let (status, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let lanes = body["initiatives"].as_array().expect("initiatives");
+    let by_title = |t: &str| {
+        lanes
+            .iter()
+            .find(|l| l["title"] == t)
+            .unwrap_or_else(|| panic!("lane {t} missing: {body}"))
+            .clone()
+    };
+
+    assert_eq!(
+        by_title("Nothing filed yet")["flags"],
+        json!(["empty_initiative"]),
+        "{body}"
+    );
+
+    let p = by_title("Set aside");
+    assert_eq!(p["ready"], 1, "the parked lane has claimable work: {p}");
+    assert_eq!(p["flags"], json!(["parked_with_ready_work"]), "{p}");
+
+    let d = by_title("Became tickets");
+    assert_eq!(d["total"], 1, "{d}");
+    assert!(
+        d["flags"].as_array().unwrap().is_empty(),
+        "distilled with open work is the expected shape, not a contradiction: {d}"
+    );
+}
+
+// The rollups' `ready` must answer the same question the queue answers, and the
+// way that breaks is silent: a rule is added to the queue and not to the rollup,
+// and the roadmap goes on advertising work nobody can be handed. That is exactly
+// what happened when epic reservations landed — the rollup carried its own copy
+// of the predicate — so this pins the two together against the newest rule.
+#[tokio::test]
+async fn roadmap_ready_agrees_with_the_queue_under_an_epic_reservation() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Payments", "open").await;
+    let epic = create_tagged(&app, "Payments v1", "epic", &format!("initiative:{ini}")).await;
+    let c1 = app.create_typed("Charges", "task", Some(&epic)).await;
+    let c2 = app.create_typed("Refunds", "task", Some(&epic)).await;
+    app.to_ready(&epic).await;
+    app.to_ready(&c1).await;
+    app.to_ready(&c2).await;
+
+    // `type=task` keeps the epic's own readiness out of the comparison: the
+    // roadmap treats an epic as a container and never counts it in its own
+    // rollup, so the two would differ by one for a reason that is not drift.
+    let queue = "/v1/ready?project=tp&type=task&limit=100";
+    let (s, q) = app.get(&app.worker, queue).await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert_eq!(q["total"], 2, "the queue offers both children: {q}");
+
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(body["epics"][0]["ready"], 2, "epic rollup agrees: {body}");
+    assert_eq!(
+        body["initiatives"][0]["ready"], 2,
+        "lane rollup agrees: {body}"
+    );
+
+    // Claiming the epic reserves its whole subtree, so the queue stops offering
+    // the children to anyone.
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+
+    let (_, q) = app.get(&app.worker, queue).await;
+    assert_eq!(q["total"], 0, "a reserved subtree is not offered: {q}");
+
+    // …and every rollup has to say so too. These are the assertions that fail
+    // when the rollup keeps its own copy of the readiness predicate.
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(
+        body["epics"][0]["ready"], 0,
+        "epic rollup must follow the queue into the reservation: {body}"
+    );
+    assert_eq!(
+        body["initiatives"][0]["ready"], 0,
+        "lane rollup must follow it too: {body}"
+    );
+
+    // The work did not vanish, it stopped being offerable: `ready + backlog` is
+    // the whole claimable set, so it moved across that line.
+    assert_eq!(
+        body["epics"][0]["backlog"], 2,
+        "reserved work is backlog, not gone: {body}"
+    );
+}
+
+// The other half of the shared predicate. Epic reservations live in the recursive
+// CTEs; this rule lives in the outer conditions, so the two tests together pin
+// both halves of what the rollup borrows from the queue.
+#[tokio::test]
+async fn roadmap_ready_follows_the_queue_when_the_project_is_archived() {
+    let app = TestApp::spawn().await;
+    let epic = app.create_typed("Shipping", "epic", None).await;
+    let child = app.create_typed("Rates", "task", Some(&epic)).await;
+    app.to_ready(&child).await;
+
+    let queue = "/v1/ready?project=tp&type=task&limit=100";
+    let (_, q) = app.get(&app.worker, queue).await;
+    assert_eq!(q["total"], 1, "offered before the archive: {q}");
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(body["epics"][0]["ready"], 1, "{body}");
+
+    let (s, b) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    let (_, q) = app.get(&app.worker, queue).await;
+    assert_eq!(q["total"], 0, "an archived project offers nothing: {q}");
+
+    // Archiving is a gate on WRITES, not a state, so every read still works —
+    // which is exactly why the rollup has to apply the rule itself. A count that
+    // still said 1 would invite someone to pick up work the gate then refuses.
+    let (s, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the rollup is a read and keeps working: {body}"
+    );
+    assert_eq!(
+        body["epics"][0]["ready"], 0,
+        "rollup must follow the queue: {body}"
+    );
+    assert_eq!(
+        body["epics"][0]["backlog"], 1,
+        "still in a claimable state, just not offerable: {body}"
+    );
+}
+
+// An epic claim has no expiry to judge it by, so the roadmap reports who holds it
+// and whether anything under them has moved — the numbers an epic-first view needs
+// without one event-log walk per epic. And each epic names the lanes it belongs
+// to, the inverse of a lane's `epics`, so "what is this version part of" does not
+// require inverting a whole project's lanes client-side.
+#[tokio::test]
+async fn roadmap_epics_carry_their_claim_and_the_lanes_they_belong_to() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Payments", "open").await;
+    let other = new_initiative(&app, "Reporting", "open").await;
+    // Filed under two lanes: legitimate, and the reason the field is a list.
+    let epic = create_tagged(&app, "Payments v1", "epic", &format!("initiative:{ini}")).await;
+    let (s, b) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{epic}"),
+            json!({ "tags_add": [format!("initiative:{other}")] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let child = app.create_typed("Charges", "task", Some(&epic)).await;
+    let unfiled = app.create_typed("Unfiled epic", "epic", None).await;
+
+    // Unclaimed: `claim` is null rather than an object of nulls, so "held" is one
+    // check for a client rather than three.
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let mine = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == epic.as_str())
+        .expect("epic")
+        .clone();
+    assert!(mine["claim"].is_null(), "unclaimed reads as null: {mine}");
+    // Both lanes, in a stable order.
+    let mut lanes: Vec<&str> = mine["initiatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    lanes.sort();
+    let mut want = vec![ini.as_str(), other.as_str()];
+    want.sort();
+    assert_eq!(lanes, want, "both lanes named: {mine}");
+
+    let unfiled_row = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == unfiled.as_str())
+        .expect("unfiled epic")
+        .clone();
+    assert_eq!(
+        unfiled_row["initiatives"],
+        json!([]),
+        "an epic under no lane reports an empty list, not null: {unfiled_row}"
+    );
+
+    // Claimed with no TTL: held until released, which is why movement is what
+    // there is to judge it by.
+    app.to_ready(&epic).await;
+    app.to_ready(&child).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let mine = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == epic.as_str())
+        .expect("epic")
+        .clone();
+    let c = &mine["claim"];
+    assert_eq!(c["holder"], "agent:w1", "{c}");
+    assert_eq!(c["indefinite"], true, "no TTL means no expiry: {c}");
+    assert!(c["expires_at"].is_null(), "{c}");
+    assert!(c["held_since"].is_string(), "{c}");
+    assert!(c["held_for_seconds"].as_i64().unwrap() >= 0, "{c}");
+    // Anchored at the claim when nothing has moved since, so a fresh hold reads
+    // as barely idle rather than as idle since whenever the subtree last changed.
+    assert!(
+        c["idle_seconds"].as_i64().unwrap() < 60,
+        "a fresh claim is not reported as long-idle: {c}"
+    );
+
+    // An expired lease is not a hold: a bounded claim, backdated past its
+    // deadline, must not read as claimed.
+    app.to_ready(&unfiled).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{unfiled}/claim"),
+            json!({ "ttl_seconds": 1 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    app.force_claim_expiry(&unfiled, 1_000);
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let expired = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == unfiled.as_str())
+        .expect("unfiled epic")
+        .clone();
+    assert!(
+        expired["claim"].is_null(),
+        "an expired lease is not a hold: {expired}"
+    );
+}
+
 // Impact ranks blockers by how much closing ONE of them would release. The
 // count is a counterfactual, and the cases below are exactly the ones a naive
 // reachability walk gets wrong.
@@ -13622,6 +14054,13 @@ async fn epic_filter_scopes_roadmap_impact_and_list_to_the_subtree() {
     assert!(
         body.get("unparented").is_none(),
         "unparented is project-wide and must be omitted under an epic filter: {body}"
+    );
+    // The initiative side is project-wide for the same reason, and worse: a lane
+    // SPANS versions, so reporting lanes beside one version invites reading the
+    // lane's numbers as that version's.
+    assert!(
+        body.get("initiatives").is_none() && body.get("uninitiated").is_none(),
+        "the initiative side is project-wide and must be omitted too: {body}"
     );
 
     // impact?epic= -> counts only work inside the subtree, but still names the

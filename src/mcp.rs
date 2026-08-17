@@ -1146,8 +1146,13 @@ impl TakomoMcp {
         splits its claimable work into `ready` (what the ready queue would hand out) and \
         `backlog` (claimable but blocked or already claimed), and carries \
         `awaiting_answer` — tickets holding an open question, which is an OVERLAY on the \
-        state counts, not a separate bucket. Pass `epic` to report on ONE epic's subtree; \
-        the project-wide `unparented` bucket is then omitted rather than returned empty."
+        state counts, not a separate bucket. `initiatives` is the same rollup per \
+        INITIATIVE — the long-lived lane a feature is worked in, which never closes — over \
+        every ticket tagged `initiative:<id>` and everything beneath it, with `epics` \
+        naming the versions filed under that lane; `uninitiated` covers work no lane owns. \
+        Lane rollups MAY OVERLAP and must not be summed. Pass `epic` to report on ONE \
+        epic's subtree; the project-wide `unparented`, `initiatives` and `uninitiated` \
+        sections are then omitted rather than returned empty."
     )]
     async fn takomo_roadmap(
         &self,

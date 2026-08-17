@@ -247,6 +247,50 @@ teaching it about marks first. Formatting inside a pane is therefore not availab
 is not closing. `distilled` records that its substance became tickets, which is the only outcome an
 initiative has, since it is never "done" on its own terms. Nothing enforces an order between them.
 
+## The lane: progress across versions
+
+Never being "done" is what makes an initiative useful for something beyond an idea's first outing.
+A feature is rarely finished when it ships: there is an MVP, then 1.1, then 1.2, then a 2.0 that
+rethinks it. An **epic closes** and reopening one is a lie about what happened; an **initiative never
+closes**. So the durable thing is the initiative — the lane the feature is worked in — and each
+version is an ordinary epic filed under it:
+
+```
+initiative  "Billing"          the lane. never closes. carries the understanding.
+├── epic    "Billing v1"       closes when v1 ships
+├── epic    "Billing v1.1"     closes when v1.1 ships
+└── epic    "Billing v2"       open
+```
+
+**Filing is the tag that already existed.** A ticket joins a lane by carrying `initiative:<id>` —
+the same reference `/initiatives` writes when it dispatches a passage as work — and the rollup grows
+the set *downward* through `parent` from there. Tagging the version epic is therefore enough; every
+ticket beneath it counts. No new field, no new table, no new route.
+
+`GET /v1/projects/{project}/roadmap` reports both readings at once, so neither has to be
+reconstructed by a client:
+
+| | |
+|---|---|
+| `epics` | per-version progress — did 1.1 ship? |
+| `initiatives` | lane-lifetime progress, plus `epics` naming the versions filed under it |
+| `uninitiated` | work no lane owns, so a lane's percentage cannot read as complete while real work sits outside every one |
+
+Two properties differ from epics and a reader has to know both. **Lane rollups may overlap and must
+not be summed**: a ticket can serve two lanes, and flat epics partition a project where lanes do not.
+And **a tag naming an initiative that does not exist owns nothing** — its ticket lands in
+`uninitiated` rather than disappearing from every bucket, the same rule `unparented` applies to a
+dangling `parent`.
+
+Lane `flags` are not the epic's. `empty_initiative` marks a lane opened before any work is filed —
+legitimate, hence a flag rather than an error. `parked_with_ready_work` marks a lane deliberately set
+aside whose tickets the queue is still handing out, which is the decision and the fleet's behaviour
+having come apart. There is deliberately no `done`-style code, because `distilled` *means* the
+substance became tickets: open work under it is the expected shape, not a contradiction.
+
+Under `?epic=`, the whole initiative side is omitted along with `unparented`. A lane spans versions,
+so reporting lanes beside a single version invites reading the lane's numbers as that version's.
+
 ## The caps, and why they exist
 
 An initiative is the one thing in this store that accepts binary uploads, and every write goes

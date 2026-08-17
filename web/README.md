@@ -29,6 +29,25 @@ read and guard the JavaScript inside those files.
 Each port flips exactly one `include_str!` path, so the surfaces can be replaced
 one at a time with no big-bang cutover.
 
+## Two altitudes on /board
+
+`/board`'s view toggle is a different axis from the three modes above: those are
+about **who you are** (a board token, a share, an answer grant), this is about
+**what you are looking at**.
+
+- **Board** — the kanban. Where is each ticket. `by epic` groups the same columns
+  under epic headings; it is still a ticket board.
+- **Epics** — one row per epic, no columns. Where is each epic, which initiatives
+  it belongs to, who holds it, and whether it is moving. It reads
+  `GET /v1/projects/{p}/roadmap` and is fetched only while open, because that
+  endpoint runs a query per epic; it refreshes when the event poll finds
+  something rather than on the poll's own four-second tick.
+
+Rows are in the server's order — creation order — deliberately. Ranking them here
+would be the page inventing a priority the API does not have; the counted
+attention strip at the top is the fast read instead. `docs/epic-claims.md` owns
+why a held-but-idle epic is worth a surface at all.
+
 ## Commands
 
 ```sh

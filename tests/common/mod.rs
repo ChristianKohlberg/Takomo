@@ -460,6 +460,26 @@ impl TestApp {
         );
     }
 
+    /// Backdate a LEASE so "the hold lapsed" is observable without sleeping it
+    /// out. Deliberately separate from `force_ticket_expiry`: that one is the
+    /// scheduled-occurrence deadline, and confusing the two would silently test
+    /// the wrong rule.
+    pub fn force_claim_expiry(&self, id: &str, expires_ms: i64) {
+        let conn = rusqlite::Connection::open(self.db_path()).expect("open db");
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        let n = conn
+            .execute(
+                "UPDATE tickets SET claim_expires_at = ?2 WHERE id = ?1",
+                rusqlite::params![id, expires_ms],
+            )
+            .expect("force claim_expires_at");
+        assert_eq!(
+            n, 1,
+            "force_claim_expiry should touch exactly one row ({id})"
+        );
+    }
+
     // --- tickets -------------------------------------------------------------
 
     pub async fn create_ticket(&self, title: &str) -> String {

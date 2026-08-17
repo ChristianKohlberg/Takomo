@@ -36,7 +36,9 @@ import { SelectionPane, type Operation } from '@/components/initiatives/Selectio
 import { SourceInspector } from '@/components/initiatives/SourceInspector'
 import { SourcesFooter } from '@/components/initiatives/SourcesFooter'
 import { OriginMasthead } from '@/components/initiatives/OriginMasthead'
+import { VersionsStrip } from '@/components/initiatives/VersionsStrip'
 import { resolveAnchor, type Anchor } from '@/lib/initiative-anchor'
+import { fetchRoadmap, lane, laneVersions, laneWarnings, type Roadmap } from '@/lib/roadmap'
 import {
   amendedView,
   buildDoc,
@@ -107,6 +109,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [entries, setEntries] = useState<Entry[]>([])
   const [entryCursor, setEntryCursor] = useState<string | null>(null)
+  const [roadmap, setRoadmap] = useState<Roadmap | undefined>(undefined)
 
   const [status, setStatus] = useState('')
   const [q, setQ] = useState('')
@@ -148,6 +151,16 @@ export function App() {
     () => items.find((i) => i.id === selectedId) ?? null,
     [items, selectedId],
   )
+
+  // An initiative never closes, so "how far along is it" is not a question its
+  // own status can answer. The answer is the epics filed under it, one per
+  // version — joined here from the same roadmap response that carries them.
+  const laneRollup = useMemo(() => lane(roadmap, selectedId ?? ''), [roadmap, selectedId])
+  const laneVersionList = useMemo(
+    () => laneVersions(roadmap, selectedId ?? ''),
+    [roadmap, selectedId],
+  )
+  const laneFlags = useMemo(() => laneWarnings(laneRollup), [laneRollup])
 
   // The tree is filtered client-side, unlike the status chips: folder structure
   // is derived here, so a server-side text filter would hand back a set of
@@ -303,6 +316,29 @@ export function App() {
     fetchAll().catch(handleErr)
   }, [token, fetchAll, handleErr])
 
+  // The lane's work, from the project roadmap. Kept deliberately soft: the strip
+  // is supplementary to the document, so a roadmap that fails to load leaves it
+  // unrendered instead of taking the page down with an error toast. A reader who
+  // came here to read the argument still gets to.
+  const refreshRoadmap = useCallback(
+    async (project: string | undefined) => {
+      if (!token || !project) {
+        setRoadmap(undefined)
+        return
+      }
+      try {
+        setRoadmap(await fetchRoadmap(token, project))
+      } catch {
+        setRoadmap(undefined)
+      }
+    },
+    [token],
+  )
+
+  useEffect(() => {
+    void refreshRoadmap(selected?.project)
+  }, [refreshRoadmap, selected?.project])
+
   // Deep link: `#i=<id>` selects a document, and reveals the folders above it —
   // a link into a collapsed branch that selects nothing visible is a broken link
   // as far as the reader is concerned.
@@ -447,6 +483,9 @@ export function App() {
             text,
             meta: { ...anchorMeta(anchor), state: 'running', ticket: ticketId },
           })
+          // The ticket carries this initiative's tag, so it just joined the lane —
+          // refresh the versions strip rather than leaving it a request behind.
+          void refreshRoadmap(ini.project)
           toast(op === 'ask' ? t.asked : `${t.dispatched} ${ticketId}`, 'success')
         } else if (op === 'cite') {
           const placed = resolveAnchor(paneText(paneDoc), anchor)
@@ -480,7 +519,21 @@ export function App() {
         setBusy(false)
       }
     },
-    [selected, selectedId, anchor, guardWrite, doc, token, actor, t, toast, entries, fetchEntries, handleErr],
+    [
+      selected,
+      selectedId,
+      anchor,
+      guardWrite,
+      doc,
+      token,
+      actor,
+      t,
+      toast,
+      entries,
+      fetchEntries,
+      refreshRoadmap,
+      handleErr,
+    ],
   )
 
   /**
@@ -541,6 +594,7 @@ export function App() {
           },
         })
         await fetchEntries(selectedId, true)
+        void refreshRoadmap(ini.project)
         toast(`${t.dispatched} ${ticketId}`, 'success')
       } catch (e) {
         handleErr(e)
@@ -548,7 +602,18 @@ export function App() {
         setBusy(false)
       }
     },
-    [selected, selectedId, guardWrite, token, actor, t, fetchEntries, toast, handleErr],
+    [
+      selected,
+      selectedId,
+      guardWrite,
+      token,
+      actor,
+      t,
+      fetchEntries,
+      refreshRoadmap,
+      toast,
+      handleErr,
+    ],
   )
 
   /** Settle a note without making work of it. */
@@ -921,6 +986,23 @@ export function App() {
                   chars: t.rChars,
                   size: t.rSize,
                   last: t.rLast,
+                }}
+              />
+
+              <VersionsStrip
+                lane={laneRollup}
+                versions={laneVersionList}
+                warnings={laneFlags}
+                epicHref={(id) => `/board#t=${encodeURIComponent(id)}`}
+                labels={{
+                  heading: t.vHeading,
+                  done: t.vDone,
+                  ready: t.vReady,
+                  backlog: t.vBacklog,
+                  awaiting: t.vAwaiting,
+                  empty: t.vEmpty,
+                  emptyHint: t.vEmptyHint,
+                  parkedWithReadyWork: t.vParkedWithReadyWork,
                 }}
               />
 

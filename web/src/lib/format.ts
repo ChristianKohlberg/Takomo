@@ -14,6 +14,23 @@ export function fmtAge(iso: string | null | undefined, now: number = Date.now())
 }
 
 /**
+ * The same buckets as `fmtAge`, from a duration the API already computed in
+ * SECONDS (`held_for_seconds`, `idle_seconds`) rather than from a timestamp.
+ *
+ * Reusing `fmtAge` here would mean converting a server-computed duration back
+ * into an instant against the browser's clock, which is how a claim held for
+ * ten minutes reads as "3h" on a laptop with a skewed clock.
+ */
+export function fmtDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !isFinite(seconds)) return '—'
+  const s = Math.max(0, seconds)
+  if (s < 60) return Math.floor(s) + 's'
+  if (s < 3600) return Math.floor(s / 60) + 'm'
+  if (s < 86400) return Math.floor(s / 3600) + 'h'
+  return Math.floor(s / 86400) + 'd'
+}
+
+/**
  * Bytes for a human. The API already sends `megabytes` on the rollup, but a
  * 300-byte note would read as "0 MB" — so small sizes get their real unit.
  */

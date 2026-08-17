@@ -16,6 +16,7 @@ mod moves;
 mod oauth;
 mod projects;
 mod questions;
+mod ready_sql;
 mod roadmap;
 mod schedules;
 mod shares;
