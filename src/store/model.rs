@@ -737,6 +737,40 @@ pub struct Tag {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    /// For a `person:` reference whose handle names somebody in the people
+    /// directory: who that is. `None` for every other kind, and for a person
+    /// handle nobody has been added under.
+    ///
+    /// This is what keeps one vocabulary out of two registries. A `person:ada`
+    /// tag and the user `ada` are the same person by construction — they share the
+    /// handle rule — so the *authority* on their name is the directory, and the tag
+    /// row is a reference to it. Lazy-creation writes the handle again as a stub
+    /// label; this is what a reader should see instead.
+    pub person: Option<TagPerson>,
+}
+
+/// The directory person behind a `person:` tag reference. Three facts, not a whole
+/// [`User`]: who they are, and whether they can still be handed work.
+#[derive(Debug, Clone)]
+pub struct TagPerson {
+    pub handle: String,
+    pub name: Option<String>,
+    pub disabled: bool,
+}
+
+impl TagPerson {
+    /// What to show for this person: their name, falling back to the handle.
+    pub fn label(&self) -> String {
+        let raw = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&self.handle);
+        raw.chars()
+            .map(|c| if display_hostile(c) { '?' } else { c })
+            .collect()
+    }
 }
 
 impl Tag {
@@ -757,6 +791,14 @@ impl Tag {
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
+            // Present only when the handle resolves to somebody in the directory,
+            // so a caller can tell "a person we know" from a bare reference.
+            "person": self.person.as_ref().map(|p| json!({
+                "handle": p.handle,
+                "name": p.name,
+                "label": p.label(),
+                "disabled": p.disabled,
+            })),
         })
     }
 }

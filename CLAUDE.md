@@ -227,7 +227,12 @@ guard. Relaying an approval stays refused, an answer link for a person-gated app
 mintable by that person, and disabling them closes the route. `may_approve` in
 `src/store/questions.rs` is the only place that decides, because it is asked from four.
 A user handle is validated by the **tag** handle rule, so `person:<handle>` stays a legal reference
-to the same person and the convention that predates the directory converges on it.
+to the same person and the convention that predates the directory converges on it — and the
+registry reads join the two (`TAG_COLS_JOINED` in `src/store/tags.rs`), so a person tag carries the
+directory's name rather than the stub label lazy-creation wrote. Resolved, never copied: a rename
+in the directory is right everywhere at once. `takomo person` is retired for the same reason —
+two people-shaped commands where one did not add a person is a trap, so it is `takomo user` for the
+directory and `takomo tag` for the reference.
 
 **Concurrency is the load-bearing design.** `Store::with_tx` runs every mutation as one SQLite
 `IMMEDIATE` transaction behind a process-wide `Mutex<Connection>`; that single-writer

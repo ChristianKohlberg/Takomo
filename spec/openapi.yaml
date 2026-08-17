@@ -803,6 +803,11 @@ paths:
         component, team, …) that tickets reference by `kind:handle`. Ordered by
         (kind, handle). Reference metadata only: tags never affect ticket state,
         claims, or question routing.
+
+        A `person:` entry additionally carries `person` when its handle names
+        somebody in the people directory (`/v1/users`), which is the authority on
+        who they are — `q` searches that name too. Addressing work to a person is
+        the directory's job, not a tag's.
       parameters:
         - { $ref: "#/components/parameters/project" }
         - { name: kind, in: query, schema: { type: string }, description: 'restrict to one kind, e.g. person' }
@@ -5078,6 +5083,25 @@ components:
         handle: { type: string, description: 'identity within (project, kind)' }
         ref: { type: string, description: 'canonical kind:handle reference stored on tickets' }
         label: { type: string, description: human-facing display name }
+        person:
+          description: |
+            Present only on a `person:` reference whose handle names somebody in the
+            people directory — `null` otherwise, including for a person handle nobody
+            was added under.
+
+            A `person:ada` tag and the user `ada` are the same person by
+            construction (they share the handle rule), so the *authority* on their
+            name is the directory and this tag row is a reference to it. That matters
+            because tagging a ticket lazy-creates a stub whose `label` is the handle
+            again; `person.label` is what a reader should see.
+          oneOf:
+            - { type: "null" }
+            - type: object
+              properties:
+                handle: { type: string }
+                name: { type: [string, "null"] }
+                label: { type: string, description: 'the name, falling back to the handle' }
+                disabled: { type: boolean, description: 'true = cannot be handed new work' }
         meta: { type: object, description: 'free-form per-kind attributes, e.g. {"email": "..."}; 64 KiB cap' }
         created_by: { type: string }
         created_at: { type: string, format: date-time }

@@ -116,10 +116,24 @@ A user handle is validated by the *tag* handle rule (`handle_shape_ok` in
 decision is what makes the convention that predates the directory converge on it
 instead of forking into two vocabularies for the same person.
 
-The two stay distinct in what they *do*: `takomo person add` registers
-`person:<handle>` reference metadata on one project's tickets, while
-`takomo user new` adds somebody a decision can be addressed to. Tagging still
-affects nothing — the tag registry's own header says so.
+The two stay distinct in what they *do*, and there is one command for each:
+`takomo tag` attaches a `person:<handle>` **reference** to one project's tickets,
+`takomo user` is the **directory** of people a decision can be addressed to.
+Tagging still affects nothing — the tag registry's own header says so.
+
+`takomo person` used to be sugar over the tag kind and is retired, because two
+people-shaped commands where one quietly did not add a person is a trap:
+`takomo person add ada` wrote a registry row almost nothing reads, while reading
+like it had put Ada in the directory. It now prints where to go instead, and
+`takomo person ls` runs the directory listing, which is what somebody typing it
+almost always meant.
+
+Where the two meet, the directory wins on identity: a `person:` tag whose handle
+names somebody in the directory carries them as `person` on the wire, so a reader
+sees "Ada Lovelace" rather than the stub label lazy-creation wrote (which is the
+handle again), and `?q=` searches that name. The tag row's own `label` is left
+alone — resolving is not copying, so a rename in the directory is immediately
+right everywhere instead of drifting.
 
 ## There is no delete
 
@@ -135,6 +149,7 @@ takomo user new ada --name "Ada Lovelace" --project demo
 takomo user ls --project demo          # who can be handed work here
 takomo user member ada other-project
 takomo user disable ada                # stop new work reaching her; keep the record
+takomo tag ls --kind person            # the references, and who is in the directory
 takomo token create --actor ada --scopes read,write,human --user ada
 
 takomo ask <ticket> --title "Which key?" --assignee ada
