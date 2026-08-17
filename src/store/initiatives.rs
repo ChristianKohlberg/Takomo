@@ -372,17 +372,55 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<InitiativeEntry> {
     })
 }
 
+/// The three panes a `view` or `thread` may name. A document entry pointing at
+/// anything else is machinery the reader never sees, so the attention counts skip
+/// it exactly as `buildDoc` does.
+const PANE_LIST: &str = "'business','technical','verification'";
+
 /// Recompute an initiative's counts from its entries. One indexed aggregate; runs
 /// on both the read and the write path so a caller never sees stale numbers.
+///
+/// Two of the six columns are **attention** rather than volume, and they are the
+/// reason a collection can be read at all: an open note and an undecided amendment
+/// are the two ways this document is waiting on a person. Everything else here
+/// answers "how big is it", which never tells you where to look next.
+///
+/// They are computed with the same three predicates `web/src/lib/initiative-doc.ts`
+/// applies, and deliberately no more of it. What makes the document expensive —
+/// parsing prose, resolving anchors against it, diffing an amendment against the
+/// live pane — decides where a note lands, never whether it is open. So the count
+/// is honest without the page's machinery, and stays a derivation recomputed on
+/// every read rather than a stored number free to drift from its rows.
 fn load_rollup(conn: &Connection, initiative: &str) -> ApiResult<InitiativeRollup> {
     let rollup = conn.query_row(
-        "SELECT COUNT(*) AS entries, \
+        &format!(
+            "SELECT COUNT(*) AS entries, \
                 COALESCE(SUM(content_bytes > 0), 0) AS attachments, \
                 COALESCE(SUM(chars), 0) AS chars, \
                 COALESCE(SUM(text_bytes), 0) AS text_bytes, \
                 COALESCE(SUM(content_bytes), 0) AS attachment_bytes, \
-                MAX(created_at) AS last_entry_at \
-         FROM initiative_entries WHERE initiative = ?1",
+                MAX(created_at) AS last_entry_at, \
+                COALESCE(SUM( \
+                  e.kind = 'thread' \
+                  AND json_extract(e.meta, '$.pane') IN ({PANE_LIST}) \
+                  AND COALESCE(json_extract(e.meta, '$.state'), 'open') <> 'resolved' \
+                  AND NOT EXISTS ( \
+                    SELECT 1 FROM initiative_entries s \
+                    WHERE s.initiative = e.initiative AND s.kind = 'thread' \
+                      AND json_extract(s.meta, '$.supersedes') = e.id) \
+                ), 0) AS open_notes, \
+                COALESCE(SUM( \
+                  e.kind = 'view' \
+                  AND json_extract(e.meta, '$.proposed') = 1 \
+                  AND json_extract(e.meta, '$.pane') IN ({PANE_LIST}) \
+                  AND NOT EXISTS ( \
+                    SELECT 1 FROM initiative_entries d \
+                    WHERE d.initiative = e.initiative AND d.kind = 'decision' \
+                      AND (json_extract(d.meta, '$.accepts') = e.id \
+                        OR json_extract(d.meta, '$.rejects') = e.id)) \
+                ), 0) AS pending_amendments \
+         FROM initiative_entries e WHERE e.initiative = ?1"
+        ),
         params![initiative],
         |r| {
             let text_bytes: i64 = r.get("text_bytes")?;
@@ -394,6 +432,8 @@ fn load_rollup(conn: &Connection, initiative: &str) -> ApiResult<InitiativeRollu
                 bytes: text_bytes + attachment_bytes,
                 attachment_bytes,
                 last_entry_at: r.get("last_entry_at")?,
+                open_notes: r.get("open_notes")?,
+                pending_amendments: r.get("pending_amendments")?,
             })
         },
     )?;

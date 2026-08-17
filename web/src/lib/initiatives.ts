@@ -34,6 +34,35 @@ export interface Rollup {
   bytes?: number
   megabytes?: number
   last_entry_at?: string | null
+  /**
+   * The attention pair: what this document is waiting on a person for. Every
+   * other field here is volume, which never says where to look next.
+   *
+   * The server derives them with the same rules {@link buildDoc} applies — a note
+   * stops counting once resolved or superseded, an amendment once decided — so a
+   * row's badge and the document you open from it agree. They are the only part
+   * of the document reachable without fetching that document's entries, which is
+   * what lets a collection be read at all.
+   */
+  open_notes?: number
+  pending_amendments?: number
+}
+
+/** What a document is waiting on a person for, from its rollup alone. */
+export function waiting(rollup: Rollup | undefined): { notes: number; amendments: number } {
+  return { notes: rollup?.open_notes ?? 0, amendments: rollup?.pending_amendments ?? 0 }
+}
+
+/**
+ * Whether a document wants something from a person.
+ *
+ * A server too old to send the pair reports neither, so every document reads as
+ * quiet — the honest degradation. Inventing attention from a missing field would
+ * send readers into documents with nothing in them.
+ */
+export function isWaiting(i: { rollup?: Rollup }): boolean {
+  const w = waiting(i.rollup)
+  return w.notes > 0 || w.amendments > 0
 }
 
 export interface Initiative {

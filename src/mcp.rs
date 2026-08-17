@@ -1696,7 +1696,11 @@ impl TakomoMcp {
 
     #[tool(
         description = "List initiatives with optional filters. Each carries a rollup of what has \
-        accumulated on it: entries, attachments, characters, bytes/megabytes."
+        accumulated on it — entries, attachments, characters, bytes/megabytes — plus what is \
+        WAITING on a person: `open_notes` is unanswered notes in the document, \
+        `pending_amendments` is proposed wording nobody has accepted or rejected. Read those two \
+        before adding more: an initiative with an undecided amendment wants a decision, not another \
+        finding appended underneath it."
     )]
     async fn takomo_initiative_list(
         &self,

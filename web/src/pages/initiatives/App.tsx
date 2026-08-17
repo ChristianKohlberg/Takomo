@@ -66,6 +66,7 @@ import {
   createQuestion,
   createTicket,
   downloadAttachment,
+  isWaiting,
   listEntries,
   listInitiatives,
   listProjects,
@@ -113,6 +114,7 @@ export function App() {
 
   const [status, setStatus] = useState('')
   const [q, setQ] = useState('')
+  const [waitingOnly, setWaitingOnly] = useState(false)
   const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
@@ -168,11 +170,22 @@ export function App() {
   const tree = useMemo(() => {
     const full = buildTree(items)
     const needle = q.trim().toLowerCase()
-    if (!needle) return full
-    return pruneTree(full, (i) =>
-      `${i.title} ${i.summary ?? ''} ${pathOf(i)}`.toLowerCase().includes(needle),
-    )
-  }, [items, q])
+    if (!needle && !waitingOnly) return full
+    return pruneTree(full, (i) => {
+      if (waitingOnly && !isWaiting(i)) return false
+      if (!needle) return true
+      return `${i.title} ${i.summary ?? ''} ${pathOf(i)}`.toLowerCase().includes(needle)
+    })
+  }, [items, q, waitingOnly])
+
+  /**
+   * How many documents want something from a person right now.
+   *
+   * Counted over every loaded document rather than over the filtered tree, so the
+   * number does not shrink as you narrow the view — it is the answer to "is there
+   * anything for me here", which a filter must not be able to change.
+   */
+  const waitingCount = useMemo(() => items.filter(isWaiting).length, [items])
 
   /** Everything citable: entries that are evidence rather than document machinery. */
   const evidence = useMemo(() => entries.filter((e) => !DOCUMENT_KINDS.has(e.kind)), [entries])
@@ -893,6 +906,24 @@ export function App() {
                   onClick={() => setStatus(s)}
                 />
               ))}
+              {/* A separate axis from status, so it toggles independently: status
+                  is what the OWNER filed this as, waiting is what it wants from
+                  the reader now. A parked document with an undecided amendment is
+                  exactly the pair that makes them different questions.
+
+                  The chip carries its own count rather than a sentence beside it:
+                  the rail is 260px, where a sentence wraps, and "Waiting 3" says
+                  the same thing without a plural to get wrong in two languages.
+                  It appears only when something is actually waiting — but stays
+                  while the filter is on, so turning it on can never make the
+                  control that turned it on disappear. */}
+              {(waitingCount > 0 || waitingOnly) && (
+                <FilterChip
+                  label={`${t.explorerWaitingOnly} ${waitingCount}`}
+                  on={waitingOnly}
+                  onClick={() => setWaitingOnly(!waitingOnly)}
+                />
+              )}
             </div>
           </div>
           <div className="min-h-0 grow overflow-y-auto">
@@ -907,6 +938,16 @@ export function App() {
                 emptyHint: t.explorerEmptyHint,
                 toggle: t.explorerToggle,
                 unfiled: t.explorerUnfiled,
+                // Singular is its own string rather than a formatted "1", because
+                // the two differ by more than a letter in German — "wartet" vs
+                // "warten" — and a badge read aloud is the whole of what a screen
+                // reader gets here.
+                waitingNotes: (n) =>
+                  n === 1 ? t.explorerWaitingNote : t.explorerWaitingNotes.replace('{n}', String(n)),
+                waitingAmendments: (n) =>
+                  n === 1
+                    ? t.explorerWaitingAmendment
+                    : t.explorerWaitingAmendments.replace('{n}', String(n)),
               }}
             />
           </div>
