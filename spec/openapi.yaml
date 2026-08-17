@@ -4370,6 +4370,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Environment" }
 
+  /initiatives/{id}/verification:
+    get:
+      tags: [checklist]
+      summary: One initiative's verification standing (read scope)
+      description: |
+        "3 stale, 1 never run, 6 verified, last verified when" for the checks
+        filed under this initiative — the answer to whether the tests a feature
+        was agreed on still pass.
+
+        A SUB-RESOURCE rather than a field on the initiative, for cost: the
+        rollup scans the checks and cases beneath it, and the initiative's JSON
+        shape is shared by the list read, so inlining this would make listing
+        200 initiatives pay that scan 200 times.
+
+        `blocked` counts only `blocking`-severity checks with outstanding work.
+        Advisory and low nag; a gate that fires on everything gets overridden
+        out of habit and stops meaning anything.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The standing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  initiative: { type: string }
+                  project: { type: string }
+                  title: { type: string }
+                  checks: { type: integer, description: 'live checks filed under this initiative' }
+                  cases: { $ref: "#/components/schemas/CheckCounts" }
+                  percent: { type: integer, description: 'verified or approved over verifiable cases' }
+                  last_verified_at: { type: [string, "null"], format: date-time }
+                  blocked: { type: boolean }
+                  blocking_outstanding: { type: integer }
+                  check_detail:
+                    type: array
+                    items: { $ref: "#/components/schemas/Check" }
+        "404": { description: No initiative with that id (`notfound.initiative`). }
+
   /projects/{project}/releases:
     get:
       tags: [checklist]
@@ -4434,6 +4475,7 @@ paths:
       parameters:
         - { $ref: "#/components/parameters/project" }
         - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped checks' }
+        - { name: initiative, in: query, schema: { type: string }, description: 'an initiative id; the literal "none" narrows to checks no initiative claims — the gap between what was agreed and what got written down' }
         - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
         - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
         - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived checks' }
@@ -6444,6 +6486,7 @@ components:
         id: { type: string }
         project: { type: string }
         epic: { type: [string, "null"], description: 'a ticket of type epic this check groups under' }
+        initiative: { type: [string, "null"], description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
         title: { type: string }
         body: { type: string, description: 'the traversal to follow' }
         precondition: { type: string, description: 'the data state and permissions needed to start' }
@@ -6477,6 +6520,7 @@ components:
       properties:
         title: { type: string }
         epic: { type: string }
+        initiative: { type: string, description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
         body: { type: string }
         precondition: { type: string }
         layer: { type: string, enum: [ui, api, other], default: api }
@@ -6501,6 +6545,7 @@ components:
         layer: { type: string, enum: [ui, api, other] }
         severity: { type: string, enum: [blocking, advisory, low] }
         epic: { type: [string, "null"] }
+        initiative: { type: [string, "null"] }
         verification: { type: [string, "null"] }
         expiry_days: { type: [integer, "null"] }
         expiry_releases: { type: [integer, "null"] }
@@ -6962,6 +7007,7 @@ x-error-codes:
   validation.check_precondition: "the check precondition is over its length limit."
   validation.check_layer: "`layer` must be `ui`, `api` or `other`. A check covers ONE layer: a rule enforced only in the interface passes at the API layer, so the two verdicts are not interchangeable."
   validation.check_severity: "`severity` must be `blocking`, `advisory` or `low`. Only `blocking` blocks a release gate."
+  validation.check_initiative: "the `initiative` given does not exist, or belongs to another project. Unlike a ticket's `initiative:` tag — which the roadmap deliberately lets dangle — this is a column chosen from a list, so a wrong id is refused where it is made."
   validation.check_epic: "the `epic` given is not a ticket of type `epic`, or belongs to another project. Checks group under epics so the vocabulary matches tickets."
   validation.check_globs: "a check glob is empty, over its length bound, or there are more than one check may claim. A check covers one action, which a handful of path patterns describes."
   validation.check_numbers: "an expiry or cost field on a check is negative. Send a non-negative number, or null to inherit."

@@ -89,6 +89,39 @@ was made deliberately. Two consequences are built in rather than hoped away:
   coverage bookkeeping instead of needing a separate audit.
 - **`blocked`** — the runner could not get far enough to judge.
 
+## The initiative that agreed the check
+
+A characterisation test is usually settled while a feature is being *discussed* —
+in the initiative, months before anyone asks whether it still passes. So a check
+names its initiative directly:
+
+```sh
+POST /v1/projects/{project}/checks
+{ "title": "Split an invoice across two entities", "initiative": "ini-9f3ka2xz" }
+
+GET /v1/initiatives/{id}/verification
+# → 3 stale, 1 never run, 6 verified, last verified 2026-08-14, blocked: true
+```
+
+**Direct, not derived through the epic.** An epic already joins an initiative by
+its `initiative:<id>` tag, so the link could have been two hops — but the
+agreement usually predates any epic, and deriving it would make the link
+unstateable at exactly the moment it is being made.
+
+It is also validated on the way in, unlike that tag. A tag naming a missing
+initiative is left dangling on purpose (the roadmap reports its ticket under
+`uninitiated` rather than losing it), because a tag is typed by hand. This is a
+column chosen from a list, so a wrong id is refused where the mistake happens.
+
+`?initiative=<id>` narrows the check list, and `?initiative=none` finds the
+checks no initiative claims — the gap between what was agreed and what got
+written down.
+
+`GET /v1/initiatives/{id}/verification` is a **sub-resource** rather than a field
+on the initiative, for cost: the rollup scans the checks and cases beneath it, and
+the initiative's JSON shape is shared by the list read, so inlining it would make
+listing 200 initiatives pay that scan 200 times.
+
 ## Releases
 
 Releases are first-class and **pushed by the agent that merged the work**. There is

@@ -27,8 +27,9 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RELEASE_FIELDS: [&str; 4] = ["ref", "note", "touched_paths", "orphan_globs"];
-const CHECK_CREATE_FIELDS: [&str; 13] = [
+const CHECK_CREATE_FIELDS: [&str; 14] = [
     "epic",
+    "initiative",
     "title",
     "body",
     "precondition",
@@ -42,8 +43,9 @@ const CHECK_CREATE_FIELDS: [&str; 13] = [
     "globs",
     "metadata",
 ];
-const CHECK_PATCH_FIELDS: [&str; 13] = [
+const CHECK_PATCH_FIELDS: [&str; 14] = [
     "epic",
+    "initiative",
     "title",
     "body",
     "precondition",
@@ -169,6 +171,7 @@ pub async fn create_check(
     let req = CheckCreate {
         project: project.clone(),
         epic: get_str(obj, "epic")?,
+        initiative: get_str(obj, "initiative")?,
         title: require_str(obj, "title")?,
         body: get_str(obj, "body")?.unwrap_or_default(),
         precondition: get_str(obj, "precondition")?.unwrap_or_default(),
@@ -205,9 +208,14 @@ pub async fn list_checks(
         Some("none") => Some(String::new()),
         other => other.map(str::to_string),
     };
+    let initiative = match first(&pairs, "initiative") {
+        Some("none") => Some(String::new()),
+        other => other.map(str::to_string),
+    };
     let filter = CheckFilter {
         project: project.clone(),
         epic,
+        initiative,
         severity: first(&pairs, "severity").map(str::to_string),
         layer: first(&pairs, "layer").map(str::to_string),
         include_archived: first(&pairs, "archived") == Some("include"),
@@ -223,7 +231,7 @@ pub async fn list_checks(
         checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
         total,
         limit,
-        "Raise the page size with ?limit=N (max 200), or narrow with ?epic=/?severity=/?layer=.",
+        "Raise the page size with ?limit=N (max 200), or narrow with ?epic=/?initiative=/?severity=/?layer=.",
     )))
 }
 
@@ -266,6 +274,7 @@ pub async fn patch_check(
         globs: get_string_array(obj, "globs")?,
         metadata_merge: obj.get("metadata_merge").cloned(),
         epic: override_str(obj, "epic")?,
+        initiative: override_str(obj, "initiative")?,
     };
     let check = state.store.patch_check(&id, &patch, &ctx.actor)?;
     state.wake();
@@ -444,6 +453,22 @@ pub async fn record_verdict(
 // ---------------------------------------------------------------------------
 // Policy and reports
 // ---------------------------------------------------------------------------
+
+/// GET /v1/initiatives/{id}/verification (read) — this initiative's standing.
+///
+/// A sub-resource rather than a field on the initiative: the rollup costs a
+/// checks-and-cases scan, and `Initiative::to_json` is shared by the list read,
+/// so inlining it would make listing 200 initiatives pay that scan 200 times.
+pub async fn initiative_verification(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let out = state.store.initiative_verification(&id)?;
+    ctx.require_project(out["project"].as_str().unwrap_or_default())?;
+    Ok(Json(out))
+}
 
 /// PUT /v1/projects/{project}/checklist/policy (write) — set the project default
 /// or, with `epic`, an epic-level override. Send a field as null to clear it.

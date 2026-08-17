@@ -207,6 +207,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::checklist::list_checks).post(crate::api::checklist::create_check),
         )
         .route(
+            "/v1/initiatives/{id}/verification",
+            get(crate::api::checklist::initiative_verification),
+        )
+        .route(
             "/v1/projects/{project}/checklist/policy",
             get(crate::api::checklist::get_policies).put(crate::api::checklist::put_policy),
         )
