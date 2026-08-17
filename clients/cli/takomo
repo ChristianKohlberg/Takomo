@@ -1898,6 +1898,645 @@ print(f"{d['id']}  [{d.get('status','')}]  {d.get('title','')}")
 PY
 }
 
+# --- checks and environments -------------------------------------------------
+# Checklist is how a "done" claim becomes a verified one, and the loop it exists
+# to serve runs in a shell as often as it runs over MCP: find what needs
+# re-verifying, read where to run it, run it, say what happened.
+#
+# So the four verbs here are the loop, not CRUD parity — `takomo verify` is the
+# worklist, `takomo verdict` is the report back, `takomo env ls` is where to go.
+# Filing a check and its cases is also here, because a check is a sentence and a
+# case set is generated: both are things a shell hands over from a file or a
+# pipeline better than a textarea does.
+#
+# Takomo stores; the caller computes. Nothing below generates a case model or
+# judges a coverage claim — the store does not, and neither does this.
+
+cmd_check() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "check: usage: takomo check ls|new|show|set|cases|rm ..."
+  shift
+  case "$sub" in
+    ls|list)          cmd_check_ls "$@" ;;
+    new|file)         cmd_check_new "$@" ;;
+    show)             cmd_check_show "$@" ;;
+    set)              cmd_check_set "$@" ;;
+    cases)            cmd_check_cases "$@" ;;
+    rm|archive)       cmd_check_archive "$@" ;;
+    *) die "check: unknown subcommand '$sub' (ls|new|show|set|cases|rm)" ;;
+  esac
+}
+
+cmd_check_ls() {
+  local project="" initiative="" epic="" severity="" layer="" archived="" limit=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)    project=$2; shift 2 ;;
+      --initiative) initiative=$2; shift 2 ;;
+      --epic)       epic=$2; shift 2 ;;
+      --severity)   severity=$2; shift 2 ;;
+      --layer)      layer=$2; shift 2 ;;
+      --archived)   archived=1; shift ;;
+      --limit)      limit=$2; shift 2 ;;
+      -*) die "check ls: unknown flag $1" ;;
+      *)  die "check ls: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  [ -z "$limit" ] || is_uint "$limit" || die "check ls: --limit must be a positive integer"
+  local qs="" sep="?"
+  [ -n "$initiative" ] && { qs="$qs${sep}initiative=$(urlenc "$initiative")"; sep="&"; }
+  [ -n "$epic" ] && { qs="$qs${sep}epic=$(urlenc "$epic")"; sep="&"; }
+  [ -n "$severity" ] && { qs="$qs${sep}severity=$(urlenc "$severity")"; sep="&"; }
+  [ -n "$layer" ] && { qs="$qs${sep}layer=$(urlenc "$layer")"; sep="&"; }
+  [ -n "$archived" ] && { qs="$qs${sep}archived=include"; sep="&"; }
+  [ -n "$limit" ] && { qs="$qs${sep}limit=$limit"; sep="&"; }
+  api GET "/v1/projects/$(urlenc "$project")/checks$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print("(no checks)"); sys.exit()
+print(f"{'ID':<14} {'SEV':<9} {'LAYER':<6} {'CASES':<22} TITLE")
+for c in items:
+    n = c.get("cases") or {}
+    # The spread, not just a total: "12 cases" says nothing, while "8 ok · 3
+    # stale · 1 never" is the whole reason to look at the list.
+    parts = []
+    for key, word in (("approved", "ok"), ("verified", "ok"), ("stale", "stale"),
+                      ("failed", "fail"), ("never", "never"), ("unreachable", "n/a")):
+        v = n.get(key) or 0
+        if v: parts.append((word, v))
+    merged = {}
+    for word, v in parts: merged[word] = merged.get(word, 0) + v
+    spread = " · ".join(f"{v} {w}" for w, v in merged.items()) or "no cases"
+    print(f"{c.get('id',''):<14} {c.get('severity',''):<9} {c.get('layer',''):<6} {spread:<22} {c.get('title','')}")
+note = d.get("note")
+if note: print(f"\n{d.get('total')} total. {note}")
+PY
+}
+
+cmd_check_new() {
+  local project="" title="" initiative="" epic="" layer="" severity=""
+  local body="" have_body="" bodyfile="" precondition=""
+  local -a globs=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)      project=$2; shift 2 ;;
+      --initiative)   initiative=$2; shift 2 ;;
+      --epic)         epic=$2; shift 2 ;;
+      --layer)        layer=$2; shift 2 ;;
+      --severity)     severity=$2; shift 2 ;;
+      --body)         body=$2; have_body=1; shift 2 ;;
+      --body-file)    bodyfile=$2; shift 2 ;;
+      --precondition) precondition=$2; shift 2 ;;
+      --glob)         globs+=("$2"); shift 2 ;;
+      -*) die "check new: unknown flag $1" ;;
+      *)  if [ -z "$title" ]; then title=$1; shift; else die "check new: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$title" ] || die "check new: usage: takomo check new TITLE [--initiative I] [--glob G]..."
+  [ -n "$have_body" ] && [ -n "$bodyfile" ] && die "check new: give either --body or --body-file, not both"
+  project=$(resolve_project "$project")
+  # The traversal is prose and can be long; reading it from a path preserves it
+  # exactly rather than squeezing it through an argument.
+  local tmpbody=""
+  if [ "$bodyfile" = "-" ]; then
+    tmpbody=$(mktemp); cat > "$tmpbody"; bodyfile=$tmpbody
+  elif [ -n "$bodyfile" ]; then
+    [ -r "$bodyfile" ] || die "check new: cannot read --body-file '$bodyfile'"
+  fi
+  local data
+  data=$(TS_TITLE="$title" TS_INI="$initiative" TS_EPIC="$epic" TS_LAYER="$layer" \
+    TS_SEV="$severity" TS_BODY="$body" TS_BODYFILE="$bodyfile" TS_PRE="$precondition" \
+    TS_GLOBS="$(printf '%s\n' "${globs[@]+"${globs[@]}"}")" \
+    python3 <<'PY'
+import json, os
+d = {"title": os.environ["TS_TITLE"]}
+bf = os.environ.get("TS_BODYFILE", "")
+if bf:
+    d["body"] = open(bf, encoding="utf-8").read()
+elif os.environ.get("TS_BODY", ""):
+    d["body"] = os.environ["TS_BODY"]
+for env, key in (("TS_INI", "initiative"), ("TS_EPIC", "epic"), ("TS_LAYER", "layer"),
+                 ("TS_SEV", "severity"), ("TS_PRE", "precondition")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+globs = [g for g in os.environ.get("TS_GLOBS", "").splitlines() if g.strip()]
+if globs: d["globs"] = globs
+print(json.dumps(d))
+PY
+)
+  [ -n "$tmpbody" ] && rm -f "$tmpbody"
+  api POST "/v1/projects/$(urlenc "$project")/checks" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"{d['id']}  [{d.get('severity','')}/{d.get('layer','')}]  {d.get('title','')}")
+if d.get("initiative"): print(f"  initiative: {d['initiative']}")
+print(f"\nNext: file the cases it crosses with —")
+print(f"  takomo check cases {d['id']} --case 'entities=2' --case 'entities=3'")
+PY
+}
+
+cmd_check_show() {
+  local id=${1:-}; [ -n "$id" ] || die "check show: usage: takomo check show ID [--cases]"
+  shift
+  local cases=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cases) cases=1; shift ;;
+      -*) die "check show: unknown flag $1" ;;
+      *)  die "check show: unexpected argument '$1'" ;;
+    esac
+  done
+  api GET "/v1/checks/$(urlenc "$id")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(f"{c['id']}  [{c.get('severity','')}/{c.get('layer','')}]  {c.get('title','')}")
+if c.get("initiative"): print(f"initiative: {c['initiative']}")
+if c.get("epic"):       print(f"epic:       {c['epic']}")
+if c.get("precondition"): print(f"\nprecondition: {c['precondition']}")
+if c.get("body"): print(f"\n{c['body']}")
+if c.get("globs"): print(f"\nclaims: {', '.join(c['globs'])}")
+# An orphaned glob is the worst failure this feature has — it reads as covered
+# while matching nothing — so it is printed loudly rather than tucked away.
+if c.get("orphan_globs"):
+    print(f"ORPHANED (matched no file in the newest release): {', '.join(c['orphan_globs'])}")
+p = c.get("policy") or {}
+if p:
+    print(f"\nverification: {p.get('verification')} (from {p.get('verification_from')})")
+n = c.get("cases") or {}
+if n: print("cases: " + " · ".join(f"{k} {v}" for k, v in n.items() if v))
+PY
+  if [ -n "$cases" ]; then
+    api GET "/v1/checks/$(urlenc "$id")/cases" >/dev/null
+    python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items: sys.exit()
+print(f"\n{'CASE':<14} {'STATE':<12} KEY")
+for c in items:
+    print(f"{c.get('id',''):<14} {c.get('state',''):<12} {c.get('key','')}")
+note = d.get("note")
+if note: print(f"\n{d.get('total')} total. {note}")
+PY
+  fi
+}
+
+cmd_check_set() {
+  local id=${1:-}; [ -n "$id" ] || die "check set: usage: takomo check set ID [--initiative I|--no-initiative] ..."
+  shift
+  local initiative="" clear_ini="" severity="" layer="" title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --initiative)    initiative=$2; shift 2 ;;
+      --no-initiative) clear_ini=1; shift ;;
+      --severity)      severity=$2; shift 2 ;;
+      --layer)         layer=$2; shift 2 ;;
+      --title)         title=$2; shift 2 ;;
+      -*) die "check set: unknown flag $1" ;;
+      *)  die "check set: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -n "$initiative" ] && [ -n "$clear_ini" ] && \
+    die "check set: give either --initiative or --no-initiative, not both"
+  local data
+  data=$(TS_INI="$initiative" TS_CLEAR="$clear_ini" TS_SEV="$severity" \
+    TS_LAYER="$layer" TS_TITLE="$title" python3 <<'PY'
+import json, os
+d = {}
+# Absent and null mean different things on this wire: null clears the link and
+# resumes "no initiative", which is why --no-initiative is its own flag.
+if os.environ.get("TS_CLEAR", ""):
+    d["initiative"] = None
+elif os.environ.get("TS_INI", "").strip():
+    d["initiative"] = os.environ["TS_INI"].strip()
+for env, key in (("TS_SEV", "severity"), ("TS_LAYER", "layer"), ("TS_TITLE", "title")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+print(json.dumps(d))
+PY
+)
+  [ "$data" = "{}" ] && die "check set: nothing to change"
+  api PATCH "/v1/checks/$(urlenc "$id")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(f"{c['id']}  [{c.get('severity','')}/{c.get('layer','')}]  {c.get('title','')}")
+print(f"  initiative: {c.get('initiative') or '(none)'}")
+PY
+}
+
+# File the case set. `--case key` or `--case key=label`, repeated; or `--file`
+# for a JSON array, because a generated model comes out of a tool (PICT and
+# friends) rather than out of a person's fingers.
+cmd_check_cases() {
+  local id=${1:-}; [ -n "$id" ] || die "check cases: usage: takomo check cases ID --case KEY[::LABEL]... | --file F"
+  shift
+  local file="" keep=""
+  local -a cases=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --case)  cases+=("$2"); shift 2 ;;
+      --file)  file=$2; shift 2 ;;
+      --keep)  keep=1; shift ;;
+      -*) die "check cases: unknown flag $1" ;;
+      *)  die "check cases: unexpected argument '$1'" ;;
+    esac
+  done
+  [ ${#cases[@]} -gt 0 ] || [ -n "$file" ] || \
+    die "check cases: give --case KEY[::LABEL] (repeatable) or --file F"
+  if [ "$file" = "-" ]; then
+    local tmp; tmp=$(mktemp); cat > "$tmp"; file=$tmp
+  elif [ -n "$file" ]; then
+    [ -r "$file" ] || die "check cases: cannot read --file '$file'"
+  fi
+  local data
+  data=$(TS_FILE="$file" TS_KEEP="$keep" \
+    TS_CASES="$(printf '%s\n' "${cases[@]+"${cases[@]}"}")" python3 <<'PY'
+import json, os, sys
+f = os.environ.get("TS_FILE", "")
+if f:
+    raw = json.load(open(f, encoding="utf-8"))
+    cases = raw.get("cases") if isinstance(raw, dict) else raw
+    if not isinstance(cases, list):
+        sys.exit("takomo: --file must hold a JSON array of cases, or {\"cases\": [...]}")
+else:
+    cases = []
+    for line in os.environ.get("TS_CASES", "").splitlines():
+        if not line.strip(): continue
+        # `::`, not `=`. A case key is derived from its parameter assignment, so
+        # the common shapes are `entities=2` and `vat=19` — splitting on `=`
+        # would swallow the key at exactly the point it matters.
+        key, _, label = line.partition("::")
+        cases.append({"key": key.strip(), "label": label.strip()})
+d = {"cases": cases}
+# Filing REPLACES the set by default: a case the new set drops is retired, not
+# deleted, and one that returns is revived. --keep extends instead, for a model
+# being built up in pieces.
+if os.environ.get("TS_KEEP", ""): d["prune"] = False
+print(json.dumps(d))
+PY
+)
+  api PUT "/v1/checks/$(urlenc "$id")/cases" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"added {d.get('added',0)} · updated {d.get('updated',0)} · "
+      f"retired {d.get('retired',0)} · revived {d.get('revived',0)} · live {d.get('live',0)}")
+PY
+}
+
+cmd_check_archive() {
+  local id=${1:-}; [ -n "$id" ] || die "check archive: usage: takomo check rm ID"
+  api DELETE "/v1/checks/$(urlenc "$id")" >/dev/null
+  echo "archived $id (its cases and their verdict history are kept)"
+}
+
+# What needs re-verifying, split by who can clear it. Human time is the scarce
+# resource — a hundred cases cost an agent minutes and a person most of a day —
+# so the split is the answer, not a formatting choice.
+cmd_verify() {
+  local project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "verify: unknown flag $1" ;;
+      *)  die "verify: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/checklist/worklist" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rel = d.get("release") or {}
+if rel: print(f"as of release {rel.get('id')} (seq {rel.get('seq')})\n")
+empty = True
+for side in ("agent", "human"):
+    s = d.get(side) or {}
+    items = s.get("items") or []
+    if not items: continue
+    empty = False
+    mins = s.get("minutes")
+    cost = f", ~{mins} min" if mins else ""
+    print(f"--- {side}: {s.get('cases', 0)} case(s){cost} ---")
+    print(f"{'CASE':<14} {'REASON':<9} {'SEV':<9} CHECK")
+    for i in items:
+        label = i.get("case_label") or i.get("case_key") or ""
+        print(f"{i.get('case',''):<14} {i.get('reason',''):<9} {i.get('severity',''):<9} "
+              f"{i.get('check_title','')} — {label}")
+    print()
+if empty:
+    print("nothing to re-verify")
+else:
+    print("Report a result with:  takomo verdict CASE --pass|--fail --note '...'")
+PY
+}
+
+# Report what you observed. An agent records what it saw; only a person's token
+# may assert that a person approved a case, which is the same line ask-a-human
+# draws — hence --human being a separate, deliberate flag.
+cmd_verdict() {
+  local case_id=${1:-}
+  [ -n "$case_id" ] || die "verdict: usage: takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N]"
+  shift
+  local verdict="" note="" human="" release=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pass)        verdict=pass; shift ;;
+      --fail)        verdict=fail; shift ;;
+      --blocked)     verdict=blocked; shift ;;
+      --unreachable) verdict=unreachable; shift ;;
+      --verdict)     verdict=$2; shift 2 ;;
+      --note)        note=$2; shift 2 ;;
+      --human)       human=1; shift ;;
+      --release)     release=$2; shift 2 ;;
+      -*) die "verdict: unknown flag $1" ;;
+      *)  die "verdict: unexpected argument '$1'" ;;
+    esac
+  done
+  [ -n "$verdict" ] || die "verdict: say what you observed — --pass, --fail, --blocked or --unreachable"
+  [ "$verdict" = "fail" ] && [ -z "$note" ] && \
+    die "verdict: --fail needs --note saying what went wrong; a failure nobody described is one nobody can act on"
+  local data
+  data=$(TS_V="$verdict" TS_NOTE="$note" TS_HUMAN="$human" TS_REL="$release" python3 <<'PY'
+import json, os
+d = {"verdict": os.environ["TS_V"]}
+if os.environ.get("TS_NOTE", ""): d["note"] = os.environ["TS_NOTE"]
+if os.environ.get("TS_REL", "").strip(): d["release"] = os.environ["TS_REL"].strip()
+if os.environ.get("TS_HUMAN", ""): d["actor_kind"] = "human"
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/cases/$(urlenc "$case_id")/verdict" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(f"{c['id']}  {c.get('state','')}  {c.get('key','')}")
+PY
+}
+
+cmd_coverage() {
+  local project="" initiative=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)    project=$2; shift 2 ;;
+      --initiative) initiative=$2; shift 2 ;;
+      -*) die "coverage: unknown flag $1" ;;
+      *)  die "coverage: unexpected argument '$1'" ;;
+    esac
+  done
+  # An initiative reads its own standing through its own sub-resource: "do the
+  # tests we agreed on still pass" is a different question from "how covered is
+  # this project", and they have different answers.
+  if [ -n "$initiative" ]; then
+    api GET "/v1/initiatives/$(urlenc "$initiative")/verification" >/dev/null
+    python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = d.get("cases") or {}
+print(f"{d.get('title','')}  ({d.get('checks',0)} check(s), {d.get('percent',0)}%)")
+print(" · ".join(f"{k} {v}" for k, v in n.items() if v) or "no cases")
+if d.get("last_verified_at"): print(f"last verified {d['last_verified_at']}")
+if d.get("blocked"):
+    print(f"BLOCKED: {d.get('blocking_outstanding',0)} blocking case(s) outstanding")
+PY
+    return
+  fi
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/checklist/coverage" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = d.get("cases") or {}
+print(f"{d.get('checks',0)} check(s), {d.get('percent',0)}% of verifiable cases")
+print(" · ".join(f"{k} {v}" for k, v in n.items() if v) or "no cases")
+rel = d.get("release") or {}
+if rel: print(f"as of {rel.get('ref')} (seq {rel.get('seq')})")
+PY
+}
+
+cmd_gate() {
+  local project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "gate: unknown flag $1" ;;
+      *)  die "gate: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  api GET "/v1/projects/$(urlenc "$project")/checklist/gate" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+b = d.get("blocking") or {}
+if d.get("blocked"):
+    print(f"BLOCKED — {b.get('agent_cases',0)} agent + {b.get('human_cases',0)} human "
+          f"blocking case(s) outstanding")
+    for i in (b.get("items") or [])[:20]:
+        print(f"  {i.get('case','')}  {i.get('reason',''):<9} {i.get('check_title','')}")
+else:
+    print("clear — no blocking verification outstanding")
+adv = d.get("advisory_outstanding") or 0
+# Advisory nags rather than blocks: a gate that fires on everything gets
+# overridden out of habit and stops meaning anything.
+if adv: print(f"({adv} advisory case(s) outstanding — these do not block)")
+sys.exit(1 if d.get("blocked") else 0)
+PY
+}
+
+cmd_env() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "env: usage: takomo env ls|new|show|set|rm ..."
+  shift
+  case "$sub" in
+    ls|list)    cmd_env_ls "$@" ;;
+    new|file)   cmd_env_new "$@" ;;
+    show)       cmd_env_show "$@" ;;
+    set)        cmd_env_set "$@" ;;
+    rm|archive) cmd_env_archive "$@" ;;
+    *) die "env: unknown subcommand '$sub' (ls|new|show|set|rm)" ;;
+  esac
+}
+
+cmd_env_ls() {
+  local project="" kind="" archived=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)  project=$2; shift 2 ;;
+      --kind)     kind=$2; shift 2 ;;
+      --archived) archived=1; shift ;;
+      -*) die "env ls: unknown flag $1" ;;
+      *)  die "env ls: unexpected argument '$1'" ;;
+    esac
+  done
+  project=$(resolve_project "$project")
+  local qs="" sep="?"
+  [ -n "$kind" ] && { qs="$qs${sep}kind=$(urlenc "$kind")"; sep="&"; }
+  [ -n "$archived" ] && { qs="$qs${sep}archived=include"; sep="&"; }
+  api GET "/v1/projects/$(urlenc "$project")/environments$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print("(no environments)"); sys.exit()
+print(f"{'SLUG':<16} {'KIND':<11} {'WRITE':<6} URL")
+for e in items:
+    mark = "yes" if e.get("writable") else "READ"
+    slug = e.get("slug", "")
+    if e.get("archived_at"): slug += " (archived)"
+    print(f"{slug:<16} {e.get('kind',''):<11} {mark:<6} {e.get('base_url') or '-'}")
+PY
+}
+
+cmd_env_new() {
+  local project="" slug="" name="" kind="" base_url="" bring_up="" teardown=""
+  local data_state="" writable="" hint="" notes=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project)          project=$2; shift 2 ;;
+      --name)             name=$2; shift 2 ;;
+      --kind)             kind=$2; shift 2 ;;
+      --base-url)         base_url=$2; shift 2 ;;
+      --bring-up)         bring_up=$2; shift 2 ;;
+      --teardown)         teardown=$2; shift 2 ;;
+      --data-state)       data_state=$2; shift 2 ;;
+      --writable)         writable=true; shift ;;
+      --read-only)        writable=false; shift ;;
+      --credentials-hint) hint=$2; shift 2 ;;
+      --notes)            notes=$2; shift 2 ;;
+      -*) die "env new: unknown flag $1" ;;
+      *)  if [ -z "$slug" ]; then slug=$1; shift; else die "env new: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$slug" ] || die "env new: usage: takomo env new SLUG [--base-url U] [--bring-up C] ..."
+  project=$(resolve_project "$project")
+  local data
+  data=$(TS_SLUG="$slug" TS_NAME="$name" TS_KIND="$kind" TS_URL="$base_url" \
+    TS_UP="$bring_up" TS_DOWN="$teardown" TS_DATA="$data_state" TS_W="$writable" \
+    TS_HINT="$hint" TS_NOTES="$notes" python3 <<'PY'
+import json, os, sys
+d = {"slug": os.environ["TS_SLUG"]}
+for env, key in (("TS_NAME", "name"), ("TS_KIND", "kind"), ("TS_URL", "base_url"),
+                 ("TS_UP", "bring_up"), ("TS_DOWN", "teardown"),
+                 ("TS_DATA", "data_state"), ("TS_NOTES", "notes")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+hint = os.environ.get("TS_HINT", "").strip()
+if hint:
+    # Refused here as well as server-side, because the round trip is the thing
+    # that would have leaked: a pasted key travels over the wire, lands in a log,
+    # and is visible to every `read` token before the 422 comes back.
+    if "-----BEGIN" in hint:
+        sys.exit("takomo: --credentials-hint takes a POINTER to where a credential lives "
+                 "(env:NAME, a vault path, a runbook URL) — never the credential itself. "
+                 "Any token with 'read' can see this field.")
+    d["credentials_hint"] = hint
+w = os.environ.get("TS_W", "")
+if w: d["writable"] = (w == "true")
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/projects/$(urlenc "$project")/environments" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+print(f"{e['id']}  {e.get('slug','')}  [{e.get('kind','')}]  {e.get('base_url') or '-'}")
+if not e.get("writable"):
+    print("  read-only — destructive cases should not run here")
+PY
+}
+
+cmd_env_show() {
+  local id=${1:-}; [ -n "$id" ] || die "env show: usage: takomo env show ID"
+  api GET "/v1/environments/$(urlenc "$id")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+print(f"{e['id']}  {e.get('slug','')}  [{e.get('kind','')}]")
+print(f"name:        {e.get('name','')}")
+print(f"base_url:    {e.get('base_url') or '-'}")
+print(f"data:        {e.get('data_state','')}")
+print(f"writable:    {'yes' if e.get('writable') else 'NO — read-only'}")
+if e.get("bring_up"):         print(f"bring up:    {e['bring_up']}")
+if e.get("teardown"):         print(f"teardown:    {e['teardown']}")
+if e.get("credentials_hint"): print(f"credentials: {e['credentials_hint']}  (a pointer, not a secret)")
+if e.get("notes"):            print(f"\n{e['notes']}")
+if e.get("archived_at"):      print(f"\narchived {e['archived_at']}")
+PY
+}
+
+cmd_env_set() {
+  local id=${1:-}; [ -n "$id" ] || die "env set: usage: takomo env set ID [--base-url U] ..."
+  shift
+  local name="" kind="" base_url="" clear_url="" bring_up="" teardown=""
+  local data_state="" writable="" hint="" clear_hint="" notes=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)             name=$2; shift 2 ;;
+      --kind)             kind=$2; shift 2 ;;
+      --base-url)         base_url=$2; shift 2 ;;
+      --no-base-url)      clear_url=1; shift ;;
+      --bring-up)         bring_up=$2; shift 2 ;;
+      --teardown)         teardown=$2; shift 2 ;;
+      --data-state)       data_state=$2; shift 2 ;;
+      --writable)         writable=true; shift ;;
+      --read-only)        writable=false; shift ;;
+      --credentials-hint) hint=$2; shift 2 ;;
+      --no-credentials-hint) clear_hint=1; shift ;;
+      --notes)            notes=$2; shift 2 ;;
+      -*) die "env set: unknown flag $1" ;;
+      *)  die "env set: unexpected argument '$1'" ;;
+    esac
+  done
+  # A slug is deliberately not settable: checks and tool calls address an
+  # environment by it, so renaming one would break every reference silently.
+  local data
+  data=$(TS_NAME="$name" TS_KIND="$kind" TS_URL="$base_url" TS_CLEARURL="$clear_url" \
+    TS_UP="$bring_up" TS_DOWN="$teardown" TS_DATA="$data_state" TS_W="$writable" \
+    TS_HINT="$hint" TS_CLEARHINT="$clear_hint" TS_NOTES="$notes" python3 <<'PY'
+import json, os, sys
+d = {}
+for env, key in (("TS_NAME", "name"), ("TS_KIND", "kind"), ("TS_UP", "bring_up"),
+                 ("TS_DOWN", "teardown"), ("TS_DATA", "data_state"), ("TS_NOTES", "notes")):
+    v = os.environ.get(env, "").strip()
+    if v: d[key] = v
+if os.environ.get("TS_CLEARURL", ""): d["base_url"] = None
+elif os.environ.get("TS_URL", "").strip(): d["base_url"] = os.environ["TS_URL"].strip()
+if os.environ.get("TS_CLEARHINT", ""): d["credentials_hint"] = None
+elif os.environ.get("TS_HINT", "").strip():
+    hint = os.environ["TS_HINT"].strip()
+    if "-----BEGIN" in hint:
+        sys.exit("takomo: --credentials-hint takes a POINTER to where a credential lives, "
+                 "never the credential itself.")
+    d["credentials_hint"] = hint
+w = os.environ.get("TS_W", "")
+if w: d["writable"] = (w == "true")
+print(json.dumps(d))
+PY
+)
+  [ "$data" = "{}" ] && die "env set: nothing to change"
+  api PATCH "/v1/environments/$(urlenc "$id")" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+e = json.load(open(sys.argv[1]))
+print(f"{e['id']}  {e.get('slug','')}  [{e.get('kind','')}]  {e.get('base_url') or '-'}")
+PY
+}
+
+cmd_env_archive() {
+  local id=${1:-}; [ -n "$id" ] || die "env archive: usage: takomo env rm ID"
+  api DELETE "/v1/environments/$(urlenc "$id")" >/dev/null
+  echo "archived $id (verdicts taken there still reference it; restore with 'takomo env set' after unarchiving via the API)"
+}
+
 # --- ask-a-human board -------------------------------------------------------
 
 cmd_ask() {
@@ -3493,6 +4132,47 @@ Initiatives (an idea being nurtured — not work: no claim, no lease, no queue):
   anchored in them — stays in /initiatives, where the editor knows about citation
   marks. `takomo roadmap` shows initiatives as the lanes their epics ship in.
 
+Verification (checks — how a "done" claim becomes a verified one):
+  takomo verify [--project P]          what needs re-verifying, split by who can
+         clear it: an agent list and a human list. Human time is the scarce
+         resource, so the split IS the answer.
+  takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N] [--human]
+         report what you observed. --fail needs a --note. --human asserts that a
+         PERSON approved it and needs a token with the `human` scope — an agent
+         records what it saw, a person approves.
+  takomo check ls [--project P] [--initiative I|none] [--epic E] [--severity S] [--layer L]
+         `--initiative none` finds the checks no initiative claims: the gap
+         between what was agreed and what got written down.
+  takomo check new TITLE [--initiative I] [--epic E] [--layer ui|api|other]
+         [--severity blocking|advisory|low] [--glob G]... [--body B | --body-file F|-]
+         [--precondition P]
+         ONE action, ONE entry precondition, ONE layer. A create form, a finalize
+         step and a cancel action are three checks, not one.
+  takomo check cases ID --case KEY[::LABEL]... | --file F|-   [--keep]
+         file the generated case set. Filing REPLACES it: a case the new set
+         drops is retired (its verdict history kept), one that returns is
+         revived. --keep extends instead. --file takes the JSON a model
+         generator emits, which is where case sets actually come from.
+  takomo check show ID [--cases]   ·   takomo check set ID [--initiative I|--no-initiative]
+  takomo check rm ID               archive it; cases and verdicts are kept
+  takomo coverage [--project P | --initiative I]
+         per project, or "do the tests we agreed on still pass" per initiative.
+  takomo gate [--project P]        can this ship? exits non-zero when blocked.
+
+Environments (where a check can be run — Takomo stores this and runs none of it):
+  takomo env ls [--project P] [--kind K] [--archived]
+  takomo env new SLUG [--name N] [--kind local|ephemeral|shared|staging|production|other]
+         [--base-url U] [--bring-up C] [--teardown C]
+         [--data-state seeded|empty|production_like|unknown]
+         [--writable|--read-only] [--credentials-hint H] [--notes N]
+         --credentials-hint is a POINTER to where a credential lives
+         ("env:STAGING_TOKEN", a vault path, a runbook URL) and never the
+         credential: every token with `read` can see it. kind=production
+         defaults to read-only.
+  takomo env show ID   ·   takomo env set ID [...]   ·   takomo env rm ID
+         A slug cannot be renamed — checks and tool calls address an environment
+         by it, so a rename would break every reference silently.
+
 Portability & observability:
   takomo export [--project P] [--out FILE]   JSONL of tickets + comments + deps
   takomo import --from takomo|beads|beans PATH [--project P]
@@ -3544,6 +4224,12 @@ main() {
     promote) cmd_promote "$@" ;;
     release) cmd_release "$@" ;;
     initiative|ini) cmd_initiative "$@" ;;
+    check)   cmd_check "$@" ;;
+    env|environment) cmd_env "$@" ;;
+    verify)  cmd_verify "$@" ;;
+    verdict) cmd_verdict "$@" ;;
+    coverage) cmd_coverage "$@" ;;
+    gate)    cmd_gate "$@" ;;
     ask)         cmd_ask "$@" ;;
     answer)      cmd_answer "$@" ;;
     answer-link) cmd_answer_link "$@" ;;

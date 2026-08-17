@@ -93,6 +93,20 @@ every run without accumulating duplicates. A field the caller omits keeps
 whatever is already recorded — re-registering a URL must not silently erase
 someone else's notes.
 
+## From a shell
+
+```sh
+takomo env ls
+takomo env new staging --kind staging --base-url https://staging.example.com \
+  --bring-up 'backlot up --ttl 900' --teardown 'backlot release' \
+  --credentials-hint env:STAGING_TOKEN
+takomo env show ID   ·   takomo env set ID --read-only   ·   takomo env rm ID
+```
+
+The CLI refuses a pasted key in `--credentials-hint` **locally**, before the
+request is sent. The server refuses it too, but by then the key has crossed the
+wire and possibly landed in a log — so the check is worth having twice.
+
 ## An environment is not a configuration profile
 
 Related, and not the same. An environment is **where** the application runs.
