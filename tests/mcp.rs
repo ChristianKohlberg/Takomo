@@ -3022,3 +3022,128 @@ async fn mcp_untested_tools_reach_the_store_and_relay_errors() {
         assert!(names.contains(&tool), "tools/list missing {tool}");
     }
 }
+
+/// Brainstorming with an agent: a whole branch per call, read back as text.
+///
+/// The batch is the point. One node per tool call would make the agent's half of
+/// a brainstorm a dozen round trips, which is slower than the conversation it is
+/// supposed to keep up with.
+#[tokio::test]
+async fn mcp_grows_a_mindmap_a_branch_at_a_time() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let made = app
+        .tool_ok(
+            &app.admin,
+            "takomo_mindmap_new",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    assert!(
+        made["note"]
+            .as_str()
+            .unwrap()
+            .contains("takomo_mindmap_grow"),
+        "the reply must teach the next call: {made}"
+    );
+
+    let grown = app
+        .tool_ok(
+            &app.admin,
+            "takomo_mindmap_grow",
+            json!({ "id": map, "nodes": [
+                { "text": "API" },
+                { "text": "integrations" },
+                { "text": "workflows" },
+            ] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(grown["nodes"].as_array().unwrap().len(), 3, "{grown}");
+
+    app.tool_ok(
+        &app.admin,
+        "takomo_mindmap_grow",
+        json!({ "id": map, "nodes": [{ "parent": api, "text": "versioning?" }] }),
+    )
+    .await;
+
+    // Read back as indented text — the shape a model reasons about cheapest — with
+    // the ids alongside, because reading is the step before adding.
+    let shown = app
+        .tool_ok(&app.admin, "takomo_mindmap_show", json!({ "id": map }))
+        .await;
+    let outline = shown["outline"].as_str().unwrap();
+    assert!(outline.contains("- API\n  - versioning?"), "{outline}");
+    assert_eq!(shown["nodes"].as_array().unwrap().len(), 4, "{shown}");
+
+    // And a branch graduates into work.
+    let promoted = app
+        .tool_ok(
+            &app.admin,
+            "takomo_mindmap_promote",
+            json!({ "id": map, "node": api, "target": "epic" }),
+        )
+        .await;
+    assert_eq!(promoted["created"]["kind"], "epic", "{promoted}");
+    assert_eq!(promoted["node"]["promoted"]["kind"], "epic", "{promoted}");
+
+    let listed = app
+        .tool_ok(
+            &app.admin,
+            "takomo_mindmap_list",
+            json!({ "project": "tp" }),
+        )
+        .await;
+    assert_eq!(listed["total"], json!(1), "{listed}");
+    assert_eq!(listed["items"][0]["nodes"], json!(4), "{listed}");
+}
+
+/// Reading a map is free; growing one is not.
+///
+/// The write budget is what stops a runaway agent, and a tool that forgot to
+/// charge would be a hole in it — while charging a read would make an agent
+/// ration the very call that keeps it from guessing.
+#[tokio::test]
+async fn mcp_mindmap_reads_are_free_and_writes_are_charged() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let made = app
+        .tool_ok(
+            &app.admin,
+            "takomo_mindmap_new",
+            json!({ "project": "tp", "title": "Budget" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    // A token with a budget of one write: the create above is on another token, so
+    // this one's single write goes to the grow, and the second is refused.
+    let tight = app.mint_limited("agent:tight", &["read", "write"], None, 1);
+    app.tool_ok(
+        &tight,
+        "takomo_mindmap_grow",
+        json!({ "id": map, "nodes": [{ "text": "first" }] }),
+    )
+    .await;
+    let (err, is_err) = app
+        .tool(
+            &tight,
+            "takomo_mindmap_grow",
+            json!({ "id": map, "nodes": [{ "text": "second" }] }),
+        )
+        .await;
+    assert!(is_err, "the second write must be refused: {err}");
+    assert_eq!(err["code"], "rate.limited", "{err}");
+
+    // …and reading still works on the spent token.
+    let shown = app
+        .tool_ok(&tight, "takomo_mindmap_show", json!({ "id": map }))
+        .await;
+    assert!(
+        shown["outline"].as_str().unwrap().contains("first"),
+        "{shown}"
+    );
+}

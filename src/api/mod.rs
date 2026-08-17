@@ -8,6 +8,7 @@ pub mod events;
 pub mod export;
 pub mod initiatives;
 pub mod metrics;
+pub mod mindmaps;
 pub mod oauth;
 pub mod projects;
 pub mod questions;
@@ -372,6 +373,21 @@ pub fn get_i64(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Opt
             ApiError::bad_request(
                 "validation.field_type",
                 format!("Field '{key}' must be an integer."),
+            )
+        }),
+    }
+}
+
+/// A number that may have a fractional part — a canvas coordinate, and so far
+/// only that. Accepts an integer too, because `{"x": 40}` is what a caller writes
+/// when a node happens to land on a whole pixel.
+pub fn get_f64(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Option<f64>> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_f64().map(Some).ok_or_else(|| {
+            ApiError::bad_request(
+                "validation.field_type",
+                format!("Field '{key}' must be a number."),
             )
         }),
     }

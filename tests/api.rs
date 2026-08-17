@@ -17100,3 +17100,591 @@ async fn tag_kind_query_param_is_validated() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
     assert_eq!(e["code"], "validation.tag_kind");
 }
+
+// ---------------------------------------------------------------------------
+// Mindmaps: thinking out loud, fast, before any of it is an idea.
+//
+// The tests that matter here are the ones about *shape*: a tree that stays a
+// tree (no cycles, bounded depth), a batch that lands whole or not at all, and a
+// branch that graduates without leaving the map — because the map is the record
+// of how the thinking got there.
+// ---------------------------------------------------------------------------
+
+/// The path the feature exists for: a root, four branches, leaves under one of
+/// them — in as few calls as somebody talking would make.
+#[tokio::test]
+async fn a_mindmap_grows_a_branch_at_a_time() {
+    let app = TestApp::spawn().await;
+    let (s, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["mindmap"]["status"], "open", "{made}");
+    assert!(
+        made["note"].as_str().unwrap().contains("nodes"),
+        "the reply must say how to grow it: {made}"
+    );
+
+    // One call, four branches — the shape an agent brainstorming with somebody
+    // actually sends.
+    let (s, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [
+                { "text": "API" },
+                { "text": "integrations" },
+                { "text": "workflows" },
+                { "text": "ideas" },
+            ] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{grown}");
+    let branches = grown["nodes"].as_array().unwrap();
+    assert_eq!(branches.len(), 4, "{grown}");
+    // Positions are gapped so a later insert between two is one write.
+    assert!(
+        branches[0]["position"].as_i64().unwrap() < branches[1]["position"].as_i64().unwrap(),
+        "siblings keep the order they were sent in: {grown}"
+    );
+    let api = branches[0]["id"].as_str().unwrap().to_string();
+
+    // A single thought, unwrapped — what a keystroke sends.
+    let (s, one) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "parent": api, "text": "versioning?" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "a bare node needs no array: {one}");
+
+    // One read gives the canvas the whole tree.
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    assert_eq!(whole["total"], json!(5), "{whole}");
+    assert_eq!(whole["mindmap"]["nodes"], json!(5), "{whole}");
+
+    // And the outline is the shape a model reads cheapest.
+    let (s, outline) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/outline"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{outline}");
+    let text = outline["outline"].as_str().unwrap();
+    assert!(text.contains("# Payments rebuild"), "{text}");
+    assert!(
+        text.contains("- API\n  - versioning?"),
+        "nesting shows: {text}"
+    );
+}
+
+#[tokio::test]
+async fn a_node_is_capped_at_a_sentence_or_two_and_the_refusal_says_why() {
+    // The cap is the method, not a limitation — so the refusal has to name the way
+    // out rather than just report a length.
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "x".repeat(281) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.mindmap_node_text");
+    assert!(
+        refused["remedy"].as_str().unwrap().contains("promote"),
+        "the refusal must point at the way out: {refused}"
+    );
+
+    // An empty thought is not one.
+    let (s, empty) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "   " }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{empty}");
+}
+
+#[tokio::test]
+async fn a_batch_lands_whole_or_not_at_all() {
+    // Ten nodes from one agent turn are one act of brainstorming. Half of them
+    // landing would leave a map nobody asked for and no way to tell which half.
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [
+                { "text": "fine" },
+                { "text": "also fine" },
+                { "text": "x".repeat(400) },
+            ] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        whole["total"],
+        json!(0),
+        "the two valid nodes must not have landed: {whole}"
+    );
+}
+
+#[tokio::test]
+async fn the_tree_stays_a_tree() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (_, child) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "parent": api, "text": "versioning?" }),
+        )
+        .await;
+    let versioning = child["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    // The drag that would cut a branch off the map: dropping a node onto its own
+    // child. Easy to try with a mouse, impossible to notice afterwards.
+    let (s, cycle) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}"),
+            json!({ "parent": versioning }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{cycle}");
+    assert_eq!(cycle["code"], "mindmap.cycle");
+
+    // And onto itself.
+    let (s, self_cycle) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}"),
+            json!({ "parent": api }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{self_cycle}");
+
+    // A legal move: the child up to the first ring. `parent: null` is an
+    // instruction, where an absent field would be "leave it alone".
+    let (s, lifted) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{versioning}"),
+            json!({ "parent": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lifted}");
+    assert!(lifted["node"]["parent"].is_null(), "{lifted}");
+
+    // Depth is bounded: eight levels is where a shape stops being readable.
+    let mut parent = api.clone();
+    for depth in 2..=9 {
+        let (s, deeper) = app
+            .post(
+                &app.worker,
+                &format!("/v1/mindmaps/{map}/nodes"),
+                json!({ "parent": parent, "text": format!("level {depth}") }),
+            )
+            .await;
+        if depth <= 8 {
+            assert_eq!(s, StatusCode::CREATED, "level {depth} should fit: {deeper}");
+            parent = deeper["nodes"][0]["id"].as_str().unwrap().to_string();
+        } else {
+            assert_eq!(
+                s,
+                StatusCode::CONFLICT,
+                "level {depth} is past the cap: {deeper}"
+            );
+            assert_eq!(deeper["code"], "mindmap.too_deep");
+        }
+    }
+}
+
+#[tokio::test]
+async fn placement_is_kept_and_can_be_handed_back_to_the_layout() {
+    // A map nobody has dragged stays tidy as it grows; one that has been arranged
+    // stays exactly where it was left. Both need to be expressible, and `at: null`
+    // is what "tidy up" sends.
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }] }),
+        )
+        .await;
+    let node = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert!(
+        grown["nodes"][0]["at"].is_null(),
+        "unplaced by default: {grown}"
+    );
+
+    let (s, placed) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "at": { "x": 120.5, "y": -40.0 } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{placed}");
+    assert_eq!(placed["node"]["at"]["x"], json!(120.5), "{placed}");
+
+    // Half a coordinate places nothing, so it is refused rather than guessed at.
+    let (s, half) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "at": { "x": 10.0 } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{half}");
+
+    let (s, tidied) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "at": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{tidied}");
+    assert!(
+        tidied["node"]["at"].is_null(),
+        "back to the layout: {tidied}"
+    );
+}
+
+#[tokio::test]
+async fn a_branch_becomes_an_epic_with_its_children_as_tickets() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes"),
+        json!({ "nodes": [
+            { "parent": api, "text": "versioning" },
+            { "parent": api, "text": "idempotent retries" },
+        ] }),
+    )
+    .await;
+
+    let (s, promoted) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}/promote"),
+            json!({ "target": "epic" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{promoted}");
+    let epic = promoted["created"]["id"].as_str().unwrap().to_string();
+    assert_eq!(promoted["created"]["children"].as_array().unwrap().len(), 2);
+
+    // The epic is a real ticket in the project's initial state, and its children
+    // hang off it — so the board needs no special case for a ticket a map made.
+    let (s, ticket) = app.get(&app.worker, &format!("/v1/tickets/{epic}")).await;
+    assert_eq!(s, StatusCode::OK, "{ticket}");
+    assert_eq!(ticket["type"], "epic", "{ticket}");
+    assert_eq!(ticket["title"], "API", "{ticket}");
+    let child = promoted["created"]["children"][0].as_str().unwrap();
+    let (_, child_ticket) = app.get(&app.worker, &format!("/v1/tickets/{child}")).await;
+    assert_eq!(child_ticket["parent"], epic, "{child_ticket}");
+
+    // The node STAYS, carrying what it became: the map is the record of how the
+    // thinking got there, and this link is what keeps it useful afterwards.
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    let node = whole["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(api))
+        .expect("the promoted node is still on the map");
+    assert_eq!(node["promoted"]["kind"], "epic", "{node}");
+    assert_eq!(node["promoted"]["id"], json!(epic), "{node}");
+
+    // Twice would make a second epic from one thought, indistinguishable from the
+    // first.
+    let (s, again) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}/promote"),
+            json!({ "target": "epic" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{again}");
+    assert_eq!(again["code"], "mindmap.already_promoted");
+}
+
+#[tokio::test]
+async fn a_branch_becomes_an_initiative_seeded_with_its_subtree() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "integrations" }] }),
+        )
+        .await;
+    let node = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes"),
+        json!({ "parent": node, "text": "Stripe first" }),
+    )
+    .await;
+
+    let (s, promoted) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/promote"),
+            json!({ "target": "initiative" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{promoted}");
+    let ini = promoted["created"]["id"].as_str().unwrap().to_string();
+
+    let (s, initiative) = app
+        .get(&app.worker, &format!("/v1/initiatives/{ini}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{initiative}");
+    assert_eq!(initiative["title"], "integrations", "{initiative}");
+    assert_eq!(
+        initiative["rollup"]["entries"],
+        json!(1),
+        "seeded: {initiative}"
+    );
+
+    // The subtree arrives as an ENTRY, because an entry carries provenance — and
+    // where an idea came from is what a collection is supposed to remember.
+    let (_, entries) = app
+        .get(&app.worker, &format!("/v1/initiatives/{ini}/entries"))
+        .await;
+    let entry = &entries["items"][0];
+    assert_eq!(entry["source"], format!("mindmap:{map}"), "{entry}");
+    assert!(
+        entry["text"].as_str().unwrap().contains("Stripe first"),
+        "the subtree came with it: {entry}"
+    );
+
+    // An unknown target names both, rather than reporting a bad enum.
+    let (s, bad) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/promote"),
+            json!({ "target": "ticket" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert!(
+        bad["message"].as_str().unwrap().contains("initiative"),
+        "{bad}"
+    );
+}
+
+#[tokio::test]
+async fn throwing_a_map_away_is_ordinary_and_leaves_what_it_produced() {
+    // The clearest statement of what a mindmap is. An initiative is nurtured; a
+    // map is scratch — but the work its branches became is work in its own right.
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }, { "text": "ideas" }] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (_, promoted) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}/promote"),
+            json!({ "target": "epic" }),
+        )
+        .await;
+    let epic = promoted["created"]["id"].as_str().unwrap().to_string();
+
+    let (s, gone) = app
+        .delete(&app.worker, &format!("/v1/mindmaps/{map}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{gone}");
+    assert_eq!(gone["removed_nodes"], json!(2), "{gone}");
+
+    let (s, missing) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{missing}");
+
+    // The epic outlived the map it came from.
+    let (s, ticket) = app.get(&app.worker, &format!("/v1/tickets/{epic}")).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "promoted work survives its map: {ticket}"
+    );
+}
+
+#[tokio::test]
+async fn pruning_a_branch_takes_everything_under_it() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }, { "text": "keep me" }] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (_, child) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "parent": api, "text": "versioning" }),
+        )
+        .await;
+    let versioning = child["nodes"][0]["id"].as_str().unwrap().to_string();
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes"),
+        json!({ "parent": versioning, "text": "deeper still" }),
+    )
+    .await;
+
+    let (s, pruned) = app
+        .delete(&app.worker, &format!("/v1/mindmaps/{map}/nodes/{api}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{pruned}");
+    assert_eq!(
+        pruned["removed"],
+        json!(3),
+        "the whole branch went: {pruned}"
+    );
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(whole["total"], json!(1), "{whole}");
+    assert_eq!(whole["nodes"][0]["text"], "keep me", "{whole}");
+}
+
+#[tokio::test]
+async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
+    let app = TestApp::spawn().await;
+    for i in 0..3 {
+        app.post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": format!("Map {i}") }),
+        )
+        .await;
+    }
+    let (s, page) = app.get(&app.worker, "/v1/mindmaps?limit=2").await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 2, "{page}");
+    assert_eq!(page["total"], json!(3), "{page}");
+    assert!(
+        page["note"].as_str().unwrap().contains("Showing 2 of 3"),
+        "{page}"
+    );
+
+    // Archiving a project freezes brainstorming under it like every other write —
+    // the guard lives in the store, so this route inherits it for free.
+    app.post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    let (s, frozen) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "After the freeze" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{frozen}");
+    assert_eq!(frozen["code"], "project.archived");
+
+    // Reads keep working, exactly as they do everywhere else.
+    let (s, still) = app.get(&app.worker, "/v1/mindmaps").await;
+    assert_eq!(s, StatusCode::OK, "{still}");
+}

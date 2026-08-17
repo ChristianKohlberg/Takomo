@@ -1410,6 +1410,210 @@ cmd_user_unmember() {
 
 
 
+# --- mindmaps: brainstorming, before any of it is an idea --------------------
+#
+# The terminal half of the surface. `show` prints the tree, `add` grows it, and
+# `promote` graduates a branch — the same three moves the canvas offers, for when
+# you are already in a shell.
+cmd_mindmap() {
+  local sub=${1:-}
+  [ -n "$sub" ] || die "mindmap: usage: takomo mindmap new TITLE [--project P]
+       takomo mindmap ls [--project P] [--status open|parked|distilled]
+       takomo mindmap show ID [--node NODE]
+       takomo mindmap add ID TEXT [--parent NODE]
+       takomo mindmap promote ID NODE --to epic|initiative
+       takomo mindmap rm ID
+
+A mindmap is a tree you grow at conversation speed, before any of it is an idea.
+A node is a sentence or two; when a branch turns out to matter, promote it."
+  shift
+  case "$sub" in
+    new)          cmd_mindmap_new "$@" ;;
+    ls|list)      cmd_mindmap_ls "$@" ;;
+    show)         cmd_mindmap_show "$@" ;;
+    add)          cmd_mindmap_add "$@" ;;
+    promote)      cmd_mindmap_promote "$@" ;;
+    rm|delete)    cmd_mindmap_rm "$@" ;;
+    *) die "mindmap: unknown subcommand '$sub' (new|ls|show|add|promote|rm)" ;;
+  esac
+}
+
+cmd_mindmap_new() {
+  local title="" project=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      -*) die "mindmap new: unknown flag $1" ;;
+      *) if [ -z "$title" ]; then title=$1; shift; else die "mindmap new: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$title" ] || die "mindmap new: TITLE is required — it is the root everything hangs off"
+  project=$(resolve_project "$project")
+  local data; data=$(TS_P="$project" TS_T="$title" python3 -c 'import json,os;print(json.dumps({"project":os.environ["TS_P"],"title":os.environ["TS_T"]}))')
+  api POST "/v1/mindmaps" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d.get("mindmap", {})
+print(f"{m.get('id')}  {m.get('title')}")
+print()
+print(f"Grow it:  takomo mindmap add {m.get('id')} \"a thought\"  [--parent NODE]")
+print(f"Read it:  takomo mindmap show {m.get('id')}")
+PY
+}
+
+cmd_mindmap_ls() {
+  local project="" status=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --status) status=$2; shift 2 ;;
+      -*) die "mindmap ls: unknown flag $1" ;;
+      *) die "mindmap ls: unexpected argument '$1'" ;;
+    esac
+  done
+  local qs="" sep="?"
+  [ -n "$project" ] && { qs="$qs${sep}project=$(urlenc "$project")"; sep="&"; }
+  [ -n "$status" ] && { qs="$qs${sep}status=$(urlenc "$status")"; sep="&"; }
+  api GET "/v1/mindmaps$qs" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+items = d.get("items", [])
+if not items:
+    print('(no mindmaps; start one with: takomo mindmap new "What it is about")')
+    sys.exit()
+print(f"{'ID':<14} {'NODES':>5}  {'STATUS':<10} TITLE")
+for m in items:
+    print(f"{m.get('id',''):<14} {m.get('nodes',0):>5}  {m.get('status',''):<10} {m.get('title','')}")
+if d.get("note"):
+    print()
+    print(d["note"])
+PY
+}
+
+cmd_mindmap_show() {
+  local id="" node=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --node) node=$2; shift 2 ;;
+      -*) die "mindmap show: unknown flag $1" ;;
+      *) if [ -z "$id" ]; then id=$1; shift; else die "mindmap show: unexpected argument '$1'"; fi ;;
+    esac
+  done
+  [ -n "$id" ] || die "mindmap show: ID is required"
+  api GET "/v1/mindmaps/$(urlenc "$id")" >/dev/null
+  python3 - "$REQ_OUT" "$node" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+want = sys.argv[2] if len(sys.argv) > 2 else ""
+m = d.get("mindmap", {})
+nodes = d.get("nodes", [])
+kids = {}
+for n in nodes:
+    kids.setdefault(n.get("parent"), []).append(n)
+
+print(f"# {m.get('title')}   ({m.get('id')}, {m.get('status')})")
+
+def line(n, depth):
+    # The id sits beside the text because the next thing anyone does is hang a
+    # thought under one of these, and that takes an id.
+    promoted = n.get("promoted") or {}
+    badge = f"  -> {promoted['kind']} {promoted['id']}" if promoted else ""
+    print(f"{'  ' * depth}- {n.get('text','')}   [{n.get('id')}]{badge}")
+
+def walk(parent, depth):
+    for n in kids.get(parent, []):
+        line(n, depth)
+        walk(n.get("id"), depth + 1)
+
+if want:
+    one = next((n for n in nodes if n.get("id") == want), None)
+    if not one:
+        print(f"(no node {want} on this map)")
+        sys.exit(1)
+    line(one, 0)
+    walk(want, 1)
+else:
+    walk(None, 0)
+    if not nodes:
+        print(f'(empty; add a thought with: takomo mindmap add {m.get("id")} "…")')
+PY
+}
+
+cmd_mindmap_add() {
+  local id="" text="" parent=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --parent) parent=$2; shift 2 ;;
+      -*) die "mindmap add: unknown flag $1" ;;
+      *)
+        if [ -z "$id" ]; then id=$1
+        elif [ -z "$text" ]; then text=$1
+        else die "mindmap add: unexpected argument '$1'"; fi
+        shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "mindmap add: ID is required"
+  [ -n "$text" ] || die "mindmap add: TEXT is required (a sentence or two)"
+  local data; data=$(TS_T="$text" TS_PARENT="$parent" python3 <<'PY'
+import json, os
+d = {"text": os.environ["TS_T"]}
+if os.environ.get("TS_PARENT"): d["parent"] = os.environ["TS_PARENT"]
+print(json.dumps(d))
+PY
+)
+  api POST "/v1/mindmaps/$(urlenc "$id")/nodes" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+n = json.load(open(sys.argv[1]))["nodes"][0]
+print(f"{n.get('id')}  {n.get('text')}")
+PY
+}
+
+cmd_mindmap_promote() {
+  local id="" node="" target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to|--target) target=$2; shift 2 ;;
+      -*) die "mindmap promote: unknown flag $1" ;;
+      *)
+        if [ -z "$id" ]; then id=$1
+        elif [ -z "$node" ]; then node=$1
+        else die "mindmap promote: unexpected argument '$1'"; fi
+        shift ;;
+    esac
+  done
+  [ -n "$id" ] || die "mindmap promote: ID is required"
+  [ -n "$node" ] || die "mindmap promote: NODE is required (see: takomo mindmap show ID)"
+  [ -n "$target" ] || die "mindmap promote: --to epic|initiative is required
+  epic        an epic with this node's direct children as tickets under it
+  initiative  an initiative seeded with the whole subtree"
+  local data; data=$(TS_T="$target" python3 -c 'import json,os;print(json.dumps({"target":os.environ["TS_T"]}))')
+  api POST "/v1/mindmaps/$(urlenc "$id")/nodes/$(urlenc "$node")/promote" "$data" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+c = d.get("created", {})
+print(f"{d['node']['text']} -> {c.get('kind')} {c.get('id')}")
+for child in c.get("children") or []:
+    print(f"  {child}")
+print()
+print("The node stays on the map, carrying what it became.")
+PY
+}
+
+cmd_mindmap_rm() {
+  local id=${1:-}; [ -n "$id" ] || die "mindmap rm: ID is required"
+  api DELETE "/v1/mindmaps/$(urlenc "$id")" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"deleted, with {d.get('removed_nodes', 0)} node(s)")
+print("Anything its branches became — epics, initiatives — is untouched.")
+PY
+}
+
 cmd_dep() {
   local id=${1:-}; [ -n "$id" ] || die "dep: ID is required"; shift
   local blocked_by=""
@@ -4010,6 +4214,21 @@ Claiming & progressing (the fence is remembered locally after a claim):
   takomo move ID STATE       move to an arbitrary workflow state
   takomo release ID [REASON] return the ticket to the queue
 
+Mindmaps (brainstorming, before any of it is an idea):
+  takomo mindmap new TITLE [--project P]   the title is the root
+  takomo mindmap ls [--project P] [--status open|parked|distilled]
+  takomo mindmap show ID [--node NODE]     the tree, with node ids beside it
+  takomo mindmap add ID "a thought" [--parent NODE]
+  takomo mindmap promote ID NODE --to epic|initiative
+  takomo mindmap rm ID
+         A tree you grow at conversation speed. A node is a sentence or two —
+         that brevity is the method. When a branch turns out to matter, promote
+         it: `epic` makes an epic with its children as tickets, `initiative`
+         makes one seeded with the subtree. The node stays either way, carrying
+         what it became, so the map keeps working as navigation afterwards.
+         A mindmap is scratch by design: `rm` is ordinary, and what its branches
+         became is untouched.
+
 Ask a human (block on a human decision, then resume):
   takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory]
          [--body B] [--option O]... [--option-desc D]... [--multi] [--rec-multi O]...
@@ -4224,6 +4443,7 @@ main() {
     promote) cmd_promote "$@" ;;
     release) cmd_release "$@" ;;
     initiative|ini) cmd_initiative "$@" ;;
+    mindmap|mm)  cmd_mindmap "$@" ;;
     check)   cmd_check "$@" ;;
     env|environment) cmd_env "$@" ;;
     verify)  cmd_verify "$@" ;;

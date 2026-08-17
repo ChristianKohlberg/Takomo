@@ -12,6 +12,7 @@ mod helpers;
 mod impact;
 mod initiatives;
 mod metrics;
+mod mindmaps;
 mod model;
 mod moves;
 mod oauth;
@@ -46,6 +47,10 @@ pub use initiatives::{
     EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch, INITIATIVE_STATUSES,
     MAX_ENTRIES_PAGE, MAX_ENTRY_CONTENT_BYTES, MAX_INITIATIVES_PAGE, MAX_INITIATIVE_BYTES,
     MAX_INITIATIVE_ENTRIES,
+};
+pub use mindmaps::{
+    MindmapCreate, MindmapListFilter, MindmapPatch, NodeAdd, NodePatch, MAX_GROW,
+    MAX_MINDMAPS_PAGE, MAX_NODES, MAX_NODE_TEXT, MINDMAP_STATUSES, PROMOTION_TARGETS,
 };
 pub use model::*;
 pub use moves::{MoveOutcome, MoveRequest, MovedTicket, MAX_MOVE_TICKETS};
@@ -1196,6 +1201,72 @@ CREATE TABLE IF NOT EXISTS initiative_entries (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_initiative_entries_initiative ON initiative_entries(initiative);
+
+-- Mindmaps: the ten minutes BEFORE any of this is an idea, let alone work.
+--
+-- A tree you grow at conversation speed — six words a node, split one in two the
+-- moment it turns out to be two thoughts — whose branches can graduate into epics
+-- and initiatives afterwards. It is a brainstorming method and nothing more, so
+-- there is no workflow, no claim, no lease, no ready queue, no assignment and no
+-- attachments here.
+--
+-- What separates it from an initiative is the right to be thrown away: an
+-- initiative is nurtured, a mindmap is scratch, and DELETE is an ordinary thing to
+-- do to one (nodes cascade). What separates it from tickets is that nothing in it
+-- is work until somebody says so.
+--
+-- `title` is the root. A map starts from one thing and everything hangs off it, so
+-- the root is the map rather than a node inside it. `status` is a plain label —
+-- the same three an initiative uses, where `distilled` means its branches have
+-- graduated.
+CREATE TABLE IF NOT EXISTS mindmaps (
+  id         TEXT PRIMARY KEY,
+  project    TEXT NOT NULL REFERENCES projects(id),
+  title      TEXT NOT NULL,
+  summary    TEXT NOT NULL DEFAULT '',
+  status     TEXT NOT NULL DEFAULT 'open',
+  metadata   TEXT NOT NULL DEFAULT '{}',
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  version    INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_mindmaps_project ON mindmaps(project, status);
+
+-- One thought. Capped short on purpose (see MAX_NODE_TEXT): a sentence or two IS
+-- the method, and a node that outgrows it has stopped being a brainstorm node and
+-- wants to be an initiative.
+CREATE TABLE IF NOT EXISTS mindmap_nodes (
+  id            TEXT PRIMARY KEY,
+  mindmap       TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+  -- NULL = a first-ring branch off the root. The same edge shape as
+  -- `tickets.parent`, which is this store's precedent for a tree.
+  parent        TEXT REFERENCES mindmap_nodes(id),
+  text          TEXT NOT NULL,
+  -- Order among siblings, gapped (1000, 2000, …) so inserting between two nodes
+  -- is one write rather than a renumber of the whole ring.
+  position      INTEGER NOT NULL,
+  -- Hand placement; NULL = wherever the layout puts it. Nullable on purpose: a map
+  -- nobody has dragged stays tidy as it grows at typing speed, and one that has
+  -- been arranged stays exactly where it was left.
+  x             REAL,
+  y             REAL,
+  -- What this branch became once it graduated: ('epic', 'tp-a1d8') or
+  -- ('initiative', 'ini-9f3k'). Deliberately no REFERENCES — the same reason
+  -- `tickets.schedule` carries none: deleting the map must leave the work, and
+  -- deleting the work must leave the record of where it came from.
+  --
+  -- This pair is what lets a map stay useful after the brainstorm, as a picture of
+  -- what the thinking turned into. Promotion never moves a node: the map is the
+  -- record of how you got there.
+  promoted_kind TEXT,
+  promoted_id   TEXT,
+  created_by    TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mindmap_nodes_map ON mindmap_nodes(mindmap, position);
+CREATE INDEX IF NOT EXISTS idx_mindmap_nodes_parent ON mindmap_nodes(parent);
 
 -- Promotions: an append-only record that a ticket's work reached some named
 -- target/stage — "staging", "production", "published", "delivered", whatever

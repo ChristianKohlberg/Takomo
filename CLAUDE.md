@@ -272,6 +272,16 @@ answering resumes it through the workflow's human-gated edge — but only once *
 blocking question on the ticket is answered (a barrier). An `advisory` question records a routed
 decision and never touches ticket state.
 
+**Mindmaps** (`src/store/mindmaps.rs`) are what comes *before* an initiative: a tree grown at
+conversation speed, six words a node, whose branches graduate into epics and initiatives. Two rules
+shape it and both are load-bearing. **Deleting one is ordinary** — an initiative is nurtured, a
+mindmap is scratch, and that is what makes it safe to start one early. **A node caps at 280 chars**,
+which is the method rather than a limitation: past that it wants to be an initiative, and the refusal
+says so. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id` link, so a map that
+produced work becomes a picture of that work. The whole map comes back in one read because a canvas
+cannot draw half a tree, which is affordable precisely because of the 500-node cap; `POST .../nodes`
+takes a **batch** because that is what an agent adding a branch sends. See `docs/mindmaps.md`.
+
 **Initiatives** (`src/store/initiatives.rs`) are the one thing here that is *not* work: an idea
 being nurtured — a product direction, the residue of a good conversation — fed by appending
 entries over time, each recording where it came from. No workflow, no claim, no lease, no ready
@@ -385,5 +395,5 @@ Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workfl
 `spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`,
 `docs/environments.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
-`docs/initiatives.md`, `docs/promotions.md`,
+`docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

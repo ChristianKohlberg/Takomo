@@ -326,8 +326,14 @@ pub fn debit_write_budget(state: &AppState, ctx: &AuthCtx) -> ApiResult<()> {
             StatusCode::TOO_MANY_REQUESTS,
             "rate.limited",
             format!(
-                "Token '{}' exceeded its write budget of {} writes/minute. Only writes are charged: reads are free and still work — GET on /v1, and the read-only MCP tools (takomo_show, takomo_list, takomo_ready, takomo_deps, takomo_questions, takomo_projects, takomo_workflow, takomo_roadmap, takomo_whoami). If you are retrying a rejected call in a loop, stop and re-read the error's remedy instead. Wait {retry_after_secs}s before the next write.",
-                ctx.actor, ctx.rate_limit
+                "Token '{}' exceeded its write budget of {} writes/minute. Only writes are charged: reads are free and still work — GET on /v1, and the read-only MCP tools ({}). If you are retrying a rejected call in a loop, stop and re-read the error's remedy instead. Wait {retry_after_secs}s before the next write.",
+                ctx.actor,
+                ctx.rate_limit,
+                // Derived from the list the dispatcher actually charges by, rather
+                // than typed out again here. The two spellings drifted the moment a
+                // new read tool was added, and the wrong one is the one an agent
+                // reads while deciding what it may still call.
+                crate::mcp::READ_TOOLS.join(", "),
             ),
         )
         .remedy(format!(

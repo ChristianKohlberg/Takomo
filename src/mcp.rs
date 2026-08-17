@@ -102,6 +102,8 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_initiative_list",
     "takomo_initiative_show",
     "takomo_list",
+    "takomo_mindmap_list",
+    "takomo_mindmap_show",
     "takomo_projects",
     "takomo_questions",
     "takomo_ready",
@@ -461,6 +463,65 @@ pub struct QuestionsArgs {
     pub limit: Option<i64>,
     /// Skip this many — pass the previous reply's `next_cursor` to continue.
     pub cursor: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapNewArgs {
+    /// Project id the map belongs to.
+    pub project: String,
+    /// The root: what this brainstorm is about, e.g. "Payments rebuild".
+    pub title: String,
+    /// One line on why it exists, if it needs one.
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapNodeArg {
+    /// The node this hangs off. Omit for a branch straight off the root.
+    pub parent: Option<String>,
+    /// The thought — a sentence or two, 280 characters at most. Brevity is the
+    /// method: if it needs more, it wants to be an initiative.
+    pub text: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapGrowArgs {
+    /// Mindmap id, e.g. "mm-9f3ka2xz".
+    pub id: String,
+    /// The thoughts to add — up to 50 in one call, which is how a whole branch
+    /// arrives while somebody is still talking. They land together or not at all.
+    pub nodes: Vec<MindmapNodeArg>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapShowArgs {
+    /// Mindmap id.
+    pub id: String,
+    /// Narrow to one branch instead of the whole map.
+    pub node: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapListArgs {
+    /// Filter by project id.
+    pub project: Option<String>,
+    /// open | parked | distilled.
+    pub status: Option<String>,
+    /// Substring over title and summary.
+    pub q: Option<String>,
+    /// How many to return, 1..=200 (default 50).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct MindmapPromoteArgs {
+    /// Mindmap id.
+    pub id: String,
+    /// The node whose branch graduates.
+    pub node: String,
+    /// `epic` — an epic with this node's direct children as tickets under it.
+    /// `initiative` — an initiative seeded with the whole subtree.
+    pub target: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1594,6 +1655,77 @@ impl TakomoMcp {
     }
 
     #[tool(
+        description = "Start a mindmap: a tree you grow at conversation speed, BEFORE any of it is \
+        an idea or work. Use it when somebody is thinking out loud — a project idea fanning out into \
+        API, integrations, workflows — and the shape is not settled yet. The title is the root; \
+        everything hangs off it. Grow it with takomo_mindmap_grow, then promote the branches worth \
+        keeping. A mindmap is scratch by design and deleting one is ordinary, which is what makes it \
+        safe to start one early."
+    )]
+    async fn takomo_mindmap_new(
+        &self,
+        Parameters(a): Parameters<MindmapNewArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_mindmap_new(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Add thoughts to a mindmap — a WHOLE BRANCH in one call, which is the point: \
+        while somebody talks you capture ten nodes at once rather than one per turn. Each node is a \
+        sentence or two (280 chars); if a thought needs more it wants to be an initiative. Give \
+        `parent` to hang a node under another, or leave it out for a branch off the root. The batch \
+        lands whole or not at all, so a reader never sees half a thought."
+    )]
+    async fn takomo_mindmap_grow(
+        &self,
+        Parameters(a): Parameters<MindmapGrowArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_mindmap_grow(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Read a mindmap as indented text — the cheapest shape to reason about and the \
+        one to read before adding to a map you did not build. Pass `node` to read a single branch. \
+        Returns the node ids alongside, so you can hang new thoughts in the right place."
+    )]
+    async fn takomo_mindmap_show(
+        &self,
+        Parameters(a): Parameters<MindmapShowArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_mindmap_show(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "List mindmaps in a project, newest-touched first, with their node counts."
+    )]
+    async fn takomo_mindmap_list(
+        &self,
+        Parameters(a): Parameters<MindmapListArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_mindmap_list(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Graduate a branch that turned out to matter. `target: \"epic\"` makes an epic \
+        with this node's direct children as tickets under it — the fastest path from talking to work \
+        in the queue. `target: \"initiative\"` makes an initiative seeded with the whole subtree, for \
+        a direction that needs nurturing before it is work. The node STAYS on the map either way and \
+        keeps a link to what it became, so the map goes on being a picture of how the thinking got \
+        there. Promoting the same branch twice is refused."
+    )]
+    async fn takomo_mindmap_promote(
+        &self,
+        Parameters(a): Parameters<MindmapPromoteArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_mindmap_promote(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
         description = "Identify the caller behind the current token: actor, scopes, project \
         access, and the person this credential belongs to (`user`, null for a machine token). That \
         person is who `mine` means on takomo_questions."
@@ -1902,6 +2034,123 @@ impl TakomoMcp {
 // ---- tool implementations (call the internal store directly) ----------------
 
 impl TakomoMcp {
+    fn do_mindmap_new(&self, auth: &AuthCtx, a: MindmapNewArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        auth.require_project(&a.project)?;
+        let req = crate::store::MindmapCreate {
+            title: a.title,
+            summary: a.summary,
+            metadata: None,
+        };
+        let map = self
+            .state
+            .store
+            .create_mindmap(&a.project, &req, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "mindmap": map.to_json(),
+            "note": format!(
+                "Grow it with takomo_mindmap_grow {{ id: \"{}\", nodes: [{{ text: \"…\" }}, …] }} — a whole branch per call while the conversation is still going. Keep each node to a sentence or two; when a branch turns out to matter, takomo_mindmap_promote it to an epic or an initiative.",
+                map.id
+            ),
+        }))
+    }
+
+    fn do_mindmap_grow(&self, auth: &AuthCtx, a: MindmapGrowArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        // Scope is checked against the map's own project: an id alone never grants
+        // access, the same rule initiative_append follows.
+        let (map, _) = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+        let adds: Vec<crate::store::NodeAdd> = a
+            .nodes
+            .into_iter()
+            .map(|n| crate::store::NodeAdd {
+                parent: n.parent,
+                text: n.text,
+                position: None,
+            })
+            .collect();
+        let nodes = self.state.store.grow_mindmap(&a.id, &adds, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+            "note": "Hang the next round under these by passing their ids as `parent`.",
+        }))
+    }
+
+    fn do_mindmap_show(&self, auth: &AuthCtx, a: MindmapShowArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let (map, nodes) = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+        let outline = self.state.store.mindmap_outline(&a.id, a.node.as_deref())?;
+        Ok(json!({
+            "ok": true,
+            "mindmap": map.to_json(),
+            "outline": outline,
+            // The ids alongside the text, because reading a map is usually the step
+            // before adding to it and every add needs a parent id.
+            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+        }))
+    }
+
+    fn do_mindmap_list(&self, auth: &AuthCtx, a: MindmapListArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        if let Some(project) = &a.project {
+            auth.require_project(project)?;
+        }
+        let limit = a
+            .limit
+            .unwrap_or(50)
+            .clamp(1, crate::store::MAX_MINDMAPS_PAGE);
+        let filter = crate::store::MindmapListFilter {
+            project: a.project,
+            allowed_projects: auth.allowed_projects_vec(),
+            status: a.status,
+            q: a.q,
+            limit,
+            offset: 0,
+        };
+        let (maps, total) = self.state.store.list_mindmaps(&filter)?;
+        Ok(json!({
+            "ok": true,
+            "items": maps.iter().map(|m| m.to_json()).collect::<Vec<_>>(),
+            "total": total,
+            "limit": limit,
+        }))
+    }
+
+    fn do_mindmap_promote(&self, auth: &AuthCtx, a: MindmapPromoteArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let (map, _) = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+        let (node, created) =
+            self.state
+                .store
+                .promote_mindmap_node(&a.id, &a.node, &a.target, &auth.actor)?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "node": node.to_json(),
+            "created": created,
+            "note": "The node stays on the map, carrying what it became — the map is the record of how the thinking got there.",
+        }))
+    }
+
     fn do_initiative_new(&self, auth: &AuthCtx, a: InitiativeNewArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         auth.require_project(&a.project)?;

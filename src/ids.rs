@@ -47,6 +47,16 @@ pub fn initiative_entry_id() -> String {
     format!("ie-{}", random_chars(BASE36, 8))
 }
 
+/// Mindmap id, e.g. "mm-9f3ka2xz".
+pub fn mindmap_id() -> String {
+    format!("mm-{}", random_chars(BASE36, 8))
+}
+
+/// Mindmap node id, e.g. "mn-9f3ka2xz".
+pub fn mindmap_node_id() -> String {
+    format!("mn-{}", random_chars(BASE36, 8))
+}
+
 /// Schedule id, e.g. "sch-9f3ka2xz".
 pub fn schedule_id() -> String {
     format!("sch-{}", random_chars(BASE36, 8))

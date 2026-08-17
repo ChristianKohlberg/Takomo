@@ -662,6 +662,97 @@ impl Initiative {
     }
 }
 
+/// A mindmap: a tree grown at conversation speed, before any of it is an idea.
+///
+/// See `store/mindmaps.rs`. What separates it from an [`Initiative`] is not the
+/// shape but the stakes: an initiative is nurtured, a mindmap is scratch and
+/// deleting one is ordinary. Its `title` is the root everything hangs off.
+#[derive(Debug, Clone)]
+pub struct Mindmap {
+    pub id: String,
+    pub project: String,
+    /// The root — what the map is about.
+    pub title: String,
+    pub summary: String,
+    /// open | parked | distilled. A label, not a state machine; `distilled` means
+    /// its branches have graduated into work.
+    pub status: String,
+    pub metadata: Value,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub version: i64,
+    /// How many nodes hang off it. Derived on read and never stored, for the same
+    /// reason an initiative's rollup is: a cached count drifts from the rows it
+    /// describes and nothing notices.
+    pub nodes: i64,
+}
+
+impl Mindmap {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "title": self.title,
+            "summary": self.summary,
+            "status": self.status,
+            "metadata": self.metadata,
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "version": self.version,
+            "nodes": self.nodes,
+        })
+    }
+}
+
+/// One thought on a mindmap.
+#[derive(Debug, Clone)]
+pub struct MindmapNode {
+    pub id: String,
+    pub mindmap: String,
+    /// None = a first-ring branch off the root.
+    pub parent: Option<String>,
+    pub text: String,
+    /// Order among siblings; gapped, so inserting between two is one write.
+    pub position: i64,
+    /// Hand placement, or None to let the layout place it.
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// What this branch became: `epic` or `initiative`, and its id.
+    pub promoted_kind: Option<String>,
+    pub promoted_id: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl MindmapNode {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "mindmap": self.mindmap,
+            "parent": self.parent,
+            "text": self.text,
+            "position": self.position,
+            // Together or not at all: half a coordinate places nothing, so the
+            // pair is one fact on the wire rather than two nullable numbers every
+            // caller has to recombine.
+            "at": match (self.x, self.y) {
+                (Some(x), Some(y)) => json!({ "x": x, "y": y }),
+                _ => Value::Null,
+            },
+            "promoted": match (&self.promoted_kind, &self.promoted_id) {
+                (Some(kind), Some(id)) => json!({ "kind": kind, "id": id }),
+                _ => Value::Null,
+            },
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+        })
+    }
+}
+
 /// One appended contribution to an initiative. Append-only; never edited.
 ///
 /// Carries text, an attachment, or both. The bytes of an attachment are NOT on
