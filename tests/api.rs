@@ -2947,6 +2947,337 @@ fn the_error_code_scan_can_see_every_construction_site() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Error-code families (takomo-lycg) and event-kind pinning (takomo-oshg).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lease_and_fence_family_is_documented_as_one_set() {
+    let spec: Value = serde_norway::from_str(include_str!("../spec/openapi.yaml"))
+        .expect("spec/openapi.yaml parses as YAML");
+    let family = &spec["x-error-code-families"]["lease_and_fence"];
+    assert!(
+        family.is_object(),
+        "spec/openapi.yaml must carry x-error-code-families.lease_and_fence"
+    );
+    let members = object_keys(&family["members"], "lease_and_fence.members");
+    for code in takomo::error_codes::lease_and_fence::ALL {
+        assert!(
+            members.iter().any(|m| m == code),
+            "lease_and_fence.members must list `{code}` — the family is how agents \
+             discover the eight codes belong together"
+        );
+        assert!(
+            spec["x-error-codes"][code].is_string(),
+            "`x-error-codes.{code}` must describe the member"
+        );
+    }
+    assert_eq!(
+        members.len(),
+        takomo::error_codes::lease_and_fence::ALL.len(),
+        "lease_and_fence.members must not list codes outside src/error_codes.rs::ALL"
+    );
+}
+
+/// Event kinds the store emits at `emit_event` call sites with a string literal,
+/// plus kinds only produced through documented dynamic sites below.
+fn emitted_event_kinds() -> std::collections::BTreeSet<String> {
+    fn find_call_end(text: &str, open_paren: usize) -> usize {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut i = open_paren;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b'"' {
+                        i += if bytes[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        text.len()
+    }
+
+    fn split_top_level_args(args: &str) -> Vec<&str> {
+        let bytes = args.as_bytes();
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b'"' {
+                        i += if bytes[i] == b'\\' { 2 } else { 1 };
+                    }
+                }
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    out.push(args[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if start < args.len() {
+            out.push(args[start..].trim());
+        }
+        out
+    }
+
+    let mut kinds = std::collections::BTreeSet::new();
+    for (_, text) in rust_sources() {
+        let mut from = 0usize;
+        while let Some(hit) = text[from..].find("emit_event(") {
+            let start = from + hit;
+            let open_paren = start + "emit_event".len();
+            let end = find_call_end(&text, open_paren);
+            let args = split_top_level_args(&text[open_paren + 1..end - 1]);
+            if let Some(kind_expr) = args.get(4) {
+                if let Some(lit) = plain_string_literal(kind_expr) {
+                    if lit != "system" {
+                        kinds.insert(lit.to_string());
+                    }
+                }
+            }
+            from = end;
+        }
+    }
+    for k in [
+        "question_followup_requested",
+        "question_replied",
+        "schedule_proposed",
+        "schedule_created",
+        "schedule_activated",
+        "schedule_rejected",
+        "schedule_paused",
+        "schedule_updated",
+        "user_disabled",
+        "user_enabled",
+    ] {
+        kinds.insert(k.to_string());
+    }
+    kinds
+}
+
+/// Kinds listed in `x-event-kinds-reserved` — on the Event.kind enum but
+/// deliberately never emitted.
+fn spec_reserved_event_kinds() -> std::collections::BTreeMap<String, String> {
+    let spec: Value = serde_norway::from_str(include_str!("../spec/openapi.yaml"))
+        .expect("spec/openapi.yaml parses as YAML");
+    let reserved = object_keys(
+        &spec["x-event-kinds-reserved"],
+        "spec/openapi.yaml x-event-kinds-reserved",
+    );
+    let mut out = std::collections::BTreeMap::new();
+    for kind in reserved {
+        let description = spec["x-event-kinds-reserved"][&kind]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            description.len() > 40,
+            "`x-event-kinds-reserved.{kind}` must say why the kind is reserved \
+             and never emitted — a bare label documents nothing"
+        );
+        assert!(
+            description.contains("never emitted") || description.contains("Never emitted"),
+            "`x-event-kinds-reserved.{kind}` must state explicitly that the kind \
+             is never emitted"
+        );
+        out.insert(kind, description.to_string());
+    }
+    out
+}
+
+fn spec_event_kinds() -> std::collections::BTreeSet<String> {
+    let spec: Value = serde_norway::from_str(include_str!("../spec/openapi.yaml"))
+        .expect("spec/openapi.yaml parses as YAML");
+    spec["components"]["schemas"]["Event"]["properties"]["kind"]["enum"]
+        .as_array()
+        .expect("Event.kind enum")
+        .iter()
+        .map(|v| v.as_str().expect("kind").to_string())
+        .collect()
+}
+
+#[test]
+fn every_emitted_event_kind_is_listed_on_event_kind_enum() {
+    let emitted = emitted_event_kinds();
+    let documented = spec_event_kinds();
+    let reserved = spec_reserved_event_kinds();
+
+    let missing: Vec<String> = emitted
+        .iter()
+        .filter(|k| !documented.contains(*k))
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these event kinds are emitted under src/ but missing from Event.kind \
+         enum in spec/openapi.yaml:\n  {}\n\nThe event log is the integration \
+         surface — add each kind to the enum.",
+        missing.join("\n  ")
+    );
+
+    let stale: Vec<String> = documented
+        .iter()
+        .filter(|k| !emitted.contains(k.as_str()) && !reserved.contains_key(k.as_str()))
+        .cloned()
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "Event.kind enum lists kinds neither emitted nor reserved in \
+         x-event-kinds-reserved:\n  {}\n\nEmit them, reserve them with a reason, \
+         or remove the enum entry.",
+        stale.join("\n  ")
+    );
+
+    for (kind, reason) in &reserved {
+        assert!(
+            documented.contains(kind.as_str()),
+            "x-event-kinds-reserved lists `{kind}` but Event.kind enum does not"
+        );
+        assert!(
+            !emitted.contains(kind.as_str()),
+            "`{kind}` is reserved as never emitted ({reason}) but src/ emits it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Route ↔ spec path bijection (takomo-4tn3).
+// ---------------------------------------------------------------------------
+
+/// OpenAPI documents some SPA shells under `-page` keys because `/v1/foo` and
+/// `/foo` cannot share one YAML key. Each alias maps to the path the router serves.
+const SPEC_PATH_ALIASES: &[(&str, &str)] = &[
+    ("/schedules-page", "/schedules"),
+    ("/inbox-page", "/inbox"),
+    ("/initiatives-page", "/initiatives"),
+    ("/settings-page", "/settings"),
+];
+
+/// Router-only paths documented under another spec key.
+const ROUTER_PATH_ALIASES: &[(&str, &str)] = &[(
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/oauth-protected-resource",
+)];
+
+const EMBEDDED_ASSET_FILES: &[&str] = &["app.js", "vendor.js", "runtime.js", "app.css"];
+
+fn router_paths_from_server_rs() -> std::collections::BTreeSet<String> {
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs"),
+    )
+    .expect("read src/server.rs");
+    let mut paths = std::collections::BTreeSet::new();
+    for chunk in text.split(".route(").skip(1) {
+        let trimmed = chunk.trim_start();
+        if let Some(inner) = trimmed.strip_prefix('"') {
+            if let Some(end) = inner.find('"') {
+                paths.insert(inner[..end].to_string());
+            }
+        }
+    }
+    paths.insert("/mcp".to_string());
+    paths
+}
+
+fn spec_path_is_root_scoped(path_item: &Value) -> bool {
+    path_item
+        .get("servers")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+        .and_then(|e| e.get("url"))
+        .and_then(|u| u.as_str())
+        == Some("/")
+}
+
+fn resolve_spec_path_alias(spec_path: &str) -> &str {
+    SPEC_PATH_ALIASES
+        .iter()
+        .find(|(from, _)| *from == spec_path)
+        .map(|(_, to)| *to)
+        .unwrap_or(spec_path)
+}
+
+fn spec_paths_as_router_paths() -> std::collections::BTreeSet<String> {
+    let spec: Value = serde_norway::from_str(include_str!("../spec/openapi.yaml"))
+        .expect("spec/openapi.yaml parses as YAML");
+    let mut out = std::collections::BTreeSet::new();
+    for (path, item) in spec["paths"].as_object().expect("paths") {
+        if path == "/assets/{file}" {
+            for file in EMBEDDED_ASSET_FILES {
+                out.insert(format!("/assets/{file}"));
+            }
+            continue;
+        }
+        let resolved = resolve_spec_path_alias(path);
+        let router = if spec_path_is_root_scoped(item) {
+            resolved.to_string()
+        } else {
+            format!("/v1{resolved}")
+        };
+        out.insert(router);
+    }
+    out
+}
+
+fn normalize_router_path(path: &str) -> &str {
+    ROUTER_PATH_ALIASES
+        .iter()
+        .find(|(from, _)| *from == path)
+        .map(|(_, to)| *to)
+        .unwrap_or(path)
+}
+
+#[test]
+fn every_router_path_appears_in_the_spec_and_vice_versa() {
+    let router: std::collections::BTreeSet<String> = router_paths_from_server_rs()
+        .into_iter()
+        .map(|p| normalize_router_path(&p).to_string())
+        .collect();
+    let spec = spec_paths_as_router_paths();
+
+    let only_router: Vec<&str> = router
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !spec.contains(*p))
+        .collect();
+    assert!(
+        only_router.is_empty(),
+        "these routes are registered in src/server.rs (or /mcp) but have no \
+         matching path in spec/openapi.yaml:\n  {}\n\nAdd the path to the spec, \
+         or a ROUTER_PATH_ALIASES entry if it is documented under another key.",
+        only_router.join("\n  ")
+    );
+
+    let only_spec: Vec<&str> = spec
+        .iter()
+        .map(String::as_str)
+        .filter(|p| !router.contains(*p))
+        .collect();
+    assert!(
+        only_spec.is_empty(),
+        "these paths are in spec/openapi.yaml but not registered in the router:\n  \
+         {}\n\nRemove stale spec entries or register the route.",
+        only_spec.join("\n  ")
+    );
+}
+
 #[tokio::test]
 async fn patch_rejects_state_and_unknown_fields() {
     let app = TestApp::spawn().await;
@@ -7282,6 +7613,66 @@ async fn question_options_can_be_revised_while_open() {
     assert_eq!(settled["code"], "question.not_open");
 }
 
+/// Revising options while an outsider holds a single-use answer grant: the grant
+/// view must show the current options, and a stale pick is refused (takomo-hms9).
+#[tokio::test]
+async fn revising_options_invalidates_stale_answer_grant_picks() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Grant holder sees revised options").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Which region?",
+                "options": ["us-east", "eu-west"],
+                "fence": fence,
+            }),
+        )
+        .await;
+
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:contractor" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap();
+
+    let (s, rev) = app
+        .post(
+            &app.worker,
+            &format!("/v1/questions/{qid}/options"),
+            json!({
+                "options": ["us-east", "ap-south"],
+                "reason": "eu-west is not in scope for this rollout",
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{rev}");
+    assert_eq!(rev["options"], json!(["us-east", "ap-south"]));
+
+    let (s, view) = app.get(token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::OK, "{view}");
+    assert_eq!(view["question"]["options"], json!(["us-east", "ap-south"]));
+
+    let (s, stale) = app
+        .post(token, "/v1/answer/self", json!({ "answer": "eu-west" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{stale}");
+    assert_eq!(stale["code"], "validation.answer");
+
+    let (s, answered) = app
+        .post(token, "/v1/answer/self", json!({ "answer": "ap-south" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{answered}");
+    assert_eq!(answered["question"]["status"], "answered");
+}
+
 /// Options only exist on a `choose` question, so revising any other kind is a
 /// validation error rather than a silent no-op.
 #[tokio::test]
@@ -8451,6 +8842,78 @@ async fn project_question_language_surfaces_to_agents() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+/// PUT /style and /language teach malformed bodies with the shared validation
+/// vocabulary — field required, wrong type, unknown field (takomo-xzad).
+#[tokio::test]
+async fn project_style_and_language_put_validation() {
+    let app = TestApp::spawn().await;
+
+    for (path, field) in [
+        ("/v1/projects/tp/style", "style_guide"),
+        ("/v1/projects/tp/language", "language"),
+    ] {
+        let (s, missing) = app.put(&app.admin, path, json!({})).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{missing}");
+        assert_eq!(missing["code"], "validation.field_required");
+
+        let (s, bad_type) = app.put(&app.admin, path, json!({ field: 42 })).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad_type}");
+        assert_eq!(bad_type["code"], "validation.field_type");
+
+        let (s, unknown) = app
+            .put(&app.admin, path, json!({ field: "ok", "typo_field": true }))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{unknown}");
+        assert_eq!(unknown["code"], "validation.unknown_field");
+    }
+
+    // Style guide length is enforced after trim, not on the raw string.
+    let padded = format!("{}   ", "x".repeat(2001));
+    let (s, err) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": padded }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["code"], "project.style_guide_too_long");
+
+    let within_trim = format!("   {}   ", "y".repeat(1990));
+    let (s, ok) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": within_trim }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ok}");
+    assert_eq!(ok["style_guide"].as_str().unwrap().len(), 1990);
+
+    // Project allowlist is a 403 distinct from missing admin scope.
+    let (_, minted) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({
+                "actor": "human:other",
+                "scopes": ["read", "write", "human", "admin"],
+                "projects": ["demo"]
+            }),
+        )
+        .await;
+    let other_proj = minted["token"].as_str().unwrap();
+    let (s, denied) = app
+        .put(
+            other_proj,
+            "/v1/projects/tp/style",
+            json!({ "style_guide": "nope" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["code"], "auth.project");
+}
+
 #[tokio::test]
 async fn project_style_guide_surfaces_to_agents() {
     let app = TestApp::spawn().await;
@@ -9245,7 +9708,12 @@ async fn question_ask_is_idempotent_on_retry() {
     let (_, again) = app
         .ask(
             &app.worker,
-            json!({ "ticket": id, "kind": "confirm", "title": "Same question?" }),
+            json!({
+                "ticket": id,
+                "kind": "confirm",
+                "title": "Same question?",
+                "mode": "blocking"
+            }),
         )
         .await;
     assert_eq!(first["question"]["id"], again["question"]["id"]);
@@ -10150,6 +10618,92 @@ async fn tag_validation_and_scope() {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
     assert_eq!(e["code"], "auth.scope");
+}
+
+/// Tag registry writes emit audit events; patch guardrails refuse empty and
+/// unknown-field bodies (takomo-pbwv).
+#[tokio::test]
+async fn tag_registry_events_and_patch_guardrails() {
+    let app = TestApp::spawn().await;
+
+    let (s, created) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/tags",
+            json!({ "kind": "team", "handle": "core", "label": "Core" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+
+    let (_, ev1) = app
+        .get(&app.admin, "/v1/events?since=0&project=tp&kind=tag_created")
+        .await;
+    assert!(
+        ev1["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["kind"] == "team" && e["payload"]["handle"] == "core"),
+        "tag_created must be logged: {ev1}"
+    );
+
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            "/v1/projects/tp/tags/team/core",
+            json!({ "label": "Core platform" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+
+    let (_, ev2) = app
+        .get(&app.admin, "/v1/events?since=0&project=tp&kind=tag_updated")
+        .await;
+    assert!(
+        ev2["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["kind"] == "team" && e["payload"]["handle"] == "core"),
+        "tag_updated must be logged: {ev2}"
+    );
+
+    let (s, empty) = app
+        .patch(&app.admin, "/v1/projects/tp/tags/team/core", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{empty}");
+    assert_eq!(empty["code"], "validation.no_changes");
+
+    let (s, unknown) = app
+        .patch(
+            &app.admin,
+            "/v1/projects/tp/tags/team/core",
+            json!({ "label": "Core", "typo": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{unknown}");
+    assert_eq!(unknown["code"], "validation.unknown_field");
+
+    let (s, del) = app
+        .delete(&app.admin, "/v1/projects/tp/tags/team/core")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{del}");
+
+    let (_, ev3) = app
+        .get(&app.admin, "/v1/events?since=0&project=tp&kind=tag_deleted")
+        .await;
+    assert!(
+        ev3["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["payload"]["kind"] == "team" && e["payload"]["handle"] == "core"),
+        "tag_deleted must be logged: {ev3}"
+    );
+
+    let (s, nf) = app.get(&app.admin, "/v1/projects/tp/tags/team/core").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(nf["code"], "notfound.tag");
 }
 
 /// A ticket's tag set is bounded (takomo-xrp8). Every reference in a tag write costs

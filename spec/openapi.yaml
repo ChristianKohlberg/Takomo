@@ -792,7 +792,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Project" }
-        "403": { description: Token lacks the admin scope }
+        "400":
+          description: |
+            Malformed body — `validation.field_required` when `language` is absent,
+            `validation.field_type` when it is not a string or null,
+            `validation.unknown_field` when extra keys are present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Token lacks the admin scope, or the project is outside the token's allowlist (`auth.project`).
         "404": { $ref: "#/components/responses/NotFound" }
 
   /projects/{project}/tags:
@@ -1108,11 +1117,12 @@ paths:
         `POST /v1/questions` response note. Soft — never enforced, exactly like
         the language setting.
 
-        Capped at 2000 characters: it rides along on every work-loop response, so
-        it has to stay a short set of conventions rather than a second copy of the
-        project's documentation. Over the cap is a `422
-        project.style_guide_too_long`. A blank string is treated as a clear, and
-        `{"style_guide": null}` clears it explicitly.
+        Capped at 2000 characters **after trimming** leading and trailing
+        whitespace: the server trims, then counts Unicode scalar values, so a
+        padded string that is over the limit only after spaces may pass here and
+        fail client-side validation that checks the raw body against `maxLength`.
+        Over the cap is a `422 project.style_guide_too_long`. A blank string is
+        treated as a clear, and `{"style_guide": null}` clears it explicitly.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       requestBody:
         required: true
@@ -1124,17 +1134,25 @@ paths:
               properties:
                 style_guide:
                   type: [string, "null"]
-                  maxLength: 2000
-                  description: 'e.g. "Two sentences max. Plain language, no marketing voice."; null clears it'
+                  description: 'e.g. "Two sentences max. Plain language, no marketing voice."; null clears it. At most 2000 characters after trim (see description).'
       responses:
         "200":
           description: The updated project.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Project" }
-        "403": { description: Token lacks the admin scope }
+        "400":
+          description: |
+            Malformed body — `validation.field_required` when `style_guide` is absent,
+            `validation.field_type` when it is not a string or null,
+            `validation.unknown_field` when extra keys are present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Token lacks the admin scope, or the project is outside the token's allowlist (`auth.project`).
         "404": { $ref: "#/components/responses/NotFound" }
-        "422": { description: The style guide exceeds 2000 characters }
+        "422": { description: The style guide exceeds 2000 characters after trim (`project.style_guide_too_long`) }
 
   /projects/{project}/archive:
     post:
@@ -3152,8 +3170,12 @@ paths:
         releases the caller's lease, then records the question. End the run and
         resume the ticket once a human answers. Echo the lease `fence` while you
         hold it. A ticket may hold several open questions; it resumes only when
-        all are answered (a barrier). A re-sent ask with the same asker + kind +
-        title is an idempotent retry (returns the existing question).
+        all are answered (a barrier). Retrying with the same ticket, asker, mode,
+        kind, and title while that earlier question is still **open** returns the
+        existing question (HTTP 201 with the same body shape) rather than creating
+        a second row — safe for the CLI to replay after a transient failure. Once
+        the earlier question is answered, withdrawn, or expired, the same tuple
+        creates a new question.
       requestBody:
         required: true
         content:
@@ -3211,7 +3233,13 @@ paths:
                 fence: { type: integer }
       responses:
         "201":
-          description: The created question plus the parked ticket.
+          description: |
+            The question plus the parked ticket. Both a fresh ask and an
+            idempotent replay of an identical still-open ask (same ticket, asker,
+            mode, kind, title) return **201** with the same response shape — the
+            replay carries the existing question's id, not a new row. There is no
+            200 arm for replay; compare question ids across retries to detect
+            dedup. Safe for the CLI to replay after a transient failure.
           content:
             application/json:
               schema:
@@ -4135,6 +4163,37 @@ paths:
         while breaking the one thing a page route owes a caller: answering a typed
         URL. A non-admin token is told so in one message rather than left to watch
         four sections fail.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
+  /verification:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Verification checklist page (the app shell)
+      description: |
+        Self-contained page served at `/verification`. Unauthenticated HTML;
+        data fetches carry the viewer's bearer token. Talks to `/v1/checks*`,
+        `/v1/cases*`, and checklist report routes under `/v1/projects/{project}/checklist/*`.
+
+        Served from `web/` — the same shell as the other page routes; the router
+        picks the surface from the path.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
+  /environments:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Environments registry page (the app shell)
+      description: |
+        Self-contained page served at `/environments`. Unauthenticated HTML;
+        data fetches carry the viewer's bearer token. Talks to
+        `/v1/projects/{project}/environments` and `/v1/environments/{id}*`.
+
+        Served from `web/` — the same shell as the other page routes.
       security: []
       responses:
         "200": { description: HTML page }
@@ -6171,7 +6230,12 @@ components:
         actor: { type: string }
         kind:
           type: string
-          enum: [created, updated, commented, transitioned, claimed, heartbeat, released, lease_expired, lease_revoked, dep_added, dep_removed, workflow_changed, archived, unarchived, question_asked, question_answered, question_withdrawn, question_expired, question_escalated, question_followup_requested, question_replied, question_reopened, ticket_promoted]
+          description: |
+            Event log discriminator. Every kind the server emits is listed here;
+            kinds in `x-event-kinds-reserved` are also listed but are never
+            emitted — reserved so clients filtering the log can tell a dead arm
+            from a missing one.
+          enum: [archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 
@@ -6771,6 +6835,51 @@ components:
           description: 'outstanding cases that do NOT block, because a gate firing on everything gets overridden out of habit'
 
 # ---------------------------------------------------------------------------
+x-event-kinds-reserved:
+  heartbeat: |
+    Reserved — never emitted. Lease renewal is deliberately silent bookkeeping;
+    observe lease lifecycle through `claimed`, `released`, and `lease_expired`
+    instead. The enum entry stays so a client filtering `GET /v1/events?kind=`
+    can distinguish "this kind exists but is unused" from "this kind was never
+    part of the contract." Emitting per beat was rejected earlier as event-log
+    noise with no consumer.
+
+x-error-code-families:
+  lease_and_fence:
+    summary: |
+      Lease, claim, and fencing — eight codes for exactly-one-claimant safety.
+      An agent author needs all eight together: they share 409 Conflict and
+      describe who may write to a ticket and whether the presented fence still
+      matches the lease. Implementation map: `src/error_codes.rs`.
+    members:
+      claim.held:
+        when: "Mutating a ticket claimed by someone else."
+        routes: "PATCH /tickets/{id}, POST …/comments, POST …/transition, POST /v1/questions (blocking), …"
+      claim.none:
+        when: "Release or force-release when no claim exists."
+        routes: "POST /tickets/{id}/release, POST …/force-release"
+      claim.state:
+        when: "Claim in a non-claimable workflow state (not a resume)."
+        routes: "POST /tickets/{id}/claim, POST /ready/claim"
+      claim.blocked:
+        when: "Claim while open blockers exist."
+        routes: "POST /tickets/{id}/claim, POST /ready/claim"
+      fence.required:
+        when: "You hold the lease but omitted `fence` on a mutating call."
+        routes: "PATCH, comment, transition, ask, … while holder"
+        distinct_from: "fence.stale — lease is still yours; token was omitted."
+      fence.stale:
+        when: "Presented fence was issued but superseded, or lease is gone."
+        routes: "Any fenced write after fence_seq moved"
+        distinct_from: "fence.invalid — this number was real once."
+      fence.invalid:
+        when: "Presented fence exceeds any value the ticket ever reached."
+        routes: "Any fenced write with a fabricated or wrong-ticket fence"
+        distinct_from: "fence.stale — store never issued this number."
+      release.no_lease:
+        when: "Release without holding a lease and without an explicit fence."
+        routes: "POST /tickets/{id}/release"
+
 x-error-codes:
   # -- schedules: recurrence rules that materialize ordinary tickets --
   validation.schedule.cadence: "the recurrence rule is unusable. The message names every problem at once, and a cron-shaped string is answered with its declarative equivalent rather than parsed."
@@ -6811,15 +6920,19 @@ x-error-codes:
   answer_link.not_owner: "only the link's creator, or an admin, may revoke it."
 
   # -- claims and leases ------------------------------------------------------
+  # Family: lease_and_fence — see `src/error_codes.rs` and `x-error-code-families`.
+  # Eight codes, one concept: who may mutate a claimed ticket, and whether the
+  # caller's fence still matches the lease. All ride 409 unless a scope check
+  # runs first on a transition (403 `transition.scope` wins over fence.required).
   claim.held: "the ticket is already claimed by someone else, until the time the message states. Only the lease holder may mutate it: comment instead, pick different work, or wait for the lease to expire."
   claim.none: "the ticket holds no claim and no lapsed one, so there is nothing to release or force-release."
   claim.state: "the ticket's state is not claimable in this project's workflow. The message lists the claimable states and the route back to one."
   claim.blocked: "the ticket has open blockers, so it never enters the ready queue. Finish or cancel the blockers first."
   claim.epic_held: "the ticket sits under an epic someone else has claimed, which reserves the whole subtree for that holder. Check the claim's age and movement with GET /v1/tickets/{epic}/claim; if it looks abandoned, an admin can force-release the epic."
   claim.children_held: "the epic cannot be claimed while other workers hold live claims inside its subtree — the reservation never displaces a lease already granted. Wait, coordinate, or (admin) force-release the listed claims."
-  fence.required: "the ticket is claimed by you and this call mutates it, so it must echo the lease's fencing token. Send the `fence` from the claim or heartbeat response."
-  fence.stale: "the fence presented was superseded by a later claim, or the lease is simply gone. Stop writing — work in flight may duplicate another worker's. Re-claim if the work is still yours."
-  fence.invalid: "the fence presented is higher than any this ticket has reached, so it was never issued. A client bug: the value was fabricated, hand-incremented, or belongs to another ticket."
+  fence.required: "the ticket is claimed by you and this call mutates it, so it must echo the lease's fencing token. Send the `fence` from the claim or heartbeat response. Distinct from fence.stale: your lease is still live — you omitted the token."
+  fence.stale: "the fence presented was superseded by a later claim, or the lease is simply gone. Stop writing — work in flight may duplicate another worker's. Re-claim if the work is still yours. Distinct from fence.invalid: this value was issued once and is now stale."
+  fence.invalid: "the fence presented is higher than any this ticket has reached, so it was never issued. A client bug: the value was fabricated, hand-incremented, or belongs to another ticket. Distinct from fence.stale: the store never issued this number."
   heartbeat.no_lease: "no active lease of yours on this ticket, so there is nothing to renew. Claim it first, then heartbeat before the `expires_at` you were given."
   release.no_lease: "no active lease of yours on this ticket to release. Pass an explicit fence to release one anyway."
 
@@ -6950,7 +7063,7 @@ x-error-codes:
   validation.mode: "the question mode must be `blocking`, which parks and resumes the ticket, or `advisory`, which is routed and recorded with no state change."
   validation.urgency: "the urgency is not one of the known values."
   validation.on_timeout: "`on_timeout` is not one of `recommended`, `escalate`, `cancel` — or is `cancel` on an advisory question, which gates nothing."
-  validation.options: "`options` must be an array of strings, or of {value, desc} objects each carrying a string `value`."
+  validation.options: "`options` must be an array of strings, or of {value, desc} objects each carrying a string `value`. Always 422 — one status for this code across the ask and revise paths."
   validation.option_notes: "option descriptions must pair 1:1 with the options, and each stay within its length limit."
   validation.multi: "`multi` is only meaningful on a `choose` question."
   validation.recommended: "the recommendation is not among the options."
