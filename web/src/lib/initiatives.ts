@@ -65,6 +65,17 @@ export function isWaiting(i: { rollup?: Rollup }): boolean {
   return w.notes > 0 || w.amendments > 0
 }
 
+/**
+ * How many documents in a collection want something from a person.
+ *
+ * DOCUMENTS, not notes: the badge answers "how many places do I need to go",
+ * and one document with nine open notes is still one place. Summing the notes
+ * instead would make a single busy document look like a backlog.
+ */
+export function countWaiting(items: readonly { rollup?: Rollup }[]): number {
+  return items.filter(isWaiting).length
+}
+
 export interface Initiative {
   id: string
   project: string

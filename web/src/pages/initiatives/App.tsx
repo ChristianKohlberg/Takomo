@@ -65,6 +65,7 @@ import {
   createInitiative,
   createQuestion,
   createTicket,
+  countWaiting,
   downloadAttachment,
   isWaiting,
   listEntries,
@@ -185,7 +186,7 @@ export function App() {
    * number does not shrink as you narrow the view — it is the answer to "is there
    * anything for me here", which a filter must not be able to change.
    */
-  const waitingCount = useMemo(() => items.filter(isWaiting).length, [items])
+  const waitingCount = useMemo(() => countWaiting(items), [items])
 
   /** Everything citable: entries that are evidence rather than document machinery. */
   const evidence = useMemo(() => entries.filter((e) => !DOCUMENT_KINDS.has(e.kind)), [entries])
@@ -815,6 +816,10 @@ export function App() {
           initiatives: t.initiatives,
           schedules: t.schedules,
         },
+        // Free here — the page already knows, having counted the documents it is
+        // showing. Carried on the current entry too so the number does not appear
+        // to vanish when you follow it from the board.
+        badges: { initiatives: waitingCount },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
           id,
           name,

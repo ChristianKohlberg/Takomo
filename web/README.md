@@ -43,6 +43,15 @@ about **who you are** (a board token, a share, an answer grant), this is about
   endpoint runs a query per epic; it refreshes when the event poll finds
   something rather than on the poll's own four-second tick.
 
+That poll is also what refreshes the tickets themselves and the rail's badges, so
+one mistake in reading its response stops all three at once — and stops them
+*silently*, because a page that never hears about a change looks exactly like a
+project where nothing happened. `api<T>` is an unchecked cast of a JSON body, so
+`EventPage` naming a field the server does not send compiled and typechecked
+happily; the array is **`events`**, per `/events` in `spec/openapi.yaml`, and
+`src/lib/board.test.ts` pins that against a literal copy of the wire payload
+rather than a fixture built from the type it is testing.
+
 Rows are in the server's order — creation order — deliberately. Ranking them here
 would be the page inventing a priority the API does not have; the counted
 attention strip at the top is the fast read instead. `docs/epic-claims.md` owns
