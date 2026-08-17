@@ -500,6 +500,8 @@ export function App() {
     assignTo: t.assignTo,
     assignNobody: t.assignNobody,
     assignHint: t.assignHint,
+    msgMore: t.msgMore,
+    msgLess: t.msgLess,
   }
 
   return (

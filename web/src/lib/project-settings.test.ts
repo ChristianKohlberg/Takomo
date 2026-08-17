@@ -63,6 +63,13 @@ describe('saveBlockReason', () => {
     expect(saveBlockReason(padded, false, W)).toBe('')
   })
 
+  it('counts characters, not UTF-16 code units, against the server limit', () => {
+    const emoji = '😀'
+    const near = emoji.repeat(STYLE_MAX)
+    expect(saveBlockReason({ ...base, style: near }, false, W)).toBe('')
+    expect(saveBlockReason({ ...base, style: near + emoji }, false, W)).toBe(W.over)
+  })
+
   it('permits an unchanged, empty form', () => {
     expect(saveBlockReason(base, false, W)).toBe('')
   })

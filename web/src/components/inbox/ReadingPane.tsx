@@ -16,6 +16,49 @@ import { fmtAge } from '@/lib/format'
 import { answerBlockReason, type Draft } from '@/lib/answers'
 import type { Question, ThreadMessage } from '@/lib/questions'
 
+/** A thread reply can run to thousands of characters — clamp the preview. */
+const THREAD_MSG_CLAMP_CHARS = 700
+const THREAD_MSG_CLAMP_LINES = 12
+
+function threadNeedsClamp(body: string): boolean {
+  return body.length > THREAD_MSG_CLAMP_CHARS || body.split('\n').length > THREAD_MSG_CLAMP_LINES
+}
+
+function ThreadBody({
+  body,
+  expanded,
+  onToggle,
+  labels,
+}: {
+  body: string
+  expanded: boolean
+  onToggle: () => void
+  labels: { msgMore: string; msgLess: string }
+}) {
+  const clamp = threadNeedsClamp(body)
+  if (!clamp) return <Markdown text={body} className="text-[13px]" />
+  return (
+    <div>
+      <div
+        className={cn(
+          !expanded &&
+            'max-h-[13em] overflow-hidden [mask-image:linear-gradient(to_bottom,#000_72%,transparent)] [-webkit-mask-image:linear-gradient(to_bottom,#000_72%,transparent)]',
+        )}
+      >
+        <Markdown text={body} className="text-[13px]" />
+      </div>
+      <button
+        type="button"
+        className="text-primary mt-1 cursor-pointer text-[12px] font-[650] underline underline-offset-2"
+        aria-expanded={expanded}
+        onClick={onToggle}
+      >
+        {expanded ? labels.msgLess : labels.msgMore}
+      </button>
+    </div>
+  )
+}
+
 export interface ReadingPaneLabels extends AnswerAreaLabels {
   submit: string
   sendFollow: string
@@ -40,6 +83,9 @@ export interface ReadingPaneLabels extends AnswerAreaLabels {
   assignTo: string
   assignNobody: string
   assignHint: string
+  /** Long thread replies: expand/collapse toggle labels. */
+  msgMore: string
+  msgLess: string
 }
 
 export interface ReadingPaneProps {
@@ -90,6 +136,9 @@ export function ReadingPane({
 }: ReadingPaneProps) {
   const [composing, setComposing] = useState(false)
   const [followText, setFollowText] = useState('')
+  // Expanded thread messages — React state, not a DOM class, so a poll or parent
+  // re-render does not collapse a reply the reader was still reading.
+  const [expandedMsgs, setExpandedMsgs] = useState<Set<string>>(() => new Set())
 
   const closed = q.status !== 'open'
   const blockReason = answerBlockReason(q, draft, labels)
@@ -176,7 +225,20 @@ export function ReadingPane({
                 <div className="text-muted-foreground mb-1 font-mono text-[11px]">
                   {m.author} · {fmtAge(m.created_at)}
                 </div>
-                <Markdown text={m.body} className="text-[13px]" />
+                <ThreadBody
+                  body={m.body}
+                  expanded={expandedMsgs.has(m.id ?? String(i))}
+                  onToggle={() => {
+                    const key = m.id ?? String(i)
+                    setExpandedMsgs((cur) => {
+                      const next = new Set(cur)
+                      if (next.delete(key)) return next
+                      next.add(key)
+                      return next
+                    })
+                  }}
+                  labels={{ msgMore: labels.msgMore, msgLess: labels.msgLess }}
+                />
               </div>
             ))}
             {q.awaiting === 'agent' && (

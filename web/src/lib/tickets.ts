@@ -68,6 +68,25 @@ export function inSubtree(
   return false
 }
 
+/**
+ * Whether a ticket's tag refs pass the board's kind / kind:handle filter.
+ *
+ * Shared with the inbox's old `questionMatchesTag` — same predicate, two
+ * surfaces. The inbox filter bar no longer offers tags, but the board still
+ * does, and one implementation beats two copies that drift.
+ */
+export function matchesTagRefs(
+  tags: readonly string[] | undefined,
+  tagKind: string,
+  tagRef: string,
+): boolean {
+  if (!tagKind) return true
+  const list = tags ?? []
+  if (tagRef) return list.includes(tagRef)
+  const pref = tagKind + ':'
+  return list.some((r) => r.startsWith(pref))
+}
+
 /** Build the id -> ticket index both walks take. */
 export function indexById(tickets: readonly TicketNode[]): TicketIndex {
   const out: TicketIndex = {}

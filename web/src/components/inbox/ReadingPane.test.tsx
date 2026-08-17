@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render, screen, cleanup, act } from '@testing-library/react'
 import { ReadingPane } from './ReadingPane'
 import type { Question } from '@/lib/questions'
 
@@ -44,6 +44,8 @@ const labels = {
   assignTo: 'Waiting on',
   assignNobody: 'Nobody yet',
   assignHint: 'Address this decision to one person.',
+  msgMore: 'Show full reply',
+  msgLess: 'Collapse reply',
   yes: 'Yes',
   no: 'No',
   writeOwn: 'Other',
@@ -90,5 +92,47 @@ describe('ReadingPane reopen', () => {
       />,
     )
     expect(screen.getByRole('button', { name: 'Reopen' })).toBeTruthy()
+  })
+})
+
+describe('ReadingPane thread expansion', () => {
+  const open: Question = { ...answered, status: 'open' }
+
+  it('clamps a long reply behind a toggle that survives re-render', () => {
+    const long = 'line\n'.repeat(20)
+    const { rerender } = render(
+      <ReadingPane
+        question={open}
+        thread={[{ id: 'm1', role: 'agent', body: long, author: 'agent', created_at: '2026-08-08T00:00:00Z' }]}
+        draft={undefined}
+        onDraft={() => {}}
+        canAnswer
+        labels={labels}
+        onSubmit={() => {}}
+        onFollowup={() => {}}
+        onWithdraw={() => {}}
+        onReopen={() => {}}
+        onShare={() => {}}
+      />,
+    )
+    const expand = screen.getByRole('button', { name: 'Show full reply' })
+    act(() => expand.click())
+    expect(screen.getByRole('button', { name: 'Collapse reply' })).toBeTruthy()
+    rerender(
+      <ReadingPane
+        question={open}
+        thread={[{ id: 'm1', role: 'agent', body: long, author: 'agent', created_at: '2026-08-08T00:00:00Z' }]}
+        draft={undefined}
+        onDraft={() => {}}
+        canAnswer
+        labels={labels}
+        onSubmit={() => {}}
+        onFollowup={() => {}}
+        onWithdraw={() => {}}
+        onReopen={() => {}}
+        onShare={() => {}}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Collapse reply' })).toBeTruthy()
   })
 })
