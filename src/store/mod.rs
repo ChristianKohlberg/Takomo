@@ -718,6 +718,26 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN \"user\" TEXT"), [])?;
         }
     }
+    // checks.initiative: which initiative's conversation agreed this check should
+    // exist. Nullable, and NULL is exactly right for every existing row — a check
+    // filed before the link existed belongs to no initiative, which is a fact
+    // rather than a gap. Not back-filled from the epic's `initiative:` tag: that
+    // would assert a link nobody made.
+    let check_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(checks)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !check_cols.is_empty() && !check_cols.iter().any(|c| c == "initiative") {
+        conn.execute("ALTER TABLE checks ADD COLUMN initiative TEXT", [])?;
+    }
+    // After the column is guaranteed to exist.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_checks_initiative ON checks(initiative) WHERE initiative IS NOT NULL",
+        [],
+    )?;
     // answer_grants.user: which person an answer link was minted FOR. Nullable —
     // an older grant, and any grant handed to an outside expert, carries only its
     // free-form `actor`. Non-NULL is what lets the grant satisfy an assignee-gated
@@ -1359,6 +1379,19 @@ CREATE TABLE IF NOT EXISTS checks (
   id TEXT PRIMARY KEY,
   project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   epic TEXT,
+  -- The initiative whose conversation agreed this check should exist.
+  --
+  -- A DIRECT reference rather than one derived through the epic's
+  -- `initiative:<id>` tag, because the moment a characterisation test gets
+  -- agreed is a conversation about the feature, which is usually BEFORE any
+  -- epic exists to hang it from. Deriving it would make the link unstateable
+  -- exactly when it is being made.
+  --
+  -- No REFERENCES clause, matching `epic` directly above: validity is enforced
+  -- in Rust so a wrong id gets a teaching 422 instead of an opaque FOREIGN KEY
+  -- failure, and a dangling reference stays readable rather than blocking the
+  -- row.
+  initiative TEXT,
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
   precondition TEXT NOT NULL DEFAULT '',
@@ -1378,6 +1411,9 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS idx_checks_project ON checks(project);
 CREATE INDEX IF NOT EXISTS idx_checks_epic ON checks(epic) WHERE epic IS NOT NULL;
+-- The index on `initiative` is created in `migrate()`, NOT here. This batch runs
+-- before the ALTER that adds the column to a pre-rename database, so indexing it
+-- here fails on exactly the databases the migration exists for.
 
 -- Which paths of the application under test a check claims to exercise. Declared by
 -- hand and known to rot; `release_orphan_globs` is how the rot becomes visible.

@@ -12938,6 +12938,170 @@ async fn a_release_does_not_stale_a_case_that_was_never_verified() {
     assert!(reasons.contains(&"never"), "{wl}");
 }
 
+/// An initiative can answer whether the tests it agreed on still pass.
+///
+/// This is the link the whole surface is for: a characterisation test gets
+/// settled while a feature is being discussed, and months later somebody has to
+/// know whether it still holds. The reference is DIRECT rather than derived
+/// through the epic's `initiative:` tag, because the agreement usually predates
+/// any epic — deriving it would make the link unstateable exactly when it is made.
+#[tokio::test]
+async fn an_initiative_reports_the_standing_of_the_checks_it_agreed() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Split billing", "open").await;
+    let other = new_initiative(&app, "Something else", "open").await;
+
+    // Filed against the initiative with no epic in sight — the case this exists for.
+    let split = check(
+        &app,
+        json!({
+            "title": "Split an invoice",
+            "initiative": ini,
+            "severity": "blocking",
+            "globs": ["src/billing/**"],
+        }),
+    )
+    .await;
+    let unattached = check(&app, json!({ "title": "Nobody claimed this one" })).await;
+    let elsewhere = check(&app, json!({ "title": "Other work", "initiative": other })).await;
+
+    file_cases(&app, &split, &["a", "b", "c"]).await;
+    let cases = case_ids(&app, &split).await;
+
+    // Two verified, one never run — the spread the rollup has to report.
+    for (_key, id) in cases.iter().take(2) {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                &format!("/v1/cases/{id}/verdict"),
+                json!({ "verdict": "pass" }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+    }
+
+    let (s, v) = app
+        .get(&app.admin, &format!("/v1/initiatives/{ini}/verification"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["title"], "Split billing");
+    assert_eq!(v["checks"], json!(1), "only its own checks: {v}");
+    assert_eq!(v["cases"]["verified"], json!(2), "{v}");
+    assert_eq!(
+        v["cases"]["never"],
+        json!(1),
+        "a case nobody ran is the gap this exists to show: {v}"
+    );
+    assert!(
+        v["last_verified_at"].is_string(),
+        "'when was this last checked' is the other half of the question: {v}"
+    );
+    assert_eq!(
+        v["blocked"],
+        json!(true),
+        "a blocking check with a never-run case is not ready to ship: {v}"
+    );
+
+    // The other initiative's checks are its own, and the unattached one belongs
+    // to neither — a check nobody filed under an initiative is a fact, not a gap
+    // to be papered over by guessing.
+    let (_, o) = app
+        .get(&app.admin, &format!("/v1/initiatives/{other}/verification"))
+        .await;
+    assert_eq!(o["checks"], json!(1), "{o}");
+    assert_eq!(o["cases"]["total"], json!(0), "{o}");
+
+    // …and the list route can find both readings.
+    let (_, mine) = app
+        .get(
+            &app.admin,
+            &format!("/v1/projects/tp/checks?initiative={ini}"),
+        )
+        .await;
+    assert_eq!(mine["total"], json!(1), "{mine}");
+    assert_eq!(mine["items"][0]["id"], json!(split));
+    assert_eq!(mine["items"][0]["initiative"], json!(ini));
+
+    let (_, orphans) = app
+        .get(&app.admin, "/v1/projects/tp/checks?initiative=none")
+        .await;
+    assert_eq!(
+        orphans["total"],
+        json!(1),
+        "'none' finds what nothing agreed: {orphans}"
+    );
+    assert_eq!(orphans["items"][0]["id"], json!(unattached));
+
+    // The link is editable in both directions, and an explicit null detaches.
+    let (s, moved) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/checks/{elsewhere}"),
+            json!({ "initiative": ini }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["initiative"], json!(ini));
+    let (s, detached) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/checks/{elsewhere}"),
+            json!({ "initiative": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{detached}");
+    assert!(detached["initiative"].is_null(), "{detached}");
+}
+
+/// A wrong initiative id is refused where it is made.
+///
+/// Deliberately unlike a ticket's `initiative:` TAG, which the roadmap lets
+/// dangle and reports under `uninitiated` — a tag is typed by hand, while this
+/// is a column chosen from a list, so a mistake here is worth a teaching 422
+/// rather than a row that quietly belongs to nothing.
+#[tokio::test]
+async fn a_check_refuses_an_initiative_that_does_not_exist_or_is_elsewhere() {
+    let app = TestApp::spawn().await;
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({ "title": "Orphan", "initiative": "ini-nosuchid" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{b}");
+    assert_eq!(b["code"], "notfound.initiative");
+
+    // One that exists, but in another project.
+    let (s, other_project) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({ "id": "op", "name": "Other project" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{other_project}");
+    let (s, foreign) = app
+        .post(
+            &app.admin,
+            "/v1/initiatives",
+            json!({ "project": "op", "title": "Theirs" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{foreign}");
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({ "title": "Crossed wires", "initiative": foreign["id"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["code"], "validation.check_initiative");
+}
+
 /// A database written before the rename opens as `checks`, with every row intact.
 ///
 /// The rename is the one migration step that runs BEFORE the schema batch, and

@@ -1377,6 +1377,10 @@ pub struct Check {
     pub id: String,
     pub project: String,
     pub epic: Option<String>,
+    /// The initiative whose conversation agreed this check should exist.
+    /// Direct, not derived through the epic: the agreement usually predates any
+    /// epic, so deriving it would make the link unstateable when it is made.
+    pub initiative: Option<String>,
     pub title: String,
     pub body: String,
     pub precondition: String,
@@ -1407,6 +1411,7 @@ impl Check {
             "id": self.id,
             "project": self.project,
             "epic": self.epic,
+            "initiative": self.initiative,
             "title": self.title,
             "body": self.body,
             "precondition": self.precondition,

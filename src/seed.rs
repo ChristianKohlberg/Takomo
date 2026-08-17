@@ -13,8 +13,8 @@ use crate::error::ApiResult;
 use crate::ids::now_ms;
 use crate::schedule::Cadence;
 use crate::store::{
-    AskRequest, EnvironmentCreate, QuestionFilter, ScheduleCreate, ScheduleTemplate, Store,
-    TicketCreate, TicketListFilter, TimeoutAction,
+    AskRequest, CaseInput, CheckCreate, EnvironmentCreate, QuestionFilter, ReleasePush,
+    ScheduleCreate, ScheduleTemplate, Store, TicketCreate, TicketListFilter, TimeoutAction,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -505,8 +505,9 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
         advance(store, ticket, "done", SEEDER, None)?;
     }
 
-    initiative(store)?;
+    let ini = initiative(store)?;
     environments(store)?;
+    checks(store, &ini)?;
 
     // Counted, not hardcoded, so the summary can't drift from the content.
     Ok(SeedSummary {
@@ -586,7 +587,7 @@ fn environments(store: &Store) -> ApiResult<()> {
 ///
 /// Evidence is appended FIRST because a view cites entries by id, and the ids do
 /// not exist until the rows do.
-fn initiative(store: &Store) -> ApiResult<()> {
+fn initiative(store: &Store) -> ApiResult<String> {
     let now = now_ms();
     let ini = store.create_initiative(
         PROJECT,
@@ -786,6 +787,131 @@ fn initiative(store: &Store) -> ApiResult<()> {
             ..Default::default()
         },
         SEEDER,
+    )?;
+
+    Ok(ini.id)
+}
+
+/// Two checks under the demo initiative, with their cases in DIFFERENT states.
+///
+/// A fixture where everything is verified shows nothing. The whole point of the
+/// surface is the spread: what has never been run, what was verified and then
+/// invalidated by a merge, what failed, and what a person has approved. So this
+/// files two checks, records a mix of verdicts, and then pushes a release
+/// touching one check's globs — which stales exactly the cases that were
+/// verified and leaves the never-run one reading `never`.
+///
+/// It doubles as a traversability check on Checklist itself, the way the ticket
+/// seed is one on the workflow: if filing, verdicts and release staling stop
+/// composing, seeding notices before a person does.
+fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
+    let split = store.create_check(
+        &CheckCreate {
+            project: PROJECT.to_string(),
+            initiative: Some(initiative.to_string()),
+            title: "Split an invoice across two entities".to_string(),
+            body: "Open a shared invoice, split it, confirm each entity's share reaches AP."
+                .to_string(),
+            precondition: "A finalised invoice with at least two billable entities on it."
+                .to_string(),
+            layer: Some("ui".to_string()),
+            severity: Some("blocking".to_string()),
+            globs: vec!["src/billing/split/**".to_string()],
+            cost_agent_minutes: Some(6),
+            cost_human_minutes: Some(20),
+            ..Default::default()
+        },
+        SEEDER,
+    )?;
+
+    // A second check the same initiative agreed, at the API layer. The pair is
+    // what makes "a check covers ONE layer" legible rather than abstract.
+    let rounding = store.create_check(
+        &CheckCreate {
+            project: PROJECT.to_string(),
+            initiative: Some(initiative.to_string()),
+            title: "Rounding remainder lands on the majority entity".to_string(),
+            body: "POST a split whose shares do not divide evenly; assert where the cent goes."
+                .to_string(),
+            precondition: "A finalised invoice with an odd total.".to_string(),
+            layer: Some("api".to_string()),
+            severity: Some("advisory".to_string()),
+            globs: vec!["src/billing/rounding/**".to_string()],
+            cost_agent_minutes: Some(2),
+            ..Default::default()
+        },
+        SEEDER,
+    )?;
+
+    let case = |key: &str, label: &str, entities: &str| CaseInput {
+        key: key.to_string(),
+        label: label.to_string(),
+        assignment: json!({ "entities": entities }),
+        seeded: true,
+    };
+    store.file_cases(
+        &split.id,
+        &[
+            case("entities=2", "two entities", "2"),
+            case("entities=3", "three entities", "3"),
+            case("entities=12", "twelve entities", "12"),
+        ],
+        true,
+        SEEDER,
+    )?;
+    store.file_cases(
+        &rounding.id,
+        &[
+            case("odd-total", "total does not divide evenly", "2"),
+            case("even-total", "total divides evenly", "2"),
+        ],
+        true,
+        SEEDER,
+    )?;
+
+    // `entities=12` stays never-run on purpose: a case nobody has executed is
+    // the gap this feature exists to show, and it must not read the same as one
+    // that went stale.
+    let agent = "agent:runner-1";
+    let split_cases = store.list_cases(&split.id, false, None, None)?.0;
+    for c in split_cases.iter().filter(|c| c.key != "entities=12") {
+        store.record_verdict(&c.id, "agent", agent, "pass", None, None)?;
+    }
+    // One also carries a person's approval, so `approved` shows up as a state
+    // distinct from agent-verified.
+    if let Some(walked) = split_cases.iter().find(|c| c.key == "entities=2") {
+        store.record_verdict(
+            &walked.id,
+            "human",
+            SEEDER,
+            "pass",
+            Some("Walked it with Ada on the shared account."),
+            None,
+        )?;
+    }
+
+    let rounding_cases = store.list_cases(&rounding.id, false, None, None)?.0;
+    for c in &rounding_cases {
+        let (verdict, note) = if c.key == "odd-total" {
+            ("fail", Some("Remainder went to the smaller entity."))
+        } else {
+            ("pass", None)
+        };
+        store.record_verdict(&c.id, "agent", agent, verdict, note, None)?;
+    }
+
+    // A release touching the split check's claimed paths stales the cases that
+    // were verified and leaves the never-run one alone — the "never ≠ stale"
+    // rule, visible in the fixture rather than only in a test.
+    store.push_release(
+        &ReleasePush {
+            project: PROJECT.to_string(),
+            reference: "v1.4.0".to_string(),
+            note: Some("Split rewrite".to_string()),
+            touched_paths: vec!["src/billing/split/apportion.rs".to_string()],
+            orphan_globs: vec![],
+        },
+        agent,
     )?;
 
     Ok(())

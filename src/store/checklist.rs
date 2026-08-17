@@ -127,6 +127,8 @@ pub struct ReleasePush {
 pub struct CheckCreate {
     pub project: String,
     pub epic: Option<String>,
+    /// The initiative that agreed this check should exist.
+    pub initiative: Option<String>,
     pub title: String,
     pub body: String,
     pub precondition: String,
@@ -159,6 +161,7 @@ pub struct CheckPatch {
     pub globs: Option<Vec<String>>,
     pub metadata_merge: Option<Value>,
     pub epic: Option<Option<String>>,
+    pub initiative: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -203,6 +206,9 @@ pub struct PolicyInput {
 pub struct CheckFilter {
     pub project: String,
     pub epic: Option<String>,
+    /// Narrow to one initiative's checks; the literal "none" narrows to checks
+    /// no initiative claims.
+    pub initiative: Option<String>,
     pub severity: Option<String>,
     pub layer: Option<String>,
     pub include_archived: bool,
@@ -502,12 +508,43 @@ fn validate_epic(conn: &Connection, project: &str, epic: &str) -> ApiResult<()> 
     }
 }
 
+/// The initiative a check is filed under must exist and live in the same project.
+///
+/// Validated on the way in rather than left to dangle, unlike a ticket's
+/// `initiative:` TAG — a tag naming nothing is a reference somebody typed by
+/// hand, and the roadmap deliberately keeps its ticket visible in `uninitiated`
+/// rather than dropping it. This is a column chosen from a list, so a wrong id is
+/// a mistake worth refusing where it is made.
+fn validate_initiative(conn: &Connection, project: &str, initiative: &str) -> ApiResult<()> {
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT project FROM initiatives WHERE id = ?1",
+            params![initiative],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match row {
+        None => Err(ApiError::not_found("initiative", initiative).remedy(
+            "List them with GET /v1/initiatives?project=<project>, or omit 'initiative' \
+             to leave the check unattached."
+                .to_string(),
+        )),
+        Some(p) if p != project => Err(ApiError::validation(
+            "validation.check_initiative",
+            format!("Initiative '{initiative}' belongs to project '{p}', not '{project}'."),
+        )
+        .remedy("Pick an initiative in this project, or omit 'initiative'.".to_string())),
+        Some(_) => Ok(()),
+    }
+}
+
 fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
     let metadata_raw: String = row.get("metadata")?;
     Ok(Check {
         id: row.get("id")?,
         project: row.get("project")?,
         epic: row.get("epic")?,
+        initiative: row.get("initiative")?,
         title: row.get("title")?,
         body: row.get("body")?,
         precondition: row.get("precondition")?,
@@ -557,7 +594,8 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
     })
 }
 
-const CHECK_COLS: &str = "id, project, epic, title, body, precondition, layer, severity, \
+const CHECK_COLS: &str =
+    "id, project, epic, initiative, title, body, precondition, layer, severity, \
     verification, expiry_days, expiry_releases, cost_agent_minutes, cost_human_minutes, \
     metadata, version, created_by, created_at, updated_at, archived_at";
 
@@ -1036,6 +1074,7 @@ impl Store {
         let id = check_id();
         let project = req.project.clone();
         let epic = req.epic.clone();
+        let initiative = req.initiative.clone();
 
         self.with_tx(|tx| {
             project_exists(tx, &project)?;
@@ -1043,11 +1082,15 @@ impl Store {
             if let Some(e) = &epic {
                 validate_epic(tx, &project, e)?;
             }
+            if let Some(i) = &initiative {
+                validate_initiative(tx, &project, i)?;
+            }
             tx.execute(
-                "INSERT INTO checks (id, project, epic, title, body, precondition, layer, severity,
-                    verification, expiry_days, expiry_releases, cost_agent_minutes,
-                    cost_human_minutes, metadata, version, created_by, created_at, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16,?16)",
+                "INSERT INTO checks (id, project, epic, initiative, title, body, precondition,
+                    layer, severity, verification, expiry_days, expiry_releases,
+                    cost_agent_minutes, cost_human_minutes, metadata, version, created_by,
+                    created_at, updated_at)
+                 VALUES (?1,?2,?3,?17,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16,?16)",
                 params![
                     id,
                     project,
@@ -1065,6 +1108,7 @@ impl Store {
                     metadata_raw,
                     actor,
                     now,
+                    initiative,
                 ],
             )?;
             for g in &globs {
@@ -1131,9 +1175,23 @@ impl Store {
                     .query_map(params![filter.project], row_to_check)?
                     .collect::<Result<Vec<_>, _>>()?,
             };
+            // severity/layer/initiative are filtered in Rust rather than in SQL
+            // on purpose: the builder above hand-matches on `filter.epic` for
+            // positional binding, and each extra optional predicate would double
+            // the number of arms. `total` is counted after the retain, so the
+            // envelope still reports what actually matched.
             checks.retain(|l| {
                 filter.severity.as_deref().is_none_or(|s| s == l.severity)
                     && filter.layer.as_deref().is_none_or(|s| s == l.layer)
+                    && filter.initiative.as_deref().is_none_or(|i| {
+                        // "" is the `?initiative=none` convention: checks no
+                        // initiative claims, the same shape `epic=none` uses.
+                        if i.is_empty() {
+                            l.initiative.is_none()
+                        } else {
+                            l.initiative.as_deref() == Some(i)
+                        }
+                    })
             });
             let total = checks.len() as i64;
             checks.truncate(limit as usize);
@@ -1210,6 +1268,9 @@ impl Store {
             if let Some(Some(e)) = &patch.epic {
                 validate_epic(tx, &existing.project, e)?;
             }
+            if let Some(Some(i)) = &patch.initiative {
+                validate_initiative(tx, &existing.project, i)?;
+            }
 
             macro_rules! set_plain {
                 ($field:ident, $col:literal) => {
@@ -1243,6 +1304,7 @@ impl Store {
             set_override!(cost_agent_minutes, "cost_agent_minutes");
             set_override!(cost_human_minutes, "cost_human_minutes");
             set_override!(epic, "epic");
+            set_override!(initiative, "initiative");
 
             if let Some(merge) = &patch.metadata_merge {
                 let mut merged = existing.metadata.clone();
@@ -1921,6 +1983,94 @@ impl Store {
                 "percent": percent(&total),
                 "epics": epics,
                 "check_detail": checks.iter().map(|l| l.to_json()).collect::<Vec<_>>(),
+            }))
+        })
+    }
+
+    /// One initiative's verification standing: "3 stale, 1 never run, 6
+    /// verified, last verified when".
+    ///
+    /// Lives here rather than in `initiatives.rs` because it is checklist
+    /// arithmetic — it reuses `row_to_check`, `load_counts` and `percent`, and a
+    /// second implementation of those is how two answers to the same question
+    /// start disagreeing.
+    ///
+    /// Served as a SUB-RESOURCE rather than folded into `GET /v1/initiatives/{id}`
+    /// for a cost reason: `Initiative::to_json` is shared by the list and the
+    /// detail read, so inlining this would make a 200-item initiative list pay a
+    /// checks-and-cases scan per row — the exact mistake the bounded list routes
+    /// exist to avoid.
+    pub fn initiative_verification(&self, initiative: &str) -> ApiResult<Value> {
+        self.with_conn(|conn| {
+            let (project, title): (String, String) = conn
+                .query_row(
+                    "SELECT project, title FROM initiatives WHERE id = ?1",
+                    params![initiative],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| ApiError::not_found("initiative", initiative))?;
+
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {CHECK_COLS} FROM checks \
+                 WHERE initiative = ?1 AND archived_at IS NULL ORDER BY title"
+            ))?;
+            let mut checks = stmt
+                .query_map(params![initiative], row_to_check)?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            for check in &mut checks {
+                check.globs = load_globs(conn, &check.id)?;
+                check.counts = load_counts(conn, &check.id)?;
+                check.orphan_globs = load_orphan_globs(conn, &project, &check.id)?;
+                check.policy = Some(resolve_policy(conn, check)?);
+            }
+
+            let mut total = CheckCounts::default();
+            let mut blocking_outstanding = 0i64;
+            for check in &checks {
+                total.total += check.counts.total;
+                total.approved += check.counts.approved;
+                total.verified += check.counts.verified;
+                total.stale += check.counts.stale;
+                total.failed += check.counts.failed;
+                total.unreachable += check.counts.unreachable;
+                total.never += check.counts.never;
+                // Only `blocking` severity is a reason not to ship; advisory and
+                // low nag. A gate that fires on everything gets overridden out of
+                // habit and stops meaning anything.
+                if check.severity == "blocking" {
+                    blocking_outstanding +=
+                        check.counts.stale + check.counts.failed + check.counts.never;
+                }
+            }
+
+            // The freshest verdict anywhere under the initiative, agent or human.
+            // One aggregate over the join rather than a scan of `case_verdicts`:
+            // the summary columns already carry the last of each kind.
+            let last_verified_at: Option<i64> = conn
+                .query_row(
+                    "SELECT MAX(MAX(COALESCE(c.agent_at, 0), COALESCE(c.human_at, 0))) \
+                     FROM cases c JOIN checks k ON k.id = c.check_id \
+                     WHERE k.initiative = ?1 AND k.archived_at IS NULL AND c.retired_at IS NULL",
+                    params![initiative],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()?
+                .flatten()
+                .filter(|v| *v > 0);
+
+            Ok(json!({
+                "initiative": initiative,
+                "project": project,
+                "title": title,
+                "checks": checks.len(),
+                "cases": total.to_json(),
+                "percent": percent(&total),
+                "last_verified_at": last_verified_at.map(crate::ids::iso),
+                "blocked": blocking_outstanding > 0,
+                "blocking_outstanding": blocking_outstanding,
+                "check_detail": checks.iter().map(|c| c.to_json()).collect::<Vec<_>>(),
             }))
         })
     }

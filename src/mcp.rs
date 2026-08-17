@@ -729,6 +729,11 @@ pub struct InitiativeShowArgs {
     pub limit: Option<i64>,
     /// Opaque cursor from a previous page's `next_cursor`.
     pub cursor: Option<String>,
+    /// Include this initiative's verification standing: how many of its checks'
+    /// cases are verified, stale, failed or never run, and when one was last
+    /// verified. Off by default because it costs a scan over the checks and
+    /// cases beneath the initiative.
+    pub verification: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -805,6 +810,9 @@ pub struct ChecksArgs {
     pub project: String,
     /// Narrow to one epic's checks, or "none" for checks nobody grouped.
     pub epic: Option<String>,
+    /// Narrow to one initiative's checks, or "none" for checks no initiative
+    /// claims — the gap between what was agreed and what got written down.
+    pub initiative: Option<String>,
     /// Narrow by severity: blocking, advisory, low.
     pub severity: Option<String>,
     /// Narrow by layer: ui, api, other.
@@ -835,6 +843,10 @@ pub struct CheckFileArgs {
     pub title: String,
     /// Epic ticket id to group under. Omit to leave it ungrouped.
     pub epic: Option<String>,
+    /// The initiative whose conversation agreed this check should exist. This is
+    /// how a characterisation test you settled on while discussing a feature
+    /// stays attached to that discussion — file it even before an epic exists.
+    pub initiative: Option<String>,
     /// Free-form traversal an agent or a human follows. No step model, no DAG —
     /// prose is the content.
     pub body: Option<String>,
@@ -1874,7 +1886,9 @@ impl TakomoMcp {
     #[tool(
         description = "Fetch one initiative with its rollup and a page of entries, newest first. \
         Entry text is included; attachment bytes are not — fetch those from \
-        GET /v1/initiatives/{id}/entries/{entry}/content."
+        GET /v1/initiatives/{id}/entries/{entry}/content. Pass verification=true to also get the \
+        standing of the checks filed under this initiative: how many of their cases are verified, \
+        stale, failed or never run, and when one was last verified."
     )]
     async fn takomo_initiative_show(
         &self,
@@ -2037,6 +2051,12 @@ impl TakomoMcp {
                 json!(entries.iter().map(|e| e.to_json()).collect::<Vec<_>>()),
             );
             m.insert("next_cursor".to_string(), json!(next_cursor));
+            if a.verification.unwrap_or(false) {
+                m.insert(
+                    "verification".to_string(),
+                    self.state.store.initiative_verification(&a.id)?,
+                );
+            }
         }
         Ok(json!({ "ok": true, "initiative": out }))
     }
@@ -3034,9 +3054,14 @@ impl TakomoMcp {
             Some("none") => Some(String::new()),
             other => other.map(str::to_string),
         };
+        let initiative = match a.initiative.as_deref() {
+            Some("none") => Some(String::new()),
+            other => other.map(str::to_string),
+        };
         let filter = crate::store::CheckFilter {
             project: a.project.clone(),
             epic,
+            initiative,
             severity: a.severity,
             layer: a.layer,
             include_archived: false,
@@ -3093,6 +3118,7 @@ impl TakomoMcp {
         let req = crate::store::CheckCreate {
             project: a.project.clone(),
             epic: a.epic,
+            initiative: a.initiative,
             title: a.title,
             body: a.body.unwrap_or_default(),
             precondition: a.precondition.unwrap_or_default(),
