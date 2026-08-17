@@ -16409,11 +16409,7 @@ async fn root_redirects_to_board_without_auth() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
-    let resp = client
-        .get(app.url("/"))
-        .send()
-        .await
-        .expect("GET /");
+    let resp = client.get(app.url("/")).send().await.expect("GET /");
     assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
     assert_eq!(
         resp.headers().get("location").and_then(|v| v.to_str().ok()),
