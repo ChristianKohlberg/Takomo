@@ -26,6 +26,7 @@ import {
   LayoutGridIcon,
   LightbulbIcon,
   LogOutIcon,
+  NetworkIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   ServerIcon,
@@ -41,6 +42,7 @@ export interface NavLabels {
   board: string
   inbox: string
   initiatives: string
+  mindmaps: string
   schedules: string
   verification: string
   environments: string
@@ -103,6 +105,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   inbox: '/inbox',
   initiatives: '/initiatives',
+  mindmaps: '/mindmaps',
   schedules: '/schedules',
   verification: '/verification',
   environments: '/environments',
@@ -112,6 +115,7 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   board: LayoutGridIcon,
   inbox: InboxIcon,
   initiatives: LightbulbIcon,
+  mindmaps: NetworkIcon,
   schedules: CalendarClockIcon,
   verification: ShieldCheckIcon,
   environments: ServerIcon,
@@ -120,9 +124,12 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
 // Verification sits after the work surfaces and before Environments, which is
 // its configuration: you read what needs verifying far more often than you edit
 // where it runs.
+// Mindmaps sits before Initiatives because that is the order the thinking runs
+// in: a brainstorm becomes a direction becomes work.
 const NAV_ORDER: (keyof NavLabels)[] = [
   'board',
   'inbox',
+  'mindmaps',
   'initiatives',
   'schedules',
   'verification',

@@ -509,6 +509,7 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
     let ini = initiative(store)?;
     environments(store)?;
     checks(store, &ini)?;
+    mindmap(store)?;
 
     // Counted, not hardcoded, so the summary can't drift from the content.
     Ok(SeedSummary {
@@ -951,6 +952,67 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
 }
 
 /// Every ticket in the demo project.
+/// One brainstorm, mid-flight — the only state a mindmap is interesting in.
+///
+/// Two branches have graduated and two have not, because the graduated ones are
+/// what make the page read as more than a note-taker: a map is a picture of what
+/// the thinking turned into, and that only shows once something has.
+fn mindmap(store: &Store) -> ApiResult<()> {
+    let map = store.create_mindmap(
+        PROJECT,
+        &crate::store::MindmapCreate {
+            title: "Payments rebuild".to_string(),
+            summary: Some("Where the billing work came from.".to_string()),
+            metadata: None,
+        },
+        SEEDER,
+    )?;
+
+    let grow =
+        |parent: Option<&str>, texts: &[&str]| -> ApiResult<Vec<crate::store::MindmapNode>> {
+            store.grow_mindmap(
+                &map.id,
+                &texts
+                    .iter()
+                    .map(|text| crate::store::NodeAdd {
+                        parent: parent.map(str::to_string),
+                        text: (*text).to_string(),
+                        position: None,
+                    })
+                    .collect::<Vec<_>>(),
+                SEEDER,
+            )
+        };
+
+    let branches = grow(None, &["API", "integrations", "workflows", "ideas"])?;
+    // Leaves under some of them: a map where every branch is bare reads as an
+    // empty gesture, and one where every branch is full reads as a document.
+    grow(
+        Some(&branches[0].id),
+        &[
+            "versioning: v1 forever, or dated?",
+            "idempotent retries on capture",
+        ],
+    )?;
+    grow(
+        Some(&branches[1].id),
+        &[
+            "Stripe first, then the bank file",
+            "one webhook per provider?",
+        ],
+    )?;
+    grow(
+        Some(&branches[3].id),
+        &["let a customer split one invoice themselves"],
+    )?;
+
+    // One branch became work, one became a direction, two are still thoughts —
+    // which is what a real brainstorm looks like halfway through.
+    store.promote_mindmap_node(&map.id, &branches[0].id, "epic", SEEDER)?;
+    store.promote_mindmap_node(&map.id, &branches[1].id, "initiative", SEEDER)?;
+    Ok(())
+}
+
 fn seeded_tickets(store: &Store) -> ApiResult<Vec<crate::store::Ticket>> {
     let filter = TicketListFilter {
         project: Some(PROJECT.to_string()),

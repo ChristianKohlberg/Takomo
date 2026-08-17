@@ -19,6 +19,7 @@ const NAV = {
   board: 'Board',
   inbox: 'Inbox',
   initiatives: 'Initiatives',
+  mindmaps: 'Mindmaps',
   schedules: 'Schedules',
   verification: 'Verification',
   environments: 'Environments',

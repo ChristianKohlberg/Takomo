@@ -4389,6 +4389,35 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /mindmaps-page:
+    servers: [{ url: / }]
+    get:
+      operationId: mindmapsPage
+      tags: [mindmaps]
+      summary: Mindmaps page (the app shell; served at `/mindmaps`)
+      description: |
+        Self-contained page served at **`/mindmaps`** — documented under a distinct
+        key because the `/v1` collection route already claims `/mindmaps` in this
+        document, and OpenAPI paths are unique per document regardless of
+        `servers`.
+
+        A pan/zoom canvas: drag a node onto another to reparent it, into space to
+        pin it, and grow the map from the keyboard — Enter for the next thought,
+        Tab to go a level deeper. A node with no hand placement is laid out
+        automatically, which is what keeps a map growing at typing speed tidy;
+        "tidy up" hands every pinned node back to the layout.
+
+        On a phone the same tree renders as an indented list. That is not a
+        degraded canvas but a better shape for the screen: a pinch-zoom surface at
+        375 px is a worse way to read a tree than a list is.
+
+        Unauthenticated HTML; every data fetch carries the viewer's bearer token.
+        Reading needs `read`; growing, moving or promoting additionally needs
+        `write`.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /schedules-page:
     servers: [{ url: / }]
     get:

@@ -504,6 +504,7 @@ function Board({
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
+          mindmaps: t.mindmaps,
           schedules: t.schedules,
           verification: t.verification,
           environments: t.environments,
