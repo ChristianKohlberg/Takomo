@@ -5557,7 +5557,10 @@ async fn roadmap_ready_agrees_with_the_queue_under_an_epic_reservation() {
 
     let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
     assert_eq!(body["epics"][0]["ready"], 2, "epic rollup agrees: {body}");
-    assert_eq!(body["initiatives"][0]["ready"], 2, "lane rollup agrees: {body}");
+    assert_eq!(
+        body["initiatives"][0]["ready"], 2,
+        "lane rollup agrees: {body}"
+    );
 
     // Claiming the epic reserves its whole subtree, so the queue stops offering
     // the children to anyone.
@@ -5629,6 +5632,121 @@ async fn roadmap_ready_follows_the_queue_when_the_project_is_archived() {
     assert_eq!(
         body["epics"][0]["backlog"], 1,
         "still in a claimable state, just not offerable: {body}"
+    );
+}
+
+// An epic claim has no expiry to judge it by, so the roadmap reports who holds it
+// and whether anything under them has moved — the numbers an epic-first view needs
+// without one event-log walk per epic. And each epic names the lanes it belongs
+// to, the inverse of a lane's `epics`, so "what is this version part of" does not
+// require inverting a whole project's lanes client-side.
+#[tokio::test]
+async fn roadmap_epics_carry_their_claim_and_the_lanes_they_belong_to() {
+    let app = TestApp::spawn().await;
+    let ini = new_initiative(&app, "Payments", "open").await;
+    let other = new_initiative(&app, "Reporting", "open").await;
+    // Filed under two lanes: legitimate, and the reason the field is a list.
+    let epic = create_tagged(&app, "Payments v1", "epic", &format!("initiative:{ini}")).await;
+    let (s, b) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/tickets/{epic}"),
+            json!({ "tags_add": [format!("initiative:{other}")] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let child = app.create_typed("Charges", "task", Some(&epic)).await;
+    let unfiled = app.create_typed("Unfiled epic", "epic", None).await;
+
+    // Unclaimed: `claim` is null rather than an object of nulls, so "held" is one
+    // check for a client rather than three.
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let mine = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == epic.as_str())
+        .expect("epic")
+        .clone();
+    assert!(mine["claim"].is_null(), "unclaimed reads as null: {mine}");
+    // Both lanes, in a stable order.
+    let mut lanes: Vec<&str> = mine["initiatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    lanes.sort();
+    let mut want = vec![ini.as_str(), other.as_str()];
+    want.sort();
+    assert_eq!(lanes, want, "both lanes named: {mine}");
+
+    let unfiled_row = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == unfiled.as_str())
+        .expect("unfiled epic")
+        .clone();
+    assert_eq!(
+        unfiled_row["initiatives"],
+        json!([]),
+        "an epic under no lane reports an empty list, not null: {unfiled_row}"
+    );
+
+    // Claimed with no TTL: held until released, which is why movement is what
+    // there is to judge it by.
+    app.to_ready(&epic).await;
+    app.to_ready(&child).await;
+    let (s, lease) = app
+        .post(&app.worker, &format!("/v1/tickets/{epic}/claim"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{lease}");
+
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let mine = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == epic.as_str())
+        .expect("epic")
+        .clone();
+    let c = &mine["claim"];
+    assert_eq!(c["holder"], "agent:w1", "{c}");
+    assert_eq!(c["indefinite"], true, "no TTL means no expiry: {c}");
+    assert!(c["expires_at"].is_null(), "{c}");
+    assert!(c["held_since"].is_string(), "{c}");
+    assert!(c["held_for_seconds"].as_i64().unwrap() >= 0, "{c}");
+    // Anchored at the claim when nothing has moved since, so a fresh hold reads
+    // as barely idle rather than as idle since whenever the subtree last changed.
+    assert!(
+        c["idle_seconds"].as_i64().unwrap() < 60,
+        "a fresh claim is not reported as long-idle: {c}"
+    );
+
+    // An expired lease is not a hold: a bounded claim, backdated past its
+    // deadline, must not read as claimed.
+    app.to_ready(&unfiled).await;
+    let (s, b) = app
+        .post(
+            &app.worker,
+            &format!("/v1/tickets/{unfiled}/claim"),
+            json!({ "ttl_seconds": 1 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    app.force_claim_expiry(&unfiled, 1_000);
+    let (_, body) = app.get(&app.admin, "/v1/projects/tp/roadmap").await;
+    let expired = body["epics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == unfiled.as_str())
+        .expect("unfiled epic")
+        .clone();
+    assert!(
+        expired["claim"].is_null(),
+        "an expired lease is not a hold: {expired}"
     );
 }
 

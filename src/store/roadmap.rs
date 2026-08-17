@@ -87,13 +87,15 @@ fn ready_ctes() -> String {
 fn rollup_selects() -> String {
     format!(
         // Column ORDER is the contract with `collect_rollup`, which reads by
-        // index: 3 = ready, 4 = awaiting, 5 = claimable_state.
+        // index: 3 = ready, 4 = awaiting, 5 = claimable_state,
+        // 6 = last_activity.
         r#",
                SUM(CASE WHEN {ready} THEN 1 ELSE 0 END) AS ready,
                SUM(CASE WHEN EXISTS (SELECT 1 FROM questions q
                                       WHERE q.ticket = t.id AND q.status = 'open')
                         THEN 1 ELSE 0 END) AS awaiting,
-               COALESCE(MAX(ws.claimable), 0) AS claimable_state"#,
+               COALESCE(MAX(ws.claimable), 0) AS claimable_state,
+               MAX(t.updated_at) AS last_activity"#,
         ready = super::ready_sql::ready_conditions("?1"),
     )
 }
@@ -111,6 +113,10 @@ struct Rollup {
     /// Carrying at least one open question. An OVERLAY, not a partition — such a
     /// ticket is also counted in its own state, and may or may not be `ready`.
     awaiting_answer: i64,
+    /// Newest `updated_at` in the set, or None when the set is empty. Free — the
+    /// aggregate already walks these rows — and it is what lets an epic claim be
+    /// judged by movement without a second pass over the event log.
+    last_activity: Option<i64>,
     by_state: Map<String, Value>,
     by_category: Map<String, Value>,
 }
@@ -126,8 +132,8 @@ impl Rollup {
     }
 }
 
-/// Fold `(state, category, count, ready, awaiting, claimable)` rows — the shape
-/// every rollup query below returns — into a `Rollup`.
+/// Fold `(state, category, count, ready, awaiting, claimable, last_activity)`
+/// rows — the shape every rollup query below returns — into a `Rollup`.
 fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiResult<Rollup> {
     let rows = stmt
         .query_map(args, |r| {
@@ -138,6 +144,7 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
                 r.get::<_, i64>(3)?,
                 r.get::<_, i64>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -147,9 +154,15 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
     let mut ready = 0i64;
     let mut claimable = 0i64;
     let mut awaiting_answer = 0i64;
+    let mut last_activity: Option<i64> = None;
     let mut by_state: Map<String, Value> = Map::new();
     let mut by_category: Map<String, Value> = Map::new();
-    for (st, cat, n, rdy, awaiting, is_claimable) in rows {
+    for (st, cat, n, rdy, awaiting, is_claimable, touched) in rows {
+        // Newest write anywhere in the set. Grouped by state, so the max has to
+        // be folded across groups rather than read off one row.
+        if let Some(ts) = touched {
+            last_activity = Some(last_activity.map_or(ts, |cur: i64| cur.max(ts)));
+        }
         total += n;
         by_state.insert(st, json!(n));
         if cat == "done" {
@@ -177,6 +190,7 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
         // construction (its CASE requires `ws.claimable = 1`).
         backlog: (claimable - ready).max(0),
         awaiting_answer,
+        last_activity,
         by_state,
         by_category,
     })
@@ -373,6 +387,69 @@ fn epics_by_initiative(
     Ok(out)
 }
 
+/// Which initiatives each epic is filed under — `epics_by_initiative` inverted.
+///
+/// The lane→versions direction answers "where is this feature", and this one
+/// answers "what is this version part of". An epic-first reader needs the second,
+/// and inverting a whole project's lanes client-side to get it is work the server
+/// has already done.
+fn initiatives_by_epic(epics_for: &HashMap<String, Vec<String>>) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    // Sorted, so an epic in two lanes reports them in a stable order rather than
+    // whatever the hash iteration gave this time.
+    let mut lanes: Vec<&String> = epics_for.keys().collect();
+    lanes.sort();
+    for lane in lanes {
+        for epic in &epics_for[lane] {
+            out.entry(epic.clone()).or_default().push(lane.clone());
+        }
+    }
+    out
+}
+
+/// An epic's claim, as much of it as the row itself can answer.
+///
+/// Deliberately NOT `GET /v1/tickets/{id}/claim`. That route walks the event log
+/// to break movement down into created/closed/in_progress/blocked, which is worth
+/// a request for one epic and would be N event-log walks here — on an endpoint
+/// that already runs a query per epic. So this is the cheap half: who holds it,
+/// how long they have, and whether anything under them has moved since.
+///
+/// `idle_seconds` is anchored at the claim when nothing has moved, so a fresh
+/// claim reads as idle 0 rather than as idle-since-whenever. It is derived from
+/// `updated_at` rather than from events, which makes it a near-equivalent of that
+/// route's number and not the identical one — close enough to sort a list by,
+/// and the route remains the precise answer for one epic.
+///
+/// `None` when there is no active claim: an expired lease is not a hold.
+fn claim_summary(
+    holder: Option<String>,
+    since: Option<i64>,
+    expires_at: Option<i64>,
+    last_activity: Option<i64>,
+    now: i64,
+) -> Option<Value> {
+    let holder = holder?;
+    if expires_at.is_some_and(|e| e <= now) {
+        return None;
+    }
+    let anchor = match (last_activity, since) {
+        (Some(a), Some(s)) => Some(a.max(s)),
+        (a, s) => a.or(s),
+    };
+    Some(json!({
+        "holder": holder,
+        "held_since": since.map(iso),
+        "held_for_seconds": since.map(|s| ((now - s) / 1000).max(0)),
+        // An epic claimed without a TTL is held until released — there is no
+        // expiry to judge it by, which is exactly why movement is reported.
+        "indefinite": expires_at.is_none(),
+        "expires_at": expires_at.map(iso),
+        "last_activity_at": last_activity.map(iso),
+        "idle_seconds": anchor.map(|a| ((now - a) / 1000).max(0)),
+    }))
+}
+
 /// Contradiction codes for an initiative whose own status disagrees with the work
 /// filed under it. Pure derivation over the rollup — no extra query.
 ///
@@ -397,7 +474,12 @@ fn initiative_flags(status: &str, r: &Rollup) -> Vec<&'static str> {
 /// Every initiative in the project with its lane rollup, in creation order so a
 /// client renders a stable list. One extra query per initiative, matching what
 /// the per-epic rollups already cost.
-fn initiative_rollups(conn: &Connection, project: &str, now: i64) -> ApiResult<Vec<Value>> {
+fn initiative_rollups(
+    conn: &Connection,
+    project: &str,
+    now: i64,
+    epics_for: &HashMap<String, Vec<String>>,
+) -> ApiResult<Vec<Value>> {
     let mut stmt = conn.prepare(
         r#"
         SELECT id, title, status
@@ -416,7 +498,6 @@ fn initiative_rollups(conn: &Connection, project: &str, now: i64) -> ApiResult<V
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut epics_for = epics_by_initiative(conn, project)?;
     let mut out = Vec::with_capacity(rows.len());
     for (id, title, status) in rows {
         let r = rollup_for_initiative(conn, project, &id, now)?;
@@ -434,7 +515,7 @@ fn initiative_rollups(conn: &Connection, project: &str, now: i64) -> ApiResult<V
             "awaiting_answer": r.awaiting_answer,
             "by_state": Value::Object(r.by_state),
             "by_category": Value::Object(r.by_category),
-            "epics": epics_for.remove(&id).unwrap_or_default(),
+            "epics": epics_for.get(&id).cloned().unwrap_or_default(),
             "flags": flags,
         }));
     }
@@ -505,7 +586,8 @@ impl Store {
                 r#"
                 SELECT t.id, t.title, t.state, t.priority,
                        COALESCE((SELECT ws.category FROM workflow_states ws
-                                 WHERE ws.project = t.project AND ws.state = t.state), '') AS category
+                                 WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
+                       t.claim_holder, t.claim_since, t.claim_expires_at
                 FROM tickets t
                 WHERE t.project = ?1 AND t.type = 'epic'
                   AND (?2 IS NULL OR t.id = ?2)
@@ -520,15 +602,24 @@ impl Store {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<i64>>(6)?,
+                        r.get::<_, Option<i64>>(7)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
+            // Which lanes each epic belongs to. One query for the whole project,
+            // shared by both directions of the join below.
+            let epics_for = epics_by_initiative(conn, project)?;
+            let lanes_of = initiatives_by_epic(&epics_for);
+
             let mut out = Vec::with_capacity(epics.len());
-            for (id, title, st, priority, category) in epics {
+            for (id, title, st, priority, category, holder, since, expires) in epics {
                 let r = rollup_for_epic(conn, &id, now)?;
                 let flags = epic_flags(&category, &r);
                 let percent = r.percent();
+                let claim = claim_summary(holder, since, expires, r.last_activity, now);
                 out.push(json!({
                     "id": id,
                     "title": title,
@@ -543,6 +634,10 @@ impl Store {
                     "awaiting_answer": r.awaiting_answer,
                     "by_state": Value::Object(r.by_state),
                     "by_category": Value::Object(r.by_category),
+                    // The inverse of a lane's `epics`: what this version is part
+                    // of. Empty for an epic filed under no initiative.
+                    "initiatives": lanes_of.get(&id).cloned().unwrap_or_default(),
+                    "claim": claim,
                     "flags": flags,
                 }));
             }
@@ -561,7 +656,8 @@ impl Store {
                 // `unparented` is: a lane spans versions, so reporting lanes
                 // beside ONE version would invite reading the lane's numbers as
                 // that version's.
-                body["initiatives"] = Value::Array(initiative_rollups(conn, project, now)?);
+                body["initiatives"] =
+                    Value::Array(initiative_rollups(conn, project, now, &epics_for)?);
 
                 let ui = rollup_uninitiated(conn, project, now)?;
                 body["uninitiated"] = json!({

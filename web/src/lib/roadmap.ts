@@ -22,12 +22,30 @@ export interface Counts {
   by_category?: Record<string, number>
 }
 
+/**
+ * An epic's ACTIVE claim, or null. The cheap half of `GET /v1/tickets/{id}/claim`
+ * — enough to scan a list by, with that route the precise answer for one epic.
+ */
+export interface EpicClaim {
+  holder: string
+  held_since: string | null
+  held_for_seconds: number | null
+  /** An active claim with no expiry: held until released, so movement judges it. */
+  indefinite: boolean
+  expires_at: string | null
+  last_activity_at: string | null
+  idle_seconds: number | null
+}
+
 export interface RoadmapEpic extends Counts {
   id: string
   title: string
   state: string
   state_category: string
   priority: string
+  /** Ids of the lanes this epic is filed under — the inverse of a lane's `epics`. */
+  initiatives?: string[]
+  claim?: EpicClaim | null
   flags: string[]
 }
 
@@ -97,4 +115,48 @@ export const LANE_FLAGS_SHOWN = ['parked_with_ready_work'] as const
 export function laneWarnings(l: RoadmapLane | undefined): string[] {
   if (!l) return []
   return LANE_FLAGS_SHOWN.filter((f) => l.flags.includes(f))
+}
+
+/** Lane id → title, for naming the lanes an epic belongs to. */
+export function laneTitles(rm: Roadmap | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const l of rm?.initiatives ?? []) out[l.id] = l.title
+  return out
+}
+
+/** Seconds of no movement past which a held epic is worth looking at. */
+export const STALLED_AFTER_SECONDS = 86_400
+
+/**
+ * What in this project wants a person's attention, counted once so a reader gets
+ * the answer before scrolling.
+ *
+ * `stalled` is the number that only exists because an epic claim need not expire:
+ * a held epic with nothing moving underneath is invisible in a ticket board, and
+ * no lease is going to lapse and give it back.
+ */
+export interface EpicAttention {
+  held: number
+  stalled: number
+  awaiting: number
+  flagged: number
+}
+
+export function epicAttention(
+  epics: RoadmapEpic[],
+  stalledAfter: number = STALLED_AFTER_SECONDS,
+): EpicAttention {
+  let held = 0
+  let stalled = 0
+  let awaiting = 0
+  let flagged = 0
+  for (const e of epics) {
+    if (e.claim) {
+      held++
+      if ((e.claim.idle_seconds ?? 0) >= stalledAfter) stalled++
+    }
+    if (e.awaiting_answer > 0) awaiting++
+    if (e.flags.length > 0) flagged++
+  }
+  return { held, stalled, awaiting, flagged }
 }

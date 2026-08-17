@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { lane, laneVersions, laneWarnings, type Roadmap } from './roadmap'
+import {
+  epicAttention,
+  lane,
+  laneTitles,
+  laneVersions,
+  laneWarnings,
+  type Roadmap,
+} from './roadmap'
 
 const counts = { total: 0, done: 0, percent: 0, ready: 0, backlog: 0, awaiting_answer: 0 }
 
@@ -86,5 +93,60 @@ describe('laneWarnings', () => {
 
   it('is empty for no lane', () => {
     expect(laneWarnings(undefined)).toEqual([])
+  })
+})
+
+describe('laneTitles', () => {
+  it('maps lane id to title, and is empty when a response carries no lanes', () => {
+    expect(laneTitles(rm)).toEqual({ 'ini-a': 'Billing', 'ini-b': 'Empty' })
+    expect(laneTitles({ ...rm, initiatives: undefined })).toEqual({})
+    expect(laneTitles(undefined)).toEqual({})
+  })
+})
+
+describe('epicAttention', () => {
+  const claim = {
+    holder: 'agent:w1',
+    held_since: '2026-08-01T00:00:00.000Z',
+    held_for_seconds: 100,
+    indefinite: true,
+    expires_at: null,
+    last_activity_at: null,
+    idle_seconds: 100,
+  }
+
+  it('counts nothing for an unheld, unflagged project', () => {
+    expect(epicAttention([epic('a', 'A'), epic('b', 'B')])).toEqual({
+      held: 0,
+      stalled: 0,
+      awaiting: 0,
+      flagged: 0,
+    })
+  })
+
+  // The number that only exists because an epic claim need not expire: nothing
+  // will lapse and hand this back on its own.
+  it('counts a held epic as stalled once nothing has moved for long enough', () => {
+    const fresh = epic('a', 'A', { claim })
+    const cold = epic('b', 'B', { claim: { ...claim, idle_seconds: 200_000 } })
+    expect(epicAttention([fresh, cold])).toMatchObject({ held: 2, stalled: 1 })
+  })
+
+  it('takes the threshold as a parameter rather than burying it', () => {
+    const e = epic('a', 'A', { claim: { ...claim, idle_seconds: 3_600 } })
+    expect(epicAttention([e]).stalled).toBe(0)
+    expect(epicAttention([e], 1_800).stalled).toBe(1)
+  })
+
+  // A claim with no idle number is held but not evidence of being stuck.
+  it('does not call a claim with no idle reading stalled', () => {
+    const e = epic('a', 'A', { claim: { ...claim, idle_seconds: null } })
+    expect(epicAttention([e])).toMatchObject({ held: 1, stalled: 0 })
+  })
+
+  it('counts open questions and flags per epic, not per occurrence', () => {
+    const q = epic('a', 'A', { awaiting_answer: 3 })
+    const f = epic('b', 'B', { flags: ['done_with_open_children', 'empty_epic'] })
+    expect(epicAttention([q, f])).toMatchObject({ awaiting: 1, flagged: 1 })
   })
 })

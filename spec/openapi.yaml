@@ -543,6 +543,46 @@ paths:
                             claimable and is not worth picking up.
                         by_state: { type: object, additionalProperties: { type: integer } }
                         by_category: { type: object, additionalProperties: { type: integer } }
+                        initiatives:
+                          type: array
+                          description: |
+                            Ids of the initiatives this epic is filed under — the inverse of a
+                            lane's `epics`, so "what is this version part of" needs no
+                            client-side inversion of the whole project. Empty for an epic under
+                            no lane; more than one is legitimate.
+                          items: { type: string }
+                        claim:
+                          type: [object, "null"]
+                          description: |
+                            The epic's ACTIVE claim, or `null` — an expired lease is not a hold,
+                            so "is it held" is one check rather than three.
+
+                            An epic claimed without `ttl_seconds` is held until released, so
+                            there is no expiry to judge it by and movement is what there is
+                            instead. `idle_seconds` is anchored at the claim when nothing has
+                            moved since, so a fresh hold reads as barely idle rather than as
+                            idle since whenever the subtree last changed.
+
+                            This is the CHEAP half of `GET /v1/tickets/{id}/claim`, derived from
+                            row timestamps. That route walks the event log to break movement into
+                            created/closed/in_progress/blocked, which is worth a request for one
+                            epic and would be one walk per epic here. Use this to scan a list;
+                            use the route for the precise answer on one.
+                          properties:
+                            holder: { type: string }
+                            held_since: { type: [string, "null"], format: date-time }
+                            held_for_seconds: { type: [integer, "null"] }
+                            indefinite:
+                              type: boolean
+                              description: An active claim with no expiry — an epic claim without a TTL.
+                            expires_at: { type: [string, "null"], format: date-time }
+                            last_activity_at:
+                              type: [string, "null"]
+                              format: date-time
+                              description: Newest write anywhere in the subtree; null when the subtree is empty.
+                            idle_seconds:
+                              type: [integer, "null"]
+                              description: Seconds since the last movement, anchored at the claim when nothing has moved.
                         flags:
                           type: array
                           description: |
