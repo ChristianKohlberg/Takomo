@@ -67,31 +67,19 @@ pub async fn create(
         super::get_i64(obj, "claim_ttl_seconds")?,
         super::get_i64(obj, "max_claim_ttl_seconds")?,
     )?;
-    let mut project = state
-        .store
-        .create_project(&id, &name, workflow, &ctx.actor)?;
-    // Optional per-project human-facing question language, set at creation.
-    if let Some(lang) = super::get_str(obj, "question_language")? {
-        project = state
-            .store
-            .set_question_language(&id, Some(&lang), &ctx.actor)?;
-    }
-    // Optional per-project style guide for agent-written text, set at creation.
-    if let Some(style) = style {
-        project = state.store.set_style_guide(&id, Some(&style), &ctx.actor)?;
-    }
-    // Optional per-project answer-link default lifetime, set at creation.
-    if let Some(ttl) = link_ttl {
-        project = state
-            .store
-            .set_answer_link_ttl(&id, Some(ttl), &ctx.actor)?;
-    }
-    // Optional per-project lease policy, set at creation.
-    if claim_ttl.is_some() || max_claim_ttl.is_some() {
-        project = state
-            .store
-            .set_claim_ttls(&id, claim_ttl, max_claim_ttl, &ctx.actor)?;
-    }
+    let project = state.store.create_project_with_settings(
+        &id,
+        &name,
+        workflow,
+        &ctx.actor,
+        &crate::store::ProjectCreateSettings {
+            question_language: super::get_str(obj, "question_language")?,
+            style_guide: style,
+            answer_link_ttl_seconds: link_ttl,
+            claim_ttl_seconds: claim_ttl,
+            max_claim_ttl_seconds: max_claim_ttl,
+        },
+    )?;
     state.wake();
     Ok((StatusCode::CREATED, Json(project.to_json())))
 }

@@ -49,7 +49,7 @@ pub use oauth::{
 };
 pub use projects::{
     normalize_answer_link_ttl, normalize_claim_ttls, normalize_style_guide, Conventions,
-    DeletedCounts, MAX_STYLE_GUIDE_CHARS,
+    DeletedCounts, ProjectCreateSettings, MAX_STYLE_GUIDE_CHARS,
 };
 pub use questions::{
     question_quality_hints, AnswerOutcome, AskRequest, QuestionFilter, ResumeBlocked,
@@ -579,6 +579,27 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if !columns.iter().any(|c| c == "claim_since") {
         conn.execute("ALTER TABLE tickets ADD COLUMN claim_since INTEGER", [])?;
     }
+    let idempotency_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(idempotency)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !idempotency_cols.is_empty() && !idempotency_cols.iter().any(|c| c == "body_hash") {
+        conn.execute("ALTER TABLE idempotency ADD COLUMN body_hash TEXT", [])?;
+    }
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS comment_idempotency (
+            actor TEXT NOT NULL,
+            key TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            body_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (actor, key)
+        )",
+        [],
+    )?;
     // Created after the columns are guaranteed to exist. This index IS the
     // exactly-once guarantee, so it is added on an old database too.
     conn.execute(
@@ -804,6 +825,16 @@ CREATE TABLE IF NOT EXISTS idempotency (
   actor      TEXT NOT NULL,
   key        TEXT NOT NULL,
   ticket     TEXT NOT NULL,
+  body_hash  TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (actor, key)
+);
+
+CREATE TABLE IF NOT EXISTS comment_idempotency (
+  actor      TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  comment    TEXT NOT NULL,
+  body_hash  TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (actor, key)
 );

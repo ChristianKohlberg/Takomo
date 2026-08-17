@@ -286,6 +286,16 @@ fn validate_workflow(wf: &Workflow, existing_states: &[String]) -> ApiResult<()>
     .details(serde_json::json!({ "problems": problems })))
 }
 
+/// Optional per-project settings applied atomically at creation time.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectCreateSettings {
+    pub question_language: Option<String>,
+    pub style_guide: Option<String>,
+    pub answer_link_ttl_seconds: Option<i64>,
+    pub claim_ttl_seconds: Option<i64>,
+    pub max_claim_ttl_seconds: Option<i64>,
+}
+
 impl Store {
     pub fn create_project(
         &self,
@@ -340,6 +350,104 @@ impl Store {
                 answer_link_ttl_seconds: None,
                 claim_ttl_seconds: None,
                 max_claim_ttl_seconds: None,
+                archived_at: None,
+                created_at: now,
+            })
+        })
+    }
+
+    /// Create a project and apply optional per-project settings in one
+    /// transaction. Callers must validate each setting (style guide length,
+    /// claim-ttl pairing, …) before calling — same contract as the HTTP
+    /// handler's pre-insert checks.
+    pub fn create_project_with_settings(
+        &self,
+        id: &str,
+        name: &str,
+        workflow: Option<Workflow>,
+        actor: &str,
+        settings: &ProjectCreateSettings,
+    ) -> ApiResult<Project> {
+        if !project_id_valid(id) {
+            return Err(ApiError::validation(
+                "project.id",
+                format!(
+                    "Project id '{id}' is invalid. Use 2-16 chars matching ^[a-z][a-z0-9-]{{1,15}}$; it becomes the ticket id prefix."
+                ),
+            ));
+        }
+        let wf = workflow.unwrap_or_else(crate::workflow::factory_default);
+        validate_workflow(&wf, &[])?;
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let exists: Option<String> = tx
+                .query_row("SELECT id FROM projects WHERE id = ?1", params![id], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            if exists.is_some() {
+                return Err(ApiError::conflict(
+                    "project.exists",
+                    format!("Project '{id}' already exists. Choose a different id, or GET /v1/projects/{id}/workflow to inspect it."),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO projects (id, name, workflow_json, question_language, style_guide, \
+                 answer_link_ttl_seconds, claim_ttl_seconds, max_claim_ttl_seconds, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    id,
+                    name,
+                    serde_json::to_string(&wf).unwrap(),
+                    settings.question_language,
+                    settings.style_guide,
+                    settings.answer_link_ttl_seconds,
+                    settings.claim_ttl_seconds,
+                    settings.max_claim_ttl_seconds,
+                    now,
+                ],
+            )?;
+            sync_workflow_states(tx, id, &wf)?;
+            emit_event(
+                tx,
+                None,
+                Some(id),
+                actor,
+                "workflow_changed",
+                serde_json::json!({ "workflow": wf.name, "on": "project_created" }),
+                now,
+            )?;
+            let has_settings = settings.question_language.is_some()
+                || settings.style_guide.is_some()
+                || settings.answer_link_ttl_seconds.is_some()
+                || settings.claim_ttl_seconds.is_some()
+                || settings.max_claim_ttl_seconds.is_some();
+            if has_settings {
+                emit_event(
+                    tx,
+                    None,
+                    Some(id),
+                    actor,
+                    "project_updated",
+                    serde_json::json!({
+                        "question_language": settings.question_language,
+                        "style_guide": settings.style_guide,
+                        "answer_link_ttl_seconds": settings.answer_link_ttl_seconds,
+                        "claim_ttl_seconds": settings.claim_ttl_seconds,
+                        "max_claim_ttl_seconds": settings.max_claim_ttl_seconds,
+                    }),
+                    now,
+                )?;
+            }
+            Ok(Project {
+                id: id.to_string(),
+                name: name.to_string(),
+                workflow: wf,
+                question_language: settings.question_language.clone(),
+                style_guide: settings.style_guide.clone(),
+                answer_link_ttl_seconds: settings.answer_link_ttl_seconds,
+                claim_ttl_seconds: settings.claim_ttl_seconds,
+                max_claim_ttl_seconds: settings.max_claim_ttl_seconds,
                 archived_at: None,
                 created_at: now,
             })
@@ -863,6 +971,10 @@ impl Store {
             // blocking the delete. That is a separate bug with its own ticket.
             tx.execute(
                 "DELETE FROM deps WHERE ticket IN (SELECT id FROM tickets WHERE project = ?1) OR blocked_by IN (SELECT id FROM tickets WHERE project = ?1)",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM comment_idempotency WHERE comment IN (SELECT id FROM comments WHERE ticket IN (SELECT id FROM tickets WHERE project = ?1))",
                 params![id],
             )?;
             tx.execute(

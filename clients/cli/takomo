@@ -162,8 +162,8 @@ curl_never_sent() { case "$1" in 5|6|7) return 0 ;; *) return 1 ;; esac; }
 #                                  the store treats a repeat as success.
 #
 # unsafe — never replayed automatically; these fail loudly instead:
-#   POST .../comments              appends unconditionally: would double-post the
-#                                  evidence a ticket is verified by.
+#   POST .../comments              was unconditional before idempotency keys;
+#                                  still unsafe without Idempotency-Key.
 #   POST /v1/tokens, /v1/shares    would mint a second live credential whose
 #                                  one-time plaintext you never saw.
 #   POST /v1/ready/claim           would leak a lease on ticket A and hand you B.
@@ -194,6 +194,7 @@ replay_class() {
     POST)
       case "$path" in
         /v1/tickets) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
+        /v1/tickets/*/comments) case "$extra" in Idempotency-Key:*) echo safe; return ;; esac ;;
         /v1/questions) echo safe; return ;;
         /v1/tickets/*/claim|/v1/tickets/*/archive|/v1/tickets/*/unarchive|/v1/tickets/*/deps)
           echo safe; return ;;
@@ -965,8 +966,9 @@ cmd_move() {
 cmd_comment() {
   local id=${1:-} text=${2:-}
   { [ -n "$id" ] && [ -n "$text" ]; } || die "comment: usage: takomo comment ID TEXT"
-  local data; data=$(TS_B="$text" python3 -c 'import json,os; print(json.dumps({"body":os.environ["TS_B"]}))')
-  api POST "/v1/tickets/$(urlenc "$id")/comments" "$data" >/dev/null
+  local data idem; data=$(TS_B="$text" python3 -c 'import json,os; print(json.dumps({"body":os.environ["TS_B"]}))')
+  idem="takomo-cli-$(date +%s)-$$-$RANDOM"
+  api POST "/v1/tickets/$(urlenc "$id")/comments" "$data" "Idempotency-Key: $idem" >/dev/null
   echo "comment added to $id"
 }
 

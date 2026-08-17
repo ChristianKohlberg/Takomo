@@ -79,12 +79,8 @@ pub async fn create(
     };
     ctx.require_project(&req.project)?;
 
-    let idem_key = headers
-        .get("Idempotency-Key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|k| !k.is_empty());
-    if let Some(k) = idem_key {
+    let idem_key = parse_idempotency_key(&headers)?;
+    if let Some(ref k) = idem_key {
         if k.len() > 128 {
             return Err(ApiError::bad_request(
                 "validation.idempotency_key",
@@ -93,7 +89,10 @@ pub async fn create(
         }
     }
 
-    let (ticket, similar, replayed) = state.store.create_ticket(&req, &ctx.actor, idem_key)?;
+    let (ticket, similar, replayed) =
+        state
+            .store
+            .create_ticket(&req, &ctx.actor, idem_key.as_deref())?;
     state.wake();
     let mut out = ticket.to_json(now_ms());
     out["similar"] = Value::Array(similar);
@@ -323,6 +322,7 @@ pub async fn add_comment(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
@@ -330,9 +330,36 @@ pub async fn add_comment(
     let obj = body_object(&body)?;
     reject_unknown_fields(obj, &["body"], "Comment")?;
     let text = require_str(obj, "body")?;
-    let comment = state.store.add_comment(&id, &ctx.actor, &text)?;
+    let idem_key = parse_idempotency_key(&headers)?;
+    let (comment, replayed) =
+        state
+            .store
+            .add_comment(&id, &ctx.actor, &text, idem_key.as_deref())?;
     state.wake();
-    Ok((StatusCode::CREATED, Json(comment.to_json())))
+    let status = if replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(comment.to_json())))
+}
+
+fn parse_idempotency_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+    let key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    if let Some(ref k) = key {
+        if k.len() > 128 {
+            return Err(ApiError::bad_request(
+                "validation.idempotency_key",
+                "Idempotency-Key must be at most 128 characters.",
+            ));
+        }
+    }
+    Ok(key)
 }
 
 /// GET /v1/tickets/{id}/deps — the dependency graph around a ticket.

@@ -4,7 +4,7 @@
 
 use clap::{Parser, Subcommand};
 use takomo::ids::{iso, now_ms};
-use takomo::store::Store;
+use takomo::store::{normalize_style_guide, Store};
 use takomo::workflow::Workflow;
 
 #[derive(Parser)]
@@ -467,6 +467,7 @@ fn run_project(db: &str, command: ProjectCommand) -> Result<(), String> {
                     Some(wf)
                 }
             };
+            let style = normalize_style_guide(style.as_deref()).map_err(|e| e.into_message())?;
             let mut project = store
                 .create_project(&id, &name, wf, "cli:admin")
                 .map_err(|e| e.into_message())?;
