@@ -3,6 +3,13 @@
 //! and by category, plus a done-count and completion percent. Read-only; drives
 //! `GET /v1/projects/{project}/roadmap` and `takomo roadmap`.
 //!
+//! The same rollup is also computed **per initiative**, which is what lets an
+//! initiative be a long-lived lane rather than only a place ideas land. An epic
+//! closes; an initiative never does. So a feature that ships as v1, then v1.1,
+//! then v2 is one initiative with one epic per version filed under it, and the
+//! numbers below are what make that readable: per-version progress from `epics`,
+//! lane-lifetime progress from `initiatives`.
+//!
 //! Two things sit alongside the per-epic rollups so the response accounts for
 //! all the work, not just the work someone remembered to file under an epic:
 //!
@@ -19,6 +26,27 @@
 //!   flag lets a client render it differently from a 0%-complete epic that
 //!   does have children.
 //!
+//! The initiative side has the same pair, for the same reason: `uninitiated` is
+//! the rollup over work no initiative owns, and `flags` marks an initiative
+//! whose own status disagrees with its work. Both are project-wide statements,
+//! so both are omitted — exactly as `unparented` is — when the report is
+//! narrowed to one epic.
+//!
+//! **A ticket joins an initiative by the `initiative:<id>` tag** — the reference
+//! the `/initiatives` page already writes when it files a passage as work — and
+//! the set is grown downward through `parent` from there, so tagging the epic is
+//! enough and every ticket beneath it counts. Two consequences worth knowing:
+//!
+//! - **Initiative rollups may overlap.** A ticket carrying two initiative tags,
+//!   or tagged for one lane beneath an ancestor tagged for another, is counted by
+//!   both. Unlike flat epics, `initiatives` therefore does NOT partition the
+//!   project and its totals must not be summed. `uninitiated` stays well defined
+//!   regardless: it is the work no tagged subtree reaches.
+//! - **A tag naming an initiative that does not exist owns nothing.** The seed
+//!   joins `initiatives`, so a stale `initiative:` reference leaves its ticket in
+//!   `uninitiated` rather than disappearing from every bucket — the same rule
+//!   `unparented` applies to a dangling `parent`.
+//!
 //! Both recursive walks use `WITH RECURSIVE ... UNION` (not `UNION ALL`), which
 //! stops at an already-visited id — a malformed `parent` cycle terminates
 //! rather than hanging the endpoint.
@@ -28,32 +56,27 @@ use crate::error::{ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
 use rusqlite::{params, Connection, Statement};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
-/// The blocked-set CTE, verbatim from the ready queue (`store::claims`):
-/// a ticket is blocked if it, or any ancestor, has a `blocked_by` edge to a
-/// non-terminal ticket. Shared as a string constant rather than re-typed per
-/// query so `ready` here can never drift from the queue that actually hands
-/// work out — a rollup that disagreed with `takomo ready` would be worse than
-/// no rollup at all.
+/// The recursive CTEs readiness needs, in `ready_sql`'s NUMBERED form so every
+/// `now` reference collapses to one bind. Every rollup query below opens with
+/// `WITH RECURSIVE {…}, …` and appends its own CTEs after these.
 ///
-/// `UNION` (not `UNION ALL`) again: it stops at an already-visited id, so a
-/// malformed `parent` cycle terminates instead of hanging.
-const BLOCKED_CTE: &str = r#"
-        blocked(id) AS (
-            SELECT DISTINCT d.ticket
-            FROM deps d
-            JOIN tickets b ON b.id = d.blocked_by
-            JOIN workflow_states bs ON bs.project = b.project AND bs.state = b.state
-            WHERE bs.terminal = 0
-            UNION
-            SELECT c.id FROM tickets c JOIN blocked ON c.parent = blocked.id
-        )"#;
+/// `?1` is `now` in every rollup query here, which is why the numbered form is
+/// the right one: the positional form's four-binds-in-declared-order contract
+/// would have to be re-honoured by each of the four queries separately.
+fn ready_ctes() -> String {
+    super::ready_sql::ready_ctes("?1")
+}
 
-/// The two per-ticket predicates every rollup query selects alongside its
-/// counts. `?{n}` is the `now` millis bound for the lease check.
+/// The two per-ticket predicates every rollup query selects alongside its counts.
 ///
-/// `ready` mirrors the ready queue exactly: claimable state, not archived,
-/// unclaimed or lease-expired, and not in the blocked set.
+/// `ready` is the ready queue's own predicate, taken from `store::ready_sql` —
+/// the same text `store::claims` filters on, so this count cannot answer a
+/// different question than the queue does. It used to be a copy annotated
+/// "verbatim from the ready queue"; epic reservations were then added to the queue
+/// and not to the copy, and the rollup went on reporting reserved work as
+/// offerable. A comment cannot hold two copies together.
 ///
 /// `awaiting` counts a ticket carrying at least one OPEN question, in ANY mode.
 /// Advisory questions are included deliberately: the number answers "is a
@@ -61,20 +84,17 @@ const BLOCKED_CTE: &str = r#"
 /// pick up, and a `blocking` question has already moved its ticket out of a
 /// claimable state anyway — so restricting to blocking would report ~0 on the
 /// very tickets this count exists to surface.
-fn rollup_selects(now_param: usize) -> String {
+fn rollup_selects() -> String {
     format!(
         // Column ORDER is the contract with `collect_rollup`, which reads by
         // index: 3 = ready, 4 = awaiting, 5 = claimable_state.
         r#",
-               SUM(CASE WHEN ws.claimable = 1
-                         AND t.archived_at IS NULL
-                         AND (t.claim_holder IS NULL OR t.claim_expires_at <= ?{now_param})
-                         AND t.id NOT IN (SELECT id FROM blocked)
-                        THEN 1 ELSE 0 END) AS ready,
+               SUM(CASE WHEN {ready} THEN 1 ELSE 0 END) AS ready,
                SUM(CASE WHEN EXISTS (SELECT 1 FROM questions q
                                       WHERE q.ticket = t.id AND q.status = 'open')
                         THEN 1 ELSE 0 END) AS awaiting,
-               COALESCE(MAX(ws.claimable), 0) AS claimable_state"#
+               COALESCE(MAX(ws.claimable), 0) AS claimable_state"#,
+        ready = super::ready_sql::ready_conditions("?1"),
     )
 }
 
@@ -169,9 +189,9 @@ fn collect_rollup(stmt: &mut Statement, args: &[&dyn rusqlite::ToSql]) -> ApiRes
 fn rollup_for_epic(conn: &Connection, epic_id: &str, now: i64) -> ApiResult<Rollup> {
     let sql = format!(
         r#"
-        WITH RECURSIVE{BLOCKED_CTE},
+        WITH RECURSIVE {ctes},
         sub(id) AS (
-            SELECT id FROM tickets WHERE parent = ?1
+            SELECT id FROM tickets WHERE parent = ?2
             UNION
             SELECT t.id FROM tickets t JOIN sub ON t.parent = sub.id
         )
@@ -181,12 +201,14 @@ fn rollup_for_epic(conn: &Connection, epic_id: &str, now: i64) -> ApiResult<Roll
         FROM sub
         JOIN tickets t ON t.id = sub.id
         LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
+        JOIN projects p ON p.id = t.project
         GROUP BY t.state
         "#,
-        selects = rollup_selects(2)
+        ctes = ready_ctes(),
+        selects = rollup_selects(),
     );
     let mut stmt = conn.prepare(&sql)?;
-    collect_rollup(&mut stmt, params![epic_id, now])
+    collect_rollup(&mut stmt, params![now, epic_id])
 }
 
 /// Rollup over the project's non-epic tickets that no epic owns: the recursive
@@ -197,11 +219,11 @@ fn rollup_for_epic(conn: &Connection, epic_id: &str, now: i64) -> ApiResult<Roll
 fn rollup_unparented(conn: &Connection, project: &str, now: i64) -> ApiResult<Rollup> {
     let sql = format!(
         r#"
-        WITH RECURSIVE{BLOCKED_CTE},
+        WITH RECURSIVE {ctes},
         owned(id) AS (
             SELECT t.id FROM tickets t
-              JOIN tickets p ON t.parent = p.id
-             WHERE t.project = ?1 AND p.type = 'epic'
+              JOIN tickets par ON t.parent = par.id
+             WHERE t.project = ?2 AND par.type = 'epic'
             UNION
             SELECT t.id FROM tickets t JOIN owned ON t.parent = owned.id
         )
@@ -210,15 +232,213 @@ fn rollup_unparented(conn: &Connection, project: &str, now: i64) -> ApiResult<Ro
                COUNT(*) AS n{selects}
         FROM tickets t
         LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
-        WHERE t.project = ?1
+        JOIN projects p ON p.id = t.project
+        WHERE t.project = ?2
           AND t.type <> 'epic'
           AND t.id NOT IN (SELECT id FROM owned)
         GROUP BY t.state
         "#,
-        selects = rollup_selects(2)
+        ctes = ready_ctes(),
+        selects = rollup_selects(),
     );
     let mut stmt = conn.prepare(&sql)?;
-    collect_rollup(&mut stmt, params![project, now])
+    collect_rollup(&mut stmt, params![now, project])
+}
+
+/// How a ticket says which initiative it belongs to: a `kind:handle` reference
+/// into the project tag registry whose handle is the initiative id. Not a new
+/// mechanism — `/initiatives` already writes exactly this tag when it files a
+/// passage as work, so the rollup reads a link that is already being created.
+const INITIATIVE_TAG: &str = "initiative:";
+
+/// Rollup over one initiative's work: every ticket in `project` carrying
+/// `initiative:<id>`, plus everything beneath those tickets via `parent`. Tagging
+/// the version epic is therefore enough to count its whole subtree.
+///
+/// Epics are excluded from the counts for the same reason `rollup_unparented`
+/// excludes them: under this model an epic is the container for a version, not a
+/// unit of work, and counting it would inflate every lane by one per version.
+fn rollup_for_initiative(
+    conn: &Connection,
+    project: &str,
+    initiative_id: &str,
+    now: i64,
+) -> ApiResult<Rollup> {
+    let sql = format!(
+        r#"
+        WITH RECURSIVE {ctes},
+        sub(id) AS (
+            SELECT t.id FROM tickets t
+             WHERE t.project = ?2
+               AND EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?3)
+            UNION
+            SELECT c.id FROM tickets c JOIN sub ON c.parent = sub.id
+        )
+        SELECT t.state,
+               COALESCE(ws.category, '') AS category,
+               COUNT(*) AS n{selects}
+        FROM sub
+        JOIN tickets t ON t.id = sub.id
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
+        JOIN projects p ON p.id = t.project
+        WHERE t.type <> 'epic'
+        GROUP BY t.state
+        "#,
+        ctes = ready_ctes(),
+        selects = rollup_selects(),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let tag = format!("{INITIATIVE_TAG}{initiative_id}");
+    collect_rollup(&mut stmt, params![now, project, tag])
+}
+
+/// Rollup over the project's non-epic tickets that no initiative owns — the
+/// initiative-side twin of `rollup_unparented`, and the reason the per-initiative
+/// percentages cannot read as complete while real work sits outside every lane.
+///
+/// The seed JOINs `initiatives`, so a tag naming an initiative that no longer
+/// exists does not silently remove its ticket from the accounting: that ticket is
+/// unowned, and lands here.
+fn rollup_uninitiated(conn: &Connection, project: &str, now: i64) -> ApiResult<Rollup> {
+    let sql = format!(
+        r#"
+        WITH RECURSIVE {ctes},
+        owned(id) AS (
+            SELECT t.id FROM tickets t
+             WHERE t.project = ?2
+               AND EXISTS (
+                   SELECT 1 FROM json_each(t.tags) je
+                     JOIN initiatives i ON i.id = substr(je.value, {handle_at})
+                    WHERE je.value LIKE '{INITIATIVE_TAG}%'
+                      AND i.project = t.project
+               )
+            UNION
+            SELECT c.id FROM tickets c JOIN owned ON c.parent = owned.id
+        )
+        SELECT t.state,
+               COALESCE(ws.category, '') AS category,
+               COUNT(*) AS n{selects}
+        FROM tickets t
+        LEFT JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
+        JOIN projects p ON p.id = t.project
+        WHERE t.project = ?2
+          AND t.type <> 'epic'
+          AND t.id NOT IN (SELECT id FROM owned)
+        GROUP BY t.state
+        "#,
+        ctes = ready_ctes(),
+        // 1-based, so the handle starts one past the prefix. Derived from the
+        // constant rather than written as a literal, so the two cannot drift.
+        handle_at = INITIATIVE_TAG.len() + 1,
+        selects = rollup_selects(),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    collect_rollup(&mut stmt, params![now, project])
+}
+
+/// Which epics are filed under which initiative, as one query rather than one
+/// per initiative — the join that makes "initiative is the lane, epic is the
+/// version" renderable from a single response.
+///
+/// Directly tagged epics only. The rollup above walks *downward* into a tagged
+/// ticket's subtree, but this list answers a narrower question — "which versions
+/// were filed under this lane" — and an epic that merely inherits a lane from an
+/// ancestor was not filed as one of its versions.
+fn epics_by_initiative(
+    conn: &Connection,
+    project: &str,
+) -> ApiResult<HashMap<String, Vec<String>>> {
+    let sql = format!(
+        r#"
+        SELECT substr(je.value, {handle_at}) AS initiative, t.id
+          FROM tickets t, json_each(t.tags) je
+         WHERE t.project = ?1
+           AND t.type = 'epic'
+           AND je.value LIKE '{INITIATIVE_TAG}%'
+         ORDER BY t.created_at ASC, t.rowid ASC
+        "#,
+        handle_at = INITIATIVE_TAG.len() + 1,
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![project], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for (initiative, epic) in rows {
+        out.entry(initiative).or_default().push(epic);
+    }
+    Ok(out)
+}
+
+/// Contradiction codes for an initiative whose own status disagrees with the work
+/// filed under it. Pure derivation over the rollup — no extra query.
+///
+/// There is no initiative equivalent of `done_with_open_children`, and that is
+/// not an omission: an initiative's `status` is a label, not a state machine, and
+/// `distilled` means "its substance became tickets" — which is precisely when
+/// open work is expected, not a contradiction.
+fn initiative_flags(status: &str, r: &Rollup) -> Vec<&'static str> {
+    let mut flags = Vec::new();
+    if r.total == 0 {
+        flags.push("empty_initiative");
+    }
+    // Parking is deliberate ("set aside, still readable"), so a parked lane whose
+    // tickets the queue is still handing out is worth surfacing: the decision to
+    // stop and what the fleet will actually do have come apart.
+    if status == "parked" && r.ready > 0 {
+        flags.push("parked_with_ready_work");
+    }
+    flags
+}
+
+/// Every initiative in the project with its lane rollup, in creation order so a
+/// client renders a stable list. One extra query per initiative, matching what
+/// the per-epic rollups already cost.
+fn initiative_rollups(conn: &Connection, project: &str, now: i64) -> ApiResult<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, title, status
+        FROM initiatives
+        WHERE project = ?1
+        ORDER BY created_at ASC, rowid ASC
+        "#,
+    )?;
+    let rows = stmt
+        .query_map(params![project], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut epics_for = epics_by_initiative(conn, project)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, title, status) in rows {
+        let r = rollup_for_initiative(conn, project, &id, now)?;
+        let flags = initiative_flags(&status, &r);
+        let percent = r.percent();
+        out.push(json!({
+            "id": id,
+            "title": title,
+            "status": status,
+            "total": r.total,
+            "done": r.done,
+            "percent": percent,
+            "ready": r.ready,
+            "backlog": r.backlog,
+            "awaiting_answer": r.awaiting_answer,
+            "by_state": Value::Object(r.by_state),
+            "by_category": Value::Object(r.by_category),
+            "epics": epics_for.remove(&id).unwrap_or_default(),
+            "flags": flags,
+        }));
+    }
+    Ok(out)
 }
 
 /// Contradiction codes for an epic whose own state disagrees with its subtree.
@@ -336,6 +556,25 @@ impl Store {
                 // Echo the filter so a stored response says what it is a view of.
                 body["epic"] = json!(e);
             } else {
+                // The initiative side, and both project-wide buckets. All of it
+                // is omitted under a single-epic view for the same reason
+                // `unparented` is: a lane spans versions, so reporting lanes
+                // beside ONE version would invite reading the lane's numbers as
+                // that version's.
+                body["initiatives"] = Value::Array(initiative_rollups(conn, project, now)?);
+
+                let ui = rollup_uninitiated(conn, project, now)?;
+                body["uninitiated"] = json!({
+                    "total": ui.total,
+                    "done": ui.done,
+                    "percent": ui.percent(),
+                    "ready": ui.ready,
+                    "backlog": ui.backlog,
+                    "awaiting_answer": ui.awaiting_answer,
+                    "by_state": Value::Object(ui.by_state),
+                    "by_category": Value::Object(ui.by_category),
+                });
+
                 let u = rollup_unparented(conn, project, now)?;
                 body["unparented"] = json!({
                     "total": u.total,

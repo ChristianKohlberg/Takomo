@@ -435,8 +435,14 @@ paths:
   /projects/{project}/roadmap:
     get:
       tags: [workflow]
-      summary: Epic progress rollup (read scope)
+      summary: Epic and initiative progress rollup (read scope)
       description: |
+        Two readings of the same work. An epic CLOSES and an initiative never
+        does, so a feature that ships as v1, then v1.1, then v2 is one
+        initiative with one epic per version filed under it: `epics` gives
+        per-version progress, `initiatives` gives progress over the life of the
+        lane.
+
         For each `epic` in the project, returns the epic plus a rollup over its
         FULL descendant subtree (walked recursively via `parent`): ticket counts
         by state and by category, the subtree `total`, a `done` count (states in
@@ -454,11 +460,31 @@ paths:
         exists. Without it, work outside every epic would be invisible while the
         per-epic percentages read as complete.
 
+        `initiatives` and `uninitiated` are the same pair on the initiative
+        side. A ticket joins an initiative by carrying the `initiative:<id>`
+        tag — the reference `/initiatives` already writes when it files a
+        passage as work — and the set is grown DOWNWARD through `parent` from
+        there, so tagging the version epic counts everything beneath it. Epics
+        are containers and are excluded from the counts.
+
+        Two properties differ from `epics` and matter to a client:
+
+        - **Initiative rollups may overlap and MUST NOT be summed.** A ticket
+          carrying two initiative tags, or tagged for one lane beneath an
+          ancestor tagged for another, is counted by both. Flat epics partition
+          the project; lanes do not.
+        - **A tag naming an initiative that does not exist owns nothing**, so
+          its ticket lands in `uninitiated` rather than disappearing from every
+          bucket — the rule `unparented` applies to a dangling `parent`.
+
         `epic` narrows the report to a single epic. `unparented` is then OMITTED
         rather than returned empty — it is a project-wide statement about work no
         epic owns, and repeating it under a single-epic view would read as "this
-        epic has no unparented work", which is not a thing an epic can have. The
-        response echoes the filter back as `epic`.
+        epic has no unparented work", which is not a thing an epic can have.
+        `initiatives` and `uninitiated` are omitted for the same reason, and one
+        more: a lane SPANS versions, so reporting lanes beside a single version
+        would invite reading the lane's numbers as that version's. The response
+        echoes the filter back as `epic`.
       parameters:
         - { $ref: "#/components/parameters/project" }
         - name: epic
@@ -530,6 +556,72 @@ paths:
                           items:
                             type: string
                             enum: [done_with_open_children, open_with_all_children_done, empty_epic]
+                  initiatives:
+                    type: array
+                    description: |
+                      One entry per initiative in the project, in creation order. Counts cover
+                      every non-epic ticket tagged `initiative:<id>` plus everything beneath
+                      those tickets via `parent`. These rollups MAY OVERLAP each other and must
+                      not be summed — see the endpoint description. Omitted under an `epic`
+                      filter, like `unparented`.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        status:
+                          type: string
+                          description: |
+                            The initiative's own label (`open`, `parked`, `distilled`, …). A
+                            label, not a state machine — an initiative is nurtured, not
+                            completed, which is why it can outlive any number of epics.
+                        total: { type: integer, description: non-epic tickets in the lane }
+                        done: { type: integer, description: those in a done-category state }
+                        percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                        ready: { type: integer, description: what the ready queue would hand out }
+                        backlog: { type: integer, description: claimable but blocked or already claimed }
+                        awaiting_answer: { type: integer, description: "holding an open question (an overlay, not a bucket)" }
+                        by_state: { type: object, additionalProperties: { type: integer } }
+                        by_category: { type: object, additionalProperties: { type: integer } }
+                        epics:
+                          type: array
+                          description: |
+                            Ids of the epic tickets tagged into this initiative directly, in
+                            creation order — the versions filed under the lane. Join them to
+                            the `epics` array in this same response for per-version progress.
+                            Directly tagged only: an epic that merely inherits the lane from an
+                            ancestor was not filed as one of its versions.
+                          items: { type: string }
+                        flags:
+                          type: array
+                          description: |
+                            Initiative/work contradictions, empty when consistent.
+                            `empty_initiative`: `total == 0` — a flag, not an error, since a
+                            lane opened before any work is filed is legitimate.
+                            `parked_with_ready_work`: status is `parked` but `ready > 0`, so
+                            the lane was set aside while the queue still hands its tickets out.
+                            There is deliberately no `done`-style code: `distilled` means the
+                            substance became tickets, so open work under it is expected.
+                          items:
+                            type: string
+                            enum: [empty_initiative, parked_with_ready_work]
+                  uninitiated:
+                    type: object
+                    description: |
+                      Rollup over the project's non-epic tickets that no initiative owns —
+                      never tagged, not beneath anything tagged, or carrying a tag that names
+                      an initiative which does not exist. Same shape as an initiative's rollup
+                      without the identity fields; it is a bucket, not an initiative. Omitted
+                      under an `epic` filter.
+                    properties:
+                      total: { type: integer }
+                      done: { type: integer }
+                      percent: { type: integer, description: done/total as a whole percent (0 when empty) }
+                      ready: { type: integer, description: what the ready queue would hand out }
+                      backlog: { type: integer, description: claimable but blocked or already claimed }
+                      awaiting_answer: { type: integer, description: "holding an open question (an overlay, not a bucket)" }
+                      by_state: { type: object, additionalProperties: { type: integer } }
+                      by_category: { type: object, additionalProperties: { type: integer } }
                   unparented:
                     type: object
                     description: |

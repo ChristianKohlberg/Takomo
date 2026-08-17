@@ -609,7 +609,6 @@ cmd_roadmap() {
 import json, sys
 d = json.load(open(sys.argv[1]))
 epics = d.get("epics", [])
-unparented = d.get("unparented") or {}
 print(f"roadmap for {d.get('project','')}  ({len(epics)} epic(s))")
 def bar(pct, width=10):
     filled = int(round(pct / 100.0 * width))
@@ -644,8 +643,32 @@ for e in epics:
     rollup(e)
 # Work that belongs to no epic is real work: show it even when it is empty, so
 # an empty bucket reads as "all accounted for" rather than as a missing row.
-print(f"\n(no epic)  {unparented.get('total', 0)} ticket(s) outside every epic")
-rollup(unparented, "tickets by state")
+#
+# Under --epic the server OMITS these project-wide sections rather than zeroing
+# them, so key presence is the test. Printing "0 ticket(s) outside every epic"
+# from a missing key would make exactly the false statement the omission avoids.
+if "unparented" in d:
+    print(f"\n(no epic)  {d['unparented'].get('total', 0)} ticket(s) outside every epic")
+    rollup(d["unparented"], "tickets by state")
+# The lane view: an epic closes, an initiative does not, so this is progress over
+# the life of a feature rather than of one version. Totals may overlap between
+# lanes and are deliberately not summed into a project figure.
+if "initiatives" in d:
+    lanes = d["initiatives"]
+    print(f"\n--- initiatives  ({len(lanes)} lane(s)) ---")
+    if not lanes:
+        print("(none)")
+    for lane in lanes:
+        flags = lane.get("flags") or []
+        suffix = "  !" + ",".join(flags) if flags else ""
+        versions = lane.get("epics") or []
+        vtxt = f"  {len(versions)} version(s)" if versions else ""
+        title = trunc(lane.get("title", ""), 46)
+        print(f"\n{lane['id']}  [{lane.get('status','')}]  {title}{vtxt}{suffix}")
+        rollup(lane, "work by state")
+    uninitiated = d.get("uninitiated") or {}
+    print(f"\n(no initiative)  {uninitiated.get('total', 0)} ticket(s) outside every lane")
+    rollup(uninitiated, "tickets by state")
 PY
 }
 
@@ -2757,8 +2780,11 @@ Finding & creating work:
          into direct (they hold the edge) and downstream (inherited from an
          ancestor). A ticket held by two blockers counts towards neither alone.
   takomo roadmap [--project P] [--epic ID]
-         epic progress rollup: a bar + child counts per epic,
-                                 contradiction flags, and a "(no epic)" bucket
+         progress rollup, twice over: a bar + child counts per EPIC (one
+                                 version) and per INITIATIVE (the lane it ships
+                                 in, which never closes), contradiction flags,
+                                 and "(no epic)" / "(no initiative)" buckets.
+                                 --epic reports one epic, without either bucket
   takomo show ID
 
 Claiming & progressing (the fence is remembered locally after a claim):

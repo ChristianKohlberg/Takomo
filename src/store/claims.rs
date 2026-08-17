@@ -199,62 +199,25 @@ pub fn clamp_ttl_for(tx: &Connection, project: &str, ttl_seconds: Option<i64>) -
 /// to count it would be the obvious way to drift: a filter added to one copy and
 /// not the other reports "20 of 137" where 137 counts tickets the page would
 /// never have offered.
+///
+/// The CTEs and conditions themselves live in [`super::ready_sql`], because
+/// `store::roadmap` counts the same predicate to report what the queue would
+/// offer, and a second copy there had already drifted once.
 fn ready_scope(projection: &str, filter: &ReadyFilter, now: i64) -> (String, Vec<SqlValue>) {
     let mut sql = format!(
         r#"
-        WITH RECURSIVE blocked(id) AS (
-            SELECT DISTINCT d.ticket
-            FROM deps d
-            JOIN tickets b ON b.id = d.blocked_by
-            JOIN workflow_states bs ON bs.project = b.project AND bs.state = b.state
-            WHERE bs.terminal = 0
-            UNION
-            -- An epic with an active claim (leased or indefinite — NULL expiry
-            -- never lapses) seeds its subtree as blocked via the parent walk
-            -- below.
-            SELECT e.id FROM tickets e
-            WHERE e.type = 'epic' AND e.claim_holder IS NOT NULL
-              AND (e.claim_expires_at IS NULL OR e.claim_expires_at > ?)
-            UNION
-            SELECT c.id FROM tickets c JOIN blocked ON c.parent = blocked.id
-        ),
-        -- Every ancestor of an actively claimed ticket. An epic in this set has
-        -- live work under it, so the queue must not offer it: popping it would
-        -- grant a subtree reservation over a lease someone already holds, which
-        -- the claim-by-id path refuses (claim.children_held) — the queue must
-        -- not hand out what the claim would refuse.
-        anc_of_claimed(id) AS (
-            SELECT c.parent FROM tickets c
-            WHERE c.claim_holder IS NOT NULL
-              AND (c.claim_expires_at IS NULL OR c.claim_expires_at > ?)
-              AND c.parent IS NOT NULL
-            UNION
-            SELECT p.parent FROM tickets p JOIN anc_of_claimed a ON p.id = a.id
-            WHERE p.parent IS NOT NULL
-        )
+        WITH RECURSIVE {ctes}
         SELECT {projection} FROM tickets t
         JOIN workflow_states ws ON ws.project = t.project AND ws.state = t.state
         JOIN projects p ON p.id = t.project
-        WHERE ws.claimable = 1
-          AND NOT (t.type = 'epic' AND t.id IN (SELECT id FROM anc_of_claimed))
-          AND t.archived_at IS NULL
-          -- An archived project takes no work, so its tickets must not be
-          -- offered: a queue that handed one over would be inviting an agent to
-          -- claim something the archive gate then refuses to let it do anything
-          -- with. The count uses this same scope, so "n of m" stays honest.
-          AND p.archived_at IS NULL
-          AND (t.claim_holder IS NULL OR t.claim_expires_at <= ?)
-          -- An expired scheduled occurrence is no longer live work, so it must
-          -- not be handed to a worker: without this an agent calling /v1/ready
-          -- would keep being given last month's review forever. It stays
-          -- fetchable and claimable BY ID — only the queue stops offering it.
-          AND (t.expires_at IS NULL OR t.expires_at > ?)
-          AND t.id NOT IN (SELECT id FROM blocked)
-        "#
+        WHERE {conditions}
+        "#,
+        ctes = super::ready_sql::ready_ctes("?"),
+        conditions = super::ready_sql::ready_conditions("?"),
     );
-    // Four `now` binds: the claimed-epic check inside the blocked CTE, the
-    // active-claim check inside anc_of_claimed, then the claim-expiry and
-    // occurrence-expiry checks, in the order the placeholders appear above.
+    // Four `now` binds, in the order `ready_sql`'s positional form emits them:
+    // the claimed-epic check inside the blocked CTE, the active-claim check
+    // inside anc_of_claimed, then the claim-expiry and occurrence-expiry checks.
     let mut params_vec: Vec<SqlValue> = vec![
         SqlValue::Integer(now),
         SqlValue::Integer(now),
