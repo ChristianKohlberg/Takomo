@@ -145,7 +145,7 @@ fn share_read_err(e: rusqlite::Error) -> ApiError {
 }
 
 const SHARE_COLS: &str =
-    "id, kind, \"ref\" AS ref_id, project, expires_at, created_by, created_at, revoked_at";
+    "id, kind, \"ref\" AS ref_id, project, expires_at, created_by, created_at, revoked_at, last_used_at";
 
 fn row_to_share(row: &Row) -> rusqlite::Result<ShareRow> {
     Ok(ShareRow {
@@ -157,6 +157,7 @@ fn row_to_share(row: &Row) -> rusqlite::Result<ShareRow> {
         created_by: row.get("created_by")?,
         created_at: row.get("created_at")?,
         revoked_at: row.get("revoked_at")?,
+        last_used_at: row.get("last_used_at")?,
     })
 }
 
@@ -193,6 +194,7 @@ impl Store {
             created_by: created_by.to_string(),
             created_at: now,
             revoked_at: None,
+            last_used_at: None,
         };
         Ok((row, plaintext))
     }
@@ -255,6 +257,17 @@ impl Store {
                 params![id, now_ms()],
             )?;
             Ok(n > 0)
+        })
+    }
+
+    /// Update last_used_at (called at most ~once a minute per share).
+    pub fn touch_share(&self, id: &str) -> ApiResult<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE shares SET last_used_at = ?2 WHERE id = ?1",
+                params![id, now_ms()],
+            )?;
+            Ok(())
         })
     }
 

@@ -947,6 +947,7 @@ pub async fn self_get(
         .store
         .get_question(&grant.question)?
         .ok_or_else(|| ApiError::not_found("question", &grant.question))?;
+    ensure_grant_question_project(&grant, &q)?;
     let ticket = state.store.get_ticket(&q.ticket)?;
     Ok(Json(json!({
         "question": q.to_json(),
@@ -971,6 +972,7 @@ pub async fn self_answer(
         .store
         .get_question(&grant.question)?
         .ok_or_else(|| ApiError::not_found("question", &grant.question))?;
+    ensure_grant_question_project(&grant, &q)?;
 
     let obj = body_object(&body)?;
     reject_unknown(obj, &["answer", "resume_to"])?;
@@ -1012,6 +1014,23 @@ pub async fn self_answer(
         "ticket": outcome.ticket.to_json(now_ms()),
         "resume": outcome.resume_json(),
     })))
+}
+
+/// Defence in depth on the outside-the-org path: a grant's stored project must
+/// match the question it references. Minting keeps them aligned today, but this
+/// is the one handler that does not go through `require_project`.
+fn ensure_grant_question_project(grant: &AnswerCtx, question: &Question) -> ApiResult<()> {
+    if grant.project == question.project {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "answer.project",
+        format!(
+            "This answer link is scoped to project '{}' but the question belongs to '{}'. The link cannot be used.",
+            grant.project, question.project
+        ),
+    ))
 }
 
 /// Reject unknown top-level fields with the codebase's standard teaching error.

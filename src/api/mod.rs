@@ -97,6 +97,12 @@ pub async fn healthz() -> Json<Value> {
     Json(serde_json::json!({ "status": "ok", "version": crate::server::VERSION }))
 }
 
+/// Bare hostname hits `/` before the SPA router runs; send readers to the board
+/// without requiring a bearer token (same placement as `/healthz` and `/oauth/*`).
+pub async fn root_redirect() -> axum::response::Redirect {
+    axum::response::Redirect::temporary("/board")
+}
+
 /// Serve the app document with defense-in-depth headers. The page holds the
 /// viewer's bearer token in `localStorage`, so a strict CSP keeps any future
 /// injection from exfiltrating it, and `frame-ancestors`/`X-Frame-Options`

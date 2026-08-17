@@ -2103,13 +2103,17 @@ impl TakomoMcp {
         if let Some(p) = &a.project {
             auth.require_project(p)?;
         }
+        let tag_kinds: Vec<String> = a.tag_kind.into_iter().collect();
+        for kind in &tag_kinds {
+            crate::store::validate_tag_kind(kind)?;
+        }
         let filter = TicketListFilter {
             project: a.project,
             state: a.state,
             ty: a.r#type,
             labels: a.label.into_iter().collect(),
             tags: a.tag.into_iter().collect(),
-            tag_kinds: a.tag_kind.into_iter().collect(),
+            tag_kinds,
             // Scheduled-occurrence filters are not on the MCP list tool: an agent
             // wants work to do, and `takomo_next` already refuses to hand it an
             // expired occurrence. Tidying them up is a human-directed maintenance

@@ -7,6 +7,19 @@ use crate::workflow::Workflow;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 
+/// Escape `%`, `_`, and `\` so a caller-supplied fragment is a literal in a
+/// `LIKE … ESCAPE '\'` pattern (the backslash is the escape character).
+pub fn escape_like_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Column list every ticket SELECT uses, with `t` as the tickets alias.
 pub const TICKET_COLS: &str = "t.id, t.project, t.type, t.parent, t.title, t.body, t.state, \
     COALESCE((SELECT ws.category FROM workflow_states ws WHERE ws.project = t.project AND ws.state = t.state), '') AS state_category, \

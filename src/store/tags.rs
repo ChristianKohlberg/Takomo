@@ -4,7 +4,7 @@
 //! attributes carried in the free-form `meta` object. Tagging never affects
 //! claims, leases, or question routing; a tag is reference metadata only.
 
-use super::helpers::{emit_event, ensure_project_writable};
+use super::helpers::{emit_event, ensure_project_writable, escape_like_literal};
 use super::merge_patch;
 use super::model::{Tag, TagPerson, MAX_METADATA};
 use super::Store;
@@ -392,10 +392,12 @@ impl Store {
             if let Some(q) = &filter.q {
                 // The directory name is searched as well as the stored label: for a
                 // person the name a reader knows lives there, not on the tag row.
+                // Metacharacters in `q` are escaped so a literal `%` or `_` in a
+                // handle does not act as a wildcard.
                 sql.push_str(
-                    " AND (LOWER(t.handle) LIKE ? OR LOWER(t.label) LIKE ? OR LOWER(COALESCE(u.name, '')) LIKE ?)",
+                    " AND (LOWER(t.handle) LIKE ? ESCAPE '\\' OR LOWER(t.label) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(u.name, '')) LIKE ? ESCAPE '\\')",
                 );
-                let needle = format!("%{}%", q.to_lowercase());
+                let needle = format!("%{}%", escape_like_literal(&q.to_lowercase()));
                 for _ in 0..3 {
                     params_vec.push(rusqlite::types::Value::Text(needle.clone()));
                 }

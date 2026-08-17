@@ -752,6 +752,22 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     if !grant_cols.is_empty() && !grant_cols.iter().any(|c| c == "user") {
         conn.execute("ALTER TABLE answer_grants ADD COLUMN \"user\" TEXT", [])?;
     }
+    let share_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(shares)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !share_cols.is_empty() && !share_cols.iter().any(|c| c == "last_used_at") {
+        conn.execute("ALTER TABLE shares ADD COLUMN last_used_at INTEGER", [])?;
+    }
+    if !grant_cols.is_empty() && !grant_cols.iter().any(|c| c == "last_used_at") {
+        conn.execute(
+            "ALTER TABLE answer_grants ADD COLUMN last_used_at INTEGER",
+            [],
+        )?;
+    }
     // questions.assignee: the person this decision is waiting on. Nullable, and
     // NULL on every existing row is right — they were routed by expertise alone.
     let question_assignee_cols: Vec<String> = {
@@ -1073,7 +1089,8 @@ CREATE TABLE IF NOT EXISTS shares (
   expires_at  INTEGER NOT NULL,
   created_by  TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
-  revoked_at  INTEGER
+  revoked_at  INTEGER,
+  last_used_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_shares_project ON shares(project);
 CREATE INDEX IF NOT EXISTS idx_shares_created_by ON shares(created_by);
@@ -1100,7 +1117,8 @@ CREATE TABLE IF NOT EXISTS answer_grants (
   created_by  TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
   used_at     INTEGER,
-  revoked_at  INTEGER
+  revoked_at  INTEGER,
+  last_used_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_answer_grants_question ON answer_grants(question);
 

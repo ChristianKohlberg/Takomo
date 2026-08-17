@@ -472,6 +472,7 @@ pub struct ShareRow {
     pub created_by: String,
     pub created_at: i64,
     pub revoked_at: Option<i64>,
+    pub last_used_at: Option<i64>,
 }
 
 impl ShareRow {
@@ -486,6 +487,7 @@ impl ShareRow {
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
             "revoked_at": self.revoked_at.map(iso),
+            "last_used_at": self.last_used_at.map(iso),
         })
     }
 }
@@ -512,6 +514,7 @@ pub struct AnswerGrantRow {
     pub created_at: i64,
     pub used_at: Option<i64>,
     pub revoked_at: Option<i64>,
+    pub last_used_at: Option<i64>,
 }
 
 impl AnswerGrantRow {
@@ -528,6 +531,7 @@ impl AnswerGrantRow {
             "created_at": iso(self.created_at),
             "used_at": self.used_at.map(iso),
             "revoked_at": self.revoked_at.map(iso),
+            "last_used_at": self.last_used_at.map(iso),
         })
     }
 }

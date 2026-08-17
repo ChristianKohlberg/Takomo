@@ -113,7 +113,9 @@ A **share** mints a second, distinct kind of bearer token (`tks_`-prefixed, hash
 
 **Distinct auth path.** A share token is validated only against the `shares` table and reaches ONLY the `/v1/shares/self*` endpoints. It is **read-only** and **cannot**: read arbitrary projects, hit any normal endpoint, or write anything — a share token on `GET /v1/tickets` (or any write) is rejected `401`. Conversely a normal `tk_` token is not accepted on the `self*` endpoints.
 
-**Expiry / revocation.** Every share has a hard `expires_at` (default 24h, cap 30d). An expired or revoked share token returns **`410 Gone`** on every `self*` endpoint, which the board turns into a friendly "this shared link has expired" page.
+**Expiry / revocation.** Every share has a hard `expires_at` (default 24h, cap 30d). An expired or revoked share token returns **`410 Gone`** on every `self*` endpoint, which the board turns into a friendly "this shared link has expired" page. An **unrecognized** share token returns **`401`** instead — there is no link to declare dead, only a mistyped or deleted credential. That split is deliberate: `410` tells the page "this link is no longer valid"; `401` would read like "log in", which a share viewer cannot do.
+
+**Audit.** `last_used_at` on the share row is touched when the link is opened (at most once a minute), the same throttle as `tk_` tokens use, so an operator can tell whether an over-shared link was ever opened.
 
 **Bounded work per request, and a budget per link.** Both halves matter, because either alone leaves the hole open: a cap on one response does not stop a script repeating it, and a rate limit does not stop one request from scanning a 100k-ticket project.
 
@@ -127,6 +129,24 @@ An unrecognized share token is not charged (there is no share to charge it to); 
 **Fragment token, deliberately.** The mint returns `path = /board#s=<token>` — the token rides in the URL **fragment**, which browsers never send to the server, so it stays out of access logs and `Referer` headers. The board reads it from `location.hash`, never puts it in a query string, and never persists it.
 
 **Tradeoff (accepted).** A share link is a bearer capability: **anyone with the link can view the scoped board, read-only, until it expires.** There is no per-viewer identity or audit. That is the point (frictionless read-only sharing), and it is bounded by: read-only, a single project/subtree scope, a mandatory expiry (≤30d), and one-command revocation. Prefer short TTLs and revoke when done; never mint a share over a project whose mere ticket titles/bodies are sensitive.
+
+## Answer-link tokens (single-question grants)
+
+A **answer grant** mints a third bearer kind (`tka_`-prefixed, hashed at rest, plaintext shown once) that authorizes exactly one write: answering the one referenced question. It is what you hand an outside expert who should not hold a standing token.
+
+| method & path | auth | purpose |
+|---------------|------|---------|
+| `POST /v1/questions/{id}/answer-link` | normal token, `human` scope (plus expertise for `approve`) | mint a link; body `{actor?, ttl_seconds?}`. Returns the `token` ONCE plus `path` (`/inbox#a=<token>` or `/board#a=<token>`). |
+| `GET /v1/answer/self` | **answer grant** | the one question this link can answer, plus minimal ticket context. |
+| `POST /v1/answer/self` | **answer grant** | answer that question; the grant is spent in the same transaction. |
+
+**Distinct auth path.** A grant resolves only against `answer_grants` and reaches ONLY `/v1/answer/self*`. A `tk_` or `tks_` token is rejected there; a `tka_` token cannot reach any other endpoint.
+
+**HTTP status on a bad credential — same deliberate split as shares.** Unknown grant → **`401`** (mistyped or deleted link). Spent, revoked, or expired grant → **`410 Gone`** so the one-question page can say "this link is no longer valid" instead of "log in". Normal `tk_` tokens keep **`401`** for revoked and expired too — that is the right UX for a credential you paste into a client.
+
+**Audit.** `last_used_at` is touched when the link is opened (at most once a minute), so you can distinguish "the expert never looked" from "they looked and did not answer" before the grant is spent.
+
+**Single-use.** Spending the grant (`used_at`) is conditional inside the same transaction that records the answer; concurrent attempts on one link get `410` / `answer_link.spent`.
 
 ## OAuth 2.1, for hosted MCP clients
 
