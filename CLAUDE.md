@@ -366,8 +366,19 @@ ids — an id is opaque, and rewriting primary keys is the one part of a rename 
 schema batch: `CREATE TABLE IF NOT EXISTS checks` would otherwise create an empty table beside the
 populated one.
 
+**Environments** (`src/store/environments.rs`) are where a check can be run: a base URL, prose for
+bringing the thing up and giving it back, what data is in it, and whether writing to it is safe.
+It exists because a verdict with no environment behind it is a claim nobody can reproduce, and all
+of that used to travel out of band. Takomo runs none of it — `bring_up`/`teardown` are prose handed
+to whoever needs them next, `writable` is advisory, and `credentials_hint` is a POINTER to where a
+credential lives and **never** a credential, because every `read` token can see it. A slug is
+immutable (checks and tool calls address environments by it) and archiving is reversible. Writes
+take `write`, not `human`: an agent registering the ephemeral instance it just leased is the caller
+this serves. See `docs/environments.md`.
+
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
-`spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`, `docs/epic-claims.md`
+`spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`,
+`docs/environments.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
 `docs/initiatives.md`, `docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

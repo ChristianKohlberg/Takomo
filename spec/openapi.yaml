@@ -35,6 +35,7 @@ tags:
   - { name: tags }
   - { name: users }
   - { name: checklist }
+  - { name: environments }
   - { name: oauth }
   - { name: initiatives }
   - { name: schedules }
@@ -4222,6 +4223,148 @@ paths:
           content:
             image/svg+xml: {}
 
+  /projects/{project}/environments:
+    get:
+      tags: [environments]
+      summary: The places a check can be run (read scope)
+      description: |
+        The registry an agent reads BEFORE running a check: base URL, how to
+        bring each environment up and give it back, what data is in it, and
+        whether writing to it is safe.
+
+        It exists because a verdict with no environment behind it is a claim
+        nobody can reproduce, and because all of this used to travel out of band
+        — which is exactly the context that goes stale without anyone noticing.
+
+        Takomo runs none of it. `bring_up` and `teardown` are prose handed to
+        whoever needs them next, `writable` is advisory, and `credentials_hint`
+        is a POINTER to where a credential lives and never a credential.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [local, ephemeral, shared, staging, production, other] }
+          description: narrow to one kind
+        - name: archived
+          in: query
+          schema: { type: string, enum: [include] }
+          description: include archived environments, which are kept because past verdicts still reference them
+        - { name: limit, in: query, schema: { type: integer }, description: '1..=200 (default 200)' }
+      responses:
+        "200":
+          description: The environments, sorted by slug — the reader is usually picking one.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Environment" }
+                  total: { type: integer, description: 'Environments matching the filter, ignoring limit.' }
+                  limit: { type: integer }
+                  note: { type: string, description: 'Present only when the page left environments out.' }
+    post:
+      tags: [environments]
+      summary: Register an environment (write scope)
+      description: |
+        Takes `write`, not `human`: an agent that has just leased an ephemeral
+        instance is exactly the caller this registry exists for, and gating it
+        on a person would push that registration back out of band.
+
+        `kind: production` defaults `writable` to false. That is a default and
+        not a rule — a project that really does test writes against production
+        can send `writable: true` — but it errs toward refusing a destructive
+        run rather than permitting one.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnvironmentCreate" }
+      responses:
+        "201":
+          description: The registered environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+        "409":
+          description: The slug is already taken in this project (`conflict.environment_slug`).
+        "422":
+          description: A field is invalid — see `x-error-codes` for the vocabulary.
+
+  /environments/{id}:
+    get:
+      tags: [environments]
+      summary: One environment (read scope)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+        "404": { description: No environment with that id (`notfound.environment`). }
+    patch:
+      tags: [environments]
+      summary: Update an environment (write scope)
+      description: |
+        `base_url` and `credentials_hint` accept an explicit null to clear them,
+        so a value can be removed once set.
+
+        There is deliberately no `slug`: it is the handle checks and tool calls
+        carry, so renaming one would silently break every reference to it. A new
+        name is a new environment, and the old one is archived.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnvironmentPatch" }
+      responses:
+        "200":
+          description: The updated environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+    delete:
+      tags: [environments]
+      summary: Archive an environment (write scope)
+      description: |
+        Archiving, not deletion. A decommissioned box is still the evidence
+        behind every verdict ever taken there, and deleting the row would orphan
+        that history — the same reason a check is archived rather than dropped.
+
+        An archived environment leaves the default list and stays readable by id.
+        Reversible with `/unarchive`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The archived environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+
+  /environments/{id}/unarchive:
+    post:
+      tags: [environments]
+      summary: Restore an archived environment (write scope)
+      description: |
+        Archiving changed nothing else about the environment, so this is a pure
+        reversal.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The restored environment.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Environment" }
+
   /projects/{project}/releases:
     get:
       tags: [checklist]
@@ -6106,6 +6249,83 @@ components:
 # The HTTP status a code rides on is documented per route, under that route's
 # `responses`. It is deliberately not restated here: a second copy would be one
 # nothing checks.
+    Environment:
+      type: object
+      description: |
+        A place a check can be run. Takomo stores it and never touches it: the
+        server runs nothing here, polls nothing, and deploys nothing.
+      properties:
+        id: { type: string, description: 'env-xxxxxxxx' }
+        project: { type: string }
+        slug:
+          type: string
+          description: 'The handle a person types and an agent passes. Immutable.'
+        name: { type: string }
+        kind:
+          type: string
+          enum: [local, ephemeral, shared, staging, production, other]
+        base_url:
+          type: [string, "null"]
+          description: 'Where the application answers. Null when it has no HTTP surface.'
+        bring_up:
+          type: string
+          description: 'How to get it running. Prose handed to whoever needs it next — Takomo never executes it, which is why it is not a structured command.'
+        teardown:
+          type: string
+          description: 'How to give it back when the run is over. The half nobody writes down.'
+        data_state:
+          type: string
+          enum: [seeded, empty, production_like, unknown]
+          description: 'What is in it, which decides whether a case preconditions can be met at all.'
+        writable:
+          type: boolean
+          description: 'Whether a destructive case may run here. ADVISORY — Takomo executes nothing and cannot enforce it. Defaults to false for kind=production.'
+        credentials_hint:
+          type: [string, "null"]
+          description: 'WHERE a credential lives, e.g. env:STAGING_TOKEN or a vault path. NEVER a credential: every token with read scope can see this field.'
+        notes:
+          type: string
+          description: 'Caveats that would make a verdict untrustworthy — reset cadence, shared sandboxes.'
+        metadata: { description: 'Free-form JSON, or null.' }
+        version: { type: integer }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: [string, "null"], format: date-time }
+
+    EnvironmentCreate:
+      type: object
+      required: [slug]
+      properties:
+        slug: { type: string, description: '2-32 chars, leading lowercase letter, then lowercase letters, digits or dashes' }
+        name: { type: string, description: 'Defaults to the slug.' }
+        kind: { type: string, enum: [local, ephemeral, shared, staging, production, other] }
+        base_url: { type: string }
+        bring_up: { type: string }
+        teardown: { type: string }
+        data_state: { type: string, enum: [seeded, empty, production_like, unknown] }
+        writable: { type: boolean, description: 'Defaults to false for kind=production, true otherwise.' }
+        credentials_hint: { type: string, description: 'A pointer, never a credential.' }
+        notes: { type: string }
+        metadata: { description: 'Free-form JSON.' }
+
+    EnvironmentPatch:
+      type: object
+      description: |
+        No `slug`: it is the handle checks and tool calls carry, so renaming one
+        would silently break every reference to it.
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [local, ephemeral, shared, staging, production, other] }
+        base_url: { type: [string, "null"], description: 'Explicit null clears it.' }
+        bring_up: { type: string }
+        teardown: { type: string }
+        data_state: { type: string, enum: [seeded, empty, production_like, unknown] }
+        writable: { type: boolean }
+        credentials_hint: { type: [string, "null"], description: 'Explicit null clears it.' }
+        notes: { type: string }
+        metadata_merge: { description: 'Merged key by key into metadata; a null value removes that key.' }
+
     Release:
       type: object
       description: |
@@ -6689,6 +6909,19 @@ x-error-codes:
   validation.entry_attachment_unlabeled: "an attachment arrived with neither `filename` nor `mime`, so nothing downstream could tell a reader what the bytes are. Send at least one."
   validation.entry_mime: "the attachment's media type is not a bare `type/subtype`. It is served back as the attachment's `Content-Type`, so it is restricted to what a header may hold — no parameters, no whitespace."
   validation.origin_at: "`origin_at` is not an RFC 3339 timestamp. It states when the content was written, as opposed to when it landed here; a wrong provenance date is worse than a missing one, so it is refused rather than dropped."
+
+  # -- environments: where a check can be run ----------------------------------
+  notfound.environment: "no environment with that id, or none with that slug in this project. List them with GET /v1/projects/{project}/environments, or register it first."
+  conflict.environment_slug: "that slug is already taken in this project. A slug is immutable because checks and tool calls address environments by it — update the existing environment, or pick another slug."
+  validation.environment_slug: "`slug` must be 2-32 characters: a leading lowercase letter, then lowercase letters, digits or dashes. It is the handle a person types and an agent passes."
+  validation.environment_name: "`name` must be non-empty and within its length bound. Omit it entirely to reuse the slug."
+  validation.environment_kind: "`kind` must be `local`, `ephemeral`, `shared`, `staging`, `production` or `other`. An enum rather than free text, so a project cannot grow prod/production/Prod and lose the ability to answer whether something is verified in production."
+  validation.environment_data_state: "`data_state` must be `seeded`, `empty`, `production_like` or `unknown` — what is in the environment, which is what decides whether a case's preconditions can be met at all."
+  validation.environment_base_url: "`base_url` must be an absolute http:// or https:// URL within its length bound, or null when the environment has no HTTP surface. A bare host is refused because it produces a request to nowhere rather than an error."
+  validation.environment_prose: "`bring_up`, `teardown` or `notes` is over its length limit. Keep it to the commands and caveats a runner needs, and link out for the rest."
+  validation.environment_credentials_hint: "`credentials_hint` is over its length bound, or looks like a credential rather than a pointer to one. Takomo never stores credentials and every token with `read` can see this field — send where the credential lives, e.g. `env:STAGING_TOKEN`."
+  validation.environment_metadata_size: "serialized environment `metadata` is over its cap. The bulk belongs in `notes`."
+  validation.environment_count: "the project already holds the maximum number of live environments. Archive one nobody runs against any more."
 
   # -- checklist: releases, checks, cases, verdicts ----------------------------
   notfound.release: "no release with that id in this project. A verdict may only cite a release the project actually has."

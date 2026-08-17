@@ -1133,6 +1133,79 @@ pub const CHECK_SEVERITIES: [&str; 3] = ["blocking", "advisory", "low"];
 pub const VERIFICATION_LEVELS: [&str; 3] = ["agent", "human", "agent_then_human"];
 pub const CASE_VERDICTS: [&str; 4] = ["pass", "fail", "blocked", "unreachable"];
 
+/// What kind of place this is. An enum rather than free text, because a project
+/// that grows `prod`, `production` and `Prod` can no longer answer "is it
+/// verified in production" — and because a gap on a scratch box and the same gap
+/// on production are not the same finding.
+pub const ENVIRONMENT_KINDS: [&str; 6] = [
+    "local",
+    "ephemeral",
+    "shared",
+    "staging",
+    "production",
+    "other",
+];
+
+/// What is in it, which is what decides whether a case's preconditions can even
+/// be met. `unknown` is honest and is the default: an environment nobody has
+/// described is not the same as one described as empty.
+pub const ENVIRONMENT_DATA_STATES: [&str; 4] = ["seeded", "empty", "production_like", "unknown"];
+
+/// A place a check can be run: a URL, how to bring it up, and what is in it.
+///
+/// Takomo never touches it. This is a registry an agent reads before running,
+/// and the reason it exists is that a verdict with no environment behind it is a
+/// claim nobody can reproduce.
+#[derive(Debug, Clone)]
+pub struct Environment {
+    pub id: String,
+    pub project: String,
+    /// The handle an agent types. Immutable once created.
+    pub slug: String,
+    pub name: String,
+    pub kind: String,
+    pub base_url: Option<String>,
+    pub bring_up: String,
+    pub teardown: String,
+    pub data_state: String,
+    /// Advisory only — Takomo executes nothing and enforces nothing here.
+    pub writable: bool,
+    /// A POINTER to where a credential lives. Never a credential.
+    pub credentials_hint: Option<String>,
+    pub notes: String,
+    pub metadata: Value,
+    pub version: i64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+}
+
+impl Environment {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "slug": self.slug,
+            "name": self.name,
+            "kind": self.kind,
+            "base_url": self.base_url,
+            "bring_up": self.bring_up,
+            "teardown": self.teardown,
+            "data_state": self.data_state,
+            "writable": self.writable,
+            "credentials_hint": self.credentials_hint,
+            "notes": self.notes,
+            "metadata": self.metadata,
+            "version": self.version,
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "archived_at": self.archived_at.map(iso),
+        })
+    }
+}
+
 /// An ordered marker in a project's release history, pushed by the agent that
 /// merged the work. `seq` is monotonic per project so a release-count expiry
 /// ("retest every 5 releases") is arithmetic.

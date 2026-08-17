@@ -3,6 +3,7 @@
 
 pub mod checklist;
 pub mod claims;
+pub mod environments;
 pub mod events;
 pub mod export;
 pub mod initiatives;

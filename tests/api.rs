@@ -4489,6 +4489,16 @@ async fn project_archive_refuses_every_write_and_allows_every_read() {
     assert_eq!(s, StatusCode::CONFLICT, "tag: {b}");
     assert_eq!(b["code"], "project.archived");
 
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/environments",
+            json!({ "slug": "staging" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "environment: {b}");
+    assert_eq!(b["code"], "project.archived");
+
     // The project's own settings are frozen too: an archived project is kept as
     // it stood, not reconfigured in place.
     let (s, b) = app
@@ -11676,6 +11686,325 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
         bundle.contains("/v1/initiatives"),
         "the initiatives client is missing from the bundle"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Environments: where a check can be run.
+//
+// The registry exists because a verdict with no environment behind it is a claim
+// nobody can reproduce, and because the URL, the bring-up command and the
+// credential pointer were previously carried out of band — which is exactly the
+// context that goes stale without anyone noticing.
+//
+// What is worth pinning here is not the CRUD but the three rules a later change
+// is most likely to erode: production is read-only unless someone says
+// otherwise, a slug is immutable, and this table never holds a secret.
+// ---------------------------------------------------------------------------
+
+/// Register an environment and return the created body.
+async fn environment(app: &TestApp, body: Value) -> Value {
+    let (status, b) = app
+        .post(&app.admin, "/v1/projects/tp/environments", body)
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "environment create failed: {b}"
+    );
+    b
+}
+
+/// The defaults are the documentation an agent actually reads, so they are the
+/// part worth asserting: an undescribed environment says `unknown` rather than
+/// guessing, and production is read-only until somebody states otherwise.
+#[tokio::test]
+async fn an_environment_defaults_to_unknown_data_and_production_to_read_only() {
+    let app = TestApp::spawn().await;
+
+    let bare = environment(&app, json!({ "slug": "scratch" })).await;
+    assert_eq!(bare["slug"], "scratch");
+    assert_eq!(bare["name"], "scratch", "name defaults to the slug: {bare}");
+    assert_eq!(bare["kind"], "other");
+    assert_eq!(
+        bare["data_state"], "unknown",
+        "an environment nobody described is not the same as one described as empty: {bare}"
+    );
+    assert_eq!(bare["writable"], json!(true));
+    assert!(bare["base_url"].is_null());
+    assert!(bare["archived_at"].is_null());
+
+    // Production errs toward refusing a destructive run rather than permitting
+    // one. It is a default and not a rule, so a project that really does test
+    // writes against production can still say so.
+    let prod = environment(&app, json!({ "slug": "prod", "kind": "production" })).await;
+    assert_eq!(
+        prod["writable"],
+        json!(false),
+        "production defaults to read-only: {prod}"
+    );
+
+    let opted_in = environment(
+        &app,
+        json!({ "slug": "prod-write", "kind": "production", "writable": true }),
+    )
+    .await;
+    assert_eq!(
+        opted_in["writable"],
+        json!(true),
+        "an explicit choice wins over the default: {opted_in}"
+    );
+
+    // Everything a runner needs comes back on the read, so it never has to be
+    // told any of this out of band.
+    let full = environment(
+        &app,
+        json!({
+            "slug": "staging",
+            "name": "Staging (eu-west)",
+            "kind": "staging",
+            "base_url": "https://staging.example.com",
+            "bring_up": "backlot up --ttl 900",
+            "teardown": "backlot release",
+            "data_state": "seeded",
+            "credentials_hint": "env:STAGING_TOKEN",
+            "notes": "reseeded 03:00 UTC; shares the payment sandbox",
+        }),
+    )
+    .await;
+    let (s, got) = app
+        .get(
+            &app.worker,
+            &format!("/v1/environments/{}", full["id"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(got["base_url"], "https://staging.example.com");
+    assert_eq!(got["bring_up"], "backlot up --ttl 900");
+    assert_eq!(got["teardown"], "backlot release");
+    assert_eq!(got["credentials_hint"], "env:STAGING_TOKEN");
+
+    // Listing is an envelope, like every other list route.
+    let (s, list) = app.get(&app.worker, "/v1/projects/tp/environments").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert_eq!(list["total"], json!(4), "{list}");
+    let slugs: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        slugs,
+        vec!["prod", "prod-write", "scratch", "staging"],
+        "sorted by slug, because the reader is picking one: {list}"
+    );
+
+    let (s, filtered) = app
+        .get(&app.worker, "/v1/projects/tp/environments?kind=production")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered["total"], json!(2), "{filtered}");
+}
+
+/// A slug is the handle checks and tool calls carry, so it is unique per project
+/// and can never be renamed. Both halves matter: without uniqueness "staging"
+/// stops identifying anything, and with renaming every stored reference to it
+/// breaks silently.
+#[tokio::test]
+async fn an_environment_slug_is_unique_and_cannot_be_renamed() {
+    let app = TestApp::spawn().await;
+    let first = environment(&app, json!({ "slug": "staging", "name": "Staging" })).await;
+
+    let (s, dup) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/environments",
+            json!({ "slug": "staging", "name": "Staging again" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{dup}");
+    assert_eq!(dup["code"], "conflict.environment_slug");
+    assert!(
+        dup["message"]
+            .as_str()
+            .unwrap()
+            .contains(first["id"].as_str().unwrap()),
+        "the refusal names the environment already holding the slug: {dup}"
+    );
+
+    // Renaming is not a permitted operation rather than a discouraged one: the
+    // field is not in the patch allowlist at all.
+    let (s, renamed) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/environments/{}", first["id"].as_str().unwrap()),
+            json!({ "slug": "staging2" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "slug is not patchable: {renamed}"
+    );
+
+    // Everything else is.
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/environments/{}", first["id"].as_str().unwrap()),
+            json!({ "name": "Staging (eu-west)", "kind": "staging", "notes": "reseeded nightly" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["name"], "Staging (eu-west)");
+    assert_eq!(patched["kind"], "staging");
+    assert_eq!(
+        patched["version"],
+        json!(2),
+        "a patch bumps version: {patched}"
+    );
+
+    let (s, bad) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/environments",
+            json!({ "slug": "Staging Prod" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.environment_slug");
+}
+
+/// `credentials_hint` points at where a credential lives and never holds one.
+///
+/// Every token with `read` can list environments, so a secret here would be a
+/// secret handed to every reader. The PEM check is not secret detection and does
+/// not pretend to be — it catches the single most common way a private key gets
+/// pasted into a text box, and refuses it loudly enough to send the next person
+/// to the docs.
+#[tokio::test]
+async fn a_credential_hint_is_a_pointer_and_a_pasted_key_is_refused() {
+    let app = TestApp::spawn().await;
+
+    for pointer in [
+        "env:STAGING_TOKEN",
+        "op://vault/staging/agent",
+        "see the runbook at https://wiki.example.com/staging",
+    ] {
+        let env = environment(
+            &app,
+            json!({ "slug": format!("e{}", pointer.len()), "credentials_hint": pointer }),
+        )
+        .await;
+        assert_eq!(env["credentials_hint"], pointer);
+    }
+
+    let (s, refused) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/environments",
+            json!({
+                "slug": "leaky",
+                "credentials_hint": "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA==\n",
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.environment_credentials_hint");
+    assert!(
+        refused["remedy"]
+            .as_str()
+            .unwrap()
+            .contains("never stores credentials"),
+        "the refusal has to say why, or it reads as an arbitrary limit: {refused}"
+    );
+}
+
+/// Archiving is how an environment goes away, and it is reversible, because
+/// every verdict ever taken there still references it. Deleting the row would
+/// orphan that history — the same reason a check is archived rather than dropped.
+#[tokio::test]
+async fn archiving_an_environment_keeps_it_readable_and_is_reversible() {
+    let app = TestApp::spawn().await;
+    let env = environment(&app, json!({ "slug": "old-box", "kind": "shared" })).await;
+    let id = env["id"].as_str().unwrap().to_string();
+
+    let (s, archived) = app
+        .delete(&app.admin, &format!("/v1/environments/{id}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{archived}");
+    assert!(archived["archived_at"].is_string(), "{archived}");
+
+    // Gone from the default list, still readable by id, and still countable.
+    let (_, list) = app.get(&app.worker, "/v1/projects/tp/environments").await;
+    assert_eq!(
+        list["total"],
+        json!(0),
+        "archived drops out by default: {list}"
+    );
+    let (_, with) = app
+        .get(&app.worker, "/v1/projects/tp/environments?archived=include")
+        .await;
+    assert_eq!(with["total"], json!(1), "{with}");
+    let (s, still) = app
+        .get(&app.worker, &format!("/v1/environments/{id}"))
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "a verdict's evidence stays readable: {still}"
+    );
+
+    // Archiving changed nothing else about it, so unarchiving is a pure reversal.
+    let (s, back) = app
+        .post(
+            &app.admin,
+            &format!("/v1/environments/{id}/unarchive"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert!(back["archived_at"].is_null(), "{back}");
+    assert_eq!(back["kind"], "shared", "nothing else moved: {back}");
+}
+
+/// The enums exist so a project cannot grow `prod`, `production` and `Prod` and
+/// then be unable to answer "is it verified in production". Each refusal names
+/// the values that would have worked.
+#[tokio::test]
+async fn environment_enums_and_urls_are_refused_with_the_valid_values() {
+    let app = TestApp::spawn().await;
+
+    for (field, value, code) in [
+        ("kind", "prod", "validation.environment_kind"),
+        ("data_state", "fresh", "validation.environment_data_state"),
+    ] {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                "/v1/projects/tp/environments",
+                json!({ "slug": "e1", field: value }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {b}");
+        assert_eq!(b["code"], code, "{b}");
+        assert!(
+            b["remedy"].as_str().unwrap().contains("Send one of:"),
+            "a refusal that does not list the alternatives just costs a round trip: {b}"
+        );
+    }
+
+    // A bare host is the common mistake, and it is the one that produces a
+    // request to nowhere rather than an error, so it is refused up front.
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/environments",
+            json!({ "slug": "e2", "base_url": "staging.example.com" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["code"], "validation.environment_base_url");
 }
 
 // ---------------------------------------------------------------------------

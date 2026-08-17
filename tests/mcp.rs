@@ -1903,6 +1903,91 @@ async fn initiative_tools_are_discoverable_and_classified() {
     assert!(!takomo::mcp::READ_TOOLS.contains(&"takomo_initiative_append"));
 }
 
+/// An agent registers the instance it just stood up, and the next one reads it.
+///
+/// This is the point of the registry over MCP: the runner that leases an
+/// environment is the only party that knows its URL, and with nowhere to put
+/// that, the knowledge stays in one session's head. Filing upserts by slug so a
+/// runner can call it every run without accumulating duplicates, and an omitted
+/// field keeps what is already recorded — re-registering a URL must not silently
+/// erase someone's notes.
+#[tokio::test]
+async fn an_agent_files_an_environment_and_the_next_one_reads_it() {
+    let app = TestApp::spawn().await;
+
+    let (created, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_environment_file",
+            json!({
+                "project": "tp",
+                "slug": "preview",
+                "kind": "ephemeral",
+                "base_url": "https://preview-417.example.com",
+                "bring_up": "backlot up --ttl 900",
+                "teardown": "backlot release",
+                "data_state": "seeded",
+                "credentials_hint": "env:PREVIEW_TOKEN",
+                "notes": "torn down when the PR closes",
+            }),
+        )
+        .await;
+    assert!(!is_err, "environment_file failed: {created}");
+    assert_eq!(created["created"], json!(true), "{created}");
+    assert_eq!(created["environment"]["slug"], "preview");
+    assert_eq!(
+        created["environment"]["writable"],
+        json!(true),
+        "an ephemeral box is writable: {created}"
+    );
+
+    // The same slug again is an update, not a second environment — and the
+    // fields the caller left out keep what was already recorded.
+    let (again, is_err) = app
+        .tool(
+            &app.worker,
+            "takomo_environment_file",
+            json!({
+                "project": "tp",
+                "slug": "preview",
+                "base_url": "https://preview-418.example.com",
+            }),
+        )
+        .await;
+    assert!(!is_err, "refiling failed: {again}");
+    assert_eq!(again["created"], json!(false), "{again}");
+    assert_eq!(
+        again["environment"]["base_url"],
+        "https://preview-418.example.com"
+    );
+    assert_eq!(
+        again["environment"]["notes"], "torn down when the PR closes",
+        "an omitted field must not erase what is there: {again}"
+    );
+    assert_eq!(again["environment"]["id"], created["environment"]["id"]);
+
+    // The next runner reads what it needs to actually go and run something.
+    let (list, is_err) = app
+        .tool(
+            &app.worker2,
+            "takomo_environments",
+            json!({ "project": "tp" }),
+        )
+        .await;
+    assert!(!is_err, "environments failed: {list}");
+    assert_eq!(list["total"], json!(1), "{list}");
+    let env = &list["environments"][0];
+    assert_eq!(env["base_url"], "https://preview-418.example.com");
+    assert_eq!(env["bring_up"], "backlot up --ttl 900");
+    assert_eq!(env["credentials_hint"], "env:PREVIEW_TOKEN");
+
+    // Reading the registry is free; registering is not. A read charged against
+    // the write budget would let an agent rate-limit itself out of the tracker
+    // just by looking up where to run.
+    assert!(takomo::mcp::READ_TOOLS.contains(&"takomo_environments"));
+    assert!(!takomo::mcp::READ_TOOLS.contains(&"takomo_environment_file"));
+}
+
 /// The whole checklist loop an agent actually runs, over MCP: file a check, file
 /// its generated cases, record a verdict, push the release you merged, then read
 /// what that invalidated. This is the surface the feature exists to serve — a

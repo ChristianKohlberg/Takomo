@@ -13,8 +13,8 @@ use crate::error::ApiResult;
 use crate::ids::now_ms;
 use crate::schedule::Cadence;
 use crate::store::{
-    AskRequest, QuestionFilter, ScheduleCreate, ScheduleTemplate, Store, TicketCreate,
-    TicketListFilter, TimeoutAction,
+    AskRequest, EnvironmentCreate, QuestionFilter, ScheduleCreate, ScheduleTemplate, Store,
+    TicketCreate, TicketListFilter, TimeoutAction,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -506,6 +506,7 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
     }
 
     initiative(store)?;
+    environments(store)?;
 
     // Counted, not hardcoded, so the summary can't drift from the content.
     Ok(SeedSummary {
@@ -518,6 +519,59 @@ pub fn dev(store: &Store) -> ApiResult<SeedSummary> {
 
 /// One day, in milliseconds — the unit every `origin_at` below is offset by.
 const DAY_MS: i64 = 86_400_000;
+
+/// Three environments, because one would not show what the registry is for.
+///
+/// The interesting shape is the contrast between them: a seeded local box you
+/// can break, a staging tier that resets on a schedule, and a production entry
+/// that is read-only and says so. An agent reading this list learns where to go
+/// AND what it may do there, which is the whole reason the registry exists.
+fn environments(store: &Store) -> ApiResult<()> {
+    for req in [
+        EnvironmentCreate {
+            project: PROJECT.to_string(),
+            slug: "local".to_string(),
+            name: Some("Local (backlot)".to_string()),
+            kind: Some("local".to_string()),
+            base_url: Some("http://127.0.0.1:8080".to_string()),
+            bring_up: Some("backlot up --ttl 900   # agents: --ttl, not $$".to_string()),
+            teardown: Some("backlot release".to_string()),
+            data_state: Some("seeded".to_string()),
+            notes: Some("Yours to break. Reseeded on every lease.".to_string()),
+            ..Default::default()
+        },
+        EnvironmentCreate {
+            project: PROJECT.to_string(),
+            slug: "staging".to_string(),
+            name: Some("Staging".to_string()),
+            kind: Some("staging".to_string()),
+            base_url: Some("https://staging.demo.example".to_string()),
+            bring_up: Some("Always on.".to_string()),
+            data_state: Some("production_like".to_string()),
+            credentials_hint: Some("env:STAGING_TOKEN".to_string()),
+            notes: Some(
+                "Reseeded 03:00 UTC — a verdict recorded just before that is worth re-running."
+                    .to_string(),
+            ),
+            ..Default::default()
+        },
+        EnvironmentCreate {
+            project: PROJECT.to_string(),
+            slug: "production".to_string(),
+            name: Some("Production".to_string()),
+            kind: Some("production".to_string()),
+            base_url: Some("https://demo.example".to_string()),
+            bring_up: Some("Always on.".to_string()),
+            data_state: Some("production_like".to_string()),
+            credentials_hint: Some("op://vault/demo-prod/readonly".to_string()),
+            notes: Some("Read-only checks only. Real customer data.".to_string()),
+            ..Default::default()
+        },
+    ] {
+        store.create_environment(&req, SEEDER)?;
+    }
+    Ok(())
+}
 
 /// Seed the demo initiative as a DOCUMENT, not just a pile of entries.
 ///

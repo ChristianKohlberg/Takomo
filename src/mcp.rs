@@ -96,6 +96,7 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_claim_status",
     "takomo_coverage",
     "takomo_deps",
+    "takomo_environments",
     "takomo_gate",
     "takomo_impact",
     "takomo_initiative_list",
@@ -756,6 +757,49 @@ pub struct ChecklistProjectArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EnvironmentsArgs {
+    /// Project id.
+    pub project: String,
+    /// Narrow by kind: local, ephemeral, shared, staging, production, other.
+    pub kind: Option<String>,
+    /// Include archived environments, which are kept because past verdicts
+    /// still reference them.
+    pub archived: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EnvironmentFileArgs {
+    /// Project the environment belongs to.
+    pub project: String,
+    /// Stable handle you will pass everywhere else, e.g. "staging". Filing the
+    /// same slug twice updates that environment rather than creating a second.
+    pub slug: String,
+    /// Human-readable name. Defaults to the slug.
+    pub name: Option<String>,
+    /// local, ephemeral, shared, staging, production, other.
+    pub kind: Option<String>,
+    /// Where the application answers, e.g. "https://staging.example.com".
+    pub base_url: Option<String>,
+    /// How to get it running, in prose or as a command — Takomo never runs it,
+    /// it hands it to whoever needs it next.
+    pub bring_up: Option<String>,
+    /// How to give it back when the run is over. The half nobody writes down.
+    pub teardown: Option<String>,
+    /// seeded, empty, production_like or unknown — what is in it, which decides
+    /// whether a case's preconditions can be met at all.
+    pub data_state: Option<String>,
+    /// Whether a destructive case may run here. ADVISORY: Takomo executes
+    /// nothing and cannot enforce it. Defaults to false for kind=production.
+    pub writable: Option<bool>,
+    /// WHERE a credential lives — "env:STAGING_TOKEN", a vault path, a runbook
+    /// URL. Never the credential itself: every token with `read` can see this.
+    pub credentials_hint: Option<String>,
+    /// Caveats worth knowing before running: reset cadence, shared sandboxes,
+    /// anything that would make a verdict untrustworthy.
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ChecksArgs {
     /// Project id.
     pub project: String,
@@ -1371,6 +1415,37 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_answer_link(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "List the environments a check can be run against: base URL, how to bring \
+        each one up and give it back, what data is in it, and whether writing to it is safe. Read \
+        this BEFORE running a check — it is where the URL and the credential pointer live, so you \
+        do not have to be told them out of band. `writable` and `credentials_hint` are advisory: \
+        Takomo runs nothing and stores no secrets, only a pointer to where one lives."
+    )]
+    async fn takomo_environments(
+        &self,
+        Parameters(a): Parameters<EnvironmentsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_environments(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Register an environment, or update the one already holding that slug. Use \
+        it when you stand up an instance others will verify against — an ephemeral preview, a \
+        seeded local box — so the next runner is not told the URL out of band. Filing the same \
+        slug twice updates in place, so this is safe to call every run. Put a POINTER in \
+        `credentials_hint` (\"env:STAGING_TOKEN\", a vault path), never a credential: any token \
+        with `read` can see it."
+    )]
+    async fn takomo_environment_file(
+        &self,
+        Parameters(a): Parameters<EnvironmentFileArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_environment_file(&require_auth(&ctx)?, a))
     }
 
     #[tool(
@@ -2836,6 +2911,90 @@ impl TakomoMcp {
         let ticket = self.state.store.archive_ticket(id, &auth.actor)?;
         self.state.wake();
         Ok(json!({ "ok": true, "ticket": ticket.to_json(now_ms()) }))
+    }
+
+    // ---- environments ------------------------------------------------------
+
+    fn do_environments(&self, auth: &AuthCtx, a: EnvironmentsArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        auth.require_project(&a.project)?;
+        let filter = crate::store::EnvironmentFilter {
+            project: a.project.clone(),
+            kind: a.kind,
+            include_archived: a.archived.unwrap_or(false),
+            limit: None,
+        };
+        let (envs, total) = self.state.store.list_environments(&filter)?;
+        Ok(json!({
+            "ok": true,
+            "environments": envs.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
+            "total": total,
+        }))
+    }
+
+    /// Upsert by `(project, slug)`.
+    ///
+    /// Implemented as create-then-patch-on-conflict rather than as a second
+    /// SQL path: the validation, the caps and the events all live in
+    /// `create_environment` and `patch_environment`, and a third code path
+    /// writing the same table is how those three drift apart. Losing the race
+    /// costs one retry and lands in the same state either way.
+    fn do_environment_file(&self, auth: &AuthCtx, a: EnvironmentFileArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        auth.require_project(&a.project)?;
+        let create = crate::store::EnvironmentCreate {
+            project: a.project.clone(),
+            slug: a.slug.clone(),
+            name: a.name.clone(),
+            kind: a.kind.clone(),
+            base_url: a.base_url.clone(),
+            bring_up: a.bring_up.clone(),
+            teardown: a.teardown.clone(),
+            data_state: a.data_state.clone(),
+            writable: a.writable,
+            credentials_hint: a.credentials_hint.clone(),
+            notes: a.notes.clone(),
+            metadata: None,
+        };
+        match self.state.store.create_environment(&create, &auth.actor) {
+            Ok(env) => Ok(json!({ "ok": true, "created": true, "environment": env.to_json() })),
+            Err(e) if e.body.code == "conflict.environment_slug" => {
+                let existing = self
+                    .state
+                    .store
+                    .list_environments(&crate::store::EnvironmentFilter {
+                        project: a.project.clone(),
+                        kind: None,
+                        include_archived: true,
+                        limit: None,
+                    })?
+                    .0
+                    .into_iter()
+                    .find(|e| e.slug == a.slug)
+                    .ok_or(e)?;
+                // Only the fields the caller actually sent are applied; an
+                // omitted field keeps whatever is already recorded, so a runner
+                // re-registering a URL cannot silently erase someone's notes.
+                let patch = crate::store::EnvironmentPatch {
+                    name: a.name,
+                    kind: a.kind,
+                    base_url: a.base_url.map(Some),
+                    bring_up: a.bring_up,
+                    teardown: a.teardown,
+                    data_state: a.data_state,
+                    writable: a.writable,
+                    credentials_hint: a.credentials_hint.map(Some),
+                    notes: a.notes,
+                    metadata_merge: None,
+                };
+                let env = self
+                    .state
+                    .store
+                    .patch_environment(&existing.id, &patch, &auth.actor)?;
+                Ok(json!({ "ok": true, "created": false, "environment": env.to_json() }))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     // ---- checklist ---------------------------------------------------------
