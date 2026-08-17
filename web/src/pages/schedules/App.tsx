@@ -258,7 +258,6 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
-          settings: t.settings,
         },
         badges: { schedules: pending.length },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
@@ -283,6 +282,7 @@ export function App() {
           collapse: t.navCollapse,
           signOut: t.signOut,
           account: t.navAccount,
+          settings: t.settings,
         },
         collapsed: navCollapsed,
         onCollapsed: setNavCollapsed,

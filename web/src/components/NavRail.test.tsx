@@ -5,16 +5,21 @@
 // surface is not a link to itself, and that a plain click is intercepted while
 // a cmd-click is not.
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { NavRail, type NavRailProps } from './NavRail'
 
-const LABELS = { expand: 'Expand', collapse: 'Collapse', signOut: 'Sign out', account: 'Account' }
+const LABELS = {
+  expand: 'Expand',
+  collapse: 'Collapse',
+  signOut: 'Sign out',
+  account: 'Account',
+  settings: 'Settings',
+}
 const NAV = {
   board: 'Board',
   inbox: 'Inbox',
   initiatives: 'Initiatives',
   schedules: 'Schedules',
-  settings: 'Settings',
 }
 
 function mount(props: Partial<NavRailProps> = {}) {
@@ -36,8 +41,10 @@ function mount(props: Partial<NavRailProps> = {}) {
   return { onCollapsed, onSignOut, onNavigate }
 }
 
+const accountTrigger = () => screen.getByRole('button', { name: 'Account' })
+
 describe('NavRail', () => {
-  it('links to the other four surfaces and not to the current one', () => {
+  it('links to the other three surfaces and not to the current one', () => {
     mount()
     expect(screen.getByRole('link', { name: 'Inbox' })).toHaveProperty(
       'pathname',
@@ -47,11 +54,16 @@ describe('NavRail', () => {
     expect(screen.getByText('Board')).toBeTruthy()
   })
 
+  it('does not list settings among the surface links', () => {
+    mount()
+    expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull()
+  })
+
   it('keeps every destination reachable by name when collapsed', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
-    // it and a collapsed rail is five unlabelled glyphs to a screen reader.
+    // it and a collapsed rail is four unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Inbox', 'Initiatives', 'Schedules', 'Settings']) {
+    for (const name of ['Inbox', 'Initiatives', 'Schedules']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })
@@ -73,12 +85,47 @@ describe('NavRail', () => {
     expect(screen.queryByText('0')).toBeNull()
   })
 
-  it('toggles through the caller, and signs out', () => {
-    const { onCollapsed, onSignOut } = mount()
+  it('toggles through the caller', () => {
+    const { onCollapsed } = mount()
     screen.getByRole('button', { name: 'Collapse' }).click()
     expect(onCollapsed).toHaveBeenCalledWith(true)
-    screen.getByRole('button', { name: 'Sign out' }).click()
+  })
+
+  it('opens the account menu with settings and sign-out', () => {
+    mount()
+    fireEvent.click(accountTrigger())
+    const menu = screen.getByRole('menu')
+    expect(menu).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Settings' })).toHaveProperty(
+      'pathname',
+      '/settings',
+    )
+    expect(screen.getByRole('menuitem', { name: 'Sign out' })).toBeTruthy()
+  })
+
+  it('navigates to settings through onNavigate on a plain click', () => {
+    const { onNavigate } = mount()
+    fireEvent.click(accountTrigger())
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }))
+    expect(onNavigate).toHaveBeenCalledWith('/settings')
+  })
+
+  it('signs out from the account menu', () => {
+    const { onSignOut } = mount()
+    fireEvent.click(accountTrigger())
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }))
     expect(onSignOut).toHaveBeenCalled()
+  })
+
+  it('places the account menu beside the trigger when the rail is collapsed', () => {
+    mount({ collapsed: true })
+    fireEvent.click(accountTrigger())
+    expect(screen.getByRole('menu').className).toContain('left-full')
+  })
+
+  it('highlights the account trigger on /settings', () => {
+    mount({ current: 'account' })
+    expect(accountTrigger().className).toContain('bg-secondary')
   })
 
   it('shows the actor and derives a role from its scopes', () => {

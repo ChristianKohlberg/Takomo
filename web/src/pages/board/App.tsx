@@ -461,7 +461,6 @@ function Board({
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
-          settings: t.settings,
         },
         // The board already loads this project's open questions for its own
         // inbox drawer, so the rail can badge /inbox without a second request.
@@ -489,6 +488,7 @@ function Board({
           collapse: t.navCollapse,
           signOut: t.signout,
           account: t.navAccount,
+          settings: t.settings,
         },
         collapsed: navCollapsed,
         onCollapsed: setNavCollapsed,
