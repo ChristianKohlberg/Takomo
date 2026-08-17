@@ -485,6 +485,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/oauth/token", post(crate::api::oauth::token));
 
     Router::new()
+        .route("/", get(crate::api::root_redirect))
         .route("/healthz", get(crate::api::healthz))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))

@@ -4183,11 +4183,28 @@ paths:
         "304": { description: The client's copy is current; no body. }
         "404": { description: Not one of the embedded asset names. }
 
+  /:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Redirect to the board (open — no auth)
+      description: |
+        A bare hostname would otherwise fall through to the `/v1` bearer
+        middleware and answer `401 auth.missing`. Only `/` is redirected; a
+        typo'd path is left to the client router.
+      security: []
+      responses:
+        "307":
+          description: Temporary redirect to `/board`
+          headers:
+            Location:
+              schema: { type: string, example: /board }
+
   /healthz:
     servers: [{ url: / }]
     get:
       tags: [admin]
-      summary: Liveness/readiness (open — no auth; the only unauthenticated endpoint)
+      summary: Liveness/readiness (open — no auth)
       security: []
       responses:
         "200":
@@ -6788,6 +6805,7 @@ x-error-codes:
   answer.missing: "no answer-link token. An answer link carries it in the URL fragment (#a=...)."
   answer.invalid: "the answer-link token is not recognised. The link is mistyped, or the grant was revoked."
   answer.expired: "the answer link existed but its window has closed. Ask for a fresh one."
+  answer.project: "the grant's stored project does not match the question it references. The link is refused rather than served under the wrong scope."
   answer_link.spent: "the grant is single-use and has already been spent. Nothing was recorded for this attempt; the answer already on the question stands."
   answer_link.ttl: "`ttl_seconds` on answer-link creation must be a positive integer no larger than the 30-day maximum — the link is a credential handed outside the org."
   answer_link.not_owner: "only the link's creator, or an admin, may revoke it."

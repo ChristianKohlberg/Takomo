@@ -6,7 +6,7 @@ use crate::ids::{now_ms, token_hash};
 use crate::server::AppState;
 use crate::store::ShareKind;
 use axum::extract::{Request, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -125,6 +125,46 @@ impl Surface {
     }
 }
 
+/// Pull the bearer credential out of `Authorization`. Shared by the three
+/// independent auth middlewares only — resolution against `tokens`, `shares`,
+/// and `answer_grants` stays in each middleware.
+fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+/// Drop in-memory throttle entries that have aged out. The DB touch is capped at
+/// once a minute per credential; the map only needs to remember that long.
+fn evict_stale_last_touch(touched: &mut HashMap<String, i64>, now: i64) {
+    const MAX_AGE_MS: i64 = 3_600_000;
+    touched.retain(|_, t| now - *t < MAX_AGE_MS);
+}
+
+/// Persist `last_used_at` at most once a minute per credential id (`tk_`, `tks_`,
+/// `tka_` each have their own row and their own touch function).
+fn touch_last_used<F>(state: &AppState, id: &str, persist: F)
+where
+    F: FnOnce(&crate::store::Store) -> ApiResult<()>,
+{
+    let now = now_ms();
+    let mut touched = state.last_touch.lock().expect("touch lock");
+    evict_stale_last_touch(&mut touched, now);
+    let due = touched.get(id).map(|t| now - *t >= 60_000).unwrap_or(true);
+    if due {
+        touched.insert(id.to_string(), now);
+        drop(touched);
+        let _ = persist(&state.store);
+    }
+}
+
 /// Bearer auth for the REST surface (`/v1/*`): writes are classified by method.
 pub async fn auth_middleware(
     state: State<Arc<AppState>>,
@@ -164,13 +204,7 @@ async fn authenticate(
         _ => err,
     };
 
-    let header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
-    if token.is_empty() {
+    let token = extract_bearer(request.headers()).ok_or_else(|| {
         let mut message = String::from(
             "Missing bearer token. Send 'Authorization: Bearer tk_...' on every request; only /healthz is open. Tokens are minted on the server with: takomo token create.",
         );
@@ -179,18 +213,22 @@ async fn authenticate(
                 " This endpoint also accepts an OAuth-issued token: see the WWW-Authenticate header on this response for where to start the flow, which is what a hosted client (claude.ai, ChatGPT, the Gemini app) does automatically.",
             );
         }
-        return Err(challenge(ApiError::new(
+        challenge(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "auth.missing",
             message,
-        )));
-    }
+        ))
+    })?;
 
     let row = state
         .store
         .lookup_token(&token_hash(token))?
         .ok_or_else(|| challenge(invalid_token("unknown token")))?;
     let now = now_ms();
+    // `tk_` tokens answer 401 for every bad state — revoked, expired, or unknown.
+    // That is the right UX for a credential you paste into a client: "log in
+    // again", not "this link is dead". Share and answer-grant links use 410 for
+    // spent/expired credentials instead; see their middlewares below.
     if row.revoked_at.is_some() {
         return Err(challenge(invalid_token("the token has been revoked")));
     }
@@ -215,18 +253,8 @@ async fn authenticate(
     }
 
     // Touch last_used_at at most once a minute per token.
-    {
-        let mut touched = state.last_touch.lock().expect("touch lock");
-        let due = touched
-            .get(&ctx.token_id)
-            .map(|t| now - *t >= 60_000)
-            .unwrap_or(true);
-        if due {
-            touched.insert(ctx.token_id.clone(), now);
-            drop(touched);
-            let _ = state.store.touch_token(&ctx.token_id);
-        }
-    }
+    let token_id = ctx.token_id.clone();
+    touch_last_used(&state, &token_id, |store| store.touch_token(&token_id));
 
     request.extensions_mut().insert(ctx);
     Ok(next.run(request).await)
@@ -247,8 +275,16 @@ fn debit_window(
     now: i64,
 ) -> Result<(), i64> {
     let mut windows = windows.lock().expect("rate lock");
-    let window = windows.entry(key.to_string()).or_default();
     let cutoff = now - 60_000;
+    // A credential charged once and never again leaves an empty deque behind;
+    // drop those keys so the map does not grow with every id ever minted.
+    windows.retain(|_, window| {
+        while window.front().is_some_and(|t| *t <= cutoff) {
+            window.pop_front();
+        }
+        !window.is_empty()
+    });
+    let window = windows.entry(key.to_string()).or_default();
     while window.front().is_some_and(|t| *t <= cutoff) {
         window.pop_front();
     }
@@ -361,24 +397,22 @@ pub async fn share_auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
-    if token.is_empty() {
-        return Err(ApiError::new(
+    let token = extract_bearer(request.headers()).ok_or_else(|| {
+        ApiError::new(
             StatusCode::UNAUTHORIZED,
             "share.missing",
             "Missing share token. Open the shared link, which carries its token in the URL fragment (#s=...).",
-        ));
-    }
+        )
+    })?;
 
     let share = state
         .store
         .lookup_share_by_hash(&token_hash(token))?
         .ok_or_else(|| {
+            // Unknown share token: 401 — there is no link to declare dead, only a
+            // mistyped or deleted credential. Revoked/expired links get 410 below
+            // so the board can say "this link is no longer valid" instead of
+            // "log in".
             ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "share.invalid",
@@ -411,6 +445,9 @@ pub async fn share_auth_middleware(
         ))
         .header("Retry-After", retry_after_secs.to_string()));
     }
+
+    let share_id = share.id.clone();
+    touch_last_used(&state, &share_id, |store| store.touch_share(&share_id));
 
     let ctx = ShareCtx {
         share_id: share.id,
@@ -455,24 +492,20 @@ pub async fn answer_auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let header = request
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let token = header.strip_prefix("Bearer ").unwrap_or("").trim();
-    if token.is_empty() {
-        return Err(ApiError::new(
+    let token = extract_bearer(request.headers()).ok_or_else(|| {
+        ApiError::new(
             StatusCode::UNAUTHORIZED,
             "answer.missing",
             "Missing answer-link token. Open the answer link, which carries its token in the URL fragment (#a=...).",
-        ));
-    }
+        )
+    })?;
 
     let grant = state
         .store
         .lookup_answer_grant_by_hash(&token_hash(token))?
         .ok_or_else(|| {
+            // Same split as shares: unknown → 401, spent/revoked/expired → 410 so
+            // the one-question page can distinguish a typo from a dead link.
             ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "answer.invalid",
@@ -492,6 +525,11 @@ pub async fn answer_auth_middleware(
     if grant.expires_at <= now {
         return Err(answer_gone("this answer link has expired"));
     }
+
+    let grant_id = grant.id.clone();
+    touch_last_used(&state, &grant_id, |store| {
+        store.touch_answer_grant(&grant_id)
+    });
 
     let ctx = AnswerCtx {
         grant_id: grant.id,

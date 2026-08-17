@@ -8,7 +8,7 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::now_ms;
 use crate::server::AppState;
-use crate::store::{Ticket, TicketCreate, TicketListFilter, TicketPatch};
+use crate::store::{validate_tag_kind, Ticket, TicketCreate, TicketListFilter, TicketPatch};
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -118,13 +118,17 @@ pub async fn list(
     if let Some(p) = first(&pairs, "project") {
         ctx.require_project(p)?;
     }
+    let tag_kinds: Vec<String> = all(&pairs, "tag_kind");
+    for kind in &tag_kinds {
+        validate_tag_kind(kind)?;
+    }
     let filter = TicketListFilter {
         project: first(&pairs, "project").map(str::to_string),
         state: first(&pairs, "state").map(str::to_string),
         ty: first(&pairs, "type").map(str::to_string),
         labels: all(&pairs, "label"),
         tags: all(&pairs, "tag"),
-        tag_kinds: all(&pairs, "tag_kind"),
+        tag_kinds,
         parent: first(&pairs, "parent").map(str::to_string),
         epic: first(&pairs, "epic").map(str::to_string),
         q: first(&pairs, "q").map(str::to_string),

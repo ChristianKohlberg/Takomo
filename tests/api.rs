@@ -16398,3 +16398,155 @@ async fn a_person_tag_resolves_to_the_directory_person() {
         .collect();
     assert_eq!(refs, vec!["person:ada"], "{found}");
 }
+
+// ---------------------------------------------------------------------------
+// Auth/query hardening (takomo-66k9 … takomo-dpue)
+
+#[tokio::test]
+async fn root_redirects_to_board_without_auth() {
+    let app = TestApp::spawn().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let resp = client
+        .get(app.url("/"))
+        .send()
+        .await
+        .expect("GET /");
+    assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        resp.headers().get("location").and_then(|v| v.to_str().ok()),
+        Some("/board")
+    );
+}
+
+#[tokio::test]
+async fn answer_self_rejects_grant_project_mismatch() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("Mismatch guard").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "OK?", "fence": fence }),
+        )
+        .await;
+    let (s, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:outsider" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{link}");
+    let token = link["token"].as_str().unwrap().to_string();
+    let grant_id = link["id"].as_str().unwrap().to_string();
+
+    let conn = rusqlite::Connection::open(app.tmp.path().join("test.db")).unwrap();
+    conn.execute(
+        "UPDATE answer_grants SET project = 'wrong' WHERE id = ?1",
+        [&grant_id],
+    )
+    .unwrap();
+
+    let (s, body) = app.get(&token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "answer.project");
+    let (s, body) = app
+        .post(&token, "/v1/answer/self", json!({ "answer": "yes" }))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "answer.project");
+}
+
+#[tokio::test]
+async fn share_and_answer_grant_touch_last_used_at() {
+    let app = TestApp::spawn().await;
+    let _ = app.create_ticket("Audit touch").await;
+    let (_, share) = app
+        .post(
+            &app.admin,
+            "/v1/shares",
+            json!({ "kind": "project", "ref": "tp" }),
+        )
+        .await;
+    let share_token = share["token"].as_str().unwrap().to_string();
+    let share_id = share["id"].as_str().unwrap().to_string();
+
+    let id = app.create_ticket("Grant touch").await;
+    let fence = app.to_implementing(&id).await;
+    let (qid, _) = app
+        .ask(
+            &app.worker,
+            json!({ "ticket": id, "kind": "confirm", "title": "Touch?", "fence": fence }),
+        )
+        .await;
+    let (_, link) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/answer-link"),
+            json!({ "actor": "human:outsider" }),
+        )
+        .await;
+    let grant_token = link["token"].as_str().unwrap().to_string();
+    let grant_id = link["id"].as_str().unwrap().to_string();
+
+    let (s, _) = app.get(&share_token, "/v1/shares/self").await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = app.get(&grant_token, "/v1/answer/self").await;
+    assert_eq!(s, StatusCode::OK);
+
+    let store = app.open_store();
+    let share_row = store.get_share(&share_id).unwrap().unwrap();
+    assert!(
+        share_row.last_used_at.is_some(),
+        "share last_used_at should be set: {share_row:?}"
+    );
+    let grant_row = store.get_answer_grant(&grant_id).unwrap().unwrap();
+    assert!(
+        grant_row.last_used_at.is_some(),
+        "grant last_used_at should be set: {grant_row:?}"
+    );
+}
+
+#[tokio::test]
+async fn ticket_search_treats_percent_as_literal() {
+    let app = TestApp::spawn().await;
+    let (s, t) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "100% done", "body": "nothing else" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t}");
+    let (s, t2) = app
+        .post(
+            &app.admin,
+            "/v1/tickets",
+            json!({ "project": "tp", "title": "Unrelated", "body": "100 done" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{t2}");
+
+    let (_, list) = app.get(&app.admin, "/v1/tickets?project=tp&q=100%25").await;
+    let ids: Vec<&str> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 1, "literal % must not act as a wildcard: {list}");
+    assert!(list["items"][0]["title"].as_str().unwrap().contains('%'));
+}
+
+#[tokio::test]
+async fn tag_kind_query_param_is_validated() {
+    let app = TestApp::spawn().await;
+    let (s, e) = app
+        .get(&app.admin, "/v1/tickets?project=tp&tag_kind=per%son")
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["code"], "validation.tag_kind");
+}

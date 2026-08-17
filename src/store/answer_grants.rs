@@ -72,7 +72,7 @@ pub const DEFAULT_ANSWER_TTL_SECONDS: i64 = 7 * 86_400;
 pub const MAX_ANSWER_TTL_SECONDS: i64 = 30 * 86_400;
 
 const GRANT_COLS: &str = "id, question, project, actor, \"user\", expires_at, created_by, \
-     created_at, used_at, revoked_at";
+     created_at, used_at, revoked_at, last_used_at";
 
 fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
     Ok(AnswerGrantRow {
@@ -86,6 +86,7 @@ fn row_to_grant(row: &Row) -> rusqlite::Result<AnswerGrantRow> {
         created_at: row.get("created_at")?,
         used_at: row.get("used_at")?,
         revoked_at: row.get("revoked_at")?,
+        last_used_at: row.get("last_used_at")?,
     })
 }
 
@@ -135,6 +136,7 @@ impl Store {
                 created_at: now,
                 used_at: None,
                 revoked_at: None,
+                last_used_at: None,
             },
             plaintext,
         ))
@@ -178,6 +180,17 @@ impl Store {
                 params![id, now_ms()],
             )?;
             Ok(n > 0)
+        })
+    }
+
+    /// Update last_used_at (called at most ~once a minute per grant).
+    pub fn touch_answer_grant(&self, id: &str) -> ApiResult<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE answer_grants SET last_used_at = ?2 WHERE id = ?1",
+                params![id, now_ms()],
+            )?;
+            Ok(())
         })
     }
 }

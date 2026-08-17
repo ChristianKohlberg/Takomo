@@ -3,8 +3,8 @@
 
 use super::helpers::{
     check_fence_for_write, clear_expired_claim, emit_event, ensure_project_writable,
-    ensure_ticket_writable, get_ticket_opt, get_ticket_required, get_workflow, load_blocked_by,
-    row_to_ticket, touch_ticket, TICKET_COLS,
+    ensure_ticket_writable, escape_like_literal, get_ticket_opt, get_ticket_required, get_workflow,
+    load_blocked_by, row_to_ticket, touch_ticket, TICKET_COLS,
 };
 use super::model::{
     Comment, Promotion, Ticket, MAX_BODY, MAX_COMMENT, MAX_LINKS, MAX_LINKS_SIZE, MAX_LINK_KEY,
@@ -795,7 +795,8 @@ impl Store {
                 params_vec.push(SqlValue::Text(tag.clone()));
             }
             for kind in &filter.tag_kinds {
-                // `kind:%` is a literal prefix because kinds forbid `%`/`_`.
+                // `kind:%` is a literal prefix because kinds are validated at the
+                // API layer (`validate_tag_kind` forbids `%`/`_`).
                 sql.push_str(
                     " AND EXISTS (SELECT 1 FROM json_each(t.tags) WHERE json_each.value LIKE ?)",
                 );
@@ -822,10 +823,13 @@ impl Store {
                 // Tokenized full-text: every whitespace-separated term must
                 // match (AND), each against title OR body (case-insensitive).
                 // "auth token" finds a ticket titled "token" with "auth" in the
-                // body, but not one that mentions only "auth".
+                // body, but not one that mentions only "auth". Metacharacters in
+                // a term are escaped so a literal `%` or `_` does not widen the match.
                 for term in q.split_whitespace() {
-                    sql.push_str(" AND (LOWER(t.title) LIKE ? OR LOWER(t.body) LIKE ?)");
-                    let needle = format!("%{}%", term.to_lowercase());
+                    sql.push_str(
+                        " AND (LOWER(t.title) LIKE ? ESCAPE '\\' OR LOWER(t.body) LIKE ? ESCAPE '\\')",
+                    );
+                    let needle = format!("%{}%", escape_like_literal(&term.to_lowercase()));
                     params_vec.push(SqlValue::Text(needle.clone()));
                     params_vec.push(SqlValue::Text(needle));
                 }
