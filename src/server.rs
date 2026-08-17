@@ -180,6 +180,23 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/projects/{project}/claim-ttl",
             put(crate::api::projects::put_claim_ttl),
         )
+        // Environments: where a check can be run. Writes take `write`, not
+        // `human` — an agent that just leased an ephemeral instance is exactly
+        // the caller this registry exists for.
+        .route(
+            "/v1/projects/{project}/environments",
+            get(crate::api::environments::list).post(crate::api::environments::create),
+        )
+        .route(
+            "/v1/environments/{id}",
+            get(crate::api::environments::get_one)
+                .merge(patch(crate::api::environments::patch))
+                .merge(axum::routing::delete(crate::api::environments::archive)),
+        )
+        .route(
+            "/v1/environments/{id}/unarchive",
+            post(crate::api::environments::unarchive),
+        )
         // Checklist: releases, checks, cases, verdicts and the derived reports.
         .route(
             "/v1/projects/{project}/releases",

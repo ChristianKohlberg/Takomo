@@ -6,6 +6,7 @@
 mod answer_grants;
 mod checklist;
 mod claims;
+mod environments;
 mod events;
 mod helpers;
 mod impact;
@@ -35,6 +36,10 @@ pub use checklist::{
 };
 pub use claims::{
     ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
+};
+pub use environments::{
+    EnvironmentCreate, EnvironmentFilter, EnvironmentPatch, MAX_ENVIRONMENTS_PAGE,
+    MAX_ENVIRONMENTS_PER_PROJECT,
 };
 pub use events::EventFilter;
 pub use initiatives::{
@@ -1426,6 +1431,56 @@ CREATE TABLE IF NOT EXISTS case_verdicts (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
+
+-- Where a check can actually be run: a named, project-scoped environment.
+--
+-- A verdict is only as good as the thing it was taken against, and until now
+-- Takomo had no way to say what that thing was. An agent handed "re-verify this"
+-- had to be told the URL out of band, which is exactly the kind of context that
+-- goes stale silently.
+--
+-- Takomo stores; the agent computes — the same rule the rest of Checklist runs
+-- on. Nothing here is executed, polled or health-checked: `bring_up` and
+-- `teardown` are prose an agent reads, not a command the server runs, which is
+-- why they are free text rather than a structured spec. Structure would be a
+-- promise the store cannot keep.
+--
+-- `credentials_hint` is a POINTER and never a secret — an env-var name, a vault
+-- path, a runbook URL. The name is chosen to refuse on sight, because any token
+-- with `read` can see this column.
+CREATE TABLE IF NOT EXISTS environments (
+  id               TEXT PRIMARY KEY,
+  project          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- The handle an agent types. Not patchable: checks and tool calls carry it,
+  -- and a silent rename would break every one of them.
+  slug             TEXT NOT NULL,
+  name             TEXT NOT NULL,
+  -- An enum, not free text, or one project grows prod/production/Prod. The kind
+  -- is also what makes an unverified flow on a scratch box a different finding
+  -- from the same flow on production.
+  kind             TEXT NOT NULL DEFAULT 'other',
+  base_url         TEXT,
+  bring_up         TEXT NOT NULL DEFAULT '',
+  -- The half nobody writes down, and the half agents get wrong: who releases the
+  -- lease when the run is over.
+  teardown         TEXT NOT NULL DEFAULT '',
+  data_state       TEXT NOT NULL DEFAULT 'unknown',
+  -- ADVISORY. Takomo executes nothing and cannot enforce this; it is what an
+  -- agent reads before running a destructive case, not a guarantee.
+  writable         INTEGER NOT NULL DEFAULT 1,
+  credentials_hint TEXT,
+  notes            TEXT NOT NULL DEFAULT '',
+  metadata         TEXT NOT NULL DEFAULT 'null',
+  version          INTEGER NOT NULL DEFAULT 1,
+  created_by       TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  -- Archive, never delete: a decommissioned box is still the evidence for every
+  -- verdict ever taken there.
+  archived_at      INTEGER,
+  UNIQUE(project, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_environments_project ON environments(project);
 
 -- Named workflows that can be applied to any project.
 --

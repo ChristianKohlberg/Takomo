@@ -52,6 +52,12 @@ pub fn schedule_id() -> String {
     format!("sch-{}", random_chars(BASE36, 8))
 }
 
+/// Environment id, e.g. "env-9f3ka2xz". Agents address an environment by its
+/// `slug` ("staging"); this is the stable key everything else references.
+pub fn environment_id() -> String {
+    format!("env-{}", random_chars(BASE36, 8))
+}
+
 /// Tag (project entity — person, component, …) id, e.g. "tag-9f3ka2xz".
 pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))
