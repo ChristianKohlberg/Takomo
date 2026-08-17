@@ -1981,6 +1981,7 @@ cmd_check_new() {
   local project="" title="" initiative="" epic="" layer="" severity=""
   local body="" have_body="" bodyfile="" precondition=""
   local -a globs=()
+  local -a envs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --project)      project=$2; shift 2 ;;
@@ -1992,6 +1993,7 @@ cmd_check_new() {
       --body-file)    bodyfile=$2; shift 2 ;;
       --precondition) precondition=$2; shift 2 ;;
       --glob)         globs+=("$2"); shift 2 ;;
+      --env)          envs+=("$2"); shift 2 ;;
       -*) die "check new: unknown flag $1" ;;
       *)  if [ -z "$title" ]; then title=$1; shift; else die "check new: unexpected argument '$1'"; fi ;;
     esac
@@ -2011,6 +2013,7 @@ cmd_check_new() {
   data=$(TS_TITLE="$title" TS_INI="$initiative" TS_EPIC="$epic" TS_LAYER="$layer" \
     TS_SEV="$severity" TS_BODY="$body" TS_BODYFILE="$bodyfile" TS_PRE="$precondition" \
     TS_GLOBS="$(printf '%s\n' "${globs[@]+"${globs[@]}"}")" \
+    TS_ENVS="$(printf '%s\n' "${envs[@]+"${envs[@]}"}")" \
     python3 <<'PY'
 import json, os
 d = {"title": os.environ["TS_TITLE"]}
@@ -2025,6 +2028,8 @@ for env, key in (("TS_INI", "initiative"), ("TS_EPIC", "epic"), ("TS_LAYER", "la
     if v: d[key] = v
 globs = [g for g in os.environ.get("TS_GLOBS", "").splitlines() if g.strip()]
 if globs: d["globs"] = globs
+envs = [e for e in os.environ.get("TS_ENVS", "").splitlines() if e.strip()]
+if envs: d["environments"] = envs
 print(json.dumps(d))
 PY
 )
@@ -2070,6 +2075,13 @@ if p:
     print(f"\nverification: {p.get('verification')} (from {p.get('verification_from')})")
 n = c.get("cases") or {}
 if n: print("cases: " + " · ".join(f"{k} {v}" for k, v in n.items() if v))
+# Where it must pass, and how each one stands. One line per environment
+# because "verified" and "never run" living in the same number is the thing
+# declaring environments exists to stop.
+for e in c.get("environment_cases") or []:
+    ec = e.get("cases") or {}
+    spread = " · ".join(f"{k} {v}" for k, v in ec.items() if v and k != "total") or "no cases"
+    print(f"  {e.get('slug',''):<14} {spread}")
 PY
   if [ -n "$cases" ]; then
     api GET "/v1/checks/$(urlenc "$id")/cases" >/dev/null
@@ -2090,7 +2102,8 @@ PY
 cmd_check_set() {
   local id=${1:-}; [ -n "$id" ] || die "check set: usage: takomo check set ID [--initiative I|--no-initiative] ..."
   shift
-  local initiative="" clear_ini="" severity="" layer="" title=""
+  local initiative="" clear_ini="" severity="" layer="" title="" set_envs=""
+  local -a envs=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --initiative)    initiative=$2; shift 2 ;;
@@ -2098,6 +2111,8 @@ cmd_check_set() {
       --severity)      severity=$2; shift 2 ;;
       --layer)         layer=$2; shift 2 ;;
       --title)         title=$2; shift 2 ;;
+      --env)           envs+=("$2"); set_envs=1; shift 2 ;;
+      --no-env)        set_envs=1; shift ;;
       -*) die "check set: unknown flag $1" ;;
       *)  die "check set: unexpected argument '$1'" ;;
     esac
@@ -2106,7 +2121,8 @@ cmd_check_set() {
     die "check set: give either --initiative or --no-initiative, not both"
   local data
   data=$(TS_INI="$initiative" TS_CLEAR="$clear_ini" TS_SEV="$severity" \
-    TS_LAYER="$layer" TS_TITLE="$title" python3 <<'PY'
+    TS_LAYER="$layer" TS_TITLE="$title" TS_SETENVS="$set_envs" \
+    TS_ENVS="$(printf '%s\n' "${envs[@]+"${envs[@]}"}")" python3 <<'PY'
 import json, os
 d = {}
 # Absent and null mean different things on this wire: null clears the link and
@@ -2118,6 +2134,11 @@ elif os.environ.get("TS_INI", "").strip():
 for env, key in (("TS_SEV", "severity"), ("TS_LAYER", "layer"), ("TS_TITLE", "title")):
     v = os.environ.get(env, "").strip()
     if v: d[key] = v
+# --env REPLACES the declared set, and --no-env clears it. Undeclaring keeps
+# whatever was recorded there, so this is narrowing what must pass rather than
+# discarding evidence.
+if os.environ.get("TS_SETENVS", ""):
+    d["environments"] = [e for e in os.environ.get("TS_ENVS", "").splitlines() if e.strip()]
 print(json.dumps(d))
 PY
 )
@@ -2127,7 +2148,9 @@ PY
 import json, sys
 c = json.load(open(sys.argv[1]))
 print(f"{c['id']}  [{c.get('severity','')}/{c.get('layer','')}]  {c.get('title','')}")
-print(f"  initiative: {c.get('initiative') or '(none)'}")
+print(f"  initiative:   {c.get('initiative') or '(none)'}")
+slugs = [e.get('slug','') for e in (c.get('environments') or [])]
+print(f"  environments: {', '.join(slugs) or '(none — verified anywhere)'}")
 PY
 }
 
@@ -2225,16 +2248,31 @@ for side in ("agent", "human"):
     mins = s.get("minutes")
     cost = f", ~{mins} min" if mins else ""
     print(f"--- {side}: {s.get('cases', 0)} case(s){cost} ---")
-    print(f"{'CASE':<14} {'REASON':<9} {'SEV':<9} CHECK")
+    show_env = any(i.get("environment_slug") for i in items)
+    head = f"{'CASE':<14} {'REASON':<9} {'SEV':<9} "
+    if show_env: head += f"{'WHERE':<12} "
+    print(head + "CHECK")
     for i in items:
         label = i.get("case_label") or i.get("case_key") or ""
-        print(f"{i.get('case',''):<14} {i.get('reason',''):<9} {i.get('severity',''):<9} "
-              f"{i.get('check_title','')} — {label}")
+        row = f"{i.get('case',''):<14} {i.get('reason',''):<9} {i.get('severity',''):<9} "
+        if show_env: row += f"{i.get('environment_slug') or '-':<12} "
+        print(row + f"{i.get('check_title','')} — {label}")
+    # The URL is on the item precisely so nobody has to look it up. One line per
+    # DISTINCT environment: printing the first item's would read as the address
+    # for every row above it.
+    seen = {}
+    for i in items:
+        slug, url = i.get("environment_slug"), i.get("base_url")
+        if slug and url and slug not in seen:
+            seen[slug] = url
+    for slug, url in sorted(seen.items()):
+        print(f"    {slug}: {url}")
     print()
 if empty:
     print("nothing to re-verify")
 else:
     print("Report a result with:  takomo verdict CASE --pass|--fail --note '...'")
+    print("A check that must pass in several environments also needs --environment SLUG.")
 PY
 }
 
@@ -2245,7 +2283,7 @@ cmd_verdict() {
   local case_id=${1:-}
   [ -n "$case_id" ] || die "verdict: usage: takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N]"
   shift
-  local verdict="" note="" human="" release=""
+  local verdict="" note="" human="" release="" env=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pass)        verdict=pass; shift ;;
@@ -2256,6 +2294,7 @@ cmd_verdict() {
       --note)        note=$2; shift 2 ;;
       --human)       human=1; shift ;;
       --release)     release=$2; shift 2 ;;
+      --environment|--env) env=$2; shift 2 ;;
       -*) die "verdict: unknown flag $1" ;;
       *)  die "verdict: unexpected argument '$1'" ;;
     esac
@@ -2264,12 +2303,17 @@ cmd_verdict() {
   [ "$verdict" = "fail" ] && [ -z "$note" ] && \
     die "verdict: --fail needs --note saying what went wrong; a failure nobody described is one nobody can act on"
   local data
-  data=$(TS_V="$verdict" TS_NOTE="$note" TS_HUMAN="$human" TS_REL="$release" python3 <<'PY'
+  data=$(TS_V="$verdict" TS_NOTE="$note" TS_HUMAN="$human" TS_REL="$release" \
+    TS_ENV="$env" python3 <<'PY'
 import json, os
 d = {"verdict": os.environ["TS_V"]}
 if os.environ.get("TS_NOTE", ""): d["note"] = os.environ["TS_NOTE"]
 if os.environ.get("TS_REL", "").strip(): d["release"] = os.environ["TS_REL"].strip()
 if os.environ.get("TS_HUMAN", ""): d["actor_kind"] = "human"
+# Required when the check must pass in more than one environment. Omitted is
+# fine for a check declaring one or none; the store refuses rather than guesses
+# when it is genuinely ambiguous.
+if os.environ.get("TS_ENV", "").strip(): d["environment"] = os.environ["TS_ENV"].strip()
 print(json.dumps(d))
 PY
 )
@@ -2278,6 +2322,10 @@ PY
 import json, sys
 c = json.load(open(sys.argv[1]))
 print(f"{c['id']}  {c.get('state','')}  {c.get('key','')}")
+# With declared environments the case's own word is the WORST of them, so the
+# per-environment line is what says whether there is anything left to do.
+for e in c.get("environments") or []:
+    print(f"  {e.get('slug',''):<14} {e.get('state','')}")
 PY
 }
 
@@ -4137,15 +4185,22 @@ Verification (checks — how a "done" claim becomes a verified one):
          clear it: an agent list and a human list. Human time is the scarce
          resource, so the split IS the answer.
   takomo verdict CASE --pass|--fail|--blocked|--unreachable [--note N] [--human]
+         [--environment SLUG]
          report what you observed. --fail needs a --note. --human asserts that a
          PERSON approved it and needs a token with the `human` scope — an agent
-         records what it saw, a person approves.
+         records what it saw, a person approves. --environment is REQUIRED when
+         the check must pass in more than one: a bare verdict there does not say
+         what you saw, and it is refused rather than filed against a guess.
   takomo check ls [--project P] [--initiative I|none] [--epic E] [--severity S] [--layer L]
          `--initiative none` finds the checks no initiative claims: the gap
          between what was agreed and what got written down.
   takomo check new TITLE [--initiative I] [--epic E] [--layer ui|api|other]
-         [--severity blocking|advisory|low] [--glob G]... [--body B | --body-file F|-]
-         [--precondition P]
+         [--severity blocking|advisory|low] [--glob G]... [--env SLUG]...
+         [--body B | --body-file F|-] [--precondition P]
+         --env declares where it must pass. Each case is then tracked per
+         environment, so "verified on staging, never run on production" is
+         expressible instead of collapsing into one verdict. Omit it for a check
+         whose result does not depend on where it runs.
          ONE action, ONE entry precondition, ONE layer. A create form, a finalize
          step and a cancel action are three checks, not one.
   takomo check cases ID --case KEY[::LABEL]... | --file F|-   [--keep]
@@ -4153,7 +4208,11 @@ Verification (checks — how a "done" claim becomes a verified one):
          drops is retired (its verdict history kept), one that returns is
          revived. --keep extends instead. --file takes the JSON a model
          generator emits, which is where case sets actually come from.
-  takomo check show ID [--cases]   ·   takomo check set ID [--initiative I|--no-initiative]
+  takomo check show ID [--cases]
+  takomo check set ID [--initiative I|--no-initiative] [--env SLUG]... [--no-env]
+         --env REPLACES the declared set; --no-env clears it. Undeclaring an
+         environment KEEPS the verdicts recorded there, so narrowing what must
+         pass never discards evidence.
   takomo check rm ID               archive it; cases and verdicts are kept
   takomo coverage [--project P | --initiative I]
          per project, or "do the tests we agreed on still pass" per initiative.

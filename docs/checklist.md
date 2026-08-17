@@ -122,6 +122,64 @@ on the initiative, for cost: the rollup scans the checks and cases beneath it, a
 the initiative's JSON shape is shared by the list read, so inlining it would make
 listing 200 initiatives pay that scan 200 times.
 
+## Where a check must pass
+
+A check can declare the environments it must be verified in. Each of its cases is
+then tracked **per environment**, so the thing you actually want to know becomes
+expressible:
+
+```
+check "Split an invoice"   must pass in: staging, production
+  case entities=2
+    staging     verified  2026-08-14
+    production  never
+  ⇒ the case is NOT verified
+```
+
+**The worst environment wins.** "Verified" must not be claimable while an
+environment the check declares has never been run — that would be the feature
+reporting the opposite of what it exists to show.
+
+**Declaring nothing is a legitimate steady state**, not a gap. A check whose
+result does not depend on where it runs declares no environments and keeps the
+original, environment-agnostic reading. The two stores are mutually exclusive by
+construction: `record_verdict` refuses an environment on a check that declares
+none, and requires one on a check that declares any, so nothing can write both
+and nothing can disagree.
+
+### An omitted environment resolves when unambiguous and refuses when not
+
+| the check declares | and the verdict says | then |
+|---|---|---|
+| nothing | nothing | recorded unscoped — the original behaviour |
+| nothing | an environment | refused (`validation.verdict_environment`) |
+| one | nothing | that one was meant |
+| two or more | nothing | **refused** (`conflict.environment_ambiguous`), naming the candidates |
+| any | one it declares | recorded there |
+| any | one it does not | refused — a verdict is evidence about the check |
+
+The refusal matters more than the convenience: filing a staging run as
+production is worse than no record at all. Resolving the single-environment case
+keeps every caller written before this existed working unchanged.
+
+### What this does and does not change
+
+- **`cases` still counts one row per case**, taking the worst of its
+  environments, so declaring a second environment does not double a check's
+  denominator overnight. `environment_cases` breaks the same set out per
+  environment, which is where the gap actually is.
+- **A release stales every environment's reading.** The release is a fact about
+  code: the thing that was verified no longer exists, wherever it was verified.
+  `stale_cases` counts distinct cases and `stale_pairs` counts the units of work.
+- **Expiry runs per environment.** Staging verified last week and production
+  verified a year ago are not one fact, and expiring them together would hide the
+  older one.
+- **A work item is (case × environment)** and carries the environment's
+  `base_url`, because an item that does not say where to go is not actionable.
+- **Undeclaring an environment keeps its verdicts.** It stops being required,
+  which is not the same as never having been verified there, so re-declaring it
+  later finds the history intact.
+
 ## Releases
 
 Releases are first-class and **pushed by the agent that merged the work**. There is

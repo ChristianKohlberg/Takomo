@@ -40,7 +40,11 @@ export interface CheckCardProps {
   canApprove: boolean
   labels: CheckCardLabels
   onToggleCases: () => void
-  onVerdict: (caseId: string, verdict: 'pass' | 'fail', opts: { note?: string; human?: boolean }) => void
+  onVerdict: (
+    caseId: string,
+    verdict: 'pass' | 'fail',
+    opts: { note?: string; human?: boolean; environment?: string },
+  ) => void
   onArchive: () => void
 }
 
@@ -80,6 +84,72 @@ export function stateWord(state: CaseState | 'none', l: CheckCardLabels): string
   }
 }
 
+/** The controls for one scope: the case as a whole, or one of its environments. */
+function VerdictControls({
+  caseId,
+  environment,
+  canWrite,
+  canApprove,
+  labels,
+  onVerdict,
+}: {
+  caseId: string
+  environment?: string
+  canWrite: boolean
+  canApprove: boolean
+  labels: CheckCardLabels
+  onVerdict: CheckCardProps['onVerdict']
+}) {
+  const [failing, setFailing] = useState(false)
+  const [note, setNote] = useState('')
+  return (
+    <>
+      {canWrite && (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onVerdict(caseId, 'pass', { environment })}
+          >
+            {labels.markPass}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setFailing((v) => !v)}>
+            {labels.markFail}
+          </Button>
+        </>
+      )}
+      {/* Approving asserts a PERSON checked it — the same line ask-a-human
+          draws — so it is a separate control from recording an observation. */}
+      {canApprove && (
+        <Button size="sm" onClick={() => onVerdict(caseId, 'pass', { human: true, environment })}>
+          {labels.approve}
+        </Button>
+      )}
+      {failing && (
+        <div className="flex w-full flex-col gap-2 md:flex-row">
+          <Input
+            value={note}
+            placeholder={labels.notePlaceholder}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!note.trim()}
+            onClick={() => {
+              onVerdict(caseId, 'fail', { note: note.trim(), environment })
+              setFailing(false)
+              setNote('')
+            }}
+          >
+            {labels.markFail}
+          </Button>
+        </div>
+      )}
+    </>
+  )
+}
+
 function CaseLine({
   row,
   canWrite,
@@ -93,9 +163,10 @@ function CaseLine({
   labels: CheckCardLabels
   onVerdict: CheckCardProps['onVerdict']
 }) {
-  const [failing, setFailing] = useState(false)
-  const [note, setNote] = useState('')
-
+  // With declared environments the controls move DOWN to each environment: a
+  // single Pass button there would have to pick one silently, which is the
+  // failure the server refuses at the door.
+  const perEnv = row.environments.length > 0
   return (
     <div className="border-border-soft flex flex-col gap-2 border-t py-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -107,47 +178,35 @@ function CaseLine({
           <span className="text-muted-foreground min-w-0 truncate text-[12px]">{row.label}</span>
         )}
         <span className="grow" />
-        {canWrite && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onVerdict(row.id, 'pass', {})}
-            >
-              {labels.markPass}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setFailing((v) => !v)}>
-              {labels.markFail}
-            </Button>
-          </>
-        )}
-        {/* Approving asserts a PERSON checked it — the same line ask-a-human
-            draws — so it is a separate control from recording an observation. */}
-        {canApprove && (
-          <Button size="sm" onClick={() => onVerdict(row.id, 'pass', { human: true })}>
-            {labels.approve}
-          </Button>
+        {!perEnv && (
+          <VerdictControls
+            caseId={row.id}
+            canWrite={canWrite}
+            canApprove={canApprove}
+            labels={labels}
+            onVerdict={onVerdict}
+          />
         )}
       </div>
-      {failing && (
-        <div className="flex flex-col gap-2 md:flex-row">
-          <Input
-            value={note}
-            placeholder={labels.notePlaceholder}
-            onChange={(e) => setNote(e.target.value)}
-          />
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!note.trim()}
-            onClick={() => {
-              onVerdict(row.id, 'fail', { note: note.trim() })
-              setFailing(false)
-              setNote('')
-            }}
-          >
-            {labels.markFail}
-          </Button>
+      {perEnv && (
+        <div className="flex flex-col gap-1.5 pl-1">
+          {row.environments.map((e) => (
+            <div key={e.environment} className="flex min-w-0 flex-wrap items-center gap-2">
+              <Badge className={stateTone(e.state)}>{stateWord(e.state, labels)}</Badge>
+              <span className="text-muted-foreground min-w-0 truncate text-[12px] font-[620]">
+                {e.slug}
+              </span>
+              <span className="grow" />
+              <VerdictControls
+                caseId={row.id}
+                environment={e.environment}
+                canWrite={canWrite}
+                canApprove={canApprove}
+                labels={labels}
+                onVerdict={onVerdict}
+              />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -186,6 +245,22 @@ export function CheckCard({
             <span key={p.state} className={cn(p.state === 'failed' && 'text-nf font-[650]')}>
               {i > 0 && <span className="mr-2 opacity-40">·</span>}
               {p.n} {stateWord(p.state, labels)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Where it must pass, and how each one stands. On the face rather than
+          behind the disclosure: "fine on staging, untouched on production" is
+          the finding, and a single rolled-up word hides exactly that. */}
+      {check.environment_cases.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+          {check.environment_cases.map((e) => (
+            <span key={e.environment} className="flex items-center gap-1.5">
+              <Badge className={stateTone(worstState(e.cases))}>{e.slug}</Badge>
+              <span className="text-muted-foreground">
+                {stateWord(worstState(e.cases), labels)}
+              </span>
             </span>
           ))}
         </div>

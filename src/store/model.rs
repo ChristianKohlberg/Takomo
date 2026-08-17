@@ -1288,6 +1288,11 @@ impl Release {
 /// immediately what it just made stale, without a second request.
 #[derive(Debug, Clone, Default)]
 pub struct ReleaseImpact {
+    /// (case, environment) pairs staled. Reported ALONGSIDE `stale_cases`
+    /// rather than instead of it: a check across three environments would
+    /// otherwise report its work three times over to a caller counting cases.
+    /// Zero for checks that declare no environments.
+    pub stale_pairs: i64,
     pub stale_cases: i64,
     pub stale_checks: Vec<String>,
     pub expired_checks: Vec<String>,
@@ -1298,6 +1303,7 @@ impl ReleaseImpact {
     pub fn to_json(&self) -> Value {
         json!({
             "stale_cases": self.stale_cases,
+            "stale_pairs": self.stale_pairs,
             "stale_checks": self.stale_checks,
             "expired_checks": self.expired_checks,
             "orphaned_checks": self.orphaned_checks,
@@ -1402,7 +1408,13 @@ pub struct Check {
     pub updated_at: i64,
     pub archived_at: Option<i64>,
     pub globs: Vec<String>,
+    /// The environments this check must be verified in, each `{environment, slug}`.
+    /// Empty means environment-agnostic.
+    pub environments: Vec<Value>,
     pub counts: CheckCounts,
+    /// The same case counts, once per declared environment: `{environment, slug,
+    /// cases}`. Empty when the check declares none.
+    pub env_counts: Vec<Value>,
     /// Globs that matched nothing in the most recent release — coverage claimed
     /// over code that is not there.
     pub orphan_globs: Vec<String>,
@@ -1429,8 +1441,14 @@ impl Check {
             "metadata": self.metadata,
             "version": self.version,
             "globs": self.globs,
+            "environments": self.environments,
             "orphan_globs": self.orphan_globs,
+            // `cases` counts one row per CASE, taking the worst of its declared
+            // environments; `environment_cases` breaks the same set out per
+            // environment. Both are reported because a single number cannot say
+            // "fine on staging, untouched on production".
             "cases": self.counts.to_json(),
+            "environment_cases": self.env_counts,
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
@@ -1441,6 +1459,143 @@ impl Check {
         }
         v
     }
+}
+
+/// The nine facts a verdict leaves behind, and the readings derived from them.
+///
+/// Extracted because a case now carries these TWICE over: once unscoped, and
+/// once per environment it must be verified in. Two copies of `state()` would
+/// be two answers to the same question the first time either was edited, so
+/// there is one implementation and both callers borrow a view of it.
+#[derive(Debug, Clone, Default)]
+pub struct Verdicts {
+    pub agent_verdict: Option<String>,
+    pub agent_at: Option<i64>,
+    pub agent_by: Option<String>,
+    pub agent_release: Option<String>,
+    pub human_verdict: Option<String>,
+    pub human_at: Option<i64>,
+    pub human_by: Option<String>,
+    pub human_release: Option<String>,
+    pub stale_since: Option<String>,
+}
+
+impl Verdicts {
+    /// The one word that describes where this stands, worst first.
+    ///
+    /// `stale` outranks `unreachable` deliberately: once the claimed code moved,
+    /// an earlier "the interface cannot reach this" is a statement about code
+    /// that no longer exists, so it has to be re-established rather than trusted.
+    pub fn state(&self) -> &'static str {
+        if self.stale_since.is_some() {
+            return "stale";
+        }
+        if self.agent_verdict.as_deref() == Some("unreachable")
+            || self.human_verdict.as_deref() == Some("unreachable")
+        {
+            return "unreachable";
+        }
+        if self.agent_verdict.as_deref() == Some("fail")
+            || self.human_verdict.as_deref() == Some("fail")
+        {
+            return "failed";
+        }
+        if self.human_verdict.as_deref() == Some("pass") {
+            return "approved";
+        }
+        if self.agent_verdict.as_deref() == Some("pass") {
+            return "verified";
+        }
+        "never"
+    }
+
+    /// Is this cleared under `policy`? `agent_then_human` needs both facts,
+    /// which is exactly why they are stored separately.
+    pub fn satisfies(&self, policy: &ResolvedPolicy) -> bool {
+        if self.state() == "unreachable" {
+            return true;
+        }
+        match policy.verification.as_str() {
+            "human" => self.human_verdict.as_deref() == Some("pass"),
+            "agent_then_human" => {
+                self.agent_verdict.as_deref() == Some("pass")
+                    && self.human_verdict.as_deref() == Some("pass")
+            }
+            _ => {
+                self.agent_verdict.as_deref() == Some("pass")
+                    || self.human_verdict.as_deref() == Some("pass")
+            }
+        }
+    }
+
+    /// True once anything has been recorded — which is what a release stales.
+    /// A pair nobody ever ran stays `never`: calling it stale would report
+    /// re-testing for work nobody has done once.
+    pub fn ever_verified(&self) -> bool {
+        self.agent_verdict.is_some() || self.human_verdict.is_some()
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "state": self.state(),
+            "agent": {
+                "verdict": self.agent_verdict,
+                "at": self.agent_at.map(iso),
+                "by": self.agent_by,
+                "release": self.agent_release,
+            },
+            "human": {
+                "verdict": self.human_verdict,
+                "at": self.human_at.map(iso),
+                "by": self.human_by,
+                "release": self.human_release,
+            },
+            "stale_since": self.stale_since,
+        })
+    }
+}
+
+/// How one case stands in ONE environment it must be verified in.
+///
+/// Rows exist only once something has been recorded: a pair nobody has run has
+/// no row and reads `never`, which is both correct and free. Creating them
+/// eagerly would fan `file_cases` out to cases x environments inserts — a
+/// 5,000-case check across four environments is 20,000 rows in one transaction
+/// holding the write mutex every claim waits on.
+#[derive(Debug, Clone)]
+pub struct CaseEnv {
+    pub environment: String,
+    /// Denormalized so a reader never needs a second request to name it.
+    pub slug: String,
+    pub verdicts: Verdicts,
+}
+
+impl CaseEnv {
+    pub fn to_json(&self) -> Value {
+        let mut v = self.verdicts.to_json();
+        v["environment"] = json!(self.environment);
+        v["slug"] = json!(self.slug);
+        v
+    }
+}
+
+/// Roll several environments' readings into the one word for the case.
+///
+/// **The worst environment wins.** "Verified" must not be claimable while an
+/// environment the check declares is unverified — that would be the feature
+/// reporting the opposite of what it exists to show.
+pub fn worst_state(states: impl IntoIterator<Item = &'static str>) -> &'static str {
+    let seen: Vec<&'static str> = states.into_iter().collect();
+    if seen.is_empty() {
+        return "never";
+    }
+    for rank in ["failed", "stale", "never", "unreachable", "verified"] {
+        if seen.contains(&rank) {
+            return rank;
+        }
+    }
+    // Everything left is `approved`: a person signed off every environment.
+    "approved"
 }
 
 /// A check crossed with one parameter assignment: the unit that actually gets
@@ -1465,57 +1620,56 @@ pub struct Case {
     pub retired_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// How this case stands in each environment its check declares.
+    ///
+    /// EMPTY means the check declares none, and then the columns above are the
+    /// whole story — the original, environment-agnostic reading, which is what
+    /// every check filed before environments existed still uses. The two are
+    /// mutually exclusive by construction: `record_verdict` refuses an
+    /// environment on a check that declares none, and requires one on a check
+    /// that declares any, so nothing can write both and nothing can disagree.
+    pub environments: Vec<CaseEnv>,
 }
 
 impl Case {
+    /// This case's own columns as a verdict view — the unscoped reading.
+    pub fn unscoped(&self) -> Verdicts {
+        Verdicts {
+            agent_verdict: self.agent_verdict.clone(),
+            agent_at: self.agent_at,
+            agent_by: self.agent_by.clone(),
+            agent_release: self.agent_release.clone(),
+            human_verdict: self.human_verdict.clone(),
+            human_at: self.human_at,
+            human_by: self.human_by.clone(),
+            human_release: self.human_release.clone(),
+            stale_since: self.stale_since.clone(),
+        }
+    }
+
     /// The one word that describes where this case stands.
     ///
-    /// `stale` outranks `unreachable` deliberately: once the claimed code moved,
-    /// an earlier "the interface cannot reach this" is a statement about code
-    /// that no longer exists, so it has to be re-established rather than trusted.
+    /// With declared environments this is the WORST of them: a case verified on
+    /// staging and never run on production is not verified.
     pub fn state(&self) -> &'static str {
         if self.retired_at.is_some() {
             return "retired";
         }
-        if self.stale_since.is_some() {
-            return "stale";
+        if self.environments.is_empty() {
+            return self.unscoped().state();
         }
-        if self.agent_verdict.as_deref() == Some("unreachable")
-            || self.human_verdict.as_deref() == Some("unreachable")
-        {
-            return "unreachable";
-        }
-        if self.agent_verdict.as_deref() == Some("fail")
-            || self.human_verdict.as_deref() == Some("fail")
-        {
-            return "failed";
-        }
-        if self.human_verdict.as_deref() == Some("pass") {
-            return "approved";
-        }
-        if self.agent_verdict.as_deref() == Some("pass") {
-            return "verified";
-        }
-        "never"
+        worst_state(self.environments.iter().map(|e| e.verdicts.state()))
     }
 
-    /// Is this case cleared under `policy`? `agent_then_human` needs both facts,
-    /// which is exactly why they are stored separately.
+    /// Is this case cleared under `policy`? With declared environments, EVERY
+    /// one of them has to be — which is the whole point of declaring them.
     pub fn satisfies(&self, policy: &ResolvedPolicy) -> bool {
-        if self.state() == "unreachable" {
-            return true;
+        if self.environments.is_empty() {
+            return self.unscoped().satisfies(policy);
         }
-        match policy.verification.as_str() {
-            "human" => self.human_verdict.as_deref() == Some("pass"),
-            "agent_then_human" => {
-                self.agent_verdict.as_deref() == Some("pass")
-                    && self.human_verdict.as_deref() == Some("pass")
-            }
-            _ => {
-                self.agent_verdict.as_deref() == Some("pass")
-                    || self.human_verdict.as_deref() == Some("pass")
-            }
-        }
+        self.environments
+            .iter()
+            .all(|e| e.verdicts.satisfies(policy))
     }
 
     pub fn to_json(&self) -> Value {
@@ -1540,6 +1694,9 @@ impl Case {
                 "release": self.human_release,
             },
             "stale_since": self.stale_since,
+            // Present and empty on a check that declares no environments, so a
+            // reader can tell "environment-agnostic" from "not loaded".
+            "environments": self.environments.iter().map(|e| e.to_json()).collect::<Vec<_>>(),
             "retired_at": self.retired_at.map(iso),
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
@@ -1557,6 +1714,10 @@ pub struct CaseVerdict {
     pub verdict: String,
     pub note: Option<String>,
     pub release: Option<String>,
+    /// Where it was observed. NULL on a verdict recorded before environments
+    /// existed, and on one against a check that declares none — both of which
+    /// mean "unstated", not "unknown environment".
+    pub environment: Option<String>,
     pub at: i64,
 }
 
@@ -1570,6 +1731,7 @@ impl CaseVerdict {
             "verdict": self.verdict,
             "note": self.note,
             "release": self.release,
+            "environment": self.environment,
             "at": iso(self.at),
         })
     }

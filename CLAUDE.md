@@ -371,6 +371,15 @@ ids — an id is opaque, and rewriting primary keys is the one part of a rename 
 schema batch: `CREATE TABLE IF NOT EXISTS checks` would otherwise create an empty table beside the
 populated one.
 
+**A check may declare which environments it must pass in**, and then each of its cases is tracked
+per `(case, environment)` — so "verified on staging, never run on production" is expressible and the
+case's own state is the WORST of its environments. Declaring none is a legitimate steady state, not
+a gap: that check keeps the original environment-agnostic reading, stored in the verdict columns on
+`cases` rather than in `case_environments`. The two are mutually exclusive by construction, which is
+what stops them disagreeing. An omitted environment resolves when the check declares exactly one and
+is refused with `conflict.environment_ambiguous` when it declares more — filing a staging run as
+production is worse than no record.
+
 **Environments** (`src/store/environments.rs`) are where a check can be run: a base URL, prose for
 bringing the thing up and giving it back, what data is in it, and whether writing to it is safe.
 It exists because a verdict with no environment behind it is a claim nobody can reproduce, and all

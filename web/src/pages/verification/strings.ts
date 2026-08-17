@@ -97,6 +97,10 @@ export const STR = defineStrings({
     fPreconditionPh: 'A finalised invoice with at least two billable entities on it.',
     fBody: 'The traversal to follow',
     fBodyPh: 'Open the invoice, split it, confirm each share reaches AP.',
+    fEnvironments: 'Where it must pass',
+    fEnvironmentsHint:
+      'Each case is then tracked per environment, so "verified on staging, never run on production" is expressible instead of collapsing into one verdict. Leave empty for a check whose result does not depend on where it runs.',
+    fEnvironmentsNone: 'No environments registered yet.',
     fGlobs: 'Paths it exercises',
     fGlobsPh: 'src/billing/split/**',
     fGlobsHint:
@@ -200,6 +204,10 @@ export const STR = defineStrings({
     fPreconditionPh: 'Eine abgeschlossene Rechnung mit mindestens zwei abrechenbaren Einheiten.',
     fBody: 'Der abzulaufende Weg',
     fBodyPh: 'Rechnung öffnen, aufteilen, prüfen, dass jeder Anteil in der Kreditorenbuchhaltung ankommt.',
+    fEnvironments: 'Wo sie bestehen muss',
+    fEnvironmentsHint:
+      'Jeder Fall wird dann pro Umgebung verfolgt, sodass „auf Staging verifiziert, auf Produktion nie gelaufen“ ausdrückbar ist, statt in einem Urteil zu verschwinden. Leer lassen, wenn das Ergebnis nicht davon abhängt, wo es läuft.',
+    fEnvironmentsNone: 'Noch keine Umgebungen registriert.',
     fGlobs: 'Pfade, die sie ausübt',
     fGlobsPh: 'src/billing/split/**',
     fGlobsHint:

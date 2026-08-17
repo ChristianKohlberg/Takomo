@@ -29,10 +29,12 @@ import {
   fetchWorklist,
   listCases,
   listChecks,
+  listEnvironments,
   recordVerdict,
   type CaseRow,
   type Check,
   type CheckFields,
+  type Environment,
   type Gate,
   type Worklist,
 } from '@/lib/verification'
@@ -68,6 +70,7 @@ export function App() {
   const [initiativeTitles, setInitiativeTitles] = useState<Record<string, string>>({})
   const [worklist, setWorklist] = useState<Worklist | null>(null)
   const [gate, setGate] = useState<Gate | null>(null)
+  const [environments, setEnvironments] = useState<Environment[]>([])
   const [cases, setCases] = useState<Record<string, CaseRow[]>>({})
   const [loadingCases, setLoadingCases] = useState<Record<string, boolean>>({})
   const [creating, setCreating] = useState(false)
@@ -104,13 +107,16 @@ export function App() {
       setGate(null)
       return
     }
-    const [c, w, g, inis] = await Promise.all([
+    const [c, w, g, inis, envs] = await Promise.all([
       listChecks(token, project),
       // The reports are a header, not the content: a soft failure in either
       // must not take the checks down with it.
       fetchWorklist(token, project).catch(() => null),
       fetchGate(token, project).catch(() => null),
       listInitiatives(token, { project }).catch(() => ({ items: [] })),
+      // Only to populate the "where must it pass" picker — a project with none
+      // still shows the page, it just cannot declare environments yet.
+      listEnvironments(token, project).catch(() => ({ items: [] as Environment[] })),
     ])
     setChecks(c.items)
     setWorklist(w)
@@ -118,6 +124,7 @@ export function App() {
     const titles: Record<string, string> = {}
     for (const i of inis.items) titles[i.id] = i.title
     setInitiativeTitles(titles)
+    setEnvironments(envs.items.filter((e) => !e.archived_at))
     setCases({})
   }, [token, project])
 
@@ -180,7 +187,7 @@ export function App() {
       check: string,
       caseId: string,
       verdict: 'pass' | 'fail',
-      opts: { note?: string; human?: boolean },
+      opts: { note?: string; human?: boolean; environment?: string },
     ) => {
       if (opts.human && !canApprove) {
         toast(t.needHuman, 'err')
@@ -444,6 +451,7 @@ export function App() {
         open={creating}
         onOpenChange={setCreating}
         initiatives={Object.entries(initiativeTitles).map(([id, title]) => ({ id, title }))}
+        environments={environments.map((e) => ({ id: e.id, slug: e.slug }))}
         defaultInitiative={createUnder}
         labels={t}
         onSubmit={async (fields: CheckFields) => {

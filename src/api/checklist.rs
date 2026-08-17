@@ -16,8 +16,8 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
 use crate::store::{
-    CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput, ReleasePush, MAX_CASES_PAGE,
-    MAX_CHECKS_PAGE,
+    CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput, ReleasePush, VerdictInput,
+    MAX_CASES_PAGE, MAX_CHECKS_PAGE,
 };
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -27,9 +27,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RELEASE_FIELDS: [&str; 4] = ["ref", "note", "touched_paths", "orphan_globs"];
-const CHECK_CREATE_FIELDS: [&str; 14] = [
+const CHECK_CREATE_FIELDS: [&str; 15] = [
     "epic",
     "initiative",
+    "environments",
     "title",
     "body",
     "precondition",
@@ -43,9 +44,10 @@ const CHECK_CREATE_FIELDS: [&str; 14] = [
     "globs",
     "metadata",
 ];
-const CHECK_PATCH_FIELDS: [&str; 14] = [
+const CHECK_PATCH_FIELDS: [&str; 15] = [
     "epic",
     "initiative",
+    "environments",
     "title",
     "body",
     "precondition",
@@ -61,7 +63,7 @@ const CHECK_PATCH_FIELDS: [&str; 14] = [
 ];
 const CASES_FIELDS: [&str; 2] = ["cases", "prune"];
 const CASE_FIELDS: [&str; 4] = ["key", "label", "assignment", "seeded"];
-const VERDICT_FIELDS: [&str; 4] = ["verdict", "note", "release", "actor_kind"];
+const VERDICT_FIELDS: [&str; 5] = ["verdict", "note", "release", "actor_kind", "environment"];
 const POLICY_FIELDS: [&str; 4] = ["epic", "verification", "expiry_days", "expiry_releases"];
 
 /// Read a field that is present-but-null distinctly from absent. An override slot
@@ -172,6 +174,7 @@ pub async fn create_check(
         project: project.clone(),
         epic: get_str(obj, "epic")?,
         initiative: get_str(obj, "initiative")?,
+        environments: get_string_array(obj, "environments")?.unwrap_or_default(),
         title: require_str(obj, "title")?,
         body: get_str(obj, "body")?.unwrap_or_default(),
         precondition: get_str(obj, "precondition")?.unwrap_or_default(),
@@ -275,6 +278,7 @@ pub async fn patch_check(
         metadata_merge: obj.get("metadata_merge").cloned(),
         epic: override_str(obj, "epic")?,
         initiative: override_str(obj, "initiative")?,
+        environments: get_string_array(obj, "environments")?,
     };
     let check = state.store.patch_check(&id, &patch, &ctx.actor)?;
     state.wake();
@@ -438,14 +442,16 @@ pub async fn record_verdict(
     }
     let note = get_str(obj, "note")?;
     let release = get_str(obj, "release")?;
-    let out = state.store.record_verdict(
-        &id,
-        &actor_kind,
-        &ctx.actor,
-        &verdict,
-        note.as_deref(),
-        release.as_deref(),
-    )?;
+    let environment = get_str(obj, "environment")?;
+    let out = state.store.record_verdict(&VerdictInput {
+        case: &id,
+        actor_kind: &actor_kind,
+        actor: &ctx.actor,
+        verdict: &verdict,
+        note: note.as_deref(),
+        release: release.as_deref(),
+        environment: environment.as_deref(),
+    })?;
     state.wake();
     Ok(Json(out.to_json()))
 }

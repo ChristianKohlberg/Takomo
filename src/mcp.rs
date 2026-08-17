@@ -847,6 +847,11 @@ pub struct CheckFileArgs {
     /// how a characterisation test you settled on while discussing a feature
     /// stays attached to that discussion — file it even before an epic exists.
     pub initiative: Option<String>,
+    /// Environments this check must be verified in, by slug or id. Each case is
+    /// then tracked per environment, so "passes on staging, never run on
+    /// production" is expressible instead of collapsing into one verdict. Omit
+    /// for a check whose result does not depend on where it runs.
+    pub environments: Option<Vec<String>>,
     /// Free-form traversal an agent or a human follows. No step model, no DAG —
     /// prose is the content.
     pub body: Option<String>,
@@ -900,6 +905,11 @@ pub struct CaseArg {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct VerdictArgs {
+    /// Which environment you observed this in, by slug or id. Required when the
+    /// check declares more than one — a bare verdict there does not say what you
+    /// saw, and it is refused rather than guessed at. Omit for a check that
+    /// declares one (that one is meant) or none.
+    pub environment: Option<String>,
     /// Case id.
     pub case: String,
     /// pass, fail, blocked or unreachable. `unreachable` is NOT a failure — use it
@@ -3123,6 +3133,7 @@ impl TakomoMcp {
             project: a.project.clone(),
             epic: a.epic,
             initiative: a.initiative,
+            environments: a.environments.unwrap_or_default(),
             title: a.title,
             body: a.body.unwrap_or_default(),
             precondition: a.precondition.unwrap_or_default(),
@@ -3176,14 +3187,23 @@ impl TakomoMcp {
         // Deliberately no actor_kind parameter: over MCP an agent records an agent
         // verdict. "A person approved this" is a claim only a human-scoped token
         // may make, and it is made through /v1/cases/{id}/verdict.
-        let out = self.state.store.record_verdict(
-            &a.case,
-            "agent",
-            &auth.actor,
-            &a.verdict,
-            a.note.as_deref(),
-            a.release.as_deref(),
-        )?;
+        let out = self
+            .state
+            .store
+            .record_verdict(&crate::store::VerdictInput {
+                case: &a.case,
+                // Over MCP a verdict is ALWAYS the agent's. There is no
+                // `actor_kind` here on purpose: asserting that a person approved
+                // something is the one claim an agent must not be able to make
+                // on their behalf, and it goes through POST /v1/cases/{id}/verdict
+                // with a `human`-scoped token.
+                actor_kind: "agent",
+                actor: &auth.actor,
+                verdict: &a.verdict,
+                note: a.note.as_deref(),
+                release: a.release.as_deref(),
+                environment: a.environment.as_deref(),
+            })?;
         self.state.wake();
         let mut body = out.to_json();
         body["ok"] = json!(true);

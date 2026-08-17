@@ -6517,7 +6517,8 @@ components:
       type: object
       description: What the push invalidated, returned so the pusher needs no second call.
       properties:
-        stale_cases: { type: integer }
+        stale_cases: { type: integer, description: 'DISTINCT cases staled — a check across three environments does not report its work three times over' }
+        stale_pairs: { type: integer, description: '(case, environment) pairs staled: the units of work to redo. Zero for checks that declare no environments.' }
         stale_checks: { type: array, items: { type: string } }
         expired_checks: { type: array, items: { type: string }, description: 'checks whose policy clock ran out at this release' }
         orphaned_checks: { type: array, items: { type: string }, description: 'checks whose every glob matched nothing' }
@@ -6588,7 +6589,28 @@ components:
           type: array
           items: { type: string }
           description: 'of those globs, the ones that matched nothing in the newest release'
+        environments:
+          type: array
+          description: 'the environments this check must be verified in; empty means environment-agnostic'
+          items:
+            type: object
+            properties:
+              environment: { type: string }
+              slug: { type: string }
         cases: { $ref: "#/components/schemas/CheckCounts" }
+        environment_cases:
+          type: array
+          description: |
+            The same case set broken out per environment. `cases` above counts one
+            row per CASE, taking the WORST of its environments, so declaring a
+            second environment does not double the denominator — what it changes
+            is each case's state. This array says where the gap actually is.
+          items:
+            type: object
+            properties:
+              environment: { type: string }
+              slug: { type: string }
+              cases: { $ref: "#/components/schemas/CheckCounts" }
         policy: { $ref: "#/components/schemas/ResolvedPolicy" }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
@@ -6601,6 +6623,7 @@ components:
       properties:
         title: { type: string }
         epic: { type: string }
+        environments: { type: array, items: { type: string }, description: 'environments this check must be verified in, by id or slug. Each case is then tracked per environment, so "passes on staging, never run on production" is expressible instead of collapsing into one verdict. Empty leaves the check environment-agnostic, which is the original behaviour and still the right one for a check whose result does not depend on where it runs' }
         initiative: { type: string, description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
         body: { type: string }
         precondition: { type: string }
@@ -6627,6 +6650,10 @@ components:
         severity: { type: string, enum: [blocking, advisory, low] }
         epic: { type: [string, "null"] }
         initiative: { type: [string, "null"] }
+        environments:
+          type: array
+          items: { type: string }
+          description: 'replaces the declared set; an empty array clears it. Undeclaring an environment KEEPS the verdicts recorded there — it stops being required, which is not the same as never having been verified — so re-declaring it later finds the history intact.'
         verification: { type: [string, "null"] }
         expiry_days: { type: [integer, "null"] }
         expiry_releases: { type: [integer, "null"] }
@@ -6688,6 +6715,15 @@ components:
       properties:
         id: { type: string }
         case: { type: string }
+        environment:
+          type: string
+          description: |
+            Where you observed it, by slug or id. REQUIRED when the check declares
+            more than one environment: a bare verdict there does not say what was
+            observed, and it is refused (`conflict.environment_ambiguous`) rather
+            than defaulted, because filing a staging run as production is worse
+            than no record. Omit for a check that declares one (that one is meant)
+            or none.
         actor_kind: { type: string, enum: [agent, human] }
         actor: { type: string }
         verdict: { type: string, enum: [pass, fail, blocked, unreachable] }
@@ -6793,6 +6829,9 @@ components:
         case: { type: string }
         case_key: { type: string }
         case_label: { type: string }
+        environment: { type: [string, "null"], description: 'where to run it; null when the check declares no environments' }
+        environment_slug: { type: [string, "null"] }
+        base_url: { type: [string, "null"], description: 'carried on the item so a runner needs no second request — an item that does not say where is not actionable' }
         reason:
           type: string
           enum: [stale, expired, failed, never, awaiting_human]
@@ -7138,6 +7177,9 @@ x-error-codes:
   validation.check_precondition: "the check precondition is over its length limit."
   validation.check_layer: "`layer` must be `ui`, `api` or `other`. A check covers ONE layer: a rule enforced only in the interface passes at the API layer, so the two verdicts are not interchangeable."
   validation.check_severity: "`severity` must be `blocking`, `advisory` or `low`. Only `blocking` blocks a release gate."
+  validation.check_environments: "more environments than one check may declare. A check verified in twenty places is usually several checks — declare the ones where the verdict actually differs."
+  validation.verdict_environment: "the verdict names an environment this check is not verified in, or names one at all on a check that declares none. A verdict is evidence about the check, so it has to be taken somewhere the check claims."
+  conflict.environment_ambiguous: "the check must be verified in more than one environment, so a verdict has to say which one it is about. A bare verdict there does not state what was observed, and defaulting silently would file (say) a staging run as production. The worklist names the environment for every item on it."
   validation.check_initiative: "the `initiative` given does not exist, or belongs to another project. Unlike a ticket's `initiative:` tag — which the roadmap deliberately lets dangle — this is a column chosen from a list, so a wrong id is refused where it is made."
   validation.check_epic: "the `epic` given is not a ticket of type `epic`, or belongs to another project. Checks group under epics so the vocabulary matches tickets."
   validation.check_globs: "a check glob is empty, over its length bound, or there are more than one check may claim. A check covers one action, which a handful of path patterns describes."
