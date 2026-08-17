@@ -1,11 +1,15 @@
-// The left navigation rail: brand, the five surfaces, and the profile block.
+// The left navigation rail: brand, the four work surfaces, and the profile block.
 //
 // This replaces the horizontal nav strip that used to live inside AppHeader.
 // The strip had to scroll sideways the moment a fifth surface arrived, which
 // hid whatever did not fit behind an edge nothing signals — and every surface
 // name competed with the project picker and the action buttons for the same
-// row. A rail gives the surfaces their own axis, so adding a sixth costs
-// vertical space nobody is short of.
+// row. A rail gives the surfaces their own axis.
+//
+// Settings is not a fifth surface — it is account/token configuration, reached
+// from the profile block's menu rather than beside Board and Inbox. Sign-out
+// lives there too; the standalone icon beside the avatar was folded in so the
+// block is one control, not avatar-plus-glyph.
 //
 // Two states, one toggle: EXPANDED shows icon + label, COLLAPSED shows icons
 // only. The choice is the caller's to persist (`useNavCollapsed`), because it
@@ -15,7 +19,7 @@
 // OVERLAYS the content with a backdrop instead of pushing it, and a spacer keeps
 // the collapsed strip's place in the flow. That is a structural difference, not
 // a visual one, which is why it uses `useIsPhone` rather than a `md:` prefix.
-import type { ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
   InboxIcon,
@@ -36,7 +40,6 @@ export interface NavLabels {
   inbox: string
   initiatives: string
   schedules: string
-  settings: string
 }
 
 export interface NavRailLabels {
@@ -47,12 +50,17 @@ export interface NavRailLabels {
   signOut: string
   /** Heading over the profile block; also the fallback when there is no actor. */
   account: string
+  /** Profile-menu entry for /settings. */
+  settings: string
 }
 
 export interface NavRailProps {
   nav: NavLabels
-  /** Which surface is current — highlighted, and not a link to itself. */
-  current: keyof NavLabels
+  /**
+   * Which surface is current — highlighted, and not a link to itself — or
+   * `account` on /settings, which highlights the profile trigger instead.
+   */
+  current: keyof NavLabels | 'account'
   /**
    * A count beside a nav entry, the way /inbox badges open questions and
    * /schedules badges proposals waiting on a human. Zero renders nothing —
@@ -92,7 +100,6 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
   inbox: '/inbox',
   initiatives: '/initiatives',
   schedules: '/schedules',
-  settings: '/settings',
 }
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
@@ -100,10 +107,11 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   inbox: InboxIcon,
   initiatives: LightbulbIcon,
   schedules: CalendarClockIcon,
-  settings: SettingsIcon,
 }
 
-const NAV_ORDER: (keyof NavLabels)[] = ['board', 'inbox', 'initiatives', 'schedules', 'settings']
+const NAV_ORDER: (keyof NavLabels)[] = ['board', 'inbox', 'initiatives', 'schedules']
+
+const SETTINGS_HREF = '/settings'
 
 /** The role worth showing, most privileged first. Anything else reads as "agent". */
 function roleOf(scopes: string[] | undefined): string {
@@ -164,6 +172,77 @@ export function NavRail({
   const overlay = isPhone && expanded
   const role = roleOf(scopes)
   const initial = (actor || labels.account).trim().charAt(0).toUpperCase()
+  const accountActive = current === 'account'
+  const accountName = actor || labels.account
+
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [menuActive, setMenuActive] = useState(0)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const settingsRef = useRef<HTMLAnchorElement>(null)
+  const signOutRef = useRef<HTMLButtonElement>(null)
+  const menuId = useId()
+  const settingsItemId = `${menuId}-settings`
+  const signOutItemId = `${menuId}-signout`
+
+  useEffect(() => {
+    if (!menuOpen) return
+    setMenuActive(0)
+    settingsRef.current?.focus()
+  }, [menuOpen])
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  function closeMenu() {
+    setMenuOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  function goSettings(e: React.MouseEvent<HTMLAnchorElement>) {
+    if (!onNavigate) return
+    if (!plainLeftClick(e)) return
+    e.preventDefault()
+    if (overlay) onCollapsed(true)
+    setMenuOpen(false)
+    onNavigate(SETTINGS_HREF)
+  }
+
+  function signOut() {
+    setMenuOpen(false)
+    onSignOut()
+  }
+
+  function onTriggerKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      setMenuOpen(true)
+    }
+  }
+
+  function onMenuKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      const next = Math.min(menuActive + 1, 1)
+      setMenuActive(next)
+      if (next === 0) settingsRef.current?.focus()
+      else signOutRef.current?.focus()
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      const next = Math.max(menuActive - 1, 0)
+      setMenuActive(next)
+      if (next === 0) settingsRef.current?.focus()
+      else signOutRef.current?.focus()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      closeMenu()
+    }
+  }
 
   return (
     <>
@@ -285,35 +364,95 @@ export function NavRail({
           })}
         </nav>
 
-        {/* The profile block. Sign-out used to be one more icon button in a row
-            of icon buttons on every page's header, where it sat beside
-            "refresh" — two adjacent glyphs, one harmless and one that ends the
-            session. Down here it is the only thing in its own region. */}
+        {/* Profile block at the bottom: avatar opens a menu for settings and
+            sign-out. Hand-rolled rather than Radix — ProjectPicker already owns
+            the popover-placement pattern for a collapsed rail, and Settings must
+            stay a real `<a href>` for middle-click and copy-link. */}
         <div
           className={cn(
-            'border-t-border-soft flex flex-none items-center gap-2 border-t px-2 py-2.5',
-            collapsed && 'flex-col gap-1.5 px-0',
+            'border-t-border-soft flex flex-none border-t px-2 py-2.5',
+            collapsed && 'px-0',
           )}
         >
-          <span
-            title={actor || labels.account}
-            className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold"
-          >
-            {initial}
-          </span>
-          {expanded && (
-            <div className="min-w-0 grow leading-tight">
-              <div className="text-foreground truncate text-[12.5px] font-[650]">
-                {actor || labels.account}
-              </div>
-              {role && (
-                <div className="text-muted-foreground truncate text-[11px]">{role}</div>
+          <div ref={menuRef} className={cn('relative', collapsed && 'flex justify-center')}>
+            <button
+              ref={triggerRef}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-controls={menuId}
+              aria-label={accountName}
+              title={accountName}
+              onClick={() => setMenuOpen((o) => !o)}
+              onKeyDown={onTriggerKeyDown}
+              className={cn(
+                'hover:bg-muted flex w-full cursor-pointer items-center gap-2 rounded-lg px-0 py-0 text-left',
+                collapsed && 'justify-center',
+                accountActive && 'text-primary bg-secondary',
               )}
-            </div>
-          )}
-          <IconButton label={labels.signOut} onClick={onSignOut}>
-            <LogOutIcon size={17} />
-          </IconButton>
+            >
+              <span
+                className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold"
+              >
+                {initial}
+              </span>
+              {expanded && (
+                <div className="min-w-0 grow leading-tight">
+                  <div className="text-foreground truncate text-[12.5px] font-[650]">
+                    {accountName}
+                  </div>
+                  {role && (
+                    <div className="text-muted-foreground truncate text-[11px]">{role}</div>
+                  )}
+                </div>
+              )}
+            </button>
+
+            {menuOpen && (
+              <div
+                id={menuId}
+                role="menu"
+                aria-label={labels.account}
+                onKeyDown={onMenuKeyDown}
+                className={cn(
+                  'bg-card border-border absolute z-50 min-w-44 overflow-hidden rounded-lg border py-1 shadow-[var(--shadow)]',
+                  // Collapsed, beside the trigger — under it would hang off the
+                  // 56px strip. Expanded, above — the block sits on the bottom edge.
+                  collapsed ? 'top-0 left-full ml-1' : 'bottom-full left-0 mb-1',
+                )}
+              >
+                <a
+                  ref={settingsRef}
+                  id={settingsItemId}
+                  role="menuitem"
+                  href={SETTINGS_HREF}
+                  className={cn(
+                    'text-foreground hover:bg-muted flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-[13px] font-[650] no-underline',
+                    menuActive === 0 && 'bg-accent',
+                    accountActive && 'text-primary font-[680]',
+                  )}
+                  onClick={goSettings}
+                >
+                  <SettingsIcon size={16} className="flex-none" />
+                  <span>{labels.settings}</span>
+                </a>
+                <button
+                  ref={signOutRef}
+                  id={signOutItemId}
+                  type="button"
+                  role="menuitem"
+                  className={cn(
+                    'text-foreground hover:bg-muted flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[13px] font-[650]',
+                    menuActive === 1 && 'bg-accent',
+                  )}
+                  onClick={signOut}
+                >
+                  <LogOutIcon size={16} className="flex-none" />
+                  <span>{labels.signOut}</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </aside>
     </>

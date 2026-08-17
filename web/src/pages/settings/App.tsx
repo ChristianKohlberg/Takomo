@@ -372,19 +372,19 @@ export function App() {
     <AppShell
       rail={{
         onNavigate: navigate,
-        current: 'settings',
+        current: 'account',
         nav: {
           board: t.board,
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
-          settings: t.settings,
         },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
           signOut: t.signOut,
           account: t.navAccount,
+          settings: t.settings,
         },
         collapsed: navCollapsed,
         onCollapsed: setNavCollapsed,

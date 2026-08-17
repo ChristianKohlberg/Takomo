@@ -801,7 +801,6 @@ export function App() {
           inbox: t.inbox,
           initiatives: t.initiatives,
           schedules: t.schedules,
-          settings: t.settings,
         },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
           id,
@@ -829,6 +828,7 @@ export function App() {
           collapse: t.navCollapse,
           signOut: t.signOut,
           account: t.navAccount,
+          settings: t.settings,
         },
         collapsed: navCollapsed,
         onCollapsed: setNavCollapsed,
