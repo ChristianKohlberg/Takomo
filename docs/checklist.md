@@ -183,6 +183,27 @@ agent can do.
 ship". Only `blocking` severity blocks; advisory and low checks nag. A gate that
 fires on everything gets overridden out of habit and stops meaning anything.
 
+## The same loop from a shell
+
+`clients/cli/takomo` carries the loop, not CRUD parity with the API:
+
+```sh
+takomo verify                      # what needs re-verifying, split agent vs human
+takomo env ls                      # where to run it, and whether writing is safe
+takomo verdict CASE --pass --note '...'   # what you observed
+takomo gate                        # can this ship? exits non-zero when blocked
+takomo coverage --initiative INI   # do the tests we agreed on still pass
+```
+
+Filing lives here too — `takomo check new`, `takomo check cases` — because a
+check is a sentence and a case set is *generated*: `--body-file` and
+`--file` take both from a pipeline, which is what a shell does better than a
+textarea. Case keys are `--case 'entities=2'`; a label uses `::` as the
+separator, because `=` is what the keys themselves are made of.
+
+`takomo gate` exiting non-zero is the point of having it in a shell at all: it
+drops straight into a release script.
+
 ## The agent loop over MCP
 
 ```
