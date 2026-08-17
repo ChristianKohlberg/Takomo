@@ -22,6 +22,7 @@ export interface PeopleListLabels {
   active: string
   disabled: string
   /** Row actions. */
+  edit: string
   disable: string
   enable: string
   /** Tooltip on the disable action — it is not a delete. */
@@ -33,10 +34,18 @@ export interface PeopleListProps {
   labels: PeopleListLabels
   /** Absent = a reader who cannot administer the directory; actions are hidden. */
   onSetDisabled?: (person: User, disabled: boolean) => void
+  /** Open the dialog on this person. Hidden with the other actions when absent. */
+  onEdit?: (person: User) => void
   busyHandle?: string
 }
 
-export function PeopleList({ people, labels, onSetDisabled, busyHandle }: PeopleListProps) {
+export function PeopleList({
+  people,
+  labels,
+  onSetDisabled,
+  onEdit,
+  busyHandle,
+}: PeopleListProps) {
   return (
     <ul className="flex flex-col gap-px">
       {people.map((p) => (
@@ -78,17 +87,30 @@ export function PeopleList({ people, labels, onSetDisabled, busyHandle }: People
             )}
           </div>
 
-          {onSetDisabled && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busyHandle === p.handle}
-              title={p.disabled ? undefined : labels.disableHint}
-              onClick={() => onSetDisabled(p, !p.disabled)}
-              className="shrink-0 self-start md:self-auto"
-            >
-              {p.disabled ? labels.enable : labels.disable}
-            </Button>
+          {(onEdit || onSetDisabled) && (
+            <div className="flex shrink-0 gap-1.5 self-start md:self-auto">
+              {onEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busyHandle === p.handle}
+                  onClick={() => onEdit(p)}
+                >
+                  {labels.edit}
+                </Button>
+              )}
+              {onSetDisabled && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busyHandle === p.handle}
+                  title={p.disabled ? undefined : labels.disableHint}
+                  onClick={() => onSetDisabled(p, !p.disabled)}
+                >
+                  {p.disabled ? labels.enable : labels.disable}
+                </Button>
+              )}
+            </div>
           )}
         </li>
       ))}

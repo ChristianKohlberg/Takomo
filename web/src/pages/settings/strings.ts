@@ -44,6 +44,35 @@ export const STR = defineStrings({
     peopleEnable: 'Enable',
     peopleDisableHint:
       'Stops new work being addressed to them. Not a delete and not a revocation: every past decision keeps their name on it, and their credentials keep working — revoke those to end access.',
+    peopleAdd: 'Add person',
+    peopleEdit: 'Edit',
+    personAddTitle: 'Add a person',
+    personAddSub:
+      'Somebody a decision can be addressed to. This grants no access on its own — scopes are what a credential may do.',
+    personEditTitle: 'Edit person',
+    personEditSub: 'Their display name, email, and which projects can hand them work.',
+    personHandle: 'Handle',
+    personHandlePh: 'ada',
+    personHandleHint:
+      'Lowercase, e.g. ada or j.chen. Their stable identity, and usable as a person:<handle> tag. The real name goes below.',
+    personHandleFixed:
+      'Fixed: every person:<handle> reference and every assignment resolves through it. Change the name instead.',
+    personName: 'Name',
+    personNamePh: 'Ada Lovelace',
+    personNameHint: 'What a reader sees on a question waiting on them.',
+    personEmail: 'Email',
+    personEmailPh: 'ada@example.com',
+    personEmailHint: 'For a human reader — Takomo never sends mail. Clear it to remove it.',
+    personProjects: 'Can be handed work in',
+    personProjectsHint:
+      'Membership says who may be handed work in a project. Separate from what their credentials may read or write.',
+    personNoProjectsPicked:
+      'No project picked — they will be in the directory but cannot be assigned anything.',
+    personSave: 'Save',
+    personAdd: 'Add',
+    personNeedHandle: 'A handle is required — it is how this person is referenced everywhere.',
+    personBadHandle:
+      'A handle must be lowercase and match ^[a-z0-9][a-z0-9._-]*$, e.g. ada or j.chen. Put the real name in Name.',
 
     signOut: 'Sign out',
     navExpand: 'Expand navigation',
@@ -305,6 +334,37 @@ export const STR = defineStrings({
     peopleEnable: 'Aktivieren',
     peopleDisableHint:
       'Verhindert, dass neue Arbeit an sie gerichtet wird. Kein L\u00f6schen und kein Widerruf: jede fr\u00fchere Entscheidung beh\u00e4lt ihren Namen, und ihre Zugangsberechtigungen funktionieren weiter — diese widerrufen, um den Zugriff zu beenden.',
+    peopleAdd: 'Person hinzuf\u00fcgen',
+    peopleEdit: 'Bearbeiten',
+    personAddTitle: 'Person hinzuf\u00fcgen',
+    personAddSub:
+      'Jemand, an den eine Entscheidung gerichtet werden kann. Das gew\u00e4hrt allein keinen Zugriff \u2014 was eine Zugangsberechtigung darf, sind ihre Scopes.',
+    personEditTitle: 'Person bearbeiten',
+    personEditSub: 'Anzeigename, E-Mail und in welchen Projekten sie Arbeit erhalten kann.',
+    personHandle: 'Handle',
+    personHandlePh: 'ada',
+    personHandleHint:
+      'Kleinbuchstaben, z.\u00a0B. ada oder j.chen. Die feste Identit\u00e4t, auch als person:<handle>-Tag nutzbar. Der echte Name steht unten.',
+    personHandleFixed:
+      'Unver\u00e4nderlich: jede person:<handle>-Referenz und jede Zuweisung l\u00f6st dar\u00fcber auf. Stattdessen den Namen \u00e4ndern.',
+    personName: 'Name',
+    personNamePh: 'Ada Lovelace',
+    personNameHint: 'Was bei einer Frage steht, die auf sie wartet.',
+    personEmail: 'E-Mail',
+    personEmailPh: 'ada@example.com',
+    personEmailHint:
+      'Nur zur Information \u2014 Takomo versendet keine E-Mails. Leeren entfernt sie.',
+    personProjects: 'Kann Arbeit erhalten in',
+    personProjectsHint:
+      'Die Mitgliedschaft sagt, wer in einem Projekt Arbeit erhalten kann. Unabh\u00e4ngig davon, was ihre Zugangsberechtigungen lesen oder schreiben d\u00fcrfen.',
+    personNoProjectsPicked:
+      'Kein Projekt gew\u00e4hlt \u2014 die Person steht dann im Verzeichnis, kann aber nichts zugewiesen bekommen.',
+    personSave: 'Speichern',
+    personAdd: 'Hinzuf\u00fcgen',
+    personNeedHandle:
+      'Ein Handle ist erforderlich \u2014 dar\u00fcber wird die Person \u00fcberall referenziert.',
+    personBadHandle:
+      'Ein Handle muss klein geschrieben sein und ^[a-z0-9][a-z0-9._-]*$ entsprechen, z.\u00a0B. ada oder j.chen. Der echte Name geh\u00f6rt in Name.',
 
     signOut: 'Abmelden',
     navExpand: 'Navigation ausklappen',

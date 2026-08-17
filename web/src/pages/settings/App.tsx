@@ -29,7 +29,16 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
 import { PeopleList } from '@/components/settings/PeopleList'
-import { listUsers, setUserDisabled, type User } from '@/lib/users'
+import { PersonDialog, type PersonSaved } from '@/components/settings/PersonDialog'
+import {
+  addMembership,
+  createUser,
+  listUsers,
+  patchUser,
+  removeMembership,
+  setUserDisabled,
+  type User,
+} from '@/lib/users'
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
@@ -120,6 +129,9 @@ export function App() {
   // halves of one question: what may be done, and who work can be addressed to.
   const [people, setPeople] = useState<User[]>([])
   const [peopleBusy, setPeopleBusy] = useState('')
+  // `null` = the dialog is closed. `{}` = adding somebody; a person = editing
+  // them. One piece of state, so the two flows cannot both be open.
+  const [editingPerson, setEditingPerson] = useState<User | 'new' | null>(null)
 
   // Which project's detail is open, and its editable settings. `?project=<id>`
   // is what the board's gear links to, so a deep link opens straight on the
@@ -250,6 +262,42 @@ export function App() {
     { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
     { key: 'library', label: t.navLibrary, hint: t.navLibraryHint },
   ]
+
+  /**
+   * Save the dialog: the person, then their memberships.
+   *
+   * Membership is a diff rather than a set: the API has one route per edge (there
+   * is no "replace all"), so this sends only what changed. Sequential on purpose —
+   * one refused edge (an archived project freezes its memberships) should leave a
+   * legible error rather than a half-applied fan-out whose failure order nobody
+   * can reconstruct.
+   */
+  async function savePerson(fields: PersonSaved) {
+    const existing = editingPerson !== 'new' && editingPerson ? editingPerson : null
+    const handle = existing ? existing.handle : fields.handle
+    if (existing) {
+      await patchUser(token, handle, { name: fields.name, email: fields.email })
+    } else {
+      // The memberships picked at creation ride along in the same transaction, so
+      // a new person and their first project land together or not at all.
+      await createUser(token, {
+        handle,
+        name: fields.name,
+        email: fields.email ?? undefined,
+        projects: fields.projects,
+      })
+    }
+    const before = new Set(existing ? (existing.projects ?? []) : fields.projects)
+    const after = new Set(fields.projects)
+    for (const p of after) {
+      if (!before.has(p)) await addMembership(token, handle, p)
+    }
+    for (const p of before) {
+      if (!after.has(p)) await removeMembership(token, handle, p)
+    }
+    setEditingPerson(null)
+    await refresh()
+  }
 
   function signOut() {
     saveToken('')
@@ -532,7 +580,13 @@ export function App() {
               )}
             </Section>
           ) : section === 'people' ? (
-            <Section title={t.peopleTitle} description={t.peopleSub}>
+            <Section
+              title={t.peopleTitle}
+              description={t.peopleSub}
+              action={
+                <Button onClick={() => setEditingPerson('new')}>+&nbsp;{t.peopleAdd}</Button>
+              }
+            >
               {people.length === 0 ? (
                 <EmptyState>{t.peopleEmpty}</EmptyState>
               ) : (
@@ -546,10 +600,12 @@ export function App() {
                     status: t.peopleStatus,
                     active: t.peopleActive,
                     disabled: t.peopleDisabled,
+                    edit: t.peopleEdit,
                     disable: t.peopleDisable,
                     enable: t.peopleEnable,
                     disableHint: t.peopleDisableHint,
                   }}
+                  onEdit={(person) => setEditingPerson(person)}
                   onSetDisabled={(person, disabled) => {
                     setPeopleBusy(person.handle)
                     setUserDisabled(token, person.handle, disabled)
@@ -770,6 +826,40 @@ export function App() {
           )}
         </div>
       </div>
+
+      <PersonDialog
+        open={editingPerson !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditingPerson(null)
+        }}
+        person={editingPerson === 'new' ? null : editingPerson}
+        projects={projects}
+        labels={{
+          addTitle: t.personAddTitle,
+          addSubtitle: t.personAddSub,
+          editTitle: t.personEditTitle,
+          editSubtitle: t.personEditSub,
+          handle: t.personHandle,
+          handlePh: t.personHandlePh,
+          handleHint: t.personHandleHint,
+          handleFixed: t.personHandleFixed,
+          name: t.personName,
+          namePh: t.personNamePh,
+          nameHint: t.personNameHint,
+          email: t.personEmail,
+          emailPh: t.personEmailPh,
+          emailHint: t.personEmailHint,
+          projects: t.personProjects,
+          projectsHint: t.personProjectsHint,
+          noProjectsPicked: t.personNoProjectsPicked,
+          save: t.personSave,
+          add: t.personAdd,
+          cancel: t.cancel,
+          needHandle: t.personNeedHandle,
+          badHandle: t.personBadHandle,
+        }}
+        onSave={savePerson}
+      />
 
       <NewTokenDialog
         open={newToken}

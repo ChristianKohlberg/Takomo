@@ -21,6 +21,7 @@ const LABELS = {
   status: 'Status',
   active: 'Active',
   disabled: 'Disabled',
+  edit: 'Edit',
   disable: 'Disable',
   enable: 'Enable',
   disableHint: 'Stops new work being addressed to them.',
@@ -64,8 +65,25 @@ describe('PeopleList', () => {
     expect(onSetDisabled).toHaveBeenCalledWith(expect.objectContaining({ handle: 'sam' }), false)
   })
 
-  it('hides the actions from a reader who cannot administer the directory', () => {
+  it('hides every action from a reader who cannot administer the directory', () => {
     render(<PeopleList people={[person()]} labels={LABELS} />)
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('opens the dialog on the person whose row was pressed', () => {
+    const onEdit = vi.fn()
+    render(
+      <PeopleList
+        people={[person(), person({ id: 'usr-2', handle: 'sam', label: 'Sam' })]}
+        labels={LABELS}
+        onEdit={onEdit}
+      />,
+    )
+    // Two rows, so the buttons share a name — the second one must carry the
+    // second person, which an index-free assertion would not catch.
+    const rows = screen.getAllByRole('button', { name: 'Edit' })
+    expect(rows).toHaveLength(2)
+    fireEvent.click(rows[1]!)
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ handle: 'sam' }))
   })
 })
