@@ -8,6 +8,15 @@ const PROJECTS = [
   { id: 'infra', name: null },
 ]
 
+const ARCHIVED = {
+  id: 'legacy',
+  name: 'Legacy stack',
+  archived: true,
+  archived_at: '2024-06-01T12:00:00Z',
+}
+
+const PROJECTS_WITH_ARCHIVED = [...PROJECTS, ARCHIVED]
+
 const LABELS = {
   project: 'project',
   search: 'Search projects',
@@ -97,5 +106,31 @@ describe('ProjectPicker', () => {
   it('collapses to a single initial', () => {
     mount({ value: 'demo', collapsed: true })
     expect(trigger().textContent).toBe('D')
+  })
+
+  it('omits archived projects from the list and from search', () => {
+    mount({ projects: PROJECTS_WITH_ARCHIVED })
+    fireEvent.click(trigger())
+    expect(screen.queryByRole('option', { name: /Legacy stack/ })).toBeNull()
+
+    fireEvent.change(search(), { target: { value: 'legacy' } })
+    expect(screen.queryByRole('option', { name: /Legacy stack/ })).toBeNull()
+    expect(screen.getByText('No project matches “legacy”')).toBeTruthy()
+  })
+
+  it('still labels the trigger when the current scope is archived', () => {
+    mount({ projects: PROJECTS_WITH_ARCHIVED, value: 'legacy' })
+    expect(trigger().textContent).toContain('Legacy stack')
+  })
+
+  it('counts only active projects in the overflow footer', () => {
+    // Thirteen active rows plus one archived: the footer must say 12/13, not 12/14.
+    const many = Array.from({ length: 13 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Project ${i}`,
+    }))
+    mount({ projects: [...many, ARCHIVED], labels: { ...LABELS, all: undefined } })
+    fireEvent.click(trigger())
+    expect(screen.getByText('12 / 13')).toBeTruthy()
   })
 })

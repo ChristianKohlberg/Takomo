@@ -443,7 +443,12 @@ export function App() {
           settings: t.settings,
         },
         badges: { inbox: openTotal },
-        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        projects: projects.map(({ id, name, archived, archived_at }) => ({
+          id,
+          name,
+          archived,
+          archived_at,
+        })),
         project,
         onProject: (id) => {
           setProject(id)
