@@ -211,6 +211,19 @@ pub async fn schedules_page() -> impl axum::response::IntoResponse {
 /// other four routes serve — it carries no data — and every request behind it is
 /// refused without an `admin` token. Gating the HTML would protect nothing and
 /// would break the one thing a page route owes a caller: answering a typed URL.
+/// `GET /verification` — whether the tests a feature was agreed on still pass.
+///
+/// Named `_page` for the same reason `initiatives_page` is: a sibling module in
+/// `src/api/` already owns the name.
+pub async fn verification_page() -> impl axum::response::IntoResponse {
+    secure_html(INDEX_HTML)
+}
+
+/// `GET /environments` — the registry of places a check can be run.
+pub async fn environments_page() -> impl axum::response::IntoResponse {
+    secure_html(INDEX_HTML)
+}
+
 pub async fn settings_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }

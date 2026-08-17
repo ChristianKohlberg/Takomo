@@ -181,7 +181,7 @@ jobs:
       # repo: edit `web/src/`, forget `npm run build`, and the binary keeps
       # serving the previous page while every test here passes. So rebuild it and
       # fail if the result differs from what was committed.
-      - name: Build the four pages
+      - name: Build the pages
         run: npm run build
 
       - name: web/dist is current
@@ -197,14 +197,14 @@ jobs:
         run: npm run size
 
   docker:
-    name: Docker image (builds · serves all four pages)
+    name: Docker image (builds · serves every page)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # This job exists because the Dockerfile's "anything the source embeds
       # from outside src/ has to be copied here too" comment had nothing behind
-      # it. The four pages used to be src/*.html, carried by `COPY src ./src`;
+      # it. The pages used to be src/*.html, carried by `COPY src ./src`;
       # once they moved to web/dist/*.html the image stopped building entirely,
       # and every other job stayed green because none of them builds it.
       # Render is unaffected (it uses the native rust runtime, not this file),
@@ -214,7 +214,7 @@ jobs:
 
       # Building is not enough: `include_str!` could be satisfied by an empty or
       # stale file. Run it and check the pages actually come out.
-      - name: It serves all four pages
+      - name: It serves every page
         run: |
           docker run -d --name takomo-ci -p 8080:8080 takomo-ci
           for i in $(seq 1 30); do
@@ -224,7 +224,7 @@ jobs:
           curl -fsS http://127.0.0.1:8080/healthz >/dev/null || {
             echo "::error::container never became healthy"; docker logs takomo-ci; exit 1;
           }
-          for page in board inbox initiatives schedules; do
+          for page in board inbox initiatives schedules verification environments; do
             if ! curl -fsS "http://127.0.0.1:8080/$page" | grep -q 'id="root"'; then
               echo "::error::/$page did not serve the web build (no React mount point)"
               exit 1

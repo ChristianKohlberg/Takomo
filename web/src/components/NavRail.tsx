@@ -28,7 +28,9 @@ import {
   LogOutIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  ServerIcon,
   SettingsIcon,
+  ShieldCheckIcon,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
@@ -40,6 +42,8 @@ export interface NavLabels {
   inbox: string
   initiatives: string
   schedules: string
+  verification: string
+  environments: string
 }
 
 export interface NavRailLabels {
@@ -100,6 +104,8 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
   inbox: '/inbox',
   initiatives: '/initiatives',
   schedules: '/schedules',
+  verification: '/verification',
+  environments: '/environments',
 }
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
@@ -107,9 +113,21 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   inbox: InboxIcon,
   initiatives: LightbulbIcon,
   schedules: CalendarClockIcon,
+  verification: ShieldCheckIcon,
+  environments: ServerIcon,
 }
 
-const NAV_ORDER: (keyof NavLabels)[] = ['board', 'inbox', 'initiatives', 'schedules']
+// Verification sits after the work surfaces and before Environments, which is
+// its configuration: you read what needs verifying far more often than you edit
+// where it runs.
+const NAV_ORDER: (keyof NavLabels)[] = [
+  'board',
+  'inbox',
+  'initiatives',
+  'schedules',
+  'verification',
+  'environments',
+]
 
 const SETTINGS_HREF = '/settings'
 

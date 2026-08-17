@@ -9,6 +9,8 @@ export const STR = defineStrings({
     inbox: 'Inbox',
     initiatives: 'Initiatives',
     schedules: 'Schedules',
+    verification: 'Verification',
+    environments: 'Environments',
 
     gateTokenSub: "An admin token. Without 'admin' this page has nothing to show you.",
     gateLabel: 'API token',
@@ -268,6 +270,8 @@ export const STR = defineStrings({
     inbox: 'Posteingang',
     initiatives: 'Initiativen',
     schedules: 'Zeitpläne',
+    verification: 'Verifizierung',
+    environments: 'Umgebungen',
 
     gateTokenSub: "Ein Admin-Token. Ohne 'admin' hat diese Seite nichts zu zeigen.",
     gateLabel: 'API-Token',

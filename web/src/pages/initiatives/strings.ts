@@ -10,6 +10,8 @@ export const STR = defineStrings({
   en: {
     initiatives: 'Initiatives',
     schedules: 'Schedules',
+    verification: 'Verification',
+    environments: 'Environments',
     board: 'Board',
     inbox: 'Inbox',
     settings: 'Settings',
@@ -206,6 +208,8 @@ export const STR = defineStrings({
   de: {
     initiatives: 'Initiativen',
     schedules: 'Zeitpläne',
+    verification: 'Verifizierung',
+    environments: 'Umgebungen',
     board: 'Board',
     inbox: 'Inbox',
     settings: 'Einstellungen',

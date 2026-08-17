@@ -15,7 +15,9 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } fr
 import { App as BoardApp } from './pages/board/App'
 import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
+import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as SchedulesApp } from './pages/schedules/App'
+import { App as VerificationApp } from './pages/verification/App'
 import { App as SettingsApp } from './pages/settings/App'
 
 /** The document title each surface used to carry in its own `<head>`. */
@@ -24,6 +26,8 @@ const TITLES: Record<string, string> = {
   '/inbox': 'takomo · inbox',
   '/initiatives': 'takomo · initiatives',
   '/schedules': 'takomo · schedules',
+  '/verification': 'takomo · verification',
+  '/environments': 'takomo · environments',
   '/settings': 'takomo · settings',
 }
 
@@ -51,6 +55,8 @@ const router = createBrowserRouter([
       { path: '/inbox', element: <InboxApp /> },
       { path: '/initiatives', element: <InitiativesApp /> },
       { path: '/schedules', element: <SchedulesApp /> },
+      { path: '/verification', element: <VerificationApp /> },
+      { path: '/environments', element: <EnvironmentsApp /> },
       { path: '/settings', element: <SettingsApp /> },
       // Anything else the server handed this document for. The server serves it
       // only on the five routes, so this is a safety net rather than a real path.
