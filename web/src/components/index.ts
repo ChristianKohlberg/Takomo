@@ -91,6 +91,8 @@ export { SelectionPane } from './initiatives/SelectionPane'
 export type { SelectionPaneProps, SelectionPaneLabels, Operation } from './initiatives/SelectionPane'
 export { SourcesFooter } from './initiatives/SourcesFooter'
 export type { SourcesFooterProps, SourcesFooterLabels } from './initiatives/SourcesFooter'
+export { VersionsStrip } from './initiatives/VersionsStrip'
+export type { VersionsStripProps, VersionsStripLabels } from './initiatives/VersionsStrip'
 
 // ---- schedules ----
 export { ScheduleCard } from './schedules/ScheduleCard'
