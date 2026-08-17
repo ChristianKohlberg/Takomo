@@ -10794,6 +10794,148 @@ async fn initiative_list_and_detail_report_a_derived_rollup() {
     assert_eq!(detail["rollup"], *rollup);
 }
 
+/// The rollup's two ATTENTION counts, against every rule that decides whether a
+/// document is waiting on someone.
+///
+/// These exist so a collection can be read without opening each document in turn,
+/// which means they are only worth having if they agree with what the page shows.
+/// `web/src/lib/initiative-doc.ts` decides that with three predicates — superseded,
+/// resolved, decided — plus a pane filter, and each one is exercised here with a
+/// row that must NOT count next to a row that must. A count that ignored any of
+/// them would still look plausible on a healthy document and would nag forever on
+/// a finished one.
+#[tokio::test]
+async fn initiative_rollup_counts_what_is_waiting_on_a_person() {
+    let app = TestApp::spawn().await;
+    let (id, note_id, _) = seed_initiative(&app.open_store());
+    let entries = format!("/v1/initiatives/{id}/entries");
+
+    let append = async |body: serde_json::Value| -> String {
+        let (status, out) = app.post(&app.human, &entries, body).await;
+        assert_eq!(status, StatusCode::CREATED, "{out}");
+        out["entry"]["id"].as_str().unwrap().to_string()
+    };
+    let rollup = async || -> serde_json::Value {
+        let (status, d) = app.get(&app.worker, &format!("/v1/initiatives/{id}")).await;
+        assert_eq!(status, StatusCode::OK);
+        d["rollup"].clone()
+    };
+
+    // Nothing is waiting on an initiative that is only evidence.
+    let r = rollup().await;
+    assert_eq!(r["open_notes"], 0);
+    assert_eq!(r["pending_amendments"], 0);
+
+    // The live pane, which is not an amendment however many times it is revised.
+    append(json!({
+        "kind": "view", "source": "agent:w1", "text": "The live position.",
+        "meta": { "pane": "business", "cites": [] },
+    }))
+    .await;
+
+    // One note, one undecided amendment: both are waiting.
+    let open_note = append(json!({
+        "kind": "thread", "source": "person:ada", "text": "Who counted?",
+        "meta": { "pane": "business", "para": 0 },
+    }))
+    .await;
+    let undecided = append(json!({
+        "kind": "view", "source": "agent:w3", "text": "A better position.",
+        "meta": { "pane": "business", "cites": [], "proposed": true },
+    }))
+    .await;
+    let r = rollup().await;
+    assert_eq!(r["open_notes"], 1, "{r}");
+    assert_eq!(r["pending_amendments"], 1, "{r}");
+
+    // A note explicitly resolved stops waiting.
+    append(json!({
+        "kind": "thread", "source": "person:ada", "text": "Answered inline.",
+        "meta": { "pane": "business", "para": 0, "state": "resolved" },
+    }))
+    .await;
+    assert_eq!(
+        rollup().await["open_notes"],
+        1,
+        "a resolved note is not waiting"
+    );
+
+    // `running` is not resolved — work is under way, the question still stands.
+    append(json!({
+        "kind": "thread", "source": "agent:w1", "text": "Counting now.",
+        "meta": { "pane": "business", "para": 0, "state": "running" },
+    }))
+    .await;
+    assert_eq!(rollup().await["open_notes"], 2, "'running' still counts");
+
+    // Superseding a note replaces it rather than adding to it: the superseding
+    // row counts, the superseded one stops.
+    append(json!({
+        "kind": "thread", "source": "agent:w1", "text": "Filed as work.",
+        "meta": { "pane": "business", "para": 0, "supersedes": open_note, "state": "running" },
+    }))
+    .await;
+    assert_eq!(
+        rollup().await["open_notes"],
+        2,
+        "a superseding note replaces the one it supersedes"
+    );
+
+    // A decision retires the amendment whether it accepts or rejects it.
+    append(json!({
+        "kind": "decision", "source": "human:reviewer", "text": "No.",
+        "meta": { "rejects": undecided, "pane": "business" },
+    }))
+    .await;
+    assert_eq!(
+        rollup().await["pending_amendments"],
+        0,
+        "a rejected amendment is decided"
+    );
+
+    let accepted = append(json!({
+        "kind": "view", "source": "agent:w3", "text": "Another try.",
+        "meta": { "pane": "technical", "cites": [], "proposed": true },
+    }))
+    .await;
+    assert_eq!(rollup().await["pending_amendments"], 1);
+    append(json!({
+        "kind": "decision", "source": "human:reviewer", "text": "Yes.",
+        "meta": { "accepts": accepted, "pane": "technical" },
+    }))
+    .await;
+    assert_eq!(rollup().await["pending_amendments"], 0);
+
+    // Document machinery pointed at no real pane is invisible on the page, so it
+    // must be invisible here too — otherwise the badge nags about something the
+    // reader can never find.
+    append(json!({
+        "kind": "thread", "source": "agent:w9", "text": "Stray.",
+        "meta": { "pane": "nonsense", "para": 0 },
+    }))
+    .await;
+    append(json!({
+        "kind": "view", "source": "agent:w9", "text": "Stray.",
+        "meta": { "pane": "nonsense", "cites": [], "proposed": true },
+    }))
+    .await;
+    // …and neither is an entry with no `meta` at all: evidence is not a note.
+    append(json!({
+        "kind": "research", "source": "somewhere", "text": "Evidence.",
+    }))
+    .await;
+    let r = rollup().await;
+    assert_eq!(r["open_notes"], 2, "{r}");
+    assert_eq!(r["pending_amendments"], 0, "{r}");
+
+    // The list agrees with the detail route — one derivation, as with every other
+    // rollup field.
+    let (status, body) = app.get(&app.worker, "/v1/initiatives?project=tp").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["items"][0]["rollup"], r);
+    let _ = note_id;
+}
+
 /// Entries carry their provenance, and listing them never drags attachment bytes
 /// along — `has_content` is how a reader learns there are any.
 #[tokio::test]

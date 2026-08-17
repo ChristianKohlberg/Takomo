@@ -41,7 +41,8 @@ without reading any of it:
 "rollup": {
   "entries": 7, "attachments": 2, "chars": 18450,
   "bytes": 412_003, "attachment_bytes": 393_553,
-  "megabytes": 0.39, "last_entry_at": "2026-07-30T14:02:11.980Z"
+  "megabytes": 0.39, "last_entry_at": "2026-07-30T14:02:11.980Z",
+  "open_notes": 3, "pending_amendments": 1
 }
 ```
 
@@ -50,6 +51,24 @@ drifting from the thing it describes. `chars` counts characters of entry text �
 means by "how long is this" — while `bytes` is what is actually stored, text and attachments
 together.
 
+The last two are **attention** rather than volume, and they are the only fields here that say where
+to look next. Everything else answers "how big is this", which cannot distinguish a document that
+wants a decision today from one nobody has touched in a month. `open_notes` counts unanswered notes
+in the document; `pending_amendments` counts proposed wording no `decision` has accepted or rejected.
+
+They exist because the document surface could not be read at scale without them. An open note and an
+offered rewrite were visible only *inside* the document that held them, so a collection of thirty
+gave a reader no way to find the two that needed them — and an agent proposing a rewrite had no way
+to know whether anyone would ever see it.
+
+They apply the same rules `web/src/lib/initiative-doc.ts` does, and deliberately none of the rest of
+it: a note stops counting once it is resolved or superseded, an amendment once a decision names it,
+and document entries pointing at no real pane are skipped because no reader can reach them. What
+makes the document expensive — parsing prose, resolving anchors against it, diffing an amendment
+against the live pane — decides *where* a note lands, never *whether* it is open, so the counts are
+honest without any of that machinery. `initiative_rollup_counts_what_is_waiting_on_a_person` in
+`tests/api.rs` pins each rule with a row that must count beside one that must not.
+
 ## Three surfaces
 
 `/initiatives` is the page: **an explorer, a document, and what you can do with a passage**. A folder
@@ -57,6 +76,14 @@ tree on the left over every document in the project; one document rendered in th
 scrolling surface; a pane on the right that turns a highlight into an action. Title, summary and
 folder are edited in place; status is a dropdown; a file picker attaches a document. It is the only
 SPA in this repo that **writes**.
+
+Each row in the tree carries what that document is waiting on, from the rollup's attention pair: a
+filled count for suggested changes, an outlined one for open notes. Amendments read louder because
+they are a decision someone is blocked on, where a note is a question that can wait, and both stay
+small enough to ignore — a row that shouts is one people learn to stop seeing. A **Waiting** chip
+filters the tree to those documents and carries the total, which is a different axis from status:
+status is what the owner filed this as, waiting is what it wants from the reader now, and a *parked*
+document with an undecided amendment is exactly the pair that makes them different questions.
 
 **Folders are `metadata.path`, and nothing else.** Initiatives stay flat in the store — `metadata`
 was already a free-form JSON object on every one of them, so nesting needed no migration, no folder

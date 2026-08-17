@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { ancestors, pathOf, type TreeFolder, type TreeNode } from '@/lib/initiative-tree'
-import type { Initiative } from '@/lib/initiatives'
+import { waiting, type Initiative } from '@/lib/initiatives'
 import { cn } from '@/lib/utils'
 
 export interface ExplorerLabels {
@@ -9,6 +9,9 @@ export interface ExplorerLabels {
   /** Accessible name for a folder's expand/collapse control. */
   toggle: string
   unfiled: string
+  /** Accessible name for the waiting badges, given a count: `(n) => string`. */
+  waitingNotes: (n: number) => string
+  waitingAmendments: (n: number) => string
 }
 
 export interface ExplorerProps {
@@ -87,10 +90,54 @@ export function Explorer({ root, selectedId, expanded, onToggle, onSelect, label
                 {row.node.initiative.status}
               </span>
             )}
+            <Waiting initiative={row.node.initiative} labels={labels} />
           </button>
         ),
       )}
     </div>
+  )
+}
+
+/**
+ * What this document is waiting on, on its own row.
+ *
+ * The whole point of the badges: before them, an open note or an offered rewrite
+ * was invisible until you opened that document and scrolled to it, so a
+ * collection of thirty gave a reader no way to find the two that needed them.
+ *
+ * Amendments read louder than notes because they are a decision someone is
+ * blocked on, where a note is a question that can wait. Both stay small enough to
+ * be ignorable — a row that shouts is one people learn to stop seeing.
+ */
+function Waiting({ initiative, labels }: { initiative: Initiative; labels: ExplorerLabels }) {
+  const { notes, amendments } = waiting(initiative.rollup)
+  if (notes === 0 && amendments === 0) return null
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center gap-1 font-mono text-[10.5px] leading-none',
+        initiative.status === 'open' && 'ml-auto',
+      )}
+    >
+      {amendments > 0 && (
+        <span
+          title={labels.waitingAmendments(amendments)}
+          aria-label={labels.waitingAmendments(amendments)}
+          className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 font-semibold"
+        >
+          {amendments}
+        </span>
+      )}
+      {notes > 0 && (
+        <span
+          title={labels.waitingNotes(notes)}
+          aria-label={labels.waitingNotes(notes)}
+          className="border-border text-muted-foreground rounded-full border px-1.5 py-0.5"
+        >
+          {notes}
+        </span>
+      )}
+    </span>
   )
 }
 

@@ -1583,8 +1583,15 @@ for i in items:
     last = (r.get("last_entry_at") or "")[:10]
     meta = f"{r.get('entries', 0)} entr{'y' if r.get('entries') == 1 else 'ies'}"
     if last: meta += f", last {last}"
+    # What the document wants from a person, said in words rather than as two
+    # bare numbers: this is the line that decides which one you open next.
+    notes, amend = r.get("open_notes", 0), r.get("pending_amendments", 0)
+    waiting = []
+    if amend: waiting.append(f"{amend} suggested change{'' if amend == 1 else 's'} to decide")
+    if notes: waiting.append(f"{notes} open note{'' if notes == 1 else 's'}")
     print(f"{i['id']}  [{i.get('status','')}]  {trunc(i.get('title',''), 52)}")
     print(f"    {meta}")
+    if waiting: print(f"    waiting: {', '.join(waiting)}")
 if d.get("next_cursor"):
     print(f"\nmore: --cursor {d['next_cursor']}")
 PY
@@ -3224,6 +3231,9 @@ Initiatives (an idea being nurtured — not work: no claim, no lease, no queue):
          marks the words the idea ARRIVED in, quoted above every pane on the page.
   takomo initiative ls [--project P] [--status S] [--label L] [--tag T] [-q TEXT]
          [--limit N] [--cursor C]
+         each row says what has accumulated, and — when there is any — what is
+         WAITING on a person: suggested changes nobody has decided, open notes
+         nobody has answered. That line is the one that says which to open next.
   takomo initiative show ID [--limit N] [--cursor C]   description, then entries
   takomo initiative set ID [--title T] [--summary S] [--status S] [--label L]... [--tag T]...
          edit how it is DESCRIBED; entries are append-only on every surface.

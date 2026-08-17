@@ -5207,8 +5207,16 @@ components:
       type: object
       description: |
         The derived size and shape of an initiative: how much has accumulated on
-        it. Not stored anywhere — recomputed from the entries on every read, so it
-        cannot drift from what it describes.
+        it, and how much of it is waiting on a person. Not stored anywhere —
+        recomputed from the entries on every read, so it cannot drift from what it
+        describes.
+
+        `open_notes` and `pending_amendments` are the attention pair, and the only
+        fields here that tell a caller where to look next rather than how big
+        something is. They apply the same rules the document view does: a note
+        stops counting once it is resolved or superseded, an amendment once a
+        decision has accepted or rejected it, and document entries naming no real
+        pane are skipped because no reader can reach them.
       properties:
         entries: { type: integer, description: 'number of entries' }
         attachments: { type: integer, description: 'entries carrying attachment bytes' }
@@ -5217,6 +5225,8 @@ components:
         attachment_bytes: { type: integer, description: 'of which attachment content, so a wall of text is distinguishable from a pile of PDFs without fetching either' }
         megabytes: { type: number, description: 'bytes as MiB, rounded to two decimals — precomputed because every surface wants it and each would round differently' }
         last_entry_at: { type: [string, "null"], format: date-time }
+        open_notes: { type: integer, description: 'unresolved notes anchored in the document — a thread nothing supersedes and nobody resolved. Someone''s unanswered question' }
+        pending_amendments: { type: integer, description: 'proposed wording no decision has accepted or rejected: an agent is offering a rewrite that is not live until a person says so' }
 
     Initiative:
       type: object

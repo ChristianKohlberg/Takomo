@@ -538,6 +538,12 @@ pub struct InitiativeRollup {
     pub attachment_bytes: i64,
     /// When the most recent entry landed, or None on an initiative with none.
     pub last_entry_at: Option<i64>,
+    /// Unresolved notes anchored in the document — a `thread` entry that nothing
+    /// supersedes and nobody marked resolved. Someone's unanswered question.
+    pub open_notes: i64,
+    /// Proposed `view` entries no `decision` has accepted or rejected: wording an
+    /// agent is offering that is not live until a person says so.
+    pub pending_amendments: i64,
 }
 
 impl InitiativeRollup {
@@ -554,6 +560,11 @@ impl InitiativeRollup {
             // precision than a size in megabytes deserves.
             "megabytes": (self.bytes as f64 / (1024.0 * 1024.0) * 100.0).round() / 100.0,
             "last_entry_at": self.last_entry_at.map(iso),
+            // The two attention counts. Named for what is waiting rather than for
+            // the entry kinds that produce them, because a caller deciding where
+            // to look next does not care that a note is a `thread` row.
+            "open_notes": self.open_notes,
+            "pending_amendments": self.pending_amendments,
         })
     }
 }
