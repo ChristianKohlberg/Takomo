@@ -2262,12 +2262,17 @@ fn ticket_request_field_lists_match_their_structs_and_the_spec() {
         );
     }
 
-    // The MCP door is narrower on purpose (`takomo_new` takes no metadata,
-    // blocked_by or state), so this is a subset check, not equality: what it
-    // catches is an argument MCP accepts that the REST create cannot express.
+    // The MCP door is a subset check, not equality: what it catches is an
+    // argument MCP accepts that the REST create body cannot express. `state` is
+    // intentionally REST-only; `idempotency_key` maps to the `Idempotency-Key`
+    // header, not a JSON body field.
     let new_args = serde_json::to_value(rmcp::schemars::schema_for!(takomo::mcp::NewArgs))
         .expect("serialize NewArgs schema");
+    let mcp_only = ["idempotency_key"];
     for arg in object_keys(&new_args["properties"], "takomo_new's MCP input schema") {
+        if mcp_only.contains(&arg.as_str()) {
+            continue;
+        }
         assert!(
             sorted_strings(CREATE_FIELDS).contains(&arg),
             "src/mcp.rs NewArgs takes `{arg}`, which CREATE_FIELDS in src/api/tickets.rs does \
@@ -7347,6 +7352,29 @@ async fn question_multi_select_choose_round_trip_and_answer() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad3}");
     assert_eq!(bad3["code"], "validation.multi");
+}
+
+#[tokio::test]
+async fn question_multi_rejects_a_string_instead_of_a_boolean() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("multi type").await;
+    let fence = app.to_implementing(&id).await;
+    let (s, body) = app
+        .post(
+            &app.worker,
+            "/v1/questions",
+            json!({
+                "ticket": id,
+                "kind": "choose",
+                "title": "Regions?",
+                "options": ["A", "B"],
+                "multi": "true",
+                "fence": fence,
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "validation.field_type");
 }
 
 #[tokio::test]

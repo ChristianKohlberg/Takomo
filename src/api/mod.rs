@@ -356,6 +356,17 @@ pub fn get_i64(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Opt
     }
 }
 
+pub fn get_bool(obj: &serde_json::Map<String, Value>, key: &str) -> ApiResult<Option<bool>> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(ApiError::bad_request(
+            "validation.field_type",
+            format!("Field '{key}' must be a boolean."),
+        )),
+    }
+}
+
 pub fn get_string_array(
     obj: &serde_json::Map<String, Value>,
     key: &str,

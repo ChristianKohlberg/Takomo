@@ -2349,11 +2349,17 @@ paths:
         `ttl_seconds` (1-3600, default 900) and `takomo_heartbeat` renews a lease
         the caller holds — the MCP equivalents of the `ttl_seconds` body field on
         `POST /v1/tickets/{id}/claim`, `POST /v1/ready/claim`, and
-        `POST /v1/tickets/{id}/heartbeat`. Both transports resolve the fence the
-        same way (holding the active claim means the ticket's current
-        `fence_seq`), so an MCP caller does not have to track the token to renew
-        its own lease; an explicit `fence` still overrides. A lapsed lease cannot
-        be revived on either transport.
+        `POST /v1/tickets/{id}/heartbeat`. `takomo_next` long-polls with the same
+        `wait_seconds` contract as `POST /v1/ready/claim` (0..=120). Both
+        transports resolve the fence the same way (holding the active claim means
+        the ticket's current `fence_seq`), so an MCP caller does not have to track
+        the token to renew its own lease; an explicit `fence` still overrides. A
+        lapsed lease cannot be revived on either transport.
+
+        `takomo_new` accepts an optional `idempotency_key` (same semantics as the
+        Node wrapper and the REST `Idempotency-Key` header), plus `metadata` and
+        `blocked_by` on create. `takomo_ask` accepts `recommended` as any JSON
+        value, matching `POST /v1/questions`.
       requestBody:
         required: true
         description: A single JSON-RPC 2.0 request or notification (an MCP message).

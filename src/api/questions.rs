@@ -5,8 +5,8 @@
 //! ticket; `GET /questions` is the inbox read-model. See `store/questions.rs`.
 
 use super::{
-    all, body_object, first, get_i64, get_str, get_string_array, parse_i64_param, query_pairs,
-    require_str, ApiJson,
+    all, body_object, first, get_bool, get_i64, get_str, get_string_array, parse_i64_param,
+    query_pairs, require_str, ApiJson,
 };
 use crate::auth::{AnswerCtx, AuthCtx};
 use crate::error::{ApiError, ApiResult};
@@ -312,7 +312,7 @@ pub async fn create(
         body: get_str(obj, "body")?.unwrap_or_default(),
         options,
         option_notes,
-        multi: matches!(obj.get("multi"), Some(Value::Bool(true))),
+        multi: get_bool(obj, "multi")?.unwrap_or(false),
         recommended_multi: get_string_array(obj, "recommended_multi")?.unwrap_or_default(),
         recommended: obj
             .get("recommended")
