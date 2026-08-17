@@ -136,6 +136,8 @@ export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'
+export { PersonDialog } from './settings/PersonDialog'
+export type { PersonDialogProps, PersonDialogLabels, PersonSaved } from './settings/PersonDialog'
 
 // ---- shared ----
 export { Typeahead } from './Typeahead'
