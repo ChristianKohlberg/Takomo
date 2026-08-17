@@ -16115,3 +16115,78 @@ async fn membership_removal_leaves_an_open_question_addressed_to_them() {
     assert_eq!(s, StatusCode::NOT_FOUND, "{again}");
     assert_eq!(again["code"], "notfound.membership");
 }
+
+/// A `person:` tag and the user of the same handle are one person, and the
+/// directory is the authority on their name.
+///
+/// The two registries would otherwise drift in the way that matters to a reader:
+/// tagging a ticket lazy-creates a stub whose label is the handle again, so the
+/// board would say `ada` while the directory knew "Ada Lovelace" — and nothing
+/// would connect them.
+#[tokio::test]
+async fn a_person_tag_resolves_to_the_directory_person() {
+    let app = TestApp::spawn().await;
+    app.add_user("ada", Some("tp"));
+
+    // Tagging a ticket registers the stub, exactly as before.
+    let id = app.create_ticket("Tagged with a person").await;
+    let (s, tagged) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/tickets/{id}"),
+            json!({ "tags": ["person:ada", "component:billing", "person:nobody"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{tagged}");
+
+    let (s, registry) = app.get(&app.worker, "/v1/projects/tp/tags").await;
+    assert_eq!(s, StatusCode::OK, "{registry}");
+    let by_ref: std::collections::HashMap<&str, &Value> = registry["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["ref"].as_str().unwrap(), t))
+        .collect();
+
+    // The person we know: named, and pointing at the same handle.
+    let ada = by_ref["person:ada"];
+    assert_eq!(ada["person"]["handle"], "ada", "{ada}");
+    assert_eq!(ada["person"]["label"], "ada the tester", "{ada}");
+    assert_eq!(ada["person"]["disabled"], json!(false), "{ada}");
+    // The stub label is untouched — the directory is what resolves, not a copy.
+    assert_eq!(ada["label"], "ada", "{ada}");
+
+    // A person handle nobody was added under stays a bare reference rather than
+    // inventing somebody.
+    assert!(by_ref["person:nobody"]["person"].is_null(), "{registry}");
+    // And a tag of another kind is never a person, whatever its handle.
+    assert!(
+        by_ref["component:billing"]["person"].is_null(),
+        "{registry}"
+    );
+
+    // Disabling shows up here too: the tag still resolves, and says they can no
+    // longer be handed work.
+    app.post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+    let (_, one) = app
+        .get(&app.worker, "/v1/projects/tp/tags/person/ada")
+        .await;
+    assert_eq!(one["person"]["disabled"], json!(true), "{one}");
+
+    // Searching the registry finds them by the name the directory holds, which the
+    // tag row does not carry.
+    let (_, found) = app
+        .get(
+            &app.worker,
+            "/v1/projects/tp/tags?q=tester&include_disabled=1",
+        )
+        .await;
+    let refs: Vec<&str> = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["ref"].as_str().unwrap())
+        .collect();
+    assert_eq!(refs, vec!["person:ada"], "{found}");
+}

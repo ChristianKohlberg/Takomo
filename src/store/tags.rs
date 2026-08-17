@@ -6,7 +6,7 @@
 
 use super::helpers::{emit_event, ensure_project_writable};
 use super::merge_patch;
-use super::model::{Tag, MAX_METADATA};
+use super::model::{Tag, TagPerson, MAX_METADATA};
 use super::Store;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::{now_ms, tag_id};
@@ -214,10 +214,41 @@ fn row_to_tag(r: &rusqlite::Row) -> rusqlite::Result<Tag> {
         created_by: r.get("created_by")?,
         created_at: r.get("created_at")?,
         updated_at: r.get("updated_at")?,
+        // Filled by the join below, which only the registry reads perform.
+        person: r
+            .get::<_, Option<String>>("person_handle")?
+            .map(|handle| TagPerson {
+                handle,
+                name: r.get::<_, Option<String>>("person_name").unwrap_or(None),
+                disabled: r
+                    .get::<_, Option<i64>>("person_disabled_at")
+                    .unwrap_or(None)
+                    .is_some(),
+            }),
     })
 }
 
-const TAG_COLS: &str = "id, project, kind, handle, label, meta, created_by, created_at, updated_at";
+/// The registry reads, with a `person:` handle resolved against the people
+/// directory.
+///
+/// The join is what keeps the two vocabularies one: a `person:ada` tag and the
+/// user `ada` are the same person by construction (they share the handle rule), so
+/// a reader of the registry should see the name the directory holds rather than
+/// the stub label lazy-creation wrote — which is just the handle again.
+///
+/// Every column is aliased, because `users` and `tags` collide on `id`, `name`,
+/// `meta`, `created_by`, `created_at` and `updated_at`, and [`row_to_tag`] reads by
+/// name: an unaliased join would silently hand it the user's timestamps. This is
+/// the hazard `TOKEN_COLS_JOINED` documents, with six columns instead of one.
+const TAG_COLS_JOINED: &str = "t.id AS id, t.project AS project, t.kind AS kind, \
+     t.handle AS handle, t.label AS label, t.meta AS meta, t.created_by AS created_by, \
+     t.created_at AS created_at, t.updated_at AS updated_at, \
+     u.handle AS person_handle, u.name AS person_name, u.disabled_at AS person_disabled_at";
+
+/// The one join: a person tag's handle against the directory. Kept beside
+/// [`TAG_COLS_JOINED`] because the two are only ever correct together.
+const TAG_PERSON_JOIN: &str =
+    " FROM tags t LEFT JOIN users u ON t.kind = 'person' AND u.handle = t.handle";
 
 /// Ensure a registry row exists for every `kind:handle` in `refs` under
 /// `project`, creating a stub (label defaults to the handle) for any that are
@@ -322,6 +353,17 @@ impl Store {
                 json!({ "kind": req.kind, "handle": req.handle }),
                 now,
             )?;
+            // Resolved here rather than re-read, so the created row answers "is
+            // this handle a real person" exactly as a later GET will.
+            let person = if req.kind == "person" {
+                super::users::lookup_user(tx, &req.handle)?.map(|u| TagPerson {
+                    handle: u.handle.clone(),
+                    name: Some(u.name.clone()),
+                    disabled: !u.active(),
+                })
+            } else {
+                None
+            };
             Ok(Tag {
                 id,
                 project: project.to_string(),
@@ -332,26 +374,33 @@ impl Store {
                 created_by: actor.to_string(),
                 created_at: now,
                 updated_at: now,
+                person,
             })
         })
     }
 
     pub fn list_tags(&self, filter: &TagListFilter) -> ApiResult<Vec<Tag>> {
         self.with_conn(|conn| {
-            let mut sql = format!("SELECT {TAG_COLS} FROM tags WHERE project = ?1");
+            let mut sql =
+                format!("SELECT {TAG_COLS_JOINED}{TAG_PERSON_JOIN} WHERE t.project = ?1");
             let mut params_vec: Vec<rusqlite::types::Value> =
                 vec![rusqlite::types::Value::Text(filter.project.clone())];
             if let Some(kind) = &filter.kind {
-                sql.push_str(" AND kind = ?");
+                sql.push_str(" AND t.kind = ?");
                 params_vec.push(rusqlite::types::Value::Text(kind.clone()));
             }
             if let Some(q) = &filter.q {
-                sql.push_str(" AND (LOWER(handle) LIKE ? OR LOWER(label) LIKE ?)");
+                // The directory name is searched as well as the stored label: for a
+                // person the name a reader knows lives there, not on the tag row.
+                sql.push_str(
+                    " AND (LOWER(t.handle) LIKE ? OR LOWER(t.label) LIKE ? OR LOWER(COALESCE(u.name, '')) LIKE ?)",
+                );
                 let needle = format!("%{}%", q.to_lowercase());
-                params_vec.push(rusqlite::types::Value::Text(needle.clone()));
-                params_vec.push(rusqlite::types::Value::Text(needle));
+                for _ in 0..3 {
+                    params_vec.push(rusqlite::types::Value::Text(needle.clone()));
+                }
             }
-            sql.push_str(" ORDER BY kind, handle");
+            sql.push_str(" ORDER BY t.kind, t.handle");
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), row_to_tag)?;
             let mut out = Vec::new();
@@ -365,7 +414,8 @@ impl Store {
     pub fn get_tag(&self, project: &str, kind: &str, handle: &str) -> ApiResult<Option<Tag>> {
         self.with_conn(|conn| {
             let sql = format!(
-                "SELECT {TAG_COLS} FROM tags WHERE project = ?1 AND kind = ?2 AND handle = ?3"
+                "SELECT {TAG_COLS_JOINED}{TAG_PERSON_JOIN} \
+                 WHERE t.project = ?1 AND t.kind = ?2 AND t.handle = ?3"
             );
             let tag = conn
                 .query_row(&sql, params![project, kind, handle], row_to_tag)
@@ -389,7 +439,8 @@ impl Store {
         self.with_tx(|tx| {
             ensure_project_writable(tx, project)?;
             let sql = format!(
-                "SELECT {TAG_COLS} FROM tags WHERE project = ?1 AND kind = ?2 AND handle = ?3"
+                "SELECT {TAG_COLS_JOINED}{TAG_PERSON_JOIN} \
+                 WHERE t.project = ?1 AND t.kind = ?2 AND t.handle = ?3"
             );
             let mut tag = tx
                 .query_row(&sql, params![project, kind, handle], row_to_tag)

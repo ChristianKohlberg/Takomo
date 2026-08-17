@@ -1083,9 +1083,14 @@ d = json.load(open(sys.argv[1]))
 items = d.get("items", [])
 if not items:
     print("(no tags)"); sys.exit()
-print(f"{'REF':<28} LABEL")
+print(f"{'REF':<28} {'LABEL':<26} PERSON")
 for t in items:
-    print(f"{t.get('ref',''):<28} {t.get('label','')}")
+    # A `person:` handle that is in the directory shows who that is — the tag row's
+    # own label is a stub lazy-creation wrote, and the directory is the authority.
+    who = t.get('person') or {}
+    mark = who.get('label','')
+    if who and who.get('disabled'): mark += '  (disabled)'
+    print(f"{t.get('ref',''):<28} {t.get('label',''):<26} {mark}")
 PY
 }
 
@@ -1183,22 +1188,39 @@ PY
 
 # person: ergonomic alias over the `person` tag kind. `takomo person add ada`
 # is just `takomo tag new --kind person --handle ada`; ls/rm mirror it.
-# `person` is sugar over the project TAG registry — `person:<handle>` reference
-# metadata you attach to a ticket. It is NOT the people directory: that is
-# `takomo user`, where somebody can be handed a decision and a name means a person
-# the server can vouch for. The two share one handle rule on purpose, so
-# `person:ada` and user `ada` are the same spelling of the same person.
+# `person` is retired, and says so.
+#
+# It was sugar over the project TAG registry — `person:<handle>` reference
+# metadata on one project's tickets — which is a different thing from the people
+# directory a decision can be addressed to. Two people-shaped commands, one of
+# which quietly did not do what its name suggested: somebody typing
+# `takomo person add ada` reasonably believed they had added Ada, and had instead
+# written a registry row almost nothing reads.
+#
+# So there is one vocabulary now: `takomo user` is the directory, `takomo tag` is
+# the reference. This shim stays because muscle memory deserves a signpost rather
+# than "unknown command" — and because the two destinations are not
+# interchangeable, so guessing for the caller would be worse than asking.
 cmd_person() {
   local sub=${1:-}
-  [ -n "$sub" ] || die "person: usage: takomo person add HANDLE [--label ...] [--meta k=v]  |  person ls  |  person rm HANDLE
-person manages 'person:<handle>' TAGS on this project (reference metadata). To add
-somebody a question can be addressed to, use: takomo user new HANDLE"
-  shift
+  local hint="takomo person is retired: it managed 'person:<handle>' TAGS, not people.
+
+  Add somebody a decision can be addressed to:  takomo user new HANDLE --name \"Full Name\"
+  List those people:                            takomo user ls
+  Tag a ticket with a person (reference only):   takomo tag add TICKET person:HANDLE
+  List the tag registry:                        takomo tag ls --kind person
+
+A user handle and a person: tag handle are the same spelling of the same person,
+so the registry listing shows who is in the directory."
   case "$sub" in
-    add)              cmd_person_add "$@" ;;
-    ls|list)          cmd_tag_ls --kind person "$@" ;;
-    rm|remove|delete) cmd_person_rm "$@" ;;
-    *) die "person: unknown subcommand '$sub' (add|ls|rm). For the directory of people a question can be addressed to, see: takomo user" ;;
+    ls|list)
+      # The one case with an unambiguous replacement worth running for them: the
+      # directory is what somebody listing people almost always wanted.
+      warn "takomo person ls is retired; showing the people directory (takomo user ls). For the tag registry: takomo tag ls --kind person"
+      shift
+      cmd_user_ls "$@"
+      ;;
+    *) die "$hint" ;;
   esac
 }
 
@@ -1386,31 +1408,7 @@ cmd_user_unmember() {
   echo "Questions already addressed to them stay that way; nothing new can be."
 }
 
-cmd_person_add() {
-  local handle=""
-  local -a rest=()
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -*) rest+=("$1" "${2:-}"); shift 2 ;;
-      *) if [ -z "$handle" ]; then handle=$1; shift; else die "person add: unexpected argument '$1'"; fi ;;
-    esac
-  done
-  [ -n "$handle" ] || die "person add: HANDLE is required (e.g. ada); put the display name in --label"
-  cmd_tag_new --kind person --handle "$handle" "${rest[@]+"${rest[@]}"}"
-}
 
-cmd_person_rm() {
-  local handle=""
-  local -a rest=()
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -*) rest+=("$1" "${2:-}"); shift 2 ;;
-      *) handle=$1; shift ;;
-    esac
-  done
-  [ -n "$handle" ] || die "person rm: HANDLE is required (e.g. ada)"
-  cmd_tag_delete "person:$handle" "${rest[@]+"${rest[@]}"}"
-}
 
 cmd_dep() {
   local id=${1:-}; [ -n "$id" ] || die "dep: ID is required"; shift
@@ -3444,10 +3442,11 @@ Tagging (name entities per project, then tag tickets — reference metadata only
   takomo tag new --kind K --handle H [--label L] [--meta k=v ...]   register/enrich
   takomo tag show REF                  show one entity (REF = kind:handle)
   takomo tag delete REF                remove a registry entry (ticket refs kept)
-  takomo person add HANDLE [--label L] [--meta k=v]   alias for the 'person' kind
-  takomo person ls                     list people;  takomo person rm HANDLE
          Filter tickets by tag:  takomo ls --tag person:ada  |  --tag-kind person
          Attach at creation:     takomo new "…" --tag person:ada
+         A tag REFERENCES a person; `takomo user` is the directory that says who
+         they are and lets a decision be addressed to them. Same handle, one
+         person: `tag ls --kind person` shows which handles are in the directory.
 
 Shareable read-only web views (write scope):
   takomo share --project P [--ttl 24h]   mint a read-only, expiring link to a whole
