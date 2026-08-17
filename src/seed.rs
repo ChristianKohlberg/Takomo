@@ -15,6 +15,7 @@ use crate::schedule::Cadence;
 use crate::store::{
     AskRequest, CaseInput, CheckCreate, EnvironmentCreate, QuestionFilter, ReleasePush,
     ScheduleCreate, ScheduleTemplate, Store, TicketCreate, TicketListFilter, TimeoutAction,
+    VerdictInput,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -804,6 +805,25 @@ fn initiative(store: &Store) -> ApiResult<String> {
 /// It doubles as a traversability check on Checklist itself, the way the ticket
 /// seed is one on the workflow: if filing, verdicts and release staling stop
 /// composing, seeding notices before a person does.
+/// An agent verdict on one case, with no environment — the seeded checks
+/// declare none, so their verdicts are the unscoped reading.
+fn verdict_by<'a>(
+    actor: &'a str,
+    case: &'a str,
+    verdict: &'a str,
+    note: Option<&'a str>,
+) -> VerdictInput<'a> {
+    VerdictInput {
+        case,
+        actor_kind: "agent",
+        actor,
+        verdict,
+        note,
+        release: None,
+        environment: None,
+    }
+}
+
 fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
     let split = store.create_check(
         &CheckCreate {
@@ -817,6 +837,10 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
             layer: Some("ui".to_string()),
             severity: Some("blocking".to_string()),
             globs: vec!["src/billing/split/**".to_string()],
+            // Declared in two places on purpose: this is the check that shows
+            // what per-environment verification is for — the same flow verified
+            // on staging and never run on production is the finding.
+            environments: vec!["staging".to_string(), "production".to_string()],
             cost_agent_minutes: Some(6),
             cost_human_minutes: Some(20),
             ..Default::default()
@@ -875,19 +899,28 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
     let agent = "agent:runner-1";
     let split_cases = store.list_cases(&split.id, false, None, None)?.0;
     for c in split_cases.iter().filter(|c| c.key != "entities=12") {
-        store.record_verdict(&c.id, "agent", agent, "pass", None, None)?;
+        // Staging only. Production is deliberately left untouched, so the demo
+        // shows the case the whole feature exists for: verified in one place and
+        // never run in the other, which reads as NOT verified.
+        store.record_verdict(&VerdictInput {
+            environment: Some("staging"),
+            ..verdict_by(agent, &c.id, "pass", None)
+        })?;
     }
     // One also carries a person's approval, so `approved` shows up as a state
     // distinct from agent-verified.
     if let Some(walked) = split_cases.iter().find(|c| c.key == "entities=2") {
-        store.record_verdict(
-            &walked.id,
-            "human",
-            SEEDER,
-            "pass",
-            Some("Walked it with Ada on the shared account."),
-            None,
-        )?;
+        store.record_verdict(&VerdictInput {
+            actor_kind: "human",
+            actor: SEEDER,
+            environment: Some("staging"),
+            ..verdict_by(
+                SEEDER,
+                &walked.id,
+                "pass",
+                Some("Walked it with Ada on the shared account."),
+            )
+        })?;
     }
 
     let rounding_cases = store.list_cases(&rounding.id, false, None, None)?.0;
@@ -897,7 +930,7 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
         } else {
             ("pass", None)
         };
-        store.record_verdict(&c.id, "agent", agent, verdict, note, None)?;
+        store.record_verdict(&verdict_by(agent, &c.id, verdict, note))?;
     }
 
     // A release touching the split check's claimed paths stales the cases that
