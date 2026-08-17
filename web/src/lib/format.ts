@@ -41,6 +41,18 @@ export function fmtBytes(n: number | null | undefined): string {
   return (v / (1024 * 1024)).toFixed(v < 10 * 1024 * 1024 ? 2 : 1) + ' MB'
 }
 
+/**
+ * Unicode scalar count — the same measure Rust's `str.chars().count()` uses.
+ *
+ * JavaScript's `.length` is UTF-16 code units, so a style guide near the limit
+ * can look legal in the counter while the server refuses it (or vice versa).
+ */
+export function charCount(s: string): number {
+  let n = 0
+  for (const _ of s) n++
+  return n
+}
+
 /** "a, b , ,c" -> ["a","b","c"] — the comma-separated label/tag inputs. */
 export function splitList(s: string | null | undefined): string[] {
   return String(s || '')

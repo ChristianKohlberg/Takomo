@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { epicOf, inSubtree, indexById, type TicketNode } from './tickets'
+import { epicOf, inSubtree, indexById, matchesTagRefs, type TicketNode } from './tickets'
 
 const tree = (nodes: TicketNode[]) => indexById(nodes)
 
@@ -45,6 +45,22 @@ describe('epicOf', () => {
     // Deeper than MAX_DEPTH from the leaf, so the epic is out of reach — the
     // walk must return, not climb forever.
     expect(epicOf(idx['t99'], idx)).toBe('')
+  })
+})
+
+describe('matchesTagRefs', () => {
+  it('passes when no kind is chosen', () => {
+    expect(matchesTagRefs(['person:ada'], '', '')).toBe(true)
+  })
+
+  it('matches an exact kind:handle ref', () => {
+    expect(matchesTagRefs(['person:ada', 'expert:billing'], 'person', 'person:ada')).toBe(true)
+    expect(matchesTagRefs(['person:ada'], 'person', 'person:bob')).toBe(false)
+  })
+
+  it('matches any ref of a kind when no handle is chosen', () => {
+    expect(matchesTagRefs(['person:ada'], 'person', '')).toBe(true)
+    expect(matchesTagRefs(['expert:billing'], 'person', '')).toBe(false)
   })
 })
 

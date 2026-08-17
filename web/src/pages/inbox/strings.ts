@@ -4,6 +4,10 @@
 // lifted mechanically from the page and checked for key-set and order equality
 // before being written here. EN is the reference shape: a DE table that drifts is
 // now a compile error rather than an `undefined` rendered to German readers.
+//
+// Several keys share a name with board/strings.ts but carry different text
+// (takomo-2hk4). Short-form advisory uses `advTag`; the `advisory` key is the
+// long banner in the reading pane. See board-inbox-strings.test.ts.
 import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({

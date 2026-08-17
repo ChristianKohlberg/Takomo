@@ -6,6 +6,7 @@
 // validates them together and sending half of an invalid pair would 422 naming a
 // number the admin never touched.
 import { api } from './api'
+import { charCount } from './format'
 
 export interface ProjectSettings {
   /** Human-facing language for ask-a-human questions. */
@@ -92,6 +93,6 @@ export function saveBlockReason(
   words: { readOnly: string; over: string },
 ): string {
   if (readOnly) return words.readOnly
-  if (s.style.trim().length > STYLE_MAX) return words.over
+  if (charCount(s.style.trim()) > STYLE_MAX) return words.over
   return ''
 }

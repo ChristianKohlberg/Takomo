@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { fmtAge, fmtBytes, fmtDuration, splitList, localInputToRfc3339 } from './format'
+import { fmtAge, fmtBytes, fmtDuration, splitList, localInputToRfc3339, charCount } from './format'
 
 describe('fmtAge', () => {
   const now = Date.parse('2026-08-08T12:00:00Z')
@@ -37,6 +37,16 @@ describe('fmtBytes', () => {
     expect(fmtBytes(20480)).toBe('20 KB')
     expect(fmtBytes(2 * 1024 * 1024)).toBe('2.00 MB')
     expect(fmtBytes(20 * 1024 * 1024)).toBe('20.0 MB')
+  })
+})
+
+describe('charCount', () => {
+  it('counts Unicode scalar values like Rust str.chars().count()', () => {
+    // UTF-16 code units vs characters: one emoji is one char, two code units.
+    const emoji = '😀'
+    expect(emoji.length).toBe(2)
+    expect(charCount(emoji)).toBe(1)
+    expect(charCount('ab')).toBe(2)
   })
 })
 

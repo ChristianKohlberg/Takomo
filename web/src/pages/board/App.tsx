@@ -28,7 +28,7 @@ import { SharePage } from './SharePage'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { modeFor } from '@/lib/board-mode'
 import { countWaiting, listInitiatives, listProjects, whoami, type Project } from '@/lib/initiatives'
-import { epicOf, inSubtree, indexById } from '@/lib/tickets'
+import { epicOf, inSubtree, indexById, matchesTagRefs } from '@/lib/tickets'
 import { fetchRoadmap, laneTitles, type Roadmap } from '@/lib/roadmap'
 import { listUsers } from '@/lib/users'
 import { cn } from '@/lib/utils'
@@ -397,7 +397,7 @@ function Board({
     // that happened, so they are excluded, not deleted.
     let out = showArchived ? tickets : tickets.filter((x) => !x.archived_at)
     if (ticketFilter) out = out.filter((x) => inSubtree(x, ticketFilter, index))
-    if (tagFilter) out = out.filter((x) => (x.tags ?? []).includes(tagFilter))
+    if (tagKind) out = out.filter((x) => matchesTagRefs(x.tags, tagKind, tagFilter))
     if (epicFilter) out = out.filter((x) => epicOf(x, index) === epicFilter)
     if (labelFilter) out = out.filter((x) => (x.labels ?? []).includes(labelFilter))
     // "mine": claimed by me, or carrying a tag my expertise routes on.
@@ -409,7 +409,7 @@ function Board({
       )
     }
     return out
-  }, [tickets, ticketFilter, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, me, index])
+  }, [tickets, ticketFilter, tagKind, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, me, index])
 
   const states = useMemo(() => workflow?.states?.map((s) => s.id) ?? [], [workflow])
   // The phone's column, resolved: an explicit pick if the reader made one and it

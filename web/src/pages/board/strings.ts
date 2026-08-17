@@ -3,6 +3,10 @@
 // 127 keys — lifted mechanically and checked for key-set and order equality
 // before being written here. EN is the reference shape, so a DE table that
 // drifts is a compile error rather than an `undefined` shown to German readers.
+//
+// Several keys share a name with inbox/strings.ts but carry different text
+// (takomo-2hk4) — advisory, allClear, gateOpen, groupEpic, noneForTicket. The
+// tables stay per-page; see board-inbox-strings.test.ts for the explicit list.
 import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({

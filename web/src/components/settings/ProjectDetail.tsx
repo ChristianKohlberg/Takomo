@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { charCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   STYLE_MAX,
@@ -108,7 +109,7 @@ export function ProjectDetail({
     readOnly: labels.readOnlyMsg,
     over: labels.over,
   })
-  const used = s.style.trim().length
+  const used = charCount(s.style.trim())
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
