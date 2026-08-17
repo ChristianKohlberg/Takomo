@@ -607,47 +607,60 @@ impl Store {
         ttl_seconds: Option<i64>,
     ) -> ApiResult<(Ticket, Lease)> {
         let now = now_ms();
-        self.with_tx(|tx| {
-            let t = get_ticket_required(tx, id)?;
-            ensure_ticket_writable(tx, &t)?;
-            // Resolved inside the transaction, because the bounds are the
-            // *project's* now and only the ticket names its project. An epic is
-            // the one shape with no default TTL: claimed without one, it is
-            // held until released (None all the way to the row); an explicit
-            // TTL is clamped exactly like any other claim's.
-            let ttl: Option<i64> = if t.ty == "epic" {
-                ttl_seconds
-                    .map(|s| clamp_ttl_for(tx, &t.project, Some(s)))
-                    .transpose()?
-            } else {
-                Some(clamp_ttl_for(tx, &t.project, ttl_seconds)?)
-            };
+        self.with_tx(|tx| claim_ticket_tx(tx, id, actor, ttl_seconds, now))
+    }
+}
 
-            if let Some((holder, expires)) = t.active_claim(now) {
-                if holder == actor {
-                    // Idempotent renewal: keep the fence, recompute the expiry
-                    // the way a fresh claim would — which for an epic claimed
-                    // without a TTL means staying (or becoming) indefinite.
-                    let new_expires = ttl.map(|s| now + s * 1000);
-                    tx.execute(
-                        "UPDATE tickets SET claim_expires_at = ?2 WHERE id = ?1",
-                        params![id, new_expires],
-                    )?;
-                    // Lease renewal is silent bookkeeping: emitting a heartbeat
-                    // event per renewal floods the append-only log at fleet
-                    // scale (ts-8zks). claimed/released/lease_expired still tell
-                    // a supervisor everything it needs about lease ownership.
-                    let lease = Lease {
-                        ticket: id.to_string(),
-                        holder: actor.to_string(),
-                        fence: t.fence_seq,
-                        expires_at: new_expires,
-                        resumed: false,
-                    };
-                    let fresh = get_ticket_required(tx, id)?;
-                    return Ok((fresh, lease));
-                }
-                return Err(ApiError::conflict(
+/// Claim (or idempotently renew) inside an existing write transaction. Shared
+/// with [`Store::start_ticket`] so a claim that succeeds but a transition that
+/// follows cannot leave a stranded lease.
+pub(super) fn claim_ticket_tx(
+    tx: &Connection,
+    id: &str,
+    actor: &str,
+    ttl_seconds: Option<i64>,
+    now: i64,
+) -> ApiResult<(Ticket, Lease)> {
+    let t = get_ticket_required(tx, id)?;
+    ensure_ticket_writable(tx, &t)?;
+    // Resolved inside the transaction, because the bounds are the
+    // *project's* now and only the ticket names its project. An epic is
+    // the one shape with no default TTL: claimed without one, it is
+    // held until released (None all the way to the row); an explicit
+    // TTL is clamped exactly like any other claim's.
+    let ttl: Option<i64> = if t.ty == "epic" {
+        ttl_seconds
+            .map(|s| clamp_ttl_for(tx, &t.project, Some(s)))
+            .transpose()?
+    } else {
+        Some(clamp_ttl_for(tx, &t.project, ttl_seconds)?)
+    };
+
+    if let Some((holder, expires)) = t.active_claim(now) {
+        if holder == actor {
+            // Idempotent renewal: keep the fence, recompute the expiry
+            // the way a fresh claim would — which for an epic claimed
+            // without a TTL means staying (or becoming) indefinite.
+            let new_expires = ttl.map(|s| now + s * 1000);
+            tx.execute(
+                "UPDATE tickets SET claim_expires_at = ?2 WHERE id = ?1",
+                params![id, new_expires],
+            )?;
+            // Lease renewal is silent bookkeeping: emitting a heartbeat
+            // event per renewal floods the append-only log at fleet
+            // scale (ts-8zks). claimed/released/lease_expired still tell
+            // a supervisor everything it needs about lease ownership.
+            let lease = Lease {
+                ticket: id.to_string(),
+                holder: actor.to_string(),
+                fence: t.fence_seq,
+                expires_at: new_expires,
+                resumed: false,
+            };
+            let fresh = get_ticket_required(tx, id)?;
+            return Ok((fresh, lease));
+        }
+        return Err(ApiError::conflict(
                     "claim.held",
                     format!(
                         "Ticket '{id}' is already claimed by '{holder}' {}. Pick different work (POST /v1/ready/claim), or read the claim's age and what has moved under it with GET /v1/tickets/{id}/claim.",
@@ -655,20 +668,20 @@ impl Store {
                     ),
                 )
                 .details(json!({ "holder": holder, "expires_at": expires.map(iso) })));
-            }
+    }
 
-            // The epic gate: an epic with an active claim reserves its whole
-            // subtree for the holder, so anyone else claiming beneath it is
-            // refused — that is what the epic claim *is*. The holder passes
-            // through and works children with ordinary leased claims.
-            if let Some(hold) = foreign_epic_hold_above(tx, id, actor, now)? {
-                let EpicHold {
-                    epic,
-                    holder,
-                    since,
-                    expires_at,
-                } = hold;
-                return Err(ApiError::conflict(
+    // The epic gate: an epic with an active claim reserves its whole
+    // subtree for the holder, so anyone else claiming beneath it is
+    // refused — that is what the epic claim *is*. The holder passes
+    // through and works children with ordinary leased claims.
+    if let Some(hold) = foreign_epic_hold_above(tx, id, actor, now)? {
+        let EpicHold {
+            epic,
+            holder,
+            since,
+            expires_at,
+        } = hold;
+        return Err(ApiError::conflict(
                     "claim.epic_held",
                     format!(
                         "Ticket '{id}' sits under epic '{epic}', which '{holder}' has claimed {} — the whole subtree is reserved for that holder until the epic claim ends. Read the claim's age and what has moved under it with GET /v1/tickets/{epic}/claim; if it looks abandoned, ask an admin to POST /v1/tickets/{epic}/force-release. Otherwise pick different work via POST /v1/ready/claim (this subtree is not offered there).",
@@ -681,39 +694,39 @@ impl Store {
                     "held_since": since.map(iso),
                     "expires_at": expires_at.map(iso),
                 })));
-            }
+    }
 
-            // State must be claimable per the project workflow — or the caller
-            // must be the holder whose lease lapsed right here.
-            let facts = state_facts(tx, &t.project, &t.state)?;
-            let resumed = may_resume_lapsed_lease(
-                &t,
-                actor,
-                now,
-                facts.claimable,
-                facts.terminal,
-                &facts.category,
-            );
-            if !facts.claimable && !resumed {
-                let claimable_states: Vec<String> = {
-                    let mut stmt = tx.prepare(
+    // State must be claimable per the project workflow — or the caller
+    // must be the holder whose lease lapsed right here.
+    let facts = state_facts(tx, &t.project, &t.state)?;
+    let resumed = may_resume_lapsed_lease(
+        &t,
+        actor,
+        now,
+        facts.claimable,
+        facts.terminal,
+        &facts.category,
+    );
+    if !facts.claimable && !resumed {
+        let claimable_states: Vec<String> = {
+            let mut stmt = tx.prepare(
                         "SELECT state FROM workflow_states WHERE project = ?1 AND claimable = 1 ORDER BY state",
                     )?;
-                    let states = stmt
-                        .query_map(params![t.project], |r| r.get::<_, String>(0))?
-                        .collect::<Result<Vec<_>, _>>()?;
-                    states
-                };
-                // Naming the lapsed holder is the difference between "not
-                // claimable" and "not claimable *by you*": an agent that has lost
-                // a race to a successor needs to know it lost, not retry.
-                let whose = match t.lapsed_holder(now) {
+            let states = stmt
+                .query_map(params![t.project], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            states
+        };
+        // Naming the lapsed holder is the difference between "not
+        // claimable" and "not claimable *by you*": an agent that has lost
+        // a race to a successor needs to know it lost, not retry.
+        let whose = match t.lapsed_holder(now) {
                     Some(h) if h != actor => format!(
                         " The lease that lapsed in this state belonged to '{h}', so only '{h}' can resume it in place; you cannot."
                     ),
                     _ => String::new(),
                 };
-                return Err(ApiError::conflict(
+        return Err(ApiError::conflict(
                     "claim.state",
                     format!(
                         "Ticket '{id}' is in state '{}', which is not claimable. Claimable states in project '{}': {}. Move it with POST /v1/tickets/{id}/transition first, or pick ready work via POST /v1/ready/claim.{whose}",
@@ -727,15 +740,15 @@ impl Store {
                     "lapsed_holder": t.lapsed_holder(now),
                 }))
                 .current_state(t.state.clone()));
-            }
+    }
 
-            // Must be unblocked (directly or via ancestors). This applies to a
-            // resume too: a dependency that opened while the lease was lapsing is
-            // a real answer, and every guard on the transition the caller wants to
-            // make would stop it a moment later anyway.
-            let blockers = open_blockers(tx, id)?;
-            if !blockers.is_empty() {
-                return Err(ApiError::conflict(
+    // Must be unblocked (directly or via ancestors). This applies to a
+    // resume too: a dependency that opened while the lease was lapsing is
+    // a real answer, and every guard on the transition the caller wants to
+    // make would stop it a moment later anyway.
+    let blockers = open_blockers(tx, id)?;
+    if !blockers.is_empty() {
+        return Err(ApiError::conflict(
                     "claim.blocked",
                     format!(
                         "Ticket '{id}' is blocked by open ticket(s): {}. Finish or cancel the blockers first; blocked tickets never enter the ready queue.",
@@ -743,25 +756,25 @@ impl Store {
                     ),
                 )
                 .details(json!({ "open_blockers": blockers })));
-            }
+    }
 
-            // A fresh epic claim must not be taken over live work: a lease
-            // already granted to someone else inside the subtree wins, and the
-            // would-be locker waits or coordinates instead of fighting it.
-            // The caller's own claims below don't count — the subtree is being
-            // reserved for exactly that actor.
-            if t.ty == "epic" {
-                let held = foreign_claims_below(tx, id, actor, now)?;
-                if !held.is_empty() {
-                    let listed: Vec<String> = held
-                        .iter()
-                        .map(|(tid, holder)| format!("'{tid}' (claimed by '{holder}')"))
-                        .collect();
-                    let holders: Vec<serde_json::Value> = held
-                        .iter()
-                        .map(|(tid, holder)| json!({ "ticket": tid, "holder": holder }))
-                        .collect();
-                    return Err(ApiError::conflict(
+    // A fresh epic claim must not be taken over live work: a lease
+    // already granted to someone else inside the subtree wins, and the
+    // would-be locker waits or coordinates instead of fighting it.
+    // The caller's own claims below don't count — the subtree is being
+    // reserved for exactly that actor.
+    if t.ty == "epic" {
+        let held = foreign_claims_below(tx, id, actor, now)?;
+        if !held.is_empty() {
+            let listed: Vec<String> = held
+                .iter()
+                .map(|(tid, holder)| format!("'{tid}' (claimed by '{holder}')"))
+                .collect();
+            let holders: Vec<serde_json::Value> = held
+                .iter()
+                .map(|(tid, holder)| json!({ "ticket": tid, "holder": holder }))
+                .collect();
+            return Err(ApiError::conflict(
                         "claim.children_held",
                         format!(
                             "Epic '{id}' cannot be claimed while other workers hold live claims inside it: {}. Claiming an epic reserves its whole subtree, and the reservation never displaces a lease already granted. Wait for those claims to end, coordinate with the holders, or (admin) force-release them first.",
@@ -769,15 +782,15 @@ impl Store {
                         ),
                     )
                     .details(json!({ "held": holders })));
-                }
-            }
-
-            let lease = grant_claim(tx, &t, actor, ttl, now, resumed)?;
-            let fresh = get_ticket_required(tx, id)?;
-            Ok((fresh, lease))
-        })
+        }
     }
 
+    let lease = grant_claim(tx, &t, actor, ttl, now, resumed)?;
+    let fresh = get_ticket_required(tx, id)?;
+    Ok((fresh, lease))
+}
+
+impl Store {
     /// Renew a lease. The fence must match the active claim.
     pub fn heartbeat(
         &self,

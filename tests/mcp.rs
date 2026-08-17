@@ -2581,3 +2581,359 @@ async fn the_initiative_tools_teach_the_document_model_they_expect() {
         );
     }
 }
+
+// ---- MCP parity fixes (takomo-u3hd / w5zk / rsil / qr3t / knen) ------------
+
+/// `takomo_start` must not leave a claim behind when the transition it pairs
+/// with is refused — the compound verb is one store transaction.
+#[tokio::test]
+async fn mcp_start_rolls_back_a_claim_when_transition_fails() {
+    let app = TestApp::spawn().await;
+    let id = claimable(&app, "start rollback").await;
+
+    let (payload, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_start",
+            json!({ "id": id, "to": "done" }),
+        )
+        .await;
+    assert!(is_error, "ready -> done must be refused: {payload}");
+    assert!(
+        payload["allowed_transitions"].is_array(),
+        "illegal start relays allowed_transitions: {payload}"
+    );
+
+    let status = app
+        .tool_ok(&app.worker, "takomo_claim_status", json!({ "id": id }))
+        .await;
+    assert!(
+        status["holder"].is_null(),
+        "a failed start must not strand a claim: {status}"
+    );
+}
+
+/// `takomo_block` must not leave a comment behind when the block transition fails.
+#[tokio::test]
+async fn mcp_block_rolls_back_a_comment_when_transition_fails() {
+    let app = TestApp::spawn().await;
+    let id = app.create_ticket("block rollback").await;
+
+    let (payload, is_error) = app
+        .tool(
+            &app.worker,
+            "takomo_block",
+            json!({ "id": id, "comment": "orphan?" }),
+        )
+        .await;
+    assert!(is_error, "brief -> blocked must be refused: {payload}");
+
+    let (_, show) = app
+        .get(&app.worker, &format!("/v1/tickets/{id}?include=comments"))
+        .await;
+    let comments = show["comments"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert_eq!(comments, 0, "a failed block must not leave a comment");
+}
+
+/// Caller-supplied idempotency keys replay the original create instead of
+/// double-creating on a retried MCP frame.
+#[tokio::test]
+async fn mcp_new_honours_an_idempotency_key() {
+    let app = TestApp::spawn().await;
+    let key = "mcp-idem-parity";
+    let args = json!({
+        "project": "tp",
+        "title": "idem ticket",
+        "idempotency_key": key,
+    });
+    let first = app.tool_ok(&app.worker, "takomo_new", args.clone()).await;
+    let second = app.tool_ok(&app.worker, "takomo_new", args).await;
+    assert_eq!(
+        first["ticket"]["id"], second["ticket"]["id"],
+        "the same key must replay the original ticket"
+    );
+}
+
+/// MCP create accepts metadata and blocked_by like REST.
+#[tokio::test]
+async fn mcp_new_carries_metadata_and_blocked_by() {
+    let app = TestApp::spawn().await;
+    let blocker = app.create_ticket("blocker for mcp new").await;
+    app.drive_to_done(&blocker).await;
+
+    let created = app
+        .tool_ok(
+            &app.worker,
+            "takomo_new",
+            json!({
+                "project": "tp",
+                "title": "blocked at birth",
+                "blocked_by": [blocker],
+                "metadata": { "source": "mcp-test" },
+            }),
+        )
+        .await;
+    let id = created["ticket"]["id"].as_str().unwrap();
+    let show = app
+        .tool_ok(&app.worker, "takomo_show", json!({ "id": id }))
+        .await;
+    assert_eq!(show["ticket"]["metadata"]["source"], "mcp-test");
+    let deps = app
+        .tool_ok(
+            &app.worker,
+            "takomo_deps",
+            json!({ "id": id, "direction": "blocked_by" }),
+        )
+        .await;
+    let blocked_by: Vec<&str> = deps["deps"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["blocked_by"].as_str().unwrap())
+        .collect();
+    assert!(blocked_by.contains(&blocker.as_str()));
+}
+
+/// `takomo_claim` forwards ttl_seconds to the store lease.
+#[tokio::test]
+async fn mcp_claim_forwards_ttl_seconds() {
+    let app = TestApp::spawn().await;
+    let id = claimable(&app, "ttl on claim").await;
+    let before = takomo::ids::now_ms();
+    let claim = app
+        .tool_ok(
+            &app.worker,
+            "takomo_claim",
+            json!({ "id": id, "ttl_seconds": 42 }),
+        )
+        .await;
+    let expires = claim["lease"]["expires_at"].as_str().expect("expires_at");
+    let expires_ms = chrono::DateTime::parse_from_rfc3339(expires)
+        .expect("rfc3339")
+        .timestamp_millis();
+    let delta = (expires_ms - before) / 1000;
+    assert!(
+        (38..=46).contains(&delta),
+        "42s TTL expected, got {delta}s from claim {claim}"
+    );
+}
+
+/// MCP ask accepts any JSON `recommended` on kinds without options (clarify).
+#[tokio::test]
+async fn mcp_ask_accepts_recommended_as_json() {
+    let app = TestApp::spawn().await;
+    let ticket = app.create_ticket("json rec ticket").await;
+    app.to_implementing(&ticket).await;
+    let asked = app
+        .tool_ok(
+            &app.worker,
+            "takomo_ask",
+            json!({
+                "id": ticket,
+                "kind": "clarify",
+                "mode": "advisory",
+                "title": "how to word it?",
+                "recommended": { "text": "store UTC, render local" },
+            }),
+        )
+        .await;
+    assert_eq!(
+        asked["question"]["recommended"],
+        json!({ "text": "store UTC, render local" })
+    );
+}
+
+/// Tool-mapping smoke tests for MCP tools that had no dedicated coverage.
+#[tokio::test]
+async fn mcp_untested_tools_reach_the_store_and_relay_errors() {
+    let app = TestApp::spawn().await;
+
+    // projects — lists seeded demo project.
+    let projects = app.tool_ok(&app.worker, "takomo_projects", json!({})).await;
+    assert!(
+        projects["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == "tp"),
+        "takomo_projects should list tp: {projects}"
+    );
+
+    // comment — writes a comment row.
+    let id = app.create_ticket("mcp comment tool").await;
+    let commented = app
+        .tool_ok(
+            &app.worker,
+            "takomo_comment",
+            json!({ "id": id, "body": "via mcp" }),
+        )
+        .await;
+    assert_eq!(commented["comment"]["body"], "via mcp");
+
+    // dep + deps — add and read a dependency edge.
+    let blocker = app.create_ticket("mcp dep blocker").await;
+    app.drive_to_done(&blocker).await;
+    let blocked = app.create_ticket("mcp dep blocked").await;
+    app.tool_ok(
+        &app.worker,
+        "takomo_dep",
+        json!({ "id": blocked, "blocked_by": blocker }),
+    )
+    .await;
+    let graph = app
+        .tool_ok(
+            &app.worker,
+            "takomo_deps",
+            json!({ "id": blocked, "direction": "both" }),
+        )
+        .await;
+    assert!(graph["deps"]["edges"].is_array());
+
+    // promote — records a promotion on a done ticket.
+    let done_id = app.create_ticket("mcp promote").await;
+    app.drive_to_done(&done_id).await;
+    let promo = app
+        .tool_ok(
+            &app.worker,
+            "takomo_promote",
+            json!({ "id": done_id, "target": "tp", "note": "shipped" }),
+        )
+        .await;
+    assert_eq!(promo["promotion"]["target"], "tp");
+
+    // archive — sets archived_at.
+    let arch = app
+        .tool_ok(&app.worker, "takomo_archive", json!({ "id": done_id }))
+        .await;
+    assert!(arch["ticket"]["archived_at"].is_string());
+
+    // roadmap — project rollup (read mapping).
+    let roadmap = app
+        .tool_ok(&app.worker, "takomo_roadmap", json!({ "project": "tp" }))
+        .await;
+    assert!(roadmap["roadmap"].is_object());
+
+    // questions / withdraw / reopen / reply / options — question thread tools.
+    let (work, qid) = mcp_parked_question(
+        &app,
+        "mcp question tools",
+        json!({
+            "kind": "choose",
+            "title": "which?",
+            "options": ["x", "y"],
+        }),
+    )
+    .await;
+    let listed = app
+        .tool_ok(
+            &app.human,
+            "takomo_questions",
+            json!({ "project": "tp", "ticket": work }),
+        )
+        .await;
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|q| q["id"] == qid),
+        "takomo_questions should list the open question"
+    );
+
+    // Human bounces back for research; agent replies.
+    let (bounce_status, _) = app
+        .post(
+            &app.human,
+            &format!("/v1/questions/{qid}/followup"),
+            json!({ "message": "need more detail" }),
+        )
+        .await;
+    assert_eq!(bounce_status, StatusCode::OK);
+    let replied = app
+        .tool_ok(
+            &app.worker,
+            "takomo_reply",
+            json!({ "id": qid, "message": "here is the detail" }),
+        )
+        .await;
+    assert_eq!(replied["question"]["awaiting"], "human");
+
+    let revised = app
+        .tool_ok(
+            &app.worker,
+            "takomo_options",
+            json!({
+                "id": qid,
+                "options": ["x2", "y2"],
+                "recommended": "x2",
+                "reason": "research showed better choices",
+            }),
+        )
+        .await;
+    assert_eq!(revised["question"]["options"], json!(["x2", "y2"]));
+
+    app.tool_ok(
+        &app.human,
+        "takomo_answer",
+        json!({ "id": qid, "answer": "x2" }),
+    )
+    .await;
+
+    let (reopen_payload, reopen_err) = app
+        .tool(&app.worker, "takomo_reopen", json!({ "id": qid }))
+        .await;
+    assert!(
+        reopen_err,
+        "worker lacks human scope for reopen: {reopen_payload}"
+    );
+    let reopened = app
+        .tool_ok(&app.human, "takomo_reopen", json!({ "id": qid }))
+        .await;
+    assert_eq!(reopened["question"]["status"], "open");
+
+    // withdraw on a fresh question.
+    let (_work2, qid2) = mcp_parked_question(
+        &app,
+        "mcp withdraw",
+        json!({
+            "kind": "confirm",
+            "title": "still needed?",
+        }),
+    )
+    .await;
+    let withdrawn = app
+        .tool_ok(
+            &app.worker,
+            "takomo_withdraw",
+            json!({ "id": qid2, "reason": "figured it out" }),
+        )
+        .await;
+    assert_eq!(withdrawn["question"]["status"], "withdrawn");
+
+    // answer_link minting is covered elsewhere; still assert the tool name resolves.
+    let list = app.ok_call(&app.worker, "tools/list", json!({})).await;
+    let names: Vec<&str> = list["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for tool in [
+        "takomo_answer_link",
+        "takomo_archive",
+        "takomo_comment",
+        "takomo_dep",
+        "takomo_deps",
+        "takomo_link",
+        "takomo_options",
+        "takomo_projects",
+        "takomo_promote",
+        "takomo_questions",
+        "takomo_reopen",
+        "takomo_reply",
+        "takomo_roadmap",
+        "takomo_withdraw",
+    ] {
+        assert!(names.contains(&tool), "tools/list missing {tool}");
+    }
+}

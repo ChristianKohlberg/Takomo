@@ -15,11 +15,13 @@
 //! `grep -rn "SET state" src/` should return those two and nothing else; a third
 //! is a bug.
 
+use super::claims::claim_ticket_tx;
 use super::helpers::{
     clear_expired_claim, emit_event, get_ticket_required, get_workflow, stale_fence_error,
     touch_ticket,
 };
-use super::model::Ticket;
+use super::model::{Ticket, MAX_COMMENT};
+use super::tickets::insert_comment_tx;
 use super::Store;
 use crate::error::{AllowedTransition, ApiError, ApiResult};
 use crate::ids::{iso, now_ms};
@@ -167,6 +169,86 @@ impl Store {
                 id,
                 to,
                 reason,
+                fence,
+                actor,
+                scopes,
+                now,
+                MoveKind::Normal,
+            )
+        })
+    }
+
+    /// Claim if the caller does not already hold the lease, then transition —
+    /// one transaction so a guard or scope failure cannot strand a claim.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_ticket(
+        &self,
+        id: &str,
+        to: &str,
+        reason: Option<&str>,
+        fence_override: Option<i64>,
+        actor: &str,
+        scopes: &HashSet<String>,
+        ttl_seconds: Option<i64>,
+        try_claim: bool,
+    ) -> ApiResult<Ticket> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let t = get_ticket_required(tx, id)?;
+            let mut fence = fence_override.or_else(|| {
+                t.active_claim(now)
+                    .and_then(|(holder, _)| (holder == actor).then_some(t.fence_seq))
+            });
+            if fence.is_none() && try_claim {
+                let (_, lease) = claim_ticket_tx(tx, id, actor, ttl_seconds, now)?;
+                fence = Some(lease.fence);
+            }
+            apply_transition(
+                tx,
+                id,
+                to,
+                reason,
+                fence,
+                actor,
+                scopes,
+                now,
+                MoveKind::Normal,
+            )
+        })
+    }
+
+    /// Optionally record a blocker comment, then transition to a blocked state
+    /// — one transaction so a failed advance cannot leave an orphan comment.
+    pub fn block_ticket(
+        &self,
+        id: &str,
+        to: &str,
+        comment: Option<&str>,
+        fence_override: Option<i64>,
+        actor: &str,
+        scopes: &HashSet<String>,
+    ) -> ApiResult<Ticket> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            if let Some(body) = comment {
+                if body.is_empty() || body.len() > MAX_COMMENT {
+                    return Err(ApiError::validation(
+                        "validation.comment",
+                        format!("comment body must be 1-{MAX_COMMENT} bytes."),
+                    ));
+                }
+                insert_comment_tx(tx, id, actor, body, now)?;
+            }
+            let t = get_ticket_required(tx, id)?;
+            let fence = fence_override.or_else(|| {
+                t.active_claim(now)
+                    .and_then(|(holder, _)| (holder == actor).then_some(t.fence_seq))
+            });
+            apply_transition(
+                tx,
+                id,
+                to,
+                None,
                 fence,
                 actor,
                 scopes,

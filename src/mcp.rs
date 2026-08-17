@@ -172,6 +172,13 @@ pub struct NewArgs {
     pub tags: Option<Vec<String>>,
     /// Markdown body / description.
     pub body: Option<String>,
+    /// Optional metadata object (arbitrary JSON).
+    pub metadata: Option<Value>,
+    /// Ticket ids this one is blocked by at creation.
+    pub blocked_by: Option<Vec<String>>,
+    /// Idempotency key for safe retries. Omit to create a new ticket on every
+    /// call; pass the same key on a retried MCP frame to replay the original.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -244,7 +251,7 @@ pub struct NextArgs {
     pub r#type: Option<String>,
     /// Restrict to a single label.
     pub label: Option<String>,
-    /// Seconds to long-poll for work before giving up (0-60, default 0).
+    /// Seconds to long-poll for work before giving up (0-120, default 0).
     pub wait: Option<i64>,
     /// Lease lifetime in seconds for the ticket this claims (1-3600, default 900).
     pub ttl_seconds: Option<i64>,
@@ -382,8 +389,9 @@ pub struct AskArgs {
     /// Your recommended answer (a hint for the human; also applied on timeout if
     /// on_timeout=recommended). When the question has `options` it must be one of
     /// them exactly — since a timeout stores it as the answer, a recommendation that
-    /// is not an option could never be one, and is refused.
-    pub recommended: Option<String>,
+    /// is not an option could never be one, and is refused. For multi-select,
+    /// pass a JSON array of option strings.
+    pub recommended: Option<Value>,
     /// A short rationale for your recommendation ("why"), shown by the recommendation.
     pub recommended_note: Option<String>,
     /// How strong your recommendation is, 1-4 (1 tentative … 4 very strong).
@@ -1890,17 +1898,14 @@ impl TakomoMcp {
             priority: a.priority,
             labels: a.labels.unwrap_or_default(),
             tags: a.tags.unwrap_or_default(),
-            metadata: None,
-            blocked_by: Vec::new(),
+            metadata: a.metadata,
+            blocked_by: a.blocked_by.unwrap_or_default(),
             state: None,
         };
-        // A fresh idempotency key per call keeps a retried MCP frame from
-        // double-creating, matching the Node wrapper's auto-key behaviour.
-        let key = format!("mcp-{}", crate::ids::ticket_suffix(16));
         let (ticket, similar, _replayed) =
             self.state
                 .store
-                .create_ticket(&req, &auth.actor, Some(&key))?;
+                .create_ticket(&req, &auth.actor, a.idempotency_key.as_deref())?;
         self.state.wake();
         let mut out = json!({ "ok": true, "ticket": ticket.to_json(now_ms()) });
         if !similar.is_empty() {
@@ -2034,7 +2039,7 @@ impl TakomoMcp {
             option_notes: a.option_notes.unwrap_or_default(),
             multi: a.multi.unwrap_or(false),
             recommended_multi: a.recommended_multi.unwrap_or_default(),
-            recommended: a.recommended.map(Value::String).unwrap_or(Value::Null),
+            recommended: a.recommended.unwrap_or(Value::Null),
             recommended_note: a.recommended_note,
             confidence: a.confidence,
             summary: a.summary,
@@ -2362,30 +2367,26 @@ impl TakomoMcp {
             labels: a.label.into_iter().collect(),
             allowed_projects: auth.allowed_projects_vec(),
         };
-        let wait = a.wait.unwrap_or(0).clamp(0, 60);
-        let deadline = now_ms() + wait * 1000;
-        loop {
-            if let Some((ticket, lease)) =
-                self.state
-                    .store
-                    .ready_claim(&filter, &auth.actor, a.ttl_seconds)?
-            {
+        let wait = crate::api::clamp_wait(a.wait);
+        let actor = auth.actor.clone();
+        let ttl = a.ttl_seconds;
+        let claimed = crate::api::long_poll(&self.state, wait, || {
+            self.state.store.ready_claim(&filter, &actor, ttl)
+        })
+        .await?;
+        match claimed {
+            None => {
+                Ok(json!({ "ok": true, "claimed": false, "note": "No ready ticket to claim." }))
+            }
+            Some((ticket, lease)) => {
                 self.state.wake();
                 let project = ticket.project.clone();
                 let mut out = ticket.to_json(now_ms());
                 out["lease"] = lease.to_json();
                 let mut res = json!({ "ok": true, "claimed": true, "ticket": out });
                 self.attach_conventions(&mut res, &project);
-                return Ok(res);
+                Ok(res)
             }
-            if now_ms() >= deadline {
-                return Ok(
-                    json!({ "ok": true, "claimed": false, "note": "No ready ticket to claim." }),
-                );
-            }
-            // Poll at most every 2s, and never sleep past the deadline.
-            let poll_ms = (deadline - now_ms()).clamp(1, 2000) as u64;
-            tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
         }
     }
 
@@ -2393,18 +2394,6 @@ impl TakomoMcp {
         auth.require_scope("write")?;
         let ticket = load_visible(&self.state, auth, &a.id)?;
         let wf = self.workflow_for(&ticket.project)?;
-
-        let mut fence = resolve_fence(&ticket, &auth.actor, a.fence);
-        // Claim if we do not already hold the lease and the state is claimable.
-        // `ttl_seconds` only applies on that path — a lease we already hold is
-        // extended by heartbeating it, not by starting again.
-        if fence.is_none() && is_claimable(&wf, &ticket.state) {
-            let (_t, lease) = self
-                .state
-                .store
-                .claim_ticket(&a.id, &auth.actor, a.ttl_seconds)?;
-            fence = Some(lease.fence);
-        }
 
         let target = match a.to {
             Some(t) => t,
@@ -2435,10 +2424,19 @@ impl TakomoMcp {
             }
         };
 
-        let updated =
-            self.state
-                .store
-                .transition(&a.id, &target, None, fence, &auth.actor, &auth.scopes)?;
+        let resolved_fence = resolve_fence(&ticket, &auth.actor, a.fence);
+        let try_claim = resolved_fence.is_none() && is_claimable(&wf, &ticket.state);
+
+        let updated = self.state.store.start_ticket(
+            &a.id,
+            &target,
+            None,
+            a.fence,
+            &auth.actor,
+            &auth.scopes,
+            a.ttl_seconds,
+            try_claim,
+        )?;
         self.state.wake();
         let mut out =
             json!({ "ok": true, "transitioned_to": target, "ticket": updated.to_json(now_ms()) });
@@ -2504,14 +2502,39 @@ impl TakomoMcp {
 
     fn do_block(&self, auth: &AuthCtx, a: BlockArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        load_visible(&self.state, auth, &a.id)?;
-        if let Some(comment) = &a.comment {
-            self.state
-                .store
-                .add_comment(&a.id, &auth.actor, comment, None)?;
-            self.state.wake();
-        }
-        self.advance(auth, &a.id, "blocked", a.fence)
+        let ticket = load_visible(&self.state, auth, &a.id)?;
+        let wf = self.workflow_for(&ticket.project)?;
+        let target = match targets_in_category(&wf, &ticket.state, "blocked")
+            .into_iter()
+            .next()
+        {
+            Some(t) => t,
+            None => {
+                return Err(ApiError::conflict(
+                    "transition.no_target",
+                    format!(
+                        "No legal transition to a 'blocked' state from '{}' in workflow '{}'.",
+                        ticket.state, wf.name
+                    ),
+                )
+                .current_state(ticket.state.clone())
+                .allowed_transitions(allowed_transitions_from(&wf, &ticket.state)));
+            }
+        };
+        let updated = self.state.store.block_ticket(
+            &a.id,
+            &target,
+            a.comment.as_deref(),
+            a.fence,
+            &auth.actor,
+            &auth.scopes,
+        )?;
+        self.state.wake();
+        Ok(json!({
+            "ok": true,
+            "transitioned_to": target,
+            "ticket": updated.to_json(now_ms()),
+        }))
     }
 
     fn do_comment(&self, auth: &AuthCtx, id: &str, body: &str) -> ApiResult<Value> {

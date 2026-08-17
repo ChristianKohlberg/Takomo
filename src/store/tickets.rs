@@ -1205,34 +1205,13 @@ impl Store {
                 }
             }
 
-            let t = get_ticket_required(tx, ticket_id)?;
-            ensure_ticket_writable(tx, &t)?;
-            let comment = Comment {
-                id: comment_id(),
-                ticket: t.id.clone(),
-                author: actor.to_string(),
-                body: body.to_string(),
-                created_at: now,
-            };
-            tx.execute(
-                "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![comment.id, comment.ticket, comment.author, comment.body, now],
-            )?;
+            let comment = insert_comment_tx(tx, ticket_id, actor, body, now)?;
             if let Some(key) = idempotency_key {
                 tx.execute(
                     "INSERT INTO comment_idempotency (actor, key, comment, body_hash, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                     params![actor, key, comment.id, fingerprint, now],
                 )?;
             }
-            emit_event(
-                tx,
-                Some(&t.id),
-                Some(&t.project),
-                actor,
-                "commented",
-                json!({ "comment": comment.id }),
-                now,
-            )?;
             Ok((comment, false))
         })
     }
@@ -1683,4 +1662,44 @@ impl Store {
             Ok(n > 0)
         })
     }
+}
+
+/// Insert a comment inside an existing write transaction. Shared with
+/// [`Store::block_ticket`] so a comment cannot outlive a failed block transition.
+pub(super) fn insert_comment_tx(
+    tx: &Connection,
+    ticket_id: &str,
+    actor: &str,
+    body: &str,
+    now: i64,
+) -> ApiResult<Comment> {
+    let t = get_ticket_required(tx, ticket_id)?;
+    ensure_ticket_writable(tx, &t)?;
+    let comment = Comment {
+        id: comment_id(),
+        ticket: t.id.clone(),
+        author: actor.to_string(),
+        body: body.to_string(),
+        created_at: now,
+    };
+    tx.execute(
+        "INSERT INTO comments (id, ticket, author, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            comment.id,
+            comment.ticket,
+            comment.author,
+            comment.body,
+            now
+        ],
+    )?;
+    emit_event(
+        tx,
+        Some(&t.id),
+        Some(&t.project),
+        actor,
+        "commented",
+        json!({ "comment": comment.id }),
+        now,
+    )?;
+    Ok(comment)
 }
