@@ -26,6 +26,27 @@ export function useUndoQueue({ commit, refresh, onError }: UndoQueueOptions) {
   if (pending !== pendingRef.current) pendingRef.current = pending
   const commitRef = useRef(commit)
   commitRef.current = commit
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
+  const refreshRef = useRef(refresh)
+  refreshRef.current = refresh
+
+  /** Commit a set of pending answers and refetch — shared by the timer and visibility paths. */
+  const commitBatch = useCallback((batch: Pending[]) => {
+    if (!batch.length) return
+    pendingRef.current = pendingRef.current.filter((p) => !batch.some((r) => r.qid === p.qid))
+    setPending(pendingRef.current)
+    void (async () => {
+      for (const p of batch) {
+        try {
+          await commitRef.current(p)
+        } catch (e) {
+          onErrorRef.current(e)
+        }
+      }
+      refreshRef.current()
+    })()
+  }, [])
 
   /**
    * Queue an answer. One window per question — a second press is a no-op.
@@ -88,18 +109,24 @@ export function useUndoQueue({ commit, refresh, onError }: UndoQueueOptions) {
   useEffect(() => {
     const ripe = due(pending, now)
     if (!ripe.length) return
-    setPending((cur) => cur.filter((p) => !ripe.some((r) => r.qid === p.qid)))
-    void (async () => {
-      for (const p of ripe) {
-        try {
-          await commitRef.current(p)
-        } catch (e) {
-          onError(e)
-        }
+    commitBatch(ripe)
+  }, [pending, now, commitBatch])
+
+  // A backgrounded tab throttles `setInterval` to ~1/s then ~1/min, so a wall-
+  // clock deadline alone is not enough — flush on hide, and re-check on restore.
+  useEffect(() => {
+    function onVisibility() {
+      const nowMs = Date.now()
+      setNow(nowMs)
+      if (document.visibilityState === 'hidden') {
+        commitBatch(pendingRef.current)
+      } else {
+        commitBatch(due(pendingRef.current, nowMs))
       }
-      refresh()
-    })()
-  }, [pending, now, refresh, onError])
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [commitBatch])
 
   /**
    * Write everything still pending, immediately. Used when signing out — the

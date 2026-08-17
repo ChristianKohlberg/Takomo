@@ -54,6 +54,8 @@ export interface ReadingPaneProps {
   /** Lets the page hide the pane on narrow screens when nothing is chosen. */
   className?: string
   onShare: () => void
+  /** Optimistic answer still in the undo window — Reopen must stay hidden. */
+  answerPending?: boolean
 }
 
 export function ReadingPane({
@@ -70,6 +72,7 @@ export function ReadingPane({
   onWithdraw,
   onReopen,
   onShare,
+  answerPending = false,
 }: ReadingPaneProps) {
   const [composing, setComposing] = useState(false)
   const [followText, setFollowText] = useState('')
@@ -167,7 +170,7 @@ export function ReadingPane({
             {/* Only an ANSWERED question can be reopened — the server refuses a
                 withdrawn or expired one with `question.not_answered`. Offering
                 the button there would be offering an action that always fails. */}
-            {q.status === 'answered' && canAnswer && (
+            {q.status === 'answered' && canAnswer && !answerPending && (
               <Button variant="outline" size="sm" onClick={onReopen}>
                 {labels.reopen}
               </Button>

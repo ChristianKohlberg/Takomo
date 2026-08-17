@@ -112,6 +112,7 @@ export function App() {
 
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectsLoadErr, setProjectsLoadErr] = useState('')
   const [tokens, setTokens] = useState<TokenRow[]>([])
 
   // Which project's detail is open, and its editable settings. `?project=<id>`
@@ -303,13 +304,17 @@ export function App() {
   )
 
   const refresh = useCallback(async () => {
-    const [ps, ts] = await Promise.all([
-      listProjects(token).catch(() => [] as Project[]),
-      listTokens(token).catch(() => [] as TokenRow[]),
-    ])
+    let ps: Project[] = []
+    try {
+      ps = await listProjects(token)
+      setProjectsLoadErr('')
+    } catch (e) {
+      setProjectsLoadErr((e as Error).message || t.requestFailed)
+    }
+    const ts = await listTokens(token).catch(() => [] as TokenRow[])
     setProjects(ps)
     setTokens(ts)
-  }, [token])
+  }, [token, t])
 
   // `archive`/`unarchive` are declared above `refresh` (they read better next to
   // the dialogs they serve) and would otherwise capture it before it exists.
@@ -568,6 +573,13 @@ export function App() {
                 </ul>
               )}
             </Section>
+          ) : projectsLoadErr && selectedId && !selected ? (
+            <Section title={t.projTitle} description={t.projLoadErr}>
+              <p className="text-destructive text-[13px]">{projectsLoadErr}</p>
+              <Button variant="secondary" size="sm" onClick={() => selectProject(null)}>
+                {t.projBack}
+              </Button>
+            </Section>
           ) : selected ? (
             <ProjectDetail
               project={selected}
@@ -686,7 +698,9 @@ export function App() {
               description={t.projSub}
               action={<Button onClick={() => setNewProject(true)}>+&nbsp;{t.projNew}</Button>}
             >
-              {projects.length === 0 ? (
+              {projectsLoadErr ? (
+                <EmptyState>{projectsLoadErr}</EmptyState>
+              ) : projects.length === 0 ? (
                 <EmptyState>{t.projEmpty}</EmptyState>
               ) : (
                 <ul className="flex flex-col gap-px">

@@ -21,14 +21,15 @@ export function UndoSnackbar({ pending, now, labels, onUndo }: UndoSnackbarProps
       {pending.map((p) => (
         <div
           key={p.qid}
-          role="status"
           className="bg-foreground text-background flex items-center gap-3 rounded-[10px] px-3.5 py-2.5 text-[13px] shadow-[0_18px_40px_-18px_rgba(0,0,0,.5)]"
         >
-          <div className="min-w-0">
+          {/* Only the decision is announced — the countdown ticks every second
+              and would spam a screen reader if it lived in the live region. */}
+          <div role="status" aria-live="polite" className="min-w-0">
             <div className="truncate font-[650]">{p.decision}</div>
             <div className="truncate opacity-70">{p.detail}</div>
           </div>
-          <span className="tabular-nums opacity-70">
+          <span className="tabular-nums opacity-70" aria-hidden="true">
             {secondsLeft(p, now)}
             {labels.seconds}
           </span>
