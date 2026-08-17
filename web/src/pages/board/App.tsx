@@ -466,7 +466,12 @@ function Board({
         // The board already loads this project's open questions for its own
         // inbox drawer, so the rail can badge /inbox without a second request.
         badges: { inbox: questions.length },
-        projects: projects.map((p) => ({ id: p.id, name: p.name })),
+        projects: projects.map(({ id, name, archived, archived_at }) => ({
+          id,
+          name,
+          archived,
+          archived_at,
+        })),
         project: effectiveProject,
         onProject: (id) => {
           // An explicit pick DOES change the shared selection — that is a human
