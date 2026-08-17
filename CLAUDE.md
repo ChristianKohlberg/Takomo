@@ -258,7 +258,10 @@ being nurtured — a product direction, the residue of a good conversation — f
 entries over time, each recording where it came from. No workflow, no claim, no lease, no ready
 queue; `status` is a label, not a state machine. Written over MCP (`takomo_initiative_*`) because
 an agent in a conversation is what produces one, with POST/PATCH added for `/initiatives`, the one
-SPA that writes (a browser cannot call an MCP tool). Entries stay append-only on every surface.
+SPA that writes (a browser cannot call an MCP tool). `takomo initiative new|append|ls|show|set` is a
+third caller of those routes, minus pane writing — prose through shell flags is what the pane editor
+exists to avoid, so the CLI carries what a shell is better at instead (`--text-file`, `--attach`).
+Entries stay append-only on every surface.
 Entries are the only place in the store that holds binary blobs, which is why they are the only
 thing with byte caps — an unbounded upload would hold the write mutex every claim waits on.
 
