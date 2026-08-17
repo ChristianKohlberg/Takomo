@@ -398,6 +398,31 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/initiatives/{id}/entries/{entry}/content",
             get(crate::api::initiatives::entry_content),
         )
+        // Mindmaps: brainstorming, before any of it is an idea. The detail read
+        // returns the whole tree because a canvas cannot draw half of one, and the
+        // node route takes a BATCH because that is what an agent adding a branch
+        // sends.
+        .route(
+            "/v1/mindmaps",
+            get(crate::api::mindmaps::list).post(crate::api::mindmaps::create),
+        )
+        .route(
+            "/v1/mindmaps/{id}",
+            get(crate::api::mindmaps::get_one)
+                .merge(patch(crate::api::mindmaps::patch))
+                .merge(axum::routing::delete(crate::api::mindmaps::delete)),
+        )
+        .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
+        .route("/v1/mindmaps/{id}/nodes", post(crate::api::mindmaps::add_nodes))
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}",
+            patch(crate::api::mindmaps::patch_node)
+                .merge(axum::routing::delete(crate::api::mindmaps::delete_node)),
+        )
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}/promote",
+            post(crate::api::mindmaps::promote),
+        )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))
