@@ -730,6 +730,7 @@ export function App() {
                 })
                 .catch(handleErr)
             }
+            answerPending={queue.pending.some((p) => p.qid === selected.id)}
           />
         ) : (
           <div className="text-muted-foreground px-6 py-14 text-center">

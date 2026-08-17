@@ -124,6 +124,7 @@ export const STR = defineStrings({
     // Project detail — moved here from the board's dialog.
     projOpen: 'Configure',
     projBack: 'All projects',
+    projLoadErr: 'Could not load projects.',
     projWorkflowLabel: 'Workflow',
     projLangLabel: 'Question language',
     projLangHelp:
@@ -364,6 +365,7 @@ export const STR = defineStrings({
     newProjCancel: 'Abbrechen',
     projOpen: 'Konfigurieren',
     projBack: 'Alle Projekte',
+    projLoadErr: 'Projekte konnten nicht geladen werden.',
     projWorkflowLabel: 'Workflow',
     projLangLabel: 'Sprache der Fragen',
     projLangHelp:
