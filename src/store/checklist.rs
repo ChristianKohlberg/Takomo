@@ -2639,10 +2639,17 @@ impl Store {
                         } else if state == "failed" {
                             "failed"
                         } else if !v.satisfies(&policy) {
-                            if state == "never" {
-                                "never"
-                            } else {
-                                "awaiting_human"
+                            match state {
+                                "never" => "never",
+                                // Distinct from `never`: somebody already tried
+                                // and could not get far enough to judge, which
+                                // usually means the environment needs fixing
+                                // before the case is worth running again.
+                                // Routing it to `awaiting_human` would have put
+                                // it in a person's queue as though it were
+                                // waiting on their signature.
+                                "blocked" => "blocked",
+                                _ => "awaiting_human",
                             }
                         } else {
                             continue;

@@ -87,7 +87,13 @@ was made deliberately. Two consequences are built in rather than hoped away:
   work nobody can do and calling it covered claims verification of code no path
   reaches. It is the most valuable output: UI/API drift and dead code fall out of
   coverage bookkeeping instead of needing a separate audit.
-- **`blocked`** — the runner could not get far enough to judge.
+- **`blocked`** — the runner could not get far enough to judge. Its own state and
+  its own bucket, not folded into `never`: "nobody has run this" and "we ran it
+  and could not get there" call for different work, and the second is usually an
+  environment to fix rather than a case to write. It stays inside the coverage
+  denominator, because a blocked case is verifiable and simply was not verified
+  this time — and a real pass recorded later still wins, because the pass is
+  evidence about correctness and the blocked verdict never was.
 
 ## The initiative that agreed the check
 
