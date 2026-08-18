@@ -14,6 +14,7 @@ export const STR = defineStrings({
   en: {
     inbox: "Inbox",
     initiatives: "Initiatives",
+    mindmaps: "Mindmaps",
     schedules: "Schedules",
     verification: "Verification",
     environments: "Environments",
@@ -178,6 +179,7 @@ export const STR = defineStrings({
   de: {
     inbox: "Inbox",
     initiatives: "Initiativen",
+    mindmaps: "Mindmaps",
     schedules: "Zeitpläne",
     verification: "Verifizierung",
     environments: "Umgebungen",

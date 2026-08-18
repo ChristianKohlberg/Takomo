@@ -149,5 +149,9 @@ project under one person's typing.
 - **MCP** — `takomo_mindmap_new`, `takomo_mindmap_grow`, `takomo_mindmap_show`,
   `takomo_mindmap_list`, `takomo_mindmap_promote`. The two reads are free.
 - **REST** — `/v1/mindmaps`, see `spec/openapi.yaml`
-- **A canvas** at `/mindmaps` — pan, zoom, drag to reparent, keyboard to grow —
-  is the next piece, and not in this cut.
+- **A canvas** at `/mindmaps` — drag a node onto another to reparent it, into
+  space to pin it; Enter for the next thought, Tab to go deeper, F2 to retype,
+  Delete to prune. A node with no hand placement is laid out automatically, which
+  keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
+  back to the layout. On a phone the same tree is an indented list — a better
+  shape for the screen than a pinch-zoom canvas, not a consolation prize.

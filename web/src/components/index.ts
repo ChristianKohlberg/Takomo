@@ -134,6 +134,11 @@ export type { UndoSnackbarProps } from './inbox/UndoSnackbar'
 export { AnswerLinkDialog } from './inbox/AnswerLinkDialog'
 export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
+export { Canvas } from './mindmap/Canvas'
+export type { CanvasProps, CanvasLabels } from './mindmap/Canvas'
+export { Outline } from './mindmap/Outline'
+export type { OutlineProps, OutlineLabels } from './mindmap/Outline'
+
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'
 export { PersonDialog } from './settings/PersonDialog'

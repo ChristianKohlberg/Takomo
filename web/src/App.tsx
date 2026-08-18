@@ -15,6 +15,7 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } fr
 import { App as BoardApp } from './pages/board/App'
 import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
+import { App as MindmapApp } from './pages/mindmap/App'
 import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as SchedulesApp } from './pages/schedules/App'
 import { App as VerificationApp } from './pages/verification/App'
@@ -25,6 +26,7 @@ const TITLES: Record<string, string> = {
   '/board': 'takomo · board',
   '/inbox': 'takomo · inbox',
   '/initiatives': 'takomo · initiatives',
+  '/mindmaps': 'takomo · mindmaps',
   '/schedules': 'takomo · schedules',
   '/verification': 'takomo · verification',
   '/environments': 'takomo · environments',
@@ -54,6 +56,7 @@ const router = createBrowserRouter([
       { path: '/board', element: <BoardApp /> },
       { path: '/inbox', element: <InboxApp /> },
       { path: '/initiatives', element: <InitiativesApp /> },
+      { path: '/mindmaps', element: <MindmapApp /> },
       { path: '/schedules', element: <SchedulesApp /> },
       { path: '/verification', element: <VerificationApp /> },
       { path: '/environments', element: <EnvironmentsApp /> },

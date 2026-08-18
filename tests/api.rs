@@ -3165,6 +3165,7 @@ fn every_emitted_event_kind_is_listed_on_event_kind_enum() {
 /// `/foo` cannot share one YAML key. Each alias maps to the path the router serves.
 const SPEC_PATH_ALIASES: &[(&str, &str)] = &[
     ("/schedules-page", "/schedules"),
+    ("/mindmaps-page", "/mindmaps"),
     ("/inbox-page", "/inbox"),
     ("/initiatives-page", "/initiatives"),
     ("/settings-page", "/settings"),

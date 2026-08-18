@@ -201,6 +201,12 @@ pub async fn initiatives_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }
 
+/// `GET /mindmaps` — brainstorming, before any of it is an idea. Same document as
+/// every other surface; the router picks this one from the path.
+pub async fn mindmaps_page() -> impl axum::response::IntoResponse {
+    secure_html(INDEX_HTML)
+}
+
 /// `GET /schedules` — the recurrence page.
 ///
 /// Rows, not columns, and that is the whole design decision: the board sorts by
