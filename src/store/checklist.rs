@@ -10,8 +10,9 @@
 
 use super::helpers::{emit_event, ensure_project_writable};
 use super::model::{
-    Case, CaseVerdict, Check, CheckCounts, Release, ReleaseImpact, ResolvedPolicy, CASE_VERDICTS,
-    CHECK_LAYERS, CHECK_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE, VERIFICATION_LEVELS,
+    Case, CaseEnv, CaseVerdict, Check, CheckCounts, Release, ReleaseImpact, ResolvedPolicy,
+    Verdicts, CASE_VERDICTS, CHECK_LAYERS, CHECK_SEVERITIES, MAX_BODY, MAX_METADATA, MAX_TITLE,
+    VERIFICATION_LEVELS,
 };
 use super::Store;
 use crate::error::{ApiError, ApiResult};
@@ -30,6 +31,10 @@ pub const MAX_RELEASE_PATHS: usize = 20_000;
 
 /// Ceiling on globs one check may claim. A check covers one action; a handful of
 /// path patterns describes it. Anything needing fifty is really several checks.
+/// Cap on how many environments one check may declare. A check verified in
+/// twenty places is a modelling problem, not a coverage achievement.
+pub const MAX_CHECK_ENVIRONMENTS: usize = 20;
+
 pub const MAX_CHECK_GLOBS: usize = 50;
 
 /// Ceiling on cases filed in one call. The measured pairwise model for a large
@@ -129,6 +134,9 @@ pub struct CheckCreate {
     pub epic: Option<String>,
     /// The initiative that agreed this check should exist.
     pub initiative: Option<String>,
+    /// Environments this check must be verified in, by id or slug. Empty leaves
+    /// it environment-agnostic.
+    pub environments: Vec<String>,
     pub title: String,
     pub body: String,
     pub precondition: String,
@@ -162,6 +170,25 @@ pub struct CheckPatch {
     pub metadata_merge: Option<Value>,
     pub epic: Option<Option<String>>,
     pub initiative: Option<Option<String>>,
+    /// Replaces the declared set. An empty vec clears it, which returns the
+    /// check to the environment-agnostic reading.
+    pub environments: Option<Vec<String>>,
+}
+
+/// What one recorded verdict says. Grouped because seven loose arguments in a
+/// row is where a caller swaps two `Option<&str>` and nothing notices.
+#[derive(Debug, Clone, Copy)]
+pub struct VerdictInput<'a> {
+    pub case: &'a str,
+    /// `agent` or `human`. Only a `human`-scoped token may send `human`.
+    pub actor_kind: &'a str,
+    pub actor: &'a str,
+    pub verdict: &'a str,
+    pub note: Option<&'a str>,
+    pub release: Option<&'a str>,
+    /// Where it was observed; see [`Store::record_verdict`] for when it may be
+    /// omitted and when omitting it is refused.
+    pub environment: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -227,6 +254,12 @@ pub struct WorkItem {
     pub case: String,
     pub case_key: String,
     pub case_label: String,
+    /// Where to run it. None when the check declares no environments.
+    pub environment: Option<String>,
+    pub environment_slug: Option<String>,
+    /// Carried on the item so a runner does not need a second request to learn
+    /// where to go — a work item that does not say where is not actionable.
+    pub base_url: Option<String>,
     pub reason: &'static str,
     pub verification: String,
     pub cost_minutes: Option<i64>,
@@ -242,6 +275,9 @@ impl WorkItem {
             "case": self.case,
             "case_key": self.case_key,
             "case_label": self.case_label,
+            "environment": self.environment,
+            "environment_slug": self.environment_slug,
+            "base_url": self.base_url,
             "reason": self.reason,
             "verification": self.verification,
             "cost_minutes": self.cost_minutes,
@@ -329,6 +365,23 @@ fn validate_check_precondition(value: &str) -> ApiResult<()> {
     if n > MAX_BODY {
         let (m, r) = msg_too_long("precondition", n, MAX_BODY);
         return Err(ApiError::validation("validation.check_precondition", m).remedy(r));
+    }
+    Ok(())
+}
+
+fn validate_check_environment_count(n: usize) -> ApiResult<()> {
+    if n > MAX_CHECK_ENVIRONMENTS {
+        return Err(ApiError::validation(
+            "validation.check_environments",
+            format!(
+                "This check declares {n} environments; the maximum is {MAX_CHECK_ENVIRONMENTS}."
+            ),
+        )
+        .remedy(
+            "A check verified in twenty places is usually several checks. Declare the \
+             environments where the verdict actually differs."
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -563,6 +616,8 @@ fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
         archived_at: row.get("archived_at")?,
         globs: Vec::new(),
         counts: CheckCounts::default(),
+        environments: Vec::new(),
+        env_counts: Vec::new(),
         orphan_globs: Vec::new(),
         policy: None,
     })
@@ -591,6 +646,8 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
         retired_at: row.get("retired_at")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        // Filled by `hydrate_case_environments` when the check declares any.
+        environments: Vec::new(),
     })
 }
 
@@ -603,6 +660,171 @@ const CASE_COLS: &str = "id, check_id, key, label, assignment, seeded, agent_ver
     agent_by, agent_release, human_verdict, human_at, human_by, human_release, stale_since, \
     retired_at, created_at, updated_at";
 
+/// Resolve a handle — an id or a slug — to the canonical environment id.
+///
+/// Both are accepted everywhere because an agent that has just read
+/// `takomo_environments` is holding a slug, while anything storing a reference
+/// holds an id. Making callers convert between them is how the conversion ends
+/// up done wrong in three places.
+pub(crate) fn resolve_environment(
+    conn: &Connection,
+    project: &str,
+    handle: &str,
+) -> ApiResult<String> {
+    let found: Option<String> = conn
+        .query_row(
+            "SELECT id FROM environments WHERE project = ?1 AND (id = ?2 OR slug = ?2)",
+            params![project, handle],
+            |r| r.get(0),
+        )
+        .optional()?;
+    found.ok_or_else(|| {
+        ApiError::not_found("environment", handle).remedy(format!(
+            "No environment '{handle}' in project '{project}'. List them with \
+             GET /v1/projects/{project}/environments, or register it first."
+        ))
+    })
+}
+
+/// The environments a check declares, as `(id, slug)`, ordered by slug.
+///
+/// Empty means the check is environment-agnostic — the original reading, and
+/// still the one every check filed before this existed uses.
+fn load_check_environments(conn: &Connection, check: &str) -> ApiResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.slug FROM check_environments ce \
+         JOIN environments e ON e.id = ce.environment \
+         WHERE ce.check_id = ?1 ORDER BY e.slug",
+    )?;
+    let out = stmt
+        .query_map(params![check], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(out)
+}
+
+/// Fill in `case.environments` from the check's declared set.
+///
+/// A declared environment with no row reads `never` rather than being absent:
+/// the gap is the finding, so it has to appear in the list rather than be
+/// inferred from its length.
+fn hydrate_case_environments(
+    conn: &Connection,
+    case: &mut Case,
+    declared: &[(String, String)],
+) -> ApiResult<()> {
+    if declared.is_empty() {
+        case.environments.clear();
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT environment, agent_verdict, agent_at, agent_by, agent_release, \
+         human_verdict, human_at, human_by, human_release, stale_since \
+         FROM case_environments WHERE case_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![case.id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Verdicts {
+                    agent_verdict: r.get(1)?,
+                    agent_at: r.get(2)?,
+                    agent_by: r.get(3)?,
+                    agent_release: r.get(4)?,
+                    human_verdict: r.get(5)?,
+                    human_at: r.get(6)?,
+                    human_by: r.get(7)?,
+                    human_release: r.get(8)?,
+                    stale_since: r.get(9)?,
+                },
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let by_env: HashMap<String, Verdicts> = rows.into_iter().collect();
+    case.environments = declared
+        .iter()
+        .map(|(id, slug)| CaseEnv {
+            environment: id.clone(),
+            slug: slug.clone(),
+            verdicts: by_env.get(id).cloned().unwrap_or_default(),
+        })
+        .collect();
+    Ok(())
+}
+
+/// Which environment a verdict is about.
+///
+/// The rule, and the reason for each branch:
+///
+/// - The check declares NONE. An environment must not be named, because the
+///   per-environment store is only consulted for checks that declare some — a
+///   verdict filed there would be written and never read.
+/// - The check declares one, and none was named. That one was meant; requiring
+///   it would be ceremony, and it also keeps every caller written before this
+///   existed working unchanged.
+/// - The check declares several, and none was named. Refused. This is the case
+///   the whole design exists for: a bare verdict genuinely does not say what was
+///   observed, and picking one silently would file a staging run as production.
+/// - An environment was named. It must be one the check declares — verifying
+///   somewhere the check does not claim is not evidence about the check.
+fn resolve_verdict_environment(
+    conn: &Connection,
+    project: &str,
+    declared: &[(String, String)],
+    requested: Option<&str>,
+) -> ApiResult<Option<String>> {
+    match (declared.len(), requested) {
+        (0, None) => Ok(None),
+        (0, Some(env)) => Err(ApiError::validation(
+            "validation.verdict_environment",
+            format!("This check declares no environments, so a verdict cannot cite '{env}'."),
+        )
+        .remedy(
+            "Either record the verdict without an environment, or declare the \
+             environments this check must be verified in first."
+                .to_string(),
+        )),
+        (1, None) => Ok(Some(declared[0].0.clone())),
+        (_, None) => {
+            let slugs: Vec<&str> = declared.iter().map(|(_, s)| s.as_str()).collect();
+            Err(ApiError::conflict(
+                "conflict.environment_ambiguous",
+                format!(
+                    "This check must be verified in {} environments ({}), so a verdict has to \
+                     say which one it is about.",
+                    declared.len(),
+                    slugs.join(", ")
+                ),
+            )
+            .details(json!({ "environments": slugs }))
+            .remedy(format!(
+                "Send {{\"environment\": \"{}\"}}. The worklist already names the \
+                 environment for every item on it.",
+                slugs[0]
+            )))
+        }
+        (_, Some(env)) => {
+            let id = resolve_environment(conn, project, env)?;
+            if !declared.iter().any(|(d, _)| *d == id) {
+                let slugs: Vec<&str> = declared.iter().map(|(_, s)| s.as_str()).collect();
+                return Err(ApiError::validation(
+                    "validation.verdict_environment",
+                    format!(
+                        "This check is not verified in '{env}'. It declares: {}.",
+                        slugs.join(", ")
+                    ),
+                )
+                .details(json!({ "environments": slugs }))
+                .remedy(
+                    "Record the verdict against one of the environments the check declares, \
+                     or add this one to the check first."
+                        .to_string(),
+                ));
+            }
+            Ok(Some(id))
+        }
+    }
+}
+
 fn load_globs(conn: &Connection, check: &str) -> ApiResult<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT glob FROM check_globs WHERE check_id = ?1 ORDER BY glob")?;
@@ -613,18 +835,57 @@ fn load_globs(conn: &Connection, check: &str) -> ApiResult<Vec<String>> {
 }
 
 /// Live cases of a check, counted by state.
-fn load_counts(conn: &Connection, check: &str) -> ApiResult<CheckCounts> {
+/// Case counts per declared environment: `(environment id, slug, counts)`.
+type EnvCounts = Vec<(String, String, CheckCounts)>;
+
+/// Case counts for a check, and the same counts broken out per environment.
+///
+/// The headline counts one row per CASE, not per (case, environment) pair, so a
+/// check that adds a second required environment does not double its own
+/// denominator overnight. What a second environment does change is each case's
+/// state — the worst of its environments — which is the honest reading: a case
+/// verified on staging and never run on production is not verified.
+fn load_counts_detail(conn: &Connection, check: &str) -> ApiResult<(CheckCounts, EnvCounts)> {
+    let declared = load_check_environments(conn, check)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {CASE_COLS} FROM cases WHERE check_id = ?1 AND retired_at IS NULL"
     ))?;
-    let cases = stmt
+    let mut cases = stmt
         .query_map(params![check], row_to_case)?
         .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
     let mut counts = CheckCounts::default();
-    for c in &cases {
+    let mut per_env: Vec<(String, String, CheckCounts)> = declared
+        .iter()
+        .map(|(id, slug)| (id.clone(), slug.clone(), CheckCounts::default()))
+        .collect();
+
+    for c in &mut cases {
+        hydrate_case_environments(conn, c, &declared)?;
         counts.add(c.state());
+        for (i, ce) in c.environments.iter().enumerate() {
+            per_env[i].2.add(ce.verdicts.state());
+        }
     }
-    Ok(counts)
+    Ok((counts, per_env))
+}
+
+/// Fill a check's counts, its declared environments, and the per-environment
+/// breakdown, in one pass. Every read path calls this so they cannot report
+/// different shapes for the same check.
+fn hydrate_check_counts(conn: &Connection, check: &mut Check) -> ApiResult<()> {
+    let (counts, per_env) = load_counts_detail(conn, &check.id)?;
+    check.counts = counts;
+    check.environments = per_env
+        .iter()
+        .map(|(id, slug, _)| json!({ "environment": id, "slug": slug }))
+        .collect();
+    check.env_counts = per_env
+        .into_iter()
+        .map(|(id, slug, c)| json!({ "environment": id, "slug": slug, "cases": c.to_json() }))
+        .collect();
+    Ok(())
 }
 
 /// Globs of this check that matched nothing in the newest release. Reported by the
@@ -713,7 +974,7 @@ fn resolve_policy(conn: &Connection, check: &Check) -> ApiResult<ResolvedPolicy>
 /// Has a verified case aged out? Time-based and release-count expiry both apply;
 /// whichever trips first wins, which is why this is an `||` and not a choice.
 fn case_expired(
-    case: &Case,
+    case: &Verdicts,
     policy: &ResolvedPolicy,
     now: i64,
     latest_seq: Option<i64>,
@@ -893,18 +1154,45 @@ impl Store {
                 if !globs.is_empty() && globs.iter().all(|g| orphan_set.contains(g.as_str())) {
                     impact.orphaned_checks.push(check.id.clone());
                 }
+                let declared = load_check_environments(tx, &check.id)?;
                 if touched {
                     // Only something previously verified can go stale. A case that
                     // was never verified stays `never`: calling it stale would
                     // report "needs re-testing" for work nobody has done once, and
                     // quietly shrink the never-tested gap this feature exists to
                     // show.
-                    let n = tx.execute(
-                        "UPDATE cases SET stale_since = ?1, updated_at = ?2
-                         WHERE check_id = ?3 AND retired_at IS NULL AND stale_since IS NULL
-                           AND (agent_verdict IS NOT NULL OR human_verdict IS NOT NULL)",
-                        params![id, now, check.id],
-                    )?;
+                    //
+                    // The release is a fact about CODE, so it stales every
+                    // environment's reading: the thing that was verified there no
+                    // longer exists, wherever it was verified.
+                    let n = if declared.is_empty() {
+                        tx.execute(
+                            "UPDATE cases SET stale_since = ?1, updated_at = ?2
+                             WHERE check_id = ?3 AND retired_at IS NULL AND stale_since IS NULL
+                               AND (agent_verdict IS NOT NULL OR human_verdict IS NOT NULL)",
+                            params![id, now, check.id],
+                        )?
+                    } else {
+                        let pairs = tx.execute(
+                            "UPDATE case_environments SET stale_since = ?1, updated_at = ?2
+                             WHERE stale_since IS NULL
+                               AND (agent_verdict IS NOT NULL OR human_verdict IS NOT NULL)
+                               AND case_id IN (
+                                 SELECT id FROM cases WHERE check_id = ?3 AND retired_at IS NULL)",
+                            params![id, now, check.id],
+                        )?;
+                        impact.stale_pairs += pairs as i64;
+                        // `stale_cases` keeps meaning DISTINCT cases, so a check
+                        // across three environments does not report its work
+                        // three times over to a caller counting cases.
+                        tx.query_row(
+                            "SELECT COUNT(DISTINCT ce.case_id) FROM case_environments ce
+                             JOIN cases c ON c.id = ce.case_id
+                             WHERE c.check_id = ?1 AND ce.stale_since = ?2",
+                            params![check.id, id],
+                            |r| r.get::<_, i64>(0),
+                        )? as usize
+                    };
                     if n > 0 {
                         impact.stale_cases += n as i64;
                         impact.stale_checks.push(check.id.clone());
@@ -923,21 +1211,62 @@ impl Store {
                     .query_map(params![check.id], row_to_case)?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
-                let expired: Vec<&Case> = cases
-                    .iter()
-                    .filter(|c| {
-                        c.stale_since.is_none()
-                            && case_expired(c, &policy, now, Some(next_seq), &release_seq)
-                    })
-                    .collect();
-                if !expired.is_empty() {
+                let mut expired_cases = 0i64;
+                if declared.is_empty() {
+                    let expired: Vec<&Case> = cases
+                        .iter()
+                        .filter(|c| {
+                            c.stale_since.is_none()
+                                && case_expired(
+                                    &c.unscoped(),
+                                    &policy,
+                                    now,
+                                    Some(next_seq),
+                                    &release_seq,
+                                )
+                        })
+                        .collect();
                     for c in &expired {
                         tx.execute(
                             "UPDATE cases SET stale_since = ?1, updated_at = ?2 WHERE id = ?3",
                             params![id, now, c.id],
                         )?;
                     }
-                    impact.stale_cases += expired.len() as i64;
+                    expired_cases = expired.len() as i64;
+                } else {
+                    // Each environment's clock runs on its own: staging verified
+                    // last week and production verified a year ago are not one
+                    // fact, and expiring them together would hide the older one.
+                    let mut hydrated = cases;
+                    for c in &mut hydrated {
+                        hydrate_case_environments(tx, c, &declared)?;
+                        let mut any = false;
+                        for ce in &c.environments {
+                            if ce.verdicts.stale_since.is_none()
+                                && case_expired(
+                                    &ce.verdicts,
+                                    &policy,
+                                    now,
+                                    Some(next_seq),
+                                    &release_seq,
+                                )
+                            {
+                                tx.execute(
+                                    "UPDATE case_environments SET stale_since = ?1, updated_at = ?2 \
+                                     WHERE case_id = ?3 AND environment = ?4",
+                                    params![id, now, c.id, ce.environment],
+                                )?;
+                                impact.stale_pairs += 1;
+                                any = true;
+                            }
+                        }
+                        if any {
+                            expired_cases += 1;
+                        }
+                    }
+                }
+                if expired_cases > 0 {
+                    impact.stale_cases += expired_cases;
                     impact.expired_checks.push(check.id.clone());
                 }
             }
@@ -1085,6 +1414,14 @@ impl Store {
             if let Some(i) = &initiative {
                 validate_initiative(tx, &project, i)?;
             }
+            validate_check_environment_count(req.environments.len())?;
+            let mut env_ids = Vec::new();
+            for handle in &req.environments {
+                let id = resolve_environment(tx, &project, handle)?;
+                if !env_ids.contains(&id) {
+                    env_ids.push(id);
+                }
+            }
             tx.execute(
                 "INSERT INTO checks (id, project, epic, initiative, title, body, precondition,
                     layer, severity, verification, expiry_days, expiry_releases,
@@ -1117,6 +1454,12 @@ impl Store {
                     params![id, g],
                 )?;
             }
+            for e in &env_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO check_environments (check_id, environment) VALUES (?1, ?2)",
+                    params![id, e],
+                )?;
+            }
             emit_event(
                 tx,
                 epic.as_deref(),
@@ -1128,7 +1471,12 @@ impl Store {
             )?;
             let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
             let mut check = stmt.query_row(params![id], row_to_check)?;
+            drop(stmt);
             check.globs = globs.clone();
+            check.environments = load_check_environments(tx, &id)?
+                .into_iter()
+                .map(|(id, slug)| json!({ "environment": id, "slug": slug }))
+                .collect();
             check.policy = Some(resolve_policy(tx, &check)?);
             Ok(check)
         })
@@ -1197,7 +1545,7 @@ impl Store {
             checks.truncate(limit as usize);
             for check in &mut checks {
                 check.globs = load_globs(conn, &check.id)?;
-                check.counts = load_counts(conn, &check.id)?;
+                hydrate_check_counts(conn, check)?;
                 check.orphan_globs = load_orphan_globs(conn, &filter.project, &check.id)?;
                 if filter.with_policy {
                     check.policy = Some(resolve_policy(conn, check)?);
@@ -1216,7 +1564,7 @@ impl Store {
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("check", id))?;
             check.globs = load_globs(conn, id)?;
-            check.counts = load_counts(conn, id)?;
+            hydrate_check_counts(conn, &mut check)?;
             check.orphan_globs = load_orphan_globs(conn, &check.project, id)?;
             check.policy = Some(resolve_policy(conn, &check)?);
             Ok(check)
@@ -1271,6 +1619,22 @@ impl Store {
             if let Some(Some(i)) = &patch.initiative {
                 validate_initiative(tx, &existing.project, i)?;
             }
+            // Resolved BEFORE anything is written, so a bad handle refuses the
+            // whole patch rather than half-applying it.
+            let new_envs = match &patch.environments {
+                None => None,
+                Some(list) => {
+                    validate_check_environment_count(list.len())?;
+                    let mut ids = Vec::new();
+                    for handle in list {
+                        let id = resolve_environment(tx, &existing.project, handle)?;
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    Some(ids)
+                }
+            };
 
             macro_rules! set_plain {
                 ($field:ident, $col:literal) => {
@@ -1334,6 +1698,24 @@ impl Store {
                     )?;
                 }
             }
+            // Replacing the declared set does NOT touch the per-environment
+            // rows. An environment dropped from a check keeps its recorded
+            // verdicts: it stops being required, which is not the same as never
+            // having been verified there, and re-declaring it later finds the
+            // history intact.
+            if let Some(ids) = &new_envs {
+                tx.execute(
+                    "DELETE FROM check_environments WHERE check_id = ?1",
+                    params![id],
+                )?;
+                for e in ids {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO check_environments (check_id, environment) \
+                         VALUES (?1, ?2)",
+                        params![id, e],
+                    )?;
+                }
+            }
             tx.execute(
                 "UPDATE checks SET version = version + 1, updated_at = ?1 WHERE id = ?2",
                 params![now, id],
@@ -1352,7 +1734,7 @@ impl Store {
             let mut check = stmt.query_row(params![id], row_to_check)?;
             drop(stmt);
             check.globs = load_globs(tx, &id)?;
-            check.counts = load_counts(tx, &id)?;
+            hydrate_check_counts(tx, &mut check)?;
             check.policy = Some(resolve_policy(tx, &check)?);
             Ok(check)
         })
@@ -1389,7 +1771,7 @@ impl Store {
             let mut check = stmt.query_row(params![id], row_to_check)?;
             drop(stmt);
             check.globs = load_globs(tx, &id)?;
-            check.counts = load_counts(tx, &id)?;
+            hydrate_check_counts(tx, &mut check)?;
             Ok(check)
         })
     }
@@ -1603,9 +1985,14 @@ impl Store {
                  ORDER BY key LIMIT ?2 OFFSET ?3"
             );
             let mut stmt = conn.prepare(&sql)?;
-            let out = stmt
+            let mut out = stmt
                 .query_map(params![check, limit, offset], row_to_case)?
                 .collect::<Result<Vec<_>, _>>()?;
+            drop(stmt);
+            let declared = load_check_environments(conn, check)?;
+            for c in &mut out {
+                hydrate_case_environments(conn, c, &declared)?;
+            }
             Ok((out, total))
         })
     }
@@ -1613,11 +2000,13 @@ impl Store {
     pub fn get_case(&self, id: &str) -> ApiResult<(Case, Vec<CaseVerdict>)> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(&format!("SELECT {CASE_COLS} FROM cases WHERE id = ?1"))?;
-            let case = stmt
+            let mut case = stmt
                 .query_row(params![id], row_to_case)
                 .optional()?
                 .ok_or_else(|| ApiError::not_found("case", id))?;
             drop(stmt);
+            let declared = load_check_environments(conn, &case.check)?;
+            hydrate_case_environments(conn, &mut case, &declared)?;
             let mut stmt = conn.prepare(
                 // Newest first, tiebroken on rowid — i.e. insertion order.
                 //
@@ -1627,7 +2016,7 @@ impl Store {
                 // exactly what an agent pass followed by a human pass does — came
                 // back in either order, so "newest first" was only true about half
                 // the time.
-                "SELECT id, case_id, actor_kind, actor, verdict, note, release, at
+                "SELECT id, case_id, actor_kind, actor, verdict, note, release, environment, at
                  FROM case_verdicts WHERE case_id = ?1 ORDER BY at DESC, rowid DESC",
             )?;
             let history = stmt
@@ -1640,7 +2029,8 @@ impl Store {
                         verdict: r.get(4)?,
                         note: r.get(5)?,
                         release: r.get(6)?,
-                        at: r.get(7)?,
+                        environment: r.get(7)?,
+                        at: r.get(8)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1657,15 +2047,28 @@ impl Store {
     /// them would make "a person looked at this" unrecoverable.
     ///
     /// A verdict clears `stale_since` — that is the whole point of re-running it.
-    pub fn record_verdict(
-        &self,
-        case: &str,
-        actor_kind: &str,
-        actor: &str,
-        verdict: &str,
-        note: Option<&str>,
-        release: Option<&str>,
-    ) -> ApiResult<Case> {
+    /// Record a verdict, optionally against one of the check's environments.
+    ///
+    /// **An omitted environment resolves when unambiguous and refuses loudly
+    /// when not.** If the check declares exactly one, that is what was meant. If
+    /// it declares two or more, a bare verdict genuinely does not say what was
+    /// observed, and a silent default would be the one failure this whole design
+    /// exists to prevent: a staging run filed as production is worse than no
+    /// record at all.
+    ///
+    /// A check that declares no environments keeps the original behaviour, and
+    /// naming one there is refused rather than quietly stored — the two stores
+    /// are mutually exclusive, and that is what keeps them from disagreeing.
+    pub fn record_verdict(&self, req: &VerdictInput<'_>) -> ApiResult<Case> {
+        let VerdictInput {
+            case,
+            actor_kind,
+            actor,
+            verdict,
+            note,
+            release,
+            environment,
+        } = *req;
         validate_verdict(verdict)?;
         validate_actor_kind(actor_kind)?;
         if let Some(n) = note {
@@ -1731,7 +2134,35 @@ impl Store {
                 }
             }
 
-            if actor_kind == "agent" {
+            let declared = load_check_environments(tx, &existing.check)?;
+            let target = resolve_verdict_environment(tx, &project, &declared, environment)?;
+
+            if let Some(env) = &target {
+                // Lazily created: a pair nobody has run has no row, which is how
+                // `never` stays free rather than costing a row per case per
+                // environment at filing time.
+                tx.execute(
+                    "INSERT OR IGNORE INTO case_environments (case_id, environment, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?3)",
+                    params![case, env, now],
+                )?;
+                let sql = if actor_kind == "agent" {
+                    "UPDATE case_environments SET agent_verdict = ?1, agent_at = ?2, agent_by = ?3, \
+                     agent_release = ?4, stale_since = NULL, updated_at = ?2 \
+                     WHERE case_id = ?5 AND environment = ?6"
+                } else {
+                    "UPDATE case_environments SET human_verdict = ?1, human_at = ?2, human_by = ?3, \
+                     human_release = ?4, stale_since = NULL, updated_at = ?2 \
+                     WHERE case_id = ?5 AND environment = ?6"
+                };
+                tx.execute(sql, params![verdict, now, actor, release, case, env])?;
+                // The case row's own timestamp still moves, so "when did anything
+                // last happen here" stays answerable without a join.
+                tx.execute(
+                    "UPDATE cases SET updated_at = ?1 WHERE id = ?2",
+                    params![now, case],
+                )?;
+            } else if actor_kind == "agent" {
                 tx.execute(
                     "UPDATE cases SET agent_verdict = ?1, agent_at = ?2, agent_by = ?3,
                          agent_release = ?4, stale_since = NULL, updated_at = ?2 WHERE id = ?5",
@@ -1745,9 +2176,9 @@ impl Store {
                 )?;
             }
             tx.execute(
-                "INSERT INTO case_verdicts (id, case_id, actor_kind, actor, verdict, note, release, at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![verdict_id(), case, actor_kind, actor, verdict, note, release, now],
+                "INSERT INTO case_verdicts (id, case_id, actor_kind, actor, verdict, note, release, environment, at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![verdict_id(), case, actor_kind, actor, verdict, note, release, target, now],
             )?;
             emit_event(
                 tx,
@@ -1761,11 +2192,14 @@ impl Store {
                     "actor_kind": actor_kind,
                     "verdict": verdict,
                     "release": release,
+                    "environment": target,
                 }),
                 now,
             )?;
             let mut stmt = tx.prepare(&format!("SELECT {CASE_COLS} FROM cases WHERE id = ?1"))?;
-            let out = stmt.query_row(params![case], row_to_case)?;
+            let mut out = stmt.query_row(params![case], row_to_case)?;
+            drop(stmt);
+            hydrate_case_environments(tx, &mut out, &declared)?;
             Ok(out)
         })
     }
@@ -1907,7 +2341,7 @@ impl Store {
             drop(stmt);
             for check in &mut checks {
                 check.globs = load_globs(conn, &check.id)?;
-                check.counts = load_counts(conn, &check.id)?;
+                hydrate_check_counts(conn, check)?;
                 check.orphan_globs = load_orphan_globs(conn, project, &check.id)?;
                 check.policy = Some(resolve_policy(conn, check)?);
             }
@@ -2021,7 +2455,7 @@ impl Store {
             drop(stmt);
             for check in &mut checks {
                 check.globs = load_globs(conn, &check.id)?;
-                check.counts = load_counts(conn, &check.id)?;
+                hydrate_check_counts(conn, check)?;
                 check.orphan_globs = load_orphan_globs(conn, &project, &check.id)?;
                 check.policy = Some(resolve_policy(conn, check)?);
             }
@@ -2113,52 +2547,96 @@ impl Store {
                     .query_map(params![check.id], row_to_case)?
                     .collect::<Result<Vec<_>, _>>()?;
                 drop(stmt);
-                for case in &cases {
-                    let expired = case_expired(case, &policy, now, latest_seq, &release_seq);
-                    let reason = if case.stale_since.is_some() {
-                        "stale"
-                    } else if expired {
-                        "expired"
-                    } else if case.state() == "failed" {
-                        "failed"
-                    } else if !case.satisfies(&policy) {
-                        if case.state() == "never" {
-                            "never"
+                let declared = load_check_environments(conn, &check.id)?;
+                let mut cases = cases;
+                for case in &mut cases {
+                    hydrate_case_environments(conn, case, &declared)?;
+                    // A unit of work is (case x environment) once a check
+                    // declares any: "re-run this on staging" is the instruction,
+                    // and one that does not say where is not actionable.
+                    let units: Vec<(Option<(String, String)>, Verdicts)> =
+                        if case.environments.is_empty() {
+                            vec![(None, case.unscoped())]
                         } else {
-                            "awaiting_human"
+                            case.environments
+                                .iter()
+                                .map(|ce| {
+                                    (
+                                        Some((ce.environment.clone(), ce.slug.clone())),
+                                        ce.verdicts.clone(),
+                                    )
+                                })
+                                .collect()
+                        };
+
+                    for (env, v) in units {
+                        let expired = case_expired(&v, &policy, now, latest_seq, &release_seq);
+                        let state = v.state();
+                        let reason = if v.stale_since.is_some() {
+                            "stale"
+                        } else if expired {
+                            "expired"
+                        } else if state == "failed" {
+                            "failed"
+                        } else if !v.satisfies(&policy) {
+                            if state == "never" {
+                                "never"
+                            } else {
+                                "awaiting_human"
+                            }
+                        } else {
+                            continue;
+                        };
+                        // Who can clear it: anything needing a human's signature goes to
+                        // the human list, and a stale case under agent_then_human needs
+                        // the agent first, so it appears on the agent list until it has
+                        // a fresh agent verdict.
+                        let needs_agent_first = policy.verification == "agent_then_human"
+                            && (v.stale_since.is_some()
+                                || expired
+                                || v.agent_verdict.as_deref() != Some("pass"));
+                        let to_human = policy.needs_human() && !needs_agent_first;
+                        let (environment, environment_slug) = match &env {
+                            Some((id, slug)) => (Some(id.clone()), Some(slug.clone())),
+                            None => (None, None),
+                        };
+                        let base_url = match &env {
+                            // Carried on the item so a runner does not need a
+                            // second request to learn where to go.
+                            Some((id, _)) => conn
+                                .query_row(
+                                    "SELECT base_url FROM environments WHERE id = ?1",
+                                    params![id],
+                                    |r| r.get::<_, Option<String>>(0),
+                                )
+                                .optional()?
+                                .flatten(),
+                            None => None,
+                        };
+                        let item = WorkItem {
+                            check: check.id.clone(),
+                            check_title: check.title.clone(),
+                            severity: check.severity.clone(),
+                            layer: check.layer.clone(),
+                            case: case.id.clone(),
+                            case_key: case.key.clone(),
+                            case_label: case.label.clone(),
+                            environment,
+                            environment_slug,
+                            base_url,
+                            reason,
+                            verification: policy.verification.clone(),
+                            cost_minutes: if to_human {
+                                check.cost_human_minutes
+                            } else {
+                                check.cost_agent_minutes
+                            },
+                        };
+                        if to_human {
+                            human_items.push(item);
+                        } else {
+                            agent_items.push(item);
                         }
-                    } else {
-                        continue;
-                    };
-                    // Who can clear it: anything needing a human's signature goes to
-                    // the human list, and a stale case under agent_then_human needs
-                    // the agent first, so it appears on the agent list until it has
-                    // a fresh agent verdict.
-                    let needs_agent_first = policy.verification == "agent_then_human"
-                        && (case.stale_since.is_some()
-                            || expired
-                            || case.agent_verdict.as_deref() != Some("pass"));
-                    let to_human = policy.needs_human() && !needs_agent_first;
-                    let item = WorkItem {
-                        check: check.id.clone(),
-                        check_title: check.title.clone(),
-                        severity: check.severity.clone(),
-                        layer: check.layer.clone(),
-                        case: case.id.clone(),
-                        case_key: case.key.clone(),
-                        case_label: case.label.clone(),
-                        reason,
-                        verification: policy.verification.clone(),
-                        cost_minutes: if to_human {
-                            check.cost_human_minutes
-                        } else {
-                            check.cost_agent_minutes
-                        },
-                    };
-                    if to_human {
-                        human_items.push(item);
-                    } else {
-                        agent_items.push(item);
                     }
                 }
             }
@@ -2174,6 +2652,7 @@ impl Store {
                         .cmp(&rank(&b.severity))
                         .then_with(|| a.check_title.cmp(&b.check_title))
                         .then_with(|| a.case_key.cmp(&b.case_key))
+                        .then_with(|| a.environment_slug.cmp(&b.environment_slug))
                 });
             }
 

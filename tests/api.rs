@@ -13660,6 +13660,373 @@ async fn a_check_refuses_an_initiative_that_does_not_exist_or_is_elsewhere() {
     assert_eq!(b["code"], "validation.check_initiative");
 }
 
+/// A check declaring two environments tracks each one separately.
+///
+/// This is the whole point of declaring them: "passes on staging, never run on
+/// production" has to be expressible, and the case's own word has to be the
+/// WORST of its environments — otherwise the feature reports the opposite of
+/// what it exists to show.
+#[tokio::test]
+async fn a_case_is_verified_per_environment_and_the_worst_one_wins() {
+    let app = TestApp::spawn().await;
+    let staging = environment(&app, json!({ "slug": "staging", "kind": "staging" })).await;
+    let prod = environment(&app, json!({ "slug": "prod", "kind": "production" })).await;
+
+    let id = check(
+        &app,
+        json!({
+            "title": "Split an invoice",
+            "environments": ["staging", "prod"],
+            "severity": "blocking",
+        }),
+    )
+    .await;
+    let (_, c) = app.get(&app.admin, &format!("/v1/checks/{id}")).await;
+    let slugs: Vec<&str> = c["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(slugs, vec!["prod", "staging"], "declared, by slug: {c}");
+
+    file_cases(&app, &id, &["a"]).await;
+    let case = case_ids(&app, &id).await[0].1.clone();
+
+    // Nothing recorded anywhere: every declared environment reads `never`, and
+    // so does the case.
+    let (_, before) = app.get(&app.admin, &format!("/v1/cases/{case}")).await;
+    assert_eq!(before["state"], "never", "{before}");
+    assert_eq!(before["environments"].as_array().unwrap().len(), 2);
+    for e in before["environments"].as_array().unwrap() {
+        assert_eq!(e["state"], "never", "{e}");
+    }
+
+    // Pass on staging only.
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{case}/verdict"),
+            json!({ "verdict": "pass", "environment": "staging" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["state"], "never",
+        "staging alone does not verify the case — production has never been run: {b}"
+    );
+    let by_slug: std::collections::HashMap<&str, &Value> = b["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["slug"].as_str().unwrap(), e))
+        .collect();
+    assert_eq!(by_slug["staging"]["state"], "verified", "{b}");
+    assert_eq!(by_slug["prod"]["state"], "never", "{b}");
+
+    // The check's headline counts one row per CASE (the worst reading), and
+    // reports the same set broken out per environment beside it.
+    let (_, ck) = app.get(&app.admin, &format!("/v1/checks/{id}")).await;
+    assert_eq!(ck["cases"]["never"], json!(1), "{ck}");
+    assert_eq!(
+        ck["cases"]["total"],
+        json!(1),
+        "not doubled by a second environment: {ck}"
+    );
+    let env_cases: std::collections::HashMap<&str, &Value> = ck["environment_cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["slug"].as_str().unwrap(), e))
+        .collect();
+    assert_eq!(env_cases["staging"]["cases"]["verified"], json!(1), "{ck}");
+    assert_eq!(env_cases["prod"]["cases"]["never"], json!(1), "{ck}");
+
+    // Now production too — and only then is the case verified.
+    let (_, done) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{case}/verdict"),
+            json!({ "verdict": "pass", "environment": prod["slug"] }),
+        )
+        .await;
+    assert_eq!(done["state"], "verified", "{done}");
+
+    // The history says where each verdict was taken, which is what makes an old
+    // one auditable rather than merely present.
+    let (_, full) = app.get(&app.admin, &format!("/v1/cases/{case}")).await;
+    let envs: Vec<&str> = full["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["environment"].as_str().unwrap_or("?"))
+        .collect();
+    assert_eq!(envs.len(), 2, "{full}");
+    assert!(
+        envs.contains(&staging["id"].as_str().unwrap())
+            && envs.contains(&prod["id"].as_str().unwrap()),
+        "every verdict records its environment: {full}"
+    );
+}
+
+/// A verdict that does not say where it was taken is refused when that is
+/// genuinely ambiguous — and resolved when it is not.
+///
+/// The silent alternative is the one failure this design exists to prevent: a
+/// staging run filed as production is worse than no record at all. Resolving the
+/// single-environment case keeps every caller written before this existed
+/// working unchanged.
+#[tokio::test]
+async fn an_omitted_environment_resolves_when_unambiguous_and_refuses_when_not() {
+    let app = TestApp::spawn().await;
+    environment(&app, json!({ "slug": "staging" })).await;
+    environment(&app, json!({ "slug": "prod" })).await;
+
+    // A check with no environments: the original behaviour, unchanged.
+    let plain = check(&app, json!({ "title": "Anywhere" })).await;
+    file_cases(&app, &plain, &["a"]).await;
+    let plain_case = case_ids(&app, &plain).await[0].1.clone();
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{plain_case}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["state"], "verified", "{b}");
+    assert!(
+        b["environments"].as_array().unwrap().is_empty(),
+        "environment-agnostic stays that way: {b}"
+    );
+    // …and naming one there is refused rather than stored where nothing reads it.
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{plain_case}/verdict"),
+            json!({ "verdict": "pass", "environment": "staging" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["code"], "validation.verdict_environment");
+
+    // Exactly one declared: an omitted environment means that one.
+    let one = check(
+        &app,
+        json!({ "title": "Only staging", "environments": ["staging"] }),
+    )
+    .await;
+    file_cases(&app, &one, &["a"]).await;
+    let one_case = case_ids(&app, &one).await[0].1.clone();
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{one_case}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["state"], "verified", "{b}");
+    assert_eq!(b["environments"][0]["slug"], "staging", "{b}");
+
+    // Two declared: refused, naming both so the caller can pick.
+    let two = check(
+        &app,
+        json!({ "title": "Both", "environments": ["staging", "prod"] }),
+    )
+    .await;
+    file_cases(&app, &two, &["a"]).await;
+    let two_case = case_ids(&app, &two).await[0].1.clone();
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{two_case}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "conflict.environment_ambiguous");
+    let named: Vec<&str> = b["details"]["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        named.contains(&"staging") && named.contains(&"prod"),
+        "the refusal names the candidates, or it costs a round trip: {b}"
+    );
+
+    // An environment the check does not declare is refused too: a verdict is
+    // evidence about the check, so it has to be taken where the check claims.
+    environment(&app, json!({ "slug": "elsewhere" })).await;
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{two_case}/verdict"),
+            json!({ "verdict": "pass", "environment": "elsewhere" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["code"], "validation.verdict_environment");
+}
+
+/// A release stales every environment's reading, and the worklist says where.
+///
+/// The release is a fact about CODE: the thing that was verified no longer
+/// exists, wherever it was verified. And `stale_cases` keeps counting DISTINCT
+/// cases while `stale_pairs` counts the work, so a caller counting cases does
+/// not see one check's work reported twice over.
+#[tokio::test]
+async fn a_release_stales_every_environment_and_the_worklist_says_where() {
+    let app = TestApp::spawn().await;
+    environment(
+        &app,
+        json!({ "slug": "staging", "base_url": "https://staging.example.com" }),
+    )
+    .await;
+    environment(&app, json!({ "slug": "prod" })).await;
+
+    let id = check(
+        &app,
+        json!({
+            "title": "Split an invoice",
+            "environments": ["staging", "prod"],
+            "globs": ["src/billing/**"],
+        }),
+    )
+    .await;
+    file_cases(&app, &id, &["a"]).await;
+    let case = case_ids(&app, &id).await[0].1.clone();
+    for env in ["staging", "prod"] {
+        app.post(
+            &app.admin,
+            &format!("/v1/cases/{case}/verdict"),
+            json!({ "verdict": "pass", "environment": env }),
+        )
+        .await;
+    }
+
+    let (_, rel) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/releases",
+            json!({ "ref": "v2", "touched_paths": ["src/billing/split.rs"] }),
+        )
+        .await;
+    assert_eq!(
+        rel["impact"]["stale_cases"], 1,
+        "one case, however many environments it is verified in: {rel}"
+    );
+    assert_eq!(
+        rel["impact"]["stale_pairs"], 2,
+        "…and two units of work to redo: {rel}"
+    );
+
+    // The worklist is per (case, environment) and carries where to go, because
+    // an item that does not say where is not actionable.
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    assert_eq!(wl["agent"]["cases"], json!(2), "{wl}");
+    let items = wl["agent"]["items"].as_array().unwrap();
+    let slugs: Vec<&str> = items
+        .iter()
+        .map(|i| i["environment_slug"].as_str().unwrap())
+        .collect();
+    assert!(
+        slugs.contains(&"staging") && slugs.contains(&"prod"),
+        "{wl}"
+    );
+    let staging_item = items
+        .iter()
+        .find(|i| i["environment_slug"] == "staging")
+        .unwrap();
+    assert_eq!(staging_item["reason"], "stale", "{staging_item}");
+    assert_eq!(
+        staging_item["base_url"], "https://staging.example.com",
+        "the item says where to go: {staging_item}"
+    );
+}
+
+/// Dropping an environment from a check keeps what was recorded there.
+///
+/// It stops being required, which is not the same as never having been verified
+/// there — and re-declaring it later finds the history intact rather than
+/// starting from `never`.
+#[tokio::test]
+async fn undeclaring_an_environment_keeps_its_verdicts_for_when_it_returns() {
+    let app = TestApp::spawn().await;
+    environment(&app, json!({ "slug": "staging" })).await;
+    environment(&app, json!({ "slug": "prod" })).await;
+
+    let id = check(
+        &app,
+        json!({ "title": "Split", "environments": ["staging", "prod"] }),
+    )
+    .await;
+    file_cases(&app, &id, &["a"]).await;
+    let case = case_ids(&app, &id).await[0].1.clone();
+    app.post(
+        &app.admin,
+        &format!("/v1/cases/{case}/verdict"),
+        json!({ "verdict": "pass", "environment": "staging" }),
+    )
+    .await;
+
+    // Narrow it to production only.
+    let (s, patched) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/checks/{id}"),
+            json!({ "environments": ["prod"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["environments"].as_array().unwrap().len(), 1);
+    let (_, narrowed) = app.get(&app.admin, &format!("/v1/cases/{case}")).await;
+    assert_eq!(narrowed["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(narrowed["environments"][0]["slug"], "prod");
+    assert_eq!(
+        narrowed["state"], "never",
+        "only production counts now: {narrowed}"
+    );
+
+    // Put staging back: its verdict is still there.
+    let (_, restored) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/checks/{id}"),
+            json!({ "environments": ["staging", "prod"] }),
+        )
+        .await;
+    assert_eq!(restored["environments"].as_array().unwrap().len(), 2);
+    let (_, back) = app.get(&app.admin, &format!("/v1/cases/{case}")).await;
+    let by_slug: std::collections::HashMap<&str, &Value> = back["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["slug"].as_str().unwrap(), e))
+        .collect();
+    assert_eq!(
+        by_slug["staging"]["state"], "verified",
+        "the record survived being undeclared: {back}"
+    );
+
+    // Clearing the set entirely returns the check to the unscoped reading.
+    let (_, cleared) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/checks/{id}"),
+            json!({ "environments": [] }),
+        )
+        .await;
+    assert!(
+        cleared["environments"].as_array().unwrap().is_empty(),
+        "{cleared}"
+    );
+}
+
 /// A database written before the rename opens as `checks`, with every row intact.
 ///
 /// The rename is the one migration step that runs BEFORE the schema batch, and

@@ -32,8 +32,8 @@ mod workflows;
 pub use answer_grants::{DEFAULT_ANSWER_TTL_SECONDS, MAX_ANSWER_TTL_SECONDS};
 pub use checklist::{
     glob_matches, CaseFileOutcome, CaseInput, CheckCreate, CheckFilter, CheckPatch, PolicyInput,
-    ReleasePush, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_CHECKS_PAGE, MAX_CHECK_GLOBS,
-    MAX_RELEASE_PATHS,
+    ReleasePush, VerdictInput, WorkItem, MAX_CASES_PAGE, MAX_CASES_PER_FILE, MAX_CHECKS_PAGE,
+    MAX_CHECK_GLOBS, MAX_RELEASE_PATHS,
 };
 pub use claims::{
     ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
@@ -722,6 +722,21 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         if !cols.is_empty() && !cols.iter().any(|c| c == "user") {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN \"user\" TEXT"), [])?;
         }
+    }
+    // case_verdicts.environment: where the verdict was observed. Nullable, and
+    // NULL is exactly right for every existing row — a verdict recorded before
+    // environments existed states no environment, which is not the same as an
+    // unknown one. Not back-filled: inventing a location for a past observation
+    // would be inventing evidence.
+    let verdict_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(case_verdicts)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        cols
+    };
+    if !verdict_cols.is_empty() && !verdict_cols.iter().any(|c| c == "environment") {
+        conn.execute("ALTER TABLE case_verdicts ADD COLUMN environment TEXT", [])?;
     }
     // checks.initiative: which initiative's conversation agreed this check should
     // exist. Nullable, and NULL is exactly right for every existing row — a check
@@ -1556,6 +1571,45 @@ CREATE TABLE IF NOT EXISTS case_verdicts (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
+
+-- Which environments a check must be verified in.
+--
+-- EMPTY is a legitimate steady state, not a gap: a check can be genuinely
+-- environment-agnostic, and every check filed before this existed is one. A
+-- check that declares nothing keeps using the verdict columns on `cases`; a
+-- check that declares anything uses `case_environments` instead, and nothing
+-- writes both.
+CREATE TABLE IF NOT EXISTS check_environments (
+  check_id    TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+  environment TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  PRIMARY KEY (check_id, environment)
+) WITHOUT ROWID;
+
+-- How one case stands in ONE environment.
+--
+-- The nine columns are lifted verbatim from `cases`, because they are the same
+-- nine facts asked in a narrower scope. A row exists only once something has
+-- been recorded: a pair nobody has run has no row and reads `never`, which is
+-- both correct and free. Creating them eagerly would fan `file_cases` out to
+-- cases x environments inserts — a 5,000-case check across four environments is
+-- 20,000 rows in one transaction holding the write mutex every claim waits on.
+CREATE TABLE IF NOT EXISTS case_environments (
+  case_id       TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  environment   TEXT NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  agent_verdict TEXT,
+  agent_at      INTEGER,
+  agent_by      TEXT,
+  agent_release TEXT,
+  human_verdict TEXT,
+  human_at      INTEGER,
+  human_by      TEXT,
+  human_release TEXT,
+  stale_since   TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (case_id, environment)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_case_environments_env ON case_environments(environment);
 
 -- Where a check can actually be run: a named, project-scoped environment.
 --

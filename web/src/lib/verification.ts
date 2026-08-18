@@ -66,6 +66,22 @@ export interface ResolvedPolicy {
   expiry_from: string
 }
 
+export interface CheckEnvRef {
+  environment: string
+  slug: string
+}
+
+export interface EnvCases extends CheckEnvRef {
+  cases: CaseCounts
+}
+
+export interface CaseEnvState extends CheckEnvRef {
+  state: CaseState
+  agent?: { verdict: string | null; at: string | null; by: string | null }
+  human?: { verdict: string | null; at: string | null; by: string | null }
+  stale_since?: string | null
+}
+
 export interface Check {
   id: string
   project: string
@@ -80,6 +96,14 @@ export interface Check {
   globs: string[]
   /** Globs that matched NO file in the newest release — the rot, made visible. */
   orphan_globs: string[]
+  /** Where this check must pass. Empty means environment-agnostic. */
+  environments: CheckEnvRef[]
+  /**
+   * `cases` counts one row per CASE, taking the WORST of its environments, so a
+   * second environment does not double the denominator. This says where the gap
+   * actually is.
+   */
+  environment_cases: EnvCases[]
   cases: CaseCounts
   policy?: ResolvedPolicy
   cost_agent_minutes: number | null
@@ -94,6 +118,8 @@ export interface CaseRow {
   key: string
   label: string
   state: CaseState
+  /** Per-environment readings; empty when the check declares none. */
+  environments: CaseEnvState[]
   assignment: unknown
   agent?: { verdict: string | null; at: string | null; by: string | null }
   human?: { verdict: string | null; at: string | null; by: string | null }
@@ -121,6 +147,10 @@ export interface Environment {
 export interface WorkItem {
   check: string
   check_title: string
+  environment?: string | null
+  environment_slug?: string | null
+  /** Where to go, carried on the item so a runner needs no second request. */
+  base_url?: string | null
   severity: Severity
   layer: Layer
   case: string
@@ -186,6 +216,8 @@ export function listChecks(
 export interface CheckFields {
   title: string
   initiative?: string
+  /** Environment ids or slugs this check must be verified in. */
+  environments?: string[]
   epic?: string
   layer?: Layer
   severity?: Severity
@@ -258,11 +290,15 @@ export function recordVerdict(
   token: string,
   caseId: string,
   verdict: Verdict,
-  opts: { note?: string; human?: boolean } = {},
+  opts: { note?: string; human?: boolean; environment?: string } = {},
 ): Promise<CaseRow> {
   const body: Record<string, unknown> = { verdict }
   if (opts.note) body.note = opts.note
   if (opts.human) body.actor_kind = 'human'
+  // Required when the check declares more than one environment: the server
+  // refuses rather than guessing, because filing a staging run as production is
+  // worse than no record.
+  if (opts.environment) body.environment = opts.environment
   return api<CaseRow>(token, `/cases/${enc(caseId)}/verdict`, {
     method: 'POST',
     headers: json,

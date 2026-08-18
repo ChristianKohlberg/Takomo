@@ -28,6 +28,9 @@ import {
 
 export interface CheckDialogLabels {
   newCheck: string
+  fEnvironments: string
+  fEnvironmentsHint: string
+  fEnvironmentsNone: string
   fTitle: string
   fTitlePh: string
   fInitiative: string
@@ -52,6 +55,8 @@ export interface CheckDialogProps {
   onOpenChange: (open: boolean) => void
   /** Initiatives to file under, as `[id, title]`. */
   initiatives: { id: string; title: string }[]
+  /** Environments this project has, to declare where the check must pass. */
+  environments: { id: string; slug: string }[]
   /** Preselected initiative, when the dialog was opened from a group header. */
   defaultInitiative?: string
   labels: CheckDialogLabels
@@ -62,6 +67,7 @@ export function CheckDialog({
   open,
   onOpenChange,
   initiatives,
+  environments,
   defaultInitiative,
   labels,
   onSubmit,
@@ -73,6 +79,7 @@ export function CheckDialog({
   const [precondition, setPrecondition] = useState('')
   const [body, setBody] = useState('')
   const [globs, setGlobs] = useState('')
+  const [envs, setEnvs] = useState<string[]>([])
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -85,6 +92,7 @@ export function CheckDialog({
     setPrecondition('')
     setBody('')
     setGlobs('')
+    setEnvs([])
     setError('')
   }, [open, defaultInitiative])
 
@@ -100,6 +108,7 @@ export function CheckDialog({
         .map((g) => g.trim())
         .filter(Boolean)
       if (list.length) fields.globs = list
+      if (envs.length) fields.environments = envs
       await onSubmit(fields)
       onOpenChange(false)
     } catch (e) {
@@ -202,6 +211,40 @@ export function CheckDialog({
                 placeholder={labels.fBodyPh}
                 onChange={(e) => setBody(e.target.value)}
               />
+            )}
+          </Field>
+
+          {/* Checkboxes, not a multi-select: declaring two environments is a
+              deliberate choice with a real consequence — every case is then
+              tracked in both — so it should take two clicks and read as two
+              things, not as a list widget. */}
+          <Field label={labels.fEnvironments} hint={labels.fEnvironmentsHint}>
+            {(id) => (
+              <div id={id} className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {environments.length === 0 ? (
+                  <span className="text-muted-foreground text-[12.5px]">
+                    {labels.fEnvironmentsNone}
+                  </span>
+                ) : (
+                  environments.map((e) => (
+                    <label
+                      key={e.id}
+                      className="text-foreground flex items-center gap-1.5 text-[13px]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={envs.includes(e.id)}
+                        onChange={(ev) =>
+                          setEnvs((p) =>
+                            ev.target.checked ? [...p, e.id] : p.filter((x) => x !== e.id),
+                          )
+                        }
+                      />
+                      {e.slug}
+                    </label>
+                  ))
+                )}
+              </div>
             )}
           </Field>
 
