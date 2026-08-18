@@ -11,6 +11,8 @@ not change or embed the server in any way.
 ## What it does
 
 - Speaks MCP over **stdio** using the official TypeScript SDK.
+- Covers **both loops**: the work loop (claim, transition, comment, done) and the
+  verification loop (checks, cases, verdicts, environments, worklist, gate).
 - Wraps each tracker verb as one MCP tool returning compact JSON.
 - **Tracks claim fences in memory** for the life of the process, keyed by ticket id, so
   `start` / `transition` / `done` / `release` include the fencing token automatically. Pass
@@ -47,6 +49,34 @@ not change or embed the server in any way.
 | `takomo_projects` | List projects and their workflows. |
 | `takomo_workflow` | Show a project's workflow (states/categories/transitions). |
 | `takomo_whoami` | Identify the token holder if `/whoami` exists; graceful note if not. |
+
+### Verification — how a "done" claim becomes a *verified* one
+
+**Takomo stores; you compute.** Nothing below generates a case model, validates one,
+or judges whether a coverage claim is true. The store persists what you file and
+enforces who may assert what.
+
+| Tool | Purpose |
+| --- | --- |
+| `takomo_worklist` | What needs re-verifying, split by **who can clear it** — an agent list and a human list. Each item carries its reason and, where the check declares environments, which one and its base URL. |
+| `takomo_environments` | Where a check can be run: base URL, how to bring it up and give it back, what data is in it, whether writing is safe. Read this *before* running. |
+| `takomo_verdict` | Record what you observed (`pass`/`fail`/`blocked`/`unreachable`). `fail` needs a note. Always an **agent** verdict — a person's approval needs a `human` token through REST. |
+| `takomo_environment_file` | Register the instance you just stood up, so the next runner is not told the URL out of band. Upserts by slug, so it is safe to call every run. |
+| `takomo_checks` / `takomo_check` | List checks (filter by `initiative`, `epic`, `severity`, `layer`), or show one with its cases. `initiative: "none"` finds what nothing agreed. |
+| `takomo_check_file` | Declare a check: one action, one entry precondition, one layer. `environments` makes each case tracked per environment. |
+| `takomo_cases_file` | File the generated case set. Upsert by `key` derived from the assignment, so regenerating keeps history. |
+| `takomo_coverage` / `takomo_gate` | The rollup, and whether verification is good enough to ship. Only `blocking` severity blocks. |
+| `takomo_verification` | Do the tests one **initiative** agreed on still pass? |
+| `takomo_releases` / `takomo_release_push` | List releases, or record the one you merged and learn what it invalidated. |
+
+Two refusals worth knowing before you hit them:
+
+- A check that must pass in **more than one environment** rejects a verdict that
+  does not say which one it is about (`conflict.environment_ambiguous`). Filing a
+  staging run as production is worse than no record. A check declaring exactly one
+  resolves an omitted environment to that one.
+- `credentials_hint` is a **pointer** to where a credential lives, never the
+  credential — every token with `read` can see it.
 
 ## Install & build
 

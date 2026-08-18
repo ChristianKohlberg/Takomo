@@ -5,6 +5,12 @@
 // project: new -> ready -> next -> start -> comment -> done, plus one illegal
 // transition to prove the store's error text passes through.
 //
+// Then the VERIFICATION loop, which is the other half of what an agent does
+// here: register where you can run, declare a check and its cases, read what
+// needs re-verifying, and report what you observed. The assertion that matters
+// most is the refusal — a check that must pass in two environments must not
+// accept a verdict that does not say which one it is about.
+//
 // Usage: node test/e2e.mjs   (reads TAKOMO_URL / TAKOMO_TOKEN from env)
 
 import { fileURLToPath } from "node:url";
@@ -113,6 +119,119 @@ async function main() {
 
   // 9. whoami graceful fallback
   await call("takomo_whoami", {});
+
+  // --- verification loop ----------------------------------------------------
+  // Slugs are unique per project and immutable, so the run reuses fixed ones:
+  // filing an environment upserts, which is exactly the property a runner that
+  // registers its instance every run depends on.
+  const envA = await call("takomo_environment_file", {
+    project: PROJECT,
+    slug: "e2e-staging",
+    kind: "staging",
+    base_url: "https://staging.e2e.invalid",
+    bring_up: "backlot up --ttl 900",
+    teardown: "backlot release",
+    credentials_hint: "env:E2E_TOKEN",
+  });
+  expect(!envA.isError && envA.data.environment?.slug === "e2e-staging", "registered an environment");
+  const envB = await call("takomo_environment_file", {
+    project: PROJECT,
+    slug: "e2e-prod",
+    kind: "production",
+  });
+  expect(!envB.isError && envB.data.environment?.writable === false, "production defaults to read-only");
+
+  // Filing the same slug again updates in place rather than duplicating, and
+  // leaves fields it was not given alone.
+  const refiled = await call("takomo_environment_file", {
+    project: PROJECT,
+    slug: "e2e-staging",
+    base_url: "https://staging-2.e2e.invalid",
+  });
+  expect(!refiled.isError && refiled.data.created === false, "refiling a slug updates in place");
+  expect(
+    refiled.data.environment?.bring_up === "backlot up --ttl 900",
+    "an omitted field keeps what was already recorded"
+  );
+
+  const envs = await call("takomo_environments", { project: PROJECT });
+  expect(
+    !envs.isError && envs.data.items.some((e) => e.slug === "e2e-staging"),
+    "environments lists what a runner needs"
+  );
+
+  // A check that must pass in BOTH, so the ambiguity rule has something to bite.
+  const check = await call("takomo_check_file", {
+    project: PROJECT,
+    title: `e2e check ${Date.now()}`,
+    layer: "api",
+    severity: "advisory",
+    environments: ["e2e-staging", "e2e-prod"],
+    globs: ["src/e2e/**"],
+  });
+  expect(!check.isError && check.data.check?.id, "filed a check");
+  expect(check.data.check?.environments?.length === 2, "the check declares both environments");
+  const checkId = check.data.check.id;
+
+  const filed = await call("takomo_cases_file", {
+    check: checkId,
+    cases: [
+      { key: "n=1", label: "one", assignment: { n: 1 } },
+      { key: "n=2", label: "two", assignment: { n: 2 } },
+    ],
+  });
+  expect(!filed.isError && filed.data.live === 2, "filed two cases");
+
+  const shown = await call("takomo_check", { id: checkId, cases: true });
+  expect(!shown.isError && shown.data.cases?.length === 2, "check shows its cases");
+  const caseId = shown.data.cases[0].id;
+  expect(
+    shown.data.cases[0].environments?.length === 2,
+    "each case carries a reading per declared environment"
+  );
+
+  // The refusal: two environments declared, so a bare verdict does not say what
+  // was observed. Filing a staging run as production would be worse than no
+  // record, which is why this is an error rather than a default.
+  const ambiguous = await call("takomo_verdict", { case: caseId, verdict: "pass" });
+  expect(
+    ambiguous.isError && ambiguous.data.code === "conflict.environment_ambiguous",
+    "a verdict that does not say where is refused when that is ambiguous"
+  );
+
+  const scoped = await call("takomo_verdict", {
+    case: caseId,
+    verdict: "pass",
+    environment: "e2e-staging",
+  });
+  expect(!scoped.isError, "a verdict naming its environment is recorded");
+  expect(
+    scoped.data.case?.state === "never",
+    "one environment passing does not verify the case while the other is untouched"
+  );
+
+  // `fail` without a note is refused: a failure nobody described is one nobody
+  // can act on.
+  const bareFail = await call("takomo_verdict", {
+    case: caseId,
+    verdict: "fail",
+    environment: "e2e-prod",
+  });
+  expect(bareFail.isError, "a fail with no note is refused");
+
+  const worklist = await call("takomo_worklist", { project: PROJECT });
+  expect(!worklist.isError && worklist.data.agent, "worklist splits by who can clear it");
+  const mine = (worklist.data.agent.items ?? []).filter((i) => i.check === checkId);
+  expect(mine.length > 0 && mine.every((i) => i.environment_slug), "every item says where to run it");
+
+  await call("takomo_coverage", { project: PROJECT });
+  const gate = await call("takomo_gate", { project: PROJECT });
+  expect(!gate.isError && typeof gate.data.blocked === "boolean", "the gate answers can-this-ship");
+
+  // One last read, so the run also exercises the list route it started from.
+  // Nothing is torn down: a check and its verdicts are the record of what was
+  // verified, and the environment slugs are reused by the next run.
+  await call("takomo_checks", { project: PROJECT });
 
   line(`\n=== e2e complete: ${failures === 0 ? "ALL ASSERTIONS PASSED" : failures + " ASSERTION(S) FAILED"} ===`);
   await client.close();
