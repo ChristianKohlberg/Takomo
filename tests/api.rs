@@ -866,36 +866,62 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
             "round {round} took no claim samples during a {wall:?} export"
         );
 
+        // The CONTROL, taken immediately after the export finishes and in the
+        // same round: the same claim, the same loop, the same machine, with no
+        // read in flight. Same count as the during-samples so the two medians
+        // are drawn from comparable populations.
+        //
+        // This is the whole point of the round's shape. Every statistic that
+        // compares the during-samples against something measured in a DIFFERENT
+        // phase — an idle baseline taken minutes earlier, or the round's own
+        // wall clock — silently measures how loaded the machine was, and on a
+        // busy runner that is indistinguishable from the store serializing.
+        let mut control: Vec<Duration> = Vec::with_capacity(during.len());
+        for _ in 0..during.len() {
+            let started = Instant::now();
+            let (s, lease) = app
+                .post(
+                    &app.worker,
+                    &format!("/v1/tickets/{target}/claim"),
+                    json!({}),
+                )
+                .await;
+            assert_eq!(s, StatusCode::OK, "control claim failed: {lease}");
+            control.push(started.elapsed());
+        }
+
         during.sort();
+        control.sort();
         let worst = *during.last().expect("samples during the export");
         let median = during[during.len() / 2];
-        // The share of the export's wall time that went into claims costing what a
-        // claim typically costs *in this same round*. Deliberately self-contained:
-        // comparing against the idle baseline instead makes the number depend on
-        // how loaded the machine was during a different phase of the test, which is
-        // how the statistic this replaces became flaky in the first place. When
-        // writers run freely the loop is saturated and this is ~100%; when the
-        // export holds the lock, the wall time goes somewhere that is not claims
-        // and it collapses.
-        let productive = (during.len() as u128) * median.as_nanos() * 100 / wall.as_nanos().max(1);
+        let control_median = control[control.len() / 2];
+        // How much slower a typical claim is while a read is in flight. Scaled
+        // by 100 so it stays integer arithmetic: 100 means identical.
+        //
+        // Serialization that is spread thinly — every claim waiting a little,
+        // rather than one claim absorbing the whole lock hold — moves the two
+        // medians apart and shows up here. CPU starvation moves them together,
+        // because both halves of the round queue for the same cores, so it does
+        // not.
+        let slowdown = median.as_nanos() * 100 / control_median.as_nanos().max(1);
         eprintln!(
-            "round {round}: export {wall:?} | {} claims, median {median:?}, worst \
-             {worst:?}, {productive}% of the wall in typical claims",
+            "round {round}: export {wall:?} | {} claims, median {median:?} vs control \
+             {control_median:?} ({slowdown}%), worst {worst:?}",
             during.len(),
         );
         round_worst.push(worst);
-        round_throughput.push(productive);
+        round_throughput.push(slowdown);
     }
 
     round_worst.sort();
     round_throughput.sort();
     let typical_worst = round_worst[ROUNDS / 2];
-    let typical_productive = round_throughput[ROUNDS / 2];
+    let typical_slowdown = round_throughput[ROUNDS / 2];
     eprintln!(
         "export {solo_export:?} solo | idle claim median {idle_median:?} worst \
          {idle_worst:?} | across {ROUNDS} rounds: typical worst claim \
-         {typical_worst:?}, typically {typical_productive}% of the export's wall \
-         time spent in typical-cost claims"
+         {typical_worst:?}, typical claim {typical_slowdown}% of its same-round \
+         control"
     );
 
     // ---------------------------------------------------------------------
@@ -927,20 +953,58 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
     //
     // and a single 80ms stall in one of five rounds leaves the median at ~0.6ms.
     //
-    // The second assertion is the same property seen from the other side — how
-    // much of the export's wall time writers actually got — and it is here because
-    // the first one's statistic is a tail: this one holds even if serialization is
-    // spread thinly enough that no single claim stands out.
+    // The second assertion exists because the first one's statistic is a tail:
+    // it catches serialization that gives one claim the whole lock hold, and
+    // would miss it if it were spread thinly enough that no single claim stood
+    // out. So the second compares a typical claim DURING the export against a
+    // typical claim measured moments later, in the same round, with no export
+    // running.
     //
-    // Note what does *not* work for that, since it is the obvious thing to reach
-    // for: the median claim during the export against the median claim with the
-    // store idle. Measured with reads on the writer, those are 191µs and 187µs —
-    // indistinguishable — because only one claim per export ever waits. Nor does
-    // comparing the claim count against what the idle baseline predicts: that
-    // number depends on how loaded the machine was during a *different* phase of
-    // the test, and it reds under load for the same reason the old assertion did
-    // (measured: 7 of 8 loaded runs pass, one at 37%). Hence a tail statistic and
-    // a within-round one.
+    // That control is the fix for the second flakiness round. The statistic it
+    // replaces was the share of the export's wall clock spent in typical-cost
+    // claims, and it was wrong in a way that only showed under load: the claim
+    // loop is sequential, so when the process is starved of CPU it issues fewer
+    // claims per second while each one still costs what it always cost. The
+    // number that produced then measured how much CPU the TEST LOOP got and
+    // reported it as how much the LOCK let writers through. Measured on two
+    // contended cores: 650 claims per round at a 212µs median — identical to the
+    // idle median, so writers were plainly not blocked — and the statistic read
+    // 21%, which is the same number this file documents for a genuinely
+    // serializing store. A healthy store and a broken one were indistinguishable
+    // on it, and the failure message accused the code of a bug it did not have.
+    //
+    // Comparing against the idle baseline taken earlier in the test has the same
+    // defect for the same reason: it depends on how loaded the machine was
+    // during a *different* phase. The control has to be measured in the same
+    // round, through the same loop, on the same cores. Then CPU starvation moves
+    // both halves together and cancels, while serialization moves them apart.
+    //
+    // Measured three ways, with `readers` forced empty to reproduce the
+    // pre-read-connections store:
+    //
+    //                                    typical worst   during/control   result
+    //   healthy, idle                          ~1.5ms            ~112%    pass
+    //   healthy, 2 cores + 4 busy loops         ~17ms         96%-120%    pass
+    //   with_conn on the writer                ~150ms            ~115%    FAIL
+    //
+    // Read the last row carefully, because it says something worth knowing: the
+    // regression this test exists for is caught ENTIRELY by the first assertion.
+    // The single-writer mutex gives one claim per export the whole lock hold —
+    // 150ms of a 186ms export — while every other claim is untouched, so the
+    // median lands at 300µs against a 317µs control. The control ratio does not
+    // move for it, and is not meant to.
+    //
+    // What the control ratio is for is the case the first assertion cannot see:
+    // serialization spread thinly enough that no single claim stands out. No
+    // implementation here has produced that, so it guards a shape rather than a
+    // known bug — kept because it is nearly free and, unlike the statistic it
+    // replaces, it cannot fire when the machine is merely busy. If it ever does
+    // fire, the median claim really did get slower while a read was in flight.
+    //
+    // The 4x threshold is deliberately loose. A typical claim is ~200µs, so a
+    // few hundred microseconds of scheduling noise on either side moves this
+    // ratio a long way, while diffuse serialization against a >100ms export
+    // would move it by an order of magnitude.
     // ---------------------------------------------------------------------
     assert!(
         typical_worst * 4 < solo_export,
@@ -950,11 +1014,11 @@ async fn long_export_does_not_stall_claims_and_heartbeats() {
          Per-round worsts: {round_worst:?}"
     );
     assert!(
-        typical_productive > 50,
-        "across {ROUNDS} rounds only {typical_productive}% of an export's wall time \
-         went into claims costing what a claim typically costs in that same round — \
-         the rest went somewhere writers could not run, i.e. reads are serializing \
-         them again. Per-round: {round_throughput:?}"
+        typical_slowdown < 400,
+        "across {ROUNDS} rounds a typical claim cost {typical_slowdown}% of what the \
+         same claim cost moments later with no export running — reads are slowing \
+         writers down across the board, i.e. serializing them again. Per-round: \
+         {round_throughput:?}"
     );
 }
 
