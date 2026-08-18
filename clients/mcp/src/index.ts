@@ -955,6 +955,475 @@ server.registerTool(
   })
 );
 
+// ---- verification: checks, cases, verdicts, environments ---------------------
+//
+// How a "done" claim becomes a VERIFIED one. A check is one action with one
+// entry precondition at one layer; a case is that check crossed with one
+// parameter assignment, and the case is what actually gets executed.
+//
+// **Takomo stores; you compute.** Nothing here generates a case model, validates
+// one, or judges whether a coverage claim is true. The store persists what you
+// file and enforces who may assert what — the intelligence stays where the
+// context is.
+//
+// The loop these serve: `takomo_worklist` says what needs re-verifying and who
+// can clear it, `takomo_environments` says where to run it and whether writing
+// there is safe, and `takomo_verdict` reports what you observed.
+
+server.registerTool(
+  "takomo_checks",
+  {
+    title: "List checks",
+    description:
+      "List a project's checks with their case counts, resolved policy and any orphaned globs. " +
+      "A check is ONE action with ONE entry precondition at ONE layer. " +
+      "`initiative: \"none\"` narrows to checks no initiative claims — the gap between what was " +
+      "agreed and what got written down.",
+    inputSchema: {
+      project: z.string().describe("Project id."),
+      initiative: z
+        .string()
+        .optional()
+        .describe('Narrow to one initiative, or "none" for checks no initiative claims.'),
+      epic: z.string().optional().describe('Narrow to one epic, or "none" for ungrouped checks.'),
+      severity: z.string().optional().describe("blocking, advisory or low."),
+      layer: z.string().optional().describe("ui, api or other."),
+      limit: z.number().optional().describe("1..=200 (default 200). `total` always reports how many matched."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/checks`,
+      query: {
+        initiative: a.initiative,
+        epic: a.epic,
+        severity: a.severity,
+        layer: a.layer,
+        limit: a.limit,
+      },
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_check",
+  {
+    title: "Show one check",
+    description:
+      "One check: its traversal body, entry precondition, claimed globs, the environments it must " +
+      "pass in, its resolved policy and its case counts. Pass cases=true to include every case with " +
+      "its per-environment state.",
+    inputSchema: {
+      id: z.string().describe("Check id."),
+      cases: z.boolean().optional().describe("Include the check's cases."),
+      limit: z.number().optional().describe("With cases: 1..=500 (default 500)."),
+    },
+  },
+  tool(async (a) => {
+    const check = await client.request<any>({ path: `/checks/${encodeURIComponent(a.id)}` });
+    const out: any = { ok: true, check };
+    if (a.cases) {
+      const page = await client.request<any>({
+        path: `/checks/${encodeURIComponent(a.id)}/cases`,
+        query: { limit: a.limit },
+      });
+      out.cases = page?.items ?? [];
+      out.case_total = page?.total;
+      if (page?.note) out.note = page.note;
+    }
+    return ok(out);
+  })
+);
+
+server.registerTool(
+  "takomo_check_file",
+  {
+    title: "Declare a check",
+    description:
+      "Declare a check. Draw its boundary at a STATE TRANSITION, not a screen: if something needs a " +
+      "persisted record, has its own permission gate, or is only reachable from another check's " +
+      "terminal state, it is a SEPARATE check. A create form, a finalize step and a cancel action " +
+      "are three checks, not one. " +
+      "One check covers ONE layer — a rule enforced only in the interface passes at the API layer, " +
+      "so those two verdicts are not interchangeable. " +
+      "Takomo stores what you file and does not judge whether the model is right.",
+    inputSchema: {
+      project: z.string().describe("Project the check belongs to."),
+      title: z.string().describe('The one action this verifies, e.g. "Create a claim".'),
+      initiative: z
+        .string()
+        .optional()
+        .describe(
+          "The initiative whose conversation agreed this check should exist. File it even before " +
+            "an epic exists — that is usually when the agreement is made."
+        ),
+      environments: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Where it must pass, by slug or id. Each case is then tracked PER ENVIRONMENT, so " +
+            '"verified on staging, never run on production" is expressible instead of collapsing ' +
+            "into one verdict. Omit for a check whose result does not depend on where it runs."
+        ),
+      epic: z.string().optional().describe("Epic ticket id to group under."),
+      body: z.string().optional().describe("Free-form traversal to follow. No step model, no DAG — prose is the content."),
+      precondition: z.string().optional().describe("The data state and permissions needed before this check can start."),
+      layer: z.string().optional().describe("ui, api or other (default api)."),
+      severity: z.string().optional().describe("blocking, advisory or low (default advisory). Only blocking blocks a gate."),
+      globs: z
+        .array(z.string())
+        .optional()
+        .describe("Paths of the app under test this check claims, e.g. src/claims/**. Hand-declared and known to rot."),
+      verification: z.string().optional().describe("agent, human or agent_then_human. Omit to inherit."),
+      expiry_days: z.number().optional().describe("Re-verify after this many days. Omit to inherit."),
+      expiry_releases: z.number().optional().describe("Re-verify after this many releases. Omit to inherit."),
+      cost_agent_minutes: z.number().optional().describe("Rough agent-minutes to run once."),
+      cost_human_minutes: z.number().optional().describe("Rough human-minutes to run once."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { title: a.title };
+    for (const k of [
+      "initiative",
+      "environments",
+      "epic",
+      "body",
+      "precondition",
+      "layer",
+      "severity",
+      "globs",
+      "verification",
+      "expiry_days",
+      "expiry_releases",
+      "cost_agent_minutes",
+      "cost_human_minutes",
+    ] as const) {
+      if (a[k] !== undefined) body[k] = a[k];
+    }
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/projects/${encodeURIComponent(a.project)}/checks`,
+      body,
+    });
+    return ok({ ok: true, check: res });
+  })
+);
+
+server.registerTool(
+  "takomo_cases_file",
+  {
+    title: "File a check's case set",
+    description:
+      "File the generated case set for a check. Upsert is by `key`, so DERIVE EACH KEY FROM ITS " +
+      "PARAMETER ASSIGNMENT: a case still present keeps its verdict history, one that vanished is " +
+      "retired rather than deleted, one that returns is revived. That is what makes regenerating a " +
+      "model after adding a parameter safe. " +
+      "A large real form yields around 76 pairwise cases — if you have thousands, most of your " +
+      "parameters are inert fields that do not belong in the model. " +
+      "`prune: false` extends the set instead of replacing it.",
+    inputSchema: {
+      check: z.string().describe("Check id."),
+      cases: z
+        .array(
+          z.object({
+            key: z.string().describe("Stable identity derived from the assignment, e.g. entities=2."),
+            label: z.string().optional().describe("Human-readable name."),
+            assignment: z.record(z.any()).optional().describe("The parameter assignment this case stands for."),
+            seeded: z.boolean().optional().describe("True when the fixture data already exists."),
+          })
+        )
+        .describe("The generated case set."),
+      prune: z.boolean().optional().describe("False extends rather than replaces (default true)."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { cases: a.cases };
+    if (a.prune !== undefined) body.prune = a.prune;
+    const res = await client.request<any>({
+      method: "PUT",
+      path: `/checks/${encodeURIComponent(a.check)}/cases`,
+      body,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_verdict",
+  {
+    title: "Record a verdict",
+    description:
+      "Record what you OBSERVED on one case: pass, fail, blocked or unreachable. " +
+      "`fail` needs a note — a failure nobody described is one nobody can act on. " +
+      "`unreachable` means the declared layer gives no way to reach this configuration, and it is " +
+      "the most valuable output here: it is how UI/API drift and dead code fall out of coverage " +
+      "bookkeeping instead of needing a separate audit. " +
+      "This tool always records an AGENT verdict. Asserting that a PERSON approved a case needs a " +
+      "human-scoped token through POST /v1/cases/{id}/verdict — the same line ask-a-human draws.",
+    inputSchema: {
+      case: z.string().describe("Case id."),
+      verdict: z.string().describe("pass, fail, blocked or unreachable."),
+      note: z.string().optional().describe("What you observed. Required for `fail`."),
+      environment: z
+        .string()
+        .optional()
+        .describe(
+          "Where you observed it, by slug or id. REQUIRED when the check declares more than one " +
+            "environment — a bare verdict there does not say what you saw, and it is refused rather " +
+            "than filed against a guess. Omit for a check declaring one (that one is meant) or none."
+        ),
+      release: z.string().optional().describe("Release id this verdict was taken against."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { verdict: a.verdict };
+    if (a.note !== undefined) body.note = a.note;
+    if (a.environment !== undefined) body.environment = a.environment;
+    if (a.release !== undefined) body.release = a.release;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/cases/${encodeURIComponent(a.case)}/verdict`,
+      body,
+    });
+    return ok({ ok: true, case: res });
+  })
+);
+
+server.registerTool(
+  "takomo_worklist",
+  {
+    title: "What needs re-verifying",
+    description:
+      "What must be re-verified, split by WHO CAN CLEAR IT. Human time is the scarce resource — a " +
+      "hundred cases cost an agent minutes and cost a person most of a day — so the split is the " +
+      "answer, not a formatting choice. " +
+      "Each item carries its reason (stale, expired, failed, never, awaiting_human) and, when the " +
+      "check declares environments, WHERE to run it and that environment's base URL. " +
+      "A stale case under agent_then_human stays on the AGENT list until it has a fresh agent " +
+      "verdict, so it never sits in a person's queue waiting for work only an agent can do.",
+    inputSchema: { project: z.string().describe("Project id.") },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/checklist/worklist`,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_coverage",
+  {
+    title: "Coverage rollup",
+    description:
+      "Coverage per epic, and per environment where checks declare them. " +
+      "`percent` is verified-or-approved over VERIFIABLE cases: stale, failed and never are outside " +
+      "the numerator, and unreachable is outside the denominator too, so a fully verified project " +
+      "can actually reach 100% and the unreachable count stands on its own as a finding. " +
+      "Coverage is of the DECLARED surface — hand-written globs, not measured execution.",
+    inputSchema: { project: z.string().describe("Project id.") },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/checklist/coverage`,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_gate",
+  {
+    title: "Can this ship",
+    description:
+      "Is verification good enough to ship? Only `blocking` severity blocks; advisory and low nag. " +
+      "A gate that fires on everything gets overridden out of habit and stops meaning anything.",
+    inputSchema: { project: z.string().describe("Project id.") },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/checklist/gate`,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_verification",
+  {
+    title: "An initiative's verification standing",
+    description:
+      "Do the tests this initiative agreed on still pass? Returns how many of its checks' cases are " +
+      "verified, stale, failed or never run, when one was last verified, and whether anything " +
+      "blocking is outstanding. " +
+      "This is the question a characterisation test exists to answer months after the conversation " +
+      "that produced it.",
+    inputSchema: { initiative: z.string().describe("Initiative id (ini-…).") },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/initiatives/${encodeURIComponent(a.initiative)}/verification`,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_releases",
+  {
+    title: "List releases",
+    description:
+      "A project's releases, newest first, with their sequence numbers. " +
+      "Not to be confused with `takomo_release`, which gives back a ticket CLAIM — these are the " +
+      "shipped-code markers verdicts are dated against.",
+    inputSchema: {
+      project: z.string().describe("Project id."),
+      limit: z.number().optional().describe("How many to return."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/releases`,
+      query: { limit: a.limit },
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_release_push",
+  {
+    title: "Record a merged release",
+    description:
+      "Record a release you just merged, and learn what it invalidated. " +
+      "Send the tag or FULL sha as `ref`, the paths the diff touched, and any check globs that " +
+      "matched NO file in the tree. Every check claiming a touched path has its verified cases " +
+      "marked stale; globs that matched nothing are flagged so those checks stop counting as " +
+      "covered. " +
+      "YOU supply the paths and the empty globs because you have the tree checked out — the server " +
+      "clones nothing, which is the cheapest possible place to learn the truth. There is no direct " +
+      "integration by design: the agent that merged the work is what tells Takomo a release happened.",
+    inputSchema: {
+      project: z.string().describe("Project the release belongs to."),
+      ref: z.string().describe("The tag or FULL commit sha. Short shas are ambiguous."),
+      note: z.string().optional().describe("What shipped."),
+      touched_paths: z.array(z.string()).optional().describe("Paths the diff touched."),
+      orphan_globs: z.array(z.string()).optional().describe("Check globs that matched NO file in this tree."),
+    },
+  },
+  tool(async (a) => {
+    const body: Record<string, unknown> = { ref: a.ref };
+    if (a.note !== undefined) body.note = a.note;
+    if (a.touched_paths !== undefined) body.touched_paths = a.touched_paths;
+    if (a.orphan_globs !== undefined) body.orphan_globs = a.orphan_globs;
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/projects/${encodeURIComponent(a.project)}/releases`,
+      body,
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_environments",
+  {
+    title: "Where a check can be run",
+    description:
+      "The places a check can be run: base URL, how to bring each one up and give it back, what " +
+      "data is in it, and whether writing to it is safe. " +
+      "READ THIS BEFORE RUNNING A CHECK — it is where the URL and the credential pointer live, so " +
+      "you do not have to be told them out of band. " +
+      "`writable` is advisory: Takomo executes nothing and cannot enforce it. `credentials_hint` is " +
+      "a POINTER to where a credential lives, never a credential — every token with `read` can see it.",
+    inputSchema: {
+      project: z.string().describe("Project id."),
+      kind: z.string().optional().describe("local, ephemeral, shared, staging, production or other."),
+      archived: z.boolean().optional().describe("Include archived environments."),
+    },
+  },
+  tool(async (a) => {
+    const res = await client.request<any>({
+      path: `/projects/${encodeURIComponent(a.project)}/environments`,
+      query: { kind: a.kind, archived: a.archived ? "include" : undefined },
+    });
+    return ok({ ok: true, ...res });
+  })
+);
+
+server.registerTool(
+  "takomo_environment_file",
+  {
+    title: "Register an environment",
+    description:
+      "Register an environment, or update the one already holding that slug. " +
+      "Use it when you stand up an instance others will verify against — an ephemeral preview, a " +
+      "seeded local box — so the next runner is not told the URL out of band. " +
+      "Filing the same slug twice updates in place, so this is safe to call every run, and a field " +
+      "you omit keeps whatever is already recorded. " +
+      "Put a POINTER in `credentials_hint` (\"env:STAGING_TOKEN\", a vault path), NEVER a credential: " +
+      "any token with `read` can see it.",
+    inputSchema: {
+      project: z.string().describe("Project the environment belongs to."),
+      slug: z.string().describe('Stable handle you will pass everywhere else, e.g. "staging". Immutable once created.'),
+      name: z.string().optional().describe("Human-readable name. Defaults to the slug."),
+      kind: z.string().optional().describe("local, ephemeral, shared, staging, production or other."),
+      base_url: z.string().optional().describe("Where the application answers."),
+      bring_up: z.string().optional().describe("How to get it running. Takomo never runs it — it hands it to whoever needs it next."),
+      teardown: z.string().optional().describe("How to give it back when the run is over."),
+      data_state: z.string().optional().describe("seeded, empty, production_like or unknown."),
+      writable: z
+        .boolean()
+        .optional()
+        .describe("Whether a destructive case may run here. ADVISORY. Defaults to false for kind=production."),
+      credentials_hint: z.string().optional().describe("WHERE a credential lives. Never the credential itself."),
+      notes: z.string().optional().describe("Caveats that would make a verdict untrustworthy — reset cadence, shared sandboxes."),
+    },
+  },
+  tool(async (a) => {
+    const fields: Record<string, unknown> = {};
+    for (const k of [
+      "name",
+      "kind",
+      "base_url",
+      "bring_up",
+      "teardown",
+      "data_state",
+      "writable",
+      "credentials_hint",
+      "notes",
+    ] as const) {
+      if (a[k] !== undefined) fields[k] = a[k];
+    }
+    // Upsert by (project, slug): create, and on a slug conflict patch the one
+    // already holding it. Two calls rather than a second server path, so the
+    // validation, caps and events all stay in the routes that own them.
+    try {
+      const created = await client.request<any>({
+        method: "POST",
+        path: `/projects/${encodeURIComponent(a.project)}/environments`,
+        body: { slug: a.slug, ...fields },
+      });
+      return ok({ ok: true, created: true, environment: created });
+    } catch (err) {
+      if (!(err instanceof StoreError) || err.body?.code !== "conflict.environment_slug") throw err;
+      const list = await client.request<any>({
+        path: `/projects/${encodeURIComponent(a.project)}/environments`,
+        query: { archived: "include" },
+      });
+      const existing = (list?.items ?? []).find((e: any) => e.slug === a.slug);
+      if (!existing) throw err;
+      const patched = await client.request<any>({
+        method: "PATCH",
+        path: `/environments/${encodeURIComponent(existing.id)}`,
+        body: fields,
+      });
+      return ok({ ok: true, created: false, environment: patched });
+    }
+  })
+);
+
 // ---- boot -------------------------------------------------------------------
 
 async function main() {

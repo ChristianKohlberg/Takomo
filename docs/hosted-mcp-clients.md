@@ -166,7 +166,9 @@ claude mcp add --transport http takomo https://takomo.example.com/mcp \
 ```
 
 Or the Node stdio wrapper in [`clients/mcp`](../clients/mcp/README.md), which is the right choice
-when you want the fence-tracking convenience verbs.
+when you want the fence-tracking convenience verbs. It carries the verification tools too —
+checks, cases, verdicts, environments, worklist and gate — so an agent on stdio can run the
+whole loop without the hosted endpoint.
 
 ## Troubleshooting
 
