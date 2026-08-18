@@ -788,6 +788,29 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
             [],
         )?;
     }
+    // The person behind a verdict, in the three places a verdict is recorded: the
+    // append-only history (`case_verdicts.user`, the permanent record) and the two
+    // mirrors of the latest human verdict. All nullable, and NULL is right for
+    // every existing row — those verdicts were recorded before a credential could
+    // name anybody, and inventing a person for them would be worse than admitting
+    // the gap.
+    for (table, column) in [
+        ("cases", "human_user"),
+        ("case_environments", "human_user"),
+        ("case_verdicts", "\"user\""),
+    ] {
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let cols = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            cols
+        };
+        let bare = column.trim_matches('"');
+        if !cols.is_empty() && !cols.iter().any(|c| c == bare) {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
+        }
+    }
     // questions.assignee: the person this decision is waiting on. Nullable, and
     // NULL on every existing row is right — they were routed by expertise alone.
     let question_assignee_cols: Vec<String> = {
@@ -1546,6 +1569,16 @@ CREATE TABLE IF NOT EXISTS cases (
   human_verdict TEXT,
   human_at INTEGER,
   human_by TEXT,
+  -- WHICH PERSON approved it (users.id), where `human_by` is only the free-form
+  -- actor string the credential carried. "A person approved this case" is the
+  -- strongest claim this table makes, and an unresolvable name is a poor way to
+  -- make it: two `human:alice` tokens are indistinguishable, and nothing survives
+  -- somebody leaving. Nullable, because a verdict from a credential bound to
+  -- nobody is still a verdict.
+  --
+  -- A mirror of the last human verdict, like the columns around it;
+  -- `case_verdicts.user` is the permanent per-verdict record.
+  human_user TEXT REFERENCES users(id),
   human_release TEXT,
   stale_since TEXT,
   retired_at INTEGER,
@@ -1565,6 +1598,14 @@ CREATE TABLE IF NOT EXISTS case_verdicts (
   case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
   actor_kind TEXT NOT NULL,
   actor TEXT NOT NULL,
+  -- The person behind the credential that recorded this verdict (users.id), or
+  -- NULL for a machine token. THIS is the permanent record of who: the mirrors on
+  -- `cases` and `case_environments` only hold the latest, while this table is
+  -- append-only and is what an audit reads.
+  --
+  -- Kept for an agent verdict too, not just a human one. An agent token can
+  -- belong to somebody's own automation, and "whose agent" is worth knowing.
+  "user" TEXT REFERENCES users(id),
   verdict TEXT NOT NULL,
   note TEXT,
   release TEXT,
@@ -1603,6 +1644,10 @@ CREATE TABLE IF NOT EXISTS case_environments (
   human_verdict TEXT,
   human_at      INTEGER,
   human_by      TEXT,
+  -- Which person approved it HERE. The same mirror `cases.human_user` is, per
+  -- place the check must pass: an approval in staging and one in production are
+  -- separate claims, and so is who made each.
+  human_user    TEXT REFERENCES users(id),
   human_release TEXT,
   stale_since   TEXT,
   created_at    INTEGER NOT NULL,

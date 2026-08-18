@@ -225,6 +225,42 @@ assert that a **person** approved a case — the same line `ask-a-human` draws. 
 MCP the option does not even exist: `takomo_verdict` has no `actor_kind`, so a human
 approval must come through `POST /v1/cases/{id}/verdict`.
 
+### …and which person
+
+`by` is the free-form actor string the credential carried (`human:alice`). That is a
+claim about a name, not an identity: two tokens can share one, and nothing about it
+survives its owner leaving. So a verdict also records **which person** gave it — the
+directory person behind the credential (`docs/users.md`):
+
+```json
+"human": { "verdict": "pass", "by": "human:ada", "user": "usr-5vy5j7v5", "at": "…" }
+```
+
+`null` for a credential bound to nobody, which every verdict recorded before the
+directory existed reads as — honestly, rather than by inventing somebody.
+
+It is **recorded, never checked**. Binding a credential to a person grants nothing
+here: what may be asserted is still the `human` scope, so a bound token can do no
+more than the same token unbound. The one place identity *is* an authority is
+answering an `approve` question, and that is deliberate and documented there.
+
+Where to read it:
+
+- `GET /v1/cases/{id}` resolves every id in its payload once, under `people`, keyed
+  by id — so a person who gave six verdicts appears once and a reader gets a name
+  without a second request. `{}` when nothing there names anybody.
+- The verdict **history** (`case_verdicts`) is the permanent record; the `user` on a
+  case's `human` fact only mirrors the latest. The history keeps it for agent
+  verdicts too: an agent token can belong to somebody's own automation, and "whose
+  agent" is worth knowing.
+- Lists — cases, coverage, the worklist — carry the id and no name. They answer
+  "where does verification stand", and resolving a name per row would be a lookup
+  for a question nobody asked there.
+
+A disabled person still resolves. That is the whole reason the directory has no
+delete: an approval whose approver had been erased would be an audit trail that
+forgot the only thing it was for.
+
 ## The worklist is the product
 
 Human time is the scarce resource: a hundred cases cost an agent minutes and cost a

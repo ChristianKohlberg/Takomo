@@ -7141,7 +7141,27 @@ components:
       properties:
         verdict: { type: [string, "null"], enum: [pass, fail, blocked, unreachable, null] }
         at: { type: [string, "null"], format: date-time }
-        by: { type: [string, "null"] }
+        by:
+          type: [string, "null"]
+          description: |
+            The free-form actor string the credential carried, e.g. `human:alice`.
+            A claim about a name, not a resolvable identity: two tokens can share
+            one, and nothing about it survives its owner leaving.
+        user:
+          type: [string, "null"]
+          description: |
+            WHICH person gave it (`usr-…`), or null for a credential bound to
+            nobody — which every verdict recorded before the people directory
+            existed reads as, honestly rather than absently.
+
+            Present on the `human` fact only: "a person approved this" is the
+            claim that needs a resolvable who, and an agent's own binding lives on
+            the history row instead.
+
+            An id rather than a name, because lists answer "where does verification
+            stand" and resolving a name per row would be a lookup for a question
+            nobody asked there. `GET /v1/cases/{id}` resolves every id in its
+            payload once, under `people`.
         release: { type: [string, "null"] }
 
     CaseWithHistory:
@@ -7149,6 +7169,19 @@ components:
         - { $ref: "#/components/schemas/Case" }
         - type: object
           properties:
+            people:
+              type: object
+              description: |
+                Every `user` id named anywhere in this payload — on the case, on
+                each environment, on each history row — resolved once and keyed by
+                that id. `{}` when nothing here names anybody.
+
+                Keyed rather than inlined so a person who gave six verdicts appears
+                once, and resolved here rather than by sending the reader to
+                `/v1/users` because "who approved this?" is the question this read
+                exists to answer. A disabled person still resolves, which is why the
+                directory has no delete.
+              additionalProperties: { $ref: "#/components/schemas/UserRef" }
             history:
               type: array
               items: { $ref: "#/components/schemas/RecordedVerdict" }
@@ -7170,6 +7203,15 @@ components:
             or none.
         actor_kind: { type: string, enum: [agent, human] }
         actor: { type: string }
+        user:
+          type: [string, "null"]
+          description: |
+            The person behind the credential that recorded this verdict, or null for
+            a machine token. **This** is the permanent record of who — the `user` on
+            a case's `human` fact only mirrors the latest.
+
+            Kept for an agent verdict too, not just a human one: an agent token can
+            belong to somebody's own automation, and "whose agent" is worth knowing.
         verdict: { type: string, enum: [pass, fail, blocked, unreachable] }
         note: { type: [string, "null"] }
         release: { type: [string, "null"] }

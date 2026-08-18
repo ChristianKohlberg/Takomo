@@ -14121,7 +14121,7 @@ async fn a_pre_rename_database_opens_as_checks_with_its_verdicts_intact() {
     );
 
     // The case and its verdict history survived, still reporting `verified`.
-    let (case, history) = store.get_case("case-legacy1").unwrap();
+    let (case, history, _) = store.get_case("case-legacy1").unwrap();
     assert_eq!(case.check, "lane-legacy1");
     assert_eq!(case.agent_verdict.as_deref(), Some("pass"));
     assert_eq!(case.state(), "verified", "state after the rename");
@@ -18055,4 +18055,114 @@ async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
     // Reads keep working, exactly as they do everywhere else.
     let (s, still) = app.get(&app.worker, "/v1/mindmaps").await;
     assert_eq!(s, StatusCode::OK, "{still}");
+}
+
+/// "A person approved this case" now says WHICH person, resolvably.
+///
+/// `human_by` is the free-form actor string the credential carried, which two
+/// `human:alice` tokens share and which nothing survives its owner leaving. The
+/// verdict now also records the directory person behind the credential — and the
+/// case detail resolves every such id once, because "who approved this?" is the
+/// question that read exists to answer.
+#[tokio::test]
+async fn a_human_verdict_records_which_person_gave_it() {
+    let app = TestApp::spawn().await;
+    let ada = app.add_user("ada", Some("tp"));
+    let ada_token = app.mint_as_user("human:ada", &["read", "write", "human"], &ada);
+
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    // An agent's observation first: it must NOT write a human attribution, because
+    // that column is the record of a person signing off.
+    let (s, agent) = app
+        .post(
+            &app.worker,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{agent}");
+    assert!(agent["human"]["user"].is_null(), "{agent}");
+
+    let (s, approved) = app
+        .post(
+            &ada_token,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass", "actor_kind": "human" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{approved}");
+    assert_eq!(
+        approved["human"]["by"], "human:ada",
+        "the actor is unchanged"
+    );
+    assert_eq!(
+        approved["human"]["user"], ada,
+        "and now it says who: {approved}"
+    );
+
+    // The case detail resolves it, so a reader gets a name without a second request.
+    let (s, detail) = app.get(&app.worker, &format!("/v1/cases/{cid}")).await;
+    assert_eq!(s, StatusCode::OK, "{detail}");
+    assert_eq!(detail["people"][&ada]["handle"], "ada", "{detail}");
+    assert_eq!(
+        detail["people"][&ada]["label"], "ada the tester",
+        "{detail}"
+    );
+
+    // The history is the permanent record: both verdicts are there, and the human
+    // one carries the person while the agent's carries none.
+    let history = detail["history"].as_array().unwrap();
+    let human = history
+        .iter()
+        .find(|v| v["actor_kind"] == "human")
+        .expect("the human verdict is in the history");
+    assert_eq!(human["user"], ada, "{human}");
+    let agent_entry = history
+        .iter()
+        .find(|v| v["actor_kind"] == "agent")
+        .expect("the agent verdict too");
+    assert!(agent_entry["user"].is_null(), "{agent_entry}");
+
+    // Disabling her does not erase what she approved — the whole reason the
+    // directory has no delete.
+    app.post(&app.admin, "/v1/users/ada/disable", json!({}))
+        .await;
+    let (_, after) = app.get(&app.worker, &format!("/v1/cases/{cid}")).await;
+    assert_eq!(after["people"][&ada]["handle"], "ada", "{after}");
+    assert_eq!(after["people"][&ada]["disabled"], json!(true), "{after}");
+    assert_eq!(after["human"]["user"], ada, "{after}");
+}
+
+/// A verdict from a credential bound to nobody still records — it just says so.
+///
+/// Every verdict taken before the directory existed is in this state, and
+/// inventing a person for them would be worse than admitting the gap.
+#[tokio::test]
+async fn a_verdict_from_an_unbound_credential_names_nobody() {
+    let app = TestApp::spawn().await;
+    let id = check(&app, json!({ "title": "Create a claim" })).await;
+    file_cases(&app, &id, &["only"]).await;
+    let cid = case_ids(&app, &id).await[0].1.clone();
+
+    // `app.human` is a human-scoped token with no person behind it.
+    let (s, approved) = app
+        .post(
+            &app.human,
+            &format!("/v1/cases/{cid}/verdict"),
+            json!({ "verdict": "pass", "actor_kind": "human" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{approved}");
+    assert_eq!(approved["human"]["by"], "human:reviewer", "{approved}");
+    assert!(approved["human"]["user"].is_null(), "{approved}");
+
+    let (_, detail) = app.get(&app.worker, &format!("/v1/cases/{cid}")).await;
+    assert_eq!(
+        detail["people"],
+        json!({}),
+        "nothing here names anybody, and the map says so rather than being absent: {detail}"
+    );
 }

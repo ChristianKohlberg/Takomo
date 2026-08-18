@@ -88,10 +88,16 @@ against the directory, so a document shows "Ada Lovelace" where it used to show 
 slug — and an unknown handle still degrades to the slug exactly as before.
 Nothing about initiatives changed shape; the same string means more.
 
-**Verification, later.** The checklist's checks and cases record who gave a
-verdict as an actor string, and a `human` verdict is already the line between "an
-agent observed this" and "a person approved it". Assigning a check to a person
-drops onto this directory when that surface arrives; nothing is built for it yet.
+**Named, on a verdict.** The checklist's `human` verdict is the line between "an
+agent observed this" and "a person approved it" — and it now records *which*
+person, not only the free-form actor string the credential carried. Recorded, never
+checked: what may be asserted there is still the `human` scope. See
+`docs/checklist.md`.
+
+Assigning a *check* to a person — so the human worklist reads "waiting on Ada"
+rather than "everything a human must do here" — drops onto this directory the same
+way, and is deliberately not built yet: it only earns its place once that pile is
+big enough to need dividing.
 
 ## Why global, with membership
 

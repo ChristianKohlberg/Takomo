@@ -1567,6 +1567,14 @@ pub struct Verdicts {
     pub human_verdict: Option<String>,
     pub human_at: Option<i64>,
     pub human_by: Option<String>,
+    /// WHICH PERSON approved it ([`User::id`]), where `human_by` is only the
+    /// free-form actor string the credential carried.
+    ///
+    /// "A person approved this case" is the strongest claim the checklist makes,
+    /// and an unresolvable name is a weak way to make it. `None` for a verdict
+    /// from a credential bound to nobody — which is honest rather than absent,
+    /// and is what every verdict recorded before the directory existed reads as.
+    pub human_user: Option<String>,
     pub human_release: Option<String>,
     pub stale_since: Option<String>,
 }
@@ -1639,6 +1647,12 @@ impl Verdicts {
                 "verdict": self.human_verdict,
                 "at": self.human_at.map(iso),
                 "by": self.human_by,
+                // The directory person, as an id. Resolved to a name only on the
+                // case detail — see `Store::get_case` — because that is the read
+                // where "who approved this?" is actually asked, and resolving it on
+                // every list would be a lookup per row for a question nobody asked
+                // there.
+                "user": self.human_user,
                 "release": self.human_release,
             },
             "stale_since": self.stale_since,
@@ -1706,6 +1720,8 @@ pub struct Case {
     pub human_verdict: Option<String>,
     pub human_at: Option<i64>,
     pub human_by: Option<String>,
+    /// Which person approved it — see [`Verdicts::human_user`].
+    pub human_user: Option<String>,
     pub human_release: Option<String>,
     pub stale_since: Option<String>,
     pub retired_at: Option<i64>,
@@ -1733,6 +1749,7 @@ impl Case {
             human_verdict: self.human_verdict.clone(),
             human_at: self.human_at,
             human_by: self.human_by.clone(),
+            human_user: self.human_user.clone(),
             human_release: self.human_release.clone(),
             stale_since: self.stale_since.clone(),
         }
@@ -1782,6 +1799,12 @@ impl Case {
                 "verdict": self.human_verdict,
                 "at": self.human_at.map(iso),
                 "by": self.human_by,
+                // The directory person, as an id. Resolved to a name only on the
+                // case detail — see `Store::get_case` — because that is the read
+                // where "who approved this?" is actually asked, and resolving it on
+                // every list would be a lookup per row for a question nobody asked
+                // there.
+                "user": self.human_user,
                 "release": self.human_release,
             },
             "stale_since": self.stale_since,
@@ -1802,6 +1825,10 @@ pub struct CaseVerdict {
     pub case_id: String,
     pub actor_kind: String,
     pub actor: String,
+    /// The directory person behind the credential that recorded this verdict, or
+    /// None for a machine token. The permanent record of who — the columns on
+    /// `cases` and `case_environments` only mirror the latest.
+    pub user: Option<String>,
     pub verdict: String,
     pub note: Option<String>,
     pub release: Option<String>,
@@ -1819,6 +1846,7 @@ impl CaseVerdict {
             "case": self.case_id,
             "actor_kind": self.actor_kind,
             "actor": self.actor,
+            "user": self.user,
             "verdict": self.verdict,
             "note": self.note,
             "release": self.release,
