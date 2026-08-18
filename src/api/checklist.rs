@@ -398,11 +398,22 @@ pub async fn get_case(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let (case, history) = state.store.get_case(&id)?;
+    let (case, history, people) = state.store.get_case(&id)?;
     let check = state.store.get_check(&case.check)?;
     ctx.require_project(&check.project)?;
     let mut out = case.to_json();
     out["history"] = json!(history.iter().map(|v| v.to_json()).collect::<Vec<_>>());
+    // Every `user` id in this payload, resolved once and keyed by that id, rather
+    // than the same person repeated inline on each verdict they gave. "Who
+    // approved this?" is the question this read exists to answer, and it is
+    // answered here rather than by sending the reader back to /v1/users.
+    //
+    // Empty when nothing here names anybody — a project whose verdicts predate the
+    // directory, or an agent-only case.
+    out["people"] = json!(people
+        .iter()
+        .map(|p| (p.id.clone(), p.to_ref_json()))
+        .collect::<serde_json::Map<_, _>>());
     Ok(Json(out))
 }
 
@@ -419,7 +430,7 @@ pub async fn record_verdict(
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let (case, _) = state.store.get_case(&id)?;
+    let (case, _, _) = state.store.get_case(&id)?;
     let check = state.store.get_check(&case.check)?;
     ctx.require_project(&check.project)?;
     let obj = body_object(&body)?;
@@ -447,6 +458,9 @@ pub async fn record_verdict(
         case: &id,
         actor_kind: &actor_kind,
         actor: &ctx.actor,
+        // Who the server can say gave this verdict. Recorded, not checked: what a
+        // credential may assert here is still its scopes.
+        user: ctx.user.as_deref(),
         verdict: &verdict,
         note: note.as_deref(),
         release: release.as_deref(),

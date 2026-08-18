@@ -183,6 +183,14 @@ pub struct VerdictInput<'a> {
     /// `agent` or `human`. Only a `human`-scoped token may send `human`.
     pub actor_kind: &'a str,
     pub actor: &'a str,
+    /// The directory person behind the credential (`tokens.user`), or None for a
+    /// machine token.
+    ///
+    /// Recorded, never checked: this binding says WHO gave the verdict and grants
+    /// nothing. What a credential may assert is still its scopes — only a `human`
+    /// token may claim a person approved a case — so a token bound to somebody
+    /// can do no more here than the same token unbound.
+    pub user: Option<&'a str>,
     pub verdict: &'a str,
     pub note: Option<&'a str>,
     pub release: Option<&'a str>,
@@ -641,6 +649,7 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
         human_verdict: row.get("human_verdict")?,
         human_at: row.get("human_at")?,
         human_by: row.get("human_by")?,
+        human_user: row.get("human_user")?,
         human_release: row.get("human_release")?,
         stale_since: row.get("stale_since")?,
         retired_at: row.get("retired_at")?,
@@ -657,8 +666,8 @@ const CHECK_COLS: &str =
     metadata, version, created_by, created_at, updated_at, archived_at";
 
 const CASE_COLS: &str = "id, check_id, key, label, assignment, seeded, agent_verdict, agent_at, \
-    agent_by, agent_release, human_verdict, human_at, human_by, human_release, stale_since, \
-    retired_at, created_at, updated_at";
+    agent_by, agent_release, human_verdict, human_at, human_by, human_user, human_release, \
+    stale_since, retired_at, created_at, updated_at";
 
 /// Resolve a handle — an id or a slug — to the canonical environment id.
 ///
@@ -718,7 +727,7 @@ fn hydrate_case_environments(
     }
     let mut stmt = conn.prepare(
         "SELECT environment, agent_verdict, agent_at, agent_by, agent_release, \
-         human_verdict, human_at, human_by, human_release, stale_since \
+         human_verdict, human_at, human_by, human_user, human_release, stale_since \
          FROM case_environments WHERE case_id = ?1",
     )?;
     let rows = stmt
@@ -733,8 +742,9 @@ fn hydrate_case_environments(
                     human_verdict: r.get(5)?,
                     human_at: r.get(6)?,
                     human_by: r.get(7)?,
-                    human_release: r.get(8)?,
-                    stale_since: r.get(9)?,
+                    human_user: r.get(8)?,
+                    human_release: r.get(9)?,
+                    stale_since: r.get(10)?,
                 },
             ))
         })?
@@ -1997,7 +2007,20 @@ impl Store {
         })
     }
 
-    pub fn get_case(&self, id: &str) -> ApiResult<(Case, Vec<CaseVerdict>)> {
+    /// One case, its verdict history, and the people named anywhere in either.
+    ///
+    /// The third element is what makes an attribution readable: every `user` id in
+    /// this payload — on the case, on each environment, on each history row —
+    /// resolved once. Lists deliberately do not do this: they answer "where does
+    /// verification stand", and a lookup per row for a question nobody asked there
+    /// would be N+1 for nothing.
+    ///
+    /// A person who has since been disabled still resolves, which is the whole
+    /// reason the directory has no delete.
+    pub fn get_case(
+        &self,
+        id: &str,
+    ) -> ApiResult<(Case, Vec<CaseVerdict>, Vec<super::model::User>)> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(&format!("SELECT {CASE_COLS} FROM cases WHERE id = ?1"))?;
             let mut case = stmt
@@ -2016,7 +2039,7 @@ impl Store {
                 // exactly what an agent pass followed by a human pass does — came
                 // back in either order, so "newest first" was only true about half
                 // the time.
-                "SELECT id, case_id, actor_kind, actor, verdict, note, release, environment, at
+                "SELECT id, case_id, actor_kind, actor, \"user\", verdict, note, release, environment, at
                  FROM case_verdicts WHERE case_id = ?1 ORDER BY at DESC, rowid DESC",
             )?;
             let history = stmt
@@ -2026,15 +2049,39 @@ impl Store {
                         case_id: r.get(1)?,
                         actor_kind: r.get(2)?,
                         actor: r.get(3)?,
-                        verdict: r.get(4)?,
-                        note: r.get(5)?,
-                        release: r.get(6)?,
-                        environment: r.get(7)?,
-                        at: r.get(8)?,
+                        user: r.get(4)?,
+                        verdict: r.get(5)?,
+                        note: r.get(6)?,
+                        release: r.get(7)?,
+                        environment: r.get(8)?,
+                        at: r.get(9)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok((case, history))
+
+            // Every id this payload mentions, resolved once.
+            let mut ids: Vec<String> = Vec::new();
+            let mut push = |id: &Option<String>| {
+                if let Some(id) = id {
+                    if !ids.contains(id) {
+                        ids.push(id.clone());
+                    }
+                }
+            };
+            push(&case.human_user);
+            for env in &case.environments {
+                push(&env.verdicts.human_user);
+            }
+            for entry in &history {
+                push(&entry.user);
+            }
+            let mut people = Vec::new();
+            for id in ids {
+                if let Some(person) = super::users::lookup_user(conn, &id)? {
+                    people.push(person);
+                }
+            }
+            Ok((case, history, people))
         })
     }
 
@@ -2064,6 +2111,7 @@ impl Store {
             case,
             actor_kind,
             actor,
+            user,
             verdict,
             note,
             release,
@@ -2146,16 +2194,24 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?3)",
                     params![case, env, now],
                 )?;
-                let sql = if actor_kind == "agent" {
-                    "UPDATE case_environments SET agent_verdict = ?1, agent_at = ?2, agent_by = ?3, \
-                     agent_release = ?4, stale_since = NULL, updated_at = ?2 \
-                     WHERE case_id = ?5 AND environment = ?6"
+                // An agent verdict writes no `human_user`: the column is the
+                // record of a PERSON approving, and an agent's own binding belongs
+                // on the history row rather than in a claim about human sign-off.
+                if actor_kind == "agent" {
+                    tx.execute(
+                        "UPDATE case_environments SET agent_verdict = ?1, agent_at = ?2, agent_by = ?3, \
+                         agent_release = ?4, stale_since = NULL, updated_at = ?2 \
+                         WHERE case_id = ?5 AND environment = ?6",
+                        params![verdict, now, actor, release, case, env],
+                    )?;
                 } else {
-                    "UPDATE case_environments SET human_verdict = ?1, human_at = ?2, human_by = ?3, \
-                     human_release = ?4, stale_since = NULL, updated_at = ?2 \
-                     WHERE case_id = ?5 AND environment = ?6"
-                };
-                tx.execute(sql, params![verdict, now, actor, release, case, env])?;
+                    tx.execute(
+                        "UPDATE case_environments SET human_verdict = ?1, human_at = ?2, human_by = ?3, \
+                         human_user = ?7, human_release = ?4, stale_since = NULL, updated_at = ?2 \
+                         WHERE case_id = ?5 AND environment = ?6",
+                        params![verdict, now, actor, release, case, env, user],
+                    )?;
+                }
                 // The case row's own timestamp still moves, so "when did anything
                 // last happen here" stays answerable without a join.
                 tx.execute(
@@ -2171,14 +2227,18 @@ impl Store {
             } else {
                 tx.execute(
                     "UPDATE cases SET human_verdict = ?1, human_at = ?2, human_by = ?3,
-                         human_release = ?4, stale_since = NULL, updated_at = ?2 WHERE id = ?5",
-                    params![verdict, now, actor, release, case],
+                         human_user = ?6, human_release = ?4, stale_since = NULL, updated_at = ?2 \
+                         WHERE id = ?5",
+                    params![verdict, now, actor, release, case, user],
                 )?;
             }
+            // The permanent record of who, for either kind: an agent token can
+            // belong to somebody's own automation, and "whose agent" is worth
+            // keeping even where it is not a human sign-off.
             tx.execute(
-                "INSERT INTO case_verdicts (id, case_id, actor_kind, actor, verdict, note, release, environment, at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                params![verdict_id(), case, actor_kind, actor, verdict, note, release, target, now],
+                "INSERT INTO case_verdicts (id, case_id, actor_kind, actor, \"user\", verdict, note, release, environment, at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![verdict_id(), case, actor_kind, actor, user, verdict, note, release, target, now],
             )?;
             emit_event(
                 tx,

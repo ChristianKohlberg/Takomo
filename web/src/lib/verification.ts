@@ -78,7 +78,13 @@ export interface EnvCases extends CheckEnvRef {
 export interface CaseEnvState extends CheckEnvRef {
   state: CaseState
   agent?: { verdict: string | null; at: string | null; by: string | null }
-  human?: { verdict: string | null; at: string | null; by: string | null }
+  /**
+   * `by` is the actor string the credential carried; `user` is WHICH person gave
+   * it (`usr-…`), or null for a credential bound to nobody. Nothing renders the
+   * person yet — this page shows where verification stands, not who signed — but
+   * the shape matches the server so a display does not have to re-derive it.
+   */
+  human?: { verdict: string | null; at: string | null; by: string | null; user?: string | null }
   stale_since?: string | null
 }
 
@@ -122,7 +128,13 @@ export interface CaseRow {
   environments: CaseEnvState[]
   assignment: unknown
   agent?: { verdict: string | null; at: string | null; by: string | null }
-  human?: { verdict: string | null; at: string | null; by: string | null }
+  /**
+   * `by` is the actor string the credential carried; `user` is WHICH person gave
+   * it (`usr-…`), or null for a credential bound to nobody. Nothing renders the
+   * person yet — this page shows where verification stands, not who signed — but
+   * the shape matches the server so a display does not have to re-derive it.
+   */
+  human?: { verdict: string | null; at: string | null; by: string | null; user?: string | null }
 }
 
 export interface Environment {

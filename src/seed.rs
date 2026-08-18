@@ -818,6 +818,8 @@ fn verdict_by<'a>(
         case,
         actor_kind: "agent",
         actor,
+        // The seeder is a script, not a person.
+        user: None,
         verdict,
         note,
         release: None,

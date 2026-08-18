@@ -3430,7 +3430,7 @@ impl TakomoMcp {
 
     fn do_verdict(&self, auth: &AuthCtx, a: VerdictArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        let (case, _) = self.state.store.get_case(&a.case)?;
+        let (case, _, _) = self.state.store.get_case(&a.case)?;
         let check = self.state.store.get_check(&case.check)?;
         auth.require_project(&check.project)?;
         // Deliberately no actor_kind parameter: over MCP an agent records an agent
@@ -3448,6 +3448,10 @@ impl TakomoMcp {
                 // with a `human`-scoped token.
                 actor_kind: "agent",
                 actor: &auth.actor,
+                // Kept even though this is always an agent verdict: an agent token
+                // can belong to somebody's own automation, and the history row is
+                // where "whose agent" belongs.
+                user: auth.user.as_deref(),
                 verdict: &a.verdict,
                 note: a.note.as_deref(),
                 release: a.release.as_deref(),
