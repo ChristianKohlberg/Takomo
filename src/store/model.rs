@@ -1412,6 +1412,10 @@ pub struct CheckCounts {
     pub stale: i64,
     pub failed: i64,
     pub unreachable: i64,
+    /// Tried and could not be judged. Counted apart from `never` because the two
+    /// call for different work, and inside the coverage denominator because a
+    /// blocked case is verifiable — it just was not verified this time.
+    pub blocked: i64,
     pub never: i64,
 }
 
@@ -1424,6 +1428,7 @@ impl CheckCounts {
             "stale": self.stale,
             "failed": self.failed,
             "unreachable": self.unreachable,
+            "blocked": self.blocked,
             "never": self.never,
         })
     }
@@ -1436,6 +1441,7 @@ impl CheckCounts {
             "stale" => self.stale += 1,
             "failed" => self.failed += 1,
             "unreachable" => self.unreachable += 1,
+            "blocked" => self.blocked += 1,
             _ => self.never += 1,
         }
     }
@@ -1605,6 +1611,18 @@ impl Verdicts {
         if self.agent_verdict.as_deref() == Some("pass") {
             return "verified";
         }
+        // Below every positive reading, above `never`. A `blocked` verdict is no
+        // information about CORRECTNESS — the runner never got far enough to
+        // judge — so an actual pass still wins. But it is information about
+        // EFFORT, and folding it into `never` threw that away: "nobody has ever
+        // run this" and "we tried and could not get there" call for different
+        // work, and the second is usually an environment that needs fixing
+        // rather than a case that needs writing.
+        if self.agent_verdict.as_deref() == Some("blocked")
+            || self.human_verdict.as_deref() == Some("blocked")
+        {
+            return "blocked";
+        }
         "never"
     }
 
@@ -1694,7 +1712,14 @@ pub fn worst_state(states: impl IntoIterator<Item = &'static str>) -> &'static s
     if seen.is_empty() {
         return "never";
     }
-    for rank in ["failed", "stale", "never", "unreachable", "verified"] {
+    for rank in [
+        "failed",
+        "stale",
+        "never",
+        "blocked",
+        "unreachable",
+        "verified",
+    ] {
         if seen.contains(&rank) {
             return rank;
         }

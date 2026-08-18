@@ -56,6 +56,7 @@ export const STR = defineStrings({
     stateFailed: 'failed',
     stateStale: 'stale',
     stateNever: 'never run',
+    stateBlocked: 'blocked',
     stateUnreachable: 'unreachable',
     stateVerified: 'verified',
     stateApproved: 'approved',
@@ -65,6 +66,7 @@ export const STR = defineStrings({
     reasonExpired: 'expired',
     reasonFailed: 'failed',
     reasonNever: 'never run',
+    reasonBlocked: 'blocked',
     reasonAwaitingHuman: 'awaiting you',
 
     orphanGlobs: 'claims paths that matched no file in the newest release',
@@ -163,6 +165,7 @@ export const STR = defineStrings({
     stateFailed: 'fehlgeschlagen',
     stateStale: 'veraltet',
     stateNever: 'nie gelaufen',
+    stateBlocked: 'blockiert',
     stateUnreachable: 'nicht erreichbar',
     stateVerified: 'verifiziert',
     stateApproved: 'freigegeben',
@@ -172,6 +175,7 @@ export const STR = defineStrings({
     reasonExpired: 'abgelaufen',
     reasonFailed: 'fehlgeschlagen',
     reasonNever: 'nie gelaufen',
+    reasonBlocked: 'blockiert',
     reasonAwaitingHuman: 'wartet auf Sie',
 
     orphanGlobs: 'beansprucht Pfade, die im neuesten Release auf keine Datei passten',

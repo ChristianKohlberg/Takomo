@@ -41,6 +41,7 @@ export const CASE_STATES = [
   'failed',
   'stale',
   'never',
+  'blocked',
   'unreachable',
   'verified',
   'approved',
@@ -54,6 +55,8 @@ export interface CaseCounts {
   stale: number
   failed: number
   unreachable: number
+  /** Tried and could not be judged — counted apart from `never`. */
+  blocked: number
   never: number
 }
 
@@ -410,6 +413,7 @@ export function worstState(c: CaseCounts): CaseState | 'none' {
   if (c.failed) return 'failed'
   if (c.stale) return 'stale'
   if (c.never) return 'never'
+  if (c.blocked) return 'blocked'
   if (c.approved) return 'approved'
   if (c.verified) return 'verified'
   return 'unreachable'
@@ -437,6 +441,7 @@ export function spread(c: CaseCounts): { state: CaseState; n: number }[] {
   push('failed', c.failed)
   push('stale', c.stale)
   push('never', c.never)
+  push('blocked', c.blocked)
   push('approved', c.approved)
   push('verified', c.verified)
   push('unreachable', c.unreachable)

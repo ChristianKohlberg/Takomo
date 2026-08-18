@@ -17,6 +17,7 @@ export interface CheckCardLabels {
   stateFailed: string
   stateStale: string
   stateNever: string
+  stateBlocked: string
   stateUnreachable: string
   stateVerified: string
   stateApproved: string
@@ -57,6 +58,10 @@ export function stateTone(state: CaseState | 'none'): string {
       return 'bg-accent text-accent-foreground'
     case 'never':
       return 'bg-muted text-muted-foreground'
+    // Louder than `never`: somebody already spent the effort and hit a wall,
+    // which usually means an environment to fix.
+    case 'blocked':
+      return 'bg-accent text-accent-foreground'
     case 'approved':
     case 'verified':
       return 'bg-ok-bg text-ok'
@@ -73,6 +78,8 @@ export function stateWord(state: CaseState | 'none', l: CheckCardLabels): string
       return l.stateStale
     case 'never':
       return l.stateNever
+    case 'blocked':
+      return l.stateBlocked
     case 'unreachable':
       return l.stateUnreachable
     case 'verified':

@@ -5211,7 +5211,7 @@ paths:
         AGENT list until it has a fresh agent verdict, so it never sits in a
         person's queue waiting for work only an agent can do.
 
-        `reason` is one of stale, expired, failed, never or awaiting_human.
+        `reason` is one of stale, expired, failed, blocked, never or awaiting_human.
       parameters: [ { $ref: "#/components/parameters/project" } ]
       responses:
         "200":
@@ -6978,7 +6978,8 @@ components:
       type: object
       description: |
         A check's live cases by state. `total` is the sum of the rest. `unreachable`
-        is deliberately its own bucket rather than folded into covered or uncovered.
+        is deliberately its own bucket rather than folded into covered or uncovered,
+        and `blocked` is deliberately its own rather than folded into `never`.
       properties:
         total: { type: integer }
         approved: { type: integer, description: 'a human passed it' }
@@ -6986,6 +6987,7 @@ components:
         stale: { type: integer, description: 'was verified, then the claimed code moved' }
         failed: { type: integer }
         unreachable: { type: integer, description: 'the declared layer cannot reach this configuration' }
+        blocked: { type: integer, description: 'the runner could not get far enough to judge. Counted apart from `never` because they call for different work — usually an environment to fix rather than a case to write — and inside the coverage denominator, because a blocked case is verifiable and simply was not verified this time.' }
         never: { type: integer, description: 'no verdict has ever been recorded' }
 
     ResolvedPolicy:
@@ -7320,11 +7322,13 @@ components:
         base_url: { type: [string, "null"], description: 'carried on the item so a runner needs no second request — an item that does not say where is not actionable' }
         reason:
           type: string
-          enum: [stale, expired, failed, never, awaiting_human]
+          enum: [stale, expired, failed, blocked, never, awaiting_human]
           description: |
             `stale` the release diff touched the claimed code, `expired` a policy
-            clock ran out, `never` no verdict was ever recorded, `awaiting_human` an
-            agent has passed it and the policy still wants a person.
+            clock ran out, `never` no verdict was ever recorded, `blocked` somebody
+            ran it and could not get far enough to judge (usually an environment to
+            fix rather than a case to write), `awaiting_human` an agent has passed
+            it and the policy still wants a person.
         verification: { type: string, enum: [agent, human, agent_then_human] }
         cost_minutes: { type: [integer, "null"] }
 

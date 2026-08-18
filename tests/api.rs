@@ -13725,6 +13725,81 @@ async fn a_check_refuses_an_initiative_that_does_not_exist_or_is_elsewhere() {
     assert_eq!(b["code"], "validation.check_initiative");
 }
 
+/// "Nobody ran it" and "we ran it and could not judge" are different findings.
+///
+/// `blocked` was an accepted verdict with nowhere to land: no state, no bucket,
+/// so a case whose only verdict was blocked read as `never` everywhere and the
+/// effort that went into it vanished. That is the wrong way round — a blocked
+/// case usually means the environment needs fixing, while a never-run one means
+/// the work has not started, and they go to different people.
+#[tokio::test]
+async fn a_blocked_case_is_not_a_case_nobody_ran() {
+    let app = TestApp::spawn().await;
+    let id = check(
+        &app,
+        json!({ "title": "Split an invoice", "severity": "blocking" }),
+    )
+    .await;
+    file_cases(&app, &id, &["a", "b"]).await;
+    let cases = case_ids(&app, &id).await;
+    let (_, blocked_case) = cases.iter().find(|(k, _)| k == "a").expect("case a");
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{blocked_case}/verdict"),
+            json!({ "verdict": "blocked", "note": "the seed data never loaded" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["state"], "blocked",
+        "a blocked verdict has to be visible as its own state: {b}"
+    );
+
+    // It counts apart from `never`, and stays inside the coverage denominator —
+    // a blocked case IS verifiable, it just was not verified this time.
+    let (_, c) = app.get(&app.admin, &format!("/v1/checks/{id}")).await;
+    assert_eq!(c["cases"]["blocked"], json!(1), "{c}");
+    assert_eq!(
+        c["cases"]["never"],
+        json!(1),
+        "the untouched case is the only `never`: {c}"
+    );
+    assert_eq!(c["cases"]["total"], json!(2), "{c}");
+
+    // The worklist calls it what it is, rather than routing it to a person as
+    // though it were waiting on their signature.
+    let (_, wl) = app
+        .get(&app.admin, "/v1/projects/tp/checklist/worklist")
+        .await;
+    let reason = wl["agent"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["case"] == json!(blocked_case))
+        .map(|i| i["reason"].clone())
+        .expect("the blocked case is on the agent worklist");
+    assert_eq!(reason, json!("blocked"), "{wl}");
+
+    // And it does not satisfy the policy, so a blocking check with one stays
+    // shut — "could not judge" is not "fine".
+    let (_, gate) = app.get(&app.admin, "/v1/projects/tp/checklist/gate").await;
+    assert_eq!(gate["blocked"], json!(true), "{gate}");
+
+    // A real pass still wins over a blocked verdict recorded earlier: the pass
+    // is evidence about correctness and the blocked one never was.
+    let (s, passed) = app
+        .post(
+            &app.admin,
+            &format!("/v1/cases/{blocked_case}/verdict"),
+            json!({ "verdict": "pass" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{passed}");
+    assert_eq!(passed["state"], "verified", "{passed}");
+}
+
 /// A check declaring two environments tracks each one separately.
 ///
 /// This is the whole point of declaring them: "passes on staging, never run on

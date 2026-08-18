@@ -256,6 +256,7 @@ export function App() {
     stateFailed: t.stateFailed,
     stateStale: t.stateStale,
     stateNever: t.stateNever,
+    stateBlocked: t.stateBlocked,
     stateUnreachable: t.stateUnreachable,
     stateVerified: t.stateVerified,
     stateApproved: t.stateApproved,
