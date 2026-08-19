@@ -31,6 +31,8 @@ import { CreateDialog } from '@/components/initiatives/CreateDialog'
 import { DocumentBody } from '@/components/initiatives/DocumentBody'
 import { EntryCard } from '@/components/initiatives/EntryCard'
 import { Explorer, revealPath } from '@/components/initiatives/Explorer'
+import { Minimap } from '@/components/initiatives/Minimap'
+import { RenameDialog } from '@/components/initiatives/RenameDialog'
 import { RollupStrip } from '@/components/initiatives/RollupStrip'
 import { SelectionPane, type Operation } from '@/components/initiatives/SelectionPane'
 import { SourceInspector } from '@/components/initiatives/SourceInspector'
@@ -39,6 +41,7 @@ import { OriginMasthead } from '@/components/initiatives/OriginMasthead'
 import { VersionsStrip } from '@/components/initiatives/VersionsStrip'
 import { resolveAnchor, type Anchor } from '@/lib/initiative-anchor'
 import { fetchRoadmap, lane, laneVersions, laneWarnings, type Roadmap } from '@/lib/roadmap'
+import { lanesOf } from '@/lib/initiative-map'
 import {
   amendedView,
   buildDoc,
@@ -54,7 +57,7 @@ import {
   type Pane,
   type Thread,
 } from '@/lib/initiative-doc'
-import { buildTree, normalizePath, pathOf, pruneTree } from '@/lib/initiative-tree'
+import { buildTree, folderPaths, normalizePath, pathOf, pruneTree } from '@/lib/initiative-tree'
 
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { localInputToRfc3339 } from '@/lib/format'
@@ -122,6 +125,12 @@ export function App() {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [file, setFile] = useState<PickedFile | null>(null)
   const [showLog, setShowLog] = useState(false)
+  // The map is a view of the same project, not a separate page: it swaps the
+  // document for the picture and leaves the explorer, so clicking a lane on the
+  // map can put its document back on screen without a navigation.
+  const [mapOpen, setMapOpen] = useState(false)
+  /** The document whose title the rename modal is editing, or null. */
+  const [renaming, setRenaming] = useState<Initiative | null>(null)
 
   // Which folders are open. Persisted because a tree that re-collapses on every
   // reload makes a deep document expensive to get back to.
@@ -156,6 +165,13 @@ export function App() {
     [items, selectedId],
   )
 
+  // Which project the roadmap is about. The project rather than the selected
+  // document: the versions strip only ever needed the selection's project, but
+  // the map is about the project as a whole and has to load with nothing
+  // selected. When a project IS picked the list is already narrowed to it, so
+  // the two agree.
+  const roadmapProject = project || selected?.project
+
   // An initiative never closes, so "how far along is it" is not a question its
   // own status can answer. The answer is the epics filed under it, one per
   // version — joined here from the same roadmap response that carries them.
@@ -166,19 +182,36 @@ export function App() {
   )
   const laneFlags = useMemo(() => laneWarnings(laneRollup), [laneRollup])
 
+  // The map's whole input, from the same roadmap response the versions strip
+  // reads — one request answers both altitudes.
+  const mapLanes = useMemo(() => lanesOf(roadmap), [roadmap])
+
+  /** The map's root box: the project's name, falling back to its id. */
+  const projectLabel = useMemo(() => {
+    const p = roadmapProject
+    if (!p) return ''
+    return projects.find((x) => x.id === p)?.name || p
+  }, [projects, roadmapProject])
+
+  const fullTree = useMemo(() => buildTree(items), [items])
+
   // The tree is filtered client-side, unlike the status chips: folder structure
   // is derived here, so a server-side text filter would hand back a set of
   // documents with no way to know which folders they came from.
   const tree = useMemo(() => {
-    const full = buildTree(items)
     const needle = q.trim().toLowerCase()
-    if (!needle && !waitingOnly) return full
-    return pruneTree(full, (i) => {
+    if (!needle && !waitingOnly) return fullTree
+    return pruneTree(fullTree, (i) => {
       if (waitingOnly && !isWaiting(i)) return false
       if (!needle) return true
       return `${i.title} ${i.summary ?? ''} ${pathOf(i)}`.toLowerCase().includes(needle)
     })
-  }, [items, q, waitingOnly])
+  }, [fullTree, q, waitingOnly])
+
+  // Every folder that exists, not every folder currently VISIBLE: expand-all run
+  // under a filter should leave the tree expanded when the filter comes off,
+  // rather than half-open in a way nothing on screen explains.
+  const allFolders = useMemo(() => folderPaths(fullTree), [fullTree])
 
   /**
    * How many documents want something from a person right now.
@@ -301,6 +334,23 @@ export function App() {
     })
   }, [])
 
+  /**
+   * Open or shut the whole tree.
+   *
+   * One control rather than two, because the two are never both useful: with
+   * something open the offer is to shut it, and with nothing open there is
+   * nothing to shut. It writes through the same key as `toggleFolder`, so the
+   * state survives a reload exactly as a hand-opened folder does.
+   */
+  const setAllFolders = useCallback(
+    (open: boolean) => {
+      const next = open ? new Set(allFolders) : new Set<string>()
+      localStorage.setItem(LS_FOLDERS, JSON.stringify([...next]))
+      setExpanded(next)
+    },
+    [allFolders],
+  )
+
   // Boot: projects + who am I, then the list.
   useEffect(() => {
     if (!token) return
@@ -351,8 +401,8 @@ export function App() {
   )
 
   useEffect(() => {
-    void refreshRoadmap(selected?.project)
-  }, [refreshRoadmap, selected?.project])
+    void refreshRoadmap(roadmapProject)
+  }, [refreshRoadmap, roadmapProject])
 
   // Deep link: `#i=<id>` selects a document, and reveals the folders above it —
   // a link into a collapsed branch that selects nothing visible is a broken link
@@ -407,6 +457,14 @@ export function App() {
       } catch (e) {
         handleErr(e)
       }
+    },
+    [doPatch, t, handleErr],
+  )
+
+  /** Rename a document from the tree. The same patch the inline title makes. */
+  const doRename = useCallback(
+    (id: string, title: string) => {
+      doPatch(id, { title }, t.savedTitle).catch(handleErr)
     },
     [doPatch, t, handleErr],
   )
@@ -896,6 +954,16 @@ export function App() {
           localStorage.setItem(LS_LANG, l)
         }}
       >
+        {/* A view of the same project rather than a page of its own, so it is a
+            toggle here and not an entry in the nav rail: leaving it puts you
+            back on the document you were reading. */}
+        <Button
+          variant={mapOpen ? 'default' : 'outline'}
+          aria-pressed={mapOpen}
+          onClick={() => setMapOpen((v) => !v)}
+        >
+          {mapOpen ? t.mapClose : t.mapOpen}
+        </Button>
         {/* A document belongs to exactly one project, so this cannot act while
             the selection is "All projects". It shows its own state rather than
             answering a click with a toast. */}
@@ -924,7 +992,14 @@ export function App() {
         </Button>
       </AppHeader>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_1fr_auto] md:grid-cols-[260px_1fr_340px] md:grid-rows-1">
+      <main
+        className={cn(
+          'grid min-h-0 flex-1 grid-cols-1 md:grid-rows-1',
+          mapOpen
+            ? 'grid-rows-[auto_1fr] md:grid-cols-[260px_1fr]'
+            : 'grid-rows-[auto_1fr_auto] md:grid-cols-[260px_1fr_340px]',
+        )}
+      >
         {/* --- the explorer ------------------------------------------------ */}
         <aside className="bg-card border-b-border-soft md:border-r-border-soft flex max-h-[30vh] min-h-0 flex-col overflow-hidden border-b md:max-h-none md:border-r md:border-b-0">
           <div className="border-b-border-soft flex flex-col gap-1.5 border-b px-3 py-2">
@@ -962,6 +1037,17 @@ export function App() {
                   onClick={() => setWaitingOnly(!waitingOnly)}
                 />
               )}
+              {/* Only when there is a tree to open. A control that does nothing
+                  visible is worse than an absent one on a 260px rail. */}
+              {allFolders.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAllFolders(expanded.size === 0)}
+                  className="text-muted-foreground hover:text-foreground hover:border-ring border-border ml-auto cursor-pointer rounded-full border px-2 py-0.5 text-[11px] font-semibold"
+                >
+                  {expanded.size === 0 ? t.explorerExpandAll : t.explorerCollapseAll}
+                </button>
+              )}
             </div>
           </div>
           <div className="min-h-0 grow overflow-y-auto">
@@ -971,11 +1057,16 @@ export function App() {
               expanded={expanded}
               onToggle={toggleFolder}
               onSelect={select}
+              // Withheld from a reader who cannot write: the menu's only entry
+              // would open a dialog whose save is refused.
+              onRename={canWrite ? (i) => setRenaming(i) : undefined}
               labels={{
                 empty: t.explorerEmpty,
                 emptyHint: t.explorerEmptyHint,
                 toggle: t.explorerToggle,
                 unfiled: t.explorerUnfiled,
+                menu: t.explorerMenu,
+                rename: t.explorerRename,
                 // Singular is its own string rather than a formatted "1", because
                 // the two differ by more than a letter in German — "wartet" vs
                 // "warten" — and a badge read aloud is the whole of what a screen
@@ -991,331 +1082,402 @@ export function App() {
           </div>
         </aside>
 
-        {/* --- the document ------------------------------------------------ */}
-        <section className="min-h-0 overflow-y-auto">
-          {!selected ? (
-            <Empty big={t.noneSelected} hint={t.noneSelectedHint} />
-          ) : (
-            <div className="max-w-215 px-6.5 pt-5 pb-10">
-              <div className="flex items-start gap-3">
-                <EditableText
-                  key={selected.id + ':title'}
-                  as="h1"
-                  value={selected.title}
-                  editable={canWrite}
-                  required
-                  className={cn(
-                    'm-0 grow text-[22px] font-[740] tracking-[-0.02em] outline-none',
-                    canWrite && 'focus:border-ring border-b border-dashed border-transparent',
-                  )}
-                  onCommit={(next) => doPatch(selected.id, { title: next }, t.savedTitle)}
-                />
-                <select
-                  aria-label={t.aStatus}
-                  value={selected.status}
-                  disabled={!canWrite}
-                  onChange={(e) =>
-                    doPatch(
-                      selected.id,
-                      { status: e.target.value as InitiativeStatus },
-                      t.savedStatus,
-                    ).catch(handleErr)
-                  }
-                  className="bg-secondary text-secondary-foreground border-ring cursor-pointer appearance-none rounded-md border px-2.25 py-1 text-[11.5px] font-bold tracking-[0.04em] uppercase"
-                >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {statusLabel(s)}
-                    </option>
-                  ))}
-                </select>
-              </div>
+        {/* --- the map, or the document and what to do with it ------------- */}
+        {mapOpen ? (
+          <Minimap
+            rootLabel={projectLabel}
+            lanes={mapLanes}
+            hasProject={Boolean(roadmapProject)}
+            // Leaving the map on the document you asked for: the reason to click
+            // a lane here is almost always to read it.
+            onOpenInitiative={(id) => {
+              setMapOpen(false)
+              select(id)
+            }}
+            epicHref={(id) => `/board#t=${encodeURIComponent(id)}`}
+            verificationHref="/verification"
+            labels={{
+              heading: t.mapHeading,
+              needProject: t.mapNeedProject,
+              needProjectHint: t.mapNeedProjectHint,
+              empty: t.mapEmpty,
+              emptyHint: t.mapEmptyHint,
+              unfiled: t.mapUnfiled,
+              unfiledHint: t.mapUnfiledHint,
+              goTo: t.mapGoTo,
+              openDocument: t.mapOpenDocument,
+              openVerification: t.mapOpenVerification,
+              versions: t.mapVersions,
+              statistics: t.mapStatistics,
+              close: t.mapClose2,
+              done: t.mapDone,
+              ready: t.mapReady,
+              backlog: t.mapBacklog,
+              awaiting: t.mapAwaiting,
+              state: t.mapState,
+              priority: t.mapPriority,
+              openOnBoard: t.mapOpenOnBoard,
+              noWork: t.mapNoWork,
+              zoomIn: t.mapZoomIn,
+              zoomOut: t.mapZoomOut,
+              complete: t.mapComplete,
+              pickEpic: t.mapPickEpic,
+            }}
+          />
+        ) : (
+          <>
+            <section className="min-h-0 overflow-y-auto">
+              {!selected ? (
+                <Empty big={t.noneSelected} hint={t.noneSelectedHint} />
+              ) : (
+                <div className="max-w-215 px-6.5 pt-5 pb-10">
+                  <div className="flex items-start gap-3">
+                    <EditableText
+                      key={selected.id + ':title'}
+                      as="h1"
+                      value={selected.title}
+                      editable={canWrite}
+                      required
+                      className={cn(
+                        'm-0 grow text-[22px] font-[740] tracking-[-0.02em] outline-none',
+                        canWrite && 'focus:border-ring border-b border-dashed border-transparent',
+                      )}
+                      onCommit={(next) => doPatch(selected.id, { title: next }, t.savedTitle)}
+                    />
+                    <select
+                      aria-label={t.aStatus}
+                      value={selected.status}
+                      disabled={!canWrite}
+                      onChange={(e) =>
+                        doPatch(
+                          selected.id,
+                          { status: e.target.value as InitiativeStatus },
+                          t.savedStatus,
+                        ).catch(handleErr)
+                      }
+                      className="bg-secondary text-secondary-foreground border-ring cursor-pointer appearance-none rounded-md border px-2.25 py-1 text-[11.5px] font-bold tracking-[0.04em] uppercase"
+                    >
+                      {STATUSES.map((s) => (
+                        <option key={s} value={s}>
+                          {statusLabel(s)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 font-mono text-[11.5px]">
-                <span>
-                  {selected.id} · {selected.project}
-                </span>
-                <span aria-hidden="true">·</span>
-                {/* The folder is editable text like the title, because moving a
-                    document is a metadata merge and nothing more. */}
-                <EditableText
-                  key={selected.id + ':path'}
-                  value={pathOf(selected)}
-                  editable={canWrite}
-                  placeholder={t.folderNone}
-                  className={cn(
-                    'outline-none',
-                    canWrite && 'focus:border-ring border-b border-dashed border-transparent',
-                  )}
-                  onCommit={(next) => doMove(selected.id, next)}
-                />
-              </div>
+                  <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 font-mono text-[11.5px]">
+                    <span>
+                      {selected.id} · {selected.project}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    {/* The folder is editable text like the title, because moving a
+                        document is a metadata merge and nothing more. */}
+                    <EditableText
+                      key={selected.id + ':path'}
+                      value={pathOf(selected)}
+                      editable={canWrite}
+                      placeholder={t.folderNone}
+                      className={cn(
+                        'outline-none',
+                        canWrite && 'focus:border-ring border-b border-dashed border-transparent',
+                      )}
+                      onCommit={(next) => doMove(selected.id, next)}
+                    />
+                  </div>
 
-              <EditableText
-                key={selected.id + ':summary'}
-                value={selected.summary ?? ''}
-                editable={canWrite}
-                className={cn(
-                  'text-foreground mt-2.25 mb-0 min-h-5 text-[14px] outline-none',
-                  canWrite && 'focus:border-ring border-b border-dashed border-transparent',
-                )}
-                onCommit={(next) => doPatch(selected.id, { summary: next }, t.savedSummary)}
-              />
+                  <EditableText
+                    key={selected.id + ':summary'}
+                    value={selected.summary ?? ''}
+                    editable={canWrite}
+                    className={cn(
+                      'text-foreground mt-2.25 mb-0 min-h-5 text-[14px] outline-none',
+                      canWrite && 'focus:border-ring border-b border-dashed border-transparent',
+                    )}
+                    onCommit={(next) => doPatch(selected.id, { summary: next }, t.savedSummary)}
+                  />
 
-              <RollupStrip
-                rollup={selected.rollup}
-                labels={{
-                  entries: t.rEntries,
-                  attachments: t.rAttachments,
-                  chars: t.rChars,
-                  size: t.rSize,
-                  last: t.rLast,
-                }}
-              />
-
-              <VersionsStrip
-                lane={laneRollup}
-                versions={laneVersionList}
-                warnings={laneFlags}
-                epicHref={(id) => `/board#t=${encodeURIComponent(id)}`}
-                labels={{
-                  heading: t.vHeading,
-                  done: t.vDone,
-                  ready: t.vReady,
-                  backlog: t.vBacklog,
-                  awaiting: t.vAwaiting,
-                  empty: t.vEmpty,
-                  emptyHint: t.vEmptyHint,
-                  parkedWithReadyWork: t.vParkedWithReadyWork,
-                }}
-              />
-
-              <OriginMasthead
-                origins={doc.origins}
-                labels={{ heading: t.originHdr, wrote: t.wrote }}
-              />
-
-              {/* Rendered even when no pane exists yet: this is where a person
-                  STARTS a document, and a surface that only appears once an
-                  agent has written one is a surface a person can never begin. */}
-              {(doc.hasDocument || canWrite) && (
-                <>
-                  <DocumentBody
-                    doc={doc}
-                    canWrite={canWrite}
-                    editing={editingPane}
-                    busy={busy}
-                    onStartEdit={(pane) => {
-                      setAnchor(null)
-                      setFocus(null)
-                      setEditingPane(pane)
-                    }}
-                    onCancelEdit={() => setEditingPane(null)}
-                    onSavePane={(pane, text) => void doSavePane(pane, text)}
-                    focusedSpan={focus?.id ?? null}
-                    selectedSourceId={cite?.entry.id ?? null}
-                    onSelect={(a) => {
-                      setAnchor(a)
-                      // A fresh highlight supersedes whatever note was open —
-                      // two things claiming the right-hand pane at once is how
-                      // a stale note ends up beside an unrelated selection.
-                      if (a) setFocus(null)
-                    }}
-                    onOpenSpan={(pane, id) => {
-                      setAnchor(null)
-                      setFocus({ pane, id })
-                    }}
-                    onSelectSource={(entry, n) => setCite({ entry, n })}
+                  <RollupStrip
+                    rollup={selected.rollup}
                     labels={{
-                      citation: t.aCitation,
-                      uncited: t.uncited,
-                      unwritten: t.paneUnwritten,
-                      paneBusiness: t.paneBusiness,
-                      paneTechnical: t.paneTechnical,
-                      paneVerification: t.paneVerification,
-                      orphanHeading: t.orphanHeading,
-                      orphanHint: t.orphanHint,
-                      suggestionMark: t.suggestionMark,
-                      writePane: t.writePane,
-                      revisePane: t.revisePane,
-                      hint: t.paneEditorHint,
-                      citesHeading: t.paneCites,
-                      citesHint: t.paneCitesHint,
-                      noCites: t.paneNoCites,
-                      save: t.paneSave,
-                      cancel: t.cancel,
-                      working: t.working,
+                      entries: t.rEntries,
+                      attachments: t.rAttachments,
+                      chars: t.rChars,
+                      size: t.rSize,
+                      last: t.rLast,
                     }}
                   />
-                  {cite && (
-                    <SourceInspector
-                      entry={cite.entry}
-                      n={cite.n}
-                      onClose={() => setCite(null)}
-                      onDownload={(e) => downloadAttachment(token, e).catch(handleErr)}
-                      labels={{
-                        hint: t.citeHint,
-                        kind: t.eKind,
-                        source: t.eSource,
-                        wrote: t.wrote,
-                        landed: t.landed,
-                        download: t.download,
-                        close: t.dismiss,
-                      }}
-                    />
-                  )}
-                  {doc.sources.length > 0 && (
-                    <SourcesFooter
-                      sources={doc.sources}
-                      onSelect={(entry, n) => setCite({ entry, n })}
-                      labels={{ heading: t.lineageHdr, wrote: t.wrote, landed: t.landed }}
-                    />
-                  )}
-                </>
-              )}
 
-              {/* The entry log stays reachable: the document is a reduction of
-                  it, and a reduction you cannot check against its source is a
-                  summary you have to take on faith. */}
-              <SectionHeader>
-                <button
-                  type="button"
-                  onClick={() => setShowLog((v) => !v)}
-                  className="cursor-pointer"
-                >
-                  {t.entriesHdr} {showLog ? '▾' : '▸'}
-                </button>
-              </SectionHeader>
+                  <VersionsStrip
+                    lane={laneRollup}
+                    versions={laneVersionList}
+                    warnings={laneFlags}
+                    epicHref={(id) => `/board#t=${encodeURIComponent(id)}`}
+                    labels={{
+                      heading: t.vHeading,
+                      done: t.vDone,
+                      ready: t.vReady,
+                      backlog: t.vBacklog,
+                      awaiting: t.vAwaiting,
+                      empty: t.vEmpty,
+                      emptyHint: t.vEmptyHint,
+                      parkedWithReadyWork: t.vParkedWithReadyWork,
+                    }}
+                  />
 
-              {showLog && (
-                <>
-                  {canWrite && (
-                    <Composer
-                      draft={draft}
-                      onDraft={(patch) => setDraft((d) => ({ ...d, ...patch }))}
-                      file={file}
-                      onPickFile={onPickFile}
-                      busy={busy}
-                      onAppend={doAppend}
-                      labels={{
-                        kind: t.eKind,
-                        kindHint: t.eKindHint,
-                        source: t.eSource,
-                        sourceHint: t.eSourceHint,
-                        title: t.eTitle,
-                        titlePh: t.eTitlePh,
-                        uri: t.eSourceUri,
-                        uriPh: t.eSourceUriPh,
-                        text: t.eText,
-                        textPh: t.eTextPh,
-                        origin: t.eOrigin,
-                        originHint: t.eOriginHint,
-                        attach: t.attach,
-                        attachClear: t.attachClear,
-                        attachAria: t.aAttach,
-                        append: t.append,
-                        appending: t.appending,
-                      }}
-                    />
-                  )}
-                  {entries.length === 0 ? (
-                    <Empty big={t.emptyEntries} hint={t.emptyEntriesHint} />
-                  ) : (
+                  <OriginMasthead
+                    origins={doc.origins}
+                    labels={{ heading: t.originHdr, wrote: t.wrote }}
+                  />
+
+                  {/* Rendered even when no pane exists yet: this is where a person
+                      STARTS a document, and a surface that only appears once an
+                      agent has written one is a surface a person can never begin. */}
+                  {(doc.hasDocument || canWrite) && (
                     <>
-                      {entries.map((en) => (
-                        <EntryCard
-                          key={en.id}
-                          entry={en}
-                          labels={{ by: t.by, wrote: t.wrote, download: t.download }}
+                      <DocumentBody
+                        doc={doc}
+                        canWrite={canWrite}
+                        editing={editingPane}
+                        busy={busy}
+                        onStartEdit={(pane) => {
+                          setAnchor(null)
+                          setFocus(null)
+                          setEditingPane(pane)
+                        }}
+                        onCancelEdit={() => setEditingPane(null)}
+                        onSavePane={(pane, text) => void doSavePane(pane, text)}
+                        focusedSpan={focus?.id ?? null}
+                        selectedSourceId={cite?.entry.id ?? null}
+                        onSelect={(a) => {
+                          setAnchor(a)
+                          // A fresh highlight supersedes whatever note was open —
+                          // two things claiming the right-hand pane at once is how
+                          // a stale note ends up beside an unrelated selection.
+                          if (a) setFocus(null)
+                        }}
+                        onOpenSpan={(pane, id) => {
+                          setAnchor(null)
+                          setFocus({ pane, id })
+                        }}
+                        onSelectSource={(entry, n) => setCite({ entry, n })}
+                        labels={{
+                          citation: t.aCitation,
+                          uncited: t.uncited,
+                          unwritten: t.paneUnwritten,
+                          paneBusiness: t.paneBusiness,
+                          paneTechnical: t.paneTechnical,
+                          paneVerification: t.paneVerification,
+                          orphanHeading: t.orphanHeading,
+                          orphanHint: t.orphanHint,
+                          suggestionMark: t.suggestionMark,
+                          writePane: t.writePane,
+                          revisePane: t.revisePane,
+                          hint: t.paneEditorHint,
+                          citesHeading: t.paneCites,
+                          citesHint: t.paneCitesHint,
+                          noCites: t.paneNoCites,
+                          save: t.paneSave,
+                          cancel: t.cancel,
+                          working: t.working,
+                        }}
+                      />
+                      {cite && (
+                        <SourceInspector
+                          entry={cite.entry}
+                          n={cite.n}
+                          onClose={() => setCite(null)}
                           onDownload={(e) => downloadAttachment(token, e).catch(handleErr)}
+                          labels={{
+                            hint: t.citeHint,
+                            kind: t.eKind,
+                            source: t.eSource,
+                            wrote: t.wrote,
+                            landed: t.landed,
+                            download: t.download,
+                            close: t.dismiss,
+                          }}
                         />
-                      ))}
-                      {entryCursor && (
-                        <Button
-                          variant="outline"
-                          onClick={() => fetchEntries(selected.id, false, entryCursor).catch(handleErr)}
-                        >
-                          {t.loadMore}
-                        </Button>
+                      )}
+                      {doc.sources.length > 0 && (
+                        <SourcesFooter
+                          sources={doc.sources}
+                          onSelect={(entry, n) => setCite({ entry, n })}
+                          labels={{ heading: t.lineageHdr, wrote: t.wrote, landed: t.landed }}
+                        />
                       )}
                     </>
                   )}
-                </>
-              )}
-            </div>
-          )}
-        </section>
 
-        {/* --- the operations pane ----------------------------------------- */}
-        <aside className="bg-card border-t-border-soft md:border-l-border-soft min-h-0 overflow-y-auto border-t md:border-t-0 md:border-l">
-          {selected && (
-            <SelectionPane
-              canWrite={canWrite}
-              busy={busy}
-              anchor={anchor}
-              focused={focused}
-              openThreads={openThreads}
-              pending={allPending}
-              evidence={evidence}
-              onRun={runOp}
-              onOpenThread={(th) => {
-                const pane = paneOfEntry(th.entry.id)
-                if (pane) setFocus({ pane, id: th.entry.id })
-              }}
-              onOpenAmendment={(am) => {
-                const pane = paneOfEntry(am.entry.id)
-                if (pane) setFocus({ pane, id: am.entry.id })
-              }}
-              people={people}
-              onDispatch={doDispatch}
-              onResolve={doResolve}
-              onAccept={doAccept}
-              onReject={doReject}
-              onDismiss={() => {
-                setAnchor(null)
-                setFocus(null)
-                window.getSelection()?.removeAllRanges()
-              }}
-              labels={{
-                idleHeading: t.selIdle,
-                idleHint: t.selIdleHint,
-                selectionHeading: t.selHeading,
-                comment: t.opComment,
-                suggest: t.opSuggest,
-                ticket: t.opTicket,
-                ask: t.opAsk,
-                cite: t.opCite,
-                commentPh: t.opCommentPh,
-                suggestPh: t.opSuggestPh,
-                ticketPh: t.opTicketPh,
-                askPh: t.opAskPh,
-                askWho: t.opAskWho,
-                askAnyone: t.opAskAnyone,
-                citePh: t.opCitePh,
-                submit: t.opSubmit,
-                cancel: t.cancel,
-                working: t.working,
-                openNotes: t.openNotes,
-                pendingSuggestions: t.pendingSuggestions,
-                noteBy: t.noteBy,
-                dispatch: t.dispatch,
-                accept: t.accept,
-                reject: t.reject,
-                resolve: t.resolve,
-                threadOpen: t.threadOpen,
-                threadRunning: t.threadRunning,
-                threadResolved: t.threadResolved,
-                orphanWarning: t.orphanWarning,
-                ticketMade: t.ticketMade,
-                replaces: t.replaces,
-                with: t.replacesWith,
-                readOnly: t.writeNeeded,
-                noEvidence: t.noEvidence,
-              }}
-            />
-          )}
-        </aside>
+                  {/* The entry log stays reachable: the document is a reduction of
+                      it, and a reduction you cannot check against its source is a
+                      summary you have to take on faith. */}
+                  <SectionHeader>
+                    <button
+                      type="button"
+                      onClick={() => setShowLog((v) => !v)}
+                      className="cursor-pointer"
+                    >
+                      {t.entriesHdr} {showLog ? '▾' : '▸'}
+                    </button>
+                  </SectionHeader>
+
+                  {showLog && (
+                    <>
+                      {canWrite && (
+                        <Composer
+                          draft={draft}
+                          onDraft={(patch) => setDraft((d) => ({ ...d, ...patch }))}
+                          file={file}
+                          onPickFile={onPickFile}
+                          busy={busy}
+                          onAppend={doAppend}
+                          labels={{
+                            kind: t.eKind,
+                            kindHint: t.eKindHint,
+                            source: t.eSource,
+                            sourceHint: t.eSourceHint,
+                            title: t.eTitle,
+                            titlePh: t.eTitlePh,
+                            uri: t.eSourceUri,
+                            uriPh: t.eSourceUriPh,
+                            text: t.eText,
+                            textPh: t.eTextPh,
+                            origin: t.eOrigin,
+                            originHint: t.eOriginHint,
+                            attach: t.attach,
+                            attachClear: t.attachClear,
+                            attachAria: t.aAttach,
+                            append: t.append,
+                            appending: t.appending,
+                          }}
+                        />
+                      )}
+                      {entries.length === 0 ? (
+                        <Empty big={t.emptyEntries} hint={t.emptyEntriesHint} />
+                      ) : (
+                        <>
+                          {entries.map((en) => (
+                            <EntryCard
+                              key={en.id}
+                              entry={en}
+                              labels={{ by: t.by, wrote: t.wrote, download: t.download }}
+                              onDownload={(e) => downloadAttachment(token, e).catch(handleErr)}
+                            />
+                          ))}
+                          {entryCursor && (
+                            <Button
+                              variant="outline"
+                              onClick={() => fetchEntries(selected.id, false, entryCursor).catch(handleErr)}
+                            >
+                              {t.loadMore}
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* --- the operations pane ----------------------------------------- */}
+            <aside className="bg-card border-t-border-soft md:border-l-border-soft min-h-0 overflow-y-auto border-t md:border-t-0 md:border-l">
+              {selected && (
+                <SelectionPane
+                  canWrite={canWrite}
+                  busy={busy}
+                  anchor={anchor}
+                  focused={focused}
+                  openThreads={openThreads}
+                  pending={allPending}
+                  evidence={evidence}
+                  onRun={runOp}
+                  onOpenThread={(th) => {
+                    const pane = paneOfEntry(th.entry.id)
+                    if (pane) setFocus({ pane, id: th.entry.id })
+                  }}
+                  onOpenAmendment={(am) => {
+                    const pane = paneOfEntry(am.entry.id)
+                    if (pane) setFocus({ pane, id: am.entry.id })
+                  }}
+                  people={people}
+                  onDispatch={doDispatch}
+                  onResolve={doResolve}
+                  onAccept={doAccept}
+                  onReject={doReject}
+                  onDismiss={() => {
+                    setAnchor(null)
+                    setFocus(null)
+                    window.getSelection()?.removeAllRanges()
+                  }}
+                  labels={{
+                    idleHeading: t.selIdle,
+                    idleHint: t.selIdleHint,
+                    selectionHeading: t.selHeading,
+                    comment: t.opComment,
+                    suggest: t.opSuggest,
+                    ticket: t.opTicket,
+                    ask: t.opAsk,
+                    cite: t.opCite,
+                    commentPh: t.opCommentPh,
+                    suggestPh: t.opSuggestPh,
+                    ticketPh: t.opTicketPh,
+                    askPh: t.opAskPh,
+                    askWho: t.opAskWho,
+                    askAnyone: t.opAskAnyone,
+                    citePh: t.opCitePh,
+                    submit: t.opSubmit,
+                    cancel: t.cancel,
+                    working: t.working,
+                    openNotes: t.openNotes,
+                    pendingSuggestions: t.pendingSuggestions,
+                    noteBy: t.noteBy,
+                    dispatch: t.dispatch,
+                    accept: t.accept,
+                    reject: t.reject,
+                    resolve: t.resolve,
+                    threadOpen: t.threadOpen,
+                    threadRunning: t.threadRunning,
+                    threadResolved: t.threadResolved,
+                    orphanWarning: t.orphanWarning,
+                    ticketMade: t.ticketMade,
+                    replaces: t.replaces,
+                    with: t.replacesWith,
+                    readOnly: t.writeNeeded,
+                    noEvidence: t.noEvidence,
+                  }}
+                />
+              )}
+            </aside>
+          </>
+        )}
       </main>
+
+      {/* Rename from the tree. Held here rather than in the Explorer so the
+          write goes through the same patch the inline title uses, and a rename
+          made from the tree updates the open document too. */}
+      <RenameDialog
+        open={renaming !== null}
+        onOpenChange={(open) => {
+          if (!open) setRenaming(null)
+        }}
+        value={renaming?.title ?? ''}
+        subject={renaming?.id}
+        onRename={(title) => {
+          if (renaming) doRename(renaming.id, title)
+          setRenaming(null)
+        }}
+        onInvalid={(m) => toast(m, 'err')}
+        labels={{
+          title: t.renameTitle,
+          subtitle: t.renameSubtitle,
+          field: t.renameField,
+          placeholder: t.renamePh,
+          save: t.renameSave,
+          cancel: t.cancel,
+          needTitle: t.needTitle,
+        }}
+      />
 
       <CreateDialog
         open={creating}
