@@ -6,8 +6,8 @@
 // appears on everything is one readers stop seeing — and that a document with
 // something waiting says which kind, since a decision and a question want
 // different amounts of the reader's day.
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { Explorer } from './Explorer'
 import { buildTree } from '@/lib/initiative-tree'
 import type { Initiative, Rollup } from '@/lib/initiatives'
@@ -24,13 +24,15 @@ const labels = {
   waitingNotes: (n: number) => (n === 1 ? '1 open note' : `${n} open notes`),
   waitingAmendments: (n: number) =>
     n === 1 ? '1 suggested change awaiting a decision' : `${n} suggested changes awaiting a decision`,
+  menu: 'Document actions',
+  rename: 'Rename…',
 }
 
 function doc(id: string, title: string, rollup?: Rollup): Initiative {
   return { id, project: 'demo', title, status: 'open', rollup }
 }
 
-function show(items: Initiative[]) {
+function show(items: Initiative[], onRename?: (i: Initiative) => void) {
   render(
     <Explorer
       root={buildTree(items)}
@@ -38,6 +40,7 @@ function show(items: Initiative[]) {
       expanded={new Set()}
       onToggle={() => {}}
       onSelect={() => {}}
+      onRename={onRename}
       labels={labels}
     />,
   )
@@ -71,5 +74,45 @@ describe('Explorer waiting badges', () => {
     expect(screen.queryByLabelText(/open notes/)).toBeNull()
     show([doc('ini-e', 'No rollup at all')])
     expect(screen.queryByLabelText(/open notes/)).toBeNull()
+  })
+})
+
+// Renaming from the tree, which is where a wrong name is noticed: comparing
+// names is what a tree is for, and before this the only way to fix one was to
+// open that document and lose the one you were reading.
+describe('Explorer rename menu', () => {
+  it('opens a menu naming the document that was right-clicked', () => {
+    const onRename = vi.fn()
+    show([doc('ini-a', 'Billing'), doc('ini-b', 'Onboarding')], onRename)
+    expect(screen.queryByRole('menu')).toBeNull()
+
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Onboarding/ }))
+    const menu = screen.getByRole('menu', { name: labels.menu })
+    expect(menu.textContent).toContain('Onboarding')
+
+    fireEvent.click(screen.getByRole('menuitem', { name: labels.rename }))
+    expect(onRename).toHaveBeenCalledTimes(1)
+    expect(onRename.mock.calls[0]![0].id).toBe('ini-b')
+    // The menu is spent once it has acted; leaving it open over a dialog would
+    // put two things on screen competing for the same Escape.
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('closes on Escape without renaming anything', () => {
+    const onRename = vi.fn()
+    show([doc('ini-a', 'Billing')], onRename)
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Billing/ }))
+    expect(screen.getByRole('menu')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(onRename).not.toHaveBeenCalled()
+  })
+
+  // A reader who cannot write gets the browser's own menu back: an entry whose
+  // save would be refused is worse than no entry.
+  it('leaves right-click alone when renaming is not offered', () => {
+    show([doc('ini-a', 'Billing')])
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Billing/ }))
+    expect(screen.queryByRole('menu')).toBeNull()
   })
 })
