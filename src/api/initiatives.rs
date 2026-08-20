@@ -204,6 +204,48 @@ pub async fn patch(
     Ok(Json(updated.to_json()))
 }
 
+/// DELETE /v1/initiatives/{id} (write) — delete an initiative and its entries.
+///
+/// `write`, not `admin`, matching every other content delete in a project:
+/// mindmaps, environments and checks all take `write`, and `admin` is reserved
+/// for deleting the project itself.
+///
+/// `?force=true` detaches the verification checks filed under it instead of
+/// refusing — the same shape as `DELETE /v1/projects/{p}?force=true`, so the
+/// escape hatch is spelled the same way in both places.
+///
+/// Answers with what it removed rather than 204, because two of the numbers are
+/// consequences the caller could not have predicted: checks detached, and
+/// tickets left carrying a tag that now names nothing.
+pub async fn delete(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    // Scope against the initiative's own project, exactly as `patch` does: naming
+    // an id must never reach one the token may not see.
+    let existing = state
+        .store
+        .get_initiative(&id)?
+        .ok_or_else(|| ApiError::not_found("initiative", &id))?;
+    ctx.require_project(&existing.project)?;
+    let pairs = query_pairs(raw.as_deref());
+    let force = matches!(first(&pairs, "force"), Some("true" | "1"));
+    let removed = state.store.delete_initiative(&id, force, &ctx.actor)?;
+    state.wake();
+    Ok(Json(json!({
+        "ok": true,
+        "id": id,
+        "project": existing.project,
+        "entries": removed.entries,
+        "bytes": removed.bytes,
+        "detached_checks": removed.detached_checks,
+        "tagged_tickets": removed.tagged_tickets,
+    })))
+}
+
 /// POST /v1/initiatives/{id}/entries (write) — append one contribution: a note,
 /// a research finding, a colleague's feedback, a transcript, a document.
 ///

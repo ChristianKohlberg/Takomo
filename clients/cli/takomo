@@ -1785,7 +1785,7 @@ cmd_release() {
 # document that is already on disk.
 cmd_initiative() {
   local sub=${1:-}
-  [ -n "$sub" ] || die "initiative: usage: takomo initiative new|append|ls|show|set ..."
+  [ -n "$sub" ] || die "initiative: usage: takomo initiative new|append|ls|show|set|rm ..."
   shift
   case "$sub" in
     new|open)   cmd_initiative_new "$@" ;;
@@ -1793,7 +1793,8 @@ cmd_initiative() {
     ls|list)    cmd_initiative_ls "$@" ;;
     show)       cmd_initiative_show "$@" ;;
     set)        cmd_initiative_set "$@" ;;
-    *) die "initiative: unknown subcommand '$sub' (new|append|ls|show|set)" ;;
+    rm|delete)  cmd_initiative_rm "$@" ;;
+    *) die "initiative: unknown subcommand '$sub' (new|append|ls|show|set|rm)" ;;
   esac
 }
 
@@ -2099,6 +2100,44 @@ PY
 import json, sys
 d = json.load(open(sys.argv[1]))
 print(f"{d['id']}  [{d.get('status','')}]  {d.get('title','')}")
+PY
+}
+
+# Delete an initiative, its entries and their attachments.
+#
+# `set --status parked` already covers "set aside and still readable", so this is
+# for what parking does not fix: a duplicate, a mistake, an experiment nobody
+# wants kept. --force detaches the verification checks filed under it instead of
+# refusing; the tickets tagged into the lane are never touched either way.
+cmd_initiative_rm() {
+  local id=${1:-}
+  [ -n "$id" ] || die "initiative rm: usage: takomo initiative rm ID [--force]"
+  shift
+  local force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      *) die "initiative rm: unknown flag $1" ;;
+    esac
+  done
+  local path
+  path="/v1/initiatives/$(urlenc "$id")"
+  # `if`, not `[ ... ] && ...`: under `set -e` the && form returns 1 when the
+  # test fails, which would abandon the command instead of skipping the flag.
+  if [ -n "$force" ]; then
+    path="$path?force=true"
+  fi
+  api DELETE "$path" >/dev/null
+  python3 - "$REQ_OUT" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(f"deleted {d['id']}, with {d.get('entries', 0)} entry/entries")
+if d.get("detached_checks"):
+    print(f"{d['detached_checks']} verification check(s) detached, not deleted.")
+if d.get("tagged_tickets"):
+    n = d["tagged_tickets"]
+    print(f"{n} ticket(s) still carry its initiative: tag; they are untouched and")
+    print("now report under 'uninitiated' on the roadmap.")
 PY
 }
 
@@ -4394,6 +4433,11 @@ Initiatives (an idea being nurtured — not work: no claim, no lease, no queue):
          edit how it is DESCRIBED; entries are append-only on every surface.
          Repeating --label/--tag replaces the whole list.
          `parked` is set aside; `distilled` means its substance became tickets.
+  takomo initiative rm ID [--force]
+         delete it and its entries. For what `parked` does not fix — a duplicate,
+         a mistake, an experiment. Refuses while a verification check names it;
+         --force detaches those instead. Tickets tagged into the lane are never
+         touched: they simply report under `uninitiated` afterwards.
 
   Writing the three-pane document — the panes, their citations, and the threads
   anchored in them — stays in /initiatives, where the editor knows about citation

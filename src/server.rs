@@ -387,7 +387,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/v1/initiatives/{id}",
-            get(crate::api::initiatives::get_one).patch(crate::api::initiatives::patch),
+            get(crate::api::initiatives::get_one)
+                .patch(crate::api::initiatives::patch)
+                .delete(crate::api::initiatives::delete),
         )
         .route(
             "/v1/initiatives/{id}/entries",

@@ -97,6 +97,8 @@ export { Minimap } from './initiatives/Minimap'
 export type { MinimapProps, MinimapLabels } from './initiatives/Minimap'
 export { RenameDialog } from './initiatives/RenameDialog'
 export type { RenameDialogProps } from './initiatives/RenameDialog'
+export { DeleteDialog } from './initiatives/DeleteDialog'
+export type { DeleteDialogProps, DeleteDialogLabels } from './initiatives/DeleteDialog'
 export { EpicsView } from './board/EpicsView'
 export type { EpicsViewProps, EpicsViewLabels } from './board/EpicsView'
 

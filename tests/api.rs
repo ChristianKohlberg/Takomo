@@ -12120,6 +12120,179 @@ async fn initiative_write_routes_drive_the_page_loop() {
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello takomo");
 }
 
+/// Deleting an initiative: what goes, what stays, and what refuses.
+///
+/// The three kinds of reference an initiative can carry are each handled the way
+/// the code that created them already decided — so this test is really three
+/// assertions about consistency with decisions made elsewhere in the store.
+#[tokio::test]
+async fn deleting_an_initiative_takes_its_entries_and_leaves_the_work() {
+    let app = TestApp::spawn().await;
+    let (id, _note, doc) = seed_initiative(&app.open_store());
+
+    // An epic filed under the lane, by the tag the roadmap grows lanes from.
+    let (s, epic) = app
+        .post(
+            &app.human,
+            "/v1/tickets",
+            json!({
+                "project": "tp",
+                "type": "epic",
+                "title": "v1",
+                "tags": [format!("initiative:{id}")],
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{epic}");
+    let epic_id = epic["id"].as_str().unwrap().to_string();
+
+    // The lane is real on the roadmap before the delete.
+    let (s, rm) = app.get(&app.human, "/v1/projects/tp/roadmap").await;
+    assert_eq!(s, StatusCode::OK, "{rm}");
+    assert!(
+        rm["initiatives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["id"] == json!(id)),
+        "lane should be on the roadmap first: {rm}"
+    );
+
+    let (s, gone) = app
+        .delete(&app.human, &format!("/v1/initiatives/{id}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{gone}");
+    assert_eq!(gone["id"], json!(id));
+    assert_eq!(gone["entries"], 2, "both entries went with it: {gone}");
+    assert!(gone["bytes"].as_i64().unwrap() > 0, "{gone}");
+    assert_eq!(gone["detached_checks"], 0);
+    // Counted, so the caller knows a lane is about to vanish from the roadmap.
+    assert_eq!(gone["tagged_tickets"], 1, "{gone}");
+
+    // The initiative and its entries are unreachable…
+    let (s, _) = app.get(&app.human, &format!("/v1/initiatives/{id}")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let resp = app
+        .authed(
+            Method::GET,
+            &app.human,
+            &format!("/v1/initiatives/{id}/entries/{doc}/content"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // …and the WORK it named is untouched, tag and all. A ticket whose
+    // `initiative:` tag names nothing stays visible under `uninitiated` — the
+    // roadmap's own rule for a dangling reference, which this must not break.
+    let (s, ticket) = app.get(&app.human, &format!("/v1/tickets/{epic_id}")).await;
+    assert_eq!(s, StatusCode::OK, "{ticket}");
+    assert_eq!(ticket["tags"][0], json!(format!("initiative:{id}")));
+
+    let (s, rm) = app.get(&app.human, "/v1/projects/tp/roadmap").await;
+    assert_eq!(s, StatusCode::OK, "{rm}");
+    assert!(
+        !rm["initiatives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["id"] == json!(id)),
+        "the lane is gone: {rm}"
+    );
+    assert!(
+        rm["epics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == json!(epic_id)),
+        "the epic is still reported: {rm}"
+    );
+}
+
+/// A check's `initiative` is validated on write, so a delete may not leave one
+/// naming nothing. It refuses and names them; forced, it detaches them rather
+/// than orphaning them — `NULL` is a value that column already has a meaning for.
+#[tokio::test]
+async fn deleting_an_initiative_refuses_while_a_check_still_names_it() {
+    let app = TestApp::spawn().await;
+    let (s, ini) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "Billing" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{ini}");
+    let id = ini["id"].as_str().unwrap().to_string();
+
+    let (s, check) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({ "title": "Invoice totals", "initiative": id }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{check}");
+    let check_id = check["id"].as_str().unwrap().to_string();
+
+    let (s, refused) = app
+        .delete(&app.human, &format!("/v1/initiatives/{id}"))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "conflict.initiative_has_checks");
+    assert_eq!(refused["details"]["checks"][0], json!(check_id));
+    // Refused means nothing happened.
+    let (s, _) = app.get(&app.human, &format!("/v1/initiatives/{id}")).await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, gone) = app
+        .delete(&app.human, &format!("/v1/initiatives/{id}?force=true"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{gone}");
+    assert_eq!(gone["detached_checks"], 1, "{gone}");
+
+    // The check survived, detached rather than dangling — and the store still
+    // agrees, which a dangling id would have made impossible.
+    let (s, after) = app.get(&app.admin, &format!("/v1/checks/{check_id}")).await;
+    assert_eq!(s, StatusCode::OK, "{after}");
+    assert!(after["initiative"].is_null(), "{after}");
+}
+
+/// Deleting is a `write`, scoped to the initiative's own project — naming an id
+/// must never reach one the token may not see, the rule `patch` already follows.
+#[tokio::test]
+async fn deleting_an_initiative_needs_scope_and_respects_projects() {
+    let app = TestApp::spawn().await;
+    let (s, ini) = app
+        .post(
+            &app.human,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "Mine" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{ini}");
+    let id = ini["id"].as_str().unwrap().to_string();
+
+    let reader = app.mint("human:reader", &["read"], None);
+    let (s, denied) = app.delete(&reader, &format!("/v1/initiatives/{id}")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+
+    let elsewhere = app.mint("agent:elsewhere", &["read", "write"], Some(&["op"]));
+    let (s, denied) = app
+        .delete(&elsewhere, &format!("/v1/initiatives/{id}"))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+
+    let (s, missing) = app.delete(&app.human, "/v1/initiatives/ini-nosuchid").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["code"], "notfound.initiative");
+
+    // Still there after every refusal.
+    let (s, _) = app.get(&app.human, &format!("/v1/initiatives/{id}")).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
 /// The refusals the page can walk into, each with the code the UI branches on.
 #[tokio::test]
 async fn initiative_write_routes_refuse_bad_input() {
