@@ -293,6 +293,35 @@ teaching it about marks first. Formatting inside a pane is therefore not availab
 is not closing. `distilled` records that its substance became tickets, which is the only outcome an
 initiative has, since it is never "done" on its own terms. Nothing enforces an order between them.
 
+## Deleting one
+
+`parked` covers "set aside and still readable", so what it does not cover is the case nobody wants
+kept: a duplicate, a mistake, an experiment. Parking those leaves them in the list, in the tree and
+on the map forever, so `DELETE /v1/initiatives/{id}` (`write`) removes the initiative, every entry
+appended to it, and their attachment bytes.
+
+It is the one destructive operation on this surface, and everything else here is additive by design
+— which is why the three kinds of reference an initiative can carry are each handled the way the
+code that created them already decided:
+
+| Reference | What happens | Why |
+|---|---|---|
+| Its **entries** | Deleted with it | They belong to it; nothing else can reach them once it is gone. |
+| A **check's `initiative`** | Refuses, or detaches with `?force=true` | The column is validated on write, so a delete may not leave one naming nothing. `null` is a value it already means something by: a check filed before the link existed belongs to no initiative. |
+| A ticket's **`initiative:<id>` tag** | Untouched | The roadmap deliberately keeps a ticket with a dangling reference visible under `uninitiated` rather than dropping it. Blocking on these — or editing other people's tickets — would break that rule instead of honouring it. |
+
+A mindmap node promoted into the initiative keeps its `promoted_kind`/`promoted_id` link, for the
+reason the schema gives where it declines a foreign key: deleting the work must leave the record of
+where it came from.
+
+The response says what went and what stayed — `entries`, `bytes`, `detached_checks`, and
+`tagged_tickets`, the last being how much work is about to start reporting under `uninitiated`.
+`takomo initiative rm ID [--force]` is the same call, and `/initiatives` puts it behind a right-click
+in the tree with a confirmation that names the entry count before it asks.
+
+Deliberately **not** an MCP tool, following mindmap deletion: an agent in a conversation is what
+produces an initiative, and deleting a nurtured record is a decision for the person who owns it.
+
 ## The lane: progress across versions
 
 Never being "done" is what makes an initiative useful for something beyond an idea's first outing.

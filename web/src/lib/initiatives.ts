@@ -243,6 +243,41 @@ export function patchInitiative(
   })
 }
 
+/** What a delete removed, and what it deliberately left standing. */
+export interface DeletedInitiative {
+  id: string
+  project: string
+  entries: number
+  bytes: number
+  /** Checks detached rather than deleted; only ever non-zero with `force`. */
+  detached_checks: number
+  /**
+   * Tickets whose `initiative:<id>` tag now names nothing. Untouched — the
+   * roadmap keeps them visible under `uninitiated` — but worth telling the
+   * reader about, because a lane is about to disappear from the map.
+   */
+  tagged_tickets: number
+}
+
+/**
+ * Delete an initiative and its entries.
+ *
+ * `force` detaches the verification checks filed under it instead of refusing.
+ * Without it a single check answers `409 conflict.initiative_has_checks`, which
+ * the page turns into a second, explicit confirmation rather than retrying
+ * behind the reader's back.
+ */
+export function deleteInitiative(
+  token: string,
+  id: string,
+  force = false,
+): Promise<DeletedInitiative> {
+  const q = force ? '?force=true' : ''
+  return api<DeletedInitiative>(token, `/initiatives/${encodeURIComponent(id)}${q}`, {
+    method: 'DELETE',
+  })
+}
+
 export interface AppendFields {
   kind: string
   source: string

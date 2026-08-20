@@ -44,9 +44,9 @@ pub use environments::{
 };
 pub use events::EventFilter;
 pub use initiatives::{
-    EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch, INITIATIVE_STATUSES,
-    MAX_ENTRIES_PAGE, MAX_ENTRY_CONTENT_BYTES, MAX_INITIATIVES_PAGE, MAX_INITIATIVE_BYTES,
-    MAX_INITIATIVE_ENTRIES,
+    DeletedInitiative, EntryCreate, InitiativeCreate, InitiativeListFilter, InitiativePatch,
+    INITIATIVE_STATUSES, MAX_ENTRIES_PAGE, MAX_ENTRY_CONTENT_BYTES, MAX_INITIATIVES_PAGE,
+    MAX_INITIATIVE_BYTES, MAX_INITIATIVE_ENTRIES,
 };
 pub use mindmaps::{
     MindmapCreate, MindmapListFilter, MindmapPatch, NodeAdd, NodePatch, MAX_GROW,

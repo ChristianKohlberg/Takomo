@@ -161,6 +161,24 @@ export const STR = defineStrings({
     renameField: 'Title',
     renamePh: 'What is the idea called?',
     renameSave: 'Save',
+    explorerRemove: 'Delete…',
+    delTitle: 'Delete initiative',
+    delBody:
+      '“{title}” and everything appended to it will be removed. Parking it instead keeps it readable and out of the way.',
+    delContents: 'It holds {n} entry/entries, {a} of them documents.',
+    delWaiting: 'Someone is still waiting on an answer or a decision inside it.',
+    delTagged:
+      '{n} ticket(s) are filed under it. They are not deleted — they keep their tag and report under “no initiative” on the map.',
+    delIrreversible: 'This cannot be undone.',
+    delChecksTitle: 'Verification checks name it',
+    delChecksBody:
+      '{n} verification check(s) are filed under this initiative, so it was not deleted.',
+    delChecksForce:
+      'Deleting anyway keeps the checks and their cases — only the link to this initiative is cleared.',
+    delConfirm: 'Delete',
+    delConfirmForce: 'Detach and delete',
+    delDone: 'Initiative deleted.',
+    delDoneDetached: 'Initiative deleted; {n} check(s) detached.',
     mapOpen: 'Map',
     mapClose: 'Documents',
     mapHeading: 'Project map',
@@ -399,6 +417,24 @@ export const STR = defineStrings({
     renameField: 'Titel',
     renamePh: 'Wie heißt die Idee?',
     renameSave: 'Speichern',
+    explorerRemove: 'Löschen…',
+    delTitle: 'Initiative löschen',
+    delBody:
+      '„{title}“ und alles, was daran angehängt wurde, wird entfernt. Parken lässt sie lesbar und trotzdem aus dem Weg.',
+    delContents: 'Sie enthält {n} Eintrag/Einträge, davon {a} Dokumente.',
+    delWaiting: 'Darin wartet noch jemand auf eine Antwort oder eine Entscheidung.',
+    delTagged:
+      '{n} Ticket(s) sind ihr zugeordnet. Sie werden nicht gelöscht — ihr Tag bleibt, und sie erscheinen auf der Karte unter „ohne Initiative“.',
+    delIrreversible: 'Das lässt sich nicht rückgängig machen.',
+    delChecksTitle: 'Prüfungen verweisen darauf',
+    delChecksBody:
+      '{n} Prüfung(en) sind dieser Initiative zugeordnet, deshalb wurde sie nicht gelöscht.',
+    delChecksForce:
+      'Trotzdem löschen behält die Prüfungen und ihre Fälle — nur die Verbindung zu dieser Initiative wird gelöst.',
+    delConfirm: 'Löschen',
+    delConfirmForce: 'Lösen und löschen',
+    delDone: 'Initiative gelöscht.',
+    delDoneDetached: 'Initiative gelöscht; {n} Prüfung(en) gelöst.',
     mapOpen: 'Karte',
     mapClose: 'Dokumente',
     mapHeading: 'Projektkarte',

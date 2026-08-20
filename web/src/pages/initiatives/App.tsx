@@ -33,6 +33,7 @@ import { EntryCard } from '@/components/initiatives/EntryCard'
 import { Explorer, revealPath } from '@/components/initiatives/Explorer'
 import { Minimap } from '@/components/initiatives/Minimap'
 import { RenameDialog } from '@/components/initiatives/RenameDialog'
+import { DeleteDialog } from '@/components/initiatives/DeleteDialog'
 import { RollupStrip } from '@/components/initiatives/RollupStrip'
 import { SelectionPane, type Operation } from '@/components/initiatives/SelectionPane'
 import { SourceInspector } from '@/components/initiatives/SourceInspector'
@@ -75,6 +76,7 @@ import {
   listEntries,
   listInitiatives,
   listProjects,
+  deleteInitiative,
   patchInitiative,
   readFileAsBase64,
   whoami,
@@ -131,6 +133,8 @@ export function App() {
   const [mapOpen, setMapOpen] = useState(false)
   /** The document whose title the rename modal is editing, or null. */
   const [renaming, setRenaming] = useState<Initiative | null>(null)
+  /** The document the delete confirmation is about, or null. */
+  const [deleting, setDeleting] = useState<Initiative | null>(null)
 
   // Which folders are open. Persisted because a tree that re-collapses on every
   // reload makes a deep document expensive to get back to.
@@ -467,6 +471,51 @@ export function App() {
       doPatch(id, { title }, t.savedTitle).catch(handleErr)
     },
     [doPatch, t, handleErr],
+  )
+
+  /**
+   * Delete a document, and tell the dialog whether the server refused.
+   *
+   * The refusal is returned rather than toasted: `conflict.initiative_has_checks`
+   * is not a failure the reader should read and dismiss, it is a second question
+   * — keep the checks, detached, or stop — and the dialog is where that gets
+   * asked. Every other error is a real error and goes to the toast.
+   */
+  const doDelete = useCallback(
+    async (id: string, force: boolean): Promise<string[] | null> => {
+      try {
+        const gone = await deleteInitiative(token, id, force)
+        setItems((prev) => prev.filter((i) => i.id !== id))
+        setDeleting(null)
+        // Only the document being READ needs clearing; deleting another one from
+        // the tree must not throw the reader out of what is open.
+        if (selectedIdRef.current === id) {
+          setSelectedId(null)
+          setEntries([])
+          setEntryCursor(null)
+          clearReadingState()
+          navigate({ hash: '' }, { replace: true })
+        }
+        toast(
+          gone.detached_checks > 0
+            ? t.delDoneDetached.replace('{n}', String(gone.detached_checks))
+            : t.delDone,
+          'success',
+        )
+        // The lane is gone from the roadmap, so the map has to be re-read.
+        void refreshRoadmap(roadmapProject)
+        return null
+      } catch (e) {
+        const err = e as { code?: string; details?: { checks?: unknown } }
+        if (err.code === 'conflict.initiative_has_checks') {
+          const checks = err.details?.checks
+          return Array.isArray(checks) ? checks.map(String) : []
+        }
+        handleErr(e)
+        return null
+      }
+    },
+    [token, toast, t, handleErr, clearReadingState, navigate, refreshRoadmap, roadmapProject],
   )
 
   const doCreate = useCallback(
@@ -1060,6 +1109,7 @@ export function App() {
               // Withheld from a reader who cannot write: the menu's only entry
               // would open a dialog whose save is refused.
               onRename={canWrite ? (i) => setRenaming(i) : undefined}
+              onDelete={canWrite ? (i) => setDeleting(i) : undefined}
               labels={{
                 empty: t.explorerEmpty,
                 emptyHint: t.explorerEmptyHint,
@@ -1067,6 +1117,7 @@ export function App() {
                 unfiled: t.explorerUnfiled,
                 menu: t.explorerMenu,
                 rename: t.explorerRename,
+                remove: t.explorerRemove,
                 // Singular is its own string rather than a formatted "1", because
                 // the two differ by more than a letter in German — "wartet" vs
                 // "warten" — and a badge read aloud is the whole of what a screen
@@ -1476,6 +1527,33 @@ export function App() {
           save: t.renameSave,
           cancel: t.cancel,
           needTitle: t.needTitle,
+        }}
+      />
+
+      <DeleteDialog
+        initiative={deleting}
+        onOpenChange={(open) => {
+          if (!open) setDeleting(null)
+        }}
+        onDelete={doDelete}
+        // Counted from the roadmap the page already holds, so the reader is told
+        // how much work is filed under the lane BEFORE it disappears — not after,
+        // in a toast.
+        taggedTickets={deleting ? (lane(roadmap, deleting.id)?.total ?? 0) : 0}
+        labels={{
+          title: t.delTitle,
+          body: t.delBody,
+          contents: (n, a) =>
+            t.delContents.replace('{n}', String(n)).replace('{a}', String(a)),
+          stillWaiting: t.delWaiting,
+          taggedWork: (n) => t.delTagged.replace('{n}', String(n)),
+          irreversible: t.delIrreversible,
+          checksTitle: t.delChecksTitle,
+          checksBody: (n) => t.delChecksBody.replace('{n}', String(n)),
+          checksForce: t.delChecksForce,
+          confirm: t.delConfirm,
+          confirmForce: t.delConfirmForce,
+          cancel: t.cancel,
         }}
       />
 

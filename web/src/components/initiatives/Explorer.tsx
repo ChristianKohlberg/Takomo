@@ -12,9 +12,10 @@ export interface ExplorerLabels {
   /** Accessible name for the waiting badges, given a count: `(n) => string`. */
   waitingNotes: (n: number) => string
   waitingAmendments: (n: number) => string
-  /** The right-click menu: its accessible name, and its one entry. */
+  /** The right-click menu: its accessible name, and its entries. */
   menu: string
   rename: string
+  remove: string
 }
 
 export interface ExplorerProps {
@@ -30,6 +31,12 @@ export interface ExplorerProps {
    * only entry is refused when clicked is worse than no menu at all.
    */
   onRename?: (initiative: Initiative) => void
+  /**
+   * Delete a document. Separate from `onRename` rather than one `canWrite` flag,
+   * because the two are not always offered together — a surface that wants
+   * renaming without deleting should not have to pass a no-op.
+   */
+  onDelete?: (initiative: Initiative) => void
   labels: ExplorerLabels
 }
 
@@ -57,6 +64,7 @@ export function Explorer({
   onToggle,
   onSelect,
   onRename,
+  onDelete,
   labels,
 }: ExplorerProps) {
   // Flattened to rows once per render rather than recursing in JSX: a flat list
@@ -112,7 +120,7 @@ export function Explorer({
             aria-selected={row.node.initiative.id === selectedId}
             onClick={() => onSelect((row.node as { initiative: Initiative }).initiative.id)}
             onContextMenu={
-              onRename
+              onRename || onDelete
                 ? (e) => {
                     e.preventDefault()
                     const initiative = (row.node as { initiative: Initiative }).initiative
@@ -147,16 +155,27 @@ export function Explorer({
         ),
       )}
 
-      {menu && onRename && (
+      {menu && (onRename || onDelete) && (
         <RowMenu
           at={menu}
           labels={labels}
           onDismiss={() => setMenu(null)}
-          onRename={() => {
-            const target = menu.initiative
-            setMenu(null)
-            onRename(target)
-          }}
+          onRename={
+            onRename &&
+            (() => {
+              const target = menu.initiative
+              setMenu(null)
+              onRename(target)
+            })
+          }
+          onDelete={
+            onDelete &&
+            (() => {
+              const target = menu.initiative
+              setMenu(null)
+              onDelete(target)
+            })
+          }
         />
       )}
     </div>
@@ -166,20 +185,23 @@ export function Explorer({
 /**
  * The right-click menu on a document row.
  *
- * One entry today. It is a menu rather than a straight-to-modal right-click
- * because the gesture has to say what it is about to do — a dialog that appears
- * from a right-click with no intermediate step reads as a misfire — and because
- * the next thing a row wants to offer has somewhere to go.
+ * A menu rather than a straight-to-modal right-click because the gesture has to
+ * say what it is about to do — a dialog appearing from a right-click with no
+ * intermediate step reads as a misfire. Which is truer now that one of the
+ * entries is destructive: delete sits behind a separator and reads in the
+ * destructive colour, so the two are never one slip apart.
  */
 function RowMenu({
   at,
   labels,
   onRename,
+  onDelete,
   onDismiss,
 }: {
   at: MenuAt
   labels: ExplorerLabels
-  onRename: () => void
+  onRename?: (() => void) | undefined
+  onDelete?: (() => void) | undefined
   onDismiss: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -221,14 +243,26 @@ function RowMenu({
       <div className="text-muted-foreground truncate px-3 pt-0.5 pb-1 text-[10.5px] font-bold tracking-[0.04em] uppercase">
         {at.initiative.title}
       </div>
-      <button
-        type="button"
-        role="menuitem"
-        onClick={onRename}
-        className="hover:bg-muted block w-full cursor-pointer px-3 py-1.5 text-left text-[12.5px]"
-      >
-        {labels.rename}
-      </button>
+      {onRename && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onRename}
+          className="hover:bg-muted block w-full cursor-pointer px-3 py-1.5 text-left text-[12.5px]"
+        >
+          {labels.rename}
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onDelete}
+          className="text-destructive hover:bg-destructive/10 border-t-border-soft mt-1 block w-full cursor-pointer border-t px-3 py-1.5 text-left text-[12.5px]"
+        >
+          {labels.remove}
+        </button>
+      )}
     </div>
   )
 }

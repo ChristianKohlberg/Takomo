@@ -26,13 +26,18 @@ const labels = {
     n === 1 ? '1 suggested change awaiting a decision' : `${n} suggested changes awaiting a decision`,
   menu: 'Document actions',
   rename: 'Rename…',
+  remove: 'Delete…',
 }
 
 function doc(id: string, title: string, rollup?: Rollup): Initiative {
   return { id, project: 'demo', title, status: 'open', rollup }
 }
 
-function show(items: Initiative[], onRename?: (i: Initiative) => void) {
+function show(
+  items: Initiative[],
+  onRename?: (i: Initiative) => void,
+  onDelete?: (i: Initiative) => void,
+) {
   render(
     <Explorer
       root={buildTree(items)}
@@ -41,6 +46,7 @@ function show(items: Initiative[], onRename?: (i: Initiative) => void) {
       onToggle={() => {}}
       onSelect={() => {}}
       onRename={onRename}
+      onDelete={onDelete}
       labels={labels}
     />,
   )
@@ -111,6 +117,34 @@ describe('Explorer rename menu', () => {
   // A reader who cannot write gets the browser's own menu back: an entry whose
   // save would be refused is worse than no entry.
   it('leaves right-click alone when renaming is not offered', () => {
+    show([doc('ini-a', 'Billing')])
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Billing/ }))
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+})
+
+// Delete is the only destructive thing the tree offers, so what matters is that
+// it cannot be reached by accident and is not offered to someone who cannot do it.
+describe('Explorer delete entry', () => {
+  it('offers delete alongside rename, and reports which document', () => {
+    const onDelete = vi.fn()
+    show([doc('ini-a', 'Billing'), doc('ini-b', 'Onboarding')], () => {}, onDelete)
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Onboarding/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: labels.remove }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+    expect(onDelete.mock.calls[0]![0].id).toBe('ini-b')
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('opens the menu for delete alone when renaming is not offered', () => {
+    const onDelete = vi.fn()
+    show([doc('ini-a', 'Billing')], undefined, onDelete)
+    fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Billing/ }))
+    expect(screen.queryByRole('menuitem', { name: labels.rename })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: labels.remove })).toBeTruthy()
+  })
+
+  it('leaves right-click alone when neither action is offered', () => {
     show([doc('ini-a', 'Billing')])
     fireEvent.contextMenu(screen.getByRole('treeitem', { name: /Billing/ }))
     expect(screen.queryByRole('menu')).toBeNull()
