@@ -20,6 +20,7 @@ import { useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { Op, Proposal } from '@/lib/doc-ops'
+import { Hint } from '@/components/Hint'
 
 export interface ProposalsProps {
   proposals: readonly Proposal[]
@@ -131,23 +132,25 @@ export function Proposals({
 
           {p.status === 'pending' && (
             <div className="mt-3 flex gap-2">
-              <Button
-                size="sm"
-                disabled={!canWrite}
-                title={canWrite ? undefined : labels.needWrite}
-                onClick={() => onAccept(p)}
-              >
-                {labels.accept}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!canWrite}
-                title={canWrite ? undefined : labels.needWrite}
-                onClick={() => onReject(p)}
-              >
-                {labels.reject}
-              </Button>
+              <Hint text={canWrite ? undefined : labels.needWrite}>
+                <Button
+                  size="sm"
+                  disabled={!canWrite}
+                  onClick={() => onAccept(p)}
+                >
+                  {labels.accept}
+                </Button>
+              </Hint>
+              <Hint text={canWrite ? undefined : labels.needWrite}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!canWrite}
+                  onClick={() => onReject(p)}
+                >
+                  {labels.reject}
+                </Button>
+              </Hint>
             </div>
           )}
         </article>

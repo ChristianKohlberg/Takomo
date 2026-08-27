@@ -28,6 +28,7 @@ import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { applyOps, blockText, parseProposal, touchedBlocks, type Proposal } from '@/lib/doc-ops'
 import { syncBase, type DocSession } from '@/lib/documents'
 import { Proposals, type ProposalsProps } from './Proposals'
+import { Hint } from '@/components/Hint'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable. */
 const CARET_COLORS = [
@@ -352,16 +353,17 @@ export default function Editor({
         )}
         <EditorContent editor={editor} className={ready ? '' : 'opacity-60'} />
 
-        <button
-          type="button"
-          disabled={!agentEnabled || !session.can_write}
-          title={agentEnabled ? undefined : labels.agentOff}
-          onClick={() => setMenuOpen(true)}
-          className="border-border-soft text-muted-foreground hover:bg-accent/50 mt-4 flex w-full items-center gap-2 rounded-md border border-dashed px-3 py-2 text-left text-[13px] disabled:opacity-50"
-        >
-          <kbd className="border-border-soft rounded border px-1.5 py-0.5 text-[11px]">⌘K</kbd>
-          {agentEnabled ? labels.askHint : labels.agentOff}
-        </button>
+        <Hint text={agentEnabled ? undefined : labels.agentOff}>
+          <button
+            type="button"
+            disabled={!agentEnabled || !session.can_write}
+            onClick={() => setMenuOpen(true)}
+            className="border-border-soft text-muted-foreground hover:bg-accent/50 mt-4 flex w-full items-center gap-2 rounded-md border border-dashed px-3 py-2 text-left text-[13px] disabled:opacity-50"
+          >
+            <kbd className="border-border-soft rounded border px-1.5 py-0.5 text-[11px]">⌘K</kbd>
+            {agentEnabled ? labels.askHint : labels.agentOff}
+          </button>
+        </Hint>
       </div>
 
       <CommandMenu

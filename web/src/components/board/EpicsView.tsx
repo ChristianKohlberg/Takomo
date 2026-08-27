@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Picker } from '@/components/Picker'
 import { Label } from '@/components/ui/label'
 import {
   Table,
@@ -283,57 +284,56 @@ export function EpicsView({
           <Label htmlFor="epics-filter-category" className="text-[11px] font-[650]">
             {labels.filterStateCategory}
           </Label>
-          <select
+          <Picker
             id="epics-filter-category"
             value={filters.stateCategory}
-            onChange={(e) => {
+            onValueChange={(v) => {
               setPreset(null)
-              setFilters((f) => ({ ...f, stateCategory: e.target.value }))
+              setFilters((f) => ({ ...f, stateCategory: v }))
             }}
-            className="border-border bg-background h-8 min-w-0 rounded-[6px] border px-2 text-[13px] md:min-w-[9rem]"
-          >
-            <option value="">{labels.filterAll}</option>
-            {stateCategories.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+            className="border-border bg-background h-8 min-w-0 rounded-[6px] text-[13px] md:min-w-[9rem]"
+            options={[
+              { value: '', label: labels.filterAll },
+              ...stateCategories.map((c) => ({ value: c, label: c })),
+            ]}
+          />
         </div>
         <div className="flex min-w-0 flex-col gap-1">
           <Label htmlFor="epics-filter-lane" className="text-[11px] font-[650]">
             {labels.filterLane}
           </Label>
-          <select
+          <Picker
             id="epics-filter-lane"
             value={filters.lane}
-            onChange={(e) => {
+            onValueChange={(v) => {
               setPreset(null)
-              setFilters((f) => ({ ...f, lane: e.target.value }))
+              setFilters((f) => ({ ...f, lane: v }))
             }}
-            className="border-border bg-background h-8 min-w-0 rounded-[6px] border px-2 text-[13px] md:min-w-[9rem]"
-          >
-            <option value="">{labels.filterAll}</option>
-            {laneOptions.map((l) => (
-              <option key={l.id} value={l.id}>{l.title}</option>
-            ))}
-          </select>
+            className="border-border bg-background h-8 min-w-0 rounded-[6px] text-[13px] md:min-w-[9rem]"
+            options={[
+              { value: '', label: labels.filterAll },
+              ...laneOptions.map((l) => ({ value: l.id, label: l.title })),
+            ]}
+          />
         </div>
         <div className="flex min-w-0 flex-col gap-1">
           <Label htmlFor="epics-filter-claimed" className="text-[11px] font-[650]">
             {labels.filterClaimed}
           </Label>
-          <select
+          <Picker
             id="epics-filter-claimed"
             value={filters.claimed}
-            onChange={(e) => {
+            onValueChange={(v) => {
               setPreset(null)
-              setFilters((f) => ({ ...f, claimed: e.target.value as ClaimedFilter }))
+              setFilters((f) => ({ ...f, claimed: v as ClaimedFilter }))
             }}
-            className="border-border bg-background h-8 min-w-0 rounded-[6px] border px-2 text-[13px] md:min-w-[9rem]"
-          >
-            <option value="all">{labels.filterAll}</option>
-            <option value="claimed">{labels.filterClaimedYes}</option>
-            <option value="unclaimed">{labels.filterClaimedNo}</option>
-          </select>
+            className="border-border bg-background h-8 min-w-0 rounded-[6px] text-[13px] md:min-w-[9rem]"
+            options={[
+              { value: 'all', label: labels.filterAll },
+              { value: 'claimed', label: labels.filterClaimedYes },
+              { value: 'unclaimed', label: labels.filterClaimedNo },
+            ]}
+          />
         </div>
         {(filterCount > 0 || preset) && (
           <Button

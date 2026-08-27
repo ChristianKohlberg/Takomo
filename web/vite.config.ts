@@ -182,6 +182,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // Stubs for the browser APIs Radix's overlay primitives measure with; see
+    // src/test-setup.ts for why a listbox cannot be opened in jsdom without them.
+    setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 })

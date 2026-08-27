@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
 import type { MindmapNode } from '@/lib/mindmaps'
+import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
   addChild: string
@@ -83,24 +84,26 @@ export function Outline({
               </div>
             )}
           </button>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={labels.addSibling}
-            title={labels.addSibling}
-            onClick={() => onSibling(node.id)}
-          >
-            +
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={labels.addChild}
-            title={labels.addChild}
-            onClick={() => onChild(node.id)}
-          >
-            ⇥
-          </Button>
+          <Hint text={labels.addSibling}>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={labels.addSibling}
+              onClick={() => onSibling(node.id)}
+            >
+              +
+            </Button>
+          </Hint>
+          <Hint text={labels.addChild}>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={labels.addChild}
+              onClick={() => onChild(node.id)}
+            >
+              ⇥
+            </Button>
+          </Hint>
         </li>
       ))}
     </ul>

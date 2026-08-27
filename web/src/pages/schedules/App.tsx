@@ -33,6 +33,7 @@ import {
   type Schedule,
 } from '@/lib/schedules'
 import { STR } from './strings'
+import { Hint } from '@/components/Hint'
 
 const LS_LANG = 'takomo.lang'
 
@@ -314,9 +315,11 @@ export function App() {
         >
           + {t.newSchedule}
         </Button>
-        <Button variant="outline" size="icon" title={t.refresh} onClick={() => fetchAll().catch(handleErr)}>
-          ↻
-        </Button>
+        <Hint text={t.refresh}>
+          <Button variant="outline" size="icon"onClick={() => fetchAll().catch(handleErr)}>
+            ↻
+          </Button>
+        </Hint>
       </AppHeader>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-5 pt-4.5 pb-15">

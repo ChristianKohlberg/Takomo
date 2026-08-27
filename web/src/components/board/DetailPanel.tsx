@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
+import { Hint } from '@/components/Hint'
 
 const PRIORITY: Record<string, string> = {
   critical: 'text-crit',
@@ -199,19 +200,22 @@ export function DetailPanel({
                   <div key={k} className="text-[12.5px]">
                     <strong>{k}: </strong>
                     {/^https?:\/\//.test(v) ? (
-                      <a
-                        href={v}
-                        title={isCommit ? v : undefined}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[color:var(--accent2)] underline"
-                      >
-                        {text}
-                      </a>
+                      <Hint text={isCommit ? v : undefined}>
+                        <a
+                          href={v}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[color:var(--accent2)] underline"
+                        >
+                          {text}
+                        </a>
+                      </Hint>
                     ) : (
-                      <span className="font-mono" title={isCommit ? v : undefined}>
-                        {text}
-                      </span>
+                      <Hint text={isCommit ? v : undefined}>
+                        <span className="font-mono">
+                          {text}
+                        </span>
+                      </Hint>
                     )}
                   </div>
                 )

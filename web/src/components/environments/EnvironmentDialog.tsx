@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Picker } from '@/components/Picker'
 import {
   Dialog,
   DialogContent,
@@ -177,34 +178,28 @@ export function EnvironmentDialog({
             </Field>
             <Field label={labels.fKind}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
-                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
                   value={f.kind}
-                  onChange={(e) => setKind(e.target.value as EnvironmentKind)}
-                >
-                  {ENVIRONMENT_KINDS.map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={(v) => setKind(v as EnvironmentKind)}
+                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                  options={[
+                    ...ENVIRONMENT_KINDS.map((k) => ({ value: k, label: k })),
+                  ]}
+                />
               )}
             </Field>
             <Field label={labels.fDataState}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
-                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
                   value={f.data_state}
-                  onChange={(e) => setF((p) => ({ ...p, data_state: e.target.value }))}
-                >
-                  {ENVIRONMENT_DATA_STATES.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={(v) => setF((p) => ({ ...p, data_state: v }))}
+                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                  options={[
+                    ...ENVIRONMENT_DATA_STATES.map((d) => ({ value: d, label: d })),
+                  ]}
+                />
               )}
             </Field>
           </div>

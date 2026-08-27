@@ -36,6 +36,7 @@ import {
 } from '@/lib/mindmaps'
 import { cn } from '@/lib/utils'
 import { STR } from './strings'
+import { Hint } from '@/components/Hint'
 
 const LS_LANG = 'takomo.lang'
 
@@ -432,24 +433,26 @@ export function App() {
                 </Button>
                 {/* Promotion is offered only with a node selected, because that is
                     the only time the question ("what does THIS become?") exists. */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!selectedNode || !!selectedNode.promoted}
-                  title={selectedNode?.promoted ? t.alreadyPromoted : t.promoteEpicHint}
-                  onClick={() => promote('epic')}
-                >
-                  {t.makeEpic}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!selectedNode || !!selectedNode.promoted}
-                  title={selectedNode?.promoted ? t.alreadyPromoted : t.promoteIniHint}
-                  onClick={() => promote('initiative')}
-                >
-                  {t.makeInitiative}
-                </Button>
+                <Hint text={selectedNode?.promoted ? t.alreadyPromoted : t.promoteEpicHint}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!selectedNode || !!selectedNode.promoted}
+                    onClick={() => promote('epic')}
+                  >
+                    {t.makeEpic}
+                  </Button>
+                </Hint>
+                <Hint text={selectedNode?.promoted ? t.alreadyPromoted : t.promoteIniHint}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!selectedNode || !!selectedNode.promoted}
+                    onClick={() => promote('initiative')}
+                  >
+                    {t.makeInitiative}
+                  </Button>
+                </Hint>
                 <span className="grow" />
                 <span className="text-muted-foreground hidden text-[11.5px] md:inline">
                   {t.keysHint}

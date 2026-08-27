@@ -15,6 +15,8 @@ import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import { answerBlockReason, type Draft } from '@/lib/answers'
 import type { Question, ThreadMessage } from '@/lib/questions'
+import { Hint } from '@/components/Hint'
+import { Picker } from '@/components/Picker'
 
 /** A thread reply can run to thousands of characters — clamp the preview. */
 const THREAD_MSG_CLAMP_CHARS = 700
@@ -185,24 +187,22 @@ export function ReadingPane({
             settled one would rewrite who a recorded decision was waiting on, and
             the server refuses it. */}
         {!closed && onAssign && assignable && assignable.length > 0 && (
-          <label
-            title={labels.assignHint}
-            className="text-muted-foreground mt-2 flex flex-wrap items-center gap-2 text-[12.5px] font-[650]"
-          >
-            {labels.assignTo}
-            <select
-              value={q.assignee?.handle ?? ''}
-              onChange={(e) => onAssign(e.target.value || null)}
-              className="bg-muted text-foreground border-border max-w-full cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
+          <Hint text={labels.assignHint}>
+            <label
+              className="text-muted-foreground mt-2 flex flex-wrap items-center gap-2 text-[12.5px] font-[650]"
             >
-              <option value="">{labels.assignNobody}</option>
-              {assignable.map((p) => (
-                <option key={p.handle} value={p.handle}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              {labels.assignTo}
+              <Picker
+                value={q.assignee?.handle ?? ''}
+                onValueChange={(v) => onAssign(v || null)}
+                className="bg-muted text-foreground border-border max-w-full cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
+                options={[
+                  { value: '', label: labels.assignNobody },
+                  ...assignable.map((p) => ({ value: p.handle, label: p.label })),
+                ]}
+              />
+            </label>
+          </Hint>
         )}
 
         <h1 className="mt-2 mb-0 text-[19px] font-[720] tracking-[-0.02em]">{q.title}</h1>
@@ -310,37 +310,40 @@ export function ReadingPane({
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              aria-disabled={reason ? 'true' : 'false'}
-              aria-describedby="qhint"
-              title={reason || undefined}
-              className={cn(reason && 'opacity-55')}
-              onClick={() => {
-                if (composing) {
-                  if (!followText.trim()) return
-                  onFollowup(followText.trim())
-                  setFollowText('')
-                  setComposing(false)
-                  return
-                }
-                if (reason) return
-                onSubmit()
-              }}
-            >
-              {composing ? labels.sendFollow : labels.submit}
-            </Button>
-            <Button
-              variant={composing ? 'secondary' : 'outline'}
-              onClick={() => setComposing((c) => !c)}
-              title={labels.askFollow}
-            >
-              💬
-              {thread.filter((m) => m.role === 'human').length > 0 && (
-                <span className="ml-1 tabular-nums">
-                  {thread.filter((m) => m.role === 'human').length}
-                </span>
-              )}
-            </Button>
+            <Hint text={reason || undefined}>
+              <Button
+                aria-disabled={reason ? 'true' : 'false'}
+                aria-describedby="qhint"
+                className={cn(reason && 'opacity-55')}
+                onClick={() => {
+                  if (composing) {
+                    if (!followText.trim()) return
+                    onFollowup(followText.trim())
+                    setFollowText('')
+                    setComposing(false)
+                    return
+                  }
+                  if (reason) return
+                  onSubmit()
+                }}
+              >
+                {composing ? labels.sendFollow : labels.submit}
+              </Button>
+            </Hint>
+            <Hint text={labels.askFollow}>
+              <Button
+                variant={composing ? 'secondary' : 'outline'}
+                aria-label={labels.askFollow}
+                onClick={() => setComposing((c) => !c)}
+              >
+                💬
+                {thread.filter((m) => m.role === 'human').length > 0 && (
+                  <span className="ml-1 tabular-nums">
+                    {thread.filter((m) => m.role === 'human').length}
+                  </span>
+                )}
+              </Button>
+            </Hint>
             <span className="grow" />
             <Button variant="ghost" size="sm" onClick={onShare}>
               {labels.share}

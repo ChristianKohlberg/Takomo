@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ancestors, pathOf, type TreeFolder, type TreeNode } from '@/lib/initiative-tree'
 import { waiting, type Initiative } from '@/lib/initiatives'
 import { cn } from '@/lib/utils'
+import { Hint } from '@/components/Hint'
 
 export interface ExplorerLabels {
   empty: string
@@ -289,22 +290,24 @@ function Waiting({ initiative, labels }: { initiative: Initiative; labels: Explo
       )}
     >
       {amendments > 0 && (
-        <span
-          title={labels.waitingAmendments(amendments)}
-          aria-label={labels.waitingAmendments(amendments)}
-          className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 font-semibold"
-        >
-          {amendments}
-        </span>
+        <Hint text={labels.waitingAmendments(amendments)}>
+          <span
+            aria-label={labels.waitingAmendments(amendments)}
+            className="bg-primary text-primary-foreground rounded-full px-1.5 py-0.5 font-semibold"
+          >
+            {amendments}
+          </span>
+        </Hint>
       )}
       {notes > 0 && (
-        <span
-          title={labels.waitingNotes(notes)}
-          aria-label={labels.waitingNotes(notes)}
-          className="border-border text-muted-foreground rounded-full border px-1.5 py-0.5"
-        >
-          {notes}
-        </span>
+        <Hint text={labels.waitingNotes(notes)}>
+          <span
+            aria-label={labels.waitingNotes(notes)}
+            className="border-border text-muted-foreground rounded-full border px-1.5 py-0.5"
+          >
+            {notes}
+          </span>
+        </Hint>
       )}
     </span>
   )

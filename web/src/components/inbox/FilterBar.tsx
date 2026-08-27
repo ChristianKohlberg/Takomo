@@ -19,6 +19,8 @@ import { Typeahead, type TypeaheadOption } from '../Typeahead'
 import { URGENCIES } from '@/lib/question-filters'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Hint } from '@/components/Hint'
+import { Picker } from '@/components/Picker'
 
 export interface FilterBarLabels {
   filters: string
@@ -230,90 +232,88 @@ export function FilterBar({
           })}
         </div>
 
-        <select
+        <Picker
           aria-label={labels.allModes}
           value={mode}
-          onChange={(e) => onMode(e.target.value as 'blocking' | 'advisory' | '')}
-          className="bg-muted text-foreground border-border cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
-        >
-          <option value="">{labels.allModes}</option>
-          <option value="blocking">{labels.blocking}</option>
-          <option value="advisory">{labels.advisory}</option>
-        </select>
+          onValueChange={(v) => onMode(v as 'blocking' | 'advisory' | '')}
+          className="w-auto min-w-0 bg-muted text-[13px] font-[650]"
+          options={[
+            { value: '', label: labels.allModes },
+            { value: 'blocking', label: labels.blocking },
+            { value: 'advisory', label: labels.advisory },
+          ]}
+        />
 
         {askers.length > 1 && (
-          <select
+          <Picker
             aria-label={labels.asker}
             value={askedBy}
-            onChange={(e) => onAskedBy(e.target.value)}
-            className="bg-muted text-foreground border-border max-w-45 cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
-          >
-            <option value="">{labels.allAskers}</option>
-            {askers.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
+            onValueChange={onAskedBy}
+            className="w-auto min-w-0 bg-muted text-[13px] font-[650] max-w-45"
+            options={[
+              { value: '', label: labels.allAskers },
+              ...askers.map((a) => ({ value: a, label: a })),
+            ]}
+          />
         )}
 
         {/* Who it is waiting on. `none` earns its place beside the people: the
             open queue is the one bucket a triaging reader most needs to find, and
             it is invisible in a list where most rows carry no name either. */}
         {assignees.length > 0 && (
-          <select
+          <Picker
             aria-label={labels.assignee}
             value={assignee}
-            onChange={(e) => onAssignee(e.target.value)}
-            className="bg-muted text-foreground border-border max-w-45 cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
-          >
-            <option value="">{labels.anyAssignee}</option>
-            <option value="none">{labels.unassigned}</option>
-            {assignees.map((p) => (
-              <option key={p.handle} value={p.handle}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={onAssignee}
+            className="w-auto min-w-0 bg-muted text-[13px] font-[650] max-w-45"
+            options={[
+              { value: '', label: labels.anyAssignee },
+              { value: 'none', label: labels.unassigned },
+              ...assignees.map((p) => ({ value: p.handle, label: p.label })),
+            ]}
+          />
         )}
 
         {/* Only for a reader the board can route to: "for me" is meaningless
             without either an `expert:` scope or a person behind the credential,
             and a toggle that can only ever empty the list is worse than none. */}
         {mine !== undefined && onMine && (
+          <Hint text={labels.mineHint}>
+            <label
+              className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
+            >
+              <Checkbox
+                checked={mine}
+                onCheckedChange={(e) => onMine(e === true)}
+              />
+              {labels.mine}
+            </label>
+          </Hint>
+        )}
+
+        <Hint text={labels.waitingHint}>
           <label
-            title={labels.mineHint}
             className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
           >
             <Checkbox
-              checked={mine}
-              onCheckedChange={(e) => onMine(e === true)}
+              checked={hideAwaitingAgent}
+              onCheckedChange={(e) => onHideAwaitingAgent(e === true)}
             />
-            {labels.mine}
+            {labels.waiting}
           </label>
-        )}
+        </Hint>
 
-        <label
-          title={labels.waitingHint}
-          className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
-        >
-          <Checkbox
-            checked={hideAwaitingAgent}
-            onCheckedChange={(e) => onHideAwaitingAgent(e === true)}
-          />
-          {labels.waiting}
-        </label>
-
-        <label
-          title={labels.soonHint}
-          className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
-        >
-          <Checkbox
-            checked={expiringSoon}
-            onCheckedChange={(e) => onExpiringSoon(e === true)}
-          />
-          {labels.soon}
-        </label>
+        <Hint text={labels.soonHint}>
+          <label
+            className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
+          >
+            <Checkbox
+              checked={expiringSoon}
+              onCheckedChange={(e) => onExpiringSoon(e === true)}
+            />
+            {labels.soon}
+          </label>
+        </Hint>
 
         {/* Grouping is not a filter — it hides nothing — so it sits outside the
             active count and survives "clear filters". */}

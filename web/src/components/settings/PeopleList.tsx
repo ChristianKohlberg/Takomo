@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { User } from '@/lib/users'
+import { Hint } from '@/components/Hint'
 
 export interface PeopleListLabels {
   /** Column headings. */
@@ -100,15 +101,16 @@ export function PeopleList({
                 </Button>
               )}
               {onSetDisabled && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busyHandle === p.handle}
-                  title={p.disabled ? undefined : labels.disableHint}
-                  onClick={() => onSetDisabled(p, !p.disabled)}
-                >
-                  {p.disabled ? labels.enable : labels.disable}
-                </Button>
+                <Hint text={p.disabled ? undefined : labels.disableHint}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busyHandle === p.handle}
+                    onClick={() => onSetDisabled(p, !p.disabled)}
+                  >
+                    {p.disabled ? labels.enable : labels.disable}
+                  </Button>
+                </Hint>
               )}
             </div>
           )}

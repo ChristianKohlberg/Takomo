@@ -44,6 +44,8 @@ import {
 import { answerQuestion, askQuestion, listQuestions, type Question } from '@/lib/questions'
 import { STR } from './strings'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Hint } from '@/components/Hint'
+import { Picker } from '@/components/Picker'
 
 const LS_LANG = 'takomo.lang'
 const POLL_MS = 4000
@@ -441,7 +443,7 @@ function Board({
     () => [...new Set(tickets.flatMap((x) => x.tags ?? []))].sort(),
     [tickets],
   )
-  // A tag is `kind:handle`. The KIND stays a <select> — a project has a handful
+  // A tag is `kind:handle`. The KIND is a plain picker — a project has a handful
   // of kinds and searching them would be ceremony — while the VALUES get the
   // typeahead, because there can be hundreds.
   const tagKinds = useMemo(
@@ -561,12 +563,13 @@ function Board({
             reads, so the freeze would otherwise be invisible here until someone
             tried to write from another surface and got a 409 with no context. */}
         {currentProject?.archived === true && (
-          <span
-            title={t.projArchivedHint}
-            className="border-border text-muted-foreground rounded-lg border px-2 py-1 text-[12px] font-[650]"
-          >
-            {t.projArchived}
-          </span>
+          <Hint text={t.projArchivedHint}>
+            <span
+              className="border-border text-muted-foreground rounded-lg border px-2 py-1 text-[12px] font-[650]"
+            >
+              {t.projArchived}
+            </span>
+          </Hint>
         )}
         {/* The filter bank collapses on a phone.
             Measured: at 375px the header was 355px tall — 44% of the viewport —
@@ -634,25 +637,22 @@ function Board({
         />
         {/* The SAME control as the ticket filter, mounted again — see
             components/Typeahead.tsx. Two mount points, one implementation. */}
-        <select
+        <Picker
           id="tagkindsel"
           aria-label={t.tagsHdr}
           value={tagKind}
-          onChange={(e) => {
-            setTagKind(e.target.value)
+          onValueChange={(v) => {
+            setTagKind(v)
             // The old value belongs to the old kind; keeping it would filter to
             // an empty board with no visible reason.
             setTagFilter('')
           }}
           className="bg-muted text-foreground border-border cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
-        >
-          <option value="">{t.allTags}</option>
-          {tagKinds.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: '', label: t.allTags },
+            ...tagKinds.map((k) => ({ value: k, label: k })),
+          ]}
+        />
         <Typeahead
           id="tagvalfilter"
           options={tagValues.map((tag) => ({ id: tag }))}
@@ -732,30 +732,36 @@ function Board({
         </Button>
         {/* Live status. A board that has quietly stopped updating looks exactly
             like a board with nothing happening — this is what tells them apart. */}
-        <span
-          title={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
-          className={cn(
-            'size-2 rounded-full',
-            conn === 'live' && 'bg-ok',
-            conn === 'reconnecting' && 'bg-crit',
-            (conn === 'idle' || conn === 'loading') && 'bg-muted-foreground',
-          )}
-        />
+        <Hint text={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}>
+          <span
+            role="status"
+            aria-label={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
+            className={cn(
+              'size-2 rounded-full',
+              conn === 'live' && 'bg-ok',
+              conn === 'reconnecting' && 'bg-crit',
+              (conn === 'idle' || conn === 'loading') && 'bg-muted-foreground',
+            )}
+          />
+        </Hint>
         {/* Project configuration lives in /settings now, not in a dialog here.
             A board is for looking at tickets; the page you go to in order to
             change how a project behaves is the settings page, and half the
             settings in each place was the split worth ending. */}
-        <Button
-          variant="outline"
-          size="icon"
-          title={t.settings}
-          onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
-        >
-          ⚙
-        </Button>
-        <Button variant="outline" size="icon" title={t.refresh} onClick={() => void load()}>
-          ↻
-        </Button>
+        <Hint text={t.settings}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
+          >
+            ⚙
+          </Button>
+        </Hint>
+        <Hint text={t.refresh}>
+          <Button variant="outline" size="icon"onClick={() => void load()}>
+            ↻
+          </Button>
+        </Hint>
       </AppHeader>
 
       {/* One state at a time on a phone. Rendered outside <main> so it does not

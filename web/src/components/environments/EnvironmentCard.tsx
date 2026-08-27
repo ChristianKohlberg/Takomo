@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { Environment } from '@/lib/verification'
+import { Hint } from '@/components/Hint'
 
 export interface EnvironmentCardLabels {
   archived: string
@@ -52,18 +53,19 @@ function Copyable({ label, value }: { label: string; value: string }) {
       <span className="text-muted-foreground text-[10.5px] font-bold tracking-[0.05em] uppercase">
         {label}
       </span>
-      <button
-        type="button"
-        onClick={() => {
-          void navigator.clipboard?.writeText(value)
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1200)
-        }}
-        title={value}
-        className="bg-muted hover:bg-secondary min-w-0 cursor-pointer rounded-md px-2 py-1.5 text-left font-mono text-[12px] break-all"
-      >
-        {copied ? '✓' : value}
-      </button>
+      <Hint text={value}>
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard?.writeText(value)
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1200)
+          }}
+          className="bg-muted hover:bg-secondary min-w-0 cursor-pointer rounded-md px-2 py-1.5 text-left font-mono text-[12px] break-all"
+        >
+          {copied ? '✓' : value}
+        </button>
+      </Hint>
     </div>
   )
 }

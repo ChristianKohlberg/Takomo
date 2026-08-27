@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { outcomeOf, slotLabel } from '@/lib/cadence'
 import type { Occurrence, Unit } from '@/lib/schedules'
 import type { Locale } from '@/lib/i18n'
+import { Hint } from '@/components/Hint'
 
 export interface OccurrenceStripProps {
   /** Newest-first, as the API returns it — this component reverses for display. */
@@ -55,25 +56,26 @@ export function OccurrenceStrip({
           .map((o) => {
             const out = outcomeOf(o.outcome)
             return (
-              <button
-                key={o.ticket + o.slot}
-                type="button"
-                title={`${o.title} · ${o.ticket}`}
-                onClick={() => onOpenTicket(o.ticket)}
-                className={cn(
-                  'hover:border-ring min-h-[62px] min-w-0 flex-[1_1_0] cursor-pointer overflow-hidden rounded-[7px] border p-2 text-left text-[11.5px] leading-[1.3]',
-                  'max-w-[calc((100%-42px)/8)] max-md:max-w-[calc((100%-18px)/4)]',
-                  TONE[out],
-                )}
-              >
-                <span className="text-muted-foreground block font-mono text-[10px]">
-                  {slotLabel(o.slot, unit, lang)}
-                </span>
-                <span className={cn('mt-0.75 block font-[660]', INK[out])}>{label(o)}</span>
-                <span className="text-muted-foreground mt-0.75 block truncate font-mono text-[9.5px]">
-                  {o.claimed_by || o.ticket}
-                </span>
-              </button>
+              <Hint text={`${o.title} · ${o.ticket}`}>
+                <button
+                  key={o.ticket + o.slot}
+                  type="button"
+                  onClick={() => onOpenTicket(o.ticket)}
+                  className={cn(
+                    'hover:border-ring min-h-[62px] min-w-0 flex-[1_1_0] cursor-pointer overflow-hidden rounded-[7px] border p-2 text-left text-[11.5px] leading-[1.3]',
+                    'max-w-[calc((100%-42px)/8)] max-md:max-w-[calc((100%-18px)/4)]',
+                    TONE[out],
+                  )}
+                >
+                  <span className="text-muted-foreground block font-mono text-[10px]">
+                    {slotLabel(o.slot, unit, lang)}
+                  </span>
+                  <span className={cn('mt-0.75 block font-[660]', INK[out])}>{label(o)}</span>
+                  <span className="text-muted-foreground mt-0.75 block truncate font-mono text-[9.5px]">
+                    {o.claimed_by || o.ticket}
+                  </span>
+                </button>
+              </Hint>
             )
           })}
       </div>

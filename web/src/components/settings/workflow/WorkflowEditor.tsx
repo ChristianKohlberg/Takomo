@@ -15,6 +15,8 @@ import { cn } from '@/lib/utils'
 import { autoLayout } from './layout'
 import { Canvas, type CanvasSelection } from './Canvas'
 import { Inspector, type InspectorLabels } from './Inspector'
+import { Hint } from '@/components/Hint'
+import { Picker } from '@/components/Picker'
 import {
   getLayout,
   getStateCounts,
@@ -339,8 +341,15 @@ export function WorkflowEditor({
 /**
  * "Start from…" — the library as a picker.
  *
- * A native `<select>` rather than a Radix menu, the same call the project picker
- * makes: one control, correct on mobile for free, no portalled listbox weight.
+ * One control rather than a menu — the same call the project picker makes: a
+ * short, closed list of names, where a menu's extra affordances buy nothing.
+ *
+ * This was a native `<select>`, and the comment used to justify it as "correct
+ * on mobile for free, no portalled listbox weight". Both of those were true and
+ * both were given up when the app moved onto one picker: the trade is a control
+ * that matches every other field on the page against the platform's own list.
+ * Recorded rather than quietly deleted, because it is the argument to reach for
+ * first if the phone experience turns out to matter more than the consistency.
  */
 function StartFromMenu({
   library,
@@ -352,23 +361,21 @@ function StartFromMenu({
   label: string
 }) {
   return (
-    <select
-      aria-label={label}
-      title={label}
-      value=""
-      onChange={(e) => {
-        const found = library.find((w) => w.id === e.target.value)
-        if (found) onPick(found)
-      }}
-      className="bg-muted text-foreground border-border hover:border-ring max-w-55 cursor-pointer appearance-none rounded-lg border px-3 py-1.5 text-[13px] font-[650]"
-    >
-      <option value="">{label}</option>
-      {library.map((w) => (
-        <option key={w.id} value={w.id}>
-          {w.name}
-          {w.builtin ? ' ·' : ''}
-        </option>
-      ))}
-    </select>
+    <Hint text={label}>
+      <Picker
+        aria-label={label}
+        value=""
+        onValueChange={(v) => {
+          const found = library.find((w) => w.id === v)
+          if (found) onPick(found)
+        }}
+        className="bg-muted text-foreground border-border hover:border-ring max-w-55 cursor-pointer appearance-none rounded-lg border px-3 py-1.5 text-[13px] font-[650]"
+        options={[
+          { value: '', label: label },
+          ...library.map((w) => ({ value: w.id, label: <>{w.name}
+            {w.builtin ? ' ·' : ''}</> })),
+        ]}
+      />
+    </Hint>
   )
 }
