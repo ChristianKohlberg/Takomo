@@ -56,9 +56,8 @@ export function OccurrenceStrip({
           .map((o) => {
             const out = outcomeOf(o.outcome)
             return (
-              <Hint text={`${o.title} · ${o.ticket}`}>
+              <Hint key={o.ticket + o.slot} text={`${o.title} · ${o.ticket}`}>
                 <button
-                  key={o.ticket + o.slot}
                   type="button"
                   onClick={() => onOpenTicket(o.ticket)}
                   className={cn(

@@ -372,8 +372,15 @@ function StartFromMenu({
         className="bg-muted text-foreground border-border hover:border-ring max-w-55 cursor-pointer appearance-none rounded-lg border px-3 py-1.5 text-[13px] font-[650]"
         options={[
           { value: '', label: label },
-          ...library.map((w) => ({ value: w.id, label: <>{w.name}
-            {w.builtin ? ' ·' : ''}</> })),
+          ...library.map((w) => ({
+            value: w.id,
+            label: (
+              <>
+                {w.name}
+                {w.builtin ? ' ·' : ''}
+              </>
+            ),
+          })),
         ]}
       />
     </Hint>

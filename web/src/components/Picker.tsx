@@ -27,7 +27,7 @@
 // it is not broken — but "looks like the rest of the app" is being bought with
 // "behaves like the rest of the phone", and that is a real trade rather than a
 // free upgrade.
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import {
   Select,
   SelectContent,
@@ -46,16 +46,12 @@ export interface PickerOption {
   label: ReactNode
 }
 
-export interface PickerProps {
+export interface PickerProps extends Omit<ComponentProps<typeof SelectTrigger>, 'onChange'> {
   value: string
   onValueChange: (value: string) => void
   options: readonly PickerOption[]
   /** Shown when `value` matches no option. */
   placeholder?: string
-  id?: string
-  className?: string
-  disabled?: boolean
-  'aria-label'?: string
 }
 
 export function Picker({
@@ -63,10 +59,9 @@ export function Picker({
   onValueChange,
   options,
   placeholder,
-  id,
   className,
   disabled,
-  'aria-label': ariaLabel,
+  ...rest
 }: PickerProps) {
   return (
     <Select
@@ -74,9 +69,16 @@ export function Picker({
       onValueChange={(v) => onValueChange(v === EMPTY ? '' : v)}
       disabled={disabled}
     >
+      {/* `...rest` lands on the TRIGGER, and that spread is load-bearing rather
+          than tidiness. The trigger is the only DOM node here, so it is what
+          anything composing this has to reach: `<Hint>` wraps its child in a
+          Radix `asChild` trigger, which works by handing the child event
+          handlers, `aria-describedby` and a ref. A component that destructures a
+          fixed prop list drops all of that on the floor — the tooltip renders
+          nothing and never errors, which is exactly how one shipped. */}
       <SelectTrigger
-        id={id}
-        aria-label={ariaLabel}
+        {...rest}
+        disabled={disabled}
         // `w-full` is not the primitive's default and is wanted at nearly every
         // call site here: these sit in filter bars and dialog fields that size
         // the control, where a native select stretched and this does not.

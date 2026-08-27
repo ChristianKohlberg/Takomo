@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { Picker } from './Picker'
+import { Hint } from './Hint'
 
 const OPTIONS = [
   { value: '', label: 'All modes' },
@@ -45,5 +46,25 @@ describe('Picker', () => {
     for (const call of onValueChange.mock.calls) {
       expect(call[0]).not.toContain('__none')
     }
+  })
+
+  // `Hint` reaches its child through a Radix `asChild` trigger, which works by
+  // handing the child props and a ref. `Picker` renders no DOM of its own — the
+  // trigger is the only element — so if it ever stops spreading through to it,
+  // the tooltip silently attaches to nothing. It does not throw; it just stops
+  // describing the control, which is invisible outside a screen reader.
+  it('forwards composition props through to its trigger', () => {
+    render(
+      <Hint text="Pick a mode">
+        <Picker value="blocking" onValueChange={() => {}} options={OPTIONS} aria-label="Mode" />
+      </Hint>,
+    )
+    // One element, both roles: still the select's combobox, and now also carrying
+    // the tooltip trigger's own marker. That the tooltip's `data-slot` WON the
+    // spread is the proof the props reached the trigger rather than being
+    // destructured away — a Picker that ignores unknown props leaves this
+    // reading `select-trigger`, with no error anywhere.
+    const trigger = screen.getByRole('combobox', { name: 'Mode' })
+    expect(trigger.getAttribute('data-slot')).toBe('tooltip-trigger')
   })
 })

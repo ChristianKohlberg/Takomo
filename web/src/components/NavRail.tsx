@@ -373,15 +373,14 @@ export function NavRail({
                 : 'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer',
             )
             return isCurrent ? (
-              <Hint text={nav[key]}>
-                <span key={key} className={cls} aria-current="page" aria-label={nav[key]}>
+              <Hint key={key} text={nav[key]}>
+                <span className={cls} aria-current="page" aria-label={nav[key]}>
                   {inner}
                 </span>
               </Hint>
             ) : (
-              <Hint text={nav[key]}>
+              <Hint key={key} text={nav[key]}>
                 <a
-                  key={key}
                   href={NAV_HREF[key]}
                   className={cls}
                   aria-label={nav[key]}
