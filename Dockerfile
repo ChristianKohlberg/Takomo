@@ -18,6 +18,14 @@ COPY workflows ./workflows
 # web/dist/*.html, which is outside every path above. Only the committed build
 # output is needed — no node here, which is the point of committing it.
 COPY web/dist ./web/dist
+# build.rs is the third, and it fails in the least obvious way of the three: with
+# no build script present cargo simply does not run one, so `OUT_DIR` is never
+# set and `include!(concat!(env!("OUT_DIR"), "/assets.rs"))` in src/api/mod.rs
+# fails at compile time with "environment variable `OUT_DIR` not defined" —
+# which reads as a broken toolchain rather than a missing COPY. It is needed
+# because the asset manifest stopped being a fixed `include_str!` list and became
+# generated from whatever web/dist/assets/ holds.
+COPY build.rs ./
 RUN cargo build --release
 
 # Fetch the Litestream binary (pinned release) in a throwaway stage.
