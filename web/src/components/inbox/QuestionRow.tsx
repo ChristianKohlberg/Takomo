@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Question } from '@/lib/questions'
+import { Hint } from '@/components/Hint'
 
 /** Urgency drives the left rule — the one place colour ranks work. */
 const URGENCY: Record<string, string> = {
@@ -61,12 +62,13 @@ export function QuestionRow({
             the handle and then to the id, so an unresolved person still reads as
             somebody rather than as nobody. */}
         {q.assignee && (
-          <span
-            title={labels.forPerson.replace('{who}', q.assignee.label)}
-            className="bg-secondary text-secondary-foreground rounded-[5px] px-1.5 font-[650]"
-          >
-            {q.assignee.label}
-          </span>
+          <Hint text={labels.forPerson.replace('{who}', q.assignee.label)}>
+            <span
+              className="bg-secondary text-secondary-foreground rounded-[5px] px-1.5 font-[650]"
+            >
+              {q.assignee.label}
+            </span>
+          </Hint>
         )}
         {q.expertise?.map((e) => (
           <span key={e} className="bg-muted rounded-[5px] px-1.5">

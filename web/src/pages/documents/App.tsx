@@ -41,6 +41,7 @@ import {
 import { STR } from './strings'
 import type { ConnectionState } from './Editor'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Hint } from '@/components/Hint'
 
 const Editor = lazy(() => import('./Editor'))
 
@@ -297,14 +298,15 @@ export function App() {
         >
           + {t.newDocument}
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          title={t.refresh}
-          onClick={() => fetchAll().catch(handleErr)}
-        >
-          ↻
-        </Button>
+        <Hint text={t.refresh}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => fetchAll().catch(handleErr)}
+          >
+            ↻
+          </Button>
+        </Hint>
       </AppHeader>
 
       {/* One breakpoint, `md`, meaning phone or not: the tree stacks above the
@@ -523,14 +525,15 @@ function FolderView({
               <span className="text-muted-foreground ml-1.5 text-[11px]">({archivedLabel})</span>
             )}
           </button>
-          <button
-            type="button"
-            title={doc.archived_at ? unarchiveLabel : archiveLabel}
-            onClick={() => onArchiveToggle(doc)}
-            className="text-muted-foreground hover:text-foreground flex-none px-1 text-[12px] opacity-0 group-hover:opacity-100 focus:opacity-100"
-          >
-            {doc.archived_at ? '↩' : '×'}
-          </button>
+          <Hint text={doc.archived_at ? unarchiveLabel : archiveLabel}>
+            <button
+              type="button"
+              onClick={() => onArchiveToggle(doc)}
+              className="text-muted-foreground hover:text-foreground flex-none px-1 text-[12px] opacity-0 group-hover:opacity-100 focus:opacity-100"
+            >
+              {doc.archived_at ? '↩' : '×'}
+            </button>
+          </Hint>
         </div>
       ))}
       {folder.children.map((child) => (

@@ -21,6 +21,7 @@ import {
 import { cn } from '@/lib/utils'
 import { splitList } from '@/lib/format'
 import type { QuestionKind, QuestionMode } from '@/lib/questions'
+import { Picker } from '@/components/Picker'
 
 export interface AskFields {
   ticket: string
@@ -174,18 +175,15 @@ export function AskDrawer({
 
           <Field label={labels.fKind}>
             {(id) => (
-              <select
+              <Picker
                 id={id}
                 value={kind}
-                onChange={(e) => setKind(e.target.value as QuestionKind)}
+                onValueChange={(v) => setKind(v as QuestionKind)}
                 className="border-border bg-card text-foreground w-full rounded-lg border px-2.5 py-1.5 text-[13px]"
-              >
-                {KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
-              </select>
+                options={[
+                  ...KINDS.map((k) => ({ value: k, label: k })),
+                ]}
+              />
             )}
           </Field>
 
@@ -222,19 +220,16 @@ export function AskDrawer({
           {people && people.length > 0 && (
             <Field label={labels.fAssignee} hint={labels.fAssigneeHint}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
                   value={assignee}
-                  onChange={(e) => setAssignee(e.target.value)}
+                  onValueChange={(v) => setAssignee(v)}
                   className="border-border bg-card text-foreground w-full rounded-md border px-2 py-1.5 text-[13px]"
-                >
-                  <option value="">{labels.fAssigneeAnyone}</option>
-                  {people.map((p) => (
-                    <option key={p.handle} value={p.handle}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: '', label: labels.fAssigneeAnyone },
+                    ...people.map((p) => ({ value: p.handle, label: p.label })),
+                  ]}
+                />
               )}
             </Field>
           )}

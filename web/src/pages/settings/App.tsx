@@ -25,6 +25,7 @@ import { AppShell } from '@/components/AppShell'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
+import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
@@ -87,6 +88,7 @@ import {
   type TokenRow,
 } from '@/lib/admin'
 import { STR } from './strings'
+import { Hint } from '@/components/Hint'
 
 const LS_LANG = 'takomo.lang'
 const LS_SECTION = 'takomo.settings.section'
@@ -475,17 +477,19 @@ export function App() {
       {/* max-w-3xl, not the wider column this used with a sidebar: the global
           nav rail now takes the left edge, so the panel starts further in and a
           5xl column pushed the content off-centre on a laptop. */}
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6">
-        {isAdmin && (
-          <SectionTabs
-            sections={SECTIONS}
-            current={section}
-            onSelect={(k) => {
-              setSection(k)
-              localStorage.setItem(LS_SECTION, k)
-            }}
-          />
-        )}
+      {/* The Tabs root spans BOTH the strip and the panel, because that is the
+          relationship Radix encodes: a trigger points at its content by id, so a
+          strip mounted outside the root would announce controls for panels the
+          assistive tree cannot find. */}
+      <Tabs
+        value={section}
+        onValueChange={(k) => {
+          setSection(k as SectionKey)
+          localStorage.setItem(LS_SECTION, k)
+        }}
+        className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6"
+      >
+        {isAdmin && <SectionTabs sections={SECTIONS} />}
 
         <div className="min-w-0 flex-1 pb-10">
           {!isAdmin ? (
@@ -494,340 +498,353 @@ export function App() {
                 {t.notAdminCmd}
               </code>
             </Section>
-          ) : section === 'overview' ? (
-            <Section title={t.overviewTitle} description={t.overviewSub}>
-              <dl className="border-border-soft bg-card rounded-xl border px-4">
-                <FactRow label={t.factActor}>
-                  <span className="font-mono">{who?.actor ?? '…'}</span>
-                </FactRow>
-                <FactRow label={t.factScopes}>
-                  <span className="flex flex-wrap gap-1">
-                    {(who?.scopes ?? []).map((s) => (
-                      <Badge key={s} variant="secondary">
-                        {s}
-                      </Badge>
-                    ))}
-                  </span>
-                </FactRow>
-                <FactRow label={t.factProjects}>
-                  {scopedToProjects ? (
-                    <span className="flex flex-wrap gap-1">
-                      {(allowlist ?? []).map((p) => (
-                        <Badge key={p} variant="outline" className="font-mono">
-                          {p}
-                        </Badge>
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">{t.allProjects}</span>
-                  )}
-                </FactRow>
-                <FactRow label={t.factTokenId}>
-                  <span className="text-muted-foreground font-mono text-[12px]">
-                    {who?.token_id ?? '…'}
-                  </span>
-                </FactRow>
-              </dl>
-            </Section>
-          ) : section === 'data' ? (
-            <Section title={t.dataTitle} description={t.dataSub}>
-              <p className="text-muted-foreground max-w-prose text-[13px] leading-relaxed">
-                {t.dataHow}
-              </p>
-
-              {scopedToProjects ? (
-                <Callout tone="muted" title={t.dataScopedTitle}>
-                  {t.dataScoped}
-                </Callout>
-              ) : (
-                <>
-                  <Callout tone="warn" title={t.dataWarnTitle}>
-                    {t.dataWarn}
-                  </Callout>
-                  <div>
-                    <Button onClick={() => void onExport()} disabled={exporting}>
-                      {exporting ? t.dataBusy : t.dataBtn}
-                    </Button>
-                  </div>
-                </>
-              )}
-            </Section>
-          ) : section === 'access' ? (
-            <Section
-              title={t.accessTitle}
-              description={t.accessSub}
-              action={
-                <Button onClick={() => setNewToken(true)}>+&nbsp;{t.accessNew}</Button>
-              }
-            >
-              {tokens.length === 0 ? (
-                <EmptyState>{t.accessEmpty}</EmptyState>
-              ) : (
-                <TokenList
-                  tokens={tokens}
-                  currentTokenId={who?.token_id}
-                  labels={{
-                    scopes: t.tokScopes,
-                    projects: t.tokProjects,
-                    allProjects: t.allProjects,
-                    lastUsed: t.tokLastUsed,
-                    neverUsed: t.tokNeverUsed,
-                    revoked: t.tokRevoked,
-                    expired: t.tokExpired,
-                    revoke: t.tokRevoke,
-                    thisToken: t.tokThisToken,
-                  }}
-                  onRevoke={setRevoking}
-                />
-              )}
-            </Section>
-          ) : section === 'people' ? (
-            <Section
-              title={t.peopleTitle}
-              description={t.peopleSub}
-              action={
-                <Button onClick={() => setEditingPerson('new')}>+&nbsp;{t.peopleAdd}</Button>
-              }
-            >
-              {people.length === 0 ? (
-                <EmptyState>{t.peopleEmpty}</EmptyState>
-              ) : (
-                <PeopleList
-                  people={people}
-                  busyHandle={peopleBusy}
-                  labels={{
-                    person: t.peoplePerson,
-                    projects: t.peopleProjects,
-                    noProjects: t.peopleNoProjects,
-                    status: t.peopleStatus,
-                    active: t.peopleActive,
-                    disabled: t.peopleDisabled,
-                    edit: t.peopleEdit,
-                    disable: t.peopleDisable,
-                    enable: t.peopleEnable,
-                    disableHint: t.peopleDisableHint,
-                  }}
-                  onEdit={(person) => setEditingPerson(person)}
-                  onSetDisabled={(person, disabled) => {
-                    setPeopleBusy(person.handle)
-                    setUserDisabled(token, person.handle, disabled)
-                      .then(() => refresh())
-                      .catch(handleErr)
-                      .finally(() => setPeopleBusy(''))
-                  }}
-                />
-              )}
-            </Section>
-          ) : section === 'library' ? (
-            <Section title={t.libTitle} description={t.libSub}>
-              {library.length === 0 ? (
-                <EmptyState>{t.libEmpty}</EmptyState>
-              ) : (
-                <ul className="flex flex-col gap-px">
-                  {library.map((w) => (
-                    <li
-                      key={w.id}
-                      className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-[13px] font-[650]">{w.name}</span>
-                          {w.builtin && (
-                            <Badge variant="secondary" title={t.libBuiltinLocked}>
-                              {t.libBuiltin}
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="text-muted-foreground mt-0.5 text-[11.5px]">
-                          {t.libStates.replace('{n}', String(w.workflow.states.length))}
-                          {' · '}
-                          {t.libTransitions.replace(
-                            '{n}',
-                            String(w.workflow.transitions?.length ?? 0),
-                          )}
-                          {w.description ? ` · ${w.description}` : ''}
-                        </div>
-                      </div>
-                      {/* Built-ins carry no actions at all rather than disabled
-                          ones: they are reseeded on every start, so every edit
-                          here would be undone silently. The badge's title says
-                          so, and the row stays readable. */}
-                      {!w.builtin && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setRenaming(w)}
-                          >
-                            {t.libRename}
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            onClick={() => setDeletingWorkflow(w)}
-                          >
-                            {t.libDelete}
-                          </Button>
-                        </>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Section>
-          ) : projectsLoadErr && selectedId && !selected ? (
-            <Section title={t.projTitle} description={t.projLoadErr}>
-              <p className="text-destructive text-[13px]">{projectsLoadErr}</p>
-              <Button variant="secondary" size="sm" onClick={() => selectProject(null)}>
-                {t.projBack}
-              </Button>
-            </Section>
-          ) : selected ? (
-            <ProjectDetail
-              project={selected}
-              workflowSlot={
-                projectWorkflow && (
-                  <WorkflowEditor
-                    token={token}
-                    project={selected.id}
-                    workflow={projectWorkflow}
-                    library={library}
-                    readOnly={!isAdmin}
-                    onApplied={(wf) => {
-                      setProjectWorkflow(wf)
-                      void refresh()
-                    }}
-                    onError={handleErr}
-                    onSaveAs={(wf, layout) => setSavingDraft({ wf, layout })}
-                    labels={{
-                      title: t.wfTitle,
-                      subtitle: t.wfSubtitle,
-                      addState: t.wfAddState,
-                      startFrom: t.wfStartFrom,
-                      apply: t.wfApply,
-                      applying: t.wfApplying,
-                      applied: t.wfApplied,
-                      revert: t.wfRevert,
-                      saveAs: t.wfSaveAs,
-                      problems: t.wfProblems,
-                      valid: t.wfValid,
-                      checking: t.wfChecking,
-                      blockedTitle: t.wfBlockedTitle,
-                      blockedBody: t.wfBlockedBody,
-                      blockedRow: t.wfBlockedRow,
-                      openBoard: t.wfOpenBoard,
-                      canvasInitial: t.wfCanvasInitial,
-                      canvasClaimable: t.wfCanvasClaimable,
-                      canvasTerminal: t.wfCanvasTerminal,
-                      canvasHint: t.wfCanvasHint,
-                      readOnlyMsg: t.wfReadOnly,
-                      newStateId: t.wfNewStateId,
-                      nothing: t.wfNothing,
-                      stateTitle: t.wfStateTitle,
-                      transitionTitle: t.wfTransitionTitle,
-                      id: t.wfId,
-                      idHint: t.wfIdHint,
-                      category: t.wfCategory,
-                      claimable: t.wfClaimable,
-                      claimableHint: t.wfClaimableHint,
-                      terminal: t.wfTerminal,
-                      terminalHint: t.wfTerminalHint,
-                      makeInitial: t.wfMakeInitial,
-                      isInitial: t.wfIsInitial,
-                      deleteState: t.wfDeleteState,
-                      deleteTransition: t.wfDeleteTransition,
-                      requires: t.wfRequires,
-                      reqClaim: t.wfReqClaim,
-                      reqHuman: t.wfReqHuman,
-                      reqNoChildren: t.wfReqNoChildren,
-                      reqNoBlockers: t.wfReqNoBlockers,
-                      reqHasLink: t.wfReqHasLink,
-                      reqHasLinkHint: t.wfReqHasLinkHint,
-                      linkKey: t.wfLinkKey,
-                      from: t.wfFrom,
-                      to: t.wfTo,
-                    }}
-                  />
-                )
-              }
-              settings={settings}
-              onChange={(patch) => {
-                setSettings((cur) => ({ ...cur, ...patch }))
-                setSaved(false)
-              }}
-              readOnly={!isAdmin}
-              saving={saving}
-              saved={saved}
-              error={saveErr}
-              onSave={onSaveProject}
-              onBack={() => selectProject(null)}
-              onDelete={() => setDeleting(selected)}
-              onToggleArchive={() => {
-                if (selected.archived) void unarchive(selected)
-                else setArchiving(selected)
-              }}
-              labels={{
-                back: t.projBack,
-                workflowLabel: t.projWorkflowLabel,
-                langLabel: t.projLangLabel,
-                langHelp: t.projLangHelp,
-                langPh: t.projLangPh,
-                styleLabel: t.projStyleLabel,
-                styleHelp: t.projStyleHelp,
-                stylePh: t.projStylePh,
-                chars: t.projChars,
-                ttlLabel: t.projTtlLabel,
-                ttlHelp: t.projTtlHelp,
-                claimTtlLabel: t.projClaimTtlLabel,
-                claimTtlHelp: t.projClaimTtlHelp,
-                maxClaimTtlLabel: t.projMaxClaimTtlLabel,
-                maxClaimTtlHelp: t.projMaxClaimTtlHelp,
-                save: t.projSave,
-                saving: t.projSaving,
-                savedMsg: t.projSaved,
-                readOnlyMsg: t.projReadOnly,
-                archived: t.projArchived,
-                archivedBanner: t.projArchivedBanner,
-                archive: t.projArchive,
-                unarchive: t.projUnarchive,
-                over: t.projOver,
-                delete: t.projDelete,
-              }}
-            />
           ) : (
-            <Section
-              title={t.projTitle}
-              description={t.projSub}
-              action={<Button onClick={() => setNewProject(true)}>+&nbsp;{t.projNew}</Button>}
-            >
-              {projectsLoadErr ? (
-                <EmptyState>{projectsLoadErr}</EmptyState>
-              ) : projects.length === 0 ? (
-                <EmptyState>{t.projEmpty}</EmptyState>
-              ) : (
-                <ul className="flex flex-col gap-px">
-                  {projects.map((p) => (
-                    <li
-                      key={p.id}
-                      className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
-                    >
-                      <span className="font-mono text-[13px] font-[650]">{p.id}</span>
-                      <span className="text-muted-foreground min-w-0 flex-1 truncate text-[13px]">
-                        {p.name ?? ''}
+            <>
+              <TabsContent value="overview" className="mt-0">
+                <Section title={t.overviewTitle} description={t.overviewSub}>
+                  <dl className="border-border-soft bg-card rounded-xl border px-4">
+                    <FactRow label={t.factActor}>
+                      <span className="font-mono">{who?.actor ?? '…'}</span>
+                    </FactRow>
+                    <FactRow label={t.factScopes}>
+                      <span className="flex flex-wrap gap-1">
+                        {(who?.scopes ?? []).map((s) => (
+                          <Badge key={s} variant="secondary">
+                            {s}
+                          </Badge>
+                        ))}
                       </span>
-                      {p.workflow && <Badge variant="outline">{p.workflow}</Badge>}
-                      {p.archived && <Badge variant="secondary">{t.projArchived}</Badge>}
-                      <Button variant="secondary" size="sm" onClick={() => selectProject(p.id)}>
-                        {t.projOpen}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Section>
+                    </FactRow>
+                    <FactRow label={t.factProjects}>
+                      {scopedToProjects ? (
+                        <span className="flex flex-wrap gap-1">
+                          {(allowlist ?? []).map((p) => (
+                            <Badge key={p} variant="outline" className="font-mono">
+                              {p}
+                            </Badge>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">{t.allProjects}</span>
+                      )}
+                    </FactRow>
+                    <FactRow label={t.factTokenId}>
+                      <span className="text-muted-foreground font-mono text-[12px]">
+                        {who?.token_id ?? '…'}
+                      </span>
+                    </FactRow>
+                  </dl>
+                </Section>
+              </TabsContent>
+              <TabsContent value="data" className="mt-0">
+                <Section title={t.dataTitle} description={t.dataSub}>
+                  <p className="text-muted-foreground max-w-prose text-[13px] leading-relaxed">
+                    {t.dataHow}
+                  </p>
+
+                  {scopedToProjects ? (
+                    <Callout tone="muted" title={t.dataScopedTitle}>
+                      {t.dataScoped}
+                    </Callout>
+                  ) : (
+                    <>
+                      <Callout tone="warn" title={t.dataWarnTitle}>
+                        {t.dataWarn}
+                      </Callout>
+                      <div>
+                        <Button onClick={() => void onExport()} disabled={exporting}>
+                          {exporting ? t.dataBusy : t.dataBtn}
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </Section>
+              </TabsContent>
+              <TabsContent value="access" className="mt-0">
+                <Section
+                  title={t.accessTitle}
+                  description={t.accessSub}
+                  action={
+                    <Button onClick={() => setNewToken(true)}>+&nbsp;{t.accessNew}</Button>
+                  }
+                >
+                  {tokens.length === 0 ? (
+                    <EmptyState>{t.accessEmpty}</EmptyState>
+                  ) : (
+                    <TokenList
+                      tokens={tokens}
+                      currentTokenId={who?.token_id}
+                      labels={{
+                        scopes: t.tokScopes,
+                        projects: t.tokProjects,
+                        allProjects: t.allProjects,
+                        lastUsed: t.tokLastUsed,
+                        neverUsed: t.tokNeverUsed,
+                        revoked: t.tokRevoked,
+                        expired: t.tokExpired,
+                        revoke: t.tokRevoke,
+                        thisToken: t.tokThisToken,
+                      }}
+                      onRevoke={setRevoking}
+                    />
+                  )}
+                </Section>
+              </TabsContent>
+              <TabsContent value="people" className="mt-0">
+                <Section
+                  title={t.peopleTitle}
+                  description={t.peopleSub}
+                  action={
+                    <Button onClick={() => setEditingPerson('new')}>+&nbsp;{t.peopleAdd}</Button>
+                  }
+                >
+                  {people.length === 0 ? (
+                    <EmptyState>{t.peopleEmpty}</EmptyState>
+                  ) : (
+                    <PeopleList
+                      people={people}
+                      busyHandle={peopleBusy}
+                      labels={{
+                        person: t.peoplePerson,
+                        projects: t.peopleProjects,
+                        noProjects: t.peopleNoProjects,
+                        status: t.peopleStatus,
+                        active: t.peopleActive,
+                        disabled: t.peopleDisabled,
+                        edit: t.peopleEdit,
+                        disable: t.peopleDisable,
+                        enable: t.peopleEnable,
+                        disableHint: t.peopleDisableHint,
+                      }}
+                      onEdit={(person) => setEditingPerson(person)}
+                      onSetDisabled={(person, disabled) => {
+                        setPeopleBusy(person.handle)
+                        setUserDisabled(token, person.handle, disabled)
+                          .then(() => refresh())
+                          .catch(handleErr)
+                          .finally(() => setPeopleBusy(''))
+                      }}
+                    />
+                  )}
+                </Section>
+              </TabsContent>
+              <TabsContent value="library" className="mt-0">
+                <Section title={t.libTitle} description={t.libSub}>
+                  {library.length === 0 ? (
+                    <EmptyState>{t.libEmpty}</EmptyState>
+                  ) : (
+                    <ul className="flex flex-col gap-px">
+                      {library.map((w) => (
+                        <li
+                          key={w.id}
+                          className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[13px] font-[650]">{w.name}</span>
+                              {w.builtin && (
+                                <Hint text={t.libBuiltinLocked}>
+                                  <Badge variant="secondary">
+                                    {t.libBuiltin}
+                                  </Badge>
+                                </Hint>
+                              )}
+                            </div>
+                            <div className="text-muted-foreground mt-0.5 text-[11.5px]">
+                              {t.libStates.replace('{n}', String(w.workflow.states.length))}
+                              {' · '}
+                              {t.libTransitions.replace(
+                                '{n}',
+                                String(w.workflow.transitions?.length ?? 0),
+                              )}
+                              {w.description ? ` · ${w.description}` : ''}
+                            </div>
+                          </div>
+                          {/* Built-ins carry no actions at all rather than disabled
+                              ones: they are reseeded on every start, so every edit
+                              here would be undone silently. The badge's title says
+                              so, and the row stays readable. */}
+                          {!w.builtin && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setRenaming(w)}
+                              >
+                                {t.libRename}
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => setDeletingWorkflow(w)}
+                              >
+                                {t.libDelete}
+                              </Button>
+                            </>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Section>
+              </TabsContent>
+              <TabsContent value="projects" className="mt-0">
+                {projectsLoadErr && selectedId && !selected ? (
+                <Section title={t.projTitle} description={t.projLoadErr}>
+                  <p className="text-destructive text-[13px]">{projectsLoadErr}</p>
+                  <Button variant="secondary" size="sm" onClick={() => selectProject(null)}>
+                    {t.projBack}
+                  </Button>
+                </Section>
+              ) : selected ? (
+                <ProjectDetail
+                  project={selected}
+                  workflowSlot={
+                    projectWorkflow && (
+                      <WorkflowEditor
+                        token={token}
+                        project={selected.id}
+                        workflow={projectWorkflow}
+                        library={library}
+                        readOnly={!isAdmin}
+                        onApplied={(wf) => {
+                          setProjectWorkflow(wf)
+                          void refresh()
+                        }}
+                        onError={handleErr}
+                        onSaveAs={(wf, layout) => setSavingDraft({ wf, layout })}
+                        labels={{
+                          title: t.wfTitle,
+                          subtitle: t.wfSubtitle,
+                          addState: t.wfAddState,
+                          startFrom: t.wfStartFrom,
+                          apply: t.wfApply,
+                          applying: t.wfApplying,
+                          applied: t.wfApplied,
+                          revert: t.wfRevert,
+                          saveAs: t.wfSaveAs,
+                          problems: t.wfProblems,
+                          valid: t.wfValid,
+                          checking: t.wfChecking,
+                          blockedTitle: t.wfBlockedTitle,
+                          blockedBody: t.wfBlockedBody,
+                          blockedRow: t.wfBlockedRow,
+                          openBoard: t.wfOpenBoard,
+                          canvasInitial: t.wfCanvasInitial,
+                          canvasClaimable: t.wfCanvasClaimable,
+                          canvasTerminal: t.wfCanvasTerminal,
+                          canvasHint: t.wfCanvasHint,
+                          readOnlyMsg: t.wfReadOnly,
+                          newStateId: t.wfNewStateId,
+                          nothing: t.wfNothing,
+                          stateTitle: t.wfStateTitle,
+                          transitionTitle: t.wfTransitionTitle,
+                          id: t.wfId,
+                          idHint: t.wfIdHint,
+                          category: t.wfCategory,
+                          claimable: t.wfClaimable,
+                          claimableHint: t.wfClaimableHint,
+                          terminal: t.wfTerminal,
+                          terminalHint: t.wfTerminalHint,
+                          makeInitial: t.wfMakeInitial,
+                          isInitial: t.wfIsInitial,
+                          deleteState: t.wfDeleteState,
+                          deleteTransition: t.wfDeleteTransition,
+                          requires: t.wfRequires,
+                          reqClaim: t.wfReqClaim,
+                          reqHuman: t.wfReqHuman,
+                          reqNoChildren: t.wfReqNoChildren,
+                          reqNoBlockers: t.wfReqNoBlockers,
+                          reqHasLink: t.wfReqHasLink,
+                          reqHasLinkHint: t.wfReqHasLinkHint,
+                          linkKey: t.wfLinkKey,
+                          from: t.wfFrom,
+                          to: t.wfTo,
+                        }}
+                      />
+                    )
+                  }
+                  settings={settings}
+                  onChange={(patch) => {
+                    setSettings((cur) => ({ ...cur, ...patch }))
+                    setSaved(false)
+                  }}
+                  readOnly={!isAdmin}
+                  saving={saving}
+                  saved={saved}
+                  error={saveErr}
+                  onSave={onSaveProject}
+                  onBack={() => selectProject(null)}
+                  onDelete={() => setDeleting(selected)}
+                  onToggleArchive={() => {
+                    if (selected.archived) void unarchive(selected)
+                    else setArchiving(selected)
+                  }}
+                  labels={{
+                    back: t.projBack,
+                    workflowLabel: t.projWorkflowLabel,
+                    langLabel: t.projLangLabel,
+                    langHelp: t.projLangHelp,
+                    langPh: t.projLangPh,
+                    styleLabel: t.projStyleLabel,
+                    styleHelp: t.projStyleHelp,
+                    stylePh: t.projStylePh,
+                    chars: t.projChars,
+                    ttlLabel: t.projTtlLabel,
+                    ttlHelp: t.projTtlHelp,
+                    claimTtlLabel: t.projClaimTtlLabel,
+                    claimTtlHelp: t.projClaimTtlHelp,
+                    maxClaimTtlLabel: t.projMaxClaimTtlLabel,
+                    maxClaimTtlHelp: t.projMaxClaimTtlHelp,
+                    save: t.projSave,
+                    saving: t.projSaving,
+                    savedMsg: t.projSaved,
+                    readOnlyMsg: t.projReadOnly,
+                    archived: t.projArchived,
+                    archivedBanner: t.projArchivedBanner,
+                    archive: t.projArchive,
+                    unarchive: t.projUnarchive,
+                    over: t.projOver,
+                    delete: t.projDelete,
+                  }}
+                />
+              ) : (
+                <Section
+                  title={t.projTitle}
+                  description={t.projSub}
+                  action={<Button onClick={() => setNewProject(true)}>+&nbsp;{t.projNew}</Button>}
+                >
+                  {projectsLoadErr ? (
+                    <EmptyState>{projectsLoadErr}</EmptyState>
+                  ) : projects.length === 0 ? (
+                    <EmptyState>{t.projEmpty}</EmptyState>
+                  ) : (
+                    <ul className="flex flex-col gap-px">
+                      {projects.map((p) => (
+                        <li
+                          key={p.id}
+                          className="bg-card border-border-soft flex flex-wrap items-center gap-x-3 gap-y-1.5 border px-3.5 py-3 first:rounded-t-xl last:rounded-b-xl [&:not(:first-child)]:border-t-0"
+                        >
+                          <span className="font-mono text-[13px] font-[650]">{p.id}</span>
+                          <span className="text-muted-foreground min-w-0 flex-1 truncate text-[13px]">
+                            {p.name ?? ''}
+                          </span>
+                          {p.workflow && <Badge variant="outline">{p.workflow}</Badge>}
+                          {p.archived && <Badge variant="secondary">{t.projArchived}</Badge>}
+                          <Button variant="secondary" size="sm" onClick={() => selectProject(p.id)}>
+                            {t.projOpen}
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </Section>
+                )}
+              </TabsContent>
+            </>
           )}
         </div>
-      </div>
+      </Tabs>
 
       <PersonDialog
         open={editingPerson !== null}

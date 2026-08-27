@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { charCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { Hint } from '@/components/Hint'
 import {
   STYLE_MAX,
   saveBlockReason,
@@ -123,9 +124,11 @@ export function ProjectDetail({
           <span className="text-muted-foreground text-[13px]">{project.name}</span>
         )}
         {project.workflow && (
-          <Badge variant="outline" title={labels.workflowLabel}>
-            {project.workflow}
-          </Badge>
+          <Hint text={labels.workflowLabel}>
+            <Badge variant="outline">
+              {project.workflow}
+            </Badge>
+          </Hint>
         )}
         {frozen && <Badge variant="secondary">{labels.archived}</Badge>}
       </div>

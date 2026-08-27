@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Picker } from '@/components/Picker'
 import {
   CHECK_LAYERS,
   CHECK_SEVERITIES,
@@ -141,53 +142,44 @@ export function CheckDialog({
 
           <Field label={labels.fInitiative}>
             {(id) => (
-              <select
+              <Picker
                 id={id}
-                className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
                 value={initiative}
-                onChange={(e) => setInitiative(e.target.value)}
-              >
-                <option value="">{labels.fInitiativeNone}</option>
-                {initiatives.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.title}
-                  </option>
-                ))}
-              </select>
+                onValueChange={(v) => setInitiative(v)}
+                className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                options={[
+                  { value: '', label: labels.fInitiativeNone },
+                  ...initiatives.map((i) => ({ value: i.id, label: i.title })),
+                ]}
+              />
             )}
           </Field>
 
           <div className="flex flex-col gap-3 md:flex-row md:[&>*]:flex-[1_1_170px]">
             <Field label={labels.fLayer}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
-                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
                   value={layer}
-                  onChange={(e) => setLayer(e.target.value as Layer)}
-                >
-                  {CHECK_LAYERS.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={(v) => setLayer(v as Layer)}
+                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                  options={[
+                    ...CHECK_LAYERS.map((l) => ({ value: l, label: l })),
+                  ]}
+                />
               )}
             </Field>
             <Field label={labels.fSeverity} hint={labels.fSeverityHint}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
-                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
                   value={severity}
-                  onChange={(e) => setSeverity(e.target.value as Severity)}
-                >
-                  {CHECK_SEVERITIES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                  onValueChange={(v) => setSeverity(v as Severity)}
+                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                  options={[
+                    ...CHECK_SEVERITIES.map((s) => ({ value: s, label: s })),
+                  ]}
+                />
               )}
             </Field>
           </div>

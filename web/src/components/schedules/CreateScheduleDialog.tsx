@@ -14,6 +14,7 @@ import {
 import { cn } from '@/lib/utils'
 import { splitList } from '@/lib/format'
 import { DAYS, UNITS, guessTz, type Cadence, type CreateFields, type Unit } from '@/lib/schedules'
+import { Picker } from '@/components/Picker'
 
 export interface CreateScheduleDialogProps {
   open: boolean
@@ -148,18 +149,15 @@ export function CreateScheduleDialog({
           <div className="flex flex-wrap gap-2.5 [&>*]:flex-[1_1_170px]">
             <Field label={labels.fEvery}>
               {(id) => (
-                <select
+                <Picker
                   id={id}
                   value={unit}
-                  onChange={(e) => setUnit(e.target.value as Unit)}
+                  onValueChange={(v) => setUnit(v as Unit)}
                   className="border-border bg-card text-foreground w-full rounded-lg border px-2.5 py-1.5 text-[13px]"
-                >
-                  {UNITS.map((u) => (
-                    <option key={u} value={u}>
-                      {unitLabel(u)}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    ...UNITS.map((u) => ({ value: u, label: unitLabel(u) })),
+                  ]}
+                />
               )}
             </Field>
             <Field label={labels.fInterval}>

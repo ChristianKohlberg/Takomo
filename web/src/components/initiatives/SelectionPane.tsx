@@ -5,6 +5,7 @@ import type { Anchor } from '@/lib/initiative-anchor'
 import type { Amendment, Thread } from '@/lib/initiative-doc'
 import type { Entry } from '@/lib/initiatives'
 import { cn } from '@/lib/utils'
+import { Picker } from '@/components/Picker'
 
 /** The four things a reader can do with a passage they highlighted. */
 export type Operation = 'comment' | 'suggest' | 'ticket' | 'ask' | 'cite'
@@ -142,37 +143,31 @@ export function SelectionPane(props: SelectionPaneProps) {
             {op === 'ask' && props.people && props.people.length > 0 && (
               <label className="text-muted-foreground mb-2 flex flex-wrap items-center gap-2 text-[12.5px] font-[650]">
                 {labels.askWho}
-                <select
+                <Picker
                   value={assignee}
-                  onChange={(e) => setAssignee(e.target.value)}
+                  onValueChange={(v) => setAssignee(v)}
                   className="border-border bg-card text-foreground max-w-full rounded-md border px-2 py-1.5 text-[13px]"
-                >
-                  <option value="">{labels.askAnyone}</option>
-                  {props.people.map((p) => (
-                    <option key={p.handle} value={p.handle}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: '', label: labels.askAnyone },
+                    ...props.people.map((p) => ({ value: p.handle, label: p.label })),
+                  ]}
+                />
               </label>
             )}
             {op === 'cite' ? (
               props.evidence.length === 0 ? (
                 <p className="text-muted-foreground text-[12.5px]">{labels.noEvidence}</p>
               ) : (
-                <select
+                <Picker
                   aria-label={labels.cite}
                   value={evidenceId}
-                  onChange={(e) => setEvidenceId(e.target.value)}
+                  onValueChange={(v) => setEvidenceId(v)}
                   className="border-border bg-card text-foreground w-full rounded-md border px-2 py-1.5 text-[13px]"
-                >
-                  <option value="">{labels.citePh}</option>
-                  {props.evidence.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.kind} — {e.title || e.text?.slice(0, 60) || e.id}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: '', label: labels.citePh },
+                    ...props.evidence.map((e) => ({ value: e.id, label: <>{e.kind} — {e.title || e.text?.slice(0, 60) || e.id}</> })),
+                  ]}
+                />
               )
             ) : (
               <Textarea

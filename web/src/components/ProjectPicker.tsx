@@ -16,6 +16,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronsUpDownIcon, LayersIcon, SearchIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { rankOptions } from '@/lib/typeahead'
+import { Hint } from '@/components/Hint'
 
 export interface ProjectOption {
   id: string
@@ -143,31 +144,32 @@ export function ProjectPicker({
 
   return (
     <div ref={boxRef} className="relative">
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={`${labels.project}: ${currentLabel}`}
-        title={collapsed ? `${labels.project}: ${currentLabel}` : undefined}
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          'border-border hover:border-ring hover:text-primary text-foreground flex cursor-pointer items-center rounded-lg border text-[13px] font-[650]',
-          collapsed
-            ? 'size-10 justify-center'
-            : 'bg-muted w-full gap-2 px-2.5 py-1.5 text-left',
-        )}
-      >
-        {collapsed ? (
-          // An initial carries more than a generic icon once you have picked
-          // something; the icon is only for the unscoped state.
-          initial ? <span>{initial}</span> : <LayersIcon size={17} />
-        ) : (
-          <>
-            <span className="min-w-0 grow truncate">{currentLabel}</span>
-            <ChevronsUpDownIcon size={14} className="text-muted-foreground flex-none" />
-          </>
-        )}
-      </button>
+      <Hint text={collapsed ? `${labels.project}: ${currentLabel}` : undefined}>
+        <button
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-label={`${labels.project}: ${currentLabel}`}
+          onClick={() => setOpen((o) => !o)}
+          className={cn(
+            'border-border hover:border-ring hover:text-primary text-foreground flex cursor-pointer items-center rounded-lg border text-[13px] font-[650]',
+            collapsed
+              ? 'size-10 justify-center'
+              : 'bg-muted w-full gap-2 px-2.5 py-1.5 text-left',
+          )}
+        >
+          {collapsed ? (
+            // An initial carries more than a generic icon once you have picked
+            // something; the icon is only for the unscoped state.
+            initial ? <span>{initial}</span> : <LayersIcon size={17} />
+          ) : (
+            <>
+              <span className="min-w-0 grow truncate">{currentLabel}</span>
+              <ChevronsUpDownIcon size={14} className="text-muted-foreground flex-none" />
+            </>
+          )}
+        </button>
+      </Hint>
 
       {open && (
         <div

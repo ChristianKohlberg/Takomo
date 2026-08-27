@@ -29,6 +29,7 @@ import {
 } from '@/lib/initiative-map'
 import type { RoadmapEpic } from '@/lib/roadmap'
 import { cn } from '@/lib/utils'
+import { Hint } from '@/components/Hint'
 
 export interface MinimapLabels {
   /** Caption over the map. */
@@ -157,31 +158,33 @@ export function Minimap({
           </span>
           <span className="grow" />
           <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="icon"
-              className="size-7"
-              title={labels.zoomOut}
-              aria-label={labels.zoomOut}
-              disabled={zoom <= MIN_ZOOM}
-              onClick={() => nudgeZoom(-ZOOM_STEP)}
-            >
-              −
-            </Button>
+            <Hint text={labels.zoomOut}>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                aria-label={labels.zoomOut}
+                disabled={zoom <= MIN_ZOOM}
+                onClick={() => nudgeZoom(-ZOOM_STEP)}
+              >
+                −
+              </Button>
+            </Hint>
             <span className="text-muted-foreground w-10 text-center font-mono text-[11px] tabular-nums">
               {Math.round(zoom * 100)}%
             </span>
-            <Button
-              variant="outline"
-              size="icon"
-              className="size-7"
-              title={labels.zoomIn}
-              aria-label={labels.zoomIn}
-              disabled={zoom >= MAX_ZOOM}
-              onClick={() => nudgeZoom(ZOOM_STEP)}
-            >
-              +
-            </Button>
+            <Hint text={labels.zoomIn}>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                aria-label={labels.zoomIn}
+                disabled={zoom >= MAX_ZOOM}
+                onClick={() => nudgeZoom(ZOOM_STEP)}
+              >
+                +
+              </Button>
+            </Hint>
           </div>
         </header>
 
@@ -540,16 +543,17 @@ function EpicStats({
           <h2 className="mt-1 mb-0 text-[15px] leading-snug font-[720]">{epic.title}</h2>
           <div className="text-muted-foreground mt-0.5 font-mono text-[11px]">{epic.id}</div>
         </div>
-        <Button
-          variant="outline"
-          size="icon"
-          className="size-7 shrink-0"
-          title={labels.close}
-          aria-label={labels.close}
-          onClick={onClose}
-        >
-          ×
-        </Button>
+        <Hint text={labels.close}>
+          <Button
+            variant="outline"
+            size="icon"
+            className="size-7 shrink-0"
+            aria-label={labels.close}
+            onClick={onClose}
+          >
+            ×
+          </Button>
+        </Hint>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">

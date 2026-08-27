@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
+import { Hint } from '@/components/Hint'
 
 const PRIORITY: Record<string, string> = {
   critical: 'text-crit',
@@ -138,23 +139,24 @@ export function TicketCard({
       {/* Where a scheduled ticket came from. It links to /schedules rather than
           opening the ticket, so the two pages stay one product. */}
       {t.schedule && scheduleLabels && (
-        <a
-          href="/schedules"
-          title={`${scheduleLabels.fromSchedule}: ${t.schedule}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            // Same rule as the header nav: only a plain left-click is
-            // intercepted, so cmd-click still opens a new tab.
-            if (!onNavigate) return
-            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-            e.preventDefault()
-            onNavigate('/schedules')
-          }}
-          className="text-muted-foreground pointer-events-auto mt-1.5 -mx-1 -my-0.5 flex w-fit cursor-pointer items-center gap-1 px-1 py-0.5 font-mono text-[10.5px] no-underline"
-        >
-          <span>{'\u21bb'}</span>
-          <span>{t.schedule}</span>
-        </a>
+        <Hint text={`${scheduleLabels.fromSchedule}: ${t.schedule}`}>
+          <a
+            href="/schedules"
+            onClick={(e) => {
+              e.stopPropagation()
+              // Same rule as the header nav: only a plain left-click is
+              // intercepted, so cmd-click still opens a new tab.
+              if (!onNavigate) return
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+              e.preventDefault()
+              onNavigate('/schedules')
+            }}
+            className="text-muted-foreground pointer-events-auto mt-1.5 -mx-1 -my-0.5 flex w-fit cursor-pointer items-center gap-1 px-1 py-0.5 font-mono text-[10.5px] no-underline"
+          >
+            <span>{'\u21bb'}</span>
+            <span>{t.schedule}</span>
+          </a>
+        </Hint>
       )}
 
       {(t.labels?.length || t.tags?.length || t.claim?.holder || blocked) && (

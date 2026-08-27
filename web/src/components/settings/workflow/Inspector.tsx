@@ -29,6 +29,7 @@ import {
 } from '@/lib/workflows'
 import type { CanvasSelection } from './Canvas'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Picker } from '@/components/Picker'
 
 export interface InspectorLabels {
   nothing: string
@@ -175,19 +176,16 @@ function StateInspector({
 
       <Field label={labels.category}>
         {(id) => (
-          <select
+          <Picker
             id={id}
             value={state.category}
+            onValueChange={(v) => patch({ category: v as Category })}
             disabled={readOnly}
-            onChange={(e) => patch({ category: e.target.value as Category })}
             className="bg-muted text-foreground border-border hover:border-ring w-full cursor-pointer appearance-none rounded-lg border px-3 py-2 text-[13px]"
-          >
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            options={[
+              ...CATEGORIES.map((c) => ({ value: c, label: c })),
+            ]}
+          />
         )}
       </Field>
 

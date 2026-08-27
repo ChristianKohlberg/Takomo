@@ -30,6 +30,7 @@ import {
 } from '@/lib/mindmap-layout'
 import { cn } from '@/lib/utils'
 import type { Mindmap, MindmapNode } from '@/lib/mindmaps'
+import { Hint } from '@/components/Hint'
 
 export interface CanvasLabels {
   /** The root box's caption, when the map has no nodes yet. */
@@ -384,22 +385,24 @@ export function Canvas({
       {/* Viewport controls, bottom-right — out of the way of the root, which sits
           left of everything. */}
       <div className="absolute right-3 bottom-3 flex gap-1.5">
-        <button
-          type="button"
-          onClick={onTidy}
-          title={labels.tidy}
-          className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
-        >
-          {labels.tidy}
-        </button>
-        <button
-          type="button"
-          onClick={fitAll}
-          title={labels.fit}
-          className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
-        >
-          {labels.fit}
-        </button>
+        <Hint text={labels.tidy}>
+          <button
+            type="button"
+            onClick={onTidy}
+            className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
+          >
+            {labels.tidy}
+          </button>
+        </Hint>
+        <Hint text={labels.fit}>
+          <button
+            type="button"
+            onClick={fitAll}
+            className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
+          >
+            {labels.fit}
+          </button>
+        </Hint>
         <button
           type="button"
           aria-label={labels.zoomOut}

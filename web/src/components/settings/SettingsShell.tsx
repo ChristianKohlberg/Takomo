@@ -18,7 +18,7 @@
 // in-surface switcher goes horizontal, where its subordinate relationship to the
 // rail is legible from the layout alone.
 import type { ReactNode } from 'react'
-import { cn } from '@/lib/utils'
+import { TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export interface SectionDef<K extends string> {
   key: K
@@ -29,8 +29,6 @@ export interface SectionDef<K extends string> {
 
 export interface SectionTabsProps<K extends string> {
   sections: readonly SectionDef<K>[]
-  current: K
-  onSelect: (key: K) => void
 }
 
 /**
@@ -38,42 +36,39 @@ export interface SectionTabsProps<K extends string> {
  *
  * Scrolls because four labels plus their padding do not fit 320px, and wrapping
  * them would push the panel down by a whole row on the screen that can least
- * afford it. `shrink-0` on the strip is load-bearing for the same reason it was
- * on the chips it replaced: its sibling is `flex-1`, and without it flex
- * compresses the strip to a few pixels and the only way to change section is
- * gone.
+ * afford it. `shrink-0` is load-bearing for the same reason it was on the chips
+ * this replaced: its sibling is `flex-1`, and without it flex compresses the
+ * strip to a few pixels and the only way to change section is gone. `w-full`
+ * likewise overrides the primitive's `w-fit`, which would let the strip shrink
+ * away from the border it draws.
+ *
+ * Radix owns selection now, so this no longer takes `current`/`onSelect` — the
+ * `<Tabs>` root in the page does. What that buys over the hand-rolled version is
+ * the keyboard contract a tab strip is supposed to have and did not: arrow keys
+ * move between tabs, Home/End jump to the ends, and the strip is one tab stop
+ * rather than one per section. It also stops claiming `aria-current="page"`,
+ * which says "this is the current PAGE" — these switch a panel, not a page, and
+ * a screen reader now hears a tablist.
  */
-export function SectionTabs<K extends string>({
-  sections,
-  current,
-  onSelect,
-}: SectionTabsProps<K>) {
+export function SectionTabs<K extends string>({ sections }: SectionTabsProps<K>) {
   return (
-    <nav
-      className="border-b-border-soft flex shrink-0 gap-1 overflow-x-auto border-b [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      aria-label="settings sections"
+    <TabsList
+      variant="line"
+      className="border-b-border-soft h-auto w-full shrink-0 justify-start gap-1 overflow-x-auto rounded-none border-b p-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       {sections.map((s) => (
-        <button
+        <TabsTrigger
           key={s.key}
-          type="button"
-          onClick={() => onSelect(s.key)}
-          aria-current={s.key === current ? 'page' : undefined}
-          className={cn(
-            'shrink-0 cursor-pointer border-b-2 px-3 py-2 text-[13px] font-[650] transition-colors',
-            // The active tab's underline sits ON the strip's own bottom border,
-            // so the row keeps one continuous baseline instead of gaining a
-            // second line under the selected item.
-            '-mb-px',
-            s.key === current
-              ? 'border-primary text-primary'
-              : 'text-muted-foreground hover:text-foreground border-transparent',
-          )}
+          value={s.key}
+          // The active underline sits ON the strip's own bottom border, so the
+          // row keeps one continuous baseline instead of gaining a second line
+          // under the selected item.
+          className="shrink-0 grow-0 cursor-pointer px-3 py-2 text-[13px] font-[650] after:bottom-[-1px] data-active:text-primary data-active:after:bg-primary"
         >
           {s.label}
-        </button>
+        </TabsTrigger>
       ))}
-    </nav>
+    </TabsList>
   )
 }
 

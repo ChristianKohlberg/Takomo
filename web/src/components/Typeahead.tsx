@@ -13,6 +13,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { rankOptions } from '@/lib/typeahead'
+import { Hint } from '@/components/Hint'
 
 export interface TypeaheadOption {
   id: string
@@ -124,15 +125,16 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
       />
 
       {value && (
-        <button
-          type="button"
-          className="ta-clear text-muted-foreground hover:text-primary absolute top-1.5 right-2 cursor-pointer"
-          title={labels.clear}
-          aria-label={labels.clear}
-          onClick={() => take('')}
-        >
-          ×
-        </button>
+        <Hint text={labels.clear}>
+          <button
+            type="button"
+            className="ta-clear text-muted-foreground hover:text-primary absolute top-1.5 right-2 cursor-pointer"
+            aria-label={labels.clear}
+            onClick={() => take('')}
+          >
+            ×
+          </button>
+        </Hint>
       )}
 
       {open && (

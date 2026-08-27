@@ -269,12 +269,27 @@ describe('EpicsView', () => {
     vi.restoreAllMocks()
   })
 
+/**
+ * Choose an option from a `Picker`.
+ *
+ * A native `<select>` took `fireEvent.change`; a listbox has to be opened first,
+ * and Radix opens on `pointerDown`, not `click`. The stubs that let it open at
+ * all live in src/test-setup.ts.
+ */
+function choose(labelText: string, optionName: string | RegExp) {
+  const trigger = screen.getByLabelText(labelText)
+  // Keyboard, not pointer: Radix's trigger opens on ArrowDown/Enter/Space, and
+  // that path needs none of the geometry jsdom cannot supply.
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+  fireEvent.click(screen.getByRole('option', { name: optionName }))
+}
+
   it('filters epics by claim state', () => {
     view([
       base,
       { ...base, id: 'demo-b', title: 'Claimed epic', claim },
     ])
-    fireEvent.change(screen.getByLabelText(labels.filterClaimed), { target: { value: 'unclaimed' } })
+    choose(labels.filterClaimed, labels.filterClaimedNo)
     expect(screen.getByRole('button', { name: /billing v2/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /claimed epic/i })).toBeNull()
   })
@@ -288,7 +303,7 @@ describe('EpicsView', () => {
       vi.fn(),
       { 'ini-a': 'Billing', 'ini-b': 'Reporting' },
     )
-    fireEvent.change(screen.getByLabelText(labels.filterLane), { target: { value: 'ini-a' } })
+    choose(labels.filterLane, 'Billing')
     expect(screen.getByRole('button', { name: /billing v2/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /other/i })).toBeNull()
   })

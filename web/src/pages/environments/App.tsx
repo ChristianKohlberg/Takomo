@@ -35,6 +35,7 @@ import { EnvironmentCard } from '@/components/environments/EnvironmentCard'
 import { EnvironmentDialog } from '@/components/environments/EnvironmentDialog'
 import { STR } from './strings'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Hint } from '@/components/Hint'
 
 const LS_LANG = 'takomo.lang'
 
@@ -233,14 +234,15 @@ export function App() {
         >
           + {t.newEnvironment}
         </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          title={t.refresh}
-          onClick={() => fetchAll().catch(handleErr)}
-        >
-          ↻
-        </Button>
+        <Hint text={t.refresh}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => fetchAll().catch(handleErr)}
+          >
+            ↻
+          </Button>
+        </Hint>
       </AppHeader>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-4.5 pb-15 md:px-5">

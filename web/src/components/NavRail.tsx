@@ -38,6 +38,7 @@ import { Logo } from './Logo'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
 import { cn } from '@/lib/utils'
 import { useIsPhone } from '@/hooks/useIsPhone'
+import { Hint } from '@/components/Hint'
 
 export interface NavLabels {
   board: string
@@ -170,15 +171,16 @@ function IconButton({
   children: ReactNode
 }) {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      className="text-muted-foreground hover:text-primary hover:bg-muted flex size-8 flex-none cursor-pointer items-center justify-center rounded-lg"
-    >
-      {children}
-    </button>
+    <Hint text={label}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="text-muted-foreground hover:text-primary hover:bg-muted flex size-8 flex-none cursor-pointer items-center justify-center rounded-lg"
+      >
+        {children}
+      </button>
+    </Hint>
   )
 }
 
@@ -371,27 +373,30 @@ export function NavRail({
                 : 'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer',
             )
             return isCurrent ? (
-              <span key={key} className={cls} aria-current="page" title={nav[key]}>
-                {inner}
-              </span>
+              <Hint key={key} text={nav[key]}>
+                <span className={cls} aria-current="page" aria-label={nav[key]}>
+                  {inner}
+                </span>
+              </Hint>
             ) : (
-              <a
-                key={key}
-                href={NAV_HREF[key]}
-                className={cls}
-                title={nav[key]}
-                onClick={(e) => {
-                  if (!onNavigate) return
-                  if (!plainLeftClick(e)) return
-                  e.preventDefault()
-                  // On a phone the rail is covering the page it just navigated
-                  // to, so leaving it open would hide the destination.
-                  if (overlay) onCollapsed(true)
-                  onNavigate(NAV_HREF[key])
-                }}
-              >
-                {inner}
-              </a>
+              <Hint key={key} text={nav[key]}>
+                <a
+                  href={NAV_HREF[key]}
+                  className={cls}
+                  aria-label={nav[key]}
+                  onClick={(e) => {
+                    if (!onNavigate) return
+                    if (!plainLeftClick(e)) return
+                    e.preventDefault()
+                    // On a phone the rail is covering the page it just navigated
+                    // to, so leaving it open would hide the destination.
+                    if (overlay) onCollapsed(true)
+                    onNavigate(NAV_HREF[key])
+                  }}
+                >
+                  {inner}
+                </a>
+              </Hint>
             )
           })}
         </nav>
@@ -407,38 +412,39 @@ export function NavRail({
           )}
         >
           <div ref={menuRef} className={cn('relative', collapsed && 'flex justify-center')}>
-            <button
-              ref={triggerRef}
-              type="button"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-controls={menuId}
-              aria-label={accountName}
-              title={accountName}
-              onClick={() => setMenuOpen((o) => !o)}
-              onKeyDown={onTriggerKeyDown}
-              className={cn(
-                'hover:bg-muted flex w-full cursor-pointer items-center gap-2 rounded-lg px-0 py-0 text-left',
-                collapsed && 'justify-center',
-                accountActive && 'text-primary bg-secondary',
-              )}
-            >
-              <span
-                className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold"
+            <Hint text={accountName}>
+              <button
+                ref={triggerRef}
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-controls={menuId}
+                aria-label={accountName}
+                onClick={() => setMenuOpen((o) => !o)}
+                onKeyDown={onTriggerKeyDown}
+                className={cn(
+                  'hover:bg-muted flex w-full cursor-pointer items-center gap-2 rounded-lg px-0 py-0 text-left',
+                  collapsed && 'justify-center',
+                  accountActive && 'text-primary bg-secondary',
+                )}
               >
-                {initial}
-              </span>
-              {expanded && (
-                <div className="min-w-0 grow leading-tight">
-                  <div className="text-foreground truncate text-[12.5px] font-[650]">
-                    {accountName}
+                <span
+                  className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold"
+                >
+                  {initial}
+                </span>
+                {expanded && (
+                  <div className="min-w-0 grow leading-tight">
+                    <div className="text-foreground truncate text-[12.5px] font-[650]">
+                      {accountName}
+                    </div>
+                    {role && (
+                      <div className="text-muted-foreground truncate text-[11px]">{role}</div>
+                    )}
                   </div>
-                  {role && (
-                    <div className="text-muted-foreground truncate text-[11px]">{role}</div>
-                  )}
-                </div>
-              )}
-            </button>
+                )}
+              </button>
+            </Hint>
 
             {menuOpen && (
               <div

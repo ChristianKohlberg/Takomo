@@ -87,6 +87,8 @@ import {
   type Project,
 } from '@/lib/initiatives'
 import { STR } from './strings'
+import { Hint } from '@/components/Hint'
+import { Picker } from '@/components/Picker'
 
 const LS_LANG = 'takomo.lang'
 const LS_FOLDERS = 'takomo.initiatives.folders'
@@ -1017,29 +1019,31 @@ export function App() {
         {/* A document belongs to exactly one project, so this cannot act while
             the selection is "All projects". It shows its own state rather than
             answering a click with a toast. */}
-        <Button
-          aria-disabled={!project}
-          title={project ? undefined : t.needProject}
-          className={project ? undefined : 'opacity-55'}
-          onClick={() => {
-            if (!guardWrite()) return
-            if (!project) {
-              toast(t.needProject, 'err')
-              return
-            }
-            setCreating(true)
-          }}
-        >
-          + {t.newInitiative}
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          title={t.refresh}
-          onClick={() => fetchAll().catch(handleErr)}
-        >
-          ↻
-        </Button>
+        <Hint text={project ? undefined : t.needProject}>
+          <Button
+            aria-disabled={!project}
+            className={project ? undefined : 'opacity-55'}
+            onClick={() => {
+              if (!guardWrite()) return
+              if (!project) {
+                toast(t.needProject, 'err')
+                return
+              }
+              setCreating(true)
+            }}
+          >
+            + {t.newInitiative}
+          </Button>
+        </Hint>
+        <Hint text={t.refresh}>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => fetchAll().catch(handleErr)}
+          >
+            ↻
+          </Button>
+        </Hint>
       </AppHeader>
 
       <main
@@ -1196,25 +1200,20 @@ export function App() {
                       )}
                       onCommit={(next) => doPatch(selected.id, { title: next }, t.savedTitle)}
                     />
-                    <select
+                    <Picker
                       aria-label={t.aStatus}
                       value={selected.status}
-                      disabled={!canWrite}
-                      onChange={(e) =>
-                        doPatch(
+                      onValueChange={(v) => doPatch(
                           selected.id,
-                          { status: e.target.value as InitiativeStatus },
+                          { status: v as InitiativeStatus },
                           t.savedStatus,
-                        ).catch(handleErr)
-                      }
+                        ).catch(handleErr)}
+                      disabled={!canWrite}
                       className="bg-secondary text-secondary-foreground border-ring cursor-pointer appearance-none rounded-md border px-2.25 py-1 text-[11.5px] font-bold tracking-[0.04em] uppercase"
-                    >
-                      {STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {statusLabel(s)}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        ...STATUSES.map((s) => ({ value: s, label: statusLabel(s) })),
+                      ]}
+                    />
                   </div>
 
                   <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 font-mono text-[11.5px]">
