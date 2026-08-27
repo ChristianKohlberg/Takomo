@@ -18,6 +18,7 @@
 import { Typeahead, type TypeaheadOption } from '../Typeahead'
 import { URGENCIES } from '@/lib/question-filters'
 import { cn } from '@/lib/utils'
+import { Checkbox } from '@/components/ui/checkbox'
 
 export interface FilterBarLabels {
   filters: string
@@ -284,11 +285,9 @@ export function FilterBar({
             title={labels.mineHint}
             className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
           >
-            <input
-              type="checkbox"
-              className="size-4"
+            <Checkbox
               checked={mine}
-              onChange={(e) => onMine(e.target.checked)}
+              onCheckedChange={(e) => onMine(e === true)}
             />
             {labels.mine}
           </label>
@@ -298,11 +297,9 @@ export function FilterBar({
           title={labels.waitingHint}
           className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
         >
-          <input
-            type="checkbox"
-            className="size-4"
+          <Checkbox
             checked={hideAwaitingAgent}
-            onChange={(e) => onHideAwaitingAgent(e.target.checked)}
+            onCheckedChange={(e) => onHideAwaitingAgent(e === true)}
           />
           {labels.waiting}
         </label>
@@ -311,11 +308,9 @@ export function FilterBar({
           title={labels.soonHint}
           className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]"
         >
-          <input
-            type="checkbox"
-            className="size-4"
+          <Checkbox
             checked={expiringSoon}
-            onChange={(e) => onExpiringSoon(e.target.checked)}
+            onCheckedChange={(e) => onExpiringSoon(e === true)}
           />
           {labels.soon}
         </label>
@@ -323,11 +318,9 @@ export function FilterBar({
         {/* Grouping is not a filter — it hides nothing — so it sits outside the
             active count and survives "clear filters". */}
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-          <input
-            type="checkbox"
-            className="size-4"
+          <Checkbox
             checked={group}
-            onChange={(e) => onGroup(e.target.checked)}
+            onCheckedChange={(e) => onGroup(e === true)}
           />
           {labels.groupEpic}
         </label>

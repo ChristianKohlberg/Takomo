@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { spread, worstState, type CaseRow, type CaseState, type Check } from '@/lib/verification'
@@ -236,7 +237,7 @@ export function CheckCard({
   const open = cases !== undefined
 
   return (
-    <div className="bg-card border-border-soft flex flex-col gap-2.5 rounded-[10px] border p-3.5">
+    <Card size="sm" className="gap-2.5 px-(--card-spacing)">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <Badge className={stateTone(worst)}>{stateWord(worst, labels)}</Badge>
         <span className="text-foreground min-w-0 grow truncate text-[13.5px] font-[650]">
@@ -317,6 +318,6 @@ export function CheckCard({
           )}
         </div>
       )}
-    </div>
+    </Card>
   )
 }

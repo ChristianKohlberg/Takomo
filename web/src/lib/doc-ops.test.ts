@@ -1,0 +1,154 @@
+import { describe, expect, it } from 'vitest'
+import { Schema } from '@tiptap/pm/model'
+import { EditorState } from '@tiptap/pm/state'
+
+import { applyOps, markdownToNodes, parseProposal, touchedBlocks, type Proposal } from './doc-ops'
+
+// Close enough to StarterKit for these to mean something: the node names and the
+// `id` attribute are what the ops address.
+const schema = new Schema({
+  nodes: {
+    doc: { content: 'block+' },
+    text: { group: 'inline' },
+    paragraph: { group: 'block', content: 'inline*', attrs: { id: { default: null } } },
+    heading: {
+      group: 'block',
+      content: 'inline*',
+      attrs: { id: { default: null }, level: { default: 1 } },
+    },
+    codeBlock: {
+      group: 'block',
+      content: 'text*',
+      attrs: { id: { default: null }, language: { default: null } },
+    },
+    blockquote: { group: 'block', content: 'block+', attrs: { id: { default: null } } },
+    horizontalRule: { group: 'block', attrs: { id: { default: null } } },
+    bulletList: { group: 'block', content: 'listItem+', attrs: { id: { default: null } } },
+    orderedList: { group: 'block', content: 'listItem+', attrs: { id: { default: null } } },
+    listItem: { content: 'paragraph+' },
+  },
+})
+
+const para = (id: string, text: string) =>
+  schema.nodes.paragraph!.create({ id }, schema.text(text))
+
+function stateWith(...nodes: ReturnType<typeof para>[]) {
+  return EditorState.create({ schema, doc: schema.nodes.doc!.create(null, nodes) })
+}
+
+describe('markdownToNodes', () => {
+  it('reads a heading at the level its hashes say', () => {
+    const [n] = markdownToNodes(schema, '### Pricing')
+    expect(n!.type.name).toBe('heading')
+    expect(n!.attrs.level).toBe(3)
+    expect(n!.textContent).toBe('Pricing')
+  })
+
+  it('splits blocks on blank lines, so one op can carry several', () => {
+    const nodes = markdownToNodes(schema, 'First.\n\nSecond.')
+    expect(nodes).toHaveLength(2)
+    expect(nodes.map((n) => n.textContent)).toEqual(['First.', 'Second.'])
+  })
+
+  it('does not read the inside of a fenced code block as markdown', () => {
+    const [n] = markdownToNodes(schema, '```sh\n# not a heading\n```')
+    expect(n!.type.name).toBe('codeBlock')
+    expect(n!.textContent).toBe('# not a heading')
+  })
+
+  it('builds a list with its items intact', () => {
+    const [n] = markdownToNodes(schema, '- Milch\n- Brot')
+    expect(n!.type.name).toBe('bulletList')
+    expect(n!.childCount).toBe(2)
+    expect(n!.child(0).textContent).toBe('Milch')
+  })
+
+  it('falls back to a paragraph rather than dropping something it cannot parse', () => {
+    // A proposal that silently loses a line is worse than one that renders it
+    // plainly: only the second is visible to the person deciding.
+    const [n] = markdownToNodes(schema, '|a|b|\n|-|-|')
+    expect(n!.type.name).toBe('paragraph')
+    expect(n!.textContent).toContain('|a|b|')
+  })
+
+  it('never returns nothing, so `replace` cannot become a silent delete', () => {
+    expect(markdownToNodes(schema, '   ')).toHaveLength(1)
+  })
+})
+
+describe('applyOps', () => {
+  it('replaces only the block it names', () => {
+    const state = stateWith(para('blk_a', 'First.'), para('blk_b', 'Second.'))
+    const tr = state.tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_b', markdown: 'Second, tightened.' },
+    ])
+    expect(applied).toBe(1)
+    expect(skipped).toEqual([])
+    expect(tr.doc.child(0).textContent).toBe('First.')
+    expect(tr.doc.child(1).textContent).toBe('Second, tightened.')
+  })
+
+  it('keeps later ops correct after an earlier one changed the length', () => {
+    // The reason positions are re-resolved per op. A batch computed against the
+    // original document lands increasingly wrong as it goes.
+    const state = stateWith(para('blk_a', 'A'), para('blk_b', 'B'), para('blk_c', 'C'))
+    const tr = state.tr
+    const { applied } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_a', markdown: 'A much, much longer first paragraph.' },
+      { op: 'replace', id: 'blk_c', markdown: 'C tightened.' },
+    ])
+    expect(applied).toBe(2)
+    expect(tr.doc.child(1).textContent).toBe('B')
+    expect(tr.doc.child(2).textContent).toBe('C tightened.')
+  })
+
+  it('inserts after the named block rather than before it', () => {
+    const state = stateWith(para('blk_a', 'A'), para('blk_b', 'B'))
+    const tr = state.tr
+    applyOps(tr, schema, [{ op: 'insert_after', id: 'blk_a', markdown: 'A2' }])
+    expect(tr.doc.childCount).toBe(3)
+    expect(tr.doc.child(1).textContent).toBe('A2')
+    expect(tr.doc.child(2).textContent).toBe('B')
+  })
+
+  it('skips an op whose block is gone and says so, rather than failing the batch', () => {
+    // Somebody deleting a paragraph while an agent was thinking must not make an
+    // otherwise good proposal unacceptable.
+    const state = stateWith(para('blk_a', 'A'))
+    const tr = state.tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_a', markdown: 'A tightened.' },
+      { op: 'delete', id: 'blk_missing' },
+    ])
+    expect(applied).toBe(1)
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0]).toContain('blk_missing')
+    expect(tr.doc.child(0).textContent).toBe('A tightened.')
+  })
+})
+
+describe('parseProposal', () => {
+  it('returns null for anything that is not a proposal, without throwing', () => {
+    expect(parseProposal('not json')).toBeNull()
+    expect(parseProposal('{"id":"p"}')).toBeNull()
+    expect(parseProposal(42)).toBeNull()
+  })
+})
+
+describe('touchedBlocks', () => {
+  it('counts only pending proposals — a decided one is a record, not a mark', () => {
+    const p = (id: string, status: Proposal['status'], block: string): Proposal => ({
+      id,
+      status,
+      author: 'agent:w1',
+      instruction: '',
+      summary: '',
+      created_at: 1,
+      skipped: [],
+      ops: [{ op: 'replace', id: block, markdown: 'x' }],
+    })
+    const ids = touchedBlocks([p('p1', 'pending', 'blk_a'), p('p2', 'accepted', 'blk_b')])
+    expect([...ids]).toEqual(['blk_a'])
+  })
+})

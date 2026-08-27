@@ -20,8 +20,33 @@ import { resolve } from 'node:path'
 
 const dist = resolve(import.meta.dirname, '..', 'dist')
 
-/** Everything the browser fetches before the first surface paints. */
-const FIRST_LOAD = ['index.html', 'assets/vendor.js', 'assets/runtime.js', 'assets/app.js', 'assets/app.css']
+/**
+ * Everything the browser fetches before the first surface paints — DERIVED from
+ * index.html rather than listed here.
+ *
+ * It was a hardcoded list until routes started being code-split. A fixed list
+ * gets this exactly backwards once chunks exist: the moment a route is lazily
+ * loaded, the list still names it and the budget keeps charging for bytes the
+ * first paint no longer waits on — so the check would report a regression for
+ * the very change that fixed one. Reading the document's own references measures
+ * what a browser actually blocks on.
+ *
+ * `modulepreload` links ARE counted, and that is the subtle part. They look
+ * skippable — a hint, not a fetch — but Vite emits them for the entry's STATIC
+ * dependency chunks, which the browser must have in hand before the entry can
+ * execute. `vendor.js` arrives that way. Excluding them would silently drop the
+ * largest thing on the critical path out of the budget.
+ *
+ * A dynamically imported chunk never appears in this document at all: Vite
+ * preloads those at runtime through `__vitePreload`. So "what index.html
+ * references" is exactly "what blocks the first paint", with no filtering needed.
+ */
+const firstLoadFiles = () => {
+  const html = readFileSync(resolve(dist, 'index.html'), 'utf8')
+  const refs = [...html.matchAll(/(?:src|href)="\/assets\/([^"]+)"/g)].map((m) => `assets/${m[1]}`)
+  return ['index.html', ...new Set(refs)]
+}
+const FIRST_LOAD = firstLoadFiles()
 
 /**
  * Budgets in gzipped kB.
@@ -48,15 +73,21 @@ const BUDGET_KB = { firstLoad: 320, vendor: 180 }
 
 const gz = (file) => gzipSync(readFileSync(resolve(dist, file))).length / 1024
 
-// A stray file in dist/ means the build emitted something the Rust binary does
-// not embed. vite.config.ts fails the build on that, but dist/ is committed and
+// A misplaced file in dist/ means the build emitted something the server cannot
+// serve: build.rs embeds assets/ flat and the route is `/assets/{file}`, one path
+// segment. vite.config.ts fails the build on that, but dist/ is committed and
 // could be edited by hand, so say so here too rather than quietly ignoring it.
+//
+// This no longer checks against FIRST_LOAD. It used to, back when those two sets
+// were the same thing — with code splitting they are not, and a lazy chunk is
+// exactly the file that is legitimately present and legitimately not fetched
+// first.
 const walk = (dir, base = '') =>
   readdirSync(resolve(dist, dir), { withFileTypes: true }).flatMap((e) =>
     e.isDirectory() ? walk(`${dir}/${e.name}`, `${base}${e.name}/`) : `${base}${e.name}`,
   )
 const present = walk('.').sort()
-const unexpected = present.filter((f) => !FIRST_LOAD.includes(f))
+const unexpected = present.filter((f) => f !== 'index.html' && !/^assets\/[^/]+$/.test(f))
 
 let failed = false
 
@@ -102,8 +133,8 @@ if (leaked.length) {
 
 if (unexpected.length) {
   failed = true
-  console.log(`\nFAIL unexpected files in dist/: ${unexpected.join(', ')}`)
-  console.log('     The binary embeds a fixed set by name — see EMBEDDED in vite.config.ts.')
+  console.log(`\nFAIL files dist/ cannot serve: ${unexpected.join(', ')}`)
+  console.log('     build.rs embeds assets/ flat; the route is /assets/{file}, one segment.')
 }
 
 if (failed) process.exit(1)

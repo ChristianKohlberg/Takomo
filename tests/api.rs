@@ -333,6 +333,7 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
 /// What each route still owes the caller is the shell contract below.
 const PAGE_ROUTES: &[&str] = &[
     "/board",
+    "/documents",
     "/verification",
     "/environments",
     "/inbox",
@@ -432,9 +433,44 @@ async fn app_assets_are_served_with_correct_types() {
     }
 }
 
+/// An asset name that is not embedded 404s, and cannot escape the manifest.
+///
+/// `/assets/{file}` replaced four routes named one by one, which is what let the
+/// editor route be code-split — the bundler names those chunks, so no fixed list
+/// could have covered them. The four names were also, incidentally, what made
+/// path traversal impossible, and that property has to be shown to survive the
+/// change rather than assumed.
+///
+/// It does survive, and for a stronger reason than sanitizing would give: the
+/// path is matched against a compile-time table and never joined onto a
+/// directory, so `..` is not a dangerous input, it is simply a name that is not
+/// in the table.
+#[tokio::test]
+async fn unknown_asset_names_404_and_cannot_traverse() {
+    let app = TestApp::spawn().await;
+    for path in [
+        "/assets/nope.js",
+        "/assets/..%2f..%2fCargo.toml",
+        "/assets/%2e%2e%2f%2e%2e%2fsrc%2fmain.rs",
+        "/assets/.env",
+    ] {
+        let resp = app.request(Method::GET, path).send().await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must 404 — the manifest is an exact lookup, not a directory"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            !body.contains("[package]") && !body.contains("fn main"),
+            "{path} served repository content: {body}"
+        );
+    }
+}
+
 /// Assets revalidate with an ETag instead of being cached forever.
 ///
-/// The filenames are deliberately stable (the binary `include_str!`s them by
+/// The filenames are deliberately stable (the binary embeds them by
 /// name), so nothing in the URL changes between builds. That rules out
 /// `immutable` caching and makes the ETag the only thing standing between a
 /// deploy and a browser serving last build's JavaScript out of cache — with
@@ -599,6 +635,57 @@ async fn script_src_allows_no_inline_script() {
             "the served document carries an inline script ({open}), which this CSP blocks"
         );
     }
+}
+
+/// The display face is embedded and served from `/assets/`, so the CSP must
+/// allow a same-origin font — and must say so in its own directive rather than
+/// leaning on `default-src`, which a later edit could narrow without noticing
+/// that it had just stopped the headings from loading.
+#[tokio::test]
+async fn font_src_allows_the_embedded_display_face() {
+    let app = TestApp::spawn().await;
+    let resp = app.request(Method::GET, "/board").send().await.unwrap();
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("a page route must send a CSP")
+        .to_string();
+
+    let font_src = csp
+        .split(';')
+        .map(str::trim)
+        .find(|d| d.starts_with("font-src"))
+        .expect("the CSP must name font-src explicitly, not fall back to default-src");
+    assert!(
+        font_src.contains("'self'"),
+        "font-src must allow the embedded same-origin face: '{font_src}'"
+    );
+    assert!(
+        !font_src.contains("http"),
+        "the face is embedded in the binary; font-src must name no external host: '{font_src}'"
+    );
+
+    // And the face must actually be there to serve. `build.rs` embeds whatever
+    // `web/dist/assets/` holds, so a bundle built without the font would pass
+    // every check above and still render the fallback stack.
+    let woff2 = app
+        .request(Method::GET, "/assets/geist-latin-wght-normal.woff2")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        woff2.status(),
+        StatusCode::OK,
+        "the display face must be embedded and served"
+    );
+    assert_eq!(
+        woff2
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("font/woff2"),
+    );
 }
 
 #[tokio::test]
@@ -3241,8 +3328,6 @@ const ROUTER_PATH_ALIASES: &[(&str, &str)] = &[(
     "/.well-known/oauth-protected-resource",
 )];
 
-const EMBEDDED_ASSET_FILES: &[&str] = &["app.js", "vendor.js", "runtime.js", "app.css"];
-
 fn router_paths_from_server_rs() -> std::collections::BTreeSet<String> {
     let text = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs"),
@@ -3284,12 +3369,6 @@ fn spec_paths_as_router_paths() -> std::collections::BTreeSet<String> {
         .expect("spec/openapi.yaml parses as YAML");
     let mut out = std::collections::BTreeSet::new();
     for (path, item) in spec["paths"].as_object().expect("paths") {
-        if path == "/assets/{file}" {
-            for file in EMBEDDED_ASSET_FILES {
-                out.insert(format!("/assets/{file}"));
-            }
-            continue;
-        }
         let resolved = resolve_spec_path_alias(path);
         let router = if spec_path_is_root_scoped(item) {
             resolved.to_string()
@@ -15240,6 +15319,7 @@ async fn every_spa_links_to_the_schedules_page() {
     // one product instead of five apps sharing a palette.
     for href in [
         "/board",
+        "/documents",
         "/inbox",
         "/initiatives",
         "/schedules",
@@ -18476,5 +18556,488 @@ async fn a_verdict_from_an_unbound_credential_names_nobody() {
         detail["people"],
         json!({}),
         "nothing here names anybody, and the map says so rather than being absent: {detail}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Collaborative documents
+//
+// The surface exists because the initiative document could not be edited — it
+// was reduced from an append-only entry log, "latest view per pane wins", which
+// is last-write-wins merge dressed as an audit trail. These routes carry a
+// document's FILING only; what it says lives in a Yjs CRDT and moves over the
+// WebSocket session.
+//
+// So the property worth pinning here is mostly negative: no route accepts prose,
+// and the ones that exist behave like every other list/patch/archive pair.
+// ---------------------------------------------------------------------------
+
+async fn document(app: &TestApp, body: Value) -> Value {
+    let (status, b) = app
+        .post(&app.admin, "/v1/projects/tp/documents", body)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "document create failed: {b}");
+    b
+}
+
+/// A document is created empty, filed in a folder, and reports how much history
+/// it holds — never its text.
+#[tokio::test]
+async fn a_document_is_filing_and_never_carries_its_prose() {
+    let app = TestApp::spawn().await;
+
+    let doc = document(&app, json!({ "title": "Chorleitung" })).await;
+    assert_eq!(doc["title"], "Chorleitung");
+    assert_eq!(doc["path"], "", "top level by default: {doc}");
+    assert_eq!(doc["status"], "draft");
+    assert!(doc["initiative"].is_null());
+    assert_eq!(
+        doc["updates"],
+        json!(0),
+        "a new document has no history yet: {doc}"
+    );
+    assert_eq!(doc["bytes"], json!(0), "{doc}");
+    assert!(
+        doc.get("body").is_none() && doc.get("text").is_none(),
+        "the prose must never appear on a JSON route — it is a CRDT, and a text \
+         field here would be a second, last-write-wins way to set it: {doc}"
+    );
+
+    // And no write route accepts prose either, which is the half that matters:
+    // a `body` that were merely ignored would look like it worked.
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/documents",
+            json!({ "title": "Smuggled", "body": "hello" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "an unknown 'body' field must be refused, not silently dropped: {b}"
+    );
+
+    let id = doc["id"].as_str().unwrap();
+    let (s, moved) = app
+        .patch(
+            &app.admin,
+            &format!("/v1/documents/{id}"),
+            json!({ "path": "produkt/proben", "status": "review" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["path"], "produkt/proben");
+    assert_eq!(moved["status"], "review");
+    assert_eq!(
+        moved["version"],
+        json!(2),
+        "version counts metadata edits: {moved}"
+    );
+}
+
+/// A folder path has to be renderable as a tree, so the shapes that cannot be
+/// are refused rather than stored and drawn wrong.
+#[tokio::test]
+async fn a_document_path_must_be_a_drawable_folder() {
+    let app = TestApp::spawn().await;
+    for bad in ["/leading", "trailing/", "a//b", "a/../b", "a/./b"] {
+        let (s, b) = app
+            .post(
+                &app.admin,
+                "/v1/projects/tp/documents",
+                json!({ "title": "x", "path": bad }),
+            )
+            .await;
+        assert_eq!(
+            s,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "path '{bad}' must be refused — it would draw a folder nobody can name: {b}"
+        );
+        assert_eq!(b["code"], "validation.document_path", "{b}");
+    }
+
+    // The two legitimate shapes.
+    for ok in ["", "produkt", "produkt/billing/v2"] {
+        let d = document(&app, json!({ "title": "x", "path": ok })).await;
+        assert_eq!(d["path"], ok);
+    }
+}
+
+/// A document may name the initiative it was distilled from, and that reference
+/// is validated on write — the rule `checks.initiative` already set.
+///
+/// This is the column the eventual migration off the entry-log document surface
+/// runs on, so a dangling one would make "which initiatives have been moved
+/// across" unanswerable exactly when it is being asked.
+#[tokio::test]
+async fn a_document_may_name_the_initiative_it_came_from() {
+    let app = TestApp::spawn().await;
+
+    let (s, ini) = app
+        .post(
+            &app.admin,
+            "/v1/initiatives",
+            json!({ "project": "tp", "title": "Billing" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{ini}");
+    let ini_id = ini["id"].as_str().unwrap().to_string();
+
+    let doc = document(&app, json!({ "title": "Billing v2", "initiative": ini_id })).await;
+    assert_eq!(doc["initiative"], json!(ini_id));
+
+    let (s, b) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/documents",
+            json!({ "title": "Nope", "initiative": "ini-doesnotexist" }),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "a reference naming nothing must be refused on write: {b}"
+    );
+
+    // `?initiative=none` narrows to documents no initiative claims, the same
+    // shape `?epic=none` uses on tickets.
+    document(&app, json!({ "title": "Unfiled" })).await;
+    let (s, filed) = app
+        .get(
+            &app.worker,
+            &format!("/v1/projects/tp/documents?initiative={ini_id}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{filed}");
+    assert_eq!(filed["total"], json!(1), "{filed}");
+    let (s, unfiled) = app
+        .get(&app.worker, "/v1/projects/tp/documents?initiative=none")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{unfiled}");
+    assert_eq!(unfiled["total"], json!(1), "{unfiled}");
+    assert_eq!(unfiled["items"][0]["title"], "Unfiled", "{unfiled}");
+}
+
+/// Archiving is reversible and leaves the prose untouched — which is what makes
+/// bringing one back honest rather than a restore from something lossy.
+#[tokio::test]
+async fn archiving_a_document_hides_it_and_unarchiving_brings_it_back() {
+    let app = TestApp::spawn().await;
+    let doc = document(&app, json!({ "title": "Parked" })).await;
+    let id = doc["id"].as_str().unwrap();
+
+    let (s, b) = app.delete(&app.admin, &format!("/v1/documents/{id}")).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert!(!b["archived_at"].is_null(), "{b}");
+
+    let (s, list) = app.get(&app.worker, "/v1/projects/tp/documents").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert_eq!(
+        list["total"],
+        json!(0),
+        "archived is hidden by default: {list}"
+    );
+
+    let (s, list) = app
+        .get(&app.worker, "/v1/projects/tp/documents?archived=include")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    assert_eq!(list["total"], json!(1), "{list}");
+
+    let (s, back) = app
+        .post(
+            &app.admin,
+            &format!("/v1/documents/{id}/unarchive"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    assert!(back["archived_at"].is_null(), "{back}");
+}
+
+// ---------------------------------------------------------------------------
+// The sync socket
+//
+// These drive a REAL WebSocket against the running server with real Yjs updates
+// built by `yrs`, because the properties worth checking here only exist when the
+// pieces are talking: does a second peer see the first one's edit, does a
+// read-only ticket get refused the write, does the text survive the process
+// forgetting the room. Asserting the protocol against hand-written bytes would
+// only prove the server agrees with itself.
+// ---------------------------------------------------------------------------
+
+mod docsync_support {
+    use yrs::encoding::read::{Cursor, Read as _};
+    use yrs::encoding::write::Write as _;
+
+    pub const MSG_SYNC: u64 = 0;
+    pub const SYNC_STEP1: u64 = 0;
+    pub const SYNC_STEP2: u64 = 1;
+    pub const SYNC_UPDATE: u64 = 2;
+
+    pub fn sync_message(kind: u64, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.write_var(MSG_SYNC);
+        out.write_var(kind);
+        out.write_buf(payload);
+        out
+    }
+
+    /// Pull the update out of a SYNC frame, or `None` for anything else.
+    pub fn read_sync(bytes: &[u8]) -> Option<(u64, Vec<u8>)> {
+        let mut dec = Cursor::new(bytes);
+        let kind: u64 = dec.read_var().ok()?;
+        if kind != MSG_SYNC {
+            return None;
+        }
+        let sync_kind: u64 = dec.read_var().ok()?;
+        let payload = dec.read_buf().ok()?;
+        Some((sync_kind, payload.to_vec()))
+    }
+}
+
+/// Open a document, mint a ticket, and return `(document id, ws url)`.
+async fn document_socket(app: &TestApp, token: &str, title: &str) -> (String, String) {
+    let doc = document(app, json!({ "title": title })).await;
+    let id = doc["id"].as_str().unwrap().to_string();
+    let (s, sess) = app
+        .post(token, &format!("/v1/documents/{id}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "session mint failed: {sess}");
+    let ticket = sess["token"].as_str().unwrap();
+    let ws = app.base.replacen("http://", "ws://", 1);
+    // The document id is the LAST segment: `y-websocket` composes
+    // `serverUrl + "/" + room + "?" + params`, so the route has to be shaped the
+    // way that composition produces.
+    (id.clone(), format!("{ws}/v1/docsync/{id}?ticket={ticket}"))
+}
+
+/// Two peers on one document see each other's edits, and the text is persisted.
+///
+/// This is the property the whole surface exists for: the initiative document
+/// reduced "latest view per pane wins" out of an entry log, which loses whatever
+/// was typed while somebody else was writing. Here both edits survive because
+/// neither peer ever sends a document — they send operations a CRDT merges.
+#[tokio::test]
+async fn two_peers_edit_one_document_and_both_edits_survive() {
+    use docsync_support::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::Decode;
+    use yrs::{GetString, Text, Transact};
+
+    let app = TestApp::spawn().await;
+    let (id, url) = document_socket(&app, &app.admin, "Konzept").await;
+
+    let (mut a, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("peer A");
+    let (mut b, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("peer B");
+
+    // Each peer holds its own replica, exactly as a browser does.
+    let doc_a = yrs::Doc::new();
+    let text_a = doc_a.get_or_insert_text("prose");
+    let doc_b = yrs::Doc::new();
+    let text_b = doc_b.get_or_insert_text("prose");
+
+    // A writes.
+    let update_a = {
+        let mut txn = doc_a.transact_mut();
+        text_a.insert(&mut txn, 0, "Wenn jemand absagt, ");
+        txn.encode_update_v1()
+    };
+    a.send(WsMessage::Binary(
+        sync_message(SYNC_UPDATE, &update_a).into(),
+    ))
+    .await
+    .unwrap();
+
+    // B should receive it. The server also opens with a STEP1, so read until the
+    // update arrives rather than assuming the first frame is it.
+    let relayed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let msg = b.next().await.expect("frame").expect("ok");
+            if let WsMessage::Binary(bytes) = msg {
+                if let Some((kind, payload)) = read_sync(&bytes) {
+                    // `len() > 2` skips the empty diff the server sends when it
+                    // has nothing the peer is missing — that frame is a correct
+                    // answer to our step 1 and not the edit we are waiting for.
+                    if (kind == SYNC_UPDATE || kind == SYNC_STEP2) && payload.len() > 2 {
+                        return payload;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("peer B must receive peer A's edit");
+
+    {
+        let mut txn = doc_b.transact_mut();
+        txn.apply_update(yrs::Update::decode_v1(&relayed).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        text_b.get_string(&doc_b.transact()),
+        "Wenn jemand absagt, ",
+        "peer B must see peer A's words"
+    );
+
+    // Now B writes too, and the CRDT keeps both.
+    let update_b = {
+        let mut txn = doc_b.transact_mut();
+        let len = text_b.get_string(&txn).chars().count() as u32;
+        text_b.insert(&mut txn, len, "passiert nichts automatisch.");
+        txn.encode_update_v1()
+    };
+    b.send(WsMessage::Binary(
+        sync_message(SYNC_UPDATE, &update_b).into(),
+    ))
+    .await
+    .unwrap();
+
+    // Give the flusher a couple of ticks, then prove it reached SQLite by asking
+    // the store what it holds — the document was never sent over a JSON route, so
+    // this is the only thing that could have persisted it.
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let (s, meta) = app.get(&app.worker, &format!("/v1/documents/{id}")).await;
+    assert_eq!(s, StatusCode::OK, "{meta}");
+    assert!(
+        meta["updates"].as_i64().unwrap() >= 1,
+        "the flusher must have written the edits: {meta}"
+    );
+    assert!(meta["bytes"].as_i64().unwrap() > 0, "{meta}");
+
+    // And that what was written rebuilds the text. A third peer joining gets the
+    // document from the log, which is the path a page load takes.
+    drop(a);
+    drop(b);
+    let (mut c, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("peer C");
+    let doc_c = yrs::Doc::new();
+    let text_c = doc_c.get_or_insert_text("prose");
+    // Ask for everything by sending an empty state vector.
+    let empty_sv = yrs::updates::encoder::Encode::encode_v1(&yrs::StateVector::default());
+    c.send(WsMessage::Binary(
+        sync_message(SYNC_STEP1, &empty_sv).into(),
+    ))
+    .await
+    .unwrap();
+
+    let restored = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let msg = c.next().await.expect("frame").expect("ok");
+            if let WsMessage::Binary(bytes) = msg {
+                if let Some((kind, payload)) = read_sync(&bytes) {
+                    if kind == SYNC_STEP2 && payload.len() > 2 {
+                        return payload;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("a fresh peer must be served the persisted document");
+
+    {
+        let mut txn = doc_c.transact_mut();
+        txn.apply_update(yrs::Update::decode_v1(&restored).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        text_c.get_string(&doc_c.transact()),
+        "Wenn jemand absagt, passiert nichts automatisch.",
+        "both peers' words must survive — this is the whole point of the CRDT"
+    );
+}
+
+/// A ticket reaches exactly one document, and carries no more than the token
+/// that minted it.
+///
+/// Both halves matter. The ticket travels in a query string, because a browser
+/// WebSocket cannot set an Authorization header — so what a leaked one is worth
+/// is precisely what these assertions bound.
+#[tokio::test]
+async fn a_sync_ticket_is_scoped_to_one_document_and_to_its_minter() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::{Text, Transact};
+
+    let app = TestApp::spawn().await;
+    let (_first, url) = document_socket(&app, &app.admin, "One").await;
+
+    // A ticket for one document must not open another.
+    let other = document(&app, json!({ "title": "Two" })).await;
+    let other_id = other["id"].as_str().unwrap();
+    let ticket = url.split("ticket=").nth(1).unwrap();
+    let ws = app.base.replacen("http://", "ws://", 1);
+    let wrong = format!("{ws}/v1/docsync/{other_id}?ticket={ticket}");
+    assert!(
+        tokio_tungstenite::connect_async(&wrong).await.is_err(),
+        "a ticket minted for one document must not open another"
+    );
+
+    // No ticket at all is refused too.
+    let bare = format!("{ws}/v1/docsync/{other_id}");
+    assert!(
+        tokio_tungstenite::connect_async(&bare).await.is_err(),
+        "the socket must not be reachable without a ticket"
+    );
+
+    // A read-only token mints a read-only ticket, and its edits are not applied.
+    let (s, readonly_tok) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "reader", "scopes": ["read"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{readonly_tok}");
+    let reader = readonly_tok["token"].as_str().unwrap().to_string();
+
+    let doc = document(&app, json!({ "title": "Read only" })).await;
+    let id = doc["id"].as_str().unwrap();
+    let (s, sess) = app
+        .post(&reader, &format!("/v1/documents/{id}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{sess}");
+    assert_eq!(
+        sess["can_write"],
+        json!(false),
+        "a read-only token must not mint a writing ticket: {sess}"
+    );
+
+    let ro_url = format!(
+        "{ws}/v1/docsync/{id}?ticket={}",
+        sess["token"].as_str().unwrap()
+    );
+    let (mut sock, _) = tokio_tungstenite::connect_async(&ro_url)
+        .await
+        .expect("a reader may still open the document");
+
+    let d = yrs::Doc::new();
+    let t = d.get_or_insert_text("prose");
+    let update = {
+        let mut txn = d.transact_mut();
+        t.insert(&mut txn, 0, "smuggled");
+        txn.encode_update_v1()
+    };
+    sock.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &update).into()))
+        .await
+        .unwrap();
+    drop(sock);
+
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let (s, meta) = app.get(&app.worker, &format!("/v1/documents/{id}")).await;
+    assert_eq!(s, StatusCode::OK, "{meta}");
+    assert_eq!(
+        meta["updates"],
+        json!(0),
+        "a read-only peer's edit must never be persisted: {meta}"
     );
 }

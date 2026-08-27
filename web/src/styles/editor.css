@@ -1,0 +1,170 @@
+/*
+ * The collaborative editor's own styles.
+ *
+ * Only two things need hand-written CSS, and both are cases Tailwind cannot
+ * reach: nodes ProseMirror creates itself, and pseudo-elements.
+ *
+ * Loaded with the app rather than with the lazy editor chunk. That is a
+ * deliberate trade — a few hundred bytes on first load instead of a flash of
+ * unstyled carets when the chunk lands — and it is cheap because there is one
+ * stylesheet for the whole app anyway.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Remote carets
+ *
+ * `CollaborationCaret` injects a bare `<span>` per remote user with no styling
+ * of its own. Without this the label is an ordinary inline element that takes
+ * the full line width and paints a coloured bar across the paragraph — which is
+ * exactly what it did the first time this ran in a browser.
+ * ------------------------------------------------------------------------ */
+
+.collaboration-carets__caret {
+  position: relative;
+  /* Zero-width: the caret marks a position between two characters, so any real
+     width would push the text sideways as people move around. */
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 1px solid;
+  border-right: 1px solid;
+  border-color: currentColor;
+  word-break: normal;
+  pointer-events: none;
+}
+
+.collaboration-carets__label {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  /* Above the text, not in it. `white-space: nowrap` is what keeps a two-word
+     name from wrapping the label into a block. */
+  white-space: nowrap;
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: normal;
+  color: #fff;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * The document body
+ * ------------------------------------------------------------------------ */
+
+.ProseMirror {
+  outline: none;
+}
+
+/* An empty document should say what it is for rather than sit blank — a blank
+   pane with a live cursor reads as "still loading". */
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--muted-foreground);
+}
+
+/* ---------------------------------------------------------------------------
+ * Blocks a pending proposal is about
+ *
+ * Applied as a ProseMirror *decoration*, so this styles something that is not in
+ * the document — see `web/src/lib/block-highlight.ts` for why that distinction
+ * carries the "nothing an agent writes is live text" rule.
+ *
+ * A left rule rather than a background wash: the point is to say "somebody has
+ * offered a change here", not to make the paragraph hard to read while you are
+ * deciding about it. It shipped once with no rule at all — the decoration was
+ * applied and completely invisible, which the browser check caught.
+ * ------------------------------------------------------------------------ */
+
+.ProseMirror .takomo-proposed {
+  position: relative;
+  box-shadow: -3px 0 0 0 var(--color-amber-400, #fbbf24);
+  padding-left: 0.5rem;
+  border-radius: 1px;
+  /* A tint faint enough to read through. */
+  background: color-mix(in srgb, var(--color-amber-400, #fbbf24) 8%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ProseMirror .takomo-proposed {
+    transition: background 150ms ease;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Document typography
+ *
+ * Written out rather than pulled from @tailwindcss/typography, for the reason
+ * the size budget gives: this is a handful of rules against one container, and
+ * the plugin is a stylesheet for arbitrary CMS output.
+ *
+ * It is not decoration. Tailwind's preflight resets headings to inherit their
+ * size and weight, so without this an H2 is indistinguishable from a paragraph —
+ * which makes the outline invisible in the one surface whose structure IS the
+ * outline. Headings are how a document becomes a tree, and the map reads that
+ * tree.
+ * ------------------------------------------------------------------------ */
+
+.ProseMirror > * + * {
+  margin-top: 0.75em;
+}
+
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3,
+.ProseMirror h4,
+.ProseMirror h5,
+.ProseMirror h6 {
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  margin-top: 1.4em;
+}
+.ProseMirror > h1:first-child,
+.ProseMirror > h2:first-child,
+.ProseMirror > h3:first-child {
+  margin-top: 0;
+}
+
+.ProseMirror h1 { font-size: 1.6em; }
+.ProseMirror h2 { font-size: 1.3em; }
+.ProseMirror h3 { font-size: 1.12em; }
+.ProseMirror h4,
+.ProseMirror h5,
+.ProseMirror h6 { font-size: 1em; }
+
+.ProseMirror blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.9em;
+  color: var(--muted-foreground);
+}
+
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 1.4em;
+}
+.ProseMirror ul { list-style: disc; }
+.ProseMirror ol { list-style: decimal; }
+.ProseMirror li > p { margin: 0; }
+
+.ProseMirror pre {
+  background: var(--muted);
+  border-radius: 6px;
+  padding: 0.7em 0.9em;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.ProseMirror code {
+  font-size: 0.92em;
+}
+
+.ProseMirror hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}

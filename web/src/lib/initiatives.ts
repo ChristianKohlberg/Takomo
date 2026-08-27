@@ -164,6 +164,15 @@ export interface Whoami {
    * "for me" reads on /inbox.
    */
   user?: UserRef | null
+  /**
+   * What this SERVER can do — a different question from what this credential may
+   * do, and a client needs both to boot.
+   *
+   * `doc_agent` says whether a language model is configured, which decides
+   * whether /documents shows its prompt bar or explains why there is none. A
+   * page that offered the bar and then 503'd would be the worse failure.
+   */
+  features?: { doc_agent?: boolean }
 }
 
 const json = { 'Content-Type': 'application/json' }

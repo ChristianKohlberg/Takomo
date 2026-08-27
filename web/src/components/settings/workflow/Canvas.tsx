@@ -12,6 +12,7 @@
 // drops the box the moment the cursor outruns it.
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { Layout, WfTransition, WorkflowDoc } from '@/lib/workflows'
+import { Card } from '@/components/ui/card'
 import { NODE_H, NODE_W, edgeAnchors, layoutExtent } from './layout'
 
 /**
@@ -134,7 +135,7 @@ export function Canvas({
   const edgeKey = (t: WfTransition, i: number) => `${t.from}->${t.to}-${i}`
 
   return (
-    <div className="border-border-soft bg-card overflow-auto rounded-xl border">
+    <Card className="overflow-auto py-0">
       <svg
         ref={svgRef}
         width={Math.max(width, 320)}
@@ -297,6 +298,6 @@ export function Canvas({
           )
         })}
       </svg>
-    </div>
+    </Card>
   )
 }

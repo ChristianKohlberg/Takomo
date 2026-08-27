@@ -6,7 +6,7 @@ description = "Central task store for AI agent fleets: tickets, enforced workflo
 license = "Apache-2.0"
 
 [dependencies]
-axum = { version = "0.8", features = ["json"] }
+axum = { version = "0.8", features = ["json", "ws"] }
 # Named features rather than "full": this binary uses `time` (sleep, sleep_until,
 # interval, timeout), `net` (TcpListener), `sync` (Notify), `rt-multi-thread` (the
 # runtime and tokio::spawn) and `macros` (#[tokio::main], #[tokio::test], select!).
@@ -54,6 +54,8 @@ rmcp = { version = "2.2", features = ["server", "macros", "transport-streamable-
 # lettre drives the SMTP email transport. rustls everywhere — no system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
+yrs = "0.27"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
@@ -66,6 +68,14 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # attachment the way a caller would — including one byte over the cap, which is
 # the only honest way to prove the cap is enforced on the decoded bytes.
 base64 = "0.22"
+# Also a normal dependency; declared here so the document tests can build real
+# Yjs updates the way a browser peer would. Asserting the sync protocol against
+# hand-written bytes would only prove this server agrees with itself.
+yrs = "0.27"
+# A real WebSocket client for the sync tests. The properties worth checking here
+# — does a second peer see the first one's edit, does the text survive a restart
+# — only exist over an actual socket, so these are integration tests on purpose.
+tokio-tungstenite = "0.29"
 
 [profile.release]
 lto = true

@@ -5,6 +5,7 @@
 // axis that carries all the meaning.
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Markdown } from '@/components/Markdown'
 import { OccurrenceStrip } from './OccurrenceStrip'
 import { cn } from '@/lib/utils'
@@ -74,11 +75,12 @@ export function ScheduleCard({
             : labels.statusRetired
 
   return (
-    <div
+    <Card
+      size="sm"
       className={cn(
-        'bg-card border-border rounded-[11px] border px-3.75 pt-3.25 pb-3',
+        'gap-0 px-(--card-spacing)',
         // A proposal is tinted: it is the one row that is asking something of you.
-        s.status === 'pending' && 'bg-accent border-ring',
+        s.status === 'pending' && 'bg-accent ring-ring',
       )}
     >
       <div className="flex flex-wrap items-center gap-2.5">
@@ -193,6 +195,6 @@ export function ScheduleCard({
           s.status === 'paused' && <span>{labels.noneScheduled}</span>
         )}
       </div>
-    </div>
+    </Card>
   )
 }

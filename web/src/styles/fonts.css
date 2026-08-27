@@ -1,0 +1,38 @@
+/* The display face: Geist, for HEADINGS ONLY.
+ *
+ * `shadcn init` originally appended `@import "@fontsource-variable/geist"` and it
+ * was deleted, for a reason that was correct at the time: the package's own
+ * stylesheet pulls FIVE subsets (latin, latin-ext, cyrillic, cyrillic-ext,
+ * vietnamese) and it was being inlined into four separate self-contained
+ * documents, so the same 228 kB was paid four times over for a body face.
+ *
+ * Both halves of that objection are addressed here rather than waved away:
+ *
+ *   * ONE SUBSET. The app is EN and DE (`Locale` in src/lib/i18n.ts), and every
+ *     character either needs — including ä ö ü ß — is in `latin`. So this
+ *     declares the one @font-face by hand instead of importing the package's
+ *     stylesheet. The other four subsets would never be DOWNLOADED (unicode-range
+ *     sees to that), but they would be emitted into dist/, and dist/ is embedded
+ *     in the binary by build.rs — so importing them costs ~150 kB of binary that
+ *     can never be served. One file, 32 kB.
+ *
+ *   * HEADINGS ONLY. It is wired to `--font-heading`, not `--font-sans`. Body
+ *     text, tabular numbers and the monospace identifiers keep the system stack
+ *     they were designed around; swapping the body face would reflow every
+ *     density decision on every surface for no gain.
+ *
+ * `font-display: swap` because a heading that is invisible until a font arrives
+ * is worse than a heading in the fallback face for 100 ms.
+ */
+@font-face {
+  font-family: 'Geist Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('@fontsource-variable/geist/files/geist-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}

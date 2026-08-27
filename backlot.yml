@@ -62,6 +62,14 @@ services:
     # {{datastores.main.url}} is the SQLite file path (for sqlite the namespace
     # IS the file); {{ports.http}} is the engine-allocated port.
     run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}
+    # NOTE: the /documents prompt bar needs TAKOMO_TENSORX_API_KEY, and it is
+    # deliberately NOT set here — this file is committed, so a key in it would be
+    # a key in the repository. `env:` interpolates only {{ports.*}} and
+    # {{datastores.*}}, not the host environment, so it cannot be passed through
+    # from your shell either. Services inherit the DAEMON's environment: export
+    # the variable, `backlot daemon stop`, then `backlot up`. Unset is the
+    # ordinary case — the server prints "doc agent: off" and /documents explains
+    # the missing bar rather than offering one that 503s.
     port: http
     ready:
       http: /healthz

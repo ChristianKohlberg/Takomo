@@ -7,6 +7,7 @@
 import { useEffect, useState } from 'react'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -254,11 +255,10 @@ export function EnvironmentDialog({
           </Field>
 
           <label className="text-foreground flex items-start gap-2 text-[13px]">
-            <input
-              type="checkbox"
+            <Checkbox
               className="mt-0.5"
               checked={f.writable}
-              onChange={(e) => setF((p) => ({ ...p, writable: e.target.checked }))}
+              onCheckedChange={(v) => setF((p) => ({ ...p, writable: v === true }))}
             />
             <span>
               {labels.fWritable}

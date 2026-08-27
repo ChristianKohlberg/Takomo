@@ -1,3 +1,4 @@
+import { Card } from '@/components/ui/card'
 import { fmtAge, fmtBytes } from '@/lib/format'
 import type { Rollup } from '@/lib/initiatives'
 
@@ -23,7 +24,7 @@ export function RollupStrip({ rollup, labels }: RollupStripProps) {
     [labels.last, fmtAge(r.last_entry_at)],
   ]
   return (
-    <div className="bg-card border-border mt-4.5 mb-1.5 flex flex-wrap overflow-hidden rounded-[10px] border">
+    <Card className="mt-4.5 mb-1.5 flex-row flex-wrap gap-0 py-0">
       {cells.map(([k, v], idx) => (
         <div
           key={k}
@@ -38,6 +39,6 @@ export function RollupStrip({ rollup, labels }: RollupStripProps) {
           <div className="mt-0.5 text-[17px] font-[720] tabular-nums">{v}</div>
         </div>
       ))}
-    </div>
+    </Card>
   )
 }

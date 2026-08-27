@@ -22,3 +22,13 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# Local tool output, regenerable and machine-specific.
+#
+# Both were untracked AND unignored, which is the combination that bites: they
+# do not show up as a diff to review, but `git add -A` sweeps them into whatever
+# commit is being made next. Ignoring them is what makes `add -A` safe again.
+# `.handrail/` needed no entry — it held nothing but cached gate results and was
+# removed rather than ignored.
+.lavish/
+test-results/

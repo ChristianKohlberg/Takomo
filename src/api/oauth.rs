@@ -594,7 +594,7 @@ pub async fn authorize_get(
     let pairs = query_pairs(query.as_deref());
     let (req, client_name) = match parse_authz_request(&state, &pairs).await {
         Ok(parsed) => parsed,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let requested = requested_scopes(req.scope.as_deref());
     consent_page(&req, &client_name, &requested, None, None)
@@ -614,7 +614,7 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
     let pairs = query_pairs(Some(&body));
     let (req, client_name) = match parse_authz_request(&state, &pairs).await {
         Ok(parsed) => parsed,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if first(&pairs, "action") == Some("deny") {
@@ -738,21 +738,21 @@ pub async fn authorize_post(State(state): State<Arc<AppState>>, body: String) ->
 async fn parse_authz_request(
     state: &Arc<AppState>,
     pairs: &[(String, String)],
-) -> Result<(AuthzRequest, String), Response> {
+) -> Result<(AuthzRequest, String), Box<Response>> {
     let client_id = first(pairs, "client_id").unwrap_or("").to_string();
     if client_id.is_empty() {
-        return Err(authorize_page_error(
+        return Err(Box::new(authorize_page_error(
             "This authorization request names no client_id, so there is no registration to check its redirect target against.",
-        ));
+        )));
     }
     let client = match state.store.get_oauth_client(&client_id) {
         Ok(Some(client)) => client,
         Ok(None) => {
-            return Err(authorize_page_error(
+            return Err(Box::new(authorize_page_error(
                 "No client is registered under that client_id on this server. If the client was registered against a different takomo instance, or the server's database was replaced, reconnect so it registers again.",
-            ))
+            )))
         }
-        Err(e) => return Err(e.into_response()),
+        Err(e) => return Err(Box::new(e.into_response())),
     };
 
     // An absent redirect_uri is allowed only when there is exactly one
@@ -761,45 +761,45 @@ async fn parse_authz_request(
     let redirect_uri = match present(pairs, "redirect_uri") {
         Some(uri) if client.redirect_uris.contains(&uri) => uri,
         Some(_) => {
-            return Err(authorize_page_error(
+            return Err(Box::new(authorize_page_error(
                 "The redirect_uri in this request is not one this client registered. takomo matches it literally — a differing scheme, host, port, path, or trailing slash is a different URI — so nothing is redirected anywhere.",
-            ))
+            )))
         }
         None if client.redirect_uris.len() == 1 => client.redirect_uris[0].clone(),
         None => {
-            return Err(authorize_page_error(
+            return Err(Box::new(authorize_page_error(
                 "This request omits redirect_uri and the client registered more than one, so there is no unambiguous target.",
-            ))
+            )))
         }
     };
 
     let state_param = opaque(pairs, "state");
     let response_type = first(pairs, "response_type").unwrap_or("");
     if response_type != "code" {
-        return Err(redirect_error(
+        return Err(Box::new(redirect_error(
             &redirect_uri,
             state_param.as_deref(),
             "unsupported_response_type",
             "This server implements the authorization code flow only; response_type must be 'code'.",
-        ));
+        )));
     }
     let method = first(pairs, "code_challenge_method").unwrap_or("");
     if method != "S256" {
-        return Err(redirect_error(
+        return Err(Box::new(redirect_error(
             &redirect_uri,
             state_param.as_deref(),
             "invalid_request",
             "code_challenge_method must be S256. 'plain' is not accepted, and PKCE is not optional here: it is the only client authentication a public client has.",
-        ));
+        )));
     }
     let code_challenge = first(pairs, "code_challenge").unwrap_or("").to_string();
     if code_challenge.is_empty() {
-        return Err(redirect_error(
+        return Err(Box::new(redirect_error(
             &redirect_uri,
             state_param.as_deref(),
             "invalid_request",
             "code_challenge is required (PKCE, RFC 7636).",
-        ));
+        )));
     }
 
     Ok((

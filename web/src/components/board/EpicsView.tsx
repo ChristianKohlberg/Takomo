@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import {
   Table,
@@ -243,14 +244,14 @@ export function EpicsView({
   return (
     <div className={cn('flex min-h-0 flex-col gap-3 overflow-y-auto', className)}>
       {/* The answer before the scroll: what wants a person, counted once. */}
-      <div className="bg-card border-border flex flex-wrap gap-x-4 gap-y-1 rounded-[10px] border px-3.5 py-2.5">
+      <Card size="sm" className="flex-row flex-wrap gap-x-4 gap-y-1 px-(--card-spacing)">
         {cells.map(([label, n, warn]) => (
           <span key={label} className="text-[12.5px] tabular-nums">
             <span className={cn('font-[720]', warn && 'text-[color:var(--warn,#c99a3a)]')}>{n}</span>{' '}
             <span className="text-muted-foreground">{label}</span>
           </span>
         ))}
-      </div>
+      </Card>
 
       <div className="flex flex-col gap-2">
         <div className="text-muted-foreground text-[11px] font-[750] tracking-[0.06em] uppercase">
@@ -273,8 +274,9 @@ export function EpicsView({
         </div>
       </div>
 
-      <div
-        className="bg-card border-border flex flex-col gap-3 rounded-[10px] border px-3 py-2.5 md:flex-row md:flex-wrap md:items-end"
+      <Card
+        size="sm"
+        className="gap-3 px-(--card-spacing) md:flex-row md:flex-wrap md:items-end"
         aria-label={labels.filters}
       >
         <div className="flex min-w-0 flex-col gap-1">
@@ -345,7 +347,7 @@ export function EpicsView({
             {filterCount > 0 ? ` (${filterCount})` : ''}
           </Button>
         )}
-      </div>
+      </Card>
 
       {visible.length === 0 ? (
         <div className="text-muted-foreground px-2 py-10 text-center">
@@ -359,7 +361,7 @@ export function EpicsView({
           </button>
         </div>
       ) : (
-        <div className="bg-card border-border overflow-x-auto rounded-[10px] border">
+        <Card size="sm" className="overflow-x-auto py-0">
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
@@ -507,7 +509,7 @@ export function EpicsView({
               })}
             </TableBody>
           </Table>
-        </div>
+        </Card>
       )}
     </div>
   )

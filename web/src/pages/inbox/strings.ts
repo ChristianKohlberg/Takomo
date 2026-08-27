@@ -13,6 +13,7 @@ import { defineStrings } from '@/lib/i18n'
 export const STR = defineStrings({
   en: {
     inbox: "Inbox",
+    documents: "Documents",
     initiatives: "Initiatives",
     mindmaps: "Mindmaps",
     schedules: "Schedules",
@@ -178,6 +179,7 @@ export const STR = defineStrings({
   },
   de: {
     inbox: "Inbox",
+    documents: "Dokumente",
     initiatives: "Initiativen",
     mindmaps: "Mindmaps",
     schedules: "Zeitpläne",

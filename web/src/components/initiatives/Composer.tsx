@@ -5,6 +5,7 @@
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { fmtBytes } from '@/lib/format'
 import { KINDS } from '@/lib/initiatives'
@@ -63,7 +64,7 @@ export function Composer({
   labels,
 }: ComposerProps) {
   return (
-    <div className="bg-card border-border rounded-[10px] border px-4 py-3.75">
+    <Card size="sm" className="gap-0 px-(--card-spacing)">
       <div className="mb-2.25 flex flex-wrap gap-2.5 [&>*]:flex-[1_1_170px]">
         <Field label={labels.kind} hint={labels.kindHint}>
           {(id) => (
@@ -176,6 +177,6 @@ export function Composer({
           {busy ? labels.appending : labels.append}
         </Button>
       </div>
-    </div>
+    </Card>
   )
 }

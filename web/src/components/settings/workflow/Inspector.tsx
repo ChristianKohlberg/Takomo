@@ -28,6 +28,7 @@ import {
   type WorkflowDoc,
 } from '@/lib/workflows'
 import type { CanvasSelection } from './Canvas'
+import { Checkbox } from '@/components/ui/checkbox'
 
 export interface InspectorLabels {
   nothing: string
@@ -374,12 +375,11 @@ function Check({
         disabled ? 'opacity-60' : 'hover:bg-muted cursor-pointer',
       )}
     >
-      <input
-        type="checkbox"
+      <Checkbox
         className="mt-0.5"
         checked={checked}
         disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
+        onCheckedChange={(e) => onChange(e === true)}
       />
       <span className="min-w-0">
         <span className="font-mono text-[12.5px] font-[650]">{label}</span>

@@ -18,6 +18,7 @@ const LABELS = {
 const NAV = {
   board: 'Board',
   inbox: 'Inbox',
+  documents: 'Documents',
   initiatives: 'Initiatives',
   mindmaps: 'Mindmaps',
   schedules: 'Schedules',
