@@ -68,6 +68,25 @@ pub fn environment_id() -> String {
     format!("env-{}", random_chars(BASE36, 8))
 }
 
+/// Collaborative document id, e.g. "doc-9f3ka2xz".
+///
+/// Distinct from [`initiative_id`] deliberately. An initiative is an idea being
+/// nurtured through an append-only entry log; a document is prose several people
+/// edit at once. They are different things with different write models, and the
+/// documents surface is being built beside initiatives rather than on top of
+/// them — so the ids must not be confusable.
+pub fn document_id() -> String {
+    format!("doc-{}", random_chars(BASE36, 8))
+}
+
+/// Document-proposal suffix, e.g. "9f3ka2xz" → "prop-9f3ka2xz".
+///
+/// A proposal lives in the CRDT rather than in SQLite, so this is minted where
+/// the record is written instead of by a store call.
+pub fn proposal_suffix() -> String {
+    random_chars(BASE36, 8)
+}
+
 /// Tag (project entity — person, component, …) id, e.g. "tag-9f3ka2xz".
 pub fn tag_id() -> String {
     format!("tag-{}", random_chars(BASE36, 8))
@@ -137,6 +156,28 @@ pub fn answer_grant_id() -> String {
 /// read-only share `tks_` token; the auth path is decided by the endpoint.
 pub fn answer_grant_token_plaintext() -> String {
     format!("tka_{}", random_chars(BASE62, 32))
+}
+
+/// Document-session id, e.g. "ds-9f3ka2xz".
+pub fn doc_session_id() -> String {
+    format!("ds-{}", random_chars(BASE36, 8))
+}
+
+/// Document-session bearer token: `tkd_` + 32 base62 chars (~190 bits).
+///
+/// A fifth credential shape, and it exists for one reason: a browser
+/// `WebSocket` cannot set an `Authorization` header. That is the same limitation
+/// that already keeps `/board` and `/inbox` polling `GET /v1/events` instead of
+/// using the SSE stream — but polling is not an option for a CRDT, so the
+/// credential has to travel somewhere a WebSocket handshake can carry it.
+///
+/// Putting a real `tk_` token in a query string would mean the org's actual
+/// credential landing in every access log and referrer along the path. This is
+/// the standard answer: a ticket minted over an authenticated request, scoped to
+/// ONE document, short-lived, and revocable — so what a log can leak is a
+/// capability that expires and reaches a single document.
+pub fn doc_session_token_plaintext() -> String {
+    format!("tkd_{}", random_chars(BASE62, 32))
 }
 
 /// Share bearer token plaintext: `tks_` + 32 base62 chars (~190 bits). The

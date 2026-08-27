@@ -35,6 +35,7 @@ tags:
   - { name: tags }
   - { name: users }
   - { name: checklist }
+  - { name: documents }
   - { name: environments }
   - { name: oauth }
   - { name: initiatives }
@@ -4598,6 +4599,25 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /documents:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Collaborative documents page (the app shell)
+      description: |
+        Self-contained page served at `/documents`. Unauthenticated HTML; data
+        fetches carry the viewer's bearer token, and the editor opens a sync
+        socket with a `tkd_` ticket it mints from it.
+
+        This is the one route whose JavaScript is **code-split**: the editor
+        pulls in Tiptap, ProseMirror and Yjs, which together outweigh the rest of
+        the app, so they load only when somebody comes here.
+
+        Served from `web/` — the same shell as the other page routes.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /environments:
     servers: [{ url: / }]
     get:
@@ -4620,13 +4640,22 @@ paths:
       tags: [admin]
       summary: The app's JavaScript and CSS (unauthenticated, ETag-revalidated)
       description: |
-        The bundle the page shell loads. Four fixed paths, embedded in the binary
-        by name — `app.js`, `vendor.js`, `runtime.js`, `app.css`. This is NOT a
-        static-file handler: there is no directory to traverse and no path to
-        sanitize, and a name outside the four 404s like any unknown route.
+        The bundle the page shell loads, embedded in the binary by `build.rs` from
+        the committed `web/dist/assets/` and served by exact name. This is NOT a
+        static-file handler: the manifest is an exact compile-time lookup table, so
+        there is no directory to traverse and no path to sanitize — `..` is simply
+        a name that is not in the table, and any unknown name 404s
+        (`notfound.asset`).
 
-        The filenames carry no content hash, deliberately: Rust `include_str!`s
-        them, which needs the names to be stable across builds. Cache correctness
+        The set is not fixed. It was four names until routes started being
+        code-split; a dynamic `import()` emits a chunk whose name is not knowable
+        when Rust compiles, so the binary embeds whatever the bundler produced.
+        `web/vite.config.ts` enforces the one shape the route requires: everything
+        flat under `assets/`, since this path has a single segment.
+
+        The filenames carry no content hash, deliberately: the server embeds and
+        serves them by name, which needs those names stable across builds within a
+        deploy. Cache correctness
         therefore comes from a strong `ETag` over the body plus
         `Cache-Control: public, max-age=0, must-revalidate`, so a browser
         revalidates and normally gets a `304` with no body. `immutable` would be
@@ -4636,10 +4665,8 @@ paths:
         - name: file
           in: path
           required: true
-          description: One of the four embedded asset names.
-          schema:
-            type: string
-            enum: [app.js, vendor.js, runtime.js, app.css]
+          description: 'An embedded asset name, e.g. `app.js`, `vendor.js`, `runtime.js`, `app.css`, or a code-split route chunk. Deliberately not an enum: the set depends on what the bundler emitted.'
+          schema: { type: string }
         - name: If-None-Match
           in: header
           required: false
@@ -4718,6 +4745,299 @@ paths:
           description: SVG image
           content:
             image/svg+xml: {}
+
+  /projects/{project}/documents:
+    get:
+      tags: [documents]
+      summary: Collaborative documents in a project (read scope)
+      description: |
+        Prose that humans and agents edit AT THE SAME TIME.
+
+        These routes carry a document's **filing** — title, folder, status, how
+        much history it holds. They never carry the prose, and no route here
+        accepts any: the text is a Yjs CRDT synchronised over the WebSocket
+        session, because a `body` field would be last-write-wins, and losing what
+        somebody typed while an agent was thinking is the exact failure this
+        surface exists to remove.
+
+        `path` is a folder, and a folder exists only because a document names it
+        — the last document to leave takes the folder with it. Same convention
+        `/initiatives` derives its tree from, with no folder table and no
+        orphaned-directory problem.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, review, settled, archived] }
+          description: narrow to one status
+        - name: initiative
+          in: query
+          schema: { type: string }
+          description: 'the initiative a document was distilled from; the literal `none` narrows to documents no initiative claims'
+        - { name: q, in: query, schema: { type: string }, description: substring match on title or folder }
+        - name: archived
+          in: query
+          schema: { type: string, enum: [include] }
+          description: include archived documents
+        - { name: limit, in: query, schema: { type: integer }, description: '1..=200 (default 200)' }
+      responses:
+        "200":
+          description: The documents, ordered by folder then title.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Document" }
+                  total: { type: integer, description: 'Documents matching the filter, ignoring limit.' }
+                  limit: { type: integer }
+                  note: { type: string, description: 'Present only when the page left documents out.' }
+    post:
+      tags: [documents]
+      summary: Open a document (write scope)
+      description: |
+        The document starts **empty**. There is deliberately no `body` field: the
+        first paragraph is typed into the session like every later one, which
+        keeps exactly one write path into the prose.
+
+        Takes `write`, not `human`, matching environments — an agent distilling a
+        conversation into a document is a caller this serves.
+      parameters:
+        - { name: project, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentCreate" }
+      responses:
+        "201":
+          description: The new, empty document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404":
+          description: No such project, or `initiative` names nothing (`notfound.document`, `notfound.initiative`).
+        "422":
+          description: A field is invalid — see `x-error-codes` for the vocabulary.
+
+  /documents/{id}:
+    get:
+      tags: [documents]
+      summary: One document's filing (read scope)
+      description: |
+        Title, folder, status and history size. **Not the prose** — join the
+        WebSocket session for that.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404": { description: 'No document with that id (`notfound.document`).' }
+    patch:
+      tags: [documents]
+      summary: Rename, refile or restatus a document (write scope)
+      description: |
+        `initiative` accepts an explicit null to clear it. Bumps `version`, which
+        counts metadata edits only — CRDT updates arrive by the thousand and
+        would make an `If-Match` precondition meaningless.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentPatch" }
+      responses:
+        "200":
+          description: The updated document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404": { description: 'No document with that id (`notfound.document`).' }
+        "422":
+          description: A field is invalid — see `x-error-codes` for the vocabulary.
+    delete:
+      tags: [documents]
+      summary: Archive a document (write scope)
+      description: |
+        Archive, not delete, and the update log is left exactly as it was. That
+        is what makes unarchiving honest: the prose comes back, not a copy that
+        lost the record of how it was argued into shape.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The archived document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404": { description: 'No document with that id (`notfound.document`).' }
+
+  /documents/{id}/unarchive:
+    post:
+      tags: [documents]
+      summary: Bring an archived document back (write scope)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The restored document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404": { description: 'No document with that id (`notfound.document`).' }
+
+  /documents/{id}/run:
+    post:
+      tags: [documents]
+      summary: Ask the document agent for a proposal (write scope)
+      description: |
+        The prompt bar. **The one route in this server that calls a language
+        model**, and a deliberate exception to the "Takomo stores, the agent
+        computes" division the rest of the API keeps.
+
+        It is OFF unless `TAKOMO_TENSORX_API_KEY` is configured; without it this
+        answers `503 document.agent_not_configured` and everything else on
+        `/documents` works unchanged. `GET /v1/whoami` reports
+        `features.doc_agent` so a client knows before it offers the bar.
+
+        What the exception does NOT change: the model is constrained by JSON
+        Schema to answer with **operations against block ids**, its answer goes
+        through the same validation a fleet agent's ops do — ids checked against
+        the live document, `scope` enforced, unusable ops dropped and reported —
+        and the result is a **proposal** a person still has to accept. It has no
+        privileged path into the prose.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              properties:
+                instruction:
+                  type: string
+                  description: 'What should change, in a sentence. 1..=2000 characters.'
+                scope:
+                  type: [array, "null"]
+                  items: { type: string }
+                  description: 'Block ids the run may touch. ENFORCED server-side, not merely stated in the prompt — an op outside the list is dropped and reported in `skipped`.'
+                model:
+                  type: string
+                  description: 'Override the configured model for this run.'
+      responses:
+        "200":
+          description: A proposal was written. Nothing is live text.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { type: string, description: 'prop-xxxxxxxx' }
+                  document: { type: string }
+                  status: { type: string, enum: [pending] }
+                  summary: { type: string, description: "The model's one-sentence account of the change." }
+                  operations: { type: integer, description: 'Ops actually offered.' }
+                  skipped:
+                    type: array
+                    items: { type: string }
+                    description: 'One sentence per dropped op. Shown to the reviewer too: a proposal smaller than intended must not be accepted as if it were whole.'
+                  model: { type: string }
+        "409": { description: 'The document is archived (`conflict.document_archived`).' }
+        "422": { description: 'The instruction is empty or too long (`validation.document_instruction`), or no op could be applied (`validation.document_ops`).' }
+        "502": { description: 'The provider failed or answered unusably (`document.agent_failed`). Nothing was written.' }
+        "503": { description: 'No document agent is configured (`document.agent_not_configured`).' }
+
+  /documents/{id}/session:
+    post:
+      tags: [documents]
+      summary: Mint a ticket for the sync socket (read scope)
+      description: |
+        A browser `WebSocket` cannot set an `Authorization` header — the same
+        limitation that keeps `/board` polling `/v1/events` rather than using the
+        SSE stream. Polling is not an option for a CRDT, so the credential has to
+        ride the handshake, and putting the caller's real `tk_` token in a query
+        string would scatter it through every access log on the path.
+
+        This mints a `tkd_` ticket instead: **one document, expiring, revocable**,
+        and carrying no more than the token that asked for it — `can_write` is
+        copied from the caller's scopes, so a `read`-only reader joins as a
+        read-only peer whose edits are never applied.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The ticket and where to use it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document: { type: string }
+                  session: { type: string, description: 'ds-xxxxxxxx, the revocable handle.' }
+                  token: { type: string, description: '`tkd_…`. Shown once; stored hashed.' }
+                  can_write: { type: boolean, description: 'Copied from the minting token scopes.' }
+                  display: { type: string, description: 'The name collaborators see next to a caret.' }
+                  expires_at: { type: string, format: date-time }
+                  url: { type: string, description: 'The socket BASE, without the room — y-websocket appends the room and params itself.' }
+                  room: { type: string, description: 'The room to append: the document id.' }
+                  note: { type: string }
+        "404": { description: 'No document with that id (`notfound.document`).' }
+
+  /docsync/{id}:
+    get:
+      tags: [documents]
+      summary: The y-protocols sync socket (WebSocket, ticket auth)
+      description: |
+        A WebSocket speaking the standard Yjs sync protocol, served in-process by
+        `yrs` — so a stock `y-websocket` provider connects to it unmodified and
+        there is no Node sidecar to deploy.
+
+        **This route sits outside every bearer middleware**, for the reason
+        `/oauth/*` does: it authenticates with a credential of its own, and a
+        middleware demanding a different one would make it unreachable. Pass a
+        `tkd_` ticket from `POST /v1/documents/{id}/session` as `?ticket=`.
+
+        The document id is the LAST path segment, and that is a wire requirement:
+        `y-websocket` composes its address as `serverUrl + "/" + room + "?" +
+        params`, so a route with anything after the room — or a base handed over
+        with a query string already on it — is silently assembled wrong.
+
+        Frames are lib0-varint-framed binary:
+
+        ```
+        varuint messageType
+          0 SYNC       varuint syncType
+                         0 STEP1   varbytes state vector  -> server replies STEP2
+                         1 STEP2   varbytes update        -> applied
+                         2 UPDATE  varbytes update        -> applied and relayed
+          1 AWARENESS  varbytes awareness update          -> relayed verbatim
+        ```
+
+        Awareness is relayed and never parsed: the server is not a participant, so
+        a replica of who is where could only be a stale third opinion about a fact
+        the peers already hold.
+
+        Edits are broadcast from memory and persisted by a debounced background
+        flush, never per keystroke — every write in this process is serialized
+        behind one mutex, and that serialization is the exactly-one-claimant
+        guarantee for the ready queue.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: ticket, in: query, required: true, schema: { type: string }, description: 'A `tkd_` sync ticket.' }
+      responses:
+        "101": { description: 'Switching protocols — the sync session begins.' }
+        "401": { description: 'Missing or unrecognized ticket (`document.session_missing`, `document.session_invalid`).' }
+        "403": { description: 'The ticket is for another document (`document.session_wrong_document`).' }
+        "410": { description: 'The ticket expired or was revoked (`document.session_expired`).' }
+        "503": { description: 'The document is at its live-editor ceiling (`document.too_many_peers`).' }
 
   /projects/{project}/environments:
     get:
@@ -6736,7 +7056,7 @@ components:
             kinds in `x-event-kinds-reserved` are also listed but are never
             emitted — reserved so clients filtering the log can tell a dead arm
             from a missing one.
-          enum: [archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed]
+          enum: [archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, document.archived, document.created, document.unarchived, document.updated, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 
@@ -6897,6 +7217,68 @@ components:
 # The HTTP status a code rides on is documented per route, under that route's
 # `responses`. It is deliberately not restated here: a second copy would be one
 # nothing checks.
+    Document:
+      type: object
+      description: |
+        A collaborative document's FILING. Note what is absent: the prose. The
+        text is a Yjs CRDT synchronised over the WebSocket session, because a
+        text field here would be last-write-wins — and losing what somebody typed
+        while an agent was thinking is the failure this surface exists to remove.
+      properties:
+        id: { type: string, description: 'doc-xxxxxxxx' }
+        project: { type: string }
+        title: { type: string }
+        path:
+          type: string
+          description: 'Folder, `/`-separated. Empty is the top level. A folder exists because a document names it; the last one to leave takes the folder with it.'
+        status:
+          type: string
+          enum: [draft, review, settled, archived]
+          description: 'A label, not a state machine. Nothing enforces an order between them.'
+        initiative:
+          type: [string, "null"]
+          description: 'The initiative this was distilled from, if any. Validated on write, so a reader never meets a reference naming nothing.'
+        metadata: { description: 'Free-form JSON, or null.' }
+        version:
+          type: integer
+          description: 'Counts METADATA edits only. CRDT updates do not bump it — they arrive by the thousand and would make an If-Match precondition meaningless.'
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at:
+          type: string
+          format: date-time
+          description: 'Last metadata edit or CRDT flush, whichever came later.'
+        archived_at: { type: [string, "null"], format: date-time }
+        bytes:
+          type: integer
+          description: 'Bytes held by this document history. Derived on read, never stored.'
+        updates:
+          type: integer
+          description: 'Rows in the update log. Derived on read; a high number means a compaction is due.'
+
+    DocumentCreate:
+      type: object
+      required: [title]
+      description: 'Opens an EMPTY document. There is deliberately no prose field — the first paragraph is typed into the session like every later one.'
+      properties:
+        title: { type: string, description: '1..=200 characters.' }
+        path: { type: string, description: 'Folder. Omit or send "" for the top level.' }
+        status: { type: string, enum: [draft, review, settled, archived] }
+        initiative: { type: string, description: 'The initiative this was distilled from. Must exist in the same project.' }
+        metadata: { description: 'Free-form JSON.' }
+
+    DocumentPatch:
+      type: object
+      description: 'Every field optional. `initiative` accepts an explicit null to clear it.'
+      properties:
+        title: { type: string }
+        path: { type: string }
+        status: { type: string, enum: [draft, review, settled, archived] }
+        initiative: { type: [string, "null"] }
+        metadata_merge:
+          type: object
+          description: 'Shallow key merge; an explicit null deletes a key.'
+
     Environment:
       type: object
       description: |
@@ -7726,6 +8108,39 @@ x-error-codes:
   validation.environment_credentials_hint: "`credentials_hint` is over its length bound, or looks like a credential rather than a pointer to one. Takomo never stores credentials and every token with `read` can see this field — send where the credential lives, e.g. `env:STAGING_TOKEN`."
   validation.environment_metadata_size: "serialized environment `metadata` is over its cap. The bulk belongs in `notes`."
   validation.environment_count: "the project already holds the maximum number of live environments. Archive one nobody runs against any more."
+
+  # -- collaborative documents -------------------------------------------------
+  notfound.document: "no document with that id. List them with GET /v1/projects/{project}/documents."
+  validation.document_title: "`title` must be 1-200 characters. It names the document; the prose belongs in the document itself, which is edited over the WebSocket session rather than through any JSON route."
+  validation.document_path: "`path` is not a drawable folder. Use `/`-separated segments with no leading or trailing slash, no empty segment and no `.` or `..` — those shapes render as a folder nobody can name or navigate out of. Send \"\" for the top level."
+  validation.document_status: "`status` must be `draft`, `review`, `settled` or `archived`. It is a label, not a state machine: nothing enforces an order between them."
+  validation.document_initiative: "the `initiative` given belongs to another project. A document may record the initiative it was distilled from, and that reference is validated where it is made so the migration question — which initiatives have moved across — stays answerable."
+  validation.document_metadata: "serialized document `metadata` is over its cap. Long prose belongs in the document."
+  validation.document_count: "the project already holds the maximum number of live documents. Archive one with DELETE /v1/documents/{id}."
+  validation.doc_update_empty: "a CRDT update carried no bytes. An empty flush records nothing — skip it instead."
+  validation.doc_update_too_large: "one CRDT flush is over its byte cap. A flush is meant to be a few seconds of typing; every write in this process is serialized behind the same mutex, so an oversized one stalls every claim, transition and heartbeat. Flush more often."
+  validation.document_too_large: "the document's update log is at its byte cap. The whole log is replayed into memory when the document is opened, so the cap bounds that allocation — split the document."
+
+  # -- document proposals: what an agent may offer -----------------------------
+  validation.document_ops: "`ops` is not a usable list of operations, or none of them could be applied. An agent addresses BLOCKS BY ID — `[{\"op\":\"replace\",\"id\":\"blk_…\",\"markdown\":\"…\"}]` — and never sends a whole document, because a document would overwrite whatever somebody typed while the model was thinking. Re-read with takomo_document_read: the block ids move as people edit."
+  validation.document_proposals: "the document already holds the maximum number of undecided proposals. Somebody has to accept or reject the ones already offered — a pile nobody decides on is the state this cap exists to make visible."
+  conflict.document_archived: "the document is archived and cannot be written to. Restore it first if the work still belongs to it."
+
+  # -- the prompt bar: the one route that calls a model -------------------------
+  document.agent_not_configured: "this server has no document agent configured, so the prompt bar cannot run. Set TAKOMO_TENSORX_API_KEY (optionally TAKOMO_TENSORX_BASE_URL and TAKOMO_DOC_MODEL) and restart. Everything else on /documents works without it — an agent connected over MCP proposes through the same path."
+  document.agent_failed: "the model provider could not be reached, refused the request, or answered with something that was not a usable plan. Nothing was written to the document. The provider's own message is passed through, because it is the only thing that distinguishes a bad key from an unknown model from a rate limit."
+  validation.document_unchanged: "every proposed change was the text the document already has. A model asked for something the document already satisfies should say so, not offer a replacement that changes nothing — a no-op a reviewer accepts costs them a decision and gives them nothing."
+  validation.document_instruction: "the prompt-bar instruction is empty or over its length bound. A prompt bar is for a sentence saying what should change."
+
+  # -- the document sync socket ------------------------------------------------
+  document.session_missing: "the sync socket was opened without a ticket. Mint one with POST /v1/documents/{id}/session and pass it as `?ticket=`. A browser WebSocket cannot set an Authorization header, which is why the credential rides the query string — and why it is a short-lived, single-document ticket rather than your real token."
+  document.session_invalid: "that sync ticket is not recognized. It may be mistyped, or minted against a different server."
+  document.session_expired: "that sync ticket has expired or been revoked. Mint a new one; tickets are deliberately short-lived so a leaked one is worth little."
+  document.session_wrong_document: "that sync ticket was minted for a different document. A ticket reaches exactly one, which is the point of scoping it — otherwise it would be an ordinary token with a short life."
+  document.too_many_peers: "that document already has the maximum number of live editors. Wait for somebody to close it, then reconnect."
+
+  # -- the app's own assets ----------------------------------------------------
+  notfound.asset: "no embedded asset with that name. The binary bakes `web/dist/assets/` into a compile-time table and serves `/assets/{file}` as an exact lookup in it; a stale index.html from an older build is the usual cause."
 
   # -- checklist: releases, checks, cases, verdicts ----------------------------
   notfound.release: "no release with that id in this project. A verdict may only cite a release the project actually has."

@@ -17,13 +17,19 @@
 //
 // Two things this file must guarantee for the Rust side to compile at all:
 //
-//   * STABLE asset names. Rust `include_str!`s the asset paths by name, so
-//     content hashes are turned off deliberately. Cache correctness is handled
-//     by ETag revalidation in the server, not by the filename.
-//   * EXACTLY the assets in EMBEDDED below. Any other chunk would be emitted,
-//     referenced by index.html, and then 404 at runtime because nothing embeds
-//     it. The build fails loudly rather than shipping that — which is not
-//     hypothetical: it caught the bundler's runtime chunk on the first run.
+//   * STABLE asset names. The server serves assets by name with content hashing
+//     turned off deliberately; cache correctness is handled by ETag revalidation,
+//     not by the filename.
+//   * EVERYTHING FLAT UNDER assets/. `build.rs` embeds that one directory and the
+//     server exposes it as `/assets/{file}`, so a nested directory would be
+//     emitted, referenced by index.html, and then 404 at runtime.
+//
+// This used to be an exact-set assertion against four names, because Rust
+// `include_str!`d each one. Code splitting ended that: the editor route is far
+// too large for the single app.js chunk, and a dynamic `import()` emits a chunk
+// whose name is not knowable when Rust is compiled. `build.rs` now generates the
+// manifest from whatever is in dist/, so "a chunk nothing embeds" is impossible
+// by construction rather than by a list two files had to keep in step.
 //
 // The library build lives in vite.lib.config.ts — same source, different
 // consumer (see that file).
@@ -33,22 +39,55 @@ import tailwindcss from '@tailwindcss/vite'
 import { readdirSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 
-/** The asset set the Rust binary embeds by name. Keep in sync with src/api/mod.rs. */
-const EMBEDDED = [
-  'index.html',
-  'assets/app.js',
-  'assets/vendor.js',
-  'assets/runtime.js',
-  'assets/app.css',
-]
+/** What the server serves outside `/assets/{file}`. Keep in sync with src/api/mod.rs. */
+const REQUIRED = ['index.html']
 
 /**
- * Fail the build if the output is not exactly what the binary embeds.
+ * Packages reachable ONLY from the lazily-loaded `/documents` editor.
  *
- * Without this, adding a dynamic `import()` silently emits a fourth chunk:
- * index.html references it, `cargo build` still succeeds because nothing changed
- * about the three files it names, and the app 404s in the browser on a route
- * nobody tested. Cheap check, whole class of bug.
+ * Kept out of the shared vendor chunk — see `manualChunks` below for why that
+ * matters more than it looks.
+ *
+ * This is the exact set the editor install added to the lockfile, which is what
+ * makes it trustworthy rather than a guess: nothing here existed before Tiptap
+ * did, so nothing else can need it. The transitive names matter as much as the
+ * obvious ones — `linkifyjs` (via the Link extension) and `lib0` (Yjs's own
+ * runtime) are not editor-shaped names, and leaving them out silently put them
+ * back on the critical path while the build output still showed a neat little
+ * Editor.js.
+ *
+ * A stray entry costs a slightly larger editor chunk. A missing one costs every
+ * other surface, which is what `npm run size` is there to catch.
+ */
+const EDITOR_ONLY_PACKAGES = [
+  '@tiptap',
+  'prosemirror-[^/]+',
+  'yjs',
+  'y-prosemirror',
+  'y-websocket',
+  'y-protocols',
+  'lib0',
+  'isomorphic\\.js',
+  'linkifyjs',
+  'fast-equals',
+  'use-sync-external-store',
+  'orderedmap',
+  'rope-sequence',
+  'w3c-keyname',
+  'crelt',
+]
+
+const EDITOR_ONLY = new RegExp(`node_modules/(${EDITOR_ONLY_PACKAGES.join('|')})/`)
+
+/**
+ * Fail the build if the output is not shaped the way the binary embeds it.
+ *
+ * Two things are still worth asserting now that the manifest is generated:
+ * index.html must exist (Rust `include_str!`s it by name and the build would
+ * fail confusingly without it), and every other emitted file must sit FLAT under
+ * `assets/`. The route is `/assets/{file}` with a single path segment, so a
+ * nested chunk would be referenced by index.html and 404 at runtime — the same
+ * class of bug the old exact-set check caught, in the form that can still happen.
  */
 function assertEmbeddableOutput(): Plugin {
   return {
@@ -57,8 +96,8 @@ function assertEmbeddableOutput(): Plugin {
     // `closeBundle`, not `generateBundle`: index.html is emitted by Vite's own
     // html plugin and is not in the bundle object yet when generateBundle runs,
     // so checking there reports it missing every time. Reading the finished
-    // directory is also simply the more honest check — it is what the Rust build
-    // will `include_str!`.
+    // directory is also simply the more honest check — it is what build.rs will
+    // walk.
     closeBundle() {
       const outDir = resolve(import.meta.dirname, 'dist')
       const walk = (dir: string): string[] =>
@@ -66,17 +105,19 @@ function assertEmbeddableOutput(): Plugin {
           e.isDirectory() ? walk(resolve(dir, e.name)) : [relative(outDir, resolve(dir, e.name))],
         )
       const emitted = walk(outDir).sort()
-      const unexpected = emitted.filter((f) => !EMBEDDED.includes(f))
-      const missing = EMBEDDED.filter((f) => !emitted.includes(f))
-      if (unexpected.length || missing.length) {
+      const missing = REQUIRED.filter((f) => !emitted.includes(f))
+      // Exactly one segment below `assets/`, matching the `/assets/{file}` route.
+      const misplaced = emitted.filter(
+        (f) => !REQUIRED.includes(f) && !/^assets\/[^/]+$/.test(f),
+      )
+      if (missing.length || misplaced.length) {
         this.error(
-          `the build must emit exactly the files src/api/mod.rs embeds.\n` +
-            `  expected: ${EMBEDDED.join(', ')}\n` +
-            `  emitted:  ${emitted.join(', ')}\n` +
-            (unexpected.length ? `  unexpected: ${unexpected.join(', ')}\n` : '') +
+          `the build must emit index.html plus a flat assets/ directory.\n` +
+            `  emitted: ${emitted.join(', ')}\n` +
             (missing.length ? `  missing: ${missing.join(', ')}\n` : '') +
-            `If this is intentional, add the file to include_str! in src/api/mod.rs, ` +
-            `serve it from src/server.rs, and update EMBEDDED here.`,
+            (misplaced.length ? `  not flat under assets/: ${misplaced.join(', ')}\n` : '') +
+            `build.rs embeds assets/ and src/server.rs serves it as /assets/{file}, ` +
+            `which is one path segment.`,
         )
       }
     },
@@ -109,9 +150,24 @@ export default defineConfig({
           info.name.includes('runtime') ? 'assets/runtime.js' : 'assets/[name].js',
         assetFileNames: (info) =>
           info.names?.some((n) => n.endsWith('.css')) ? 'assets/app.css' : 'assets/[name][extname]',
-        // One vendor chunk, shared by every route. This is the whole point of
-        // the change: React was previously inlined into four documents.
-        manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : undefined),
+        // One vendor chunk for what every route shares. This is the whole point
+        // of the earlier change: React was previously inlined into four
+        // documents.
+        //
+        // EDITOR_ONLY is excluded from it, and that exclusion is the difference
+        // between the editor being split and merely appearing to be. Tiptap,
+        // ProseMirror and Yjs are ~150 kB gz and reachable only from the lazy
+        // `/documents` route — but a blanket "everything in node_modules goes to
+        // vendor" would sweep them into the chunk index.html loads eagerly, so
+        // every other surface would pay for them on first paint while the build
+        // output still showed a neat little Editor.js. Returning undefined lets
+        // the bundler attach them to the dynamic chunk that actually imports
+        // them.
+        manualChunks: (id) => {
+          if (!id.includes('node_modules')) return undefined
+          if (EDITOR_ONLY.test(id)) return undefined
+          return 'vendor'
+        },
       },
     },
   },

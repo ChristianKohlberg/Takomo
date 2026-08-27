@@ -4,6 +4,7 @@
 // stripe and a word and a dot; identifiers are monospace because they are
 // identifiers; and a claimed ticket says who holds it rather than adding a
 // badge whose colour you would have to learn.
+import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
@@ -86,10 +87,21 @@ export function TicketCard({
     // for the open-ticket action, the content sits above it with
     // `pointer-events-none` so clicks fall through, and the chip re-enables
     // pointer events for itself. Two real, unnested interactive elements.
-    <div
+    <Card
+      size="sm"
       className={cn(
-        'bg-card border-border hover:border-ring relative rounded-[9px] border px-3 py-2.5 text-left',
-        selected && 'bg-accent border-ring',
+        'hover:ring-ring relative gap-0 px-(--card-spacing) text-left',
+        // `overflow-visible` undoes Card's own `overflow-hidden`, and it is not
+        // cosmetic. The open-ticket button below is `absolute inset-0` — it fills
+        // the card's padding box exactly — and it has no focus class of its own,
+        // so its focus indicator is the UA outline that `outline-ring/50` in
+        // globals.css colours. An outline is painted OUTSIDE the border box, and
+        // `overflow: hidden` clips at the padding box, so with Card's default
+        // every ticket on /board would still take keyboard focus while showing
+        // nothing for it. Nothing here needs the clip: the card has no image
+        // children and a background is clipped by border-radius regardless.
+        'overflow-visible',
+        selected && 'bg-accent ring-ring',
       )}
     >
       <button
@@ -97,7 +109,7 @@ export function TicketCard({
         onClick={() => onOpen(t.id)}
         aria-current={selected}
         aria-label={t.title || t.id}
-        className="absolute inset-0 cursor-pointer rounded-[9px]"
+        className="absolute inset-0 cursor-pointer rounded-xl"
       />
       <div className="pointer-events-none relative">
       <div className="flex items-baseline gap-2">
@@ -171,6 +183,6 @@ export function TicketCard({
         </div>
       )}
       </div>
-    </div>
+    </Card>
   )
 }

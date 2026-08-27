@@ -43,6 +43,7 @@ import {
 } from '@/lib/board'
 import { answerQuestion, askQuestion, listQuestions, type Question } from '@/lib/questions'
 import { STR } from './strings'
+import { Checkbox } from '@/components/ui/checkbox'
 
 const LS_LANG = 'takomo.lang'
 const POLL_MS = 4000
@@ -503,6 +504,7 @@ function Board({
         nav: {
           board: t.board,
           inbox: t.inbox,
+          documents: t.documents,
           initiatives: t.initiatives,
           mindmaps: t.mindmaps,
           schedules: t.schedules,
@@ -697,30 +699,24 @@ function Board({
           }}
         />
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-          <input
-            type="checkbox"
-            className="size-4"
+          <Checkbox
             checked={groupByEpic}
-            onChange={(e) => setGroupByEpic(e.target.checked)}
+            onCheckedChange={(e) => setGroupByEpic(e === true)}
           />
           {t.groupEpic}
         </label>
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-          <input
-            type="checkbox"
-            className="size-4"
+          <Checkbox
             checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
+            onCheckedChange={(e) => setShowArchived(e === true)}
           />
           {t.archived}
         </label>
         {me.expertise.length > 0 && (
           <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-            <input
-              type="checkbox"
-              className="size-4"
+            <Checkbox
               checked={mineOnly}
-              onChange={(e) => setMineOnly(e.target.checked)}
+              onCheckedChange={(e) => setMineOnly(e === true)}
             />
             {t.mine}
           </label>

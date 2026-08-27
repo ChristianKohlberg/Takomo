@@ -6,6 +6,7 @@ export const STR = defineStrings({
   en: {
     board: 'Board',
     inbox: 'Inbox',
+    documents: 'Documents',
     initiatives: 'Initiatives',
     mindmaps: 'Mindmaps',
     schedules: 'Schedules',
@@ -91,6 +92,7 @@ export const STR = defineStrings({
   de: {
     board: 'Board',
     inbox: 'Inbox',
+    documents: 'Dokumente',
     initiatives: 'Initiativen',
     mindmaps: 'Mindmaps',
     schedules: 'Zeitpläne',

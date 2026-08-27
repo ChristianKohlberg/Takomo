@@ -32,6 +32,17 @@ pub struct AppState {
     /// registration is unauthenticated by specification), and merging it would
     /// make "what has this credential spent" unanswerable.
     pub oauth_register_rate: Mutex<HashMap<String, VecDeque<i64>>>,
+    /// Every collaborative document currently open, keyed by id.
+    ///
+    /// In-memory and deliberately not a cache: a room exists only while somebody
+    /// is editing, is hydrated from the update log on the first join, and is
+    /// dropped after the last leave has flushed. Nothing survives between
+    /// sessions, so it cannot become a second, divergent copy of the store.
+    pub rooms: crate::api::docsync::Rooms,
+    /// The document agent, from `TAKOMO_TENSORX_API_KEY`. `None` turns the
+    /// `/documents` prompt bar off; everything else on that surface works
+    /// without it, because an agent over MCP proposes through the same path.
+    pub doc_agent: Option<crate::docagent::DocAgentConfig>,
     /// The OAuth authorization server's identity, from `TAKOMO_PUBLIC_URL`.
     /// `None` disables the OAuth endpoints and the `WWW-Authenticate` challenge
     /// on `/mcp` — a server that cannot state its own issuer identity cannot run
@@ -43,6 +54,20 @@ pub struct AppState {
 impl AppState {
     pub fn new(store: Store) -> Arc<Self> {
         AppState::new_with_oauth(store, None)
+    }
+
+    /// [`AppState::new_with_oauth`] plus a configured document agent.
+    pub fn new_with_agent(
+        store: Store,
+        oauth: Option<crate::api::oauth::OauthConfig>,
+        doc_agent: Option<crate::docagent::DocAgentConfig>,
+    ) -> Arc<Self> {
+        let state = AppState::new_with_oauth(store, oauth);
+        // `new_with_oauth` hands back an Arc that nothing else holds yet, so
+        // this is the one moment the field can still be set.
+        let mut state = Arc::try_unwrap(state).map_err(|_| ()).expect("sole owner");
+        state.doc_agent = doc_agent;
+        Arc::new(state)
     }
 
     /// [`AppState::new`] with an OAuth authorization server configured. Separate
@@ -59,6 +84,8 @@ impl AppState {
             share_rate: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
             oauth_register_rate: Mutex::new(HashMap::new()),
+            rooms: crate::api::docsync::Rooms::default(),
+            doc_agent: None,
             oauth,
         })
     }
@@ -197,6 +224,37 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/environments/{id}/unarchive",
             post(crate::api::environments::unarchive),
         )
+        // Collaborative documents. These routes carry a document's FILING —
+        // title, folder, status — and never its prose: the text is a Yjs CRDT
+        // and moves over the WebSocket session instead, because a `PUT body`
+        // is last-write-wins and losing what someone typed while an agent was
+        // thinking is the exact failure this surface removes.
+        .route(
+            "/v1/projects/{project}/documents",
+            get(crate::api::docs::list).post(crate::api::docs::create),
+        )
+        .route(
+            "/v1/documents/{id}",
+            get(crate::api::docs::get_one)
+                .merge(patch(crate::api::docs::patch))
+                .merge(axum::routing::delete(crate::api::docs::archive)),
+        )
+        .route(
+            "/v1/documents/{id}/unarchive",
+            post(crate::api::docs::unarchive),
+        )
+        // Mint a ticket for the sync socket. This one IS behind the bearer
+        // middleware — it is the authenticated act that produces the credential
+        // the socket then uses.
+        .route(
+            "/v1/documents/{id}/session",
+            post(crate::api::docsync::create_session),
+        )
+        // The prompt bar. The ONE route in this server that calls a language
+        // model — see the header of src/docagent.rs for why that exception
+        // exists and what keeps it contained. Off unless a key is configured;
+        // everything else on /documents works without it.
+        .route("/v1/documents/{id}/run", post(crate::api::docs::run_agent))
         // Checklist: releases, checks, cases, verdicts and the derived reports.
         .route(
             "/v1/projects/{project}/releases",
@@ -514,21 +572,34 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(crate::api::root_redirect))
         .route("/healthz", get(crate::api::healthz))
+        // The document sync socket. Mounted OUTSIDE every bearer middleware, for
+        // the reason `/oauth/*` is: it authenticates with a credential of its own
+        // (a `tkd_` ticket in the query, because a browser WebSocket cannot set an
+        // Authorization header), and running it through a middleware that demands
+        // a different one would make it unreachable.
+        //
+        // The document id is the LAST segment, and that is a wire requirement
+        // rather than a preference: `y-websocket` builds its URL as
+        // `serverUrl + "/" + room + "?" + params`, so a path with anything after
+        // the room — or a base that already carries a query string — comes out
+        // mangled. `/v1/documents/{id}/sync` did exactly that.
+        .route("/v1/docsync/{id}", get(crate::api::docsync::sync))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
+        .route("/documents", get(crate::api::documents_page))
         .route("/initiatives", get(crate::api::initiatives_page))
         .route("/mindmaps", get(crate::api::mindmaps_page))
         .route("/schedules", get(crate::api::schedules_page))
         .route("/verification", get(crate::api::verification_page))
         .route("/environments", get(crate::api::environments_page))
         .route("/settings", get(crate::api::settings_page))
-        // The app's assets. Fixed paths, not a static-file handler: the binary
-        // embeds exactly these four by name (see src/api/mod.rs), so there is no
-        // directory to traverse and no path to sanitize.
-        .route("/assets/app.js", get(crate::api::app_js))
-        .route("/assets/vendor.js", get(crate::api::vendor_js))
-        .route("/assets/runtime.js", get(crate::api::runtime_js))
-        .route("/assets/app.css", get(crate::api::app_css))
+        // The app's assets. Still not a static-file handler: `build.rs` bakes the
+        // committed `web/dist/assets/` into a compile-time name → bytes table and
+        // this route is an exact lookup in it, so there is no directory to
+        // traverse and no path to sanitize. One route rather than four names
+        // because the editor route is code-split, and the bundler names those
+        // chunks — see the ASSETS comment in src/api/mod.rs.
+        .route("/assets/{file}", get(crate::api::asset_by_name))
         .route("/favicon.svg", get(crate::api::favicon))
         .route("/favicon.ico", get(crate::api::favicon))
         .merge(oauth)
@@ -573,6 +644,11 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
             // routine garbage collection would be pure churn.
             if let Err(e) = state.store.sweep_expired_oauth() {
                 eprintln!("oauth sweep failed: {}", e.body.message);
+            }
+            // Long-dead document sync tickets. Also deliberately does not set
+            // `woke`, for the same reason: nothing long-polls on them.
+            if let Err(e) = state.store.sweep_expired_doc_sessions() {
+                eprintln!("doc session sweep failed: {}", e.body.message);
             }
             if woke {
                 state.wake();
@@ -655,8 +731,13 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
     check_bind_guard(&addr)?;
     let public_url = std::env::var("TAKOMO_PUBLIC_URL").ok();
     let (oauth, oauth_line) = resolve_oauth(public_url.as_deref());
+    let (doc_agent, agent_line) = crate::docagent::resolve(
+        std::env::var("TAKOMO_TENSORX_API_KEY").ok(),
+        std::env::var("TAKOMO_TENSORX_BASE_URL").ok(),
+        std::env::var("TAKOMO_DOC_MODEL").ok(),
+    );
     let store = Store::open(db_path).map_err(|e| e.into_message())?;
-    let state = AppState::new_with_oauth(store, oauth);
+    let state = AppState::new_with_agent(store, oauth, doc_agent);
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)
@@ -664,6 +745,7 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         .map_err(|e| format!("cannot bind {addr}: {e}"))?;
     println!("takomo v{VERSION} listening on http://{addr} (db: {db_path})");
     println!("  {oauth_line}");
+    println!("  {agent_line}");
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("server error: {e}"))

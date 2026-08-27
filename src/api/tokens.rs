@@ -60,6 +60,14 @@ pub async fn whoami(
         "scopes": scopes,
         "projects": projects,
         "user": user,
+        // What this SERVER can do, not what this credential may do — the two are
+        // different questions and a client needs both to boot. Right now there is
+        // one such fact: whether a document agent is configured, which decides
+        // whether /documents shows a prompt bar or explains its absence. A page
+        // that offered the bar and then 503'd would be the worse failure.
+        "features": {
+            "doc_agent": state.doc_agent.is_some(),
+        },
     })))
 }
 

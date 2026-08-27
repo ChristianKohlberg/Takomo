@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { Environment } from '@/lib/verification'
 
@@ -77,9 +78,10 @@ export function EnvironmentCard({
 }: EnvironmentCardProps) {
   const archived = !!env.archived_at
   return (
-    <div
+    <Card
+      size="sm"
       className={cn(
-        'bg-card border-border-soft flex flex-col gap-3 rounded-[10px] border p-3.5',
+        'gap-3 px-(--card-spacing)',
         archived && 'opacity-60',
         busy && 'pointer-events-none opacity-50',
       )}
@@ -156,6 +158,6 @@ export function EnvironmentCard({
           yet, so any number here would be the PROJECT's count wearing this
           environment's name. A count that reads as a relationship which does not
           exist is worse than no count. */}
-    </div>
+    </Card>
   )
 }

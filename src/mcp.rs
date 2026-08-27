@@ -31,6 +31,7 @@ use crate::ids::now_ms;
 use crate::server::AppState;
 use crate::store::{ReadyFilter, Ticket, TicketCreate, TicketListFilter, TicketPatch};
 use crate::workflow::Workflow;
+use yrs::Transact as _;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -96,6 +97,9 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_claim_status",
     "takomo_coverage",
     "takomo_deps",
+    "takomo_document_proposals",
+    "takomo_document_read",
+    "takomo_documents",
     "takomo_environments",
     "takomo_gate",
     "takomo_impact",
@@ -779,6 +783,49 @@ pub struct InitiativeListArgs {
     pub limit: Option<i64>,
     /// Opaque cursor from a previous page's `next_cursor`.
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DocumentsArgs {
+    /// Project id.
+    pub project: String,
+    /// Substring match over title and folder.
+    pub q: Option<String>,
+    /// 1-200 (default 200).
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DocumentReadArgs {
+    /// Document id (`doc-…`).
+    pub id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DocumentProposeArgs {
+    /// Document id (`doc-…`).
+    pub id: String,
+    /// The operations, as an array. Each is
+    /// `{"op":"replace"|"insert_after"|"delete","id":"blk_…","markdown":"…"}`.
+    /// `markdown` is omitted for `delete`.
+    pub ops: serde_json::Value,
+    /// What you were asked to do, in one line. Shown to the person deciding.
+    pub instruction: Option<String>,
+    /// What you changed and why, in one or two sentences. This is what a reviewer
+    /// reads before the diff, so it should say the REASON, not restate the edit.
+    pub summary: Option<String>,
+    /// Restrict the run to these block ids. Enforced server-side: an op outside
+    /// the list is dropped and reported back to you, not silently applied.
+    pub scope: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DocumentProposalsArgs {
+    /// Document id (`doc-…`).
+    pub id: String,
+    /// Only proposals in this state: `pending`, `accepted` or `rejected`.
+    /// Omit for all of them.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2039,11 +2086,198 @@ impl TakomoMcp {
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_initiative_show(&require_auth(&ctx)?, a))
     }
+
+    #[tool(
+        description = "List collaborative documents in a project. A document is prose people and \
+        agents write AT THE SAME TIME — unlike an initiative, which is an append-only log of \
+        entries. Returns each document's id, title, folder and how much edit history it holds. \
+        The text itself is not here: read it with takomo_document_read."
+    )]
+    async fn takomo_documents(
+        &self,
+        Parameters(a): Parameters<DocumentsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_documents(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "Read a document as markdown annotated with BLOCK IDS:\n\n\
+        <!-- blk_7f3a -->\n## Pricing\nOur current tiers are…\n\n\
+        Those ids are how you change it. Read this before proposing anything — the ids move as \
+        people edit, and an op naming a block that is gone is dropped. Also returns how many \
+        proposals are already waiting on a person: if something is pending, prefer improving that \
+        over stacking another one underneath it."
+    )]
+    async fn takomo_document_read(
+        &self,
+        Parameters(a): Parameters<DocumentReadArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_document_read(&require_auth(&ctx)?, a).await)
+    }
+
+    #[tool(
+        description = "PROPOSE a change to a document. Nothing you send here becomes live text — \
+        it is offered as a suggestion a person accepts or rejects, which is the rule this whole \
+        surface exists to keep.\n\n\
+        Send OPERATIONS AGAINST BLOCK IDS, never a rewritten document:\n\
+        [{\"op\":\"replace\",\"id\":\"blk_7f3a\",\"markdown\":\"## Pricing\\n…\"},\n\
+         {\"op\":\"insert_after\",\"id\":\"blk_7f3a\",\"markdown\":\"…\"},\n\
+         {\"op\":\"delete\",\"id\":\"blk_9c1e\"}]\n\n\
+        Blocks you do not name are never touched, which is what lets somebody keep typing three \
+        paragraphs away while you work. Returning a whole document instead would throw their \
+        words away.\n\n\
+        Write a `summary` saying WHY, not what — the diff already shows what. Ops targeting a \
+        block that has since disappeared, or one outside `scope`, are dropped and reported back \
+        in `skipped` rather than failing the call."
+    )]
+    async fn takomo_document_propose(
+        &self,
+        Parameters(a): Parameters<DocumentProposeArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_document_propose(&require_auth(&ctx)?, a).await)
+    }
+
+    #[tool(
+        description = "List a document's proposals and what became of them: `pending` is waiting \
+        on a person, `accepted` was applied, `rejected` was turned down. Check this after \
+        proposing — a rejected proposal is a signal about the document you were wrong about, not \
+        a reason to send the same thing again."
+    )]
+    async fn takomo_document_proposals(
+        &self,
+        Parameters(a): Parameters<DocumentProposalsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_document_proposals(&require_auth(&ctx)?, a).await)
+    }
 }
 
 // ---- tool implementations (call the internal store directly) ----------------
 
 impl TakomoMcp {
+    fn do_documents(&self, auth: &AuthCtx, a: DocumentsArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        auth.require_project(&a.project)?;
+        let filter = crate::store::DocumentFilter {
+            project: a.project.clone(),
+            q: a.q.clone(),
+            limit: a.limit,
+            ..Default::default()
+        };
+        let (docs, total) = self.state.store.list_documents(&filter)?;
+        Ok(json!({
+            "items": docs.iter().map(|d| d.to_json()).collect::<Vec<_>>(),
+            "total": total,
+        }))
+    }
+
+    /// Read the live replica, not the persisted log.
+    ///
+    /// It matters which: the log is up to one flush interval behind, so a read
+    /// from it would hand an agent block ids that a person had already moved on
+    /// from — and then every op it wrote would be dropped as stale. Opening the
+    /// room puts the agent on the same replica the browsers are on.
+    async fn do_document_read(&self, auth: &AuthCtx, a: DocumentReadArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let doc = self.state.store.get_document(&a.id)?;
+        auth.require_project(&doc.project)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let (markdown, blocks, pending) = room.read(|d| {
+            let frag = d.get_or_insert_xml_fragment(crate::api::docprops::PROSE_FIELD);
+            let txn = d.transact();
+            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+            drop(txn);
+            let markdown = crate::api::docprops::annotate(&blocks);
+            let n = blocks.len();
+            let pending = crate::api::docprops::read_proposals(d)
+                .iter()
+                .filter(|p| p.get("status").and_then(Value::as_str) == Some("pending"))
+                .count();
+            (markdown, n, pending)
+        });
+
+        Ok(json!({
+            "document": doc.to_json(),
+            "markdown": markdown,
+            "blocks": blocks,
+            "pending_proposals": pending,
+            "note": "Address blocks by the id in the `<!-- blk_… -->` comment above them. \
+                     Never send a whole document back.",
+        }))
+    }
+
+    async fn do_document_propose(
+        &self,
+        auth: &AuthCtx,
+        a: DocumentProposeArgs,
+    ) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let doc = self.state.store.get_document(&a.id)?;
+        auth.require_project(&doc.project)?;
+        // A proposal is a write against the document, so an archived project
+        // refuses it like every other write beneath one.
+        self.state.store.ensure_document_writable(&a.id)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let instruction = a.instruction.clone().unwrap_or_default();
+        let summary = a.summary.clone().unwrap_or_default();
+        let scope = a.scope.clone();
+        let actor = auth.actor.clone();
+        let ops_raw = a.ops.clone();
+        let now = now_ms();
+
+        let (proposal, applied, skipped) = room.mutate(|d| {
+            let frag = d.get_or_insert_xml_fragment(crate::api::docprops::PROSE_FIELD);
+            let txn = d.transact();
+            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+            drop(txn);
+
+            let validated =
+                crate::api::docprops::validate_ops(&ops_raw, &blocks, scope.as_deref())?;
+            let id = crate::api::docprops::write_proposal(
+                d,
+                &actor,
+                &instruction,
+                &summary,
+                &validated.ops,
+                &validated.skipped,
+                now,
+            )?;
+            Ok((id, validated.ops.len(), validated.skipped))
+        })?;
+
+        Ok(json!({
+            "proposal": proposal,
+            "document": a.id,
+            "status": "pending",
+            "operations": applied,
+            "skipped": skipped,
+            "note": "Offered, not applied. A person accepts or rejects it on /documents; \
+                     poll takomo_document_proposals to see which.",
+        }))
+    }
+
+    async fn do_document_proposals(
+        &self,
+        auth: &AuthCtx,
+        a: DocumentProposalsArgs,
+    ) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let doc = self.state.store.get_document(&a.id)?;
+        auth.require_project(&doc.project)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let mut items = room.read(crate::api::docprops::read_proposals);
+        if let Some(want) = a.status.as_deref() {
+            items.retain(|p| p.get("status").and_then(Value::as_str) == Some(want));
+        }
+        Ok(json!({ "items": items, "total": items.len() }))
+    }
+
     fn do_mindmap_new(&self, auth: &AuthCtx, a: MindmapNewArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         auth.require_project(&a.project)?;

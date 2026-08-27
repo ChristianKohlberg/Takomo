@@ -22,6 +22,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
+  FileTextIcon,
   InboxIcon,
   LayoutGridIcon,
   LightbulbIcon,
@@ -41,6 +42,7 @@ import { useIsPhone } from '@/hooks/useIsPhone'
 export interface NavLabels {
   board: string
   inbox: string
+  documents: string
   initiatives: string
   mindmaps: string
   schedules: string
@@ -104,6 +106,7 @@ export interface NavRailProps {
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   inbox: '/inbox',
+  documents: '/documents',
   initiatives: '/initiatives',
   mindmaps: '/mindmaps',
   schedules: '/schedules',
@@ -114,6 +117,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   board: LayoutGridIcon,
   inbox: InboxIcon,
+  documents: FileTextIcon,
   initiatives: LightbulbIcon,
   mindmaps: NetworkIcon,
   schedules: CalendarClockIcon,
@@ -125,11 +129,14 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
 // its configuration: you read what needs verifying far more often than you edit
 // where it runs.
 // Mindmaps sits before Initiatives because that is the order the thinking runs
-// in: a brainstorm becomes a direction becomes work.
+// in: a brainstorm becomes a direction becomes work. Documents sits between
+// them, which is the same argument one step further: a branch of the map is
+// written up before it is a direction anybody is nurturing.
 const NAV_ORDER: (keyof NavLabels)[] = [
   'board',
   'inbox',
   'mindmaps',
+  'documents',
   'initiatives',
   'schedules',
   'verification',

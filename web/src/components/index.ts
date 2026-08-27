@@ -42,9 +42,52 @@ export {
   DialogTitle,
   DialogTrigger,
 } from './ui/dialog'
+export { Checkbox } from './ui/checkbox'
 export { Input } from './ui/input'
 export { Label } from './ui/label'
 export { Textarea } from './ui/textarea'
+export { Switch } from './ui/switch'
+export { Separator } from './ui/separator'
+export { Skeleton } from './ui/skeleton'
+export { Alert, AlertDescription, AlertTitle } from './ui/alert'
+export { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from './ui/popover'
+export { ScrollArea, ScrollBar } from './ui/scroll-area'
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select'
+export { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs'
+export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip'
+export {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuPortal,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu'
+export {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from './ui/sheet'
 
 // ---- shared chrome ----
 export { Logo } from './Logo'

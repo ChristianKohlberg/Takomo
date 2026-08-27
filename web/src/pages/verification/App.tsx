@@ -18,6 +18,7 @@ import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Card } from '@/components/ui/card'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
@@ -280,6 +281,7 @@ export function App() {
         nav: {
           board: t.board,
           inbox: t.inbox,
+          documents: t.documents,
           initiatives: t.initiatives,
           mindmaps: t.mindmaps,
           schedules: t.schedules,
@@ -351,7 +353,7 @@ export function App() {
       <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-4.5 pb-15 md:px-5">
         <div className="mx-auto flex w-full max-w-240 flex-col gap-3.5">
           {(gate || worklist) && (
-            <div className="bg-card border-border-soft flex flex-col gap-2 rounded-[10px] border p-3.5">
+            <Card size="sm" className="gap-2 px-(--card-spacing)">
               {gate && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
@@ -387,7 +389,7 @@ export function App() {
                   </span>
                 </div>
               )}
-            </div>
+            </Card>
           )}
 
           {checks.length === 0 ? (

@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   CHECK_LAYERS,
   CHECK_SEVERITIES,
@@ -231,13 +232,12 @@ export function CheckDialog({
                       key={e.id}
                       className="text-foreground flex items-center gap-1.5 text-[13px]"
                     >
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={envs.includes(e.id)}
-                        onChange={(ev) =>
-                          setEnvs((p) =>
-                            ev.target.checked ? [...p, e.id] : p.filter((x) => x !== e.id),
-                          )
+                        onCheckedChange={(ev) =>
+                        setEnvs((p) =>
+                        ev === true ? [...p, e.id] : p.filter((x) => x !== e.id),
+                        )
                         }
                       />
                       {e.slug}

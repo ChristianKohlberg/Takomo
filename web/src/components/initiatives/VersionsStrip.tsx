@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import type { RoadmapEpic, RoadmapLane } from '@/lib/roadmap'
+import { Card } from '@/components/ui/card'
 
 export interface VersionsStripLabels {
   /** Section heading. */
@@ -69,9 +70,7 @@ export function VersionsStrip({
   if (!lane) return null
 
   return (
-    <section
-      className={cn('bg-card border-border mt-4.5 overflow-hidden rounded-[10px] border', className)}
-    >
+    <Card className={cn('mt-4.5 gap-0 py-0', className)}>
       <header className="border-b-border-soft flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3.5 py-2.5">
         <span className="text-muted-foreground text-[10.5px] font-bold tracking-[0.05em] uppercase">
           {labels.heading}
@@ -157,6 +156,6 @@ export function VersionsStrip({
           })}
         </ol>
       )}
-    </section>
+    </Card>
   )
 }

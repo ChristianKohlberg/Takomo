@@ -59,6 +59,7 @@
 @source '../**/*.{ts,tsx}';
 
 @import './tokens.css';
+@import './fonts.css';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
@@ -144,9 +145,11 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* The system stack tokens.css already sets on <body> — NOT Geist. */
+  /* Body keeps the system stack tokens.css sets on <body>. Headings get Geist,
+     latin subset only, declared in fonts.css — see the note there for why the
+     original blanket `@import "@fontsource-variable/geist"` was not restored. */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-heading: var(--font-sans);
+  --font-heading: 'Geist Variable', var(--font-sans);
 
   /* Identifiers are monospace everywhere — it is how a ticket id reads as an
      id. Exposing it as Tailwind's mono family keeps `font-mono` honest. */
@@ -167,5 +170,14 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* The display face applies to headings by ELEMENT, not by adding a class to
+     each of the fourteen call sites — a class-per-heading rule is one somebody
+     forgets on the fifteenth. shadcn's own CardTitle/DialogTitle/SheetTitle
+     already carry `font-heading`, so they resolve to the same face for free. */
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-heading);
   }
 }

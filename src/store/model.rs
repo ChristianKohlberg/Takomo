@@ -2008,3 +2008,74 @@ impl WorkflowEntry {
         })
     }
 }
+
+/// A collaborative document: prose several people and agents edit at once.
+///
+/// This row is the document's *identity and filing* — title, folder, status.
+/// The prose itself is not here and deliberately not in any column: it lives in a
+/// Yjs CRDT whose update log is `doc_updates`, because the whole point of this
+/// surface is that two people typing at the same time both keep their words.
+/// A `TEXT` column would mean last-write-wins, which is the failure this exists
+/// to remove.
+///
+/// So there is no `body`, and `version` counts metadata edits only. Asking "what
+/// does it say right now" means replaying the CRDT, which is what the WebSocket
+/// session does — see `src/store/docs.rs` and `src/api/docs.rs`.
+#[derive(Debug, Clone)]
+pub struct Document {
+    pub id: String,
+    pub project: String,
+    pub title: String,
+    /// Folder path, `/`-separated, the same convention `/initiatives` derives its
+    /// tree from. A folder exists because a document names it; the last document
+    /// to leave takes the folder with it.
+    pub path: String,
+    pub status: String,
+    /// The initiative this document was distilled from, if any.
+    ///
+    /// Nullable and validated in Rust rather than by a foreign key, following
+    /// `checks.initiative`. It exists so the eventual migration off the
+    /// entry-log document surface is *expressible*: a document that came from an
+    /// initiative can say so, and a reader can find the pair.
+    pub initiative: Option<String>,
+    pub metadata: Value,
+    /// Metadata edits only. CRDT updates do NOT bump it — they arrive by the
+    /// thousand and mean nothing to a caller doing `If-Match`.
+    pub version: i64,
+    pub created_by: String,
+    pub created_at: i64,
+    /// Last metadata edit **or** CRDT flush, whichever came later. This is the
+    /// "when was this last touched" a reader means.
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+    /// Bytes currently held by this document's update log. Derived on read.
+    pub bytes: i64,
+    /// Rows currently in the update log. Derived on read; high means a
+    /// compaction is due.
+    pub updates: i64,
+}
+
+/// The statuses a document may carry. Labels, not a state machine — nothing
+/// enforces an order, exactly as an initiative's `status` does not.
+pub const DOCUMENT_STATUSES: [&str; 4] = ["draft", "review", "settled", "archived"];
+
+impl Document {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "project": self.project,
+            "title": self.title,
+            "path": self.path,
+            "status": self.status,
+            "initiative": self.initiative,
+            "metadata": self.metadata,
+            "version": self.version,
+            "created_by": self.created_by,
+            "created_at": iso(self.created_at),
+            "updated_at": iso(self.updated_at),
+            "archived_at": self.archived_at.map(iso),
+            "bytes": self.bytes,
+            "updates": self.updates,
+        })
+    }
+}

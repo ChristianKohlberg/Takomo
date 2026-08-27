@@ -3147,3 +3147,277 @@ async fn mcp_mindmap_reads_are_free_and_writes_are_charged() {
         "{shown}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Documents: the agent proposes, the human decides
+//
+// The rule KONZEPT is actually about, and the one an implementation is most
+// likely to erode: nothing an agent writes becomes live text. What these pin is
+// that the surface makes that structurally true rather than politely requested —
+// an agent addresses blocks by id, blocks it does not name are untouched, a
+// scope is enforced rather than trusted, and the result is a proposal somebody
+// still has to accept.
+// ---------------------------------------------------------------------------
+
+/// Push a PM-shaped document into a room over the real sync socket.
+///
+/// Built as `y-prosemirror` builds it — an `XmlFragment` of `XmlElement`s named
+/// after the node type, each carrying its `id` attribute — because a fixture
+/// shaped any other way would prove the reader agrees with the fixture rather
+/// than with the editor.
+async fn seed_prose(app: &TestApp, doc_id: &str, blocks: &[(&str, &str, &str)]) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::encoding::write::Write as _;
+    use yrs::{Transact, Xml, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+
+    let (s, sess) = app
+        .post(
+            &app.admin,
+            &format!("/v1/documents/{doc_id}/session"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "session: {sess}");
+    let ticket = sess["token"].as_str().unwrap();
+    let ws = app.base.replacen("http://", "ws://", 1);
+    let url = format!("{ws}/v1/docsync/{doc_id}?ticket={ticket}");
+
+    let doc = yrs::Doc::new();
+    let frag = doc.get_or_insert_xml_fragment("prose");
+    let update = {
+        let mut txn = doc.transact_mut();
+        for (kind, id, text) in blocks {
+            let el = frag.push_back(&mut txn, XmlElementPrelim::empty(*kind));
+            el.insert_attribute(&mut txn, "id", *id);
+            if *kind == "heading" {
+                // A NUMBER, because `y-prosemirror` passes ProseMirror's own
+                // attribute value straight through — a fixture writing "2" would
+                // be testing against a document the editor never produces.
+                el.insert_attribute(&mut txn, "level", yrs::Any::BigInt(2));
+            }
+            el.push_back(&mut txn, XmlTextPrelim::new(*text));
+        }
+        txn.encode_update_v1()
+    };
+
+    let (mut sock, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
+    let mut frame = Vec::new();
+    frame.write_var(0u64); // SYNC
+    frame.write_var(2u64); // UPDATE
+    frame.write_buf(&update);
+    sock.send(WsMessage::Binary(frame.into())).await.unwrap();
+    // Let the server apply it before the socket closes.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    drop(sock);
+}
+
+async fn a_document(app: &TestApp, title: &str) -> String {
+    let (s, d) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/documents",
+            json!({ "title": title }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "document: {d}");
+    d["id"].as_str().unwrap().to_string()
+}
+
+/// An agent reads block ids and proposes against them; nothing goes live.
+#[tokio::test]
+async fn an_agent_proposes_against_block_ids_and_nothing_becomes_live_text() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let id = a_document(&app, "Chorleitung").await;
+    seed_prose(
+        &app,
+        &id,
+        &[
+            ("heading", "blk_aaa", "Chorleitung"),
+            (
+                "paragraph",
+                "blk_bbb",
+                "Wenn jemand absagt, passiert nichts.",
+            ),
+            ("paragraph", "blk_ccc", "Proben scheitern an Logistik."),
+        ],
+    )
+    .await;
+
+    // The read is annotated, which is what makes a reply addressable at all.
+    let (read, err) = app
+        .tool(&app.worker, "takomo_document_read", json!({ "id": id }))
+        .await;
+    assert!(!err, "read failed: {read}");
+    let md = read["markdown"].as_str().unwrap();
+    assert!(md.contains("<!-- blk_aaa -->"), "no block id in: {md}");
+    assert!(md.contains("## Chorleitung"), "heading level lost: {md}");
+    assert!(md.contains("Wenn jemand absagt"), "{md}");
+    assert_eq!(read["blocks"], json!(3), "{read}");
+    assert_eq!(read["pending_proposals"], json!(0), "{read}");
+
+    let (prop, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_propose",
+            json!({
+                "id": id,
+                "instruction": "tighten the second paragraph",
+                "summary": "Names who acts, which the original left open.",
+                "ops": [{
+                    "op": "replace",
+                    "id": "blk_bbb",
+                    "markdown": "Wenn jemand absagt, passiert nichts automatisch. Die Vertretung sucht die Chorleitung selbst.",
+                }],
+            }),
+        )
+        .await;
+    assert!(!err, "propose failed: {prop}");
+    assert_eq!(prop["status"], "pending", "{prop}");
+    assert_eq!(prop["operations"], json!(1), "{prop}");
+
+    // The prose is UNCHANGED. This is the assertion the whole feature is for:
+    // an agent that could write live text would make every other guarantee here
+    // decorative.
+    let (after, _) = app
+        .tool(&app.worker, "takomo_document_read", json!({ "id": id }))
+        .await;
+    let md_after = after["markdown"].as_str().unwrap();
+    assert!(
+        md_after.contains("Wenn jemand absagt, passiert nichts.")
+            && !md_after.contains("Die Vertretung sucht"),
+        "the agent's words must NOT be in the document until somebody accepts them: {md_after}"
+    );
+    assert_eq!(after["pending_proposals"], json!(1), "{after}");
+
+    // …and it is visible as something waiting on a person.
+    let (list, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_proposals",
+            json!({ "id": id }),
+        )
+        .await;
+    assert!(!err, "{list}");
+    assert_eq!(list["total"], json!(1), "{list}");
+    assert_eq!(list["items"][0]["status"], "pending", "{list}");
+    assert_eq!(list["items"][0]["author"], "agent:w1", "{list}");
+    assert_eq!(
+        list["items"][0]["summary"], "Names who acts, which the original left open.",
+        "the reason is what a reviewer reads first: {list}"
+    );
+}
+
+/// A scope is enforced, and a vanished block is reported rather than fatal.
+///
+/// Both are about the same thing from opposite sides: what an agent believes
+/// about the document is not what the document is. Telling a model to stay in
+/// one paragraph is not the same as knowing it did, and a human deleting a
+/// paragraph mid-run must not cost the whole run.
+#[tokio::test]
+async fn ops_outside_the_scope_or_naming_a_gone_block_are_dropped_and_reported() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let id = a_document(&app, "Scoped").await;
+    seed_prose(
+        &app,
+        &id,
+        &[
+            ("paragraph", "blk_one", "First."),
+            ("paragraph", "blk_two", "Second."),
+        ],
+    )
+    .await;
+
+    let (prop, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_propose",
+            json!({
+                "id": id,
+                "scope": ["blk_one"],
+                "summary": "in scope only",
+                "ops": [
+                    { "op": "replace", "id": "blk_one", "markdown": "First, tightened." },
+                    { "op": "replace", "id": "blk_two", "markdown": "Second, out of scope." },
+                    { "op": "delete", "id": "blk_gone" },
+                ],
+            }),
+        )
+        .await;
+    assert!(!err, "propose failed: {prop}");
+    assert_eq!(
+        prop["operations"],
+        json!(1),
+        "only the in-scope op may be offered: {prop}"
+    );
+    let skipped = prop["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 2, "{prop}");
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s.as_str().unwrap().contains("outside the requested scope")),
+        "the out-of-scope op must say so — a model cannot correct what it is not told: {prop}"
+    );
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s.as_str().unwrap().contains("blk_gone")),
+        "{prop}"
+    );
+
+    // Every op unusable is an error, not a silently empty proposal: a proposal
+    // nobody can act on looks the same as one nobody has looked at.
+    let (dead, err) = app
+        .tool(
+            &app.worker,
+            "takomo_document_propose",
+            json!({
+                "id": id,
+                "ops": [{ "op": "replace", "id": "blk_nope", "markdown": "…" }],
+            }),
+        )
+        .await;
+    assert!(err, "an unusable proposal must fail: {dead}");
+    assert_eq!(dead["code"], "validation.document_ops", "{dead}");
+}
+
+/// Proposing needs `write`; reading needs only `read`.
+#[tokio::test]
+async fn proposing_to_a_document_needs_the_write_scope() {
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+
+    let (s, tok) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "reader", "scopes": ["read"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{tok}");
+    let reader = tok["token"].as_str().unwrap().to_string();
+
+    let id = a_document(&app, "Guarded").await;
+    seed_prose(&app, &id, &[("paragraph", "blk_x", "Text.")]).await;
+
+    let (ok, err) = app
+        .tool(&reader, "takomo_document_read", json!({ "id": id }))
+        .await;
+    assert!(!err, "a read token must be able to read: {ok}");
+
+    let (refused, err) = app
+        .tool(
+            &reader,
+            "takomo_document_propose",
+            json!({ "id": id, "ops": [{ "op": "delete", "id": "blk_x" }] }),
+        )
+        .await;
+    assert!(err, "a read-only token must not propose: {refused}");
+    assert_eq!(refused["code"], "auth.scope", "{refused}");
+}

@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import type { Project } from '@/lib/initiatives'
+import { Checkbox } from '@/components/ui/checkbox'
 
 /** The scopes a token can carry, with what each one buys. */
 export const SCOPES = ['read', 'write', 'human', 'admin'] as const
@@ -157,11 +158,10 @@ export function NewTokenDialog({
                   key={s}
                   className="hover:bg-muted flex cursor-pointer items-start gap-2.5 rounded-lg px-2 py-1.5"
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     className="mt-0.5 cursor-pointer"
                     checked={scopes.includes(s)}
-                    onChange={() => setScopes((cur) => toggle(cur, s))}
+                    onCheckedChange={() => setScopes((cur) => toggle(cur, s))}
                   />
                   <span className="min-w-0">
                     <span className="font-mono text-[13px] font-[650]">{s}</span>

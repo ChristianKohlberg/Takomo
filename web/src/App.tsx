@@ -6,11 +6,15 @@
 // document on all five paths. What changed is that moving BETWEEN them no
 // longer reloads the page.
 //
-// Routes are eagerly imported on purpose. Lazy routes would emit extra chunks,
-// and the binary embeds a fixed set of asset files by name — vite.config.ts
-// fails the build if the output ever grows beyond it. Five surfaces sharing one
-// vendor chunk is small enough that splitting them buys nothing.
-import { useEffect } from 'react'
+// Most routes are eagerly imported: they share one vendor chunk and splitting
+// them would buy nothing. `/documents` is the exception and has to be, because
+// its editor pulls in Tiptap, ProseMirror and Yjs — together larger than the
+// rest of the app, and bytes every other surface would otherwise pay for on
+// first paint. Lazy chunks are possible at all because the binary embeds a
+// GENERATED asset manifest (build.rs) rather than four names; the note that used
+// to stand here, saying a fifth chunk would fail the build, described the older
+// contract.
+import { lazy, Suspense, useEffect } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router'
 import { App as BoardApp } from './pages/board/App'
 import { App as InboxApp } from './pages/inbox/App'
@@ -21,10 +25,16 @@ import { App as SchedulesApp } from './pages/schedules/App'
 import { App as VerificationApp } from './pages/verification/App'
 import { App as SettingsApp } from './pages/settings/App'
 
+/** The one lazy surface — see the note at the top of this file. */
+const DocumentsApp = lazy(() =>
+  import('./pages/documents/App').then((m) => ({ default: m.App })),
+)
+
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
   '/board': 'takomo · board',
   '/inbox': 'takomo · inbox',
+  '/documents': 'takomo · documents',
   '/initiatives': 'takomo · initiatives',
   '/mindmaps': 'takomo · mindmaps',
   '/schedules': 'takomo · schedules',
@@ -55,6 +65,17 @@ const router = createBrowserRouter([
     children: [
       { path: '/board', element: <BoardApp /> },
       { path: '/inbox', element: <InboxApp /> },
+      {
+        path: '/documents',
+        element: (
+          // No spinner: the chunk is fetched from the same origin and the shell
+          // it replaces is a blank page either way. A flash of "Loading…" on a
+          // fast connection reads as jank, not as feedback.
+          <Suspense fallback={null}>
+            <DocumentsApp />
+          </Suspense>
+        ),
+      },
       { path: '/initiatives', element: <InitiativesApp /> },
       { path: '/mindmaps', element: <MindmapApp /> },
       { path: '/schedules', element: <SchedulesApp /> },

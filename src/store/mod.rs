@@ -6,6 +6,7 @@
 mod answer_grants;
 mod checklist;
 mod claims;
+mod docs;
 mod environments;
 mod events;
 mod helpers;
@@ -37,6 +38,11 @@ pub use checklist::{
 };
 pub use claims::{
     ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
+};
+pub use docs::{
+    DocSession, DocumentCreate, DocumentFilter, DocumentPatch, COMPACT_AFTER_UPDATES,
+    DOC_SESSION_TTL_SECONDS, MAX_DOCUMENTS_PAGE, MAX_DOCUMENTS_PER_PROJECT, MAX_DOC_BYTES,
+    MAX_DOC_UPDATE_BYTES,
 };
 pub use environments::{
     EnvironmentCreate, EnvironmentFilter, EnvironmentPatch, MAX_ENVIRONMENTS_PAGE,
@@ -1705,6 +1711,92 @@ CREATE TABLE IF NOT EXISTS environments (
   UNIQUE(project, slug)
 );
 CREATE INDEX IF NOT EXISTS idx_environments_project ON environments(project);
+
+-- Collaborative documents: prose humans and agents edit AT THE SAME TIME.
+--
+-- Note what is not here: a `body`. The prose lives in a Yjs CRDT whose update log
+-- is `doc_updates` below, because a text column means last-write-wins, and
+-- last-write-wins is the exact failure this surface exists to remove — an agent
+-- that spends nine seconds thinking must not overwrite what was typed during
+-- them.
+--
+-- `version` therefore counts METADATA edits only. CRDT updates arrive by the
+-- thousand and would make an `If-Match` precondition meaningless.
+CREATE TABLE IF NOT EXISTS documents (
+  id          TEXT PRIMARY KEY,
+  project     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL,
+  -- Folder, `/`-separated. The same "a folder exists because a document names
+  -- it" convention `/initiatives` derives its tree from, which needs no folder
+  -- table and has no orphaned-directory problem.
+  path        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'draft',
+  -- The initiative this was distilled from, if any. No REFERENCES clause,
+  -- matching `checks.initiative`: validity is enforced in Rust so a wrong id
+  -- gets a teaching 422 instead of an opaque FOREIGN KEY failure, and a dangling
+  -- reference stays readable rather than blocking the row.
+  initiative  TEXT,
+  metadata    TEXT NOT NULL DEFAULT 'null',
+  version     INTEGER NOT NULL DEFAULT 1,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  archived_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);
+
+-- The CRDT update log: one row per flush, replayed in `seq` order to rebuild a
+-- document.
+--
+-- **There is no separate snapshot table, and that is a property of Yjs rather
+-- than a shortcut.** A Yjs document's entire state serializes as a single,
+-- ordinary update, so compacting a log is `DELETE` the rows and `INSERT` the
+-- merged blob — the same shape and the same format as an increment. A second
+-- table would only be a second thing to keep consistent.
+--
+-- Rows are appended by a DEBOUNCED flush, never per keystroke. Every write in
+-- this store goes through one `IMMEDIATE` transaction behind a process-wide
+-- mutex, and that serialization *is* the exactly-one-claimant guarantee for the
+-- ready queue — so a per-keystroke insert would put every claim, transition and
+-- heartbeat behind someone's typing. Live collaboration is served from memory;
+-- see `src/store/docs.rs`.
+CREATE TABLE IF NOT EXISTS doc_updates (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  document   TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  blob       BLOB NOT NULL,
+  bytes      INTEGER NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_doc_updates_document ON doc_updates(document, seq);
+
+-- A short-lived credential for ONE document's sync session.
+--
+-- The fifth credential shape in this store, and the reason is narrow: a browser
+-- `WebSocket` cannot set an `Authorization` header (the same limitation that
+-- keeps `/board` polling `/v1/events` rather than using SSE), so the credential
+-- has to ride the handshake. A real `tk_` token in a query string would put the
+-- org's actual credential in every access log; a ticket that expires and reaches
+-- exactly one document bounds what such a leak is worth.
+--
+-- It authenticates and nothing more. `can_write` is copied from the minting
+-- token's scopes at mint time, so a `read`-only reader joins as a read-only peer.
+CREATE TABLE IF NOT EXISTS doc_sessions (
+  id          TEXT PRIMARY KEY,
+  token_hash  TEXT NOT NULL UNIQUE,
+  document    TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  project     TEXT NOT NULL,
+  actor       TEXT NOT NULL,
+  -- The directory person this session belongs to, when the minting token was
+  -- bound to one. It is what collaborators see next to a caret.
+  "user"      TEXT REFERENCES users(id),
+  display     TEXT NOT NULL,
+  can_write   INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  revoked_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_doc_sessions_document ON doc_sessions(document);
 
 -- Named workflows that can be applied to any project.
 --

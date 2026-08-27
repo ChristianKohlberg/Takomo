@@ -8,6 +8,7 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    documents: 'Documents',
     initiatives: 'Initiatives',
     mindmaps: 'Mindmaps',
     schedules: 'Schedules',
@@ -262,6 +263,7 @@ export const STR = defineStrings({
     paneSaved: 'Saved — the earlier wording is still in the log.',
   },
   de: {
+    documents: 'Dokumente',
     initiatives: 'Initiativen',
     mindmaps: 'Mindmaps',
     schedules: 'Zeitpläne',

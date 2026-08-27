@@ -336,6 +336,7 @@ export function App() {
         nav: {
           board: t.board,
           inbox: t.inbox,
+          documents: t.documents,
           initiatives: t.initiatives,
           mindmaps: t.mindmaps,
           schedules: t.schedules,

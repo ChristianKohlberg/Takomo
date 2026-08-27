@@ -184,13 +184,49 @@ link, which is exactly the part that dominates here; measure before adopting it.
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox`, `/initiatives`, `/schedules`, `/verification`, `/environments` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). Every route serves the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus four fixed assets (`assets/{app,vendor,runtime}.js`, `assets/app.css`) by name — not a static-file handler, so nothing to traverse. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/initiatives`, `/schedules`, `/verification` and `/environments` are the ones that WRITE. See `web/README.md`. |
+| `/board`, `/inbox`, `/documents`, `/initiatives`, `/schedules`, `/verification`, `/environments` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). Every route serves the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus a `build.rs`-generated manifest of `web/dist/assets/` — an exact compile-time lookup table, not a static-file handler, so nothing to traverse. `/documents` is code-split; every other route is in the one eager bundle. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/documents`, `/initiatives`, `/schedules`, `/verification` and `/environments` are the ones that WRITE. See `web/README.md`. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the
 database. The `Store` surface is kept connection-agnostic so Postgres could slot in behind it.
 
-**Four independent auth paths, not one middleware with branches** — a token of one kind cannot
+**Documents** (`src/store/docs.rs`, `src/api/docsync.rs`, `docs/documents.md`) are prose humans and
+agents edit **at the same time**, built BESIDE `/initiatives` rather than over it. The initiative
+document is reduced from an entry log — latest `view` per pane wins — which is last-write-wins merge,
+so revising a paragraph loses whatever somebody typed meanwhile. Here the prose is a **Yjs CRDT**:
+there is no `body` column and no JSON route accepts text. `yrs` runs **in-process** over an axum
+WebSocket, so there is no Node sidecar and the one-binary property survives; the protocol is written
+out rather than taken from `yrs-axum`, which pins `yrs ^0.18` against a current 0.27. The
+load-bearing rule is that **broadcast is memory and persistence is batched**: a per-keystroke insert
+would put every claim, transition and heartbeat behind somebody's typing, because they all share the
+one write mutex. Compaction needs no snapshot table — a Yjs document's whole state *is* an ordinary
+update. `/documents` is the only code-split route, and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
+is what keeps the split real: a blanket vendor chunk sweeps Tiptap back onto the critical path while
+the build output still looks split.
+
+**An agent proposes; it never writes live text** (`src/api/docprops.rs`, `web/src/lib/doc-ops.ts`).
+Four MCP tools (`takomo_document_read|propose|proposals`, `takomo_documents`) let an agent read a
+document as markdown annotated with block ids and reply with OPS against them — `replace`,
+`insert_after`, `delete` — never with a document, which is what keeps a human's concurrent typing.
+The proposal lands in a `proposals` map in the same Y.Doc, so it shows up in an open browser at once
+and survives a disconnect, and a person accepts or rejects it. **Rust reads the CRDT; the browser
+applies the change**, because markdown→ProseMirror needs the editor's exact schema and only the
+editor has it. Scope is enforced server-side rather than prompted, dropped ops come back in `skipped`
+*and* are shown to the reviewer, and a decision is recorded rather than erased. Block highlighting is
+a ProseMirror **decoration**, never a mark — a mark would be content, which would break the very rule
+it illustrates. See `docs/documents.md`.
+
+**`POST /v1/documents/{id}/run` is the ONE route that calls a language model** (`src/docagent.rs`) —
+a deliberate exception to "Takomo stores, the agent computes", made because a prompt bar that only
+filed a request nobody would answer is not a feature. **Off unless `TAKOMO_TENSORX_API_KEY` is set**;
+`/v1/whoami` reports `features.doc_agent` so the page explains the absence instead of offering a bar
+that 503s. What the exception does *not* change: the model is schema-constrained to ops against block
+ids, its answer goes through the same `validate_ops` a fleet agent's does, and it lands as a proposal
+a person accepts. The anti-fabrication rules in the system prompt are load-bearing — the prototype
+measured a model inventing statistics — and a `replace` carrying the block's existing text is refused,
+because a model once answered that way while its summary described a change it had not made.
+
+**Five independent auth paths, not one middleware with branches** — a token of one kind cannot
 reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 
 - `tk_` bearer → `auth_middleware` (the whole `/v1` API) or `mcp_auth_middleware` (`/mcp`) —
@@ -202,15 +238,22 @@ reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 - `tks_` share → `share_auth_middleware` → **only** `/v1/shares/self*`, read-only.
 - `tka_` answer grant → `answer_auth_middleware` → **only** `/v1/answer/self`: read and answer
   exactly one question, then it's spent. This is what an outside expert gets.
+- `tkd_` document session → validated in `api::docsync` → **only** one document's sync socket. It
+  exists because a browser `WebSocket` cannot set an `Authorization` header — the same limitation
+  that keeps `/board` polling `/v1/events` rather than using SSE — so the credential must ride the
+  query string, and a real `tk_` token there would land in every access log. Scoped to one document,
+  expiring, revocable, and never more permissive than the token that minted it.
 
-**OAuth adds a fifth *route group*, deliberately not a fifth credential type.** `/oauth/*` and the
+**OAuth adds a *route group*, deliberately not a credential type of its own.** `/oauth/*` and the
 two `.well-known` documents sit OUTSIDE every middleware — they are what a client reads *in order to*
 obtain a credential, so requiring one makes the flow unstartable (before they existed these paths
 fell through to the `/v1` middleware and answered 401, which is exactly the dead end a hosted client
 cannot get past). What the token endpoint issues is an ordinary `tk_` row with an expiry, derived from
 the token a human pasted into the consent screen: same actor, a **subset** of its scopes, its project
 allowlist, its write budget. So `src/auth.rs` needs no new branch, and revocation, listing and rate
-limiting all work by the machinery that already existed. Two rules worth knowing before touching it:
+limiting all work by the machinery that already existed. (Contrast `tkd_` above, which *is* a fifth
+credential: it could not be a derived `tk_` token, because the thing it has to survive is travelling
+in a URL.) Two rules worth knowing before touching it:
 `admin` is never grantable through consent (`GRANTABLE_SCOPES`), and the `client_id`/`redirect_uri`
 checks come first so an error is never redirected to an unvalidated URI. `spec/auth.md` has the
 design, `docs/hosted-mcp-clients.md` the per-product wiring.
@@ -333,11 +376,15 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   to be ignored, and refusing it would refuse every real client.
 - **A page change needs TWO builds:** `npm run build` in `web/`, then `cargo build --release`. The
   Rust build embeds `web/dist/`, so editing `web/src/` alone changes nothing the server serves.
-- **The asset names are load-bearing.** Rust `include_str!`s `assets/app.js`, `assets/vendor.js`,
-  `assets/runtime.js` and `assets/app.css` by name, so content hashing is off and a fifth chunk would
-  404 at runtime. `web/vite.config.ts` fails the build if the output is not exactly that set — it
-  caught the bundler's own runtime chunk the first time it ran. Cache correctness comes from an ETag,
-  not the filename.
+- **The assets are a generated manifest, flat under `assets/`.** `build.rs` walks the committed
+  `web/dist/assets/` and bakes it into `ASSETS` (name → MIME → bytes); `/assets/{file}` is an exact
+  lookup in that table, so there is still no directory to traverse — `..` is just a name that is not
+  in it. Content hashing stays **off** and cache correctness comes from an ETag, not the filename.
+  What `web/vite.config.ts` still enforces is the shape the route can serve: `index.html` must exist
+  and everything else must sit **flat** under `assets/` (the route is one path segment). This
+  replaced a fixed four-name `include_str!` list, which code splitting made untenable — a dynamic
+  `import()` emits a chunk whose name is not knowable when Rust compiles. Add a new file extension to
+  `mime_for` in `build.rs` and the build tells you when you must.
   In the dev loop use `npm run dev` instead — it proxies `/v1` to a `backlot up` instance, so there
   is no Rust rebuild at all.
 - **No page renders user text through `innerHTML`.** `dangerouslySetInnerHTML` and `innerHTML =`
@@ -402,7 +449,7 @@ this serves. See `docs/environments.md`.
 
 Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workflow-format.md`,
 `spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`,
-`docs/environments.md`, `docs/epic-claims.md`
+`docs/environments.md`, `docs/documents.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
 `docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini).

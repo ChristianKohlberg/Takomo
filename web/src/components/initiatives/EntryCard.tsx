@@ -1,6 +1,7 @@
 import { Markdown } from '@/components/Markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { fmtAge, fmtBytes } from '@/lib/format'
 import type { Entry } from '@/lib/initiatives'
 
@@ -17,8 +18,8 @@ export interface EntryCardProps {
  */
 export function EntryCard({ entry: en, labels, onDownload }: EntryCardProps) {
   return (
-    <div className="bg-card border-border mb-2.5 rounded-[10px] border px-4 py-3.5">
-      <div className="mb-1.75 flex flex-wrap items-baseline gap-2">
+    <Card size="sm" className="mb-2.5 gap-2">
+      <CardContent className="flex flex-wrap items-baseline gap-2">
         <Badge
           variant="secondary"
           className="rounded-[5px] px-1.75 py-0.5 text-[10.5px] font-[750] tracking-[0.04em] uppercase"
@@ -37,36 +38,38 @@ export function EntryCard({ entry: en, labels, onDownload }: EntryCardProps) {
             {fmtAge(en.created_at)} · {labels.by} {en.author}
           </span>
         </div>
-      </div>
+      </CardContent>
 
-      {en.text && <Markdown text={en.text} className="text-[13.6px]" />}
+      <CardContent>
+        {en.text && <Markdown text={en.text} className="text-[13.6px]" />}
 
-      {en.source_uri && (
-        <div className="mt-1 text-[13.6px]">
-          <a
-            href={en.source_uri}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[color:var(--accent2)] underline [overflow-wrap:anywhere]"
+        {en.source_uri && (
+          <div className="mt-1 text-[13.6px]">
+            <a
+              href={en.source_uri}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[color:var(--accent2)] underline [overflow-wrap:anywhere]"
+            >
+              {en.source_uri}
+            </a>
+          </div>
+        )}
+
+        {en.has_content && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-primary mt-2.5 gap-1.75"
+            onClick={() => onDownload(en)}
           >
-            {en.source_uri}
-          </a>
-        </div>
-      )}
-
-      {en.has_content && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-primary mt-2.5 gap-1.75"
-          onClick={() => onDownload(en)}
-        >
-          <span>⬇ {en.filename || labels.download}</span>
-          <span className="text-muted-foreground font-mono text-[11.5px] font-semibold">
-            {fmtBytes(en.content_bytes)}
-          </span>
-        </Button>
-      )}
-    </div>
+            <span>⬇ {en.filename || labels.download}</span>
+            <span className="text-muted-foreground font-mono text-[11.5px] font-semibold">
+              {fmtBytes(en.content_bytes)}
+            </span>
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   )
 }

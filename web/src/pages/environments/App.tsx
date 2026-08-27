@@ -34,6 +34,7 @@ import {
 import { EnvironmentCard } from '@/components/environments/EnvironmentCard'
 import { EnvironmentDialog } from '@/components/environments/EnvironmentDialog'
 import { STR } from './strings'
+import { Checkbox } from '@/components/ui/checkbox'
 
 const LS_LANG = 'takomo.lang'
 
@@ -175,6 +176,7 @@ export function App() {
         nav: {
           board: t.board,
           inbox: t.inbox,
+          documents: t.documents,
           initiatives: t.initiatives,
           mindmaps: t.mindmaps,
           schedules: t.schedules,
@@ -244,10 +246,9 @@ export function App() {
       <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-4.5 pb-15 md:px-5">
         <div className="mx-auto flex w-full max-w-240 flex-col gap-3.5">
           <label className="text-muted-foreground flex items-center gap-2 self-start px-0.5 text-[12.5px]">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
+              onCheckedChange={(e) => setShowArchived(e === true)}
             />
             {t.showArchived}
           </label>
