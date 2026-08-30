@@ -11,17 +11,19 @@
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
-import type { MindmapNode } from '@/lib/mindmaps'
+import type { MapNode } from '@/lib/mindmap-doc'
 import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
   addChild: string
   addSibling: string
   empty: string
+  /** Marks a node somebody wrote notes on — the long form lives off the canvas. */
+  hasNotes: string
 }
 
 export interface OutlineProps {
-  nodes: MindmapNode[]
+  nodes: MapNode[]
   selected: string | null
   onSelect: (id: string) => void
   onChild: (id: string) => void
@@ -41,7 +43,7 @@ export function Outline({
 }: OutlineProps) {
   const kids = childrenOf(nodes)
 
-  const rows: { node: MindmapNode; depth: number }[] = []
+  const rows: { node: MapNode; depth: number }[] = []
   const walk = (parent: string | null, depth: number) => {
     for (const node of kids.get(parent) ?? []) {
       rows.push({ node, depth })
@@ -77,7 +79,14 @@ export function Outline({
             onClick={() => onSelect(node.id)}
             className="min-w-0 grow cursor-pointer text-left"
           >
-            <div className="text-foreground text-[13px] leading-snug">{node.text}</div>
+            <div className="text-foreground text-[13px] leading-snug">
+              {node.title}
+              {node.notes && (
+                <span className="text-muted-foreground ml-1.5" title={labels.hasNotes}>
+                  ≡
+                </span>
+              )}
+            </div>
             {node.promoted && (
               <div className="text-muted-foreground truncate font-mono text-[10.5px]">
                 → {node.promoted.kind} {node.promoted.id}

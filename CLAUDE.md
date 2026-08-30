@@ -238,7 +238,8 @@ reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 - `tks_` share → `share_auth_middleware` → **only** `/v1/shares/self*`, read-only.
 - `tka_` answer grant → `answer_auth_middleware` → **only** `/v1/answer/self`: read and answer
   exactly one question, then it's spent. This is what an outside expert gets.
-- `tkd_` document session → validated in `api::docsync` → **only** one document's sync socket. It
+- `tkd_` collab session → validated in `api::docsync` → **only** one object's sync socket, where
+  that object is a document *or* a mindmap. It
   exists because a browser `WebSocket` cannot set an `Authorization` header — the same limitation
   that keeps `/board` polling `/v1/events` rather than using SSE — so the credential must ride the
   query string, and a real `tk_` token there would land in every access log. Scoped to one document,
@@ -276,6 +277,18 @@ directory's name rather than the stub label lazy-creation wrote. Resolved, never
 in the directory is right everywhere at once. `takomo person` is retired for the same reason —
 two people-shaped commands where one did not add a person is a trap, so it is `takomo user` for the
 directory and `takomo tag` for the reference.
+
+**One update log for every collaborative object** (`src/store/crdt.rs`). `crdt_updates` and
+`crdt_sessions` are keyed by *(kind, id)* and serve both documents and mindmaps; the id prefix
+(`doc-`, `mm-`) carries the kind, which is a requirement rather than a convenience — `y-websocket`
+composes its URL as `serverUrl + "/" + room`, so the room must survive as ONE path segment and a
+`kind:id` room comes back mangled (`/v1/documents/{id}/sync` did exactly that and was reverted).
+Neither table carries a foreign key to its owner, because the owner is one of two tables; the
+cascade is `Store::purge_collab`, called from each kind's delete path. Widening those two tables was
+a **pre-schema** migration (`widen_doc_log_to_collab_objects`) for the reason
+`rename_lanes_to_checks` is: run it after the `CREATE TABLE IF NOT EXISTS` batch and an empty
+`crdt_updates` already stands beside the populated `doc_updates`, the copy declines, and every
+document comes back blank — a failure that looks exactly like success.
 
 **Concurrency is the load-bearing design.** `Store::with_tx` runs every mutation as one SQLite
 `IMMEDIATE` transaction behind a process-wide `Mutex<Connection>`; that single-writer
@@ -315,15 +328,39 @@ answering resumes it through the workflow's human-gated edge — but only once *
 blocking question on the ticket is answered (a barrier). An `advisory` question records a routed
 decision and never touches ticket state.
 
-**Mindmaps** (`src/store/mindmaps.rs`) are what comes *before* an initiative: a tree grown at
-conversation speed, six words a node, whose branches graduate into epics and initiatives. Two rules
-shape it and both are load-bearing. **Deleting one is ordinary** — an initiative is nurtured, a
-mindmap is scratch, and that is what makes it safe to start one early. **A node caps at 280 chars**,
-which is the method rather than a limitation: past that it wants to be an initiative, and the refusal
-says so. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id` link, so a map that
-produced work becomes a picture of that work. The whole map comes back in one read because a canvas
-cannot draw half a tree, which is affordable precisely because of the 500-node cap; `POST .../nodes`
-takes a **batch** because that is what an agent adding a branch sends. See `docs/mindmaps.md`.
+**Mindmaps** (`src/store/mindmaps.rs`, `src/store/mindmapdoc.rs`, `docs/mindmaps.md`) are what
+comes *before* an initiative: a tree grown at conversation speed, six words a node, whose branches
+graduate into epics and initiatives. Two rules shape it and both are load-bearing. **Deleting one is
+ordinary** — an initiative is nurtured, a mindmap is scratch, and that is what makes it safe to start
+one early. **A node's TITLE caps at 280 chars**, which is the method rather than a limitation: the
+line you scan has to stay scannable. That cap was relocated rather than retired when `notes` was
+added — notes do not render in the outline, so detail has somewhere to go without the branch
+stopping being readable. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id`
+link, so a map that produced work becomes a picture of that work.
+
+**A map is a CRDT, not rows** — one Yjs document per map over the same in-process `yrs` machinery
+`/documents` runs, because a brainstorm is a conversation and rows where the last writer wins throw
+one participant away silently. Three consequences. A node carries a **parent pointer**, so a move is
+one field write that merges (a nested tree would make it delete-plus-insert, which loses a subtree
+when two people drag at once) — the price is that two peers can each make a legal move that together
+form a **cycle**, so the tree is repaired deterministically ON READ, lowest id in the loop returning
+to the root, and an orphan returns to the root rather than vanishing. Sibling order is a
+**fractional index** (`src/fracdex.rs`, twinned with `web/src/lib/fracdex.ts` and bound by
+`tests/fixtures/fracdex-vectors.json` — the browser mints keys at typing speed and the API mints
+them in batches, so both implementations must agree byte for byte); the wire still reports
+`position` as a plain sibling rank, so the contract survived the storage change. And the caps hold
+on REST/MCP/CLI writes but not on individual keystrokes over the socket, which is the trust model
+`/documents` already ran. `mindmaps.nodes` is denormalised for exactly one reason: an honest count
+means replaying the document, affordable for one map and not for a list of two hundred.
+
+**Relationships** are the edge that is *not* the hierarchy — `{from, to, label}`, so a question
+hanging off what it questions and a screen navigating to another are one mechanism instead of three
+special cases. A dangling one is dropped on read, never repaired. **Attachments are pointers, never
+bytes**: a file in a CRDT log is replayed by every peer that joins, so one PDF makes the map slower
+to open for everybody forever. The whole map comes back in one read because a canvas cannot draw
+half a tree, affordable precisely because of the 500-node cap; `POST .../nodes` takes a **batch**
+because that is what an agent adding a branch sends. See `docs/mindmaps.md` and
+`spec/mindmap-crdt.md`.
 
 **Initiatives** (`src/store/initiatives.rs`) are the one thing here that is *not* work: an idea
 being nurtured — a product direction, the residue of a good conversation — fed by appending

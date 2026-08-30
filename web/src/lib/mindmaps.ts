@@ -197,3 +197,55 @@ export function promoteNode(
     { method: 'POST', headers: json, body: JSON.stringify({ target }) },
   )
 }
+
+// ---- the sync socket ------------------------------------------------------
+
+/**
+ * A ticket for one map's sync socket.
+ *
+ * The same `tkd_` credential `/documents` mints, widened from "document session"
+ * to "collab session": one object, expiring, revocable, and never more
+ * permissive than the token that asked for it. It exists because a browser
+ * `WebSocket` cannot set an `Authorization` header — the same limitation that
+ * keeps `/board` polling `/v1/events` — so the credential has to ride the
+ * handshake, and putting the viewer's real token in a query string would land it
+ * in every access log on the path.
+ */
+export interface MindmapSession {
+  object: string
+  kind: 'mindmap'
+  mindmap: string
+  session: string
+  /** The `tkd_` ticket. Shown once; the server keeps only its hash. */
+  token: string
+  /** False when the minting token had no `write` scope. */
+  can_write: boolean
+  /** The name collaborators see against this cursor. */
+  display: string
+  expires_at: string
+  /** The socket BASE, without the room. See `mindmapSyncBase`. */
+  url: string
+  /** The room to append — the map id. */
+  room: string
+  note?: string
+}
+
+export function mintMindmapSession(token: string, id: string): Promise<MindmapSession> {
+  return api<MindmapSession>(token, `/mindmaps/${encodeURIComponent(id)}/session`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * The absolute `ws(s)://` BASE for the sync socket — without the room.
+ *
+ * Returning the base rather than a finished URL is a wire requirement, not
+ * fussiness: `y-websocket` composes its own address as
+ * `serverUrl + "/" + room + "?" + params`, so a complete URL handed to it comes
+ * back mangled, with the room after the query string. Same rule, same reason, as
+ * `syncBase` in `documents.ts`.
+ */
+export function mindmapSyncBase(session: MindmapSession): string {
+  const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${location.host}${session.url}`
+}

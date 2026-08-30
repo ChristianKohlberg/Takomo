@@ -1,40 +1,43 @@
-// /mindmaps — brainstorming, before any of it is an idea.
+// /mindmaps — brainstorming, before any of it is an idea, with everyone in the
+// room at once.
 //
-// A rail of maps and one canvas. The canvas is where the thinking happens; the
-// rail exists because a project accumulates brainstorms and the newest is almost
-// never the one you want.
+// A rail of maps and one live canvas. The rail exists because a project
+// accumulates brainstorms and the newest is almost never the one you want.
 //
-// The page's own job is the part the canvas cannot do: keeping local state ahead
-// of the server so typing never waits on a round trip, and turning a selected node
-// into the two things a person does with it — grow from it, or graduate it.
+// What changed here is the state source, and it changed the page's job with it.
+// The map used to be rows: every keystroke was a REST write, every write was
+// followed by a refetch, and the page carried an optimistic tree so typing did
+// not wait on a round trip. It is now a CRDT — one replica shared by every
+// browser and every agent — so there is no optimistic copy to keep, no refetch,
+// no save button and no dirty state. The page mints the socket ticket and owns
+// the map list; `Live` owns the document.
+//
+// The list itself is still ordinary REST, because a map's title and status are
+// row metadata and were never the contended part.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui/button'
-import { Canvas } from '@/components/mindmap/Canvas'
-import { Outline } from '@/components/mindmap/Outline'
 import { TokenGate } from '@/components/TokenGate'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useToast } from '@/components/Toaster'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
-import { childrenOf, positionAfter, type Point } from '@/lib/mindmap-layout'
+import type { MapNode } from '@/lib/mindmap-doc'
 import {
-  addNodes,
   createMindmap,
   deleteMindmap,
-  deleteNode,
-  getMindmap,
   listMindmaps,
-  patchNode,
+  mintMindmapSession,
   promoteNode,
   type Mindmap,
-  type MindmapNode,
+  type MindmapSession,
 } from '@/lib/mindmaps'
 import { cn } from '@/lib/utils'
+import Live, { type ConnectionState } from './Live'
 import { STR } from './strings'
 import { Hint } from '@/components/Hint'
 
@@ -60,8 +63,10 @@ export function App() {
   const [openId, setOpenId] = useState<string | null>(
     () => new URLSearchParams(window.location.hash.slice(1)).get('m'),
   )
-  const [nodes, setNodes] = useState<MindmapNode[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  const [session, setSession] = useState<MindmapSession | null>(null)
+  const [connection, setConnection] = useState<ConnectionState>('connecting')
+  const [peers, setPeers] = useState<string[]>([])
+  const [selectedNode, setSelectedNode] = useState<MapNode | null>(null)
 
   const t = useMemo(() => pick(STR, lang), [lang])
   const canWrite = scopes.includes('write')
@@ -86,17 +91,6 @@ export function App() {
     setMaps(page.items)
     return page.items
   }, [token, project])
-
-  const refreshOpen = useCallback(
-    async (id: string) => {
-      const detail = await getMindmap(token, id)
-      setNodes(detail.nodes)
-      setMaps((current) =>
-        current.map((m) => (m.id === detail.mindmap.id ? detail.mindmap : m)),
-      )
-    },
-    [token],
-  )
 
   useEffect(() => {
     if (!token) return
@@ -135,146 +129,51 @@ export function App() {
       .catch(handleErr)
   }, [token, refreshList, handleErr])
 
+  // Opening a map means minting a ticket for its socket. Done here rather than
+  // inside the canvas so the canvas never has to know about tokens — it receives
+  // a session and connects.
   useEffect(() => {
     if (!token || !openId) {
-      setNodes([])
+      setSession(null)
       return
     }
     window.history.replaceState(null, '', `#m=${encodeURIComponent(openId)}`)
-    refreshOpen(openId).catch(handleErr)
-  }, [token, openId, refreshOpen, handleErr])
-
-  /**
-   * Run a write with the tree already updated locally.
-   *
-   * Typing must never wait on a round trip — that is the whole point of the
-   * surface — so the optimistic tree goes in first and the server's answer
-   * replaces it. A failure refetches rather than trying to unpick the edit: the
-   * server is the truth, and a half-reverted tree is worse than a redraw.
-   */
-  const write = useCallback(
-    async (optimistic: MindmapNode[] | null, run: () => Promise<unknown>) => {
-      if (!canWrite) {
-        toast(t.needWrite, 'err')
-        return
-      }
-      if (optimistic) setNodes(optimistic)
-      try {
-        await run()
-      } catch (e) {
-        handleErr(e)
-      } finally {
-        if (openId) await refreshOpen(openId).catch(handleErr)
-      }
-    },
-    [canWrite, toast, t, handleErr, openId, refreshOpen],
-  )
-
-  const addAfter = (id: string) => {
-    if (!openId) return
-    const node = nodes.find((n) => n.id === id)
-    if (!node) return
-    const siblings = childrenOf(nodes).get(node.parent ?? null) ?? []
-    const position = positionAfter(siblings, id)
-    void write(null, async () => {
-      const { nodes: made } = await addNodes(token, openId, [
-        {
-          parent: node.parent,
-          text: t.newThought,
-          ...(position !== null ? { position } : {}),
-        },
-      ])
-      // Select what was just made, so the next Enter continues from it.
-      setSelected(made[0]?.id ?? null)
-    })
-  }
-
-  const addChild = (id: string) => {
-    if (!openId) return
-    void write(null, async () => {
-      const { nodes: made } = await addNodes(token, openId, [
-        { parent: id, text: t.newThought },
-      ])
-      setSelected(made[0]?.id ?? null)
-    })
-  }
-
-  const addBranch = () => {
-    if (!openId) return
-    void write(null, async () => {
-      const { nodes: made } = await addNodes(token, openId, [{ text: t.newThought }])
-      setSelected(made[0]?.id ?? null)
-    })
-  }
-
-  const setText = (id: string, text: string) => {
-    if (!openId) return
-    const trimmed = text.trim()
-    const current = nodes.find((n) => n.id === id)
-    if (!current || trimmed === current.text) return
-    if (!trimmed) {
-      // An emptied node is a deletion in every outliner, and typing over a
-      // first-draft thought then clearing it is the commonest way to say
-      // "actually, no".
-      void write(
-        nodes.filter((n) => n.id !== id),
-        () => deleteNode(token, openId, id),
-      )
-      return
+    let cancelled = false
+    setSession(null)
+    setConnection('connecting')
+    setPeers([])
+    setSelectedNode(null)
+    mintMindmapSession(token, openId)
+      .then((s) => {
+        if (!cancelled) setSession(s)
+      })
+      .catch((e) => {
+        if (!cancelled) handleErr(e)
+      })
+    return () => {
+      cancelled = true
     }
-    void write(
-      nodes.map((n) => (n.id === id ? { ...n, text: trimmed } : n)),
-      () => patchNode(token, openId, id, { text: trimmed }),
-    )
-  }
+  }, [token, openId, handleErr])
 
-  const remove = (id: string) => {
-    if (!openId) return
-    if (!window.confirm(t.confirmPrune)) return
-    setSelected(null)
-    void write(null, () => deleteNode(token, openId, id))
-  }
-
-  const reparent = (id: string, parent: string) => {
-    if (!openId) return
-    void write(
-      // Optimistic: the node moves and un-pins, because a dropped node is placed
-      // by the layout under its new parent.
-      nodes.map((n) => (n.id === id ? { ...n, parent, at: null } : n)),
-      () => patchNode(token, openId, id, { parent, at: null }),
-    )
-  }
-
-  const place = (id: string, at: Point) => {
-    if (!openId) return
-    void write(
-      nodes.map((n) => (n.id === id ? { ...n, at } : n)),
-      () => patchNode(token, openId, id, { at }),
-    )
-  }
-
-  const tidy = () => {
-    if (!openId) return
-    const pinned = nodes.filter((n) => n.at != null)
-    if (pinned.length === 0) return
-    void write(
-      nodes.map((n) => ({ ...n, at: null })),
-      () => Promise.all(pinned.map((n) => patchNode(token, openId, n.id, { at: null }))),
-    )
-  }
+  const onConnection = useCallback((s: ConnectionState) => setConnection(s), [])
+  const onPeers = useCallback((names: string[]) => setPeers(names), [])
+  const onSelected = useCallback((node: MapNode | null) => setSelectedNode(node), [])
+  const onLiveError = useCallback((message: string) => toast(message, 'err'), [toast])
 
   const promote = (target: 'epic' | 'initiative') => {
-    if (!openId || !selected) return
-    void write(null, async () => {
-      const { created } = await promoteNode(token, openId, selected, target)
-      toast(
-        (target === 'epic' ? t.promotedEpic : t.promotedInitiative).replace(
-          '{id}',
-          created.id,
-        ),
-        'success',
-      )
-    })
+    if (!openId || !selectedNode) return
+    // Promotion goes over REST on purpose: it creates an epic or an initiative,
+    // which is work in the store rather than a change to this document. The
+    // server writes the node's link into the same room, so it arrives here over
+    // the socket like any other edit.
+    promoteNode(token, openId, selectedNode.id, target)
+      .then(({ created }) => {
+        toast(
+          (target === 'epic' ? t.promotedEpic : t.promotedInitiative).replace('{id}', created.id),
+          'success',
+        )
+      })
+      .catch(handleErr)
   }
 
   const newMap = async () => {
@@ -291,7 +190,6 @@ export function App() {
       })
       await refreshList()
       setOpenId(mindmap.id)
-      setSelected(null)
     } catch (e) {
       handleErr(e)
     }
@@ -327,7 +225,12 @@ export function App() {
     )
   }
 
-  const selectedNode = nodes.find((n) => n.id === selected) ?? null
+  const connectionLabel =
+    connection === 'connected'
+      ? t.connected
+      : connection === 'connecting'
+        ? t.connecting
+        : t.disconnected
 
   return (
     <AppShell
@@ -402,10 +305,7 @@ export function App() {
               <button
                 key={m.id}
                 type="button"
-                onClick={() => {
-                  setOpenId(m.id)
-                  setSelected(null)
-                }}
+                onClick={() => setOpenId(m.id)}
                 aria-current={m.id === openId}
                 className={cn(
                   'border-b-border-soft cursor-pointer border-b px-4 py-2.5 text-left',
@@ -425,19 +325,30 @@ export function App() {
           {open ? (
             <>
               <div className="border-b-border-soft flex flex-wrap items-center gap-2 border-b px-4 py-2">
-                <span className="text-foreground mr-1 text-[13.5px] font-[700]">
-                  {open.title}
+                <span className="text-foreground mr-1 text-[13.5px] font-[700]">{open.title}</span>
+                {/* No save button and no dirty state: the honest status on a
+                    shared document is whether this browser is connected. */}
+                <span
+                  className={
+                    'text-[11.5px] font-bold ' +
+                    (connection === 'connected'
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-muted-foreground')
+                  }
+                >
+                  ● {connectionLabel}
                 </span>
-                <Button variant="outline" size="sm" onClick={addBranch}>
-                  + {t.branch}
-                </Button>
+                <span className="text-muted-foreground text-[11.5px]">
+                  {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
+                </span>
+                <span className="grow" />
                 {/* Promotion is offered only with a node selected, because that is
                     the only time the question ("what does THIS become?") exists. */}
                 <Hint text={selectedNode?.promoted ? t.alreadyPromoted : t.promoteEpicHint}>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!selectedNode || !!selectedNode.promoted}
+                    disabled={!canWrite || !selectedNode || !!selectedNode.promoted}
                     onClick={() => promote('epic')}
                   >
                     {t.makeEpic}
@@ -447,13 +358,12 @@ export function App() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!selectedNode || !!selectedNode.promoted}
+                    disabled={!canWrite || !selectedNode || !!selectedNode.promoted}
                     onClick={() => promote('initiative')}
                   >
                     {t.makeInitiative}
                   </Button>
                 </Hint>
-                <span className="grow" />
                 <span className="text-muted-foreground hidden text-[11.5px] md:inline">
                   {t.keysHint}
                 </span>
@@ -462,46 +372,109 @@ export function App() {
                 </Button>
               </div>
 
-              {/* The canvas is the desktop surface; a phone gets the same tree as a
-                  list, which is a better shape for the screen rather than a
-                  consolation prize. */}
-              <Canvas
-                className="hidden md:flex"
-                mindmap={open}
-                nodes={nodes}
-                selected={selected}
-                onSelect={setSelected}
-                onText={setText}
-                onSibling={addAfter}
-                onChild={addChild}
-                onDelete={remove}
-                onReparent={reparent}
-                onPlace={place}
-                onTidy={tidy}
-                labels={{
-                  empty: t.canvasEmpty,
-                  emptyHint: t.canvasEmptyHint,
-                  fit: t.fit,
-                  tidy: t.tidy,
-                  zoomIn: t.zoomIn,
-                  zoomOut: t.zoomOut,
-                  cannotDrop: t.cannotDrop,
-                }}
-              />
-              <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
-                <Outline
-                  nodes={nodes}
-                  selected={selected}
-                  onSelect={setSelected}
-                  onChild={addChild}
-                  onSibling={addAfter}
+              {session ? (
+                <Live
+                  key={session.session}
+                  session={session}
+                  title={open.title}
+                  onConnection={onConnection}
+                  onPeers={onPeers}
+                  onSelected={onSelected}
+                  onError={onLiveError}
                   labels={{
+                    branch: t.branch,
+                    readOnly: t.readOnlyBanner,
+                    newThought: t.newThought,
+                    relationLabelPrompt: t.relationLabelPrompt,
+                    capNodes: t.capNodes,
+                    capRelationships: t.capRelationships,
+                    needWrite: t.needWrite,
+                  }}
+                  canvasLabels={{
+                    empty: t.canvasEmpty,
+                    emptyHint: t.canvasEmptyHint,
+                    fit: t.fit,
+                    tidy: t.tidy,
+                    radial: t.layoutRadial,
+                    tree: t.layoutTree,
+                    zoomIn: t.zoomIn,
+                    zoomOut: t.zoomOut,
+                    expand: t.expandBranch,
+                    collapse: t.collapseBranch,
+                    cannotDrop: t.cannotDrop,
+                    pickRelationTarget: t.pickRelationTarget,
+                  }}
+                  outlineLabels={{
                     addChild: t.addChild,
                     addSibling: t.addSibling,
                     empty: t.canvasEmptyHint,
+                    hasNotes: t.hasNotes,
+                  }}
+                  detailsLabels={{
+                    heading: t.detailsHeading,
+                    notes: t.notes,
+                    notesHint: t.notesHint,
+                    notesCount: t.notesCount,
+                    kind: t.kind,
+                    shape: t.shape,
+                    color: t.color,
+                    colorNone: t.colorNone,
+                    edgeLabel: t.edgeLabel,
+                    edgeLabelHint: t.edgeLabelHint,
+                    reviewed: t.reviewed,
+                    origin: t.origin,
+                    originHuman: t.originHuman,
+                    originAgent: t.originAgent,
+                    attachments: t.attachments,
+                    attachmentsHint: t.attachmentsHint,
+                    attachmentsFull: t.attachmentsFull,
+                    attachmentKind: t.attachmentKind,
+                    attachmentName: t.attachmentName,
+                    attachmentGist: t.attachmentGist,
+                    attachmentRef: t.attachmentRef,
+                    addAttachment: t.addAttachment,
+                    removeAttachment: t.removeAttachment,
+                    relations: t.relations,
+                    relationsHint: t.relationsHint,
+                    startRelation: t.startRelation,
+                    cancelRelation: t.cancelRelation,
+                    removeRelation: t.removeRelation,
+                    noRelations: t.noRelations,
+                    promoted: t.promotedLabel,
+                    deleteNode: t.deleteNode,
+                    readOnly: t.readOnlyBanner,
+                    kindThought: t.kindThought,
+                    kindQuestion: t.kindQuestion,
+                    kindDecision: t.kindDecision,
+                    kindScreen: t.kindScreen,
+                    kindComponent: t.kindComponent,
+                    shapeRounded: t.shapeRounded,
+                    shapeSquare: t.shapeSquare,
+                    shapePill: t.shapePill,
+                    attPdf: t.attPdf,
+                    attCode: t.attCode,
+                    attTable: t.attTable,
+                    attDiagram: t.attDiagram,
+                    attAudio: t.attAudio,
+                    attLink: t.attLink,
+                  }}
+                  pruneLabels={{
+                    title: t.pruneTitle,
+                    body: t.pruneBody,
+                    bodyLeaf: t.pruneBodyLeaf,
+                    confirmTitle: t.pruneConfirmTitle,
+                    confirmBody: t.pruneConfirmBody,
+                    watching: t.pruneWatching,
+                    next: t.pruneNext,
+                    remove: t.pruneRemove,
+                    cancel: t.cancel,
                   }}
                 />
-              </div>
+              ) : (
+                <div className="text-muted-foreground px-6 py-16 text-center text-[13px]">
+                  {t.connecting}
+                </div>
+              )}
             </>
           ) : (
             <div className="text-muted-foreground px-6 py-16 text-center">

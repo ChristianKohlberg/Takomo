@@ -10,10 +10,44 @@ A **mindmap** is that surface: a project-scoped tree you grow at conversation
 speed, whose branches can graduate into epics and initiatives, and which then
 keeps the link — so a map that mattered stays a way to navigate what it became.
 
+## Several people at once
+
+A brainstorm is a conversation, and a conversation has more than one person in
+it. So a map is not rows — it is **one CRDT document**, the same machinery
+`/documents` runs, and everyone on it is an ordinary peer: two people typing and
+an agent adding a branch all write to the same replica and see each other
+without reloading. There is no save button and no dirty state, because the
+question "did my change save" is replaced by "am I connected".
+
+`spec/mindmap-crdt.md` is the design; `src/store/mindmapdoc.rs` is the document
+model. Three consequences are worth knowing:
+
+**A move merges; a cycle is repaired.** A node carries a pointer to its parent,
+so dragging it somewhere is one field write rather than a delete and an insert
+(which is what loses a subtree when two people drag at once). The price is that
+two people can each make a legal move that together form a loop — neither was
+wrong, and no check at write time could have seen it coming. So the tree is
+repaired **when it is read**, by a fixed rule: the member of the loop with the
+lowest id comes back to the root. Every reader computes the same tree, which is
+the only property that matters. A node whose parent was pruned underneath it
+comes back to the root too, rather than disappearing.
+
+**Order is a fractional index, not a number.** Two people inserting between the
+same pair would both pick the same gapped integer. The stored key is a string
+with a midpoint between any two others, so an insert never renumbers anything
+and never has to agree with anybody. The API still reports `position` as a plain
+rank among siblings, because that is what it always meant to a reader.
+
+**The caps are enforced where writes are checked.** The server sees an API call;
+it does not see an individual keystroke arriving over the sync socket. So every
+cap below holds on REST, MCP and the CLI — which is where agents write, and
+agents are what would blow them — and the editor holds them in the browser. This
+is the same trust model `/documents` already runs.
+
 ## What it deliberately is not
 
 A brainstorming method, nothing more. No workflow, no claim, no lease, no ready
-queue, no assignment, no comments, no attachments, no expiry.
+queue, no assignment, no comments, no expiry.
 
 Two rules follow, and they shape everything:
 
@@ -23,16 +57,21 @@ and touches nothing its branches became — those graduated and are work in thei
 own right. That is what makes it safe to start a map early, which is the only
 time a brainstorm is worth anything.
 
-**A node is capped at 280 characters**, and that is the method rather than a
-limitation. A brainstorm whose nodes grow into paragraphs has quietly become a
-document, and the thing that made it valuable — reading a whole branch at a
-glance — is gone by the time anyone notices. So the refusal names the way out:
+**A node's title is capped at 280 characters**, and that is the method rather
+than a limitation. A brainstorm whose nodes grow into paragraphs has quietly
+become a document, and the thing that made it valuable — reading a whole branch
+at a glance — is gone by the time anyone notices.
+
+The rule has not been retired, it has been **relocated**. A node now also has
+`notes`, which do not render in the outline and are read by opening the node. So
+brevity is enforced exactly where it does the work — the line you scan — and
+detail no longer has to be truncated or promoted away:
 
 ```
-That node is 300 characters and the cap is 280. A mindmap node is a sentence or
+That title is 300 characters and the cap is 280. A mindmap node is a sentence or
 two — that brevity is what makes a branch readable at a glance.
-remedy: Shorten it, split it into two nodes, or promote the branch to an
-initiative where the long form belongs.
+remedy: Shorten it, move the detail into the node's notes, split it into two
+nodes, or promote the branch to an initiative where the long form belongs.
 ```
 
 ## Growing one
@@ -110,7 +149,10 @@ thought, indistinguishable from the first.
 
 | cap | value | why |
 |---|---|---|
-| node text | 280 chars | the method, above |
+| node title | 280 chars | the method, above |
+| node notes | 8,000 chars | the long form of ONE thought; past it the branch wants to be an initiative |
+| relationships per map | 1,000 | a canvas, not a graph database |
+| attachments per node | 20 | pointers are cheap, but a node with fifty of them is a folder |
 | nodes per map | 500 | a brainstorm, not a database. Past it: promote branches, or start a second map |
 | depth | 8 | the ceiling the initiative folder tree uses — past it nobody can read the shape |
 | nodes per call | 50 | one agent turn. The loop runs inside the write transaction that serializes every claim in the store |
@@ -121,8 +163,10 @@ worse contract than bounding it.
 
 ## Placement, order and shape
 
-`position` orders siblings and is gapped (1000, 2000, …), so inserting between two
-nodes is one write rather than a renumber of the ring.
+`position` on the wire is the node's **rank among its siblings** — 0, 1, 2. The
+key actually stored is a fractional index (see above); it never leaves the
+server, because it is an opaque string that has to stay free to change shape.
+Writing `position` means "put it at this index in its ring".
 
 `at` is hand placement — `{x, y}` or `null` to let the layout place it. Null by
 default, which keeps a map growing at typing speed tidy; a map that *has* been
@@ -131,7 +175,35 @@ the layout ("tidy up" clears them all). The pair is one field rather than two
 nullable numbers, because half a coordinate places nothing.
 
 Hanging a node off its own descendant is refused (`mindmap.cycle`). It would cut
-that branch off the map, and it is exactly what a drag makes easy to try.
+that branch off the map, and it is exactly what a drag makes easy to try. Two
+people doing it *simultaneously* cannot be refused — see the repair rule above.
+
+## Relationships — the edge that is not the tree
+
+The hierarchy answers "what is this part of". Everything else is a
+**relationship**: `{from, to, label}`, outside the tree, drawn differently on the
+canvas. A question hanging off the thing it questions, a screen that navigates to
+another, a plain "see also" — one mechanism instead of three special cases.
+
+```sh
+POST   /v1/mindmaps/{id}/relationships          {"from":"mn-…","to":"mn-…","label":"answers"}
+DELETE /v1/mindmaps/{id}/relationships/{rel}
+```
+
+A relationship whose end no longer resolves is dropped when the map is read,
+never repaired: there is no node to point at, and half an edge is not a fact
+about anything. Pruning a branch takes its relationships with it.
+
+## Attachments — a pointer, never the file
+
+A node can point at something that lives elsewhere: `{kind, name, gist, ref}`,
+where `kind` is one of `pdf`, `code`, `table`, `diagram`, `audio`, `link`.
+
+**Never the bytes.** Initiative entries are the only place in this store that
+holds binary blobs, and they carry byte caps because an unbounded upload holds
+the write mutex every claim waits on. Here the argument is stronger: bytes in a
+CRDT log are replayed by every peer that joins, so one PDF would make the map
+slower to open for everybody, forever.
 
 ## What reaches the event log
 
@@ -141,7 +213,11 @@ only), `mindmap_pruned`, `mindmap_promoted`, `mindmap_updated`, `mindmap_deleted
 
 Text and placement edits reach nothing. They change constantly while somebody is
 thinking, and an event per keystroke-batch would bury every other event in the
-project under one person's typing.
+project under one person's typing. Nothing typed over the sync socket emits an
+event at all, for the same reason — and no event is added for relationships,
+because one created in the browser would emit nothing while one created over the
+API would emit something, and an event that fires half the time is worse than no
+event.
 
 ## Surfaces
 
@@ -149,9 +225,10 @@ project under one person's typing.
 - **MCP** — `takomo_mindmap_new`, `takomo_mindmap_grow`, `takomo_mindmap_show`,
   `takomo_mindmap_list`, `takomo_mindmap_promote`. The two reads are free.
 - **REST** — `/v1/mindmaps`, see `spec/openapi.yaml`
-- **A canvas** at `/mindmaps` — drag a node onto another to reparent it, into
-  space to pin it; Enter for the next thought, Tab to go deeper, F2 to retype,
-  Delete to prune. A node with no hand placement is laid out automatically, which
+- **A canvas** at `/mindmaps` — live and shared, showing who else is on it.
+  Drag a node onto another to reparent it, into space to pin it; Enter for the
+  next thought, Tab to go deeper, F2 to retype, Delete to prune (a branch with
+  children asks twice, because everyone is watching it go). A node with no hand placement is laid out automatically, which
   keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
   back to the layout. On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.

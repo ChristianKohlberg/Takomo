@@ -19041,3 +19041,1238 @@ async fn a_sync_ticket_is_scoped_to_one_document_and_to_its_minter() {
         "a read-only peer's edit must never be persisted: {meta}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mindmaps as a collaborative object.
+//
+// The nodes stopped being rows and became one Yjs document per map, reusing the
+// machinery `/documents` already had. Two properties carry the whole change and
+// both are tested below: an existing map survives the conversion, and an agent
+// growing a branch shows up on a canvas somebody is already looking at.
+// ---------------------------------------------------------------------------
+
+/// Start a map, mint a sync ticket, and return `(mindmap id, ws url)`.
+///
+/// The mindmap id is the LAST path segment for the same wire reason a document's
+/// is: `y-websocket` composes `serverUrl + "/" + room + "?" + params`.
+async fn mindmap_socket(app: &TestApp, token: &str, title: &str) -> (String, String) {
+    let (s, made) = app
+        .post(
+            token,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": title }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let id = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (s, sess) = app
+        .post(token, &format!("/v1/mindmaps/{id}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "session mint failed: {sess}");
+    let ticket = sess["token"].as_str().unwrap();
+    let ws = app.base.replacen("http://", "ws://", 1);
+    (id.clone(), format!("{ws}/v1/docsync/{id}?ticket={ticket}"))
+}
+
+/// Attempt a sync handshake that is expected to be refused, and read the
+/// refusal.
+///
+/// The ticket is checked before the upgrade, so a refusal comes back as an
+/// ordinary HTTP response carried inside the handshake error rather than as a
+/// closed socket — which is what makes it worth asserting the code and not just
+/// that the connect failed.
+async fn ws_refusal(url: &str) -> (u16, Value) {
+    match tokio_tungstenite::connect_async(url).await {
+        Ok(_) => panic!("expected {url} to be refused, but the socket opened"),
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            let status = resp.status().as_u16();
+            let body = resp.body().clone().unwrap_or_default();
+            (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+        }
+        Err(e) => panic!("expected an HTTP refusal from {url}, got: {e}"),
+    }
+}
+
+/// Every node title in a peer's own replica, sorted so the assertion does not
+/// depend on map iteration order.
+///
+/// A peer reads the CRDT the way the browser does — `nodes` is a `Y.Map` of
+/// `Y.Map`, and `title` inside one is a `Y.Text` because two people really do
+/// type into the same node.
+fn peer_node_titles(doc: &yrs::Doc) -> Vec<String> {
+    use yrs::{Any, GetString, Map, Out, Transact};
+    let nodes = doc.get_or_insert_map("nodes");
+    let txn = doc.transact();
+    let mut out = Vec::new();
+    for (_, value) in nodes.iter(&txn) {
+        let Out::YMap(entry) = value else { continue };
+        match entry.get(&txn, "title") {
+            Some(Out::YText(t)) => out.push(t.get_string(&txn)),
+            Some(Out::Any(Any::String(s))) => out.push(s.to_string()),
+            _ => {}
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Build one node the way a browser peer does, and return the update to send.
+fn peer_node_update(doc: &yrs::Doc, id: &str, title: &str, order: &str) -> Vec<u8> {
+    use yrs::types::text::TextPrelim;
+    use yrs::{Map, MapPrelim, Transact};
+    let nodes = doc.get_or_insert_map("nodes");
+    let mut txn = doc.transact_mut();
+    let entry = nodes.insert(&mut txn, id.to_string(), MapPrelim::default());
+    entry.insert(&mut txn, "title", TextPrelim::new(title));
+    entry.insert(&mut txn, "notes", TextPrelim::new(""));
+    entry.insert(&mut txn, "order", order.to_string());
+    txn.encode_update_v1()
+}
+
+/// The migration that moves every document's prose into the shared log.
+///
+/// This is the one test whose absence would have been expensive. The mindmap
+/// conversion had a test from the start; the document log — which holds all the
+/// prose anybody has written, and whose old table is DROPPED — had none, and the
+/// first version of that migration was not atomic. An interrupted run left both
+/// tables present, which the guard read as "already done", and every document
+/// opened blank with the real bytes stranded in a table nothing read. The server
+/// started fine. Nothing said a word.
+///
+/// So this builds a genuine pre-upgrade database by hand and opens it.
+#[test]
+fn a_document_written_before_the_shared_log_survives_the_move_into_it() {
+    use rusqlite::params;
+    use takomo::store::Store;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("legacy.db");
+
+    // The old world: the two document-only tables, exactly as they were shaped
+    // before the log was widened.
+    {
+        let conn = rusqlite::Connection::open(&path).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+             -- `crdt_sessions` carries a foreign key to `users`, and it is
+             -- created before the schema batch runs, so the table it points at
+             -- has to exist. On a real pre-upgrade database it always does.
+             CREATE TABLE users (id TEXT PRIMARY KEY);
+             CREATE TABLE documents (
+               id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL,
+               path TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft',
+               initiative TEXT, metadata TEXT NOT NULL DEFAULT 'null',
+               version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER);
+             CREATE TABLE doc_updates (
+               seq INTEGER PRIMARY KEY AUTOINCREMENT,
+               document TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+               blob BLOB NOT NULL, bytes INTEGER NOT NULL,
+               created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE doc_sessions (
+               id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
+               document TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+               project TEXT NOT NULL, actor TEXT NOT NULL, \"user\" TEXT,
+               display TEXT NOT NULL, can_write INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);",
+        )
+        .expect("legacy schema");
+        conn.execute("INSERT INTO projects (id, name) VALUES ('tp', 'tp')", [])
+            .expect("project");
+        conn.execute(
+            "INSERT INTO documents (id, project, title, created_by, created_at, updated_at)
+             VALUES ('doc-legacy01', 'tp', 'Written before the move', 'someone', 1, 1)",
+            [],
+        )
+        .expect("document");
+
+        // Three flushes, in order. Replay order is the whole point: a Yjs log
+        // replayed out of order rebuilds a different document.
+        for (seq, body) in [(1i64, "first"), (2, "second"), (3, "third")] {
+            conn.execute(
+                "INSERT INTO doc_updates (seq, document, blob, bytes, created_by, created_at)
+                 VALUES (?1, 'doc-legacy01', ?2, ?3, 'someone', ?1)",
+                params![seq, body.as_bytes(), body.len() as i64],
+            )
+            .expect("update");
+        }
+        conn.execute(
+            "INSERT INTO doc_sessions (id, token_hash, document, project, actor, display,
+                                       can_write, expires_at, created_at)
+             VALUES ('ds-legacy01', 'hash-legacy', 'doc-legacy01', 'tp', 'someone', 'Someone', 1, 9999999999999, 1)",
+            [],
+        )
+        .expect("session");
+    }
+
+    // Opening the store is what runs the migration.
+    let store = Store::open(&path).expect("open the pre-upgrade database");
+
+    let updates = store
+        .load_collab_updates("doc-legacy01")
+        .expect("the document's history");
+    assert_eq!(
+        updates,
+        vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        "every flush must survive, in the order it was written"
+    );
+
+    {
+        let conn = rusqlite::Connection::open(&path).expect("reopen");
+        let doc_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM crdt_updates WHERE object_kind = 'document'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(doc_rows, 3, "and land as document rows in the shared log");
+
+        let old_gone: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('doc_updates', 'doc_sessions')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("tables");
+        assert_eq!(old_gone, 0, "the old tables are gone, not left to drift");
+
+        let session_object: String = conn
+            .query_row(
+                "SELECT object_id FROM crdt_sessions WHERE id = 'ds-legacy01'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the ticket moved too");
+        assert_eq!(session_object, "doc-legacy01");
+    }
+
+    // Opening again must be a no-op rather than a second copy.
+    drop(store);
+    let store = Store::open(&path).expect("reopen the store");
+    assert_eq!(
+        store
+            .load_collab_updates("doc-legacy01")
+            .expect("history")
+            .len(),
+        3,
+        "a second open must not duplicate the log"
+    );
+}
+
+/// An interrupted move must not read as a finished one.
+///
+/// This is the exact state a killed process used to leave behind: the new table
+/// created, nothing copied into it, the old table still holding every byte. The
+/// old guard saw the new table and skipped, and every document came back empty.
+/// Now the whole move is one transaction, so this state cannot be produced — and
+/// if it is ever found anyway, it must be refused loudly rather than served.
+#[test]
+fn a_half_finished_log_migration_is_refused_rather_than_served_empty() {
+    use rusqlite::params;
+    use takomo::store::Store;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("interrupted.db");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');
+             CREATE TABLE documents (
+               id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL,
+               path TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft',
+               initiative TEXT, metadata TEXT NOT NULL DEFAULT 'null',
+               version INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived_at INTEGER);
+             CREATE TABLE doc_updates (
+               seq INTEGER PRIMARY KEY AUTOINCREMENT, document TEXT NOT NULL,
+               blob BLOB NOT NULL, bytes INTEGER NOT NULL,
+               created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE crdt_updates (
+               seq INTEGER PRIMARY KEY AUTOINCREMENT, object_kind TEXT NOT NULL,
+               object_id TEXT NOT NULL, blob BLOB NOT NULL, bytes INTEGER NOT NULL,
+               created_by TEXT NOT NULL, created_at INTEGER NOT NULL);",
+        )
+        .expect("schema");
+        conn.execute("INSERT INTO projects (id, name) VALUES ('tp', 'tp')", [])
+            .expect("project");
+        conn.execute(
+            "INSERT INTO documents (id, project, title, created_by, created_at, updated_at)
+             VALUES ('doc-halfway01', 'tp', 'Halfway', 'someone', 1, 1)",
+            [],
+        )
+        .expect("document");
+        conn.execute(
+            "INSERT INTO doc_updates (document, blob, bytes, created_by, created_at)
+             VALUES ('doc-halfway01', ?1, 5, 'someone', 1)",
+            params![b"first".to_vec()],
+        )
+        .expect("update");
+        // The copy landed for this one, and then the process died.
+        conn.execute(
+            "INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at)
+             VALUES ('document', 'doc-halfway01', ?1, 5, 'someone', 1)",
+            params![b"first".to_vec()],
+        )
+        .expect("copied row");
+    }
+
+    let opened = Store::open(&path);
+    assert!(
+        opened.is_err(),
+        "a database in a state the migration cannot produce must be refused, not silently served"
+    );
+}
+
+/// A map that existed as rows before the CRDT converts, whole, on the first open.
+///
+/// This is the test that matters most on this change. Everything else here is a
+/// new capability that simply would not work; a bad conversion is a *silent*
+/// failure — the map opens, it just is not the map somebody left — so every fact
+/// the old rows carried is asserted individually rather than by a node count.
+#[tokio::test]
+async fn a_mindmap_stored_as_rows_before_the_crdt_survives_the_conversion() {
+    use rusqlite::params;
+
+    let app = TestApp::spawn().await;
+    // The row is created through the API so its project and metadata are real;
+    // no node has been added, so the map has no CRDT log yet — which is exactly
+    // the state every pre-existing map is in when the new binary first opens it.
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    // The old shape, written by hand: gapped positions, hand placement on one
+    // node, a promotion link on another. `ORDER BY position, created_at, id` is
+    // what the reader used, so the rows are deliberately inserted out of that
+    // order to prove the conversion sorts rather than trusts insertion order.
+    {
+        /// One row of the old table, named rather than positional: eight
+        /// anonymous tuple fields is a shape nobody can read a fixture out of.
+        struct LegacyNode {
+            id: &'static str,
+            parent: Option<&'static str>,
+            text: &'static str,
+            position: i64,
+            x: Option<f64>,
+            y: Option<f64>,
+            promoted_kind: Option<&'static str>,
+            promoted_id: Option<&'static str>,
+        }
+
+        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+        let rows = [
+            LegacyNode {
+                id: "mn-legacy02",
+                parent: None,
+                text: "integrations",
+                position: 2000,
+                x: Some(12.5),
+                y: Some(-4.0),
+                promoted_kind: None,
+                promoted_id: None,
+            },
+            LegacyNode {
+                id: "mn-legacy01",
+                parent: None,
+                text: "API",
+                position: 1000,
+                x: None,
+                y: None,
+                promoted_kind: None,
+                promoted_id: None,
+            },
+            LegacyNode {
+                id: "mn-legacy04",
+                parent: Some("mn-legacy01"),
+                text: "auth",
+                position: 2000,
+                x: None,
+                y: None,
+                promoted_kind: Some("initiative"),
+                promoted_id: Some("ini-legacy"),
+            },
+            LegacyNode {
+                id: "mn-legacy03",
+                parent: Some("mn-legacy01"),
+                text: "versioning?",
+                position: 1000,
+                x: None,
+                y: None,
+                promoted_kind: None,
+                promoted_id: None,
+            },
+        ];
+        for row in rows {
+            conn.execute(
+                "INSERT INTO mindmap_nodes (id, mindmap, parent, text, position, x, y, \
+                 promoted_kind, promoted_id, created_by, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'human:ada', 1700000000000, 1700000001000)",
+                params![
+                    row.id,
+                    map,
+                    row.parent,
+                    row.text,
+                    row.position,
+                    row.x,
+                    row.y,
+                    row.promoted_kind,
+                    row.promoted_id,
+                ],
+            )
+            .expect("insert legacy node");
+        }
+        // Nothing has converted it yet.
+        let logged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+                params![map],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 0, "the fixture must be a genuinely unconverted map");
+    }
+
+    // Opening the store is what runs the conversion — `Store::open` calls
+    // `adopt_legacy_nodes`, so an operator upgrading the binary pays for it once
+    // at startup and never has to run anything.
+    let _converted = app.open_store();
+
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    let nodes = whole["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 4, "every node survives: {whole}");
+    assert_eq!(
+        whole["mindmap"]["nodes"],
+        json!(4),
+        "the map's node count is exact on this read: {whole}"
+    );
+
+    // Tree order: parents before their children, siblings in the order the old
+    // gapped positions put them. A map somebody had arranged by hand comes back
+    // looking exactly as it was left, which is the whole promise of the
+    // conversion.
+    let order: Vec<&str> = nodes.iter().map(|n| n["text"].as_str().unwrap()).collect();
+    assert_eq!(
+        order,
+        vec!["API", "versioning?", "auth", "integrations"],
+        "the old sort survives: {whole}"
+    );
+
+    let by_id = |id: &str| -> Value {
+        nodes
+            .iter()
+            .find(|n| n["id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} missing from {whole}"))
+            .clone()
+    };
+
+    // Parentage, and `position` as it now reads: a rank among SIBLINGS, so both
+    // rings start at 0 rather than continuing a global sequence.
+    let api = by_id("mn-legacy01");
+    assert_eq!(api["parent"], Value::Null, "{api}");
+    assert_eq!(api["position"], json!(0), "{api}");
+    assert_eq!(by_id("mn-legacy02")["position"], json!(1));
+    assert_eq!(by_id("mn-legacy03")["parent"], json!("mn-legacy01"));
+    assert_eq!(by_id("mn-legacy03")["position"], json!(0));
+    assert_eq!(by_id("mn-legacy04")["position"], json!(1));
+
+    // Hand placement carries across. It is a fact somebody established by
+    // dragging a node and it is not recoverable if dropped.
+    assert_eq!(
+        by_id("mn-legacy02")["at"],
+        json!({ "x": 12.5, "y": -4.0 }),
+        "placement survives"
+    );
+    assert_eq!(
+        api["at"],
+        Value::Null,
+        "a node nobody dragged stays unplaced"
+    );
+
+    // So does the link to what a branch became — the reason a map keeps earning
+    // its place after the brainstorming is over.
+    assert_eq!(
+        by_id("mn-legacy04")["promoted"],
+        json!({ "kind": "initiative", "id": "ini-legacy" }),
+        "the promotion link survives"
+    );
+    assert_eq!(api["promoted"], Value::Null);
+
+    // Authorship, and the defaults for everything the old model had no column
+    // for. `origin` is `human` because nobody can honestly say otherwise about a
+    // node that predates the question.
+    assert_eq!(api["created_by"], json!("human:ada"), "{api}");
+    assert_eq!(api["notes"], json!(""), "{api}");
+    assert_eq!(api["origin"], json!("human"), "{api}");
+    assert_eq!(api["kind"], json!("thought"), "{api}");
+    assert_eq!(api["title"], api["text"], "both names for one field: {api}");
+    assert_eq!(whole["relationships"], json!([]), "{whole}");
+
+    // The outline — the shape a model reads — is rebuilt from the document, not
+    // from the rows that are still sitting there.
+    let (s, outline) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/outline"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{outline}");
+    assert!(
+        outline["outline"]
+            .as_str()
+            .unwrap()
+            .contains("- API\n  - versioning?\n  - auth\n- integrations"),
+        "the converted tree reads back in shape: {outline}"
+    );
+
+    // And it converts exactly once. A second open must not append a second copy
+    // of the map on top of itself — the guard is "no log yet", so this is the
+    // assertion that the guard is the right one.
+    let _again = app.open_store();
+    let (s, twice) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{twice}");
+    assert_eq!(
+        twice["nodes"].as_array().unwrap().len(),
+        4,
+        "converting twice must not duplicate the map: {twice}"
+    );
+}
+
+/// An agent growing a branch appears on a canvas somebody is already looking at.
+///
+/// This is the point of the whole change. Before it, the API wrote rows and the
+/// browser found out on its next reload; now the REST write lands on the same
+/// replica the socket peers hold, so there are not two copies to reconcile.
+#[tokio::test]
+async fn a_node_added_over_the_api_reaches_a_connected_canvas_without_a_reload() {
+    use docsync_support::*;
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::Decode;
+    use yrs::Transact;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("a canvas connects");
+
+    // The peer holds its own replica, exactly as the browser does.
+    let mine = yrs::Doc::new();
+    let _ = mine.get_or_insert_map("nodes");
+
+    // The agent's write goes through the ordinary REST route — no socket, no
+    // awareness of who is watching.
+    let (s, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "settlement window" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{grown}");
+
+    // The canvas must learn about it over the socket it already has open.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let msg = peer.next().await.expect("frame").expect("ok");
+            let WsMessage::Binary(bytes) = msg else {
+                continue;
+            };
+            let Some((kind, payload)) = read_sync(&bytes) else {
+                continue;
+            };
+            // Skip the server's opening STEP1 (a state vector, not an update)
+            // and the empty diff it answers our own STEP1 with.
+            if (kind != SYNC_UPDATE && kind != SYNC_STEP2) || payload.len() <= 2 {
+                continue;
+            }
+            let mut txn = mine.transact_mut();
+            txn.apply_update(yrs::Update::decode_v1(&payload).unwrap())
+                .unwrap();
+            drop(txn);
+            if peer_node_titles(&mine) == vec!["settlement window".to_string()] {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the agent's node must reach the open canvas without a reload");
+}
+
+/// Two people growing one map at the same time both keep their branch.
+///
+/// The mirror of `two_peers_edit_one_document_and_both_edits_survive`, and the
+/// reason a mindmap became a CRDT at all: the old store wrote rows, so two
+/// people adding to one map raced, and the loser found out by not finding their
+/// node. Neither peer here ever sends a map — they send operations that merge.
+#[tokio::test]
+async fn two_peers_grow_one_mindmap_and_both_branches_survive() {
+    use docsync_support::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::updates::decoder::Decode;
+    use yrs::Transact;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (mut a, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("peer A");
+    let (mut b, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("peer B");
+
+    let doc_a = yrs::Doc::new();
+    let doc_b = yrs::Doc::new();
+    let _ = doc_b.get_or_insert_map("nodes");
+
+    let update_a = peer_node_update(&doc_a, "mn-peera001", "Rückerstattungen", "a0");
+    a.send(WsMessage::Binary(
+        sync_message(SYNC_UPDATE, &update_a).into(),
+    ))
+    .await
+    .unwrap();
+
+    // B sees A's branch. The server also opens with a STEP1, so read until the
+    // update arrives rather than assuming the first frame is it.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let msg = b.next().await.expect("frame").expect("ok");
+            let WsMessage::Binary(bytes) = msg else {
+                continue;
+            };
+            let Some((kind, payload)) = read_sync(&bytes) else {
+                continue;
+            };
+            if (kind != SYNC_UPDATE && kind != SYNC_STEP2) || payload.len() <= 2 {
+                continue;
+            }
+            let mut txn = doc_b.transact_mut();
+            txn.apply_update(yrs::Update::decode_v1(&payload).unwrap())
+                .unwrap();
+            drop(txn);
+            if !peer_node_titles(&doc_b).is_empty() {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("peer B must see peer A's branch");
+    assert_eq!(
+        peer_node_titles(&doc_b),
+        vec!["Rückerstattungen".to_string()],
+        "peer B must see peer A's words"
+    );
+
+    // Now B grows its own, on top of what it just merged.
+    let update_b = peer_node_update(&doc_b, "mn-peerb001", "Streitfälle", "a1");
+    b.send(WsMessage::Binary(
+        sync_message(SYNC_UPDATE, &update_b).into(),
+    ))
+    .await
+    .unwrap();
+
+    // Both peers leave, so the room flushes and is dropped; the read below then
+    // rebuilds the map from the log, which is the path a page load takes.
+    drop(a);
+    drop(b);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    let titles: Vec<&str> = whole["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        titles.contains(&"Rückerstattungen") && titles.contains(&"Streitfälle"),
+        "both peers' branches must survive — this is the whole point of the CRDT: {whole}"
+    );
+}
+
+/// A sync ticket reaches one object, and a map's ticket is not a document's.
+///
+/// `tkd_` was widened from "document session" to "collab session" rather than
+/// given a sixth prefix, so this is the assertion that widening the credential
+/// did not widen what one of them reaches. The ticket travels in a query string
+/// — a browser WebSocket cannot set an Authorization header — so what a leaked
+/// one is worth is precisely what these refusals bound.
+#[tokio::test]
+async fn a_sync_ticket_for_a_map_cannot_open_a_document_and_the_reverse() {
+    let app = TestApp::spawn().await;
+    let (map, map_url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (doc, doc_url) = document_socket(&app, &app.admin, "Konzept").await;
+    let map_ticket = map_url.split("ticket=").nth(1).unwrap().to_string();
+    let doc_ticket = doc_url.split("ticket=").nth(1).unwrap().to_string();
+
+    let ws = app.base.replacen("http://", "ws://", 1);
+
+    // A refused handshake answers as ordinary HTTP — the upgrade has not
+    // happened yet — which is also what a browser surfaces most usefully on a
+    // failed connect. So the refusal carries a code, not just a closed socket.
+    let (status, body) = ws_refusal(&format!("{ws}/v1/docsync/{doc}?ticket={map_ticket}")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN.as_u16(), "{body}");
+    assert_eq!(
+        body["code"], "document.session_wrong_document",
+        "a map's ticket must not open a document: {body}"
+    );
+
+    let (status, body) = ws_refusal(&format!("{ws}/v1/docsync/{map}?ticket={doc_ticket}")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN.as_u16(), "{body}");
+    assert_eq!(
+        body["code"], "mindmap.session_wrong_mindmap",
+        "a document's ticket must not open a map: {body}"
+    );
+
+    // And the map's socket is not reachable without a ticket at all.
+    let (status, body) = ws_refusal(&format!("{ws}/v1/docsync/{map}")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED.as_u16(), "{body}");
+    assert_eq!(body["code"], "mindmap.session_missing", "{body}");
+
+    // The mint routes are scoped the same way, and check the kind against the id
+    // rather than trusting the route: minting is where a caller would otherwise
+    // be handed a ticket for something they did not ask for.
+    let (s, wrong) = app
+        .post(
+            &app.admin,
+            &format!("/v1/documents/{map}/session"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{wrong}");
+    assert_eq!(wrong["code"], "notfound.document", "{wrong}");
+    let (s, wrong) = app
+        .post(
+            &app.admin,
+            &format!("/v1/mindmaps/{doc}/session"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{wrong}");
+    assert_eq!(wrong["code"], "notfound.mindmap", "{wrong}");
+
+    // A read-only token mints a read-only ticket for a map, exactly as for a
+    // document — the ticket carries no more than the token that asked for it.
+    let reader = app.mint("reader", &["read"], None);
+    let (s, sess) = app
+        .post(&reader, &format!("/v1/mindmaps/{map}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{sess}");
+    assert_eq!(sess["can_write"], json!(false), "{sess}");
+    assert_eq!(sess["kind"], json!("mindmap"), "{sess}");
+    assert_eq!(sess["object"], json!(map), "{sess}");
+    assert_eq!(
+        sess["mindmap"], sess["object"],
+        "the kind-specific key stays, so a client written against /documents keeps working: {sess}"
+    );
+    assert_eq!(
+        sess["room"],
+        json!(map),
+        "the room is the bare id — y-websocket appends it to `url`: {sess}"
+    );
+}
+
+/// A relationship is an edge outside the hierarchy, and it dies with its ends.
+///
+/// The tree answers "what is this part of"; this answers everything else. It is
+/// one mechanism instead of three special cases, which is why it is a separate
+/// collection rather than more fields on a node.
+#[tokio::test]
+async fn a_relationship_links_two_nodes_outside_the_hierarchy_and_goes_with_them() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [
+                { "text": "checkout" },
+                { "text": "refunds" },
+                { "text": "who owns the refund window?", "kind": "question" },
+            ] }),
+        )
+        .await;
+    let ids: Vec<String> = grown["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap().to_string())
+        .collect();
+    let (checkout, refunds, question) = (&ids[0], &ids[1], &ids[2]);
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships"),
+            json!({ "from": question, "to": refunds, "label": "asks about" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let rel = made["relationship"]["id"].as_str().unwrap().to_string();
+    assert!(rel.starts_with("mr-"), "{made}");
+    assert_eq!(made["relationship"]["label"], json!("asks about"), "{made}");
+
+    // It comes back with the map, because a canvas has to draw the cross-links
+    // in the same pass it draws the tree.
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    assert_eq!(
+        whole["relationships"],
+        json!([{ "id": rel, "from": question, "to": refunds, "label": "asks about" }]),
+        "{whole}"
+    );
+    // And it does not pretend to be part of the tree.
+    assert_eq!(
+        whole["total"],
+        json!(3),
+        "a relationship is not a node: {whole}"
+    );
+
+    // An edge to nothing is refused rather than stored and hidden on read: the
+    // caller named a node, and being told which one is missing is the answer.
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships"),
+            json!({ "from": question, "to": "mn-nosuchnode" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{refused}");
+    assert_eq!(refused["code"], "notfound.mindmap_node", "{refused}");
+
+    // A self-edge says nothing, and drawing one only makes the canvas harder to
+    // read.
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships"),
+            json!({ "from": question, "to": question }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(
+        refused["code"], "validation.mindmap_relationship",
+        "{refused}"
+    );
+
+    // Deleting one takes only the edge; both nodes stay where they are.
+    let (s, second) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships"),
+            json!({ "from": checkout, "to": refunds }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{second}");
+    let second_id = second["relationship"]["id"].as_str().unwrap().to_string();
+    let (s, gone) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships/{second_id}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{gone}");
+    assert_eq!(gone["ok"], json!(true), "{gone}");
+    let (s, gone) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/relationships/{second_id}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{gone}");
+    assert_eq!(gone["code"], "notfound.mindmap_relationship", "{gone}");
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        whole["total"],
+        json!(3),
+        "deleting an edge keeps both nodes: {whole}"
+    );
+
+    // Pruning a node takes its cross-links with it. A dangling edge is not a
+    // node and there is nothing to keep.
+    let (s, pruned) = app
+        .delete(&app.worker, &format!("/v1/mindmaps/{map}/nodes/{refunds}"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{pruned}");
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        whole["relationships"],
+        json!([]),
+        "an edge to a pruned node goes with it: {whole}"
+    );
+}
+
+/// An attachment is a pointer, and a node carries at most twenty.
+///
+/// Never the bytes: a CRDT update log is replayed by every peer that joins, so a
+/// map holding a PDF would get slower to open for everybody, forever. The cap on
+/// the count is the second half of that argument.
+#[tokio::test]
+async fn an_attachment_points_at_something_and_a_node_carries_a_bounded_number() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "settlement window" }),
+        )
+        .await;
+    let node = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments"),
+            json!({
+                "kind": "link",
+                "name": "Scheme settlement rules",
+                "gist": "T+2 for cards, same day for SEPA instant.",
+                "ref": "https://example.invalid/settlement",
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let attachment = made["attachment"]["id"].as_str().unwrap().to_string();
+    assert!(attachment.starts_with("ma-"), "{made}");
+    assert_eq!(
+        made["attachment"]["ref"],
+        json!("https://example.invalid/settlement"),
+        "{made}"
+    );
+
+    // It rides on the node, so a canvas drawing the map already has it.
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        whole["nodes"][0]["attachments"],
+        json!([{
+            "id": attachment,
+            "kind": "link",
+            "name": "Scheme settlement rules",
+            "gist": "T+2 for cards, same day for SEPA instant.",
+            "ref": "https://example.invalid/settlement",
+        }]),
+        "{whole}"
+    );
+
+    // The kinds are an enum so a project cannot grow three spellings of "code"
+    // and lose the ability to filter on it.
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments"),
+            json!({ "kind": "spreadsheet", "name": "Q3" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(
+        refused["code"], "validation.mindmap_attachment",
+        "{refused}"
+    );
+    assert!(
+        refused["message"].as_str().unwrap().contains("table"),
+        "the refusal names the kinds that would work: {refused}"
+    );
+
+    // A name is what somebody reads before deciding to follow the pointer, so an
+    // attachment without one is refused rather than stored unlabelled.
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments"),
+            json!({ "kind": "pdf", "name": "   " }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(
+        refused["code"], "validation.mindmap_attachment",
+        "{refused}"
+    );
+
+    let (s, gone) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments/{attachment}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{gone}");
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(whole["nodes"][0]["attachments"], json!([]), "{whole}");
+    let (s, gone) = app
+        .delete(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments/{attachment}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{gone}");
+    assert_eq!(gone["code"], "notfound.mindmap_attachment", "{gone}");
+
+    // Twenty fit; the twenty-first is refused. A node carrying more than that
+    // has become a folder.
+    for n in 0..20 {
+        let (s, ok) = app
+            .post(
+                &app.worker,
+                &format!("/v1/mindmaps/{map}/nodes/{node}/attachments"),
+                json!({ "kind": "code", "name": format!("fixture {n}") }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "attachment {n}: {ok}");
+    }
+    let (s, full) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}/attachments"),
+            json!({ "kind": "code", "name": "one too many" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{full}");
+    assert_eq!(full["code"], "mindmap.attachments_full", "{full}");
+}
+
+/// `notes` is the long form the 280-character title cap points at.
+///
+/// The cap is the method rather than a limitation — a branch you cannot read at
+/// a glance has stopped being a brainstorm — and adding `notes` does not retire
+/// that argument, it relocates it. Which is why the refusal has to name notes as
+/// a way out: a cap with no escape hatch teaches people to write "…".
+#[tokio::test]
+async fn notes_are_the_long_form_and_the_title_refusal_now_points_at_them() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let long = "Settlement is T+2 for card schemes and same-day for SEPA instant, \
+                which is why the reconciliation job cannot assume one window.";
+    let (s, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "settlement window", "notes": long }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{grown}");
+    let node = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(grown["nodes"][0]["notes"], json!(long), "{grown}");
+
+    // Notes do not render in the outline — that is what keeps the title cap's
+    // promise intact now that there is somewhere for detail to go.
+    let (_, outline) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/outline"))
+        .await;
+    let text = outline["outline"].as_str().unwrap();
+    assert!(text.contains("- settlement window"), "{text}");
+    assert!(
+        !text.contains("SEPA"),
+        "the outline stays readable at a glance: {text}"
+    );
+
+    let (s, patched) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "notes": "Rewritten." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    assert_eq!(patched["node"]["notes"], json!("Rewritten."), "{patched}");
+    assert_eq!(
+        patched["node"]["text"],
+        json!("settlement window"),
+        "patching notes leaves the title alone: {patched}"
+    );
+
+    // 8,000 characters is where notes stop being one thought's long form.
+    let (s, refused) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "notes": "n".repeat(8_001) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.mindmap_notes", "{refused}");
+    assert!(
+        refused["message"].as_str().unwrap().contains("initiative"),
+        "the refusal names where the long form belongs: {refused}"
+    );
+    let (s, ok) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "notes": "n".repeat(8_000) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "exactly at the cap is fine: {ok}");
+
+    // The title is still 280, and the refusal now offers notes alongside
+    // promotion rather than promotion alone.
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "t".repeat(281) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.mindmap_node_text", "{refused}");
+    let remedy = refused["remedy"].as_str().unwrap_or_default();
+    assert!(
+        remedy.contains("notes"),
+        "the way out now includes the node's notes: {refused}"
+    );
+    assert!(
+        remedy.contains("initiative"),
+        "and still names promotion: {refused}"
+    );
+}
+
+/// `position` is a rank among siblings on the way out and an index among them on
+/// the way in.
+///
+/// It used to be a gapped global integer (1000, 2000, …). Gapped integers cannot
+/// survive concurrency — two peers inserting between the same pair both pick
+/// 1500 — so the order key underneath is now a fractional index, and the
+/// published contract is the rank that integer always meant to a reader.
+#[tokio::test]
+async fn position_is_a_rank_among_siblings_and_places_a_node_among_them_on_write() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let (_, grown) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [{ "text": "API" }, { "text": "integrations" }] }),
+        )
+        .await;
+    let api = grown["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(grown["nodes"][0]["position"], json!(0), "{grown}");
+    assert_eq!(grown["nodes"][1]["position"], json!(1), "{grown}");
+
+    // A second ring starts at 0 again. That is the whole difference from the old
+    // column: a position is only meaningful next to its own siblings.
+    let (_, children) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "nodes": [
+                { "parent": api, "text": "versioning?" },
+                { "parent": api, "text": "auth" },
+            ] }),
+        )
+        .await;
+    assert_eq!(children["nodes"][0]["position"], json!(0), "{children}");
+    assert_eq!(children["nodes"][1]["position"], json!(1), "{children}");
+
+    // `position` on write is an index among the new node's siblings, so 0 puts
+    // it first and everything after it shifts by one.
+    let (s, inserted) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "parent": api, "text": "rate limits", "position": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{inserted}");
+    assert_eq!(inserted["nodes"][0]["position"], json!(0), "{inserted}");
+
+    let ring = |whole: &Value, parent: &str| -> Vec<String> {
+        let mut ring: Vec<(i64, String)> = whole["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["parent"] == json!(parent))
+            .map(|n| {
+                (
+                    n["position"].as_i64().unwrap(),
+                    n["text"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        ring.sort();
+        ring.into_iter().map(|(_, text)| text).collect()
+    };
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        ring(&whole, &api),
+        vec!["rate limits", "versioning?", "auth"],
+        "an index of 0 puts the node first in its ring: {whole}"
+    );
+
+    // And a patch moves one within its ring without touching any other node's
+    // stored order — which is the property a fractional index buys.
+    let last = whole["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["text"] == json!("auth"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, moved) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{last}"),
+            json!({ "position": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["node"]["position"], json!(0), "{moved}");
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        ring(&whole, &api),
+        vec!["auth", "rate limits", "versioning?"],
+        "a move re-ranks the ring: {whole}"
+    );
+    // The first ring is untouched: the two rings are independent sequences.
+    assert_eq!(
+        ring(&whole, "null_parent_never_matches"),
+        Vec::<String>::new()
+    );
+    let roots: Vec<&str> = whole["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["parent"] == Value::Null)
+        .map(|n| n["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(roots, vec!["API", "integrations"], "{whole}");
+}

@@ -7,10 +7,12 @@
 // longer reloads the page.
 //
 // Most routes are eagerly imported: they share one vendor chunk and splitting
-// them would buy nothing. `/documents` is the exception and has to be, because
-// its editor pulls in Tiptap, ProseMirror and Yjs — together larger than the
-// rest of the app, and bytes every other surface would otherwise pay for on
-// first paint. Lazy chunks are possible at all because the binary embeds a
+// them would buy nothing. `/documents` and `/mindmaps` are the exceptions and
+// have to be, because both are collaborative: they pull in Yjs and its socket,
+// and the editor additionally pulls in Tiptap and ProseMirror — together larger
+// than the rest of the app, and bytes every other surface would otherwise pay
+// for on first paint. `vite.config.ts` splits that dependency into a `collab`
+// chunk the two share and an `editor` chunk only one of them needs. Lazy chunks are possible at all because the binary embeds a
 // GENERATED asset manifest (build.rs) rather than four names; the note that used
 // to stand here, saying a fifth chunk would fail the build, described the older
 // contract.
@@ -19,16 +21,16 @@ import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } fr
 import { App as BoardApp } from './pages/board/App'
 import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
-import { App as MindmapApp } from './pages/mindmap/App'
 import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as SchedulesApp } from './pages/schedules/App'
 import { App as VerificationApp } from './pages/verification/App'
 import { App as SettingsApp } from './pages/settings/App'
 
-/** The one lazy surface — see the note at the top of this file. */
+/** The two lazy surfaces — see the note at the top of this file. */
 const DocumentsApp = lazy(() =>
   import('./pages/documents/App').then((m) => ({ default: m.App })),
 )
+const MindmapApp = lazy(() => import('./pages/mindmap/App').then((m) => ({ default: m.App })))
 
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
@@ -77,7 +79,14 @@ const router = createBrowserRouter([
         ),
       },
       { path: '/initiatives', element: <InitiativesApp /> },
-      { path: '/mindmaps', element: <MindmapApp /> },
+      {
+        path: '/mindmaps',
+        element: (
+          <Suspense fallback={null}>
+            <MindmapApp />
+          </Suspense>
+        ),
+      },
       { path: '/schedules', element: <SchedulesApp /> },
       { path: '/verification', element: <VerificationApp /> },
       { path: '/environments', element: <EnvironmentsApp /> },

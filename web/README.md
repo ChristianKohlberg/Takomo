@@ -185,6 +185,28 @@ and needed no asset routes at all — but React and every shared module were pai
 four times, and moving between surfaces was a full page load that dropped all
 warm state.
 
+**Two collaborative routes, and one shared chunk under them.** `/documents` and
+`/mindmaps` are both CRDTs over a Yjs `Y.Doc`, synchronised through the same
+`tkd_` socket ticket and the same `y-websocket` provider — so both are
+`lazy()`-imported in `src/App.tsx` rather than eagerly bundled. `vite.config.ts`
+splits their dependencies in two: **collab** (`yjs`, `y-websocket`,
+`y-protocols`, `lib0`, `isomorphic.js`) is a named chunk the two share, and
+**editor** (`@tiptap`, `prosemirror-*` and friends) stays reachable only from
+`/documents`. Neither goes to `vendor`, because vendor is preloaded by
+`index.html` and would be paid on first paint by every surface. `collab` is
+*named* rather than left to the bundler because TWO dynamic chunks import it and
+an unnamed shared dependency is duplicated into both.
+
+The mindmap model is split the same way for the same reason:
+`src/lib/mindmap-doc.ts` holds the shape, the caps and the deterministic read
+rules and imports nothing, while `src/lib/mindmap-crdt.ts` is the only file that
+touches Yjs. A component can name a `MapNode` with a type-only import and pay
+zero bytes for it, and the normalisation rules — cycle, orphan, dangling
+relation, unusable order key — are tested without a document at all
+(`mindmap-doc.test.ts`). Fold state is per-viewer and lives in `localStorage`
+beside pan and zoom, never in the document: collapsing a branch must not collapse
+it under somebody else mid-conversation.
+
 **Tailwind scans `src/` and nothing else.** `globals.css` opens with
 `@import 'tailwindcss' source(none)` plus two explicit `@source` lines, because
 automatic content detection scans the project minus whatever is gitignored — and

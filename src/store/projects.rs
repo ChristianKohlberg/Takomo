@@ -1006,6 +1006,22 @@ impl Store {
                 "DELETE FROM promotions WHERE project = ?1 OR ticket IN (SELECT id FROM tickets WHERE project = ?1)",
                 params![id],
             )?;
+            // Documents and mindmaps cascade away with the project row, but the
+            // CRDT log behind them does NOT: `crdt_updates.object_id` points at
+            // one of two tables, so it can carry no foreign key and no cascade.
+            // Without this, deleting a project leaves every document's prose and
+            // every map's nodes in the database forever — and live sync tickets
+            // with them. "Delete the project" has to mean the text goes too.
+            tx.execute(
+                "DELETE FROM crdt_updates WHERE object_id IN \
+                   (SELECT id FROM documents WHERE project = ?1 \
+                    UNION ALL SELECT id FROM mindmaps WHERE project = ?1)",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM crdt_sessions WHERE project = ?1", params![id])?;
+            // `mindmaps.project` has no ON DELETE CASCADE, so with foreign keys
+            // on, a project holding a map would otherwise abort the whole delete.
+            tx.execute("DELETE FROM mindmaps WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM tickets WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM tags WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM workflow_states WHERE project = ?1", params![id])?;

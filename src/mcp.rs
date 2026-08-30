@@ -1739,7 +1739,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapGrowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_grow(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_grow(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -1752,7 +1752,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapShowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_show(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_show(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -1779,7 +1779,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapPromoteArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_promote(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_promote(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -2220,7 +2220,7 @@ impl TakomoMcp {
         auth.require_project(&doc.project)?;
         // A proposal is a write against the document, so an archived project
         // refuses it like every other write beneath one.
-        self.state.store.ensure_document_writable(&a.id)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
 
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
         let instruction = a.instruction.clone().unwrap_or_default();
@@ -2301,50 +2301,93 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_mindmap_grow(&self, auth: &AuthCtx, a: MindmapGrowArgs) -> ApiResult<Value> {
+    async fn do_mindmap_grow(&self, auth: &AuthCtx, a: MindmapGrowArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
         // Scope is checked against the map's own project: an id alone never grants
         // access, the same rule initiative_append follows.
-        let (map, _) = self
+        let map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let adds: Vec<crate::store::NodeAdd> = a
+        self.state.store.ensure_collab_writable(&a.id)?;
+
+        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = a
             .nodes
             .into_iter()
-            .map(|n| crate::store::NodeAdd {
+            .map(|n| crate::store::mindmapdoc::NodeAdd {
                 parent: n.parent,
-                text: n.text,
-                position: None,
+                title: n.text,
+                // An agent's branch is marked as an agent's. Nothing renders it
+                // yet, but a map that cannot say which thoughts a person had is
+                // a map that can never grow a trust view.
+                origin: Some("agent".to_string()),
+                ..Default::default()
             })
             .collect();
-        let nodes = self.state.store.grow_mindmap(&a.id, &adds, &auth.actor)?;
+
+        // The SAME replica the browsers are on, so a branch added while somebody
+        // is looking at the map appears as it is written rather than on reload.
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let actor = auth.actor.clone();
+        let created = room.mutate(|doc| crate::store::mindmapdoc::add_nodes(doc, &adds, &actor))?;
+
+        let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));
+        let nodes: Vec<Value> = created
+            .iter()
+            .filter_map(|(id, _)| {
+                all.iter()
+                    .find(|n| n["id"].as_str() == Some(id.as_str()))
+                    .cloned()
+            })
+            .collect();
+
+        self.state
+            .store
+            .note_mindmap_size(&a.id, all.len() as i64)?;
+        self.state.store.note_mindmap_event(
+            &a.id,
+            crate::store::MindmapChange::Grown,
+            json!({ "mindmap": a.id, "nodes": nodes.len() }),
+            &auth.actor,
+        )?;
         self.state.wake();
         Ok(json!({
             "ok": true,
-            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+            "nodes": nodes,
             "note": "Hang the next round under these by passing their ids as `parent`.",
         }))
     }
 
-    fn do_mindmap_show(&self, auth: &AuthCtx, a: MindmapShowArgs) -> ApiResult<Value> {
+    async fn do_mindmap_show(&self, auth: &AuthCtx, a: MindmapShowArgs) -> ApiResult<Value> {
         auth.require_scope("read")?;
-        let (map, nodes) = self
+        let mut map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let outline = self.state.store.mindmap_outline(&a.id, a.node.as_deref())?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let (nodes, relationships, outline) = room.read(|doc| {
+            let (nodes, relationships, raw) = crate::store::mindmapdoc::snapshot(doc, &a.id);
+            let text = match a.node.as_deref() {
+                Some(node) => crate::store::mindmapdoc::outline(&raw, node),
+                None => crate::store::mindmapdoc::full_outline(&raw, &map.title),
+            };
+            (nodes, relationships, text)
+        });
+        map.nodes = nodes.len() as i64;
+
         Ok(json!({
             "ok": true,
             "mindmap": map.to_json(),
             "outline": outline,
             // The ids alongside the text, because reading a map is usually the step
             // before adding to it and every add needs a parent id.
-            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+            "nodes": nodes,
+            "relationships": relationships,
         }))
     }
 
@@ -2374,22 +2417,84 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_mindmap_promote(&self, auth: &AuthCtx, a: MindmapPromoteArgs) -> ApiResult<Value> {
+    async fn do_mindmap_promote(&self, auth: &AuthCtx, a: MindmapPromoteArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        let (map, _) = self
+        let map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let (node, created) =
-            self.state
-                .store
-                .promote_mindmap_node(&a.id, &a.node, &a.target, &auth.actor)?;
+        crate::store::validate_promotion_target(&a.target)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let state = self.state.clone();
+        let actor = auth.actor.clone();
+        let map_id = a.id.clone();
+        let node_id = a.node.clone();
+        let target = a.target.clone();
+
+        let created = room.mutate(move |doc| {
+            let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, &map_id);
+            let ordered = crate::store::mindmapdoc::tree_order(&nodes);
+            let branch = ordered
+                .iter()
+                .find(|n| n.id == node_id)
+                .ok_or_else(|| ApiError::not_found("mindmap_node", &node_id))?;
+            if let (Some(kind), Some(existing)) = (&branch.promoted_kind, &branch.promoted_id) {
+                return Err(ApiError::conflict(
+                    "mindmap.already_promoted",
+                    format!(
+                        "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same thought, indistinguishable from the first."
+                    ),
+                ));
+            }
+            let title = branch.title.clone();
+            let branch_outline = crate::store::mindmapdoc::outline(&nodes, &node_id);
+            let children: Vec<(String, String)> = ordered
+                .iter()
+                .filter(|n| n.parent.as_deref() == Some(node_id.as_str()))
+                .map(|child| {
+                    (
+                        child.title.clone(),
+                        crate::store::mindmapdoc::outline(&nodes, &child.id),
+                    )
+                })
+                .collect();
+
+            let created = state.store.promote_branch(
+                &crate::store::BranchPromotion {
+                    map_id: &map_id,
+                    node_id: &node_id,
+                    target: &target,
+                    title: &title,
+                    branch_outline: &branch_outline,
+                    children: &children,
+                },
+                &actor,
+            )?;
+            let kind = created["kind"].as_str().unwrap_or_default();
+            let created_id = created["id"].as_str().unwrap_or_default();
+            crate::store::mindmapdoc::set_promoted(doc, &node_id, kind, created_id)?;
+            Ok(created)
+        })?;
+
+        // The work is committed; the link back into the map is not durable until
+        // a flush. Force one, so a crash cannot leave a promoted branch looking
+        // unpromoted and let it graduate twice.
+        crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
+
+        let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));
+        let node = all
+            .into_iter()
+            .find(|n| n["id"].as_str() == Some(a.node.as_str()))
+            .ok_or_else(|| ApiError::not_found("mindmap_node", &a.node))?;
+
         self.state.wake();
         Ok(json!({
             "ok": true,
-            "node": node.to_json(),
+            "node": node,
             "created": created,
             "note": "The node stays on the map, carrying what it became — the map is the record of how the thinking got there.",
         }))

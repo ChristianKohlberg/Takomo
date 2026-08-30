@@ -248,7 +248,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // the socket then uses.
         .route(
             "/v1/documents/{id}/session",
-            post(crate::api::docsync::create_session),
+            post(crate::api::docsync::create_document_session),
         )
         // The prompt bar. The ONE route in this server that calls a language
         // model — see the header of src/docagent.rs for why that exception
@@ -483,6 +483,31 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/mindmaps/{id}/nodes/{node}/promote",
             post(crate::api::mindmaps::promote),
         )
+        // The sync ticket, minted exactly as a document's is — a browser
+        // WebSocket cannot carry an Authorization header, so the credential has
+        // to ride the handshake.
+        .route(
+            "/v1/mindmaps/{id}/session",
+            post(crate::api::docsync::create_mindmap_session),
+        )
+        // An edge that is not part of the hierarchy.
+        .route(
+            "/v1/mindmaps/{id}/relationships",
+            post(crate::api::mindmaps::add_relationship),
+        )
+        .route(
+            "/v1/mindmaps/{id}/relationships/{relationship}",
+            axum::routing::delete(crate::api::mindmaps::delete_relationship),
+        )
+        // A pointer to something a node refers to. Never the bytes.
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}/attachments",
+            post(crate::api::mindmaps::add_attachment),
+        )
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}/attachments/{attachment}",
+            axum::routing::delete(crate::api::mindmaps::delete_attachment),
+        )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
         .route("/v1/export", get(crate::api::export::export))
@@ -647,7 +672,7 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
             }
             // Long-dead document sync tickets. Also deliberately does not set
             // `woke`, for the same reason: nothing long-polls on them.
-            if let Err(e) = state.store.sweep_expired_doc_sessions() {
+            if let Err(e) = state.store.sweep_expired_collab_sessions() {
                 eprintln!("doc session sweep failed: {}", e.body.message);
             }
             if woke {

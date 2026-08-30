@@ -970,49 +970,88 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         SEEDER,
     )?;
 
-    let grow =
-        |parent: Option<&str>, texts: &[&str]| -> ApiResult<Vec<crate::store::MindmapNode>> {
-            store.grow_mindmap(
-                &map.id,
-                &texts
-                    .iter()
-                    .map(|text| crate::store::NodeAdd {
-                        parent: parent.map(str::to_string),
-                        text: (*text).to_string(),
-                        position: None,
-                    })
-                    .collect::<Vec<_>>(),
-                SEEDER,
-            )
-        };
+    // The seeder is alone with the database, so it edits the map's document
+    // directly rather than joining a room nobody else is in.
+    let grow = |parent: Option<&str>, texts: &[&str]| -> ApiResult<Vec<String>> {
+        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = texts
+            .iter()
+            .map(|text| crate::store::mindmapdoc::NodeAdd {
+                parent: parent.map(str::to_string),
+                title: (*text).to_string(),
+                ..Default::default()
+            })
+            .collect();
+        let created = store.edit_mindmap_document(&map.id, |doc| {
+            crate::store::mindmapdoc::add_nodes(doc, &adds, SEEDER)
+        })?;
+        Ok(created.into_iter().map(|(id, _)| id).collect())
+    };
 
     let branches = grow(None, &["API", "integrations", "workflows", "ideas"])?;
     // Leaves under some of them: a map where every branch is bare reads as an
     // empty gesture, and one where every branch is full reads as a document.
     grow(
-        Some(&branches[0].id),
+        Some(&branches[0]),
         &[
             "versioning: v1 forever, or dated?",
             "idempotent retries on capture",
         ],
     )?;
     grow(
-        Some(&branches[1].id),
+        Some(&branches[1]),
         &[
             "Stripe first, then the bank file",
             "one webhook per provider?",
         ],
     )?;
     grow(
-        Some(&branches[3].id),
+        Some(&branches[3]),
         &["let a customer split one invoice themselves"],
     )?;
 
     // One branch became work, one became a direction, two are still thoughts —
     // which is what a real brainstorm looks like halfway through.
-    store.promote_mindmap_node(&map.id, &branches[0].id, "epic", SEEDER)?;
-    store.promote_mindmap_node(&map.id, &branches[1].id, "initiative", SEEDER)?;
+    promote_seeded(store, &map.id, &branches[0], "epic")?;
+    promote_seeded(store, &map.id, &branches[1], "initiative")?;
     Ok(())
+}
+
+/// Graduate one seeded branch, reading the branch out of the map's document.
+fn promote_seeded(store: &Store, map_id: &str, node_id: &str, target: &str) -> ApiResult<()> {
+    store.edit_mindmap_document(map_id, |doc| {
+        let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, map_id);
+        let ordered = crate::store::mindmapdoc::tree_order(&nodes);
+        let branch = ordered
+            .iter()
+            .find(|n| n.id == node_id)
+            .ok_or_else(|| crate::error::ApiError::not_found("mindmap_node", node_id))?;
+        let title = branch.title.clone();
+        let branch_outline = crate::store::mindmapdoc::outline(&nodes, node_id);
+        let children: Vec<(String, String)> = ordered
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(node_id))
+            .map(|child| {
+                (
+                    child.title.clone(),
+                    crate::store::mindmapdoc::outline(&nodes, &child.id),
+                )
+            })
+            .collect();
+        let created = store.promote_branch(
+            &crate::store::BranchPromotion {
+                map_id,
+                node_id,
+                target,
+                title: &title,
+                branch_outline: &branch_outline,
+                children: &children,
+            },
+            SEEDER,
+        )?;
+        let kind = created["kind"].as_str().unwrap_or_default();
+        let created_id = created["id"].as_str().unwrap_or_default();
+        crate::store::mindmapdoc::set_promoted(doc, node_id, kind, created_id)
+    })
 }
 
 fn seeded_tickets(store: &Store) -> ApiResult<Vec<crate::store::Ticket>> {

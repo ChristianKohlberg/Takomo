@@ -8,6 +8,7 @@ pub mod auth;
 pub mod docagent;
 pub mod error;
 pub mod error_codes;
+pub mod fracdex;
 pub mod ids;
 pub mod mcp;
 pub mod notify;

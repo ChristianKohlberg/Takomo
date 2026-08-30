@@ -203,7 +203,7 @@ pub async fn run_agent(
     ctx.require_scope("write")?;
     let doc = state.store.get_document(&id)?;
     ctx.require_project(&doc.project)?;
-    state.store.ensure_document_writable(&id)?;
+    state.store.ensure_collab_writable(&id)?;
 
     let cfg = state
         .doc_agent

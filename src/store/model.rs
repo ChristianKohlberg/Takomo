@@ -2013,7 +2013,7 @@ impl WorkflowEntry {
 ///
 /// This row is the document's *identity and filing* — title, folder, status.
 /// The prose itself is not here and deliberately not in any column: it lives in a
-/// Yjs CRDT whose update log is `doc_updates`, because the whole point of this
+/// Yjs CRDT whose update log is `crdt_updates`, because the whole point of this
 /// surface is that two people typing at the same time both keep their words.
 /// A `TEXT` column would mean last-write-wins, which is the failure this exists
 /// to remove.

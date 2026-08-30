@@ -52,10 +52,10 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::ids::token_hash;
 use crate::server::AppState;
-use crate::store::{DocSession, COMPACT_AFTER_UPDATES, DOC_SESSION_TTL_SECONDS};
+use crate::store::crdt;
+use crate::store::{CollabKind, CollabSession, COMPACT_AFTER_UPDATES, SESSION_TTL_SECONDS};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use futures_util::{SinkExt, StreamExt};
@@ -238,7 +238,8 @@ impl Rooms {
 
         let store_id = id.to_string();
         let store = state.clone();
-        let updates = super::blocking_read(move || store.store.load_doc_updates(&store_id)).await?;
+        let updates =
+            super::blocking_read(move || store.store.load_collab_updates(&store_id)).await?;
 
         let doc = Doc::new();
         let rows = updates.len() as u64;
@@ -253,10 +254,10 @@ impl Rooms {
                 match Update::decode_v1(blob) {
                     Ok(u) => {
                         if let Err(e) = txn.apply_update(u) {
-                            eprintln!("document {id}: skipping unapplicable update: {e}");
+                            eprintln!("{id}: skipping unapplicable update: {e}");
                         }
                     }
-                    Err(e) => eprintln!("document {id}: skipping undecodable update: {e}"),
+                    Err(e) => eprintln!("{id}: skipping undecodable update: {e}"),
                 }
             }
         }
@@ -302,19 +303,23 @@ impl Rooms {
 }
 
 fn too_many_peers(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "document.too_many_peers",
-        format!("Document '{id}' already has the maximum number of live editors."),
-    )
-    .remedy("Wait for somebody to close the document, then reconnect.".to_string())
+    crdt::too_many_peers(kind_of(id), id)
+}
+
+/// Which kind of object a room id belongs to.
+///
+/// Only used to phrase an error. An id whose prefix names no kind cannot reach a
+/// room at all — `load_collab_updates` 404s on it first — so this fallback is
+/// never what a caller ends up reading.
+fn kind_of(id: &str) -> CollabKind {
+    CollabKind::from_id(id).unwrap_or(CollabKind::Document)
 }
 
 /// Write accumulated edits, and compact when the log has grown long enough.
 ///
 /// Runs on the blocking pool: both calls take the process-wide write mutex, and
 /// blocking an async worker on it would be the very stall this design avoids.
-async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
+pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
     let batch = {
         let mut pending = room.pending.lock().expect("pending mutex");
         if pending.is_empty() {
@@ -326,7 +331,7 @@ async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
     let merged = match yrs::merge_updates_v1(&batch) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("document {}: cannot merge pending updates: {e}", room.id);
+            eprintln!("{}: cannot merge pending updates: {e}", room.id);
             return;
         }
     };
@@ -334,22 +339,24 @@ async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
     let store = state.clone();
     let id = room.id.clone();
     let writer = actor.to_string();
-    let rows =
-        tokio::task::spawn_blocking(move || store.store.append_doc_update(&id, &merged, &writer))
-            .await;
+    let rows = tokio::task::spawn_blocking(move || {
+        store.store.append_collab_update(&id, &merged, &writer)
+    })
+    .await;
 
     let rows = match rows {
         Ok(Ok(rows)) => rows,
         Ok(Err(e)) => {
-            eprintln!("document {}: flush failed: {}", room.id, e.body.message);
+            eprintln!("{}: flush failed: {}", room.id, e.body.message);
             return;
         }
         Err(e) => {
-            eprintln!("document {}: flush task failed: {e}", room.id);
+            eprintln!("{}: flush task failed: {e}", room.id);
             return;
         }
     };
     room.rows.store(rows as u64, Ordering::SeqCst);
+    note_size_if_mindmap(state, room).await;
 
     if rows >= COMPACT_AFTER_UPDATES {
         // The state we pass is the room's replica, which by construction holds
@@ -359,18 +366,38 @@ async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
         let store = state.clone();
         let id = room.id.clone();
         let writer = actor.to_string();
-        let done =
-            tokio::task::spawn_blocking(move || store.store.compact_doc(&id, &state_blob, &writer))
-                .await;
+        let done = tokio::task::spawn_blocking(move || {
+            store.store.compact_collab(&id, &state_blob, &writer)
+        })
+        .await;
         match done {
             Ok(Ok(())) => room.rows.store(1, Ordering::SeqCst),
             Ok(Err(e)) => eprintln!(
                 "document {}: compaction failed: {}",
                 room.id, e.body.message
             ),
-            Err(e) => eprintln!("document {}: compaction task failed: {e}", room.id),
+            Err(e) => eprintln!("{}: compaction task failed: {e}", room.id),
         }
     }
+}
+
+/// Keep a mindmap's denormalised node count in step with its document.
+///
+/// The flusher is the ONLY thing that sees an edit made in the browser — a
+/// canvas writes over the socket and never touches a REST route — so without
+/// this a map grown entirely in the UI reports zero nodes in the list forever.
+/// One small UPDATE per flush, and flushes are debounced to a couple of seconds.
+async fn note_size_if_mindmap(state: &Arc<AppState>, room: &Arc<Room>) {
+    if kind_of(&room.id) != CollabKind::Mindmap {
+        return;
+    }
+    let nodes = room.read(|doc| {
+        let (all, _, _) = crate::store::mindmapdoc::snapshot(doc, "");
+        all.len() as i64
+    });
+    let store = state.clone();
+    let id = room.id.clone();
+    let _ = tokio::task::spawn_blocking(move || store.store.note_mindmap_size(&id, nodes)).await;
 }
 
 fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
@@ -415,23 +442,52 @@ pub struct SyncQuery {
 /// So this mints a `tkd_` ticket instead: one document, expiring, revocable, and
 /// carrying **no more** than the token that asked for it — `can_write` is copied
 /// from the caller's scopes, so a `read`-only reader joins as a read-only peer.
-pub async fn create_session(
+pub async fn create_document_session(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
+    mint(state, ctx, id, CollabKind::Document).await
+}
+
+/// `POST /v1/mindmaps/{id}/session` (read) — the same ticket, for a map.
+pub async fn create_mindmap_session(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    mint(state, ctx, id, CollabKind::Mindmap).await
+}
+
+/// Mint a ticket for one collaborative object, whichever kind it is.
+///
+/// `expect` is checked against the id rather than assumed from the route, so a
+/// `mm-…` id presented at the documents route is a 404 rather than a ticket for
+/// something the caller did not ask for.
+async fn mint(
+    state: Arc<AppState>,
+    ctx: AuthCtx,
+    id: String,
+    expect: CollabKind,
+) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let doc = state.store.get_document(&id)?;
-    ctx.require_project(&doc.project)?;
+    let object = state.store.collab_object(&id)?;
+    if object.kind != expect {
+        return Err(match expect {
+            CollabKind::Document => ApiError::not_found("document", &id),
+            CollabKind::Mindmap => ApiError::not_found("mindmap", &id),
+        });
+    }
+    ctx.require_project(&object.project)?;
 
     let can_write = ctx.require_scope("write").is_ok();
-    let expires_at = crate::ids::now_ms() + DOC_SESSION_TTL_SECONDS * 1000;
+    let expires_at = crate::ids::now_ms() + SESSION_TTL_SECONDS * 1000;
     // What collaborators see next to a caret. The person's handle when the
     // credential is bound to one, else the actor string the token carries —
     // never the token or its id.
     let display = ctx.user.clone().unwrap_or_else(|| ctx.actor.clone());
 
-    let (session, token) = state.store.create_doc_session(
+    let (session, token) = state.store.create_collab_session(
         &id,
         &ctx.actor,
         &display,
@@ -440,8 +496,12 @@ pub async fn create_session(
         expires_at,
     )?;
 
-    Ok(Json(json!({
-        "document": id,
+    let mut body = json!({
+        // `object` is the field to read. The kind-specific key beside it stays
+        // because a client written against `/documents` reads `document`, and
+        // widening this route must not break it.
+        "object": id,
+        "kind": object.kind.as_str(),
         "session": session.id,
         "token": token,
         "can_write": can_write,
@@ -453,8 +513,10 @@ pub async fn create_session(
         "url": "/v1/docsync",
         "room": id,
         "note": "Connect a y-websocket provider with serverUrl=`url`, room=`room`, \
-                 and params={ticket}. The ticket reaches this one document and expires.",
-    })))
+                 and params={ticket}. The ticket reaches this one object and expires.",
+    });
+    body[object.kind.as_str()] = json!(id);
+    Ok(Json(body))
 }
 
 /// Resolve a `tkd_` ticket, or say precisely why it will not do.
@@ -463,54 +525,25 @@ pub async fn create_session(
 /// link call for different reactions from whoever is looking at the screen.
 fn resolve_ticket(
     state: &Arc<AppState>,
-    document: &str,
+    object: &str,
     ticket: Option<&str>,
-) -> ApiResult<DocSession> {
-    let ticket = ticket.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "document.session_missing",
-            "This socket needs a sync ticket. Mint one with POST \
-             /v1/documents/{id}/session and pass it as ?ticket=.",
-        )
-    })?;
+) -> ApiResult<CollabSession> {
+    let kind = kind_of(object);
+    let ticket = ticket.ok_or_else(|| crdt::session_missing(kind, object))?;
 
     let session = state
         .store
-        .lookup_doc_session_by_hash(&token_hash(ticket))?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "document.session_invalid",
-                "This sync ticket is not recognized.",
-            )
-        })?;
+        .lookup_collab_session_by_hash(&token_hash(ticket))?
+        .ok_or_else(|| crdt::session_invalid(kind))?;
 
-    let gone = |why: &str| {
-        ApiError::new(
-            StatusCode::GONE,
-            "document.session_expired",
-            format!("This sync ticket {why}. Mint a new one."),
-        )
-    };
-    if session.revoked_at.is_some() {
-        return Err(gone("has been revoked"));
+    if session.revoked_at.is_some() || session.expires_at <= crate::ids::now_ms() {
+        return Err(crdt::session_expired(kind));
     }
-    if session.expires_at <= crate::ids::now_ms() {
-        return Err(gone("has expired"));
-    }
-    // A ticket is minted for ONE document. Checking it here rather than trusting
+    // A ticket is minted for ONE object. Checking it here rather than trusting
     // the path is the whole point of scoping it — otherwise it would be an
     // ordinary token with a short life.
-    if session.document != document {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "document.session_wrong_document",
-            format!(
-                "This sync ticket is for document '{}', not '{document}'.",
-                session.document
-            ),
-        ));
+    if session.object != object {
+        return Err(crdt::session_wrong_object(kind, object, &session.object));
     }
     Ok(session)
 }
@@ -568,7 +601,7 @@ async fn session_loop(
     socket: WebSocket,
     state: Arc<AppState>,
     room: Arc<Room>,
-    session: DocSession,
+    session: CollabSession,
 ) {
     static NEXT_PEER: AtomicU64 = AtomicU64::new(1);
     let me = NEXT_PEER.fetch_add(1, Ordering::SeqCst);
@@ -653,7 +686,7 @@ async fn session_loop(
 /// than closing the socket: the peer may simply be a newer client sending a
 /// message type this server does not know, and disconnecting them over it would
 /// be worse than ignoring it.
-fn handle_frame(room: &Room, session: &DocSession, me: u64, bytes: &[u8]) -> Option<Vec<u8>> {
+fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> Option<Vec<u8>> {
     let mut dec = Cursor::new(bytes);
     let kind: u64 = dec.read_var().ok()?;
 
@@ -675,7 +708,7 @@ fn handle_frame(room: &Room, session: &DocSession, me: u64, bytes: &[u8]) -> Opt
                         return None;
                     }
                     if let Err(e) = room.apply(update) {
-                        eprintln!("document {}: rejecting update: {e}", room.id);
+                        eprintln!("{}: rejecting update: {e}", room.id);
                         return None;
                     }
                     room.pending

@@ -57,6 +57,16 @@ pub fn mindmap_node_id() -> String {
     format!("mn-{}", random_chars(BASE36, 8))
 }
 
+/// A cross-link between two nodes, which is not part of the hierarchy.
+pub fn mindmap_relationship_id() -> String {
+    format!("mr-{}", random_chars(BASE36, 8))
+}
+
+/// A pointer to something a node refers to. Never the thing itself.
+pub fn mindmap_attachment_id() -> String {
+    format!("ma-{}", random_chars(BASE36, 8))
+}
+
 /// Schedule id, e.g. "sch-9f3ka2xz".
 pub fn schedule_id() -> String {
     format!("sch-{}", random_chars(BASE36, 8))

@@ -187,10 +187,15 @@ export type { UndoSnackbarProps } from './inbox/UndoSnackbar'
 export { AnswerLinkDialog } from './inbox/AnswerLinkDialog'
 export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
+// ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'
-export type { CanvasProps, CanvasLabels } from './mindmap/Canvas'
+export type { CanvasProps, CanvasLabels, CanvasMode, CanvasPeer } from './mindmap/Canvas'
 export { Outline } from './mindmap/Outline'
 export type { OutlineProps, OutlineLabels } from './mindmap/Outline'
+export { Details, NODE_COLORS, NODE_SHAPES } from './mindmap/Details'
+export type { DetailsProps, DetailsLabels, NodeShape } from './mindmap/Details'
+export { PruneDialog } from './mindmap/PruneDialog'
+export type { PruneDialogProps, PruneDialogLabels } from './mindmap/PruneDialog'
 
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'
