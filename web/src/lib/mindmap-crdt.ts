@@ -37,6 +37,7 @@ import {
   type RawNode,
   type Relationship,
 } from './mindmap-doc'
+import { appendAnswer, questionTarget } from './mindmap-lens'
 import type { Point } from './mindmap-layout'
 
 // ---- reading the document -------------------------------------------------
@@ -408,6 +409,104 @@ export function createRelationship(
 
 export function deleteRelationship(doc: Y.Doc, id: string): void {
   doc.transact(() => relationshipsMap(doc).delete(id))
+}
+
+// ---- questions ------------------------------------------------------------
+//
+// A question is an ordinary node with `kind: 'question'` and an ordinary
+// relationship to whatever it is about. Nothing in the store had to learn what a
+// question is, an agent poses one with the two calls it already has, and it is a
+// first-ring node so it never hides inside the branch it doubts.
+
+/** Pose a question about a node. Returns the question's id, or null at the cap. */
+export function createQuestion(
+  doc: Y.Doc,
+  about: string | null,
+  title: string,
+  by: string,
+): string | null {
+  const id = createNode(doc, { parent: null, title, by })
+  if (!id) return null
+  setFields(doc, id, { kind: 'question' })
+  // From the question TO the thing it doubts, so the arrow reads the way the
+  // sentence does. `questionTarget` accepts either direction regardless.
+  if (about) createRelationship(doc, id, about, '')
+  return id
+}
+
+/**
+ * Answer a question in a person's own words.
+ *
+ * There is no model call here and none is wanted. The answer is appended to the
+ * notes of whatever the question was about, that node is marked as looked at, and
+ * the question goes — an answered question is not an open question, and leaving
+ * it on the map is how a map fills up with settled doubt.
+ *
+ * A question about nothing in particular keeps its own answer and stops being a
+ * question, which is the only outcome that loses nothing.
+ *
+ * Returns the id of the node that now holds the answer, or null when there was
+ * nothing to record.
+ */
+export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): string | null {
+  const text = answer.trim()
+  if (!text) return null
+  const nodes = readNodes(doc)
+  const question = nodes.find((n) => n.id === questionId)
+  if (!question) return null
+  const targetId = questionTarget(readRelationships(doc, nodes), questionId)
+  const target = targetId ? (nodes.find((n) => n.id === targetId) ?? null) : null
+
+  if (!target) {
+    const m = node(doc, questionId)
+    if (!m) return null
+    doc.transact(() => {
+      applyText(ytext(m, 'notes'), appendAnswer(question.notes, text).slice(0, MAX_NOTES))
+      m.set('kind', 'thought')
+      m.set('reviewed', true)
+      touch(m)
+    })
+    return questionId
+  }
+
+  const m = node(doc, target.id)
+  if (!m) return null
+  doc.transact(() => {
+    applyText(ytext(m, 'notes'), appendAnswer(target.notes, text).slice(0, MAX_NOTES))
+    m.set('reviewed', true)
+    touch(m)
+  })
+  // After the write, so a peer that sees the question disappear has already been
+  // sent the answer it produced.
+  deleteSubtree(doc, questionId)
+  return target.id
+}
+
+/**
+ * Detach a node from its parent, keeping everything under it.
+ *
+ * Not a deletion, and deliberately not `reparent`: the node stays exactly where
+ * it is drawn, because somebody clicked the LINE rather than dragged the thought,
+ * and having it jump to the end of the first ring would lose the place they were
+ * reading. It becomes a first-ring node, its children come with it, and nothing
+ * is removed.
+ */
+export function detach(doc: Y.Doc, id: string, at: Point | null): void {
+  const m = node(doc, id)
+  if (!m) return
+  const order = orderBetween(
+    readNodes(doc).filter((n) => n.parent === null && n.id !== id),
+    null,
+  )
+  doc.transact(() => {
+    m.set('parent', null)
+    m.set('order', order)
+    if (at) {
+      m.set('x', at.x)
+      m.set('y', at.y)
+    }
+    touch(m)
+  })
 }
 
 // ---- attachments ----------------------------------------------------------

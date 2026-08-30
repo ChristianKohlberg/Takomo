@@ -34,6 +34,7 @@ import { listProjects, whoami, type Project } from '@/lib/initiatives'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
 import {
   createMindmap,
+  writeUpMindmap,
   deleteMindmap,
   listMindmaps,
   mintMindmapSession,
@@ -222,6 +223,30 @@ export function App() {
     [canWrite, toast, t, selectedProject, token, refreshList, handleErr],
   )
 
+  /**
+   * Write the map up as documents.
+   *
+   * A REST call rather than a document write, because it makes DOCUMENTS in the
+   * project — the map's own replica only receives the link back to each one, and
+   * the server writes that before it answers.
+   */
+  const writeUp = useCallback(() => {
+    if (!openId || !canWrite) {
+      toast(t.needWrite, 'err')
+      return
+    }
+    writeUpMindmap(token, openId)
+      .then((out) => {
+        toast(
+          t.wroteUp
+            .replace('{created}', String(out.created))
+            .replace('{refiled}', String(out.refiled)),
+          'success',
+        )
+      })
+      .catch(handleErr)
+  }, [openId, canWrite, token, toast, t, handleErr])
+
   const renameMap = useCallback(() => {
     if (!open) return
     const title = window.prompt(t.renameMapPrompt, open.title)
@@ -389,6 +414,7 @@ export function App() {
               currentProject={open.project}
               onProject={chooseProject}
               canManageMap={canWrite}
+              onWriteUp={writeUp}
               onRenameMap={renameMap}
               onDeleteMap={removeMap}
               onPromote={promote}
@@ -404,6 +430,8 @@ export function App() {
                 projectPlaceholder: t.projectPlaceholder,
                 droppedFileGist: t.droppedFileGist,
                 attachmentsFull: t.attachmentsFull,
+                newQuestion: t.newQuestion,
+                trustLens: t.trustLens,
               }}
               canvasLabels={{
                 empty: t.canvasEmpty,
@@ -423,6 +451,12 @@ export function App() {
                 nodeActions: t.nodeActions,
                 nodeMenu: t.nodeMenu,
                 dropHere: t.dropHere,
+                trustLens: t.trustLens,
+                trustLegend: t.trustLegend,
+                trustConfirmed: t.trustConfirmed,
+                trustMachine: t.trustMachine,
+                trustUnverified: t.trustUnverified,
+                cutEdge: t.cutEdge,
               }}
               outlineLabels={{
                 addChild: t.addChild,
@@ -431,6 +465,12 @@ export function App() {
                 hasNotes: t.hasNotes,
                 attachments: t.attachmentsBadge,
                 remove: t.cmdDelete,
+                detach: t.detachRow,
+                folded: t.foldedSummary,
+                question: t.questionEyebrow,
+                trustConfirmed: t.trustConfirmed,
+                trustMachine: t.trustMachine,
+                trustUnverified: t.trustUnverified,
               }}
               cardLabels={{
                 notes: t.notes,
@@ -461,6 +501,16 @@ export function App() {
                 shapeRounded: t.shapeRounded,
                 shapeSquare: t.shapeSquare,
                 shapePill: t.shapePill,
+                question: t.questionEyebrow,
+                answer: t.answer,
+                answerHint: t.answerHint,
+                answerAction: t.answerAction,
+                answerAbout: t.answerAbout,
+                answerAlone: t.answerAlone,
+                folded: t.foldedSummary,
+                trustConfirmed: t.trustConfirmed,
+                trustMachine: t.trustMachine,
+                trustUnverified: t.trustUnverified,
               }}
               attachmentLabels={{
                 title: t.attachmentsTitle,
@@ -500,6 +550,17 @@ export function App() {
                 remove: t.pruneRemove,
                 cancel: t.cancel,
               }}
+              detachLabels={{
+                title: t.detachTitle,
+                body: t.detachBody,
+                confirmTitle: t.detachConfirmTitle,
+                confirmBody: t.detachConfirmBody,
+                carries: t.detachCarries,
+                watching: t.pruneWatching,
+                next: t.detachNext,
+                detach: t.detachAction,
+                cancel: t.cancel,
+              }}
               paletteLabels={{
                 scopeNode: t.paletteScopeNode,
                 scopeMap: t.paletteScopeMap,
@@ -514,6 +575,7 @@ export function App() {
                 'node.notes': t.cmdNotes,
                 'node.relate': t.cmdRelate,
                 'node.attach': t.cmdAttach,
+                'node.ask': t.cmdAsk,
                 'node.promoteEpic': t.cmdPromoteEpic,
                 'node.promoteInitiative': t.cmdPromoteInitiative,
                 'node.collapse': t.cmdCollapse,
@@ -521,13 +583,18 @@ export function App() {
                 'node.delete': t.cmdDelete,
                 'map.goto': t.cmdGoto,
                 'map.fit': t.cmdFit,
+                'map.trust': t.trustLensCmd,
                 'map.tidy': t.cmdTidy,
+                'map.writeup': t.cmdWriteUp,
                 'map.rename': t.cmdRenameMap,
                 'map.project': t.cmdProject,
                 'map.delete': t.cmdDeleteMap,
               }}
               commandHints={{
                 'node.relate': t.cmdRelateHint,
+                'node.ask': t.cmdAskHint,
+                'map.trust': t.trustLensHint,
+                'map.writeup': t.cmdWriteUpHint,
                 'node.promoteEpic': t.promoteEpicHint,
                 'node.promoteInitiative': t.promoteIniHint,
                 'node.delete': t.cmdDeleteHint,

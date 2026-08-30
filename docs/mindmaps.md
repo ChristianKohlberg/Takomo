@@ -218,6 +218,41 @@ A relationship whose end no longer resolves is dropped when the map is read,
 never repaired: there is no node to point at, and half an edge is not a fact
 about anything. Pruning a branch takes its relationships with it.
 
+## Writing it up — the map becomes documents
+
+```
+POST /v1/mindmaps/{id}/documents     {"path": "optional root folder"}
+```
+
+The map turns into a **tree of documents**, one per thought that had something
+to say, filed under folders that mirror its branches.
+
+This needs no section model inside a document, and that is the point:
+`/documents` already builds its tree from folder paths, so the shape of the
+thinking becomes the shape of the folder tree directly.
+
+**The rule that makes the result readable** — a node becomes a document when it
+has children or notes; a **bare leaf becomes a bullet** in its parent's
+document. Without it, every six-word thought is its own page and a map of forty
+converts into forty documents nobody opens.
+
+```
+Payments rebuild/                    API
+Payments rebuild/API/                versioning: v1 forever, or dated?
+Payments rebuild/                    integrations
+Payments rebuild/integrations/       Stripe first, then the bank file
+```
+
+**Running it again refiles; it never rewrites.** A node that already made a
+document keeps it: rename a branch and its document is renamed and its children
+re-filed underneath. The prose is never touched, because by then somebody has
+been writing in there, and that is the entire point of turning a map into
+documents.
+
+The link lives in the node's own `document` field, separate from `promoted` — a
+branch can be an epic *and* appear in the written-up plan, and sharing one slot
+would make writing the map up quietly erase what a branch had graduated into.
+
 ## Attachments — a pointer, never the file
 
 A node can point at something that lives elsewhere: `{kind, name, gist, ref}`,

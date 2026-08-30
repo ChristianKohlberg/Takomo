@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
 import type { MapNode } from '@/lib/mindmap-doc'
+import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
@@ -29,6 +30,17 @@ export interface OutlineLabels {
    *  is the only way in, so it is present even when there is nothing yet. */
   attachments: string
   remove: string
+  /** Detaching a row from its parent — the phone's route to cutting an edge,
+   *  which on the canvas is a click on a line a thumb cannot aim at. */
+  detach: string
+  /** A folded branch, summarised. `{n}` is the count. */
+  folded: string
+  /** The eyebrow on a question node. */
+  question: string
+  /** The trust lens, in words. A dot alone says nothing to a screen reader. */
+  trustConfirmed: string
+  trustMachine: string
+  trustUnverified: string
 }
 
 export interface OutlineProps {
@@ -42,6 +54,12 @@ export interface OutlineProps {
   onAttachments: (id: string) => void
   /** Goes through the same two questions the canvas does. */
   onDelete: (id: string) => void
+  /** Also two questions, and also not a deletion. */
+  onDetach: (id: string) => void
+  /** What each folded branch is holding — the hidden rows are not in `nodes`. */
+  foldSummaryOf: (id: string) => FoldSummary | null
+  /** The same lens the canvas has, so the phone can ask the same question. */
+  trustLens: boolean
   labels: OutlineLabels
   className?: string
 }
@@ -55,6 +73,9 @@ export function Outline({
   onSibling,
   onAttachments,
   onDelete,
+  onDetach,
+  foldSummaryOf,
+  trustLens,
   labels,
   className,
 }: OutlineProps) {
@@ -79,7 +100,20 @@ export function Outline({
 
   return (
     <ul className={cn('flex flex-col', className)}>
-      {rows.map(({ node, depth }) => (
+      {rows.map(({ node, depth }) => {
+        const fold = foldSummaryOf(node.id)
+        // The same one line of substance the canvas draws, for the same reason:
+        // a list you scroll should read as thoughts, not as labels.
+        const substance = fold ? fold.text : firstSentence(node.notes, 140)
+        const trust: Trust | null =
+          trustLens && node.kind !== 'question' ? trustOf(node) : null
+        const trustLabel =
+          trust === 'confirmed'
+            ? labels.trustConfirmed
+            : trust === 'machine'
+              ? labels.trustMachine
+              : labels.trustUnverified
+        return (
         <li
           key={node.id}
           className={cn(
@@ -96,7 +130,17 @@ export function Outline({
             onClick={() => onSelect(node.id)}
             className="min-w-0 grow cursor-pointer text-left"
           >
+            {node.kind === 'question' && (
+              <div className="font-mono text-[9px] font-[650] tracking-wider text-violet-600 uppercase dark:text-violet-300">
+                ? {labels.question}
+              </div>
+            )}
             <div className="text-foreground text-[13px] leading-snug">
+              {trust && (
+                <span className="mr-1.5 text-[11px]" title={trustLabel}>
+                  {trust === 'confirmed' ? '✓' : trust === 'machine' ? '⌁' : '~'}
+                </span>
+              )}
               {node.title}
               {/* The same marks the canvas draws, for the same reason: a list
                   you can scroll still shows where the substance is. */}
@@ -105,7 +149,20 @@ export function Outline({
                   ≋
                 </span>
               )}
+              {fold && (
+                <span
+                  className="text-muted-foreground ml-1.5 font-mono text-[10.5px]"
+                  title={labels.folded.replace('{n}', String(fold.count))}
+                >
+                  ⊞ {fold.count}
+                </span>
+              )}
             </div>
+            {substance && (
+              <div className="text-muted-foreground line-clamp-2 text-[11.5px] leading-snug">
+                {substance}
+              </div>
+            )}
             {node.promoted && (
               <div className="text-muted-foreground truncate font-mono text-[10.5px]">
                 → {node.promoted.kind} {node.promoted.id}
@@ -145,6 +202,18 @@ export function Outline({
                     ⇥
                   </Button>
                 </Hint>
+                {node.parent !== null && (
+                  <Hint text={labels.detach}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={labels.detach}
+                      onClick={() => onDetach(node.id)}
+                    >
+                      ⌐
+                    </Button>
+                  </Hint>
+                )}
                 <Hint text={labels.remove}>
                   <Button
                     variant="ghost"
@@ -159,7 +228,8 @@ export function Outline({
             )}
           </div>
         </li>
-      ))}
+        )
+      })}
     </ul>
   )
 }

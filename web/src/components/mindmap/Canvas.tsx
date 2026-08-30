@@ -44,6 +44,7 @@ import {
   type Viewport,
 } from '@/lib/mindmap-layout'
 import { cn } from '@/lib/utils'
+import { trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, NodeFields, Relationship } from '@/lib/mindmap-doc'
 import type { DropPayload } from '@/lib/mindmap-attach'
 import { Hint } from '@/components/Hint'
@@ -93,6 +94,14 @@ export interface CanvasLabels {
   nodeMenu: string
   /** Said on the node a file or link is about to be dropped onto. */
   dropHere: string
+  /** The trust lens: its toggle, its legend, and its three readings. */
+  trustLens: string
+  trustLegend: string
+  trustConfirmed: string
+  trustMachine: string
+  trustUnverified: string
+  /** Clicking the line to a parent. `{title}` and `{parent}` name both ends. */
+  cutEdge: string
 }
 
 export interface CanvasProps {
@@ -164,6 +173,20 @@ export interface CanvasProps {
   onEditOpened: () => void
   reveal: Reveal
   onRevealed: () => void
+  /** What each folded branch is holding. Only this viewer's folds have one, and
+   *  the canvas cannot compute it — the hidden nodes are not among `nodes`. */
+  foldSummaryOf: (id: string) => FoldSummary | null
+  /** Tint every node by how confident we are in it. A lens, off by default. */
+  trustLens: boolean
+  onTrustLens: (on: boolean) => void
+  /** A double-click into empty space: a thought that does not know where it goes
+   *  yet, pinned where it was dropped. World coordinates. */
+  onCreateAt: (at: Point) => void
+  /** Clicking the line between a node and its parent. The page asks twice before
+   *  anything is cut, so this only OFFERS the cut. */
+  onCutEdge: (childId: string) => void
+  /** A person's own answer to a question node. */
+  onAnswerQuestion: (id: string, answer: string) => void
   className?: string
 }
 
@@ -185,6 +208,27 @@ type Drag =
 
 /** The one place `shape` becomes geometry. A square node reads as a screen, a
  *  pill as a label; anything unrecognised falls back to the ordinary box. */
+/**
+ * The three tints of the trust lens.
+ *
+ * Deliberately a fill AND a stroke rather than a badge: the question the lens
+ * answers — "what in here has nobody looked at?" — is asked of the whole map at
+ * once, and a mark you have to read node by node does not answer it. The words
+ * are on the card and in the legend, so the reading is never colour alone.
+ */
+const TRUST_FILL: Record<Trust, string> = {
+  confirmed: 'fill-emerald-100 stroke-emerald-500 dark:fill-emerald-950',
+  machine: 'fill-rose-100 stroke-rose-500 dark:fill-rose-950',
+  unverified: 'fill-amber-100 stroke-amber-500 dark:fill-amber-950',
+}
+
+/** The legend's swatches, in the same order the lens reads. */
+const TRUST_SWATCH: Record<Trust, string> = {
+  confirmed: 'bg-emerald-300 dark:bg-emerald-700',
+  machine: 'bg-rose-300 dark:bg-rose-700',
+  unverified: 'bg-amber-300 dark:bg-amber-700',
+}
+
 function cornerRadius(shape: string): number {
   if (shape === 'square') return 2
   if (shape === 'pill') return NODE_HEIGHT / 2
@@ -234,6 +278,12 @@ export function Canvas({
   onEditOpened,
   reveal,
   onRevealed,
+  foldSummaryOf,
+  trustLens,
+  onTrustLens,
+  onCreateAt,
+  onCutEdge,
+  onAnswerQuestion,
   className,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -608,20 +658,59 @@ export function Canvas({
           setMenuAt(clampMenu(screen))
         }}
         onDoubleClick={(e) => {
-          const hit = nodeAt(placed.nodes, toWorld(pointIn(e), viewport))
-          if (hit) startEditing(hit.node.id)
+          const world = toWorld(pointIn(e), viewport)
+          const hit = nodeAt(placed.nodes, world)
+          if (hit) {
+            startEditing(hit.node.id)
+            return
+          }
+          // Empty space: a loose thought, pinned where it was dropped and opened
+          // straight into its title. You do not always know where a thought
+          // goes, and forcing a parent is wrong for the ten minutes a brainstorm
+          // is for. Centred on the cursor, because that is where it was aimed.
+          if (!canWrite) return
+          // The root box is the MAP, not a node, and it is not in `placed.nodes`
+          // for `nodeAt` to have found — so it has to be excluded by hand, or a
+          // double-click on the title drops a thought on top of it.
+          const onRoot =
+            world.x >= placed.root.x &&
+            world.x <= placed.root.x + NODE_WIDTH &&
+            world.y >= placed.root.y &&
+            world.y <= placed.root.y + NODE_HEIGHT
+          if (onRoot) return
+          onCreateAt({ x: world.x - NODE_WIDTH / 2, y: world.y - NODE_HEIGHT / 2 })
         }}
       >
         <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
-          {/* Edges first, so a node always draws over its own lines. */}
-          <g fill="none" className="stroke-border" strokeWidth={1.5}>
+          {/* Edges first, so a node always draws over its own lines.
+
+              A line to a PARENT is clickable, and the click offers to cut it —
+              the child becomes a first-ring thought and nothing is removed. The
+              hit target is a fat transparent stroke over the visible hairline,
+              because a 1.5px line is not something a pointer can be asked to
+              find. A first-ring node's line goes to the map itself rather than
+              to a node, so there is nothing there to cut. */}
+          <g fill="none" strokeWidth={1.5}>
             {placed.nodes.map((p) => {
               const from = p.node.parent ? positionOf(p.node.parent) : placed.root
+              const d = edgePath(from, positionOf(p.node.id), mode === 'radial' ? 'auto' : 'right')
+              const cuttable = canWrite && p.node.parent !== null
+              if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-border" d={d} />
               return (
-                <path
+                <g
                   key={`e-${p.node.id}`}
-                  d={edgePath(from, positionOf(p.node.id), mode === 'radial' ? 'auto' : 'right')}
-                />
+                  className="group cursor-pointer"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => onCutEdge(p.node.id)}
+                >
+                  <title>
+                    {labels.cutEdge
+                      .replace('{title}', p.node.title)
+                      .replace('{parent}', titleOf.get(p.node.parent as string) ?? '')}
+                  </title>
+                  <path d={d} stroke="transparent" strokeWidth={14} />
+                  <path className="stroke-border group-hover:stroke-destructive" d={d} />
+                </g>
               )
             })}
           </g>
@@ -645,15 +734,25 @@ export function Canvas({
 
           {/* Relations: dashed, so they read as "not the tree" at a glance, which
               is the only thing about them a reader has to get right. */}
-          <g fill="none" strokeWidth={1.5} strokeDasharray="5 4" className="stroke-ring">
-            {relationships.map((r) =>
-              byId.has(r.from) && byId.has(r.to) ? (
+          <g fill="none" strokeWidth={1.5}>
+            {relationships.map((r) => {
+              if (!byId.has(r.from) || !byId.has(r.to)) return null
+              // The line from a question to what it questions is a relation like
+              // any other — that is what let questions exist with no new field
+              // anywhere — but it is not read like one, so it is not drawn like
+              // one either.
+              const asks =
+                byId.get(r.from)?.node.kind === 'question' ||
+                byId.get(r.to)?.node.kind === 'question'
+              return (
                 <path
                   key={`r-${r.id}`}
                   d={edgePath(positionOf(r.from), positionOf(r.to), 'auto')}
+                  strokeDasharray={asks ? '2 5' : '5 4'}
+                  className={asks ? 'stroke-violet-500' : 'stroke-ring'}
                 />
-              ) : null,
-            )}
+              )
+            })}
           </g>
           <g className="fill-ring" fontSize={10.5} textAnchor="middle">
             {relationships.map((r) => {
@@ -702,6 +801,12 @@ export function Canvas({
             // The `+` is on hover OR selection, never permanently: 500 nodes
             // with a plus sign each is 500 things to look past.
             const showAdd = canWrite && (hovered === p.node.id || isSelected)
+            const isQuestion = p.node.kind === 'question'
+            // The lens is a lens: while it is on it OVERRIDES a hand-picked
+            // colour, because a map half tinted by confidence and half by
+            // somebody's palette answers neither question.
+            const trust = trustLens && !isQuestion ? trustOf(p.node) : null
+            const fold = folded ? foldSummaryOf(p.node.id) : null
             return (
               <g key={p.node.id} transform={`translate(${at.x} ${at.y})`}>
                 {/* A collaborator's ring sits OUTSIDE the box, so it never fights
@@ -723,15 +828,23 @@ export function Canvas({
                   x={offset}
                   width={width}
                   height={height}
-                  rx={isSelected ? 12 : cornerRadius(p.node.shape)}
+                  // A question is squarer than a thought: it is a different kind
+                  // of thing on the map, and shape says so before colour does.
+                  rx={isSelected ? 12 : isQuestion ? 4 : cornerRadius(p.node.shape)}
                   className={cn(
                     'fill-card stroke-border',
+                    trust && TRUST_FILL[trust],
+                    isQuestion && 'fill-violet-50 stroke-violet-400 dark:fill-violet-950',
                     isSelected && 'stroke-ring',
                     relationFrom === p.node.id && 'stroke-ring',
                     target?.allowed && 'stroke-ok',
                     target && !target.allowed && 'stroke-destructive',
                   )}
-                  style={p.node.color && !isSelected ? { fill: p.node.color } : undefined}
+                  style={
+                    p.node.color && !isSelected && !trust && !isQuestion
+                      ? { fill: p.node.color }
+                      : undefined
+                  }
                   strokeWidth={isSelected || target || relationFrom === p.node.id ? 2 : 1}
                 />
                 <foreignObject x={offset} width={width} height={height}>
@@ -752,6 +865,9 @@ export function Canvas({
                     onRemoveRelation={onRemoveRelation}
                     reveal={isSelected ? reveal : null}
                     onRevealed={onRevealed}
+                    fold={fold}
+                    trust={trust}
+                    onAnswer={onAnswerQuestion}
                     labels={cardLabels}
                   />
                 </foreignObject>
@@ -891,6 +1007,28 @@ export function Canvas({
         />
       )}
 
+      {/* The legend. Present only while the lens is, because a permanent key to
+          a decoration nobody asked for is exactly what a lens is not. */}
+      {trustLens && (
+        <div className="bg-card border-border absolute bottom-3 left-3 flex max-w-[calc(100vw-1.5rem)] flex-col gap-1 rounded-lg border px-2.5 py-2 text-[11px]">
+          <span className="text-muted-foreground text-[10px] font-[650]">
+            {labels.trustLegend}
+          </span>
+          {(
+            [
+              ['confirmed', labels.trustConfirmed],
+              ['unverified', labels.trustUnverified],
+              ['machine', labels.trustMachine],
+            ] as const
+          ).map(([kind, label]) => (
+            <span key={kind} className="text-foreground flex items-center gap-1.5">
+              <span className={cn('h-2.5 w-2.5 shrink-0 rounded-sm', TRUST_SWATCH[kind])} />
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Viewport controls, bottom-right — out of the way of the root. */}
       <div className="absolute right-3 bottom-3 flex gap-1.5">
         <Hint text={mode === 'radial' ? labels.tree : labels.radial}>
@@ -900,6 +1038,19 @@ export function Canvas({
             className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
           >
             {mode === 'radial' ? labels.tree : labels.radial}
+          </button>
+        </Hint>
+        <Hint text={labels.trustLens}>
+          <button
+            type="button"
+            aria-pressed={trustLens}
+            onClick={() => onTrustLens(!trustLens)}
+            className={cn(
+              'bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]',
+              trustLens && 'border-ring text-foreground',
+            )}
+          >
+            ◍
           </button>
         </Hint>
         <Hint text={labels.tidy}>

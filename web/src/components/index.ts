@@ -198,6 +198,8 @@ export { CommandPalette } from './mindmap/CommandPalette'
 export type { CommandPaletteProps, CommandPaletteLabels, PaletteItem } from './mindmap/CommandPalette'
 export { PruneDialog } from './mindmap/PruneDialog'
 export type { PruneDialogProps, PruneDialogLabels } from './mindmap/PruneDialog'
+export { DetachDialog } from './mindmap/DetachDialog'
+export type { DetachDialogProps, DetachDialogLabels } from './mindmap/DetachDialog'
 export { AttachmentsDialog } from './mindmap/AttachmentsDialog'
 export type {
   AttachmentsDialogProps,

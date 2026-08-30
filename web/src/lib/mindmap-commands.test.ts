@@ -35,7 +35,9 @@ describe('commandsFor', () => {
     expect(commandsFor(ctx())).toEqual([
       'map.goto',
       'map.fit',
+      'map.trust',
       'map.tidy',
+      'map.writeup',
       'map.rename',
       'map.project',
       'map.delete',
@@ -44,13 +46,14 @@ describe('commandsFor', () => {
 
   it('puts the node scope first when a node is selected', () => {
     const ids = commandsFor(ctx({ node: node({ hasChildren: true }) }))
-    expect(ids.slice(0, 10)).toEqual([
+    expect(ids.slice(0, 11)).toEqual([
       'node.child',
       'node.sibling',
       'node.rename',
       'node.notes',
       'node.relate',
       'node.attach',
+      'node.ask',
       'node.promoteEpic',
       'node.promoteInitiative',
       'node.collapse',
@@ -67,7 +70,7 @@ describe('commandsFor', () => {
     )
     // Switching project is a read, so it survives; everything that would write
     // is absent.
-    expect(ids).toEqual(['node.collapse', 'map.goto', 'map.fit', 'map.project'])
+    expect(ids).toEqual(['node.collapse', 'map.goto', 'map.fit', 'map.trust', 'map.project'])
   })
 
   it('does not offer to promote a branch that already graduated', () => {
@@ -95,6 +98,12 @@ describe('commandsFor', () => {
     expect(leaf).not.toContain('node.expand')
   })
 
+  it('offers asking a question only where something can be written', () => {
+    expect(commandsFor(ctx({ node: node() }))).toContain('node.ask')
+    expect(commandsFor(ctx({ canWrite: false, node: node() }))).not.toContain('node.ask')
+    expect(commandsFor(ctx())).not.toContain('node.ask')
+  })
+
   it('needs a second node before a relation is drawable', () => {
     expect(commandsFor(ctx({ nodeCount: 1, node: node() }))).not.toContain('node.relate')
   })
@@ -107,6 +116,8 @@ describe('commandsFor', () => {
     const ids = commandsFor(ctx({ nodeCount: 0 }))
     expect(ids).not.toContain('map.goto')
     expect(ids).not.toContain('map.tidy')
+    // Nothing to tint either.
+    expect(ids).not.toContain('map.trust')
     expect(ids).toContain('map.fit')
   })
 })

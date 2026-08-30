@@ -19,6 +19,7 @@ export const NODE_COMMANDS = [
   'node.notes',
   'node.relate',
   'node.attach',
+  'node.ask',
   'node.promoteEpic',
   'node.promoteInitiative',
   'node.collapse',
@@ -29,7 +30,9 @@ export const NODE_COMMANDS = [
 export const MAP_COMMANDS = [
   'map.goto',
   'map.fit',
+  'map.trust',
   'map.tidy',
+  'map.writeup',
   'map.rename',
   'map.project',
   'map.delete',
@@ -79,6 +82,10 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
       // inline add row: a node with twenty attachments is exactly the one whose
       // list somebody needs to get INTO.
       out.push('node.attach')
+      // Asking about a node is a WRITE — it puts a question node on a map other
+      // people are reading — so it lives with the other write verbs and is
+      // absent on a read-only token like all of them.
+      out.push('node.ask')
     }
     if (ctx.canManageMap && !n.promoted) out.push('node.promoteEpic', 'node.promoteInitiative')
     if (n.collapsed) out.push('node.expand')
@@ -87,7 +94,14 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   }
   if (ctx.nodeCount > 0) out.push('map.goto')
   out.push('map.fit')
+  // The trust lens is per-viewer and reads nothing but fields already on screen,
+  // so it survives a read-only token exactly as fold does.
+  if (ctx.nodeCount > 0) out.push('map.trust')
   if (ctx.canWrite && ctx.nodeCount > 0) out.push('map.tidy')
+  // Writing the map up makes documents in the project, so it needs the same
+  // write scope as growing the map — and there is nothing to write up when the
+  // map is empty.
+  if (ctx.canWrite && ctx.nodeCount > 0) out.push('map.writeup')
   if (ctx.canManageMap) out.push('map.rename')
   if (ctx.projectCount > 1) out.push('map.project')
   if (ctx.canManageMap) out.push('map.delete')

@@ -249,3 +249,33 @@ export function mindmapSyncBase(session: MindmapSession): string {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${scheme}//${location.host}${session.url}`
 }
+
+/** One document a write-up made, or brought back in line. */
+export interface WrittenDocument {
+  node: string
+  document: string
+  title: string
+  path: string
+}
+
+export interface WriteUp {
+  documents: WrittenDocument[]
+  created: number
+  refiled: number
+  note?: string
+}
+
+/**
+ * Turn the map into a tree of documents — one per thought that had something to
+ * say, filed under folders that mirror its branches.
+ *
+ * Running it again REFILES rather than rewrites: a node that already made a
+ * document keeps it, its title and folder come back in line with the map, and
+ * its prose is left alone, because by then somebody has been writing in it.
+ */
+export function writeUpMindmap(token: string, id: string, path?: string): Promise<WriteUp> {
+  return api<WriteUp>(token, `/mindmaps/${encodeURIComponent(id)}/documents`, {
+    method: 'POST',
+    body: JSON.stringify(path === undefined ? {} : { path }),
+  })
+}

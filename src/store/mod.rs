@@ -20,6 +20,7 @@ mod model;
 mod moves;
 mod oauth;
 mod projects;
+pub mod prose;
 mod questions;
 mod ready_sql;
 mod roadmap;

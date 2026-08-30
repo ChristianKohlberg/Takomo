@@ -19159,6 +19159,163 @@ fn peer_node_update(doc: &yrs::Doc, id: &str, title: &str, order: &str) -> Vec<u
     txn.encode_update_v1()
 }
 
+/// Writing a map up: one document per thought, filed by its branch.
+///
+/// The conversion exists because `/documents` already builds its tree from
+/// folder paths — so a map does not need a section model inside one document to
+/// become something navigable. The shape of the thinking becomes the shape of
+/// the folder tree.
+///
+/// The rule under test is the one that decides whether the result is readable:
+/// a node with children or notes becomes a document, and a bare leaf becomes a
+/// BULLET in its parent's. Without it a map of forty six-word thoughts converts
+/// into forty documents nobody opens.
+#[tokio::test]
+async fn a_map_is_written_up_as_one_document_per_thought_that_had_something_to_say() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    async fn add(app: &TestApp, map: &str, body: Value) -> String {
+        let (s, out) = app
+            .post(&app.worker, &format!("/v1/mindmaps/{map}/nodes"), body)
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{out}");
+        out["nodes"][0]["id"].as_str().unwrap().to_string()
+    }
+
+    let api = add(
+        &app,
+        &map,
+        json!({ "text": "API", "notes": "The surface everything hangs off." }),
+    )
+    .await;
+    // Two bare leaves: no notes, no children. These are bullets, not documents.
+    add(
+        &app,
+        &map,
+        json!({ "text": "idempotent retries", "parent": api }),
+    )
+    .await;
+    add(&app, &map, json!({ "text": "rate limits", "parent": api })).await;
+    // A leaf WITH something written on it earns its own document.
+    add(
+        &app,
+        &map,
+        json!({ "text": "versioning", "parent": api, "notes": "v1 forever, or dated?" }),
+    )
+    .await;
+    // A lone phrase off the root: still not a document.
+    add(&app, &map, json!({ "text": "just a thought" })).await;
+
+    let (s, out) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/documents"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{out}");
+    assert_eq!(out["created"], json!(2), "{out}");
+    assert_eq!(out["refiled"], json!(0), "{out}");
+
+    let (s, page) = app
+        .get(&app.worker, "/v1/projects/tp/documents?limit=50")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{page}");
+    let mut filed: Vec<(String, String)> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["path"].as_str().unwrap_or_default().to_string(),
+                d["title"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    filed.sort();
+    assert_eq!(
+        filed,
+        vec![
+            ("Payments rebuild".to_string(), "API".to_string()),
+            ("Payments rebuild/API".to_string(), "versioning".to_string()),
+        ],
+        "a bare leaf is a bullet in its parent, not a page of its own: {page}"
+    );
+
+    // The node now carries the document it became, in its OWN slot — promoting
+    // a branch to an epic must not erase which document it is written up in.
+    let (_, read) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    let node = read["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(api))
+        .expect("the API node");
+    assert!(node["document"].as_str().is_some(), "{node}");
+    assert_eq!(node["promoted"], Value::Null, "the two slots are separate");
+
+    // Reshape the map, run it again: the documents are REFILED, never doubled.
+    let (s, patched) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{api}"),
+            json!({ "title": "The API" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+
+    let (s, again) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/documents"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{again}");
+    assert_eq!(again["created"], json!(0), "nothing new: {again}");
+    assert_eq!(again["refiled"], json!(2), "{again}");
+
+    let (_, page) = app
+        .get(&app.worker, "/v1/projects/tp/documents?limit=50")
+        .await;
+    assert_eq!(
+        page["total"],
+        json!(2),
+        "a second run must not duplicate: {page}"
+    );
+    let mut filed: Vec<(String, String)> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["path"].as_str().unwrap_or_default().to_string(),
+                d["title"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    filed.sort();
+    assert_eq!(
+        filed,
+        vec![
+            ("Payments rebuild".to_string(), "The API".to_string()),
+            (
+                "Payments rebuild/The API".to_string(),
+                "versioning".to_string()
+            ),
+        ],
+        "renaming a branch renames its document and refiles its children: {page}"
+    );
+}
+
 /// The migration that moves every document's prose into the shared log.
 ///
 /// This is the one test whose absence would have been expensive. The mindmap

@@ -355,6 +355,21 @@ on REST/MCP/CLI writes but not on individual keystrokes over the socket, which i
 `/documents` already ran. `mindmaps.nodes` is denormalised for exactly one reason: an honest count
 means replaying the document, affordable for one map and not for a list of two hundred.
 
+**A map is written up as a TREE OF DOCUMENTS** (`POST /v1/mindmaps/{id}/documents`,
+`mindmapdoc::plan_documents`), one per thought that had something to say, filed under folders that
+mirror its branches. It needs no section model inside a document, which is the point: `/documents`
+already builds its tree from paths, so the shape of the thinking becomes the folder tree. The rule
+that makes it readable is that a node becomes a document when it has children or notes and a **bare
+leaf becomes a bullet** in its parent's — without it forty six-word thoughts become forty pages
+nobody opens. Re-running **refiles and never rewrites**: titles and folders come back in line with
+the map, prose is left alone, because by then somebody has been writing in it. The link lives in the
+node's own `document` field, separate from `promoted`, so writing a map up cannot erase what a
+branch had graduated into. `src/store/prose.rs` builds that first content and is the ONE place Rust
+writes blocks rather than reading them — permitted only because a converted document has no live
+text and nothing to merge with, and its shape is asserted by reading it back through the annotated
+markdown an agent uses (`tests/mcp.rs`), because a bullet list flattened to `bulletList > text`
+reads back fine from our own reader and renders as nothing in the editor.
+
 **Relationships** are the edge that is *not* the hierarchy — `{from, to, label}`, so a question
 hanging off what it questions and a screen navigating to another are one mechanism instead of three
 special cases. A dangling one is dropped on read, never repaired. **Attachments are pointers, never

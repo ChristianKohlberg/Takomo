@@ -972,12 +972,19 @@ fn mindmap(store: &Store) -> ApiResult<()> {
 
     // The seeder is alone with the database, so it edits the map's document
     // directly rather than joining a room nobody else is in.
-    let grow = |parent: Option<&str>, texts: &[&str]| -> ApiResult<Vec<String>> {
-        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = texts
+    //
+    // Each entry is (title, notes, origin) — because a map where every node is a
+    // bare label demonstrates nothing. Notes are what make a node convert into a
+    // document rather than a bullet, and `origin` is what the trust lens reads,
+    // so a seeded map has to carry both or two features look broken.
+    let grow = |parent: Option<&str>, nodes: &[(&str, &str, &str)]| -> ApiResult<Vec<String>> {
+        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = nodes
             .iter()
-            .map(|text| crate::store::mindmapdoc::NodeAdd {
+            .map(|(title, notes, origin)| crate::store::mindmapdoc::NodeAdd {
                 parent: parent.map(str::to_string),
-                title: (*text).to_string(),
+                title: (*title).to_string(),
+                notes: (!notes.is_empty()).then(|| (*notes).to_string()),
+                origin: Some((*origin).to_string()),
                 ..Default::default()
             })
             .collect();
@@ -987,27 +994,85 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         Ok(created.into_iter().map(|(id, _)| id).collect())
     };
 
-    let branches = grow(None, &["API", "integrations", "workflows", "ideas"])?;
-    // Leaves under some of them: a map where every branch is bare reads as an
-    // empty gesture, and one where every branch is full reads as a document.
+    let branches = grow(
+        None,
+        &[
+            (
+                "API",
+                "The surface every integration hangs off. Getting this wrong is the expensive mistake, so it gets decided first.",
+                "human",
+            ),
+            (
+                "integrations",
+                "Whose money moves, and through whom. One provider at a time, in the order they cost us.",
+                "human",
+            ),
+            ("workflows", "", "human"),
+            ("ideas", "", "human"),
+        ],
+    )?;
+
+    // A branch that converts into a document with two bullets under it, and one
+    // that converts into a document with a child document — both shapes, so the
+    // conversion has something to show.
     grow(
         Some(&branches[0]),
         &[
-            "versioning: v1 forever, or dated?",
-            "idempotent retries on capture",
+            (
+                "versioning: v1 forever, or dated?",
+                "Dated versions are honest and nobody reads them. v1-forever is a lie that keeps working. Leaning to v1-forever with additive-only changes.",
+                "human",
+            ),
+            ("idempotent retries on capture", "", "human"),
+            ("rate limits per merchant", "", "human"),
         ],
     )?;
     grow(
         Some(&branches[1]),
         &[
-            "Stripe first, then the bank file",
-            "one webhook per provider?",
+            (
+                "Stripe first, then the bank file",
+                "Stripe covers the cases we already have. The bank file is a quarter of the volume and most of the pain, so it goes second on purpose.",
+                "human",
+            ),
+            ("one webhook per provider?", "", "human"),
         ],
     )?;
     grow(
         Some(&branches[3]),
-        &["let a customer split one invoice themselves"],
+        &[
+            ("let a customer split one invoice themselves", "", "human"),
+            (
+                "dunning that reads like a person wrote it",
+                "Suggested while summarising the support backlog — nobody has checked whether it is worth doing.",
+                "agent",
+            ),
+        ],
     )?;
+
+    // An open question, hanging off the branch it questions. A brainstorm that
+    // has no unanswered question in it is one nobody was honest in.
+    let question = grow(
+        None,
+        &[(
+            "Do we charge for the API, or is it table stakes?",
+            "",
+            "human",
+        )],
+    )?;
+    store.edit_mindmap_document(&map.id, |doc| {
+        crate::store::mindmapdoc::patch_node(
+            doc,
+            &question[0],
+            &crate::store::mindmapdoc::NodePatch {
+                kind: Some("question".to_string()),
+                ..Default::default()
+            },
+            SEEDER,
+        )?;
+        crate::store::mindmapdoc::add_relationship(doc, &question[0], &branches[0], "questions")?;
+        Ok(())
+    })?;
 
     // One branch became work, one became a direction, two are still thoughts —
     // which is what a real brainstorm looks like halfway through.

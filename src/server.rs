@@ -486,6 +486,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // The sync ticket, minted exactly as a document's is — a browser
         // WebSocket cannot carry an Authorization header, so the credential has
         // to ride the handshake.
+        // Write the map up: one document per thought, filed by its branch.
+        .route(
+            "/v1/mindmaps/{id}/documents",
+            post(crate::api::mindmaps::to_documents),
+        )
         .route(
             "/v1/mindmaps/{id}/session",
             post(crate::api::docsync::create_mindmap_session),

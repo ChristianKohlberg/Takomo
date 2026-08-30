@@ -51,6 +51,7 @@ import type { MenuItem } from '@/components/mindmap/NodeMenu'
 import type { PillVerb } from '@/components/mindmap/NodePill'
 import { Outline, type OutlineLabels } from '@/components/mindmap/Outline'
 import { PruneDialog, type PruneDialogLabels } from '@/components/mindmap/PruneDialog'
+import { DetachDialog, type DetachDialogLabels } from '@/components/mindmap/DetachDialog'
 import {
   MAX_ATTACHMENTS,
   MAX_NODES,
@@ -71,10 +72,14 @@ import {
   pillVerbsFor,
   type CommandId,
 } from '@/lib/mindmap-commands'
+import { cutTarget, foldSummary } from '@/lib/mindmap-lens'
 import { draftsForDrop, type DropPayload } from '@/lib/mindmap-attach'
 import {
   addAttachment,
+  answerQuestion,
   createNode,
+  createQuestion,
+  detach,
   createRelationship,
   deleteRelationship,
   deleteSubtree,
@@ -114,6 +119,7 @@ const VERB_GLYPH: Partial<Record<CommandId, string>> = {
   'node.collapse': '⊟',
   'node.expand': '⊞',
   'node.relate': '⇢',
+  'node.ask': '?',
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
@@ -122,6 +128,8 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
  *  it under somebody else mid-conversation, so none of this is in the document. */
 const foldKey = (id: string) => `takomo.mindmap.fold.${id}`
 const MODE_KEY = 'takomo.mindmap.mode'
+/** The trust lens is a lens, so it is off by default and remembered per viewer. */
+const TRUST_KEY = 'takomo.mindmap.trust'
 
 /** How many rows a second stage offers. A palette is a shortcut, not a browser. */
 const MAX_ROWS = 12
@@ -155,6 +163,10 @@ export interface LiveLabels {
   droppedFileGist: string
   /** Said when a drop does not fit under the per-node cap. `{max}`. */
   attachmentsFull: string
+  /** The title a new question starts life with, before it is typed over. */
+  newQuestion: string
+  /** The trust lens toggle in the top strip, where a phone can reach it. */
+  trustLens: string
 }
 
 export interface LiveProps {
@@ -172,12 +184,15 @@ export interface LiveProps {
   canManageMap: boolean
   onRenameMap: () => void
   onDeleteMap: () => void
+  /** Turn the map into a tree of documents. */
+  onWriteUp: () => void
   onPromote: (node: string, target: 'epic' | 'initiative') => void
   labels: LiveLabels
   canvasLabels: CanvasLabels
   outlineLabels: OutlineLabels
   cardLabels: NodeCardLabels
   pruneLabels: PruneDialogLabels
+  detachLabels: DetachDialogLabels
   attachmentLabels: AttachmentsDialogLabels
   paletteLabels: CommandPaletteLabels
   commandLabels: CommandLabels
@@ -199,12 +214,14 @@ export default function Live({
   canManageMap,
   onRenameMap,
   onDeleteMap,
+  onWriteUp,
   onPromote,
   labels,
   canvasLabels,
   outlineLabels,
   cardLabels,
   pruneLabels,
+  detachLabels,
   attachmentLabels,
   paletteLabels,
   commandLabels,
@@ -232,6 +249,9 @@ export default function Live({
   )
   const [relationFrom, setRelationFrom] = useState<string | null>(null)
   const [pruning, setPruning] = useState<string | null>(null)
+  /** The child whose line to its parent is being cut, or null. */
+  const [cutting, setCutting] = useState<string | null>(null)
+  const [trustLens, setTrustLens] = useState(() => localStorage.getItem(TRUST_KEY) === 'on')
   /** The node whose attachments are open in the manager, or null. */
   const [attaching, setAttaching] = useState<string | null>(null)
 
@@ -336,6 +356,24 @@ export default function Live({
   const relationsFor = useCallback(
     (id: string) => relationships.filter((r) => r.from === id || r.to === id),
     [relationships],
+  )
+
+  /**
+   * What each folded branch is holding.
+   *
+   * Computed here rather than in the canvas because the canvas is handed the
+   * VISIBLE nodes, and the whole point of a fold summary is the nodes that are
+   * not among them. Only folded branches are summarised, so the cost is bounded
+   * by what this viewer folded rather than by the size of the map.
+   */
+  const foldSummaries = useMemo(() => {
+    const out = new Map<string, ReturnType<typeof foldSummary>>()
+    for (const id of collapsed) out.set(id, foldSummary(nodes, id))
+    return out
+  }, [nodes, collapsed])
+  const foldSummaryOf = useCallback(
+    (id: string) => foldSummaries.get(id) ?? null,
+    [foldSummaries],
   )
 
   const guard = useCallback((): boolean => {
@@ -463,6 +501,60 @@ export default function Live({
       if (add.length > 0) setSelected(id)
     },
     [guard, nodes, ydoc, labels.droppedFileGist, labels.attachmentsFull, onError],
+  )
+
+  /**
+   * A thought dropped into empty space.
+   *
+   * Created, pinned where it landed, selected and opened straight into its title
+   * — four things, because the gesture means one thing: "this occurred to me,
+   * here". It joins the first ring with no parent, which is the honest answer
+   * while nobody knows where it goes yet.
+   */
+  const onCreateAt = useCallback(
+    (at: Point) => {
+      if (!guard()) return
+      const id = createNode(ydoc, { parent: null, after: null, title: '', by: session.display })
+      if (!id) {
+        onError(labels.capNodes.replace('{max}', String(MAX_NODES)))
+        return
+      }
+      place(ydoc, id, at)
+      setSelected(id)
+      setEditNode(id)
+    },
+    [guard, ydoc, session.display, onError, labels.capNodes],
+  )
+
+  /** Pose a question about the selected thought, and open its title to type it. */
+  const onAsk = useCallback(
+    (about: string | null) => {
+      if (!guard()) return
+      const id = createQuestion(ydoc, about, labels.newQuestion, session.display)
+      if (!id) {
+        onError(labels.capNodes.replace('{max}', String(MAX_NODES)))
+        return
+      }
+      setSelected(id)
+      setEditNode(id)
+    },
+    [guard, ydoc, session.display, onError, labels.capNodes, labels.newQuestion],
+  )
+
+  /**
+   * Answer a question in a person's own words.
+   *
+   * The answer lands on the thought the question was about, that thought is
+   * marked as looked at, and the question goes — so selection has to move with
+   * it, or the page would sit on a node that no longer exists.
+   */
+  const onAnswerQuestion = useCallback(
+    (id: string, answer: string) => {
+      if (!guard()) return
+      const landed = answerQuestion(ydoc, id, answer)
+      if (landed) setSelected(landed)
+    },
+    [guard, ydoc],
   )
 
   const onToggleCollapse = useCallback((id: string) => {
@@ -648,6 +740,9 @@ export default function Live({
         case 'node.relate':
           setRelationFrom(node)
           break
+        case 'node.ask':
+          onAsk(node)
+          break
         case 'node.promoteEpic':
           if (node) onPromote(node, 'epic')
           break
@@ -664,8 +759,17 @@ export default function Live({
         case 'map.fit':
           setFitRequest(Date.now())
           break
+        case 'map.trust':
+          setTrustLens((on) => {
+            localStorage.setItem(TRUST_KEY, on ? 'off' : 'on')
+            return !on
+          })
+          break
         case 'map.tidy':
           onTidy()
+          break
+        case 'map.writeup':
+          onWriteUp()
           break
         case 'map.rename':
           onRenameMap()
@@ -685,9 +789,11 @@ export default function Live({
       selected,
       onChild,
       onSibling,
+      onAsk,
       onPromote,
       onToggleCollapse,
       onTidy,
+      onWriteUp,
       onRenameMap,
       onDeleteMap,
     ],
@@ -699,6 +805,9 @@ export default function Live({
   const onRevealed = useCallback(() => setReveal(null), [])
 
   const pruneTarget = pruning ? (nodes.find((n) => n.id === pruning) ?? null) : null
+  // Resolved from the live tree, so a line somebody else cut first closes the
+  // dialog rather than confirming a cut that already happened.
+  const cutT = cutting ? cutTarget(nodes, cutting) : null
   // Read from the live tree rather than captured when the badge was clicked, so
   // an attachment somebody else adds appears in the open dialog.
   const attachingNode = attaching ? (nodes.find((n) => n.id === attaching) ?? null) : null
@@ -722,6 +831,22 @@ export default function Live({
           className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 font-mono text-[12px] font-[650]"
         >
           ⌘K
+        </button>
+        {/* The lens has a control on the canvas and a command on ⌘K, and a phone
+            has neither a canvas nor a keyboard — so it gets the toggle here, and
+            only here. */}
+        <button
+          type="button"
+          aria-pressed={trustLens}
+          onClick={() => {
+            setTrustLens((on) => {
+              localStorage.setItem(TRUST_KEY, on ? 'off' : 'on')
+              return !on
+            })
+          }}
+          className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650] md:hidden"
+        >
+          ◍ {labels.trustLens}
         </button>
         {!canWrite && (
           <span className="text-muted-foreground text-[11.5px]">{labels.readOnly}</span>
@@ -778,6 +903,15 @@ export default function Live({
           onFitted={onFitted}
           reveal={reveal}
           onRevealed={onRevealed}
+          foldSummaryOf={foldSummaryOf}
+          trustLens={trustLens}
+          onTrustLens={(on) => {
+            localStorage.setItem(TRUST_KEY, on ? 'on' : 'off')
+            setTrustLens(on)
+          }}
+          onCreateAt={onCreateAt}
+          onCutEdge={setCutting}
+          onAnswerQuestion={onAnswerQuestion}
         />
       </div>
 
@@ -791,6 +925,9 @@ export default function Live({
           onSibling={onSibling}
           onAttachments={setAttaching}
           onDelete={setPruning}
+          onDetach={setCutting}
+          foldSummaryOf={foldSummaryOf}
+          trustLens={trustLens}
           labels={outlineLabels}
         />
       </div>
@@ -839,6 +976,24 @@ export default function Live({
           if (guard()) deleteSubtree(ydoc, id)
         }}
         labels={pruneLabels}
+      />
+
+      <DetachDialog
+        edge={cutT}
+        carries={cutT ? descendantsOf(nodes, cutT.child.id).length : 0}
+        peers={peers.map((p) => p.name)}
+        onOpenChange={(open) => !open && setCutting(null)}
+        onConfirm={(id) => {
+          setCutting(null)
+          if (!guard()) return
+          // Pinned where it is drawn rather than sent to the end of the first
+          // ring: somebody clicked a LINE, and having the thought jump across
+          // the map would lose the place they were reading.
+          const node = nodes.find((n) => n.id === id)
+          detach(ydoc, id, node?.at ?? null)
+          setSelected(id)
+        }}
+        labels={detachLabels}
       />
     </>
   )

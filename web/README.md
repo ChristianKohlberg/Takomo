@@ -188,7 +188,7 @@ browser is connected, who else is in it — and everything else is a command.
 
 Node detail moved ONTO the node: the selected card grows into `NodeCard`'s full
 form (notes, kind, shape, colour, edge label, relations) and every other card
-stays a title plus two marks, `≋` for notes and `¶` for relations. Only one card
+stays a title, its marks (`≋` notes, `¶` relations) and one line of substance. Only one card
 is ever expanded, which is what keeps a 500-node map readable, and the expanded
 card is drawn OVER its neighbours rather than laid out around — re-laying the map
 out on selection would move every node under a collaborator's cursor on every
@@ -230,9 +230,57 @@ space would otherwise navigate the browser to it and throw away the map, the
 connection and whatever anyone was typing.
 
 The phone gets all of that as plain buttons on each `Outline` row — attachments
-(with the count), add after, add underneath, remove — because every canvas
+(with the count), add after, add underneath, detach, remove — because every canvas
 affordance here is pointer-driven and a phone has neither hover nor a right
 button.
+
+**Every card carries a line of substance, and folding SUMMARISES.** An unselected
+card used to be a title and its marks; it now also carries one quiet line saying
+what the node actually says — the first sentence of its notes, or, where this
+viewer has folded the branch, `⊞ n` plus the titles of what went, joined with
+` · ` and clamped. That is the difference between a map of thirty labels and a map
+of thirty thoughts, and between folding as hiding and folding as summarising. All
+four readings are pure functions in `lib/mindmap-lens.ts` — first sentence, fold
+summary, trust, and what cutting an edge would detach — because none of them can
+be tested through a canvas jsdom cannot lay out. The fold summary is computed in
+`Live` rather than in `Canvas`: the canvas is handed the VISIBLE nodes, and the
+nodes a summary is about are exactly the ones missing from that list.
+
+**The trust lens is a lens.** One toggle tints every node by how much anybody has
+confirmed about it — a person wrote it and confirmed it, an agent wrote it and
+nobody has checked, or nobody has confirmed it either way — from `origin` and
+`reviewed`, which were already stored and already written by both the API and the
+canvas. Nothing new is persisted. It is OFF by default and remembered per viewer
+beside fold and zoom, because on a map an agent has been growing "what in here has
+nobody looked at?" is a question you ask occasionally, not a decoration you live
+with. The reading is never colour alone: the card carries a glyph with a title,
+and a legend appears with the lens. Reachable from ⌘K, from a control on the
+canvas, and — since a phone has neither — from a `md:hidden` button in the top
+strip.
+
+**A question is a node plus a relationship, and answering it is a person typing.**
+`kind: 'question'` renders as its own shape with an "open question" eyebrow, and
+what it questions is an ordinary relationship, drawn distinctly. So nothing in the
+store had to learn what a question is, and an agent poses one with two calls it
+already had. Selecting it offers an answer box; answering appends those words to
+the notes of the node the question was about, marks that node reviewed, and
+removes the question — an answered question is not an open question. A question
+about nothing in particular keeps its own answer and stops being a question. There
+is no model call in this path and none is wanted.
+
+**Double-clicking empty canvas captures a loose thought** — a first-ring node
+pinned where it was dropped, straight into its title editor. You do not always
+know where a thought goes, and forcing a parent is wrong for the ten minutes a
+brainstorm is for.
+
+**Clicking the line to a parent offers to cut it, behind two questions.** The
+child becomes a first-ring thought and nothing is removed, but the gesture is one
+click on a deliberately fat transparent target — so it goes through
+`DetachDialog`, which always asks twice, the way `PruneDialog` asks twice for a
+branch. Modelled on it rather than sharing it: that one asks twice only for a
+branch. The detached node stays exactly where it was drawn rather than being sent
+to the end of the ring, because somebody clicked a line and the map should not
+jump under them.
 
 Which commands ⌘K offers is a pure function (`lib/mindmap-commands.ts`), so it is
 tested rather than reviewed: scope is the selected node else the map, and a

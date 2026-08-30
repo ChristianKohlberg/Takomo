@@ -159,6 +159,13 @@ pub struct DocNode {
     pub attachments: Vec<Attachment>,
     pub promoted_kind: Option<String>,
     pub promoted_id: Option<String>,
+    /// The document this node became, if the map has been turned into one.
+    ///
+    /// A separate slot from `promoted_*` on purpose: a branch can be an epic AND
+    /// appear in the written-up plan, and those are two different facts about
+    /// it. Sharing one slot would make converting a map quietly erase what a
+    /// branch had graduated into.
+    pub document: Option<String>,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -200,6 +207,7 @@ impl DocNode {
                 (Some(kind), Some(id)) => json!({ "kind": kind, "id": id }),
                 _ => Value::Null,
             },
+            "document": self.document,
             "created_by": self.created_by,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
@@ -314,6 +322,7 @@ pub fn read_nodes<T: ReadTxn>(txn: &T, nodes: &MapRef) -> Vec<DocNode> {
             attachments: attachments_of(txn, &entry),
             promoted_kind: string_of(txn, &entry, "promoted_kind"),
             promoted_id: string_of(txn, &entry, "promoted_id"),
+            document: string_of(txn, &entry, "document"),
             created_by: string_of(txn, &entry, "created_by").unwrap_or_default(),
             created_at: int_of(txn, &entry, "created_at"),
             updated_at: int_of(txn, &entry, "updated_at"),
@@ -579,6 +588,123 @@ pub fn full_outline(nodes: &[DocNode], title: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Turning a map into documents
+// ---------------------------------------------------------------------------
+
+/// One document a conversion would make, or refresh.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocumentPlan {
+    /// The node it comes from.
+    pub node: String,
+    pub title: String,
+    /// Folder, `/`-separated — the ancestry that led here.
+    pub path: String,
+    /// What its prose opens with. Empty for a node that is only a heading.
+    pub blocks: Vec<super::prose::Block>,
+    /// The document this node already became, if the map has been converted
+    /// before.
+    pub existing: Option<String>,
+}
+
+/// A path segment cannot be empty, `.`, `..`, or carry a `/`.
+///
+/// A node's title is free text, so it has to be made safe for a folder name
+/// rather than trusted as one. The result is still recognisably the title —
+/// this is not slugification, because a person is going to read this path.
+fn path_segment(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { '-' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    if cleaned.is_empty() {
+        "untitled".to_string()
+    } else {
+        cleaned.chars().take(60).collect()
+    }
+}
+
+/// Which nodes become documents, where they sit, and what they open with.
+///
+/// **The rule that makes a converted map readable**: a node becomes a document
+/// when it has children or something written on it. A bare leaf — a phrase with
+/// no notes and nothing under it — becomes a BULLET in its parent's document
+/// instead. Without that rule every six-word thought turns into its own page,
+/// and a map of forty nodes converts into forty documents nobody will open.
+///
+/// Ancestry becomes the folder path, so the shape of the thinking survives as
+/// the shape of the folder tree. `/documents` already builds its tree from
+/// paths, which is why a map does not need a section model to convert into
+/// something navigable.
+pub fn plan_documents(nodes: &[DocNode], root_folder: &str) -> Vec<DocumentPlan> {
+    let ordered = tree_order(nodes);
+    let children: HashMap<&str, Vec<&DocNode>> = {
+        let mut map: HashMap<&str, Vec<&DocNode>> = HashMap::new();
+        for node in &ordered {
+            if let Some(parent) = node.parent.as_deref() {
+                map.entry(parent).or_default().push(node);
+            }
+        }
+        map
+    };
+
+    let becomes_document = |n: &DocNode| -> bool {
+        !n.notes.trim().is_empty() || children.contains_key(n.id.as_str())
+    };
+
+    // Where each document-node's own folder is, so its children can be filed
+    // underneath it.
+    let mut folder_of: HashMap<&str, String> = HashMap::new();
+    let mut out = Vec::new();
+
+    for node in &ordered {
+        if !becomes_document(node) {
+            continue;
+        }
+        let parent_folder = node
+            .parent
+            .as_deref()
+            .and_then(|p| folder_of.get(p).cloned())
+            .unwrap_or_else(|| root_folder.to_string());
+
+        let mut blocks = Vec::new();
+        if !node.notes.trim().is_empty() {
+            blocks.push(super::prose::Block::Paragraph(
+                node.notes.trim().to_string(),
+            ));
+        }
+        let bullets: Vec<String> = children
+            .get(node.id.as_str())
+            .map(|kids| {
+                kids.iter()
+                    .filter(|k| !becomes_document(k))
+                    .map(|k| k.title.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !bullets.is_empty() {
+            blocks.push(super::prose::Block::Bullets(bullets));
+        }
+
+        let own_folder = if parent_folder.is_empty() {
+            path_segment(&node.title)
+        } else {
+            format!("{parent_folder}/{}", path_segment(&node.title))
+        };
+        folder_of.insert(node.id.as_str(), own_folder);
+
+        out.push(DocumentPlan {
+            node: node.id.clone(),
+            title: node.title.clone(),
+            path: parent_folder,
+            blocks,
+            existing: node.document.clone(),
+        });
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
 
@@ -803,6 +929,7 @@ fn put_node(
     entry.insert(txn, "attachments", MapPrelim::default());
     entry.insert(txn, "promoted_kind", Any::Null);
     entry.insert(txn, "promoted_id", Any::Null);
+    entry.insert(txn, "document", Any::Null);
     entry.insert(txn, "created_by", actor.to_string());
     entry.insert(txn, "created_at", now);
     entry.insert(txn, "updated_at", now);
@@ -941,6 +1068,7 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
             attachments: Vec::new(),
             promoted_kind: None,
             promoted_id: None,
+            document: None,
             created_by: actor.to_string(),
             created_at: now,
             updated_at: now,
@@ -1170,6 +1298,16 @@ pub fn delete_node(doc: &Doc, id: &str) -> ApiResult<usize> {
         nodes_map.remove(&mut txn, node_id);
     }
     Ok(doomed.len())
+}
+
+/// Record which document a node became.
+pub fn set_document(doc: &Doc, id: &str, document: &str) -> ApiResult<()> {
+    let (nodes_map, _) = roots(doc);
+    let mut txn = doc.transact_mut();
+    let entry = node_map(&txn, &nodes_map, id)?;
+    entry.insert(&mut txn, "document", document.to_string());
+    entry.insert(&mut txn, "updated_at", now_ms());
+    Ok(())
 }
 
 /// Record what a branch became.
@@ -1466,6 +1604,7 @@ pub fn build_from_legacy(
                 Some(target) => entry.insert(&mut txn, "promoted_id", target.clone()),
                 None => entry.insert(&mut txn, "promoted_id", Any::Null),
             };
+            entry.insert(&mut txn, "document", Any::Null);
             entry.insert(&mut txn, "created_by", created_by.clone());
             entry.insert(&mut txn, "created_at", *created_at);
             entry.insert(&mut txn, "updated_at", *updated_at);
@@ -1498,6 +1637,7 @@ mod tests {
             attachments: Vec::new(),
             promoted_kind: None,
             promoted_id: None,
+            document: None,
             created_by: "t".to_string(),
             created_at: 0,
             updated_at: 0,
@@ -2011,6 +2151,76 @@ mod tests {
         }
         let (all, _, _) = snapshot(&doc, "mm-test");
         assert!(all.len() > 1, "the inserts landed");
+    }
+
+    #[test]
+    fn a_bare_leaf_becomes_a_bullet_and_a_thought_with_substance_becomes_a_document() {
+        // The rule that decides whether a converted map is readable. Without it
+        // every six-word thought is its own page, and forty nodes convert into
+        // forty documents nobody opens.
+        let mut api = node("api", None, "F", "API");
+        api.notes = "The surface everything else hangs off.".into();
+        let mut deep = node("deep", Some("api"), "V", "Versioning");
+        deep.notes = "v1 forever, or dated?".into();
+        let nodes = vec![
+            api,
+            node("plain", Some("api"), "F", "idempotent retries"),
+            deep,
+            node("lonely", None, "V", "just a phrase"),
+        ];
+
+        let plan = plan_documents(&nodes, "Payments rebuild");
+        let made: Vec<&str> = plan.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(
+            made,
+            vec!["API", "Versioning"],
+            "a leaf with nothing on it is not a document, and neither is a lone phrase"
+        );
+
+        assert_eq!(plan[0].path, "Payments rebuild");
+        assert_eq!(
+            plan[1].path, "Payments rebuild/API",
+            "ancestry becomes the folder path, so the thinking's shape survives"
+        );
+
+        assert_eq!(
+            plan[0].blocks,
+            vec![
+                super::super::prose::Block::Paragraph(
+                    "The surface everything else hangs off.".into()
+                ),
+                super::super::prose::Block::Bullets(vec!["idempotent retries".into()]),
+            ],
+            "the plain leaf lands as a bullet inside its parent"
+        );
+    }
+
+    #[test]
+    fn a_title_that_is_not_a_folder_name_is_made_into_one() {
+        let mut child = node("b", Some("a"), "F", "under it");
+        // Notes, so it is a document in its own right and therefore HAS a path.
+        child.notes = "so that it becomes a document".into();
+        let nodes = vec![node("a", None, "F", "billing / invoicing"), child];
+        let plan = plan_documents(&nodes, "");
+        assert_eq!(
+            plan[0].path, "",
+            "the top level is an empty path, not a slash"
+        );
+        assert!(
+            !plan[1].path.contains("billing / invoicing"),
+            "a slash in a title would split the path: {}",
+            plan[1].path
+        );
+        assert!(plan[1].path.starts_with("billing - invoicing"));
+    }
+
+    #[test]
+    fn a_map_converted_twice_remembers_what_it_already_made() {
+        let mut a = node("a", None, "F", "API");
+        a.notes = "something".into();
+        a.document = Some("doc-already01".into());
+        let plan = plan_documents(&[a], "root");
+        assert_eq!(plan[0].existing.as_deref(), Some("doc-already01"));
     }
 
     #[test]

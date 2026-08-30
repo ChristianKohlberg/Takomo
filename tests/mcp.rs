@@ -3421,3 +3421,88 @@ async fn proposing_to_a_document_needs_the_write_scope() {
     assert!(err, "a read-only token must not propose: {refused}");
     assert_eq!(refused["code"], "auth.scope", "{refused}");
 }
+
+/// The prose a conversion writes has to be prose the EDITOR can render.
+///
+/// Rust reads the CRDT and the browser applies changes to it — that is the
+/// standing rule, and writing blocks from Rust is the one case it does not
+/// cover, because a document made by converting a map has no live text and
+/// nothing to merge with. The risk that buys is a block shape only the writer
+/// understands: a bullet list flattened to `bulletList > text` reads back
+/// correctly through our own reader and renders as NOTHING in Tiptap.
+///
+/// So this reads the result through the same annotated-markdown path an agent
+/// uses, which walks the real block structure.
+#[tokio::test]
+async fn a_written_up_map_produces_prose_an_agent_can_read_and_address() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.admin,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let (s, node) = app
+        .post(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({
+                "text": "API",
+                "notes": "The surface everything else hangs off."
+            }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{node}");
+    let api = node["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    for leaf in ["idempotent retries on capture", "rate limits per merchant"] {
+        let (s, out) = app
+            .post(
+                &app.admin,
+                &format!("/v1/mindmaps/{map}/nodes"),
+                json!({ "text": leaf, "parent": api }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{out}");
+    }
+
+    let (s, written) = app
+        .post(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}/documents"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{written}");
+    let doc = written["documents"][0]["document"]
+        .as_str()
+        .expect("a document")
+        .to_string();
+
+    let (read, err) = app
+        .tool(&app.admin, "takomo_document_read", json!({ "id": doc }))
+        .await;
+    assert!(!err, "read failed: {read}");
+    let markdown = read["markdown"].as_str().unwrap_or_default();
+
+    assert!(
+        markdown.contains("The surface everything else hangs off."),
+        "the node's notes become the document's first paragraph: {markdown}"
+    );
+    assert!(
+        markdown.contains("- idempotent retries on capture"),
+        "a bare leaf becomes a BULLET, and a bullet has to read back as one — a \
+         flattened list renders as nothing in the editor: {markdown}"
+    );
+    assert!(
+        markdown.contains("- rate limits per merchant"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("blk_"),
+        "every block carries an id, or an agent cannot propose against it: {markdown}"
+    );
+}

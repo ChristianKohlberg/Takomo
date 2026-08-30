@@ -31,6 +31,7 @@ import {
   type NodeFields,
   type Relationship,
 } from '@/lib/mindmap-doc'
+import { firstSentence, questionTarget, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import { cn } from '@/lib/utils'
 
 /**
@@ -90,6 +91,20 @@ export interface NodeCardLabels {
   shapeRounded: string
   shapeSquare: string
   shapePill: string
+  /** The eyebrow on a question node, and what its answer box is called. */
+  question: string
+  answer: string
+  answerHint: string
+  answerAction: string
+  /** `{title}` is the thought the question is about. */
+  answerAbout: string
+  answerAlone: string
+  /** What a folded branch is holding. `{n}` is the count. */
+  folded: string
+  /** The trust lens, said in words so the reading is never colour alone. */
+  trustConfirmed: string
+  trustMachine: string
+  trustUnverified: string
 }
 
 export interface NodeCardProps {
@@ -113,6 +128,13 @@ export interface NodeCardProps {
   onRemoveRelation: (relationId: string) => void
   reveal: Reveal
   onRevealed: () => void
+  /** What this viewer folded away under this node, or null. Folding SUMMARISES:
+   *  the card says how much went and names it. */
+  fold: FoldSummary | null
+  /** How confident we are in this node, or null when the lens is off. */
+  trust: Trust | null
+  /** A person's own answer to a question node. There is no model in this path. */
+  onAnswer: (id: string, answer: string) => void
   labels: NodeCardLabels
   className?: string
 }
@@ -146,6 +168,9 @@ export function NodeCard({
   onRemoveRelation,
   reveal,
   onRevealed,
+  fold,
+  trust,
+  onAnswer,
   labels,
   className,
 }: NodeCardProps) {
@@ -154,6 +179,9 @@ export function NodeCard({
   // paragraph typed slowly would arrive at a collaborator letter by letter.
   const [notes, setNotes] = useState(node.notes)
   const [edgeLabel, setEdgeLabel] = useState(node.edge_label)
+  // A question's answer is a draft until it is sent, and it is never written
+  // into the document as it is typed: it is not the question's own text.
+  const [answer, setAnswer] = useState('')
 
   // The drafts belong to a NODE, not to the card, so a different node re-seeds
   // them. Done by comparing the id during render — React's own
@@ -166,6 +194,7 @@ export function NodeCard({
     setSeeded(node.id)
     setNotes(node.notes)
     setEdgeLabel(node.edge_label)
+    setAnswer('')
   }
 
   // Focus the title editor when it opens and select it all: the common edit is
@@ -199,6 +228,29 @@ export function NodeCard({
   // and a mark that added them to the relation count would say a number nothing
   // on screen agrees with.
   const context = relations.length > 0
+  const isQuestion = node.kind === 'question'
+
+  /**
+   * The one line of substance an unselected card carries.
+   *
+   * A folded branch says what is inside it; otherwise the first sentence of the
+   * notes. That is what turns a map of thirty nodes into thirty thoughts rather
+   * than thirty labels — and the full notes are still one click away, on the
+   * card that grows.
+   */
+  const substance = fold ? fold.text : firstSentence(node.notes, 140)
+
+  /** In words, so the lens is never colour alone. */
+  const trustLabel: Record<Trust, string> = {
+    confirmed: labels.trustConfirmed,
+    machine: labels.trustMachine,
+    unverified: labels.trustUnverified,
+  }
+  const TRUST_MARK: Record<Trust, string> = { confirmed: '✓', machine: '⌁', unverified: '~' }
+
+  /** What a question is about, read off the relation that carries it. */
+  const aboutId = isQuestion ? questionTarget(relations, node.id) : null
+  const about = aboutId ? (titleOf.get(aboutId) ?? aboutId) : null
 
   const titleBlock = editing ? (
     <Textarea
@@ -224,7 +276,12 @@ export function NodeCard({
       rows={2}
     />
   ) : (
-    <div className={cn('text-foreground text-[12.5px] leading-snug', !expanded && 'line-clamp-2')}>
+    <div
+      className={cn(
+        'text-foreground text-[12.5px] leading-snug',
+        !expanded && (substance || isQuestion ? 'line-clamp-1' : 'line-clamp-2'),
+      )}
+    >
       {mark ? `${mark} ` : ''}
       {node.title}
     </div>
@@ -232,10 +289,25 @@ export function NodeCard({
 
   if (!expanded) {
     return (
-      <div className={cn('flex h-full flex-col justify-center gap-0.5 px-2.5 py-1.5', className)}>
+      <div
+        className={cn(
+          'flex h-full flex-col justify-center overflow-hidden px-2.5',
+          substance ? 'py-1' : 'gap-0.5 py-1.5',
+          className,
+        )}
+      >
+        {/* A question is not a thought and does not read like one. */}
+        {isQuestion && (
+          <div className="font-mono text-[9px] leading-tight font-[650] tracking-wider text-violet-600 uppercase dark:text-violet-300">
+            ? {labels.question}
+          </div>
+        )}
         {titleBlock}
         {/* The marks. A collapsed map still says WHERE the substance is, which is
-            the whole reason it is safe to draw only one card in full. */}
+            the whole reason it is safe to draw only one card in full. Absent
+            rather than empty: with an eyebrow and a line of substance above and
+            below it, a blank row is a line of card height spent on nothing. */}
+        {(node.promoted || node.notes || context || node.origin === 'agent' || trust || fold) && (
         <div className="text-muted-foreground flex items-center gap-1.5 truncate font-mono text-[10px]">
           {node.promoted && <span>→ {node.promoted.kind}</span>}
           {node.notes && <span title={labels.hasNotes}>≋</span>}
@@ -243,7 +315,21 @@ export function NodeCard({
             <span title={labels.hasRelations}>¶ {relations.length}</span>
           )}
           {node.origin === 'agent' && <span>⌁</span>}
+          {trust && <span title={trustLabel[trust]}>{TRUST_MARK[trust]}</span>}
+          {fold && (
+            <span className="ml-auto shrink-0" title={labels.folded.replace('{n}', String(fold.count))}>
+              ⊞ {fold.count}
+            </span>
+          )}
         </div>
+        )}
+        {/* One line of what this node actually SAYS — the titles a fold is
+            standing in for, or the first sentence of its notes. */}
+        {substance && (
+          <div className="text-muted-foreground line-clamp-1 text-[10.5px] leading-tight">
+            {substance}
+          </div>
+        )}
       </div>
     )
   }
@@ -288,6 +374,40 @@ export function NodeCard({
 
         {!canWrite && (
           <p className="text-muted-foreground m-0 text-[11px]">{labels.readOnly}</p>
+        )}
+
+        {/* A question is answered in a person's own words, and the answer goes
+            to the thought it was ABOUT rather than staying here — which is why
+            answering also removes the question. No model is asked anything. */}
+        {isQuestion && (
+          <div className="flex flex-col gap-1 border-l-2 border-violet-400 pl-2 dark:border-violet-500">
+            <span className="text-[10.5px] font-[650] text-violet-700 dark:text-violet-300">
+              {labels.answer}
+            </span>
+            <span className="text-muted-foreground text-[10.5px]">
+              {about ? labels.answerAbout.replace('{title}', about) : labels.answerAlone}
+            </span>
+            <Textarea
+              value={answer}
+              disabled={!canWrite}
+              rows={2}
+              placeholder={labels.answerHint}
+              onChange={(e) => setAnswer(e.target.value)}
+              onKeyDown={(e) => e.stopPropagation()}
+              className="text-[11.5px]"
+            />
+            <button
+              type="button"
+              disabled={!canWrite || !answer.trim()}
+              onClick={() => {
+                onAnswer(node.id, answer)
+                setAnswer('')
+              }}
+              className="border-border text-foreground w-fit cursor-pointer rounded-md border px-2 py-0.5 text-[11px] font-[650] disabled:opacity-40"
+            >
+              {labels.answerAction}
+            </button>
+          </div>
         )}
 
         <label className="flex flex-col gap-0.5">

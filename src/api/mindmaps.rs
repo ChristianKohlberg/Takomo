@@ -675,3 +675,118 @@ pub async fn delete_attachment(
     state.wake();
     Ok(Json(json!({ "ok": true })))
 }
+
+/// POST /v1/mindmaps/{id}/documents (write) — write the map up.
+///
+/// The map becomes a TREE OF DOCUMENTS, one per thought that has something to
+/// say, filed under folders that mirror the branches. `/documents` already
+/// builds its tree from paths, so a map needs no section model inside a single
+/// document to convert into something navigable — the folder tree is the
+/// outline.
+///
+/// The rule that makes the result readable: a node becomes a document when it
+/// has children or notes; a bare leaf becomes a **bullet** in its parent's
+/// document. Without it, every six-word thought is its own page and a map of
+/// forty converts into forty documents nobody opens.
+///
+/// **Running it again refiles, it never rewrites.** A node that already made a
+/// document keeps it: the title and folder are brought back in line with the
+/// map, and the prose is not touched, because somebody has probably been
+/// writing in there and that is the entire point of turning a map into
+/// documents.
+pub async fn to_documents(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["path"])?;
+
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    // The map's own title is the folder everything lands under, unless the
+    // caller says otherwise. `""` puts it at the top level.
+    let root = match get_str(obj, "path")? {
+        Some(path) => path,
+        None => map.title.clone(),
+    };
+
+    let plan = room.read(|doc| {
+        let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
+        mindmapdoc::plan_documents(&nodes, &root)
+    });
+
+    let mut made = Vec::new();
+    let mut created = 0usize;
+    let mut refiled = 0usize;
+
+    for entry in &plan {
+        let existing = entry
+            .existing
+            .as_deref()
+            .and_then(|doc_id| state.store.get_document(doc_id).ok());
+
+        let document = match existing {
+            Some(document) => {
+                // Refile only. Its prose belongs to whoever has been writing it.
+                refiled += 1;
+                state.store.patch_document(
+                    &document.id,
+                    &crate::store::DocumentPatch {
+                        title: Some(entry.title.clone()),
+                        path: Some(entry.path.clone()),
+                        ..Default::default()
+                    },
+                    &ctx.actor,
+                )?
+            }
+            None => {
+                let document = state.store.create_document(
+                    &crate::store::DocumentCreate {
+                        project: map.project.clone(),
+                        title: entry.title.clone(),
+                        path: Some(entry.path.clone()),
+                        ..Default::default()
+                    },
+                    &ctx.actor,
+                )?;
+                if !entry.blocks.is_empty() {
+                    let update = crate::store::prose::initial_update(&entry.blocks);
+                    state
+                        .store
+                        .append_collab_update(&document.id, &update, &ctx.actor)?;
+                }
+                let node = entry.node.clone();
+                let doc_id = document.id.clone();
+                room.mutate(move |doc| mindmapdoc::set_document(doc, &node, &doc_id))?;
+                created += 1;
+                document
+            }
+        };
+
+        made.push(json!({
+            "node": entry.node,
+            "document": document.id,
+            "title": document.title,
+            "path": document.path,
+        }));
+    }
+
+    // The links back into the map are only in memory until a flush, and a
+    // conversion that lost them would make a second set of documents next time.
+    crate::api::docsync::flush(&state, &room, &ctx.actor).await;
+    state.wake();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "documents": made,
+            "created": created,
+            "refiled": refiled,
+            "note": "One document per thought that had something to say; a bare leaf became a bullet in its parent. Run it again after reshaping the map and the documents are refiled, never rewritten.",
+        })),
+    ))
+}

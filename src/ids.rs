@@ -57,6 +57,15 @@ pub fn mindmap_node_id() -> String {
     format!("mn-{}", random_chars(BASE36, 8))
 }
 
+/// One block of a document's prose.
+///
+/// The same shape `web/src/lib/block-id.ts` mints, because an agent addresses a
+/// block by this id and a document should not read as two different systems
+/// depending on who wrote the block.
+pub fn block_id() -> String {
+    format!("blk_{}", random_chars(BASE36, 6))
+}
+
 /// A cross-link between two nodes, which is not part of the hierarchy.
 pub fn mindmap_relationship_id() -> String {
     format!("mr-{}", random_chars(BASE36, 8))
