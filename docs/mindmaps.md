@@ -249,10 +249,27 @@ event.
 - **MCP** — `takomo_mindmap_new`, `takomo_mindmap_grow`, `takomo_mindmap_show`,
   `takomo_mindmap_list`, `takomo_mindmap_promote`. The two reads are free.
 - **REST** — `/v1/mindmaps`, see `spec/openapi.yaml`
-- **A canvas** at `/mindmaps` — live and shared, showing who else is on it.
-  Drag a node onto another to reparent it, into space to pin it; Enter for the
-  next thought, Tab to go deeper, F2 to retype, Delete to prune (a branch with
-  children asks twice, because everyone is watching it go). A node with no hand placement is laid out automatically, which
+- **A canvas** at `/mindmaps`, and the canvas is the whole page. There is no
+  list to choose from — a project holds one brainstorm, so there was never a
+  choice to make, and a rail listing one thing is chrome pretending to be
+  navigation. Live and shared, showing who else is on it. Drag a node onto
+  another to reparent it, into space to pin it; Enter for the next thought, Tab
+  to go deeper, F2 to retype, Delete to prune (a branch with children asks
+  twice, because everyone is watching it go).
+
+  **A node carries its own detail.** Selecting one grows its card in place —
+  title, notes, kind, colour, shape, edge label, attachments, the relations
+  touching it. Every other node stays a line with marks (`≋` notes, `¶` things
+  attached, `→ epic` promoted), so a map you have not opened still shows where
+  the substance is. Nothing lives in a panel at the edge of the screen, because
+  the map is the thing you are working in.
+
+  **⌘K is how you reach the rest**, scoped to the selected node or to the map
+  and saying which. Add, rename, write notes, relate, attach, promote, fold,
+  prune; fit, tidy, rename the map, switch project. And **go to a thought…**,
+  which fuzzy-matches titles, unfolds whatever was hiding the match and centres
+  it — with no rail, that is how you move around a map that has outgrown the
+  screen. A node with no hand placement is laid out automatically, which
   keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
   back to the layout. On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.

@@ -20,6 +20,8 @@ export interface OutlineLabels {
   empty: string
   /** Marks a node somebody wrote notes on — the long form lives off the canvas. */
   hasNotes: string
+  /** …and one carrying attachments. The same two marks the canvas uses. */
+  hasContext: string
 }
 
 export interface OutlineProps {
@@ -81,9 +83,16 @@ export function Outline({
           >
             <div className="text-foreground text-[13px] leading-snug">
               {node.title}
+              {/* The same marks the canvas draws, for the same reason: a list
+                  you can scroll still shows where the substance is. */}
               {node.notes && (
                 <span className="text-muted-foreground ml-1.5" title={labels.hasNotes}>
-                  ≡
+                  ≋
+                </span>
+              )}
+              {node.attachments.length > 0 && (
+                <span className="text-muted-foreground ml-1.5" title={labels.hasContext}>
+                  ¶ {node.attachments.length}
                 </span>
               )}
             </div>

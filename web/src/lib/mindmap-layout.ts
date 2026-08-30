@@ -519,3 +519,24 @@ export function positionAfter(siblings: readonly LayoutNode[], after: string): n
   if (next - current <= 1) return null
   return Math.floor((current + next) / 2)
 }
+
+/**
+ * The viewport that puts one world point in the middle of the screen, at the
+ * zoom the reader is already using.
+ *
+ * "Go to node…" is the only way to reach a node that is off screen now that the
+ * rail is gone, so it must not also change the scale somebody chose — jumping to
+ * a node AND rezooming loses the reader twice.
+ */
+export function centreOn(
+  viewport: Viewport,
+  world: Point,
+  width: number,
+  height: number,
+): Viewport {
+  return {
+    zoom: viewport.zoom,
+    x: width / 2 - world.x * viewport.zoom,
+    y: height / 2 - world.y * viewport.zoom,
+  }
+}

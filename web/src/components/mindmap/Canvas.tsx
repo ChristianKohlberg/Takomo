@@ -15,9 +15,18 @@
 //
 // It takes a tree, not a document: the CRDT lives one level up, so this stays a
 // renderer with no idea that the nodes it is drawing arrived over a socket.
+//
+// The side panel is gone and its job moved ONTO the node: the selected card
+// grows into `NodeCard`'s full form, every other one stays a title and its marks.
+// That is why the card's size is not a layout decision — the geometry in
+// `lib/mindmap-layout.ts` still places every node by `NODE_WIDTH`/`NODE_HEIGHT`,
+// and the expanded card is drawn over its neighbours rather than pushing them.
+// Re-laying out the map around whatever is selected would move every other node
+// under a collaborator's cursor on every click.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   DEFAULT_VIEWPORT,
+  centreOn,
   MAX_ZOOM,
   MIN_ZOOM,
   NODE_HEIGHT,
@@ -34,8 +43,15 @@ import {
   type Viewport,
 } from '@/lib/mindmap-layout'
 import { cn } from '@/lib/utils'
-import type { MapNode, Relationship } from '@/lib/mindmap-doc'
+import type { AttachmentKind, MapNode, NodeFields, Relationship } from '@/lib/mindmap-doc'
 import { Hint } from '@/components/Hint'
+import {
+  EXPANDED_HEIGHT,
+  EXPANDED_WIDTH,
+  NodeCard,
+  type NodeCardLabels,
+  type Reveal,
+} from '@/components/mindmap/NodeCard'
 
 /** How the first ring is arranged. Per-viewer, like pan and zoom. */
 export type CanvasMode = 'radial' | 'tidy'
@@ -99,6 +115,31 @@ export interface CanvasProps {
   onCancelRelation: () => void
   canWrite: boolean
   labels: CanvasLabels
+  /** Everything the selected card needs to be the detail surface. */
+  cardLabels: NodeCardLabels
+  relationsFor: (id: string) => Relationship[]
+  titleOf: ReadonlyMap<string, string>
+  onNotes: (id: string, notes: string) => void
+  onFields: (id: string, fields: Partial<NodeFields>) => void
+  onAddAttachment: (
+    id: string,
+    draft: { kind: AttachmentKind; name: string; gist: string; ref: string },
+  ) => void
+  onRemoveAttachment: (id: string, attachmentId: string) => void
+  onRemoveRelation: (relationId: string) => void
+  /**
+   * Asks from ⌘K, each cleared the moment it is honoured: bring a node into the
+   * middle of the view, open its title editor, or reveal one part of its card.
+   */
+  centreNode: string | null
+  onCentred: () => void
+  /** A timestamp, so asking twice asks twice. Null while nothing is pending. */
+  fitRequest: number | null
+  onFitted: () => void
+  editNode: string | null
+  onEditOpened: () => void
+  reveal: Reveal
+  onRevealed: () => void
   className?: string
 }
 
@@ -117,15 +158,6 @@ type Drag =
       at: Point
       moved: boolean
     }
-
-/** One letter for the node's kind. A full word would not fit and does not need to. */
-const KIND_MARK: Record<MapNode['kind'], string> = {
-  thought: '',
-  question: '?',
-  decision: '!',
-  screen: '▢',
-  component: '◧',
-}
 
 /** The one place `shape` becomes geometry. A square node reads as a screen, a
  *  pill as a label; anything unrecognised falls back to the ordinary box. */
@@ -159,6 +191,22 @@ export function Canvas({
   onCancelRelation,
   canWrite,
   labels,
+  cardLabels,
+  relationsFor,
+  titleOf,
+  onNotes,
+  onFields,
+  onAddAttachment,
+  onRemoveAttachment,
+  onRemoveRelation,
+  centreNode,
+  onCentred,
+  fitRequest,
+  onFitted,
+  editNode,
+  onEditOpened,
+  reveal,
+  onRevealed,
   className,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -170,6 +218,12 @@ export function Canvas({
 
   const placed = mode === 'radial' ? radialLayout(nodes) : layout(nodes)
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
+  // The selected card is drawn LAST, because it is the only one that grows: in
+  // SVG there is no z-index, so paint order is the only way it lands over its
+  // neighbours rather than under them.
+  const ordered = [...placed.nodes].sort(
+    (a, b) => Number(a.node.id === selected) - Number(b.node.id === selected),
+  )
 
   // Fit once, when the map first arrives with something in it. Refitting on every
   // change would yank the view out from under somebody who had panned somewhere —
@@ -187,11 +241,34 @@ export function Canvas({
     return { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) }
   }, [])
 
+  /**
+   * The node under a point — including the SELECTED one's expanded card.
+   *
+   * `nodeAt` knows only the layout's box, and the expanded card is wider than
+   * it. The card itself stops every pointer event except on its grip, so what
+   * reaches here from that region is exactly the press that means "drag me" —
+   * and without this it would land in empty space and deselect instead.
+   */
+  const hitAt = (world: Point) => {
+    const direct = nodeAt(placed.nodes, world)
+    if (direct) return direct
+    const p = selected ? byId.get(selected) : undefined
+    if (!p) return null
+    const at = positionOf(p.node.id)
+    const left = at.x + (NODE_WIDTH - EXPANDED_WIDTH) / 2
+    const inside =
+      world.x >= left &&
+      world.x <= left + EXPANDED_WIDTH &&
+      world.y >= at.y &&
+      world.y <= at.y + EXPANDED_HEIGHT
+    return inside ? p : null
+  }
+
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (editing) return
     const screen = pointIn(e)
     const world = toWorld(screen, viewport)
-    const hit = nodeAt(placed.nodes, world)
+    const hit = hitAt(world)
     // Drawing a relation is a two-click gesture, so a press while it is armed is
     // the second click and nothing else — never the start of a drag.
     if (relationFrom) {
@@ -274,6 +351,44 @@ export function Canvas({
     setEditing(null)
   }, [editing, draft, onTitle])
 
+  // ⌘K asked for a node. Centring is deliberately not a fit: it keeps the zoom
+  // the reader chose, because jumping AND rezooming loses them twice. The layout
+  // is recomputed here rather than read from the render pass so this effect can
+  // depend on the nodes honestly — it does nothing at all unless an ask is
+  // pending, which the caller clears the moment it is honoured.
+  useEffect(() => {
+    if (!centreNode) return
+    const box = svgRef.current?.getBoundingClientRect()
+    const at = (mode === 'radial' ? radialLayout(nodes) : layout(nodes)).nodes.find(
+      (p) => p.node.id === centreNode,
+    )
+    if (box && at) {
+      setViewport((v) =>
+        centreOn(
+          v,
+          { x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT / 2 },
+          box.width,
+          box.height,
+        ),
+      )
+    }
+    onCentred()
+  }, [centreNode, onCentred, nodes, mode])
+
+  useEffect(() => {
+    if (fitRequest === null) return
+    const box = svgRef.current?.getBoundingClientRect()
+    const bounds = (mode === 'radial' ? radialLayout(nodes) : layout(nodes)).bounds
+    if (box) setViewport(fit(bounds, box.width, box.height))
+    onFitted()
+  }, [fitRequest, onFitted, nodes, mode])
+
+  useEffect(() => {
+    if (!editNode) return
+    startEditing(editNode)
+    onEditOpened()
+  }, [editNode, onEditOpened, startEditing])
+
   // The keyboard is what makes this keep up with a conversation, so it lives on
   // the canvas rather than only inside a text box: with a node selected, Enter
   // and Tab grow the map without the mouse.
@@ -304,13 +419,6 @@ export function Canvas({
       onSelect(null)
     }
   }
-
-  // Focus the textarea when an edit opens, and select it all: the common edit is
-  // replacing a first-draft thought, not appending to it.
-  const editorRef = useRef<HTMLTextAreaElement | null>(null)
-  useEffect(() => {
-    if (editing) editorRef.current?.select()
-  }, [editing])
 
   const zoomBy = (factor: number) => {
     const box = svgRef.current?.getBoundingClientRect()
@@ -444,14 +552,19 @@ export function Canvas({
             </foreignObject>
           </g>
 
-          {placed.nodes.map((p) => {
+          {ordered.map((p) => {
             const at = positionOf(p.node.id)
             const isSelected = selected === p.node.id
             const target = dropTarget?.id === p.node.id ? dropTarget : null
             const watchers = peersOn(p.node.id)
             const hidden = descendantCounts.get(p.node.id) ?? 0
             const folded = collapsed.has(p.node.id)
-            const mark = KIND_MARK[p.node.kind]
+            // Only the selected card carries its detail. At the 500-node cap
+            // every card in full would be unreadable, so the rest keep their
+            // marks and the reader still sees where the substance is.
+            const width = isSelected ? EXPANDED_WIDTH : NODE_WIDTH
+            const height = isSelected ? EXPANDED_HEIGHT : NODE_HEIGHT
+            const offset = (NODE_WIDTH - width) / 2
             return (
               <g key={p.node.id} transform={`translate(${at.x} ${at.y})`}>
                 {/* A collaborator's ring sits OUTSIDE the box, so it never fights
@@ -470,9 +583,10 @@ export function Canvas({
                   />
                 ))}
                 <rect
-                  width={NODE_WIDTH}
-                  height={NODE_HEIGHT}
-                  rx={cornerRadius(p.node.shape)}
+                  x={offset}
+                  width={width}
+                  height={height}
+                  rx={isSelected ? 12 : cornerRadius(p.node.shape)}
                   className={cn(
                     'fill-card stroke-border',
                     isSelected && 'stroke-ring',
@@ -480,55 +594,37 @@ export function Canvas({
                     target?.allowed && 'stroke-ok',
                     target && !target.allowed && 'stroke-destructive',
                   )}
-                  style={p.node.color ? { fill: p.node.color } : undefined}
+                  style={p.node.color && !isSelected ? { fill: p.node.color } : undefined}
                   strokeWidth={isSelected || target || relationFrom === p.node.id ? 2 : 1}
                 />
-                <foreignObject width={NODE_WIDTH} height={NODE_HEIGHT}>
-                  {editing === p.node.id ? (
-                    <textarea
-                      ref={editorRef}
-                      autoFocus
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onBlur={commit}
-                      onKeyDown={(e) => {
-                        // Enter commits rather than adding a line: a node is a
-                        // sentence or two, and the next Enter should make the next
-                        // thought. Shift+Enter is the escape hatch.
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault()
-                          commit()
-                        } else if (e.key === 'Escape') {
-                          e.preventDefault()
-                          setEditing(null)
-                        }
-                        e.stopPropagation()
-                      }}
-                      className="text-foreground h-full w-full resize-none bg-transparent px-2.5 py-1.5 text-[12.5px] leading-snug outline-none"
-                    />
-                  ) : (
-                    <div className="flex h-full flex-col justify-center gap-0.5 px-2.5 py-1.5">
-                      <div className="text-foreground line-clamp-2 text-[12.5px] leading-snug">
-                        {mark ? `${mark} ` : ''}
-                        {p.node.title}
-                      </div>
-                      <div className="text-muted-foreground flex items-center gap-1.5 truncate font-mono text-[10px]">
-                        {/* What this branch became. The badge is the whole reason
-                            a map stays useful once the brainstorming is over. */}
-                        {p.node.promoted && <span>→ {p.node.promoted.kind}</span>}
-                        {p.node.notes && <span>≡</span>}
-                        {p.node.attachments.length > 0 && (
-                          <span>◫ {p.node.attachments.length}</span>
-                        )}
-                        {p.node.origin === 'agent' && <span>⌁</span>}
-                      </div>
-                    </div>
-                  )}
+                <foreignObject x={offset} width={width} height={height}>
+                  <NodeCard
+                    node={p.node}
+                    expanded={isSelected}
+                    canWrite={canWrite}
+                    editing={editing === p.node.id}
+                    draft={draft}
+                    onDraft={setDraft}
+                    onCommit={commit}
+                    onCancel={() => setEditing(null)}
+                    onEdit={() => startEditing(p.node.id)}
+                    relations={relationsFor(p.node.id)}
+                    titleOf={titleOf}
+                    onNotes={onNotes}
+                    onFields={onFields}
+                    onAddAttachment={onAddAttachment}
+                    onRemoveAttachment={onRemoveAttachment}
+                    onRemoveRelation={onRemoveRelation}
+                    reveal={isSelected ? reveal : null}
+                    onRevealed={onRevealed}
+                    labels={cardLabels}
+                  />
                 </foreignObject>
 
-                {/* The fold handle. Only where there is something to fold, and
-                    only ever for this viewer. */}
-                {(hidden > 0 || folded) && (
+                {/* The fold handle. Only where there is something to fold, only
+                    ever for this viewer, and never under the expanded card —
+                    ⌘K and Space fold the selected node instead. */}
+                {!isSelected && (hidden > 0 || folded) && (
                   <g
                     onPointerDown={(e) => {
                       e.stopPropagation()

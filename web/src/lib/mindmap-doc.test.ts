@@ -12,6 +12,7 @@ import * as Y from 'yjs'
 import {
   MAX_NOTES,
   MAX_TITLE,
+  ancestorsOf,
   compareSiblings,
   descendantsOf,
   descendantCounts,
@@ -491,5 +492,26 @@ describe('two peers', () => {
     expect(shape(alice)).toEqual(shape(bob))
     // Exactly one of them ends up at the root, and both peers agree which.
     expect(readNodes(alice).filter((n) => n.parent === null)).toHaveLength(1)
+  })
+})
+
+describe('ancestorsOf', () => {
+  const tree = normaliseNodes([
+    raw({ id: 'a' }),
+    raw({ id: 'b', parent: 'a' }),
+    raw({ id: 'c', parent: 'b' }),
+    raw({ id: 'd' }),
+  ])
+
+  it('walks root-first to the node, excluding it', () => {
+    expect(ancestorsOf(tree, 'c')).toEqual(['a', 'b'])
+  })
+
+  it('returns nothing for a root', () => {
+    expect(ancestorsOf(tree, 'd')).toEqual([])
+  })
+
+  it('is safe on a node that is not there', () => {
+    expect(ancestorsOf(tree, 'nope')).toEqual([])
   })
 })

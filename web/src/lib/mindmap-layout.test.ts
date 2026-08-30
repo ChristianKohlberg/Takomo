@@ -7,6 +7,7 @@
 // which is the failure mode worth spending tests on.
 import { describe, expect, it } from 'vitest'
 import {
+  centreOn,
   childrenOf,
   edgePath,
   radialLayout,
@@ -433,5 +434,18 @@ describe('edgePath direction', () => {
     expect(edgePath({ x: 0, y: 0 }, { x: 400, y: 0 }, 'auto')).toBe(
       edgePath({ x: 0, y: 0 }, { x: 400, y: 0 }),
     )
+  })
+})
+
+describe('centreOn', () => {
+  it('puts the point in the middle of the viewport', () => {
+    const v = centreOn({ x: 0, y: 0, zoom: 1 }, { x: 300, y: 200 }, 800, 600)
+    expect(toScreen({ x: 300, y: 200 }, v)).toEqual({ x: 400, y: 300 })
+  })
+
+  it('keeps the zoom the reader chose', () => {
+    const v = centreOn({ x: -50, y: 90, zoom: 0.5 }, { x: 300, y: 200 }, 800, 600)
+    expect(v.zoom).toBe(0.5)
+    expect(toScreen({ x: 300, y: 200 }, v)).toEqual({ x: 400, y: 300 })
   })
 })

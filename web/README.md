@@ -179,6 +179,31 @@ strip's place in the flow, and following a link closes it. That is a structural
 difference rather than a visual one, which is why it reads `useIsPhone` instead
 of taking a `md:` prefix.
 
+**On /mindmaps the canvas IS the page, and ⌘K is the chrome.** A project holds
+exactly one brainstorm, so the rail that listed maps was a list of one and the
+rail that listed projects was navigation competing with the thing being
+navigated; both are gone, and so is the project picker in `NavRail` on that route
+alone. The header keeps what a shared document needs — its title, whether this
+browser is connected, who else is in it — and everything else is a command.
+
+Node detail moved ONTO the node: the selected card grows into `NodeCard`'s full
+form (notes, kind, shape, colour, edge label, attachment chips, relations) and
+every other card stays a title plus two marks, `≋` for notes and `¶` for
+attachments or relations. Only one card is ever expanded, which is what keeps a
+500-node map readable, and the expanded card is drawn OVER its neighbours rather
+than laid out around — re-laying the map out on selection would move every node
+under a collaborator's cursor on every click. `lib/mindmap-layout.ts` is
+untouched by any of it.
+
+Which commands ⌘K offers is a pure function (`lib/mindmap-commands.ts`), so it is
+tested rather than reviewed: scope is the selected node else the map, and a
+command that does not apply is ABSENT rather than disabled — on a read-only token
+that would otherwise be most of the list. The same module owns the fuzzy match
+behind "go to node…", which is how you reach a node off screen now that there is
+no rail. The shortcut listener is registered in the CAPTURE phase, because the
+node card stops keydown propagation so that Space on its checkbox does not fold a
+branch — and that would otherwise swallow ⌘K on its way to the window.
+
 **One app, one router, one bundle.** This replaced four independently-built
 self-contained documents. That shape let the binary `include_str!` a whole page
 and needed no asset routes at all — but React and every shared module were paid

@@ -257,6 +257,29 @@ export function descendantCounts(nodes: readonly MapNode[]): Map<string, number>
   return counts
 }
 
+/**
+ * Every node on the path from the root down to `id`, root first, excluding it.
+ *
+ * "Go to node…" needs this: a match can be inside a branch this viewer folded,
+ * and jumping to a node that is not drawn is worse than not jumping. Unfolding
+ * the ancestors is what makes the destination visible — and it changes only this
+ * viewer's fold, never the document.
+ */
+export function ancestorsOf(nodes: readonly MapNode[], id: string): string[] {
+  const parents = new Map(nodes.map((n) => [n.id, n.parent]))
+  const out: string[] = []
+  const seen = new Set<string>([id])
+  let cursor = parents.get(id) ?? null
+  // `normaliseNodes` has already broken every cycle, but this walks whatever it
+  // is handed: a guard costs one Set and cannot hang the render.
+  while (cursor !== null && !seen.has(cursor)) {
+    seen.add(cursor)
+    out.push(cursor)
+    cursor = parents.get(cursor) ?? null
+  }
+  return out.reverse()
+}
+
 export function descendantsOf(nodes: readonly MapNode[], id: string): string[] {
   const kids = new Map<string, string[]>()
   for (const n of nodes) {

@@ -19,17 +19,36 @@
 //
 // And one rule of its own: there is no save button and no dirty state, because
 // the honest question is not "did my change save" but "am I connected".
+//
+// WHAT MOVED HERE, and why. There is no rail and no side panel any more: the
+// canvas is the page. So this component is also where ⌘K lives, because the
+// palette is scoped to the SELECTED NODE and the selection is document state, not
+// page state. Which commands exist is decided by `lib/mindmap-commands.ts` — a
+// pure function with tests, because jsdom could prove nothing about the overlay
+// itself — and every command that does not apply is absent rather than disabled.
+//
+// The ⌘K listener is registered in the CAPTURE phase. React attaches its handlers
+// at the root container, and the card's own fields stop propagation so a keystroke
+// meant for a text box never reaches the canvas keyboard — which would also have
+// swallowed ⌘K on its way to the window. Capturing runs first and cannot be
+// stopped from inside.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
 import { Canvas, type CanvasLabels, type CanvasMode, type CanvasPeer } from '@/components/mindmap/Canvas'
-import { Details, type DetailsLabels } from '@/components/mindmap/Details'
+import {
+  CommandPalette,
+  type CommandPaletteLabels,
+  type PaletteItem,
+} from '@/components/mindmap/CommandPalette'
+import type { NodeCardLabels, Reveal } from '@/components/mindmap/NodeCard'
 import { Outline, type OutlineLabels } from '@/components/mindmap/Outline'
 import { PruneDialog, type PruneDialogLabels } from '@/components/mindmap/PruneDialog'
 import {
   MAX_NODES,
   MAX_RELATIONSHIPS,
+  ancestorsOf,
   descendantCounts as allDescendantCounts,
   descendantsOf,
   visibleNodes,
@@ -37,6 +56,12 @@ import {
   type NodeFields,
   type Relationship,
 } from '@/lib/mindmap-doc'
+import {
+  commandsFor,
+  fuzzyRank,
+  isTextEntry,
+  type CommandId,
+} from '@/lib/mindmap-commands'
 import {
   addAttachment,
   createNode,
@@ -75,6 +100,9 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
 const foldKey = (id: string) => `takomo.mindmap.fold.${id}`
 const MODE_KEY = 'takomo.mindmap.mode'
 
+/** How many rows a second stage offers. A palette is a shortcut, not a browser. */
+const MAX_ROWS = 12
+
 function loadFold(id: string): Set<string> {
   try {
     const raw = localStorage.getItem(foldKey(id))
@@ -85,6 +113,9 @@ function loadFold(id: string): Set<string> {
   }
 }
 
+/** What each command is called in the list. Keyed by the id the pure module owns. */
+export type CommandLabels = Record<CommandId, string>
+
 export interface LiveLabels {
   branch: string
   readOnly: string
@@ -93,6 +124,9 @@ export interface LiveLabels {
   capNodes: string
   capRelationships: string
   needWrite: string
+  /** Second stages: what the input is asking for. */
+  gotoPlaceholder: string
+  projectPlaceholder: string
 }
 
 export interface LiveProps {
@@ -101,28 +135,50 @@ export interface LiveProps {
   title: string
   onConnection: (state: ConnectionState) => void
   onPeers: (names: string[]) => void
-  /** So the page's promote buttons know what is selected. */
-  onSelected: (node: MapNode | null) => void
   onError: (message: string) => void
+  /** Projects this token can reach — ⌘K is the only way to switch, now. */
+  projects: { id: string; name: string }[]
+  currentProject: string
+  onProject: (id: string) => void
+  /** Map-level commands. They go over REST, so they are the page's to run. */
+  canManageMap: boolean
+  onRenameMap: () => void
+  onDeleteMap: () => void
+  onPromote: (node: string, target: 'epic' | 'initiative') => void
   labels: LiveLabels
   canvasLabels: CanvasLabels
   outlineLabels: OutlineLabels
-  detailsLabels: DetailsLabels
+  cardLabels: NodeCardLabels
   pruneLabels: PruneDialogLabels
+  paletteLabels: CommandPaletteLabels
+  commandLabels: CommandLabels
+  /** One line under a command, where the command has consequences. */
+  commandHints: Partial<Record<CommandId, string>>
 }
+
+type Stage = 'commands' | 'goto' | 'project'
 
 export default function Live({
   session,
   title,
   onConnection,
   onPeers,
-  onSelected,
   onError,
+  projects,
+  currentProject,
+  onProject,
+  canManageMap,
+  onRenameMap,
+  onDeleteMap,
+  onPromote,
   labels,
   canvasLabels,
   outlineLabels,
-  detailsLabels,
+  cardLabels,
   pruneLabels,
+  paletteLabels,
+  commandLabels,
+  commandHints,
 }: LiveProps) {
   // One Y.Doc and one provider per map, rebuilt only when the ticket changes.
   // Recreating either on an unrelated render would drop the connection and resync
@@ -146,6 +202,17 @@ export default function Live({
   )
   const [relationFrom, setRelationFrom] = useState<string | null>(null)
   const [pruning, setPruning] = useState<string | null>(null)
+
+  // ⌘K, and the asks it hands the canvas. Each ask is cleared the moment the
+  // canvas honours it, so none of them can fire twice.
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [stage, setStage] = useState<Stage>('commands')
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState<string | null>(null)
+  const [centreNode, setCentreNode] = useState<string | null>(null)
+  const [editNode, setEditNode] = useState<string | null>(null)
+  const [fitRequest, setFitRequest] = useState<number | null>(null)
+  const [reveal, setReveal] = useState<Reveal>(null)
 
   const canWrite = session.can_write
 
@@ -228,13 +295,16 @@ export default function Live({
     () => nodes.find((n) => n.id === selected) ?? null,
     [nodes, selected],
   )
-  useEffect(() => onSelected(selectedNode), [selectedNode, onSelected])
 
   const shown = useMemo(() => visibleNodes(nodes, collapsed), [nodes, collapsed])
   // One post-order pass, not one full index rebuild per node — this recomputes
   // on every remote keystroke.
   const descendantCounts = useMemo(() => allDescendantCounts(nodes), [nodes])
   const titleOf = useMemo(() => new Map(nodes.map((n) => [n.id, n.title])), [nodes])
+  const relationsFor = useCallback(
+    (id: string) => relationships.filter((r) => r.from === id || r.to === id),
+    [relationships],
+  )
 
   const guard = useCallback((): boolean => {
     if (canWrite) return true
@@ -314,6 +384,24 @@ export default function Live({
     },
     [guard, ydoc],
   )
+  const onRemoveRelation = useCallback(
+    (id: string) => {
+      if (guard()) deleteRelationship(ydoc, id)
+    },
+    [guard, ydoc],
+  )
+  const onAddAttachment = useCallback(
+    (id: string, draft: Parameters<typeof addAttachment>[2]) => {
+      if (guard()) addAttachment(ydoc, id, draft)
+    },
+    [guard, ydoc],
+  )
+  const onRemoveAttachment = useCallback(
+    (id: string, attachment: string) => {
+      if (guard()) removeAttachment(ydoc, id, attachment)
+    },
+    [guard, ydoc],
+  )
 
   const onToggleCollapse = useCallback((id: string) => {
     setCollapsed((current) => {
@@ -340,6 +428,189 @@ export default function Live({
     [relationFrom, guard, ydoc, labels.relationLabelPrompt, labels.capRelationships, onError],
   )
 
+  // ---- ⌘K -----------------------------------------------------------------
+
+  const openPalette = useCallback(() => {
+    setStage('commands')
+    setQuery('')
+    setActive(null)
+    setPaletteOpen(true)
+  }, [])
+  const closePalette = useCallback(() => setPaletteOpen(false), [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'k' || !(e.metaKey || e.ctrlKey)) return
+      // Opening over somebody's typing would steal the keystroke; closing from
+      // there is exactly what they want, so the toggle is allowed either way and
+      // only OPENING is refused.
+      if (!paletteOpen && isTextEntry(document.activeElement)) return
+      e.preventDefault()
+      if (paletteOpen) closePalette()
+      else openPalette()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [paletteOpen, openPalette, closePalette])
+
+  const commands = useMemo(
+    () =>
+      commandsFor({
+        canWrite,
+        canManageMap,
+        nodeCount: nodes.length,
+        projectCount: projects.length,
+        node: selectedNode
+          ? {
+              id: selectedNode.id,
+              title: selectedNode.title,
+              promoted: !!selectedNode.promoted,
+              attachments: selectedNode.attachments.length,
+              hasChildren: (descendantCounts.get(selectedNode.id) ?? 0) > 0,
+              collapsed: collapsed.has(selectedNode.id),
+            }
+          : null,
+      }),
+    [canWrite, canManageMap, nodes.length, projects.length, selectedNode, descendantCounts, collapsed],
+  )
+
+  const items: PaletteItem[] = useMemo(() => {
+    if (stage === 'goto') {
+      return fuzzyRank(nodes, (n) => n.title, query, MAX_ROWS).map((n) => ({
+        id: n.id,
+        label: n.title,
+        hint: n.parent ? (titleOf.get(n.parent) ?? '') : '',
+      }))
+    }
+    if (stage === 'project') {
+      return fuzzyRank(projects, (p) => p.name || p.id, query, MAX_ROWS).map((p) => ({
+        id: p.id,
+        label: p.name || p.id,
+        hint: p.id === currentProject ? paletteLabels.scopeMap : p.id,
+      }))
+    }
+    return fuzzyRank(commands, (id) => commandLabels[id], query, commands.length).map((id) => ({
+      id,
+      label: commandLabels[id],
+      hint: commandHints[id],
+    }))
+  }, [
+    stage,
+    query,
+    nodes,
+    titleOf,
+    projects,
+    currentProject,
+    commands,
+    commandLabels,
+    commandHints,
+    paletteLabels.scopeMap,
+  ])
+
+  /** Bring a node into view even when the viewer had folded the branch it is in. */
+  const goTo = useCallback(
+    (id: string) => {
+      setCollapsed((current) => {
+        const next = new Set(current)
+        for (const parent of ancestorsOf(nodes, id)) next.delete(parent)
+        return next
+      })
+      setSelected(id)
+      setCentreNode(id)
+    },
+    [nodes],
+  )
+
+  const run = useCallback(
+    (id: string) => {
+      if (stage === 'goto') {
+        closePalette()
+        goTo(id)
+        return
+      }
+      if (stage === 'project') {
+        closePalette()
+        onProject(id)
+        return
+      }
+      const node = selected
+      // A second stage keeps the palette open and re-aims the same input.
+      if (id === 'map.goto' || id === 'map.project') {
+        setStage(id === 'map.goto' ? 'goto' : 'project')
+        setQuery('')
+        setActive(null)
+        return
+      }
+      closePalette()
+      switch (id as CommandId) {
+        case 'node.child':
+          if (node) onChild(node)
+          break
+        case 'node.sibling':
+          if (node) onSibling(node)
+          break
+        case 'node.rename':
+          setEditNode(node)
+          break
+        case 'node.notes':
+          setReveal('notes')
+          break
+        case 'node.attach':
+          setReveal('attach')
+          break
+        case 'node.relate':
+          setRelationFrom(node)
+          break
+        case 'node.promoteEpic':
+          if (node) onPromote(node, 'epic')
+          break
+        case 'node.promoteInitiative':
+          if (node) onPromote(node, 'initiative')
+          break
+        case 'node.collapse':
+        case 'node.expand':
+          if (node) onToggleCollapse(node)
+          break
+        case 'node.delete':
+          setPruning(node)
+          break
+        case 'map.fit':
+          setFitRequest(Date.now())
+          break
+        case 'map.tidy':
+          onTidy()
+          break
+        case 'map.rename':
+          onRenameMap()
+          break
+        case 'map.delete':
+          onDeleteMap()
+          break
+        default:
+          break
+      }
+    },
+    [
+      stage,
+      closePalette,
+      goTo,
+      onProject,
+      selected,
+      onChild,
+      onSibling,
+      onPromote,
+      onToggleCollapse,
+      onTidy,
+      onRenameMap,
+      onDeleteMap,
+    ],
+  )
+
+  const onCentred = useCallback(() => setCentreNode(null), [])
+  const onEditOpened = useCallback(() => setEditNode(null), [])
+  const onFitted = useCallback(() => setFitRequest(null), [])
+  const onRevealed = useCallback(() => setReveal(null), [])
+
   const pruneTarget = pruning ? (nodes.find((n) => n.id === pruning) ?? null) : null
 
   return (
@@ -354,6 +625,13 @@ export default function Live({
           className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650] disabled:opacity-40"
         >
           + {labels.branch}
+        </button>
+        <button
+          type="button"
+          onClick={openPalette}
+          className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 font-mono text-[12px] font-[650]"
+        >
+          ⌘K
         </button>
         {!canWrite && (
           <span className="text-muted-foreground text-[11.5px]">{labels.readOnly}</span>
@@ -391,31 +669,23 @@ export default function Live({
           onCancelRelation={() => setRelationFrom(null)}
           canWrite={canWrite}
           labels={canvasLabels}
+          cardLabels={cardLabels}
+          relationsFor={relationsFor}
+          titleOf={titleOf}
+          onNotes={onNotes}
+          onFields={onFields}
+          onAddAttachment={onAddAttachment}
+          onRemoveAttachment={onRemoveAttachment}
+          onRemoveRelation={onRemoveRelation}
+          centreNode={centreNode}
+          onCentred={onCentred}
+          editNode={editNode}
+          onEditOpened={onEditOpened}
+          fitRequest={fitRequest}
+          onFitted={onFitted}
+          reveal={reveal}
+          onRevealed={onRevealed}
         />
-        {selectedNode && (
-          <aside className="border-l-border-soft w-full shrink-0 overflow-y-auto border-l md:w-80">
-            <Details
-              node={selectedNode}
-              relations={relationships.filter(
-                (r) => r.from === selectedNode.id || r.to === selectedNode.id,
-              )}
-              titleOf={titleOf}
-              canWrite={canWrite}
-              drawingRelation={relationFrom === selectedNode.id}
-              onNotes={onNotes}
-              onFields={onFields}
-              onStartRelation={setRelationFrom}
-              onCancelRelation={() => setRelationFrom(null)}
-              onRemoveRelation={(id) => guard() && deleteRelationship(ydoc, id)}
-              onAddAttachment={(id, draft) => {
-                if (guard()) addAttachment(ydoc, id, draft)
-              }}
-              onRemoveAttachment={(id, att) => guard() && removeAttachment(ydoc, id, att)}
-              onDelete={setPruning}
-              labels={detailsLabels}
-            />
-          </aside>
-        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
@@ -428,6 +698,29 @@ export default function Live({
           labels={outlineLabels}
         />
       </div>
+
+      {paletteOpen && (
+        <CommandPalette
+          scope={stage === 'commands' && selectedNode ? selectedNode.title : title}
+          scopeKind={stage === 'commands' && selectedNode ? 'node' : 'map'}
+          items={items}
+          query={query}
+          onQuery={setQuery}
+          active={active}
+          onActive={setActive}
+          onRun={run}
+          onClose={closePalette}
+          labels={{
+            ...paletteLabels,
+            placeholder:
+              stage === 'goto'
+                ? labels.gotoPlaceholder
+                : stage === 'project'
+                  ? labels.projectPlaceholder
+                  : paletteLabels.placeholder,
+          }}
+        />
+      )}
 
       <PruneDialog
         node={pruneTarget}
