@@ -71,6 +71,12 @@ export const STR = defineStrings({
     layoutRadial: 'Radial',
     layoutTree: 'Tree',
 
+    editThought: 'Edit this thought',
+    nodeDialogTitle: 'Editing “{title}”',
+    nodeDialogSubtitle:
+      'Everything this thought holds. The map itself is for reading — changes land as you make them, the way they do in a shared document.',
+    titleField: 'Title',
+    titleHint: 'A few words. The long form goes in the notes.',
     notes: 'Notes',
     notesHint: 'The long form. Never drawn on the canvas — the title is what stays readable at a glance.',
     notesCount: '{n} of {max} characters',
@@ -268,6 +274,12 @@ export const STR = defineStrings({
     layoutRadial: 'Radial',
     layoutTree: 'Baum',
 
+    editThought: 'Diesen Gedanken bearbeiten',
+    nodeDialogTitle: 'Bearbeiten: „{title}“',
+    nodeDialogSubtitle:
+      'Alles, was dieser Gedanke enthält. Die Karte selbst ist zum Lesen da — Änderungen landen sofort, wie in einem geteilten Dokument.',
+    titleField: 'Titel',
+    titleHint: 'Ein paar Worte. Die Langform gehört in die Notizen.',
     notes: 'Notizen',
     notesHint: 'Die Langform. Steht nie auf der Leinwand — der Titel ist das, was auf einen Blick lesbar bleibt.',
     notesCount: '{n} von {max} Zeichen',

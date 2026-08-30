@@ -19159,6 +19159,78 @@ fn peer_node_update(doc: &yrs::Doc, id: &str, title: &str, order: &str) -> Vec<u
     txn.encode_update_v1()
 }
 
+/// An API write that answered has to have been written down.
+///
+/// The map's replica lives in memory and a debounced flusher writes it out every
+/// couple of seconds — which is right for somebody typing in a browser, where
+/// batching is the difference between a smooth canvas and every keystroke queued
+/// behind the process-wide write mutex. A request is not typing: it makes one
+/// change and then says it did.
+///
+/// Without that distinction the room can be torn down — the last peer leaves
+/// when the handler returns — while its edits are still only in memory, and the
+/// next request rebuilds the replica from a log that never received them. It
+/// showed up first as two unrelated tests failing about one run in three, which
+/// is exactly how this class of bug announces itself.
+#[tokio::test]
+async fn a_mindmap_write_is_on_disk_before_the_request_answers() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Durability" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let rows = |map: &str| -> i64 {
+        let conn = rusqlite::Connection::open(app.db_path()).expect("open db");
+        conn.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            rusqlite::params![map],
+            |r| r.get(0),
+        )
+        .expect("count")
+    };
+
+    assert_eq!(rows(&map), 0, "a map with no nodes has written nothing yet");
+
+    let (s, out) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "written down before you were told" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{out}");
+    // No sleep. The point is that this is true the instant the response lands.
+    assert!(
+        rows(&map) > 0,
+        "the node reached the log before the 201 did"
+    );
+
+    let node = out["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (s, _) = app
+        .delete(&app.worker, &format!("/v1/mindmaps/{map}/nodes/{node}"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let after_delete = rows(&map);
+
+    let (s, _) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "and so did this one" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert!(
+        rows(&map) > after_delete,
+        "every mutation persists, not just the first"
+    );
+}
+
 /// Writing a map up: one document per thought, filed by its branch.
 ///
 /// The conversion exists because `/documents` already builds its tree from

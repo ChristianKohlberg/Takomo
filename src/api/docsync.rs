@@ -106,6 +106,16 @@ pub struct Room {
     peers: AtomicUsize,
     /// Rows in the persisted log, tracked so compaction does not need a query.
     rows: AtomicU64,
+    /// Held for the length of a flush, so only one runs at a time.
+    ///
+    /// Without it `flush` is not a durability barrier, only a nudge: it takes
+    /// `pending` and returns early when it is empty — which is exactly what it
+    /// finds when the background flusher took the batch a moment earlier and is
+    /// still inside its store write. A caller that awaited `flush` to make an
+    /// edit durable before answering a request would be told the work was done
+    /// while it was still in flight. Taking this first means "everything queued
+    /// before this call is now written" is a promise the function can keep.
+    flushing: tokio::sync::Mutex<()>,
 }
 
 impl Room {
@@ -270,6 +280,7 @@ impl Rooms {
             tx,
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
+            flushing: tokio::sync::Mutex::new(()),
         });
 
         // Re-check under the lock: two peers can race to open the same document,
@@ -320,6 +331,9 @@ fn kind_of(id: &str) -> CollabKind {
 /// Runs on the blocking pool: both calls take the process-wide write mutex, and
 /// blocking an async worker on it would be the very stall this design avoids.
 pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
+    // Serialize with any flush already running, so returning from here means the
+    // log has caught up with everything queued before the call.
+    let _writing = room.flushing.lock().await;
     let batch = {
         let mut pending = room.pending.lock().expect("pending mutex");
         if pending.is_empty() {

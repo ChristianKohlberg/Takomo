@@ -176,6 +176,24 @@ pub async fn delete(
     Ok(Json(json!({ "ok": true, "removed_nodes": nodes })))
 }
 
+/// Write the replica's pending edits to the log before answering.
+///
+/// **An API call that returns 201 has to have happened.** The debounced flusher
+/// exists for somebody typing in a browser, where two seconds of batching is the
+/// difference between a smooth canvas and every keystroke queued behind the
+/// process-wide write mutex. A request is not typing: it makes one change and
+/// then says it did.
+///
+/// Without this the room can be torn down — the last peer leaves when this
+/// handler's guard drops — while its edits are still only in memory, and the
+/// next request rebuilds the replica from a log that never received them. The
+/// change is not lost for long, but it is missing from the read that follows,
+/// which is the shape of bug that looks like a flaky test until somebody loses
+/// a node.
+async fn persist(state: &Arc<AppState>, room: &crate::api::docsync::RoomGuard, ctx: &AuthCtx) {
+    crate::api::docsync::flush(state, room, &ctx.actor).await;
+}
+
 /// Fetch the map for its project check, then join its live document.
 ///
 /// The row is read first and the room second, so an unknown map or a project the
@@ -338,6 +356,7 @@ pub async fn add_nodes(
 
     let actor = ctx.actor.clone();
     let created = room.mutate(|doc| mindmapdoc::add_nodes(doc, &adds, &actor))?;
+    persist(&state, &room, &ctx).await;
 
     let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
     let nodes: Vec<Value> = created
@@ -448,6 +467,7 @@ pub async fn patch_node(
     let moved = patch.parent.is_some();
     let actor = ctx.actor.clone();
     room.mutate(|doc| mindmapdoc::patch_node(doc, &node, &patch, &actor))?;
+    persist(&state, &room, &ctx).await;
 
     if moved {
         // A reparent is the only node edit that reaches the event log. Text and
@@ -476,6 +496,7 @@ pub async fn delete_node(
     state.store.ensure_collab_writable(&id)?;
 
     let removed = room.mutate(|doc| mindmapdoc::delete_node(doc, &node))?;
+    persist(&state, &room, &ctx).await;
     let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
     state.store.note_mindmap_size(&id, all.len() as i64)?;
     state.store.note_mindmap_event(
@@ -595,6 +616,7 @@ pub async fn add_relationship(
     state.store.ensure_collab_writable(&id)?;
 
     let created = room.mutate(|doc| mindmapdoc::add_relationship(doc, &from, &to, &label))?;
+    persist(&state, &room, &ctx).await;
     state.wake();
     Ok((
         StatusCode::CREATED,
@@ -619,6 +641,7 @@ pub async fn delete_relationship(
     let (_, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
     room.mutate(|doc| mindmapdoc::delete_relationship(doc, &relationship))?;
+    persist(&state, &room, &ctx).await;
     state.wake();
     Ok(Json(json!({ "ok": true })))
 }
@@ -672,6 +695,7 @@ pub async fn delete_attachment(
     let (_, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
     room.mutate(|doc| mindmapdoc::delete_attachment(doc, &node, &attachment))?;
+    persist(&state, &room, &ctx).await;
     state.wake();
     Ok(Json(json!({ "ok": true })))
 }
@@ -775,9 +799,9 @@ pub async fn to_documents(
         }));
     }
 
-    // The links back into the map are only in memory until a flush, and a
+    // The links back into the map would otherwise sit in memory, and a
     // conversion that lost them would make a second set of documents next time.
-    crate::api::docsync::flush(&state, &room, &ctx.actor).await;
+    persist(&state, &room, &ctx).await;
     state.wake();
 
     Ok((

@@ -27,11 +27,13 @@
 // pure function with tests, because jsdom could prove nothing about the overlay
 // itself — and every command that does not apply is absent rather than disabled.
 //
-// The ⌘K listener is registered in the CAPTURE phase. React attaches its handlers
-// at the root container, and the card's own fields stop propagation so a keystroke
-// meant for a text box never reaches the canvas keyboard — which would also have
-// swallowed ⌘K on its way to the window. Capturing runs first and cannot be
-// stopped from inside.
+// The ⌘K listener is registered in the CAPTURE phase. The node card no longer
+// swallows anything — it is text you read now, and editing a thought is
+// `NodeDialog` — but the pill and the right-click menu still stop every keydown,
+// because the canvas keyboard grows and folds the map and none of that may fire
+// from a button in a toolbar. React attaches its handlers at the root container,
+// so a synthetic stopPropagation there also stops the native event before it
+// reaches the window. Capturing runs first and cannot be stopped from inside.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
@@ -42,7 +44,12 @@ import {
   type CommandPaletteLabels,
   type PaletteItem,
 } from '@/components/mindmap/CommandPalette'
-import type { NodeCardLabels, Reveal } from '@/components/mindmap/NodeCard'
+import type { NodeCardLabels } from '@/components/mindmap/NodeCard'
+import {
+  NodeDialog,
+  type NodeDialogFocus,
+  type NodeDialogLabels,
+} from '@/components/mindmap/NodeDialog'
 import {
   AttachmentsDialog,
   type AttachmentsDialogLabels,
@@ -191,6 +198,7 @@ export interface LiveProps {
   canvasLabels: CanvasLabels
   outlineLabels: OutlineLabels
   cardLabels: NodeCardLabels
+  nodeLabels: NodeDialogLabels
   pruneLabels: PruneDialogLabels
   detachLabels: DetachDialogLabels
   attachmentLabels: AttachmentsDialogLabels
@@ -220,6 +228,7 @@ export default function Live({
   canvasLabels,
   outlineLabels,
   cardLabels,
+  nodeLabels,
   pruneLabels,
   detachLabels,
   attachmentLabels,
@@ -254,6 +263,14 @@ export default function Live({
   const [trustLens, setTrustLens] = useState(() => localStorage.getItem(TRUST_KEY) === 'on')
   /** The node whose attachments are open in the manager, or null. */
   const [attaching, setAttaching] = useState<string | null>(null)
+  /**
+   * The node being edited, and which field the verb that opened it asked for.
+   *
+   * One dialog for every editing path there is — rename, notes, double-click, the
+   * context menu, and the row on the phone — because they only ever differed in
+   * where the caret lands.
+   */
+  const [editing, setEditing] = useState<{ id: string; focus: NodeDialogFocus } | null>(null)
 
   // ⌘K, and the asks it hands the canvas. Each ask is cleared the moment the
   // canvas honours it, so none of them can fire twice.
@@ -262,9 +279,9 @@ export default function Live({
   const [query, setQuery] = useState('')
   const [active, setActive] = useState<string | null>(null)
   const [centreNode, setCentreNode] = useState<string | null>(null)
-  const [editNode, setEditNode] = useState<string | null>(null)
   const [fitRequest, setFitRequest] = useState<number | null>(null)
-  const [reveal, setReveal] = useState<Reveal>(null)
+  /** Asks the canvas for the keyboard back after the dialog hands it over. */
+  const [focusRequest, setFocusRequest] = useState<number | null>(null)
 
   const canWrite = session.can_write
 
@@ -391,6 +408,10 @@ export default function Live({
         return
       }
       setSelected(id)
+      // Created and named in one gesture: Enter, Tab and the `+` all land in the
+      // dialog with the placeholder title selected, so typing a name and pressing
+      // Enter costs what it cost when the editor was drawn on the node.
+      setEditing({ id, focus: 'title' })
     },
     [guard, ydoc, labels.newThought, labels.capNodes, session.display, onError],
   )
@@ -412,6 +433,7 @@ export default function Live({
       // first-draft thought then clearing it is the commonest way to say
       // "actually, no" — but it still goes through the same questions.
       if (!trimmed) {
+        setEditing(null)
         setPruning(id)
         return
       }
@@ -514,16 +536,24 @@ export default function Live({
   const onCreateAt = useCallback(
     (at: Point) => {
       if (!guard()) return
-      const id = createNode(ydoc, { parent: null, after: null, title: '', by: session.display })
+      const id = createNode(ydoc, {
+        parent: null,
+        after: null,
+        // A placeholder rather than nothing: the dialog opens with it selected so
+        // it is typed over, and a thought left unnamed is still a legible box on
+        // the map instead of an empty one.
+        title: labels.newThought,
+        by: session.display,
+      })
       if (!id) {
         onError(labels.capNodes.replace('{max}', String(MAX_NODES)))
         return
       }
       place(ydoc, id, at)
       setSelected(id)
-      setEditNode(id)
+      setEditing({ id, focus: 'title' })
     },
-    [guard, ydoc, session.display, onError, labels.capNodes],
+    [guard, ydoc, session.display, onError, labels.capNodes, labels.newThought],
   )
 
   /** Pose a question about the selected thought, and open its title to type it. */
@@ -536,7 +566,7 @@ export default function Live({
         return
       }
       setSelected(id)
-      setEditNode(id)
+      setEditing({ id, focus: 'title' })
     },
     [guard, ydoc, session.display, onError, labels.capNodes, labels.newQuestion],
   )
@@ -552,6 +582,9 @@ export default function Live({
     (id: string, answer: string) => {
       if (!guard()) return
       const landed = answerQuestion(ydoc, id, answer)
+      // An answered question is not a question any more — it is removed — so the
+      // dialog cannot stay open on it.
+      setEditing(null)
       if (landed) setSelected(landed)
     },
     [guard, ydoc],
@@ -729,10 +762,10 @@ export default function Live({
           if (node) onSibling(node)
           break
         case 'node.rename':
-          setEditNode(node)
+          if (node) setEditing({ id: node, focus: 'title' })
           break
         case 'node.notes':
-          setReveal('notes')
+          if (node) setEditing({ id: node, focus: 'notes' })
           break
         case 'node.attach':
           setAttaching(node)
@@ -800,9 +833,18 @@ export default function Live({
   )
 
   const onCentred = useCallback(() => setCentreNode(null), [])
-  const onEditOpened = useCallback(() => setEditNode(null), [])
   const onFitted = useCallback(() => setFitRequest(null), [])
-  const onRevealed = useCallback(() => setReveal(null), [])
+  const onFocused = useCallback(() => setFocusRequest(null), [])
+  /** Opening the dialog by double-click or F2 — the canvas has no editor of its
+   *  own to open any more. */
+  const onEditNode = useCallback((id: string) => setEditing({ id, focus: 'title' }), [])
+  const closeEditing = useCallback(() => {
+    setEditing(null)
+    // The map keyboard only works while the canvas has the focus, and the dialog
+    // took it. Without this, Enter stops growing the map the moment somebody
+    // names a node.
+    setFocusRequest(Date.now())
+  }, [])
 
   const pruneTarget = pruning ? (nodes.find((n) => n.id === pruning) ?? null) : null
   // Resolved from the live tree, so a line somebody else cut first closes the
@@ -811,6 +853,9 @@ export default function Live({
   // Read from the live tree rather than captured when the badge was clicked, so
   // an attachment somebody else adds appears in the open dialog.
   const attachingNode = attaching ? (nodes.find((n) => n.id === attaching) ?? null) : null
+  // Read from the live tree for the same reason, and so a node somebody else
+  // removes closes the dialog rather than leaving a form over nothing.
+  const editingNode = editing ? (nodes.find((n) => n.id === editing.id) ?? null) : null
 
   return (
     <>
@@ -867,7 +912,7 @@ export default function Live({
           peers={peers}
           selected={selected}
           onSelect={setSelected}
-          onTitle={onTitle}
+          onEditNode={onEditNode}
           onSibling={onSibling}
           onChild={onChild}
           onDelete={setPruning}
@@ -887,9 +932,6 @@ export default function Live({
           cardLabels={cardLabels}
           relationsFor={relationsFor}
           titleOf={titleOf}
-          onNotes={onNotes}
-          onFields={onFields}
-          onRemoveRelation={onRemoveRelation}
           onOpenAttachments={setAttaching}
           onAttachDrop={onAttachDrop}
           pillVerbs={pillVerbs}
@@ -897,12 +939,10 @@ export default function Live({
           onRunVerb={run}
           centreNode={centreNode}
           onCentred={onCentred}
-          editNode={editNode}
-          onEditOpened={onEditOpened}
           fitRequest={fitRequest}
           onFitted={onFitted}
-          reveal={reveal}
-          onRevealed={onRevealed}
+          focusRequest={focusRequest}
+          onFocused={onFocused}
           foldSummaryOf={foldSummaryOf}
           trustLens={trustLens}
           onTrustLens={(on) => {
@@ -911,7 +951,6 @@ export default function Live({
           }}
           onCreateAt={onCreateAt}
           onCutEdge={setCutting}
-          onAnswerQuestion={onAnswerQuestion}
         />
       </div>
 
@@ -921,6 +960,7 @@ export default function Live({
           selected={selected}
           canWrite={canWrite}
           onSelect={setSelected}
+          onEdit={onEditNode}
           onChild={onChild}
           onSibling={onSibling}
           onAttachments={setAttaching}
@@ -954,6 +994,21 @@ export default function Live({
           }}
         />
       )}
+
+      <NodeDialog
+        node={editingNode}
+        canWrite={canWrite}
+        focus={editing?.focus ?? 'title'}
+        relations={editingNode ? relationsFor(editingNode.id) : []}
+        titleOf={titleOf}
+        onOpenChange={(open) => !open && closeEditing()}
+        onTitle={onTitle}
+        onNotes={onNotes}
+        onFields={onFields}
+        onRemoveRelation={onRemoveRelation}
+        onAnswer={onAnswerQuestion}
+        labels={nodeLabels}
+      />
 
       <AttachmentsDialog
         node={attachingNode}

@@ -6,8 +6,10 @@
 // though it worked. The list also happens to be the fastest thing to *add* to
 // with a thumb, which is what somebody on a phone is doing with a brainstorm.
 //
-// It is deliberately not an editor: on a phone you read, tap to select, add,
-// remove, and open what is attached. Retyping and rearranging are desktop work.
+// It is deliberately not an editor ITSELF: no row here has a text box in it. A
+// row that wants changing opens the same `NodeDialog` the canvas opens, which is
+// the only place a thought is typed into on either surface — the phone gets a
+// route to it, not a second, worse editor of its own.
 //
 // Those last two are here because the affordances that carry them on the canvas
 // are pointer-driven — a badge, a `+` on hover, a right-click menu — and a phone
@@ -21,6 +23,8 @@ import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mind
 import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
+  /** Opens the editing dialog on this row. */
+  edit: string
   addChild: string
   addSibling: string
   empty: string
@@ -48,6 +52,10 @@ export interface OutlineProps {
   selected: string | null
   canWrite: boolean
   onSelect: (id: string) => void
+  /** Opens the same dialog double-click opens on the canvas. Present on a
+   *  read-only token too: it is where the whole of a thought can be READ, and it
+   *  refuses every write by itself. */
+  onEdit: (id: string) => void
   onChild: (id: string) => void
   onSibling: (id: string) => void
   /** Opens the same manager the canvas badge opens. */
@@ -69,6 +77,7 @@ export function Outline({
   selected,
   canWrite,
   onSelect,
+  onEdit,
   onChild,
   onSibling,
   onAttachments,
@@ -178,6 +187,16 @@ export function Outline({
                 onClick={() => onAttachments(node.id)}
               >
                 ⎘{node.attachments.length > 0 ? ` ${node.attachments.length}` : ''}
+              </Button>
+            </Hint>
+            <Hint text={labels.edit}>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={labels.edit}
+                onClick={() => onEdit(node.id)}
+              >
+                ✎
               </Button>
             </Hint>
             {canWrite && (

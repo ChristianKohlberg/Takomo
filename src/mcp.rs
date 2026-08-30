@@ -2332,6 +2332,10 @@ impl TakomoMcp {
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
         let actor = auth.actor.clone();
         let created = room.mutate(|doc| crate::store::mindmapdoc::add_nodes(doc, &adds, &actor))?;
+        // The same rule the REST writes follow: a tool call that answers "done"
+        // has to have persisted, rather than trusting a debounce meant for
+        // somebody typing.
+        crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
 
         let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));
         let nodes: Vec<Value> = created
@@ -2480,9 +2484,9 @@ impl TakomoMcp {
             Ok(created)
         })?;
 
-        // The work is committed; the link back into the map is not durable until
-        // a flush. Force one, so a crash cannot leave a promoted branch looking
-        // unpromoted and let it graduate twice.
+        // The work is committed; without this the link back into the map is not
+        // durable, and a promoted branch could come back looking unpromoted and
+        // graduate a second time.
         crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
 
         let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));

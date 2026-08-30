@@ -18,6 +18,9 @@
 //
 // The side panel is gone and its job moved ONTO the node: the selected card
 // grows into `NodeCard`'s full form, every other one stays a title and its marks.
+// That card READS a node and never writes one — there is no editor on this
+// canvas, so nothing in here has to swallow a keystroke to keep Space from
+// folding a branch. Double-click and F2 ask the page for `NodeDialog` instead.
 // That is why the card's size is not a layout decision — the geometry in
 // `lib/mindmap-layout.ts` still places every node by `NODE_WIDTH`/`NODE_HEIGHT`,
 // and the expanded card is drawn over its neighbours rather than pushing them.
@@ -45,7 +48,7 @@ import {
 } from '@/lib/mindmap-layout'
 import { cn } from '@/lib/utils'
 import { trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
-import type { MapNode, NodeFields, Relationship } from '@/lib/mindmap-doc'
+import type { MapNode, Relationship } from '@/lib/mindmap-doc'
 import type { DropPayload } from '@/lib/mindmap-attach'
 import { Hint } from '@/components/Hint'
 import {
@@ -53,7 +56,6 @@ import {
   EXPANDED_WIDTH,
   NodeCard,
   type NodeCardLabels,
-  type Reveal,
 } from '@/components/mindmap/NodeCard'
 import { NodeMenu, type MenuItem } from '@/components/mindmap/NodeMenu'
 import { NodePill, type PillVerb } from '@/components/mindmap/NodePill'
@@ -118,8 +120,9 @@ export interface CanvasProps {
   peers: CanvasPeer[]
   selected: string | null
   onSelect: (id: string | null) => void
-  /** Commit an edited node's title. Called on blur or Escape, not per keystroke. */
-  onTitle: (id: string, title: string) => void
+  /** Open the editing dialog on a node — double-click, F2, and nothing else here.
+   *  There is no editor on the canvas any more; the canvas asks for one. */
+  onEditNode: (id: string) => void
   /** Enter: a sibling after this node. Tab: a child of it. */
   onSibling: (id: string) => void
   onChild: (id: string) => void
@@ -138,13 +141,11 @@ export interface CanvasProps {
   onCancelRelation: () => void
   canWrite: boolean
   labels: CanvasLabels
-  /** Everything the selected card needs to be the detail surface. */
+  /** Everything the selected card needs to be the detail surface. It READS the
+   *  node; changing one is the dialog's job, one level up. */
   cardLabels: NodeCardLabels
   relationsFor: (id: string) => Relationship[]
   titleOf: ReadonlyMap<string, string>
-  onNotes: (id: string, notes: string) => void
-  onFields: (id: string, fields: Partial<NodeFields>) => void
-  onRemoveRelation: (relationId: string) => void
   /** The count badge, and the right-click menu's attachment entry. */
   onOpenAttachments: (id: string) => void
   /**
@@ -161,18 +162,21 @@ export interface CanvasProps {
   /** Runs a pill verb or a menu entry. Both are command ids. */
   onRunVerb: (id: string) => void
   /**
-   * Asks from ⌘K, each cleared the moment it is honoured: bring a node into the
-   * middle of the view, open its title editor, or reveal one part of its card.
+   * Asks from the page, each cleared the moment it is honoured: bring a node into
+   * the middle of the view, fit the map, or take the keyboard back.
    */
   centreNode: string | null
   onCentred: () => void
   /** A timestamp, so asking twice asks twice. Null while nothing is pending. */
   fitRequest: number | null
   onFitted: () => void
-  editNode: string | null
-  onEditOpened: () => void
-  reveal: Reveal
-  onRevealed: () => void
+  /**
+   * Give the canvas the keyboard back — what the page asks after a dialog closes.
+   * Without it, Enter and Tab stop growing the map the moment somebody names a
+   * node, because the focus went to the dialog and never came back.
+   */
+  focusRequest: number | null
+  onFocused: () => void
   /** What each folded branch is holding. Only this viewer's folds have one, and
    *  the canvas cannot compute it — the hidden nodes are not among `nodes`. */
   foldSummaryOf: (id: string) => FoldSummary | null
@@ -185,8 +189,6 @@ export interface CanvasProps {
   /** Clicking the line between a node and its parent. The page asks twice before
    *  anything is cut, so this only OFFERS the cut. */
   onCutEdge: (childId: string) => void
-  /** A person's own answer to a question node. */
-  onAnswerQuestion: (id: string, answer: string) => void
   className?: string
 }
 
@@ -245,7 +247,7 @@ export function Canvas({
   peers,
   selected,
   onSelect,
-  onTitle,
+  onEditNode,
   onSibling,
   onChild,
   onDelete,
@@ -262,9 +264,6 @@ export function Canvas({
   cardLabels,
   relationsFor,
   titleOf,
-  onNotes,
-  onFields,
-  onRemoveRelation,
   onOpenAttachments,
   onAttachDrop,
   pillVerbs,
@@ -274,23 +273,18 @@ export function Canvas({
   onCentred,
   fitRequest,
   onFitted,
-  editNode,
-  onEditOpened,
-  reveal,
-  onRevealed,
+  focusRequest,
+  onFocused,
   foldSummaryOf,
   trustLens,
   onTrustLens,
   onCreateAt,
   onCutEdge,
-  onAnswerQuestion,
   className,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
   const [drag, setDrag] = useState<Drag>({ kind: 'none' })
-  const [editing, setEditing] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
   // The node under the pointer. Only used to reveal the `+`, and only ever set
   // when it CHANGES — a 500-node map re-rendering on every mousemove is the one
   // way a hover affordance could cost more than it is worth.
@@ -350,7 +344,6 @@ export function Canvas({
   }
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (editing) return
     const screen = pointIn(e)
     const world = toWorld(screen, viewport)
     const hit = hitAt(world)
@@ -425,20 +418,15 @@ export function Canvas({
     setViewport((v) => zoomAt(v, pointIn(e), e.deltaY < 0 ? 1.1 : 1 / 1.1))
   }
 
-  const startEditing = useCallback(
-    (id: string) => {
-      const node = nodes.find((n) => n.id === id)
-      if (!node || !canWrite) return
-      setDraft(node.title)
-      setEditing(id)
-    },
-    [nodes, canWrite],
-  )
-
-  const commit = useCallback(() => {
-    if (editing) onTitle(editing, draft)
-    setEditing(null)
-  }, [editing, draft, onTitle])
+  /**
+   * Ask the page for the dialog on a node.
+   *
+   * Deliberately NOT gated on `canWrite`: the dialog is the only place the whole
+   * of a thought can be read, and it refuses every write on a read-only token by
+   * itself. The verbs that mean "change this" stay absent for such a token, the
+   * way every other inapplicable command does.
+   */
+  const edit = onEditNode
 
   // ⌘K asked for a node. Centring is deliberately not a fit: it keeps the zoom
   // the reader chose, because jumping AND rezooming loses them twice. The layout
@@ -472,17 +460,18 @@ export function Canvas({
     onFitted()
   }, [fitRequest, onFitted, nodes, mode])
 
+  // The dialog took the focus with it when it opened; this is how it comes back,
+  // so the map keyboard works again without a click into the canvas first.
   useEffect(() => {
-    if (!editNode) return
-    startEditing(editNode)
-    onEditOpened()
-  }, [editNode, onEditOpened, startEditing])
+    if (focusRequest === null) return
+    svgRef.current?.focus()
+    onFocused()
+  }, [focusRequest, onFocused])
 
   // The keyboard is what makes this keep up with a conversation, so it lives on
   // the canvas rather than only inside a text box: with a node selected, Enter
   // and Tab grow the map without the mouse.
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (editing) return
     if (e.key === 'Escape' && relationFrom) {
       e.preventDefault()
       onCancelRelation()
@@ -506,7 +495,7 @@ export function Canvas({
       onChild(selected)
     } else if (e.key === 'F2') {
       e.preventDefault()
-      startEditing(selected)
+      edit(selected)
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
       onDelete(selected)
@@ -659,9 +648,12 @@ export function Canvas({
         }}
         onDoubleClick={(e) => {
           const world = toWorld(pointIn(e), viewport)
-          const hit = nodeAt(placed.nodes, world)
+          // `hitAt`, not `nodeAt`: the selected node is drawn as a card wider
+          // than its layout box, and a double-click on what is on screen must
+          // reach what is on screen.
+          const hit = hitAt(world)
           if (hit) {
-            startEditing(hit.node.id)
+            edit(hit.node.id)
             return
           }
           // Empty space: a loose thought, pinned where it was dropped and opened
@@ -851,23 +843,10 @@ export function Canvas({
                   <NodeCard
                     node={p.node}
                     expanded={isSelected}
-                    canWrite={canWrite}
-                    editing={editing === p.node.id}
-                    draft={draft}
-                    onDraft={setDraft}
-                    onCommit={commit}
-                    onCancel={() => setEditing(null)}
-                    onEdit={() => startEditing(p.node.id)}
                     relations={relationsFor(p.node.id)}
                     titleOf={titleOf}
-                    onNotes={onNotes}
-                    onFields={onFields}
-                    onRemoveRelation={onRemoveRelation}
-                    reveal={isSelected ? reveal : null}
-                    onRevealed={onRevealed}
                     fold={fold}
                     trust={trust}
-                    onAnswer={onAnswerQuestion}
                     labels={cardLabels}
                   />
                 </foreignObject>

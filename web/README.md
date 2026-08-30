@@ -187,12 +187,29 @@ alone. The header keeps what a shared document needs — its title, whether this
 browser is connected, who else is in it — and everything else is a command.
 
 Node detail moved ONTO the node: the selected card grows into `NodeCard`'s full
-form (notes, kind, shape, colour, edge label, relations) and every other card
-stays a title, its marks (`≋` notes, `¶` relations) and one line of substance. Only one card
+form — title, the whole notes, what is attached, the lines running to other
+branches, what it became, who wrote it — and every other card stays a title, its
+marks (`≋` notes, `¶` relations) and one line of substance. Only one card
 is ever expanded, which is what keeps a 500-node map readable, and the expanded
 card is drawn OVER its neighbours rather than laid out around — re-laying the map
 out on selection would move every node under a collaborator's cursor on every
 click. `lib/mindmap-layout.ts` is untouched by any of it.
+
+**The card is text you READ; editing one thought is `NodeDialog`.** There is no
+input, textarea, select or checkbox anywhere on the canvas, and no title editor
+drawn over a node either. A form on the canvas has to fight the canvas for the
+keyboard — Space folds a branch, Enter grows one, Backspace prunes — so the card
+had to swallow every keystroke, which then swallowed the keys the canvas needs and
+pushed ⌘K into the capture phase to get out from under it. The dialog carries
+everything that was inline (title, notes, kind, shape, colour, edge label, the
+reviewed flag, this node's relations, and a question's answer) and every path
+leads to it: the pill's rename and notes verbs, ⌘K's `node.rename` and
+`node.notes`, double-click, the right-click menu, and the `✎` on an `Outline` row.
+Creating a node opens it with the placeholder title selected, so Enter, Tab and
+`+` still cost a name and one key. Attachments keep their own badge and their own
+dialog. It commits a field when you leave it and when it closes — no save button,
+for the reason `/documents` has none — and closing hands the keyboard back to the
+canvas, or Enter would stop growing the map the moment somebody named a node.
 
 **The affordances live in the margin and appear on selection.** Unselected, a
 node is a title, its marks, and a count badge if anything is attached — nothing
@@ -230,9 +247,10 @@ space would otherwise navigate the browser to it and throw away the map, the
 connection and whatever anyone was typing.
 
 The phone gets all of that as plain buttons on each `Outline` row — attachments
-(with the count), add after, add underneath, detach, remove — because every canvas
-affordance here is pointer-driven and a phone has neither hover nor a right
-button.
+(with the count), edit, add after, add underneath, detach, remove — because every
+canvas affordance here is pointer-driven and a phone has neither hover nor a right
+button. The list is not an editor itself: `✎` opens the same `NodeDialog` the
+canvas opens, rather than growing a second, worse editor for a small screen.
 
 **Every card carries a line of substance, and folding SUMMARISES.** An unselected
 card used to be a title and its marks; it now also carries one quiet line saying
@@ -262,16 +280,16 @@ strip.
 `kind: 'question'` renders as its own shape with an "open question" eyebrow, and
 what it questions is an ordinary relationship, drawn distinctly. So nothing in the
 store had to learn what a question is, and an agent poses one with two calls it
-already had. Selecting it offers an answer box; answering appends those words to
+already had. Its dialog offers an answer box; answering appends those words to
 the notes of the node the question was about, marks that node reviewed, and
 removes the question — an answered question is not an open question. A question
 about nothing in particular keeps its own answer and stops being a question. There
 is no model call in this path and none is wanted.
 
 **Double-clicking empty canvas captures a loose thought** — a first-ring node
-pinned where it was dropped, straight into its title editor. You do not always
-know where a thought goes, and forcing a parent is wrong for the ten minutes a
-brainstorm is for.
+pinned where it was dropped, straight into `NodeDialog` with its placeholder title
+selected. You do not always know where a thought goes, and forcing a parent is
+wrong for the ten minutes a brainstorm is for.
 
 **Clicking the line to a parent offers to cut it, behind two questions.** The
 child becomes a first-ring thought and nothing is removed, but the gesture is one
@@ -287,9 +305,11 @@ tested rather than reviewed: scope is the selected node else the map, and a
 command that does not apply is ABSENT rather than disabled — on a read-only token
 that would otherwise be most of the list. The same module owns the fuzzy match
 behind "go to node…", which is how you reach a node off screen now that there is
-no rail. The shortcut listener is registered in the CAPTURE phase, because the
-node card stops keydown propagation so that Space on its checkbox does not fold a
-branch — and that would otherwise swallow ⌘K on its way to the window.
+no rail. The shortcut listener is registered in the CAPTURE phase. The card no longer
+swallows anything, but the pill and the right-click menu still stop every keydown —
+a button in a toolbar must not fold a branch — and React attaches its handlers at
+the root container, so a synthetic stopPropagation there stops the native event
+before it reaches the window.
 
 **One app, one router, one bundle.** This replaced four independently-built
 self-contained documents. That shape let the binary `include_str!` a whole page
