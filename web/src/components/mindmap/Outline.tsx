@@ -6,8 +6,13 @@
 // though it worked. The list also happens to be the fastest thing to *add* to
 // with a thumb, which is what somebody on a phone is doing with a brainstorm.
 //
-// It is deliberately not an editor: on a phone you read, tap to select, and add.
-// Retyping and rearranging are desktop work.
+// It is deliberately not an editor: on a phone you read, tap to select, add,
+// remove, and open what is attached. Retyping and rearranging are desktop work.
+//
+// Those last two are here because the affordances that carry them on the canvas
+// are pointer-driven — a badge, a `+` on hover, a right-click menu — and a phone
+// has no hover and no right button. Rather than give the list a worse version of
+// each, every row carries the same four verbs as plain buttons.
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
@@ -20,16 +25,23 @@ export interface OutlineLabels {
   empty: string
   /** Marks a node somebody wrote notes on — the long form lives off the canvas. */
   hasNotes: string
-  /** …and one carrying attachments. The same two marks the canvas uses. */
-  hasContext: string
+  /** The attachments button. `{n}` is the count, zero included — on a phone this
+   *  is the only way in, so it is present even when there is nothing yet. */
+  attachments: string
+  remove: string
 }
 
 export interface OutlineProps {
   nodes: MapNode[]
   selected: string | null
+  canWrite: boolean
   onSelect: (id: string) => void
   onChild: (id: string) => void
   onSibling: (id: string) => void
+  /** Opens the same manager the canvas badge opens. */
+  onAttachments: (id: string) => void
+  /** Goes through the same two questions the canvas does. */
+  onDelete: (id: string) => void
   labels: OutlineLabels
   className?: string
 }
@@ -37,9 +49,12 @@ export interface OutlineProps {
 export function Outline({
   nodes,
   selected,
+  canWrite,
   onSelect,
   onChild,
   onSibling,
+  onAttachments,
+  onDelete,
   labels,
   className,
 }: OutlineProps) {
@@ -90,11 +105,6 @@ export function Outline({
                   ≋
                 </span>
               )}
-              {node.attachments.length > 0 && (
-                <span className="text-muted-foreground ml-1.5" title={labels.hasContext}>
-                  ¶ {node.attachments.length}
-                </span>
-              )}
             </div>
             {node.promoted && (
               <div className="text-muted-foreground truncate font-mono text-[10.5px]">
@@ -102,26 +112,52 @@ export function Outline({
               </div>
             )}
           </button>
-          <Hint text={labels.addSibling}>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={labels.addSibling}
-              onClick={() => onSibling(node.id)}
-            >
-              +
-            </Button>
-          </Hint>
-          <Hint text={labels.addChild}>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-label={labels.addChild}
-              onClick={() => onChild(node.id)}
-            >
-              ⇥
-            </Button>
-          </Hint>
+          <div className="flex shrink-0 items-center">
+            <Hint text={labels.attachments.replace('{n}', String(node.attachments.length))}>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={labels.attachments.replace('{n}', String(node.attachments.length))}
+                onClick={() => onAttachments(node.id)}
+              >
+                ⎘{node.attachments.length > 0 ? ` ${node.attachments.length}` : ''}
+              </Button>
+            </Hint>
+            {canWrite && (
+              <>
+                <Hint text={labels.addSibling}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={labels.addSibling}
+                    onClick={() => onSibling(node.id)}
+                  >
+                    +
+                  </Button>
+                </Hint>
+                <Hint text={labels.addChild}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={labels.addChild}
+                    onClick={() => onChild(node.id)}
+                  >
+                    ⇥
+                  </Button>
+                </Hint>
+                <Hint text={labels.remove}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={labels.remove}
+                    onClick={() => onDelete(node.id)}
+                  >
+                    ×
+                  </Button>
+                </Hint>
+              </>
+            )}
+          </div>
         </li>
       ))}
     </ul>

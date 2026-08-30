@@ -198,6 +198,16 @@ export { CommandPalette } from './mindmap/CommandPalette'
 export type { CommandPaletteProps, CommandPaletteLabels, PaletteItem } from './mindmap/CommandPalette'
 export { PruneDialog } from './mindmap/PruneDialog'
 export type { PruneDialogProps, PruneDialogLabels } from './mindmap/PruneDialog'
+export { AttachmentsDialog } from './mindmap/AttachmentsDialog'
+export type {
+  AttachmentsDialogProps,
+  AttachmentsDialogLabels,
+  AttachmentDraftValue,
+} from './mindmap/AttachmentsDialog'
+export { NodeMenu } from './mindmap/NodeMenu'
+export type { NodeMenuProps, MenuItem } from './mindmap/NodeMenu'
+export { NodePill } from './mindmap/NodePill'
+export type { NodePillProps, PillVerb } from './mindmap/NodePill'
 
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'

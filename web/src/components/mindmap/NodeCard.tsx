@@ -6,8 +6,14 @@
 //
 // The rule that keeps that from ruining a 500-node map is that only the SELECTED
 // card grows. Every other node stays a title and a row of marks — `≋` where there
-// are notes, `¶` where there is context hanging off it — so a map you are reading
+// are notes, `¶` where lines run to other branches — so a map you are reading
 // still shows you where the substance is without drawing any of it.
+//
+// Attachments are the one thing NOT here any more. They were chips plus a
+// four-field add row inside a 300×320 box, growing to twenty; they are now a
+// count badge the canvas draws on every node that has one, and a dialog behind
+// it. That is also why the badge is on every node and the card is only on the
+// selected one: the count is worth seeing from across the map, the list is not.
 //
 // The explicit-fields decision is what makes the editors here safe to hand to two
 // people at once: `color`, `shape`, `kind` and `edge_label` are separate keys in
@@ -16,15 +22,11 @@
 // would have silently lost.
 import { useEffect, useRef, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
-  ATTACHMENT_KINDS,
-  MAX_ATTACHMENTS,
   MAX_NOTES,
   NODE_KINDS,
-  type AttachmentKind,
   type MapNode,
   type NodeFields,
   type Relationship,
@@ -49,8 +51,14 @@ export type NodeShape = (typeof NODE_SHAPES)[number]
  *  question whose useful answers number about six. */
 export const NODE_COLORS = ['', '#fee2e2', '#ffedd5', '#fef9c3', '#dcfce7', '#dbeafe', '#f3e8ff']
 
-/** What ⌘K asked the card to open when it selected this node. */
-export type Reveal = 'notes' | 'attach' | null
+/**
+ * What ⌘K asked the card to open when it selected this node.
+ *
+ * Only notes, now. Attachments used to be revealed here too; they have their own
+ * badge and their own dialog, which is a surface the card cannot host — the card
+ * is 300×320 and already drawn over its neighbours.
+ */
+export type Reveal = 'notes' | null
 
 export interface NodeCardLabels {
   notes: string
@@ -66,14 +74,6 @@ export interface NodeCardLabels {
   origin: string
   originHuman: string
   originAgent: string
-  attachments: string
-  attachmentsFull: string
-  attachmentKind: string
-  attachmentName: string
-  attachmentGist: string
-  attachmentRef: string
-  addAttachment: string
-  removeAttachment: string
   relations: string
   removeRelation: string
   noRelations: string
@@ -81,7 +81,7 @@ export interface NodeCardLabels {
   readOnly: string
   /** Tooltips on the marks a collapsed card shows instead of the detail. */
   hasNotes: string
-  hasContext: string
+  hasRelations: string
   kindThought: string
   kindQuestion: string
   kindDecision: string
@@ -90,12 +90,6 @@ export interface NodeCardLabels {
   shapeRounded: string
   shapeSquare: string
   shapePill: string
-  attPdf: string
-  attCode: string
-  attTable: string
-  attDiagram: string
-  attAudio: string
-  attLink: string
 }
 
 export interface NodeCardProps {
@@ -116,11 +110,6 @@ export interface NodeCardProps {
   titleOf: ReadonlyMap<string, string>
   onNotes: (id: string, notes: string) => void
   onFields: (id: string, fields: Partial<NodeFields>) => void
-  onAddAttachment: (
-    id: string,
-    draft: { kind: AttachmentKind; name: string; gist: string; ref: string },
-  ) => void
-  onRemoveAttachment: (id: string, attachmentId: string) => void
   onRemoveRelation: (relationId: string) => void
   reveal: Reveal
   onRevealed: () => void
@@ -154,8 +143,6 @@ export function NodeCard({
   titleOf,
   onNotes,
   onFields,
-  onAddAttachment,
-  onRemoveAttachment,
   onRemoveRelation,
   reveal,
   onRevealed,
@@ -167,13 +154,6 @@ export function NodeCard({
   // paragraph typed slowly would arrive at a collaborator letter by letter.
   const [notes, setNotes] = useState(node.notes)
   const [edgeLabel, setEdgeLabel] = useState(node.edge_label)
-  const [attaching, setAttaching] = useState(false)
-  const [draftAtt, setDraftAtt] = useState({
-    kind: 'link' as AttachmentKind,
-    name: '',
-    gist: '',
-    ref: '',
-  })
 
   // The drafts belong to a NODE, not to the card, so a different node re-seeds
   // them. Done by comparing the id during render — React's own
@@ -186,8 +166,6 @@ export function NodeCard({
     setSeeded(node.id)
     setNotes(node.notes)
     setEdgeLabel(node.edge_label)
-    setAttaching(false)
-    setDraftAtt({ kind: 'link', name: '', gist: '', ref: '' })
   }
 
   // Focus the title editor when it opens and select it all: the common edit is
@@ -201,7 +179,6 @@ export function NodeCard({
   useEffect(() => {
     if (!reveal) return
     if (reveal === 'notes') notesRef.current?.focus()
-    if (reveal === 'attach') setAttaching(true)
     onRevealed()
   }, [reveal, onRevealed])
 
@@ -217,17 +194,11 @@ export function NodeCard({
     square: labels.shapeSquare,
     pill: labels.shapePill,
   }
-  const attLabel: Record<AttachmentKind, string> = {
-    pdf: labels.attPdf,
-    code: labels.attCode,
-    table: labels.attTable,
-    diagram: labels.attDiagram,
-    audio: labels.attAudio,
-    link: labels.attLink,
-  }
-
   const mark = KIND_MARK[node.kind]
-  const context = node.attachments.length > 0 || relations.length > 0
+  // Attachments are NOT counted here any more: the badge on the node draws them,
+  // and a mark that added them to the relation count would say a number nothing
+  // on screen agrees with.
+  const context = relations.length > 0
 
   const titleBlock = editing ? (
     <Textarea
@@ -269,17 +240,13 @@ export function NodeCard({
           {node.promoted && <span>→ {node.promoted.kind}</span>}
           {node.notes && <span title={labels.hasNotes}>≋</span>}
           {context && (
-            <span title={labels.hasContext}>
-              ¶ {node.attachments.length + relations.length}
-            </span>
+            <span title={labels.hasRelations}>¶ {relations.length}</span>
           )}
           {node.origin === 'agent' && <span>⌁</span>}
         </div>
       </div>
     )
   }
-
-  const full = node.attachments.length >= MAX_ATTACHMENTS
 
   return (
     <div
@@ -422,108 +389,6 @@ export function NodeCard({
           />
           <span>{labels.reviewed}</span>
         </label>
-
-        {/* ---- attachments, as chips ---- */}
-        <div className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-[10.5px] font-[650]">
-            {labels.attachments}
-          </span>
-          {node.attachments.length > 0 && (
-            <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
-              {node.attachments.map((a) => (
-                <li
-                  key={a.id}
-                  title={a.gist ? `${a.name} — ${a.gist}` : a.name}
-                  className="border-border-soft bg-muted flex max-w-full items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10.5px]"
-                >
-                  <span className="min-w-0 truncate">
-                    {attLabel[a.kind]} · {a.name}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={!canWrite}
-                    aria-label={labels.removeAttachment}
-                    onClick={() => onRemoveAttachment(node.id, a.id)}
-                    className="cursor-pointer disabled:opacity-40"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {full ? (
-            <p className="text-muted-foreground m-0 text-[10.5px]">{labels.attachmentsFull}</p>
-          ) : attaching ? (
-            <div className="flex flex-col gap-1">
-              <select
-                className={FIELD}
-                aria-label={labels.attachmentKind}
-                value={draftAtt.kind}
-                disabled={!canWrite}
-                onChange={(e) =>
-                  setDraftAtt({ ...draftAtt, kind: e.target.value as AttachmentKind })
-                }
-              >
-                {ATTACHMENT_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {attLabel[k]}
-                  </option>
-                ))}
-              </select>
-              <Input
-                value={draftAtt.name}
-                disabled={!canWrite}
-                placeholder={labels.attachmentName}
-                onKeyDown={(e) => e.stopPropagation()}
-                onChange={(e) => setDraftAtt({ ...draftAtt, name: e.target.value })}
-                className="h-7 text-[11.5px]"
-              />
-              <Input
-                value={draftAtt.ref}
-                disabled={!canWrite}
-                placeholder={labels.attachmentRef}
-                onKeyDown={(e) => e.stopPropagation()}
-                onChange={(e) => setDraftAtt({ ...draftAtt, ref: e.target.value })}
-                className="h-7 text-[11.5px]"
-              />
-              <Input
-                value={draftAtt.gist}
-                disabled={!canWrite}
-                placeholder={labels.attachmentGist}
-                onKeyDown={(e) => e.stopPropagation()}
-                onChange={(e) => setDraftAtt({ ...draftAtt, gist: e.target.value })}
-                className="h-7 text-[11.5px]"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!canWrite || !draftAtt.name.trim() || !draftAtt.ref.trim()}
-                onClick={() => {
-                  onAddAttachment(node.id, {
-                    kind: draftAtt.kind,
-                    name: draftAtt.name.trim(),
-                    gist: draftAtt.gist.trim(),
-                    ref: draftAtt.ref.trim(),
-                  })
-                  setDraftAtt({ kind: 'link', name: '', gist: '', ref: '' })
-                  setAttaching(false)
-                }}
-              >
-                {labels.addAttachment}
-              </Button>
-            </div>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!canWrite}
-              onClick={() => setAttaching(true)}
-            >
-              + {labels.addAttachment}
-            </Button>
-          )}
-        </div>
 
         {/* ---- relations ---- */}
         <div className="flex flex-col gap-1">

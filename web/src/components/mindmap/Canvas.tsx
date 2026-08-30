@@ -37,13 +37,15 @@ import {
   nodeAt,
   radialLayout,
   resolveDrop,
+  toScreen,
   toWorld,
   zoomAt,
   type Point,
   type Viewport,
 } from '@/lib/mindmap-layout'
 import { cn } from '@/lib/utils'
-import type { AttachmentKind, MapNode, NodeFields, Relationship } from '@/lib/mindmap-doc'
+import type { MapNode, NodeFields, Relationship } from '@/lib/mindmap-doc'
+import type { DropPayload } from '@/lib/mindmap-attach'
 import { Hint } from '@/components/Hint'
 import {
   EXPANDED_HEIGHT,
@@ -52,6 +54,8 @@ import {
   type NodeCardLabels,
   type Reveal,
 } from '@/components/mindmap/NodeCard'
+import { NodeMenu, type MenuItem } from '@/components/mindmap/NodeMenu'
+import { NodePill, type PillVerb } from '@/components/mindmap/NodePill'
 
 /** How the first ring is arranged. Per-viewer, like pan and zoom. */
 export type CanvasMode = 'radial' | 'tidy'
@@ -79,6 +83,16 @@ export interface CanvasLabels {
   cannotDrop: string
   /** Shown while a relation is waiting for its second node. */
   pickRelationTarget: string
+  /** The count badge's accessible name. `{n}` is the count. */
+  attachments: string
+  /** The `+` beside a node. */
+  addChild: string
+  /** The pill over the selected node, as a toolbar name. */
+  nodeActions: string
+  /** The right-click menu, as a menu name. */
+  nodeMenu: string
+  /** Said on the node a file or link is about to be dropped onto. */
+  dropHere: string
 }
 
 export interface CanvasProps {
@@ -121,12 +135,22 @@ export interface CanvasProps {
   titleOf: ReadonlyMap<string, string>
   onNotes: (id: string, notes: string) => void
   onFields: (id: string, fields: Partial<NodeFields>) => void
-  onAddAttachment: (
-    id: string,
-    draft: { kind: AttachmentKind; name: string; gist: string; ref: string },
-  ) => void
-  onRemoveAttachment: (id: string, attachmentId: string) => void
   onRemoveRelation: (relationId: string) => void
+  /** The count badge, and the right-click menu's attachment entry. */
+  onOpenAttachments: (id: string) => void
+  /**
+   * Something was dropped onto a node. The canvas reduces the browser's
+   * `DataTransfer` to file NAMES and text and hands that on — it never reads a
+   * byte, because an attachment here is a pointer and bytes in a shared document
+   * are bytes every peer replays on join.
+   */
+  onAttachDrop: (id: string, payload: DropPayload) => void
+  /** The three or four verbs the pill offers over the selected node. */
+  pillVerbs: readonly PillVerb[]
+  /** What right-clicking the selected node offers. */
+  menuItems: readonly MenuItem[]
+  /** Runs a pill verb or a menu entry. Both are command ids. */
+  onRunVerb: (id: string) => void
   /**
    * Asks from ⌘K, each cleared the moment it is honoured: bring a node into the
    * middle of the view, open its title editor, or reveal one part of its card.
@@ -196,9 +220,12 @@ export function Canvas({
   titleOf,
   onNotes,
   onFields,
-  onAddAttachment,
-  onRemoveAttachment,
   onRemoveRelation,
+  onOpenAttachments,
+  onAttachDrop,
+  pillVerbs,
+  menuItems,
+  onRunVerb,
   centreNode,
   onCentred,
   fitRequest,
@@ -214,6 +241,14 @@ export function Canvas({
   const [drag, setDrag] = useState<Drag>({ kind: 'none' })
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  // The node under the pointer. Only used to reveal the `+`, and only ever set
+  // when it CHANGES — a 500-node map re-rendering on every mousemove is the one
+  // way a hover affordance could cost more than it is worth.
+  const [hovered, setHovered] = useState<string | null>(null)
+  // Where the right-click menu is, in container pixels, or null.
+  const [menuAt, setMenuAt] = useState<Point | null>(null)
+  // The node a file or link is hovering over, mid-drag.
+  const [dropOver, setDropOver] = useState<string | null>(null)
   const fitted = useRef(false)
 
   const placed = mode === 'radial' ? radialLayout(nodes) : layout(nodes)
@@ -295,7 +330,11 @@ export function Canvas({
   }
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (drag.kind === 'none') return
+    if (drag.kind === 'none') {
+      const over = nodeAt(placed.nodes, toWorld(pointIn(e), viewport))?.node.id ?? null
+      if (over !== hovered) setHovered(over)
+      return
+    }
     const screen = pointIn(e)
     if (drag.kind === 'pan') {
       setViewport({
@@ -400,6 +439,15 @@ export function Canvas({
       return
     }
     if (!selected) return
+    // A menu you can only open with a right-click is a set of commands a
+    // keyboard does not have. Shift+F10 and the ContextMenu key are what every
+    // other application answers to, so they open the same menu, anchored on the
+    // selected node rather than on a pointer that is not there.
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault()
+      openMenuFor(selected)
+      return
+    }
     if (e.key === 'Enter') {
       e.preventDefault()
       onSibling(selected)
@@ -430,6 +478,39 @@ export function Canvas({
     if (box) setViewport(fit(placed.bounds, box.width, box.height))
   }
 
+  /**
+   * Keep the menu inside the canvas instead of half off its right or bottom edge.
+   *
+   * The size is approximated rather than measured, deliberately: measuring means
+   * rendering it off-screen first and moving it, which is a visible jump, and
+   * being a few pixels out on the clamp costs nothing.
+   */
+  const clampMenu = (screen: Point): Point => {
+    const box = svgRef.current?.getBoundingClientRect()
+    const width = 232
+    const height = 34 * Math.max(menuItems.length, 1) + 16
+    return {
+      x: Math.max(4, Math.min(screen.x, (box?.width ?? width) - width - 4)),
+      y: Math.max(4, Math.min(screen.y, (box?.height ?? height) - height - 4)),
+    }
+  }
+
+  /** Open the menu anchored under a node — what the keyboard path uses, since it
+   *  has no pointer to anchor on. */
+  const openMenuFor = (id: string) => {
+    const at = positionOf(id)
+    setMenuAt(clampMenu(toScreen({ x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT }, viewport)))
+  }
+
+  const closeMenu = () => {
+    // Give the keyboard back to the canvas only if the menu is what had it. A
+    // press somewhere else also closes this, and stealing the focus away from
+    // wherever that press landed is worse than leaving it alone.
+    const fromMenu = document.activeElement?.closest?.('[role="menu"]') != null
+    setMenuAt(null)
+    if (fromMenu) svgRef.current?.focus()
+  }
+
   /** Where a node is drawn right now — its dragged position while dragging. */
   const positionOf = (id: string): Point => {
     if (drag.kind === 'node' && drag.id === id && drag.moved) return drag.at
@@ -458,8 +539,45 @@ export function Canvas({
   /** Who else has this node selected. Their colour rings it. */
   const peersOn = (id: string) => peers.filter((p) => p.selected === id)
 
+  /** The node a drag is over, or null. Shared by the dragover and drop paths so
+   *  the highlight and the write can never disagree about the target. */
+  const nodeUnderDrag = (e: { clientX: number; clientY: number }) =>
+    // `hitAt`, not `nodeAt`: the selected node is drawn as a card wider than its
+    // layout box, and a drop aimed at what is on screen must land on what is on
+    // screen.
+    hitAt(toWorld(pointIn(e), viewport))?.node.id ?? null
+
   return (
-    <div className={cn('relative min-h-0 flex-1', className)}>
+    <div
+      className={cn('relative min-h-0 flex-1', className)}
+      // The default MUST be prevented on the whole canvas, not just on a node:
+      // a file dropped anywhere else navigates the browser to it, which throws
+      // away the map, the connection and whatever anyone was typing.
+      onDragOver={(e) => {
+        e.preventDefault()
+        if (!canWrite) return
+        e.dataTransfer.dropEffect = 'copy'
+        const over = nodeUnderDrag(e)
+        if (over !== dropOver) setDropOver(over)
+      }}
+      onDragLeave={(e) => {
+        // Moving onto a child of this container is not leaving it.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setDropOver(null)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDropOver(null)
+        if (!canWrite) return
+        const target = nodeUnderDrag(e)
+        if (!target) return
+        onAttachDrop(target, {
+          // Names only. The bytes are deliberately never read.
+          files: [...e.dataTransfer.files].map((f) => ({ name: f.name })),
+          text: e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'),
+        })
+      }}
+    >
       <svg
         ref={svgRef}
         role="application"
@@ -475,6 +593,20 @@ export function Canvas({
         onPointerCancel={() => setDrag({ kind: 'none' })}
         onWheel={onWheel}
         onKeyDown={onKeyDown}
+        onPointerLeave={() => setHovered(null)}
+        onContextMenu={(e) => {
+          // The browser's own menu is never the right answer over a canvas: it
+          // offers "save image as" for a thought somebody wrote.
+          e.preventDefault()
+          const screen = pointIn(e)
+          const hit = hitAt(toWorld(screen, viewport))
+          if (!hit) {
+            setMenuAt(null)
+            return
+          }
+          onSelect(hit.node.id)
+          setMenuAt(clampMenu(screen))
+        }}
         onDoubleClick={(e) => {
           const hit = nodeAt(placed.nodes, toWorld(pointIn(e), viewport))
           if (hit) startEditing(hit.node.id)
@@ -565,6 +697,11 @@ export function Canvas({
             const width = isSelected ? EXPANDED_WIDTH : NODE_WIDTH
             const height = isSelected ? EXPANDED_HEIGHT : NODE_HEIGHT
             const offset = (NODE_WIDTH - width) / 2
+            const attachments = p.node.attachments.length
+            const dropping = dropOver === p.node.id
+            // The `+` is on hover OR selection, never permanently: 500 nodes
+            // with a plus sign each is 500 things to look past.
+            const showAdd = canWrite && (hovered === p.node.id || isSelected)
             return (
               <g key={p.node.id} transform={`translate(${at.x} ${at.y})`}>
                 {/* A collaborator's ring sits OUTSIDE the box, so it never fights
@@ -612,14 +749,85 @@ export function Canvas({
                     titleOf={titleOf}
                     onNotes={onNotes}
                     onFields={onFields}
-                    onAddAttachment={onAddAttachment}
-                    onRemoveAttachment={onRemoveAttachment}
                     onRemoveRelation={onRemoveRelation}
                     reveal={isSelected ? reveal : null}
                     onRevealed={onRevealed}
                     labels={cardLabels}
                   />
                 </foreignObject>
+
+                {/* Where a dropped file or link would land. Outside the box so
+                    it cannot be mistaken for the selection stroke, which means
+                    something else entirely. */}
+                {dropping && (
+                  <rect
+                    x={offset - 5}
+                    y={-5}
+                    width={width + 10}
+                    height={height + 10}
+                    rx={14}
+                    fill="none"
+                    strokeWidth={2}
+                    strokeDasharray="5 4"
+                    className="stroke-ok"
+                  >
+                    <title>{labels.dropHere}</title>
+                  </rect>
+                )}
+
+                {/* The attachment badge. On EVERY node that has one, not only
+                    the selected one — it is how you see there is something
+                    there at all. Clicking it opens the manager. */}
+                {attachments > 0 && (
+                  <foreignObject x={offset + width - 54} y={-11} width={56} height={22}>
+                    <div className="pointer-events-none flex h-full items-center justify-end">
+                      <button
+                        type="button"
+                        aria-label={labels.attachments.replace('{n}', String(attachments))}
+                        title={labels.attachments.replace('{n}', String(attachments))}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        onClick={() => onOpenAttachments(p.node.id)}
+                        className="bg-foreground text-background pointer-events-auto cursor-pointer rounded-full px-2 py-0.5 font-mono text-[10px] leading-none shadow-sm"
+                      >
+                        ⎘ {attachments}
+                      </button>
+                    </div>
+                  </foreignObject>
+                )}
+
+                {/* Add a child, right where the child will appear. */}
+                {showAdd && (
+                  <foreignObject x={offset + width + 1} y={height / 2 - 12} width={26} height={24}>
+                    <div className="pointer-events-none flex h-full items-center">
+                      <button
+                        type="button"
+                        aria-label={labels.addChild}
+                        title={labels.addChild}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        onClick={() => onChild(p.node.id)}
+                        className="bg-card border-border text-muted-foreground hover:text-foreground pointer-events-auto h-5 w-5 cursor-pointer rounded-full border text-[12px] leading-none"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </foreignObject>
+                )}
+
+                {/* The verbs, only on selection, in the margin above the node. */}
+                {isSelected && pillVerbs.length > 0 && (
+                  <foreignObject x={offset} y={-38} width={width} height={34}>
+                    <div className="pointer-events-none flex h-full items-end justify-center">
+                      <NodePill
+                        className="pointer-events-auto"
+                        verbs={pillVerbs}
+                        onRun={onRunVerb}
+                        ariaLabel={labels.nodeActions}
+                      />
+                    </div>
+                  </foreignObject>
+                )}
 
                 {/* The fold handle. Only where there is something to fold, only
                     ever for this viewer, and never under the expanded card —
@@ -668,6 +876,19 @@ export function Canvas({
         <div className="bg-card border-border text-foreground pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-lg border px-3 py-1.5 text-[12px] font-[650]">
           {labels.pickRelationTarget}
         </div>
+      )}
+
+      {menuAt && selected && menuItems.length > 0 && (
+        <NodeMenu
+          items={menuItems}
+          at={menuAt}
+          ariaLabel={labels.nodeMenu}
+          onRun={(id) => {
+            closeMenu()
+            onRunVerb(id)
+          }}
+          onClose={closeMenu}
+        />
       )}
 
       {/* Viewport controls, bottom-right — out of the way of the root. */}

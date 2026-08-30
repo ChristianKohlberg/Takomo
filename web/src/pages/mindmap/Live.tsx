@@ -43,9 +43,16 @@ import {
   type PaletteItem,
 } from '@/components/mindmap/CommandPalette'
 import type { NodeCardLabels, Reveal } from '@/components/mindmap/NodeCard'
+import {
+  AttachmentsDialog,
+  type AttachmentsDialogLabels,
+} from '@/components/mindmap/AttachmentsDialog'
+import type { MenuItem } from '@/components/mindmap/NodeMenu'
+import type { PillVerb } from '@/components/mindmap/NodePill'
 import { Outline, type OutlineLabels } from '@/components/mindmap/Outline'
 import { PruneDialog, type PruneDialogLabels } from '@/components/mindmap/PruneDialog'
 import {
+  MAX_ATTACHMENTS,
   MAX_NODES,
   MAX_RELATIONSHIPS,
   ancestorsOf,
@@ -60,8 +67,11 @@ import {
   commandsFor,
   fuzzyRank,
   isTextEntry,
+  menuVerbsFor,
+  pillVerbsFor,
   type CommandId,
 } from '@/lib/mindmap-commands'
+import { draftsForDrop, type DropPayload } from '@/lib/mindmap-attach'
 import {
   addAttachment,
   createNode,
@@ -79,6 +89,7 @@ import {
   setNotes,
   setTitle,
   tidyAll,
+  updateAttachment,
 } from '@/lib/mindmap-crdt'
 import type { Point } from '@/lib/mindmap-layout'
 import { mindmapSyncBase, type MindmapSession } from '@/lib/mindmaps'
@@ -91,6 +102,18 @@ function colorFor(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0
   return CARET_COLORS[Math.abs(hash) % CARET_COLORS.length] ?? '#2563eb'
+}
+
+/**
+ * One character per pill verb. The accessible name is always the command's own
+ * label — a glyph is a reminder for somebody who already knows, never the name.
+ */
+const VERB_GLYPH: Partial<Record<CommandId, string>> = {
+  'node.rename': '✎',
+  'node.notes': '≋',
+  'node.collapse': '⊟',
+  'node.expand': '⊞',
+  'node.relate': '⇢',
 }
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
@@ -127,6 +150,11 @@ export interface LiveLabels {
   /** Second stages: what the input is asking for. */
   gotoPlaceholder: string
   projectPlaceholder: string
+  /** The gist written onto a dropped FILE, which is a pointer to something this
+   *  document deliberately does not hold. */
+  droppedFileGist: string
+  /** Said when a drop does not fit under the per-node cap. `{max}`. */
+  attachmentsFull: string
 }
 
 export interface LiveProps {
@@ -150,6 +178,7 @@ export interface LiveProps {
   outlineLabels: OutlineLabels
   cardLabels: NodeCardLabels
   pruneLabels: PruneDialogLabels
+  attachmentLabels: AttachmentsDialogLabels
   paletteLabels: CommandPaletteLabels
   commandLabels: CommandLabels
   /** One line under a command, where the command has consequences. */
@@ -176,6 +205,7 @@ export default function Live({
   outlineLabels,
   cardLabels,
   pruneLabels,
+  attachmentLabels,
   paletteLabels,
   commandLabels,
   commandHints,
@@ -202,6 +232,8 @@ export default function Live({
   )
   const [relationFrom, setRelationFrom] = useState<string | null>(null)
   const [pruning, setPruning] = useState<string | null>(null)
+  /** The node whose attachments are open in the manager, or null. */
+  const [attaching, setAttaching] = useState<string | null>(null)
 
   // ⌘K, and the asks it hands the canvas. Each ask is cleared the moment the
   // canvas honours it, so none of them can fire twice.
@@ -396,11 +428,41 @@ export default function Live({
     },
     [guard, ydoc],
   )
+  const onUpdateAttachment = useCallback(
+    (id: string, attachment: string, draft: Parameters<typeof addAttachment>[2]) => {
+      if (guard()) updateAttachment(ydoc, id, attachment, draft)
+    },
+    [guard, ydoc],
+  )
   const onRemoveAttachment = useCallback(
     (id: string, attachment: string) => {
       if (guard()) removeAttachment(ydoc, id, attachment)
     },
     [guard, ydoc],
+  )
+
+  /**
+   * Something was dragged onto a node.
+   *
+   * The whole gesture is one pointer to something that lives elsewhere: a file
+   * contributes its NAME and a guessed kind and nothing else, because bytes in a
+   * shared document are bytes every peer replays on join. What does not fit
+   * under the cap is reported rather than dropped quietly — a gesture that
+   * silently keeps four of six files is worse than one that says so.
+   */
+  const onAttachDrop = useCallback(
+    (id: string, payload: DropPayload) => {
+      if (!guard()) return
+      const node = nodes.find((n) => n.id === id)
+      if (!node) return
+      const { add, refused } = draftsForDrop(payload, node.attachments.length, {
+        file: labels.droppedFileGist,
+      })
+      for (const draft of add) addAttachment(ydoc, id, draft)
+      if (refused > 0) onError(labels.attachmentsFull.replace('{max}', String(MAX_ATTACHMENTS)))
+      if (add.length > 0) setSelected(id)
+    },
+    [guard, nodes, ydoc, labels.droppedFileGist, labels.attachmentsFull, onError],
   )
 
   const onToggleCollapse = useCallback((id: string) => {
@@ -453,25 +515,50 @@ export default function Live({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [paletteOpen, openPalette, closePalette])
 
-  const commands = useMemo(
-    () =>
-      commandsFor({
-        canWrite,
-        canManageMap,
-        nodeCount: nodes.length,
-        projectCount: projects.length,
-        node: selectedNode
-          ? {
-              id: selectedNode.id,
-              title: selectedNode.title,
-              promoted: !!selectedNode.promoted,
-              attachments: selectedNode.attachments.length,
-              hasChildren: (descendantCounts.get(selectedNode.id) ?? 0) > 0,
-              collapsed: collapsed.has(selectedNode.id),
-            }
-          : null,
-      }),
+  // One context, three consumers: ⌘K's list, the pill's verbs, and the
+  // right-click menu. They differ in WHICH verbs they offer and never in what
+  // applies, which is the only way three affordances over one node can stay
+  // consistent with each other.
+  const commandContext = useMemo(
+    () => ({
+      canWrite,
+      canManageMap,
+      nodeCount: nodes.length,
+      projectCount: projects.length,
+      node: selectedNode
+        ? {
+            id: selectedNode.id,
+            title: selectedNode.title,
+            promoted: !!selectedNode.promoted,
+            attachments: selectedNode.attachments.length,
+            hasChildren: (descendantCounts.get(selectedNode.id) ?? 0) > 0,
+            collapsed: collapsed.has(selectedNode.id),
+          }
+        : null,
+    }),
     [canWrite, canManageMap, nodes.length, projects.length, selectedNode, descendantCounts, collapsed],
+  )
+
+  const commands = useMemo(() => commandsFor(commandContext), [commandContext])
+
+  const pillVerbs: PillVerb[] = useMemo(
+    () =>
+      pillVerbsFor(commandContext).map((id) => ({
+        id,
+        glyph: VERB_GLYPH[id] ?? '·',
+        label: commandLabels[id],
+      })),
+    [commandContext, commandLabels],
+  )
+
+  const menuItems: MenuItem[] = useMemo(
+    () =>
+      menuVerbsFor(commandContext).map((id) => ({
+        id,
+        label: commandLabels[id],
+        danger: id === 'node.delete',
+      })),
+    [commandContext, commandLabels],
   )
 
   const items: PaletteItem[] = useMemo(() => {
@@ -556,7 +643,7 @@ export default function Live({
           setReveal('notes')
           break
         case 'node.attach':
-          setReveal('attach')
+          setAttaching(node)
           break
         case 'node.relate':
           setRelationFrom(node)
@@ -612,6 +699,9 @@ export default function Live({
   const onRevealed = useCallback(() => setReveal(null), [])
 
   const pruneTarget = pruning ? (nodes.find((n) => n.id === pruning) ?? null) : null
+  // Read from the live tree rather than captured when the badge was clicked, so
+  // an attachment somebody else adds appears in the open dialog.
+  const attachingNode = attaching ? (nodes.find((n) => n.id === attaching) ?? null) : null
 
   return (
     <>
@@ -674,9 +764,12 @@ export default function Live({
           titleOf={titleOf}
           onNotes={onNotes}
           onFields={onFields}
-          onAddAttachment={onAddAttachment}
-          onRemoveAttachment={onRemoveAttachment}
           onRemoveRelation={onRemoveRelation}
+          onOpenAttachments={setAttaching}
+          onAttachDrop={onAttachDrop}
+          pillVerbs={pillVerbs}
+          menuItems={menuItems}
+          onRunVerb={run}
           centreNode={centreNode}
           onCentred={onCentred}
           editNode={editNode}
@@ -692,9 +785,12 @@ export default function Live({
         <Outline
           nodes={shown}
           selected={selected}
+          canWrite={canWrite}
           onSelect={setSelected}
           onChild={onChild}
           onSibling={onSibling}
+          onAttachments={setAttaching}
+          onDelete={setPruning}
           labels={outlineLabels}
         />
       </div>
@@ -721,6 +817,16 @@ export default function Live({
           }}
         />
       )}
+
+      <AttachmentsDialog
+        node={attachingNode}
+        canWrite={canWrite}
+        onOpenChange={(open) => !open && setAttaching(null)}
+        onAdd={(id, draft) => onAddAttachment(id, draft)}
+        onUpdate={onUpdateAttachment}
+        onRemove={onRemoveAttachment}
+        labels={attachmentLabels}
+      />
 
       <PruneDialog
         node={pruneTarget}

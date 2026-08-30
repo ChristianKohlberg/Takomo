@@ -5,6 +5,8 @@ import {
   fuzzyRank,
   isTextEntry,
   matchScore,
+  menuVerbsFor,
+  pillVerbsFor,
   type CommandContext,
   type CommandNode,
 } from './mindmap-commands'
@@ -74,9 +76,13 @@ describe('commandsFor', () => {
     expect(ids).not.toContain('node.promoteInitiative')
   })
 
-  it('stops offering attachments at the cap', () => {
+  it('still offers attachments at the cap, because that is where one is removed', () => {
+    // It used to be hidden at twenty. That was right while the command opened an
+    // inline ADD row; it now opens the manager, and a full node is exactly the
+    // one somebody needs to get into.
     expect(commandsFor(ctx({ node: node({ attachments: 19 }) }))).toContain('node.attach')
-    expect(commandsFor(ctx({ node: node({ attachments: 20 }) }))).not.toContain('node.attach')
+    expect(commandsFor(ctx({ node: node({ attachments: 20 }) }))).toContain('node.attach')
+    expect(commandsFor(ctx({ canWrite: false, node: node() }))).not.toContain('node.attach')
   })
 
   it('offers exactly one of collapse and expand, and neither for a leaf', () => {
@@ -175,5 +181,76 @@ describe('isTextEntry', () => {
     expect(isTextEntry({ tagName: 'svg' })).toBe(false)
     expect(isTextEntry({ tagName: 'BODY' })).toBe(false)
     expect(isTextEntry(null)).toBe(false)
+  })
+})
+
+describe('pillVerbsFor', () => {
+  it('offers four verbs on a branch somebody can write to, and no more', () => {
+    const verbs = pillVerbsFor(ctx({ node: node({ hasChildren: true }) }))
+    expect(verbs).toEqual(['node.rename', 'node.notes', 'node.collapse', 'node.relate'])
+    expect(verbs.length).toBeLessThanOrEqual(4)
+  })
+
+  it('leaves out what has its own affordance', () => {
+    // `+` beside the node adds a child, the badge on it manages attachments, and
+    // the right-click menu removes it. None of the three belongs on the pill.
+    const verbs = pillVerbsFor(ctx({ node: node({ hasChildren: true }) }))
+    expect(verbs).not.toContain('node.child')
+    expect(verbs).not.toContain('node.attach')
+    expect(verbs).not.toContain('node.delete')
+  })
+
+  it('drops the fold verb on a leaf, leaving three', () => {
+    expect(pillVerbsFor(ctx({ node: node() }))).toEqual([
+      'node.rename',
+      'node.notes',
+      'node.relate',
+    ])
+  })
+
+  it('offers unfolding rather than folding a branch this viewer folded', () => {
+    const verbs = pillVerbsFor(ctx({ node: node({ hasChildren: true, collapsed: true }) }))
+    expect(verbs).toContain('node.expand')
+    expect(verbs).not.toContain('node.collapse')
+  })
+
+  it('leaves a read-only token only what does not write', () => {
+    // Fold is per-viewer and never touches the document, so it survives; every
+    // other verb would be refused and is therefore absent.
+    expect(pillVerbsFor(ctx({ canWrite: false, node: node({ hasChildren: true }) }))).toEqual([
+      'node.collapse',
+    ])
+    // …and on a leaf a read-only token gets no pill at all.
+    expect(pillVerbsFor(ctx({ canWrite: false, node: node() }))).toEqual([])
+  })
+
+  it('needs a second node before offering to draw a relation', () => {
+    expect(pillVerbsFor(ctx({ nodeCount: 1, node: node() }))).not.toContain('node.relate')
+  })
+
+  it('has nothing to offer with no selection', () => {
+    expect(pillVerbsFor(ctx())).toEqual([])
+  })
+})
+
+describe('menuVerbsFor', () => {
+  it('ends with removing the node, and only that is destructive', () => {
+    const verbs = menuVerbsFor(ctx({ node: node({ hasChildren: true }) }))
+    expect(verbs[verbs.length - 1]).toBe('node.delete')
+  })
+
+  it('carries the occasional verbs the pill deliberately does not', () => {
+    const verbs = menuVerbsFor(ctx({ node: node() }))
+    expect(verbs).toContain('node.child')
+    expect(verbs).toContain('node.sibling')
+    expect(verbs).toContain('node.attach')
+  })
+
+  it('offers a read-only token nothing that would be refused', () => {
+    expect(menuVerbsFor(ctx({ canWrite: false, canManageMap: false, node: node() }))).toEqual([])
+  })
+
+  it('does not offer to promote a branch that already graduated', () => {
+    expect(menuVerbsFor(ctx({ node: node({ promoted: true }) }))).not.toContain('node.promoteEpic')
   })
 })

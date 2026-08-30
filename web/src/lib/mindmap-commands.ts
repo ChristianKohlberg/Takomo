@@ -12,8 +12,6 @@
 //     most of the list.
 //   * Scope is the selected node, else the map. Node commands come first
 //     because they are what somebody who selected a node came for.
-import { MAX_ATTACHMENTS } from './mindmap-doc'
-
 export const NODE_COMMANDS = [
   'node.child',
   'node.sibling',
@@ -45,6 +43,8 @@ export interface CommandNode {
   title: string
   /** A branch that already graduated cannot graduate again. */
   promoted: boolean
+  /** How many pointers hang off it. The badge draws this; the palette does not
+   *  gate on it, because the manager is also how one is REMOVED. */
   attachments: number
   /** Has at least one child in the WHOLE tree, folded or not. */
   hasChildren: boolean
@@ -75,7 +75,10 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
     if (ctx.canWrite) {
       out.push('node.child', 'node.sibling', 'node.rename', 'node.notes')
       if (ctx.nodeCount >= 2) out.push('node.relate')
-      if (n.attachments < MAX_ATTACHMENTS) out.push('node.attach')
+      // Offered at the cap too, now that it opens the manager rather than an
+      // inline add row: a node with twenty attachments is exactly the one whose
+      // list somebody needs to get INTO.
+      out.push('node.attach')
     }
     if (ctx.canManageMap && !n.promoted) out.push('node.promoteEpic', 'node.promoteInitiative')
     if (n.collapsed) out.push('node.expand')
@@ -170,4 +173,53 @@ export function isTextEntry(
   if (element.isContentEditable) return true
   const tag = (element.tagName ?? '').toUpperCase()
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+/**
+ * The verbs the floating pill offers over the selected node.
+ *
+ * Deliberately at most FOUR, and deliberately a SUBSET of the command ids above
+ * rather than a vocabulary of its own — a pill that grew its own actions would
+ * be the side panel coming back in a rounder shape, and ⌘K already carries the
+ * long tail.
+ *
+ * Which four is decided by what the other affordances already cover. Adding a
+ * child has its own `+` beside the node, attachments have the badge on it, and
+ * removing it is on the right-click menu, so none of those is here. What is left
+ * is what somebody reaches for while THINKING rather than while arranging:
+ * renaming the thought they just wrote, opening its notes, folding the branch
+ * they have finished reading, and drawing a line to something else.
+ *
+ * The fold verb survives a read-only token on purpose: fold is per-viewer and
+ * never touches the document, so it is the one thing a reader can still do.
+ */
+export function pillVerbsFor(ctx: CommandContext): CommandId[] {
+  const n = ctx.node
+  if (!n) return []
+  const out: CommandId[] = []
+  if (ctx.canWrite) out.push('node.rename', 'node.notes')
+  if (n.collapsed) out.push('node.expand')
+  else if (n.hasChildren) out.push('node.collapse')
+  if (ctx.canWrite && ctx.nodeCount >= 2) out.push('node.relate')
+  return out
+}
+
+/**
+ * What right-clicking a node offers.
+ *
+ * The menu is where the verbs that are OCCASIONAL live — the ones that would
+ * make the pill a menu. Removing the node is the reason it exists at all, and it
+ * is last and separated, because a menu whose destructive item sits between two
+ * ordinary ones is a menu that eventually deletes a branch by accident.
+ */
+export function menuVerbsFor(ctx: CommandContext): CommandId[] {
+  const n = ctx.node
+  if (!n) return []
+  const out: CommandId[] = []
+  if (ctx.canWrite) out.push('node.child', 'node.sibling', 'node.rename', 'node.attach')
+  if (n.collapsed) out.push('node.expand')
+  else if (n.hasChildren) out.push('node.collapse')
+  if (ctx.canManageMap && !n.promoted) out.push('node.promoteEpic', 'node.promoteInitiative')
+  if (ctx.canWrite) out.push('node.delete')
+  return out
 }

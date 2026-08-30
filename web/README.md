@@ -187,13 +187,52 @@ alone. The header keeps what a shared document needs — its title, whether this
 browser is connected, who else is in it — and everything else is a command.
 
 Node detail moved ONTO the node: the selected card grows into `NodeCard`'s full
-form (notes, kind, shape, colour, edge label, attachment chips, relations) and
-every other card stays a title plus two marks, `≋` for notes and `¶` for
-attachments or relations. Only one card is ever expanded, which is what keeps a
-500-node map readable, and the expanded card is drawn OVER its neighbours rather
-than laid out around — re-laying the map out on selection would move every node
-under a collaborator's cursor on every click. `lib/mindmap-layout.ts` is
-untouched by any of it.
+form (notes, kind, shape, colour, edge label, relations) and every other card
+stays a title plus two marks, `≋` for notes and `¶` for relations. Only one card
+is ever expanded, which is what keeps a 500-node map readable, and the expanded
+card is drawn OVER its neighbours rather than laid out around — re-laying the map
+out on selection would move every node under a collaborator's cursor on every
+click. `lib/mindmap-layout.ts` is untouched by any of it.
+
+**The affordances live in the margin and appear on selection.** Unselected, a
+node is a title, its marks, and a count badge if anything is attached — nothing
+else. Hovered, a `+` appears at its right edge and adds a child. Selected, a
+small pill floats above it with THREE OR FOUR verbs and no more: rename, notes,
+fold/unfold, and relate. Which four is a pure function (`pillVerbsFor`), tested
+rather than reviewed, and the choice is by what the other affordances already
+cover — `+` adds, the badge attaches, right-click removes, and ⌘K carries the
+long tail. A fifth verb wanting onto the pill is the signal it belongs in ⌘K,
+because a pill that lists everything is the side panel coming back in a rounder
+shape. Fold survives a read-only token, since fold is per-viewer and never
+touches the document.
+
+Right-click opens `NodeMenu` — the occasional verbs, with removal last and apart.
+It is not right-click only: Shift+F10 and the ContextMenu key open the same menu
+anchored on the selected node, because a menu reachable by one gesture no
+keyboard has is a set of commands a keyboard user does not have. Deleting a
+branch still goes through `PruneDialog`'s two questions from every entrance.
+
+**Attachments are a badge and a dialog, not chips on the card.** The badge shows
+the current count on EVERY node that has one, which is how you see there is
+something there; `AttachmentsDialog` behind it lists, adds, corrects and removes.
+Correcting is an in-place `updateAttachment` rather than remove-then-add, because
+the id is what every other peer is holding.
+
+**Dropping something on a node attaches it, and an attachment is a POINTER.**
+A dropped file contributes its NAME and a kind inferred from its extension and
+nothing else — no bytes, because bytes in a CRDT update log are bytes every peer
+replays on join — so its `ref` is empty and its gist says the file still lives
+where it was dragged from. Dropped text or a URL becomes a `link` carrying the
+text in `ref`. `lib/mindmap-attach.ts` is the whole inference, pure and tested;
+`Canvas` only reduces the browser's `DataTransfer` to names and text. The default
+is prevented on the WHOLE canvas, not just on a node: a file dropped in empty
+space would otherwise navigate the browser to it and throw away the map, the
+connection and whatever anyone was typing.
+
+The phone gets all of that as plain buttons on each `Outline` row — attachments
+(with the count), add after, add underneath, remove — because every canvas
+affordance here is pointer-driven and a phone has neither hover nor a right
+button.
 
 Which commands ⌘K offers is a pure function (`lib/mindmap-commands.ts`), so it is
 tested rather than reviewed: scope is the selected node else the map, and a

@@ -443,6 +443,35 @@ export function addAttachment(
   return refused ? null : id
 }
 
+/**
+ * Change a pointer in place.
+ *
+ * In place rather than remove-then-add, because the id is what a reviewer's open
+ * dialog and every other peer are holding: replacing it would make a correction
+ * to a name read, on the other side of the socket, as somebody deleting the
+ * attachment and somebody else adding a different one.
+ */
+export function updateAttachment(
+  doc: Y.Doc,
+  nodeId: string,
+  attachmentId: string,
+  draft: AttachmentDraft,
+): void {
+  const m = node(doc, nodeId)
+  if (!m) return
+  doc.transact(() => {
+    const bag = m.get('attachments')
+    if (!(bag instanceof Y.Map)) return
+    const entry = bag.get(attachmentId)
+    if (!(entry instanceof Y.Map)) return
+    entry.set('kind', draft.kind)
+    entry.set('name', draft.name.slice(0, MAX_ATTACHMENT_NAME))
+    entry.set('gist', draft.gist.slice(0, MAX_ATTACHMENT_GIST))
+    entry.set('ref', draft.ref.slice(0, MAX_ATTACHMENT_REF))
+    touch(m)
+  })
+}
+
 export function removeAttachment(doc: Y.Doc, nodeId: string, attachmentId: string): void {
   const m = node(doc, nodeId)
   if (!m) return
