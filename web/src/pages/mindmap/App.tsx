@@ -1,6 +1,12 @@
 // /mindmaps — brainstorming, before any of it is an idea, with everyone in the
 // room at once.
 //
+// A rail of PROJECTS and one live canvas. A project holds one brainstorm, so
+// the thing you choose between is the project — a rail listing one map per
+// project would be a list of one, and "which map?" was never a question anybody
+// wanted to answer.
+//
+// (The old comment below is kept because the rest of it still holds.)
 // A rail of maps and one live canvas. The rail exists because a project
 // accumulates brainstorms and the newest is almost never the one you want.
 //
@@ -71,6 +77,10 @@ export function App() {
   const t = useMemo(() => pick(STR, lang), [lang])
   const canWrite = scopes.includes('write')
   const open = maps.find((m) => m.id === openId) ?? null
+  /** The one map each project holds, if it has started one. */
+  const mapOf = useMemo(() => new Map(maps.map((m) => [m.project, m])), [maps])
+  const selectedProject = project || open?.project || projects[0]?.id || ''
+  const mapHere = mapOf.get(selectedProject) ?? null
 
   const handleErr = useCallback(
     (e: unknown) => {
@@ -86,11 +96,14 @@ export function App() {
     [toast, t],
   )
 
+  // Not filtered by project: the rail needs to know which projects HAVE a
+  // brainstorm, and one map per project keeps that list the size of the project
+  // list rather than the size of the fleet's thinking.
   const refreshList = useCallback(async () => {
-    const page = await listMindmaps(token, { project: project || undefined, limit: 100 })
+    const page = await listMindmaps(token, { limit: 100 })
     setMaps(page.items)
     return page.items
-  }, [token, project])
+  }, [token])
 
   useEffect(() => {
     if (!token) return
@@ -122,12 +135,18 @@ export function App() {
     if (!token) return
     refreshList()
       .then((items) => {
-        // Open the deep-linked map, else the newest-touched one: a page that opens
-        // on nothing makes you pick before you can look.
-        setOpenId((current) => current ?? items[0]?.id ?? null)
+        // The deep-linked map, else this project's, else the newest-touched one:
+        // a page that opens on nothing makes you pick before you can look.
+        setOpenId(
+          (current) =>
+            current ??
+            items.find((m) => m.project === (project || ''))?.id ??
+            items[0]?.id ??
+            null,
+        )
       })
       .catch(handleErr)
-  }, [token, refreshList, handleErr])
+  }, [token, refreshList, handleErr, project])
 
   // Opening a map means minting a ticket for its socket. Done here rather than
   // inside the canvas so the canvas never has to know about tokens — it receives
@@ -176,16 +195,21 @@ export function App() {
       .catch(handleErr)
   }
 
-  const newMap = async () => {
+  const newMap = async (forProject?: string) => {
     if (!canWrite) {
       toast(t.needWrite, 'err')
+      return
+    }
+    const target = forProject || selectedProject
+    if (!target) {
+      toast(t.needProject, 'err')
       return
     }
     const title = window.prompt(t.newMapPrompt)
     if (!title?.trim()) return
     try {
       const { mindmap } = await createMindmap(token, {
-        project: project || projects[0]?.id || '',
+        project: target,
         title: title.trim(),
       })
       await refreshList()
@@ -290,34 +314,48 @@ export function App() {
           localStorage.setItem(LS_LANG, l)
         }}
       >
-        <Button onClick={() => void newMap()}>+ {t.newMap}</Button>
+        {/* A project holds one brainstorm, so this appears only where there is
+            none to open — offering "new" beside an existing map would promise
+            something the server refuses. */}
+        {!mapHere && selectedProject && (
+          <Button onClick={() => void newMap()}>+ {t.newMap}</Button>
+        )}
       </AppHeader>
 
       {/* Stacked on a phone, rail + canvas from `md` up. */}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <aside className="border-b-border-soft md:border-r-border-soft flex max-h-40 shrink-0 flex-col overflow-y-auto border-b md:max-h-none md:w-60 md:border-r md:border-b-0">
-          {maps.length === 0 ? (
+          {projects.length === 0 ? (
             <div className="text-muted-foreground px-4 py-6 text-center text-[12.5px]">
-              {t.noMaps}
+              {t.noProjects}
             </div>
           ) : (
-            maps.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setOpenId(m.id)}
-                aria-current={m.id === openId}
-                className={cn(
-                  'border-b-border-soft cursor-pointer border-b px-4 py-2.5 text-left',
-                  m.id === openId && 'bg-accent',
-                )}
-              >
-                <div className="text-foreground truncate text-[13px] font-[680]">{m.title}</div>
-                <div className="text-muted-foreground font-mono text-[11px]">
-                  {m.nodes} · {m.status}
-                </div>
-              </button>
-            ))
+            projects.map((p) => {
+              const m = mapOf.get(p.id) ?? null
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    saveProject(p.id)
+                    setProject(p.id)
+                    setOpenId(m?.id ?? null)
+                  }}
+                  aria-current={p.id === selectedProject}
+                  className={cn(
+                    'border-b-border-soft cursor-pointer border-b px-4 py-2.5 text-left',
+                    p.id === selectedProject && 'bg-accent',
+                  )}
+                >
+                  <div className="text-foreground truncate text-[13px] font-[680]">
+                    {m ? m.title : p.name || p.id}
+                  </div>
+                  <div className="text-muted-foreground font-mono text-[11px]">
+                    {m ? `${m.nodes} · ${m.status}` : t.noMapYet}
+                  </div>
+                </button>
+              )
+            })
           )}
         </aside>
 
@@ -476,6 +514,17 @@ export function App() {
                 </div>
               )}
             </>
+          ) : selectedProject ? (
+            // The project is chosen and has no brainstorm. Offer to start it
+            // here rather than in the header alone: this is where somebody is
+            // looking when they find out there is nothing to open.
+            <div className="text-muted-foreground px-6 py-16 text-center">
+              <div className="text-foreground mb-1.5 text-[15px] font-[680]">{t.startHere}</div>
+              <div className="mb-4 text-[13px]">{t.startHereHint}</div>
+              {canWrite && (
+                <Button onClick={() => void newMap(selectedProject)}>+ {t.newMap}</Button>
+              )}
+            </div>
           ) : (
             <div className="text-muted-foreground px-6 py-16 text-center">
               <div className="text-foreground mb-1.5 text-[15px] font-[680]">{t.noneOpen}</div>

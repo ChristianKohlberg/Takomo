@@ -18413,14 +18413,43 @@ async fn pruning_a_branch_takes_everything_under_it() {
 #[tokio::test]
 async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
     let app = TestApp::spawn().await;
+    // One map per project, so three maps means three projects. The paging this
+    // asserts is still worth asserting — a fleet has many projects — it just
+    // cannot be reached by stacking maps under one of them any more.
     for i in 0..3 {
-        app.post(
+        let project = format!("mm{i}");
+        app.create_project_with(&project, common::simple_workflow())
+            .await;
+        let (s, made) = app
+            .post(
+                &app.worker,
+                "/v1/mindmaps",
+                json!({ "project": project, "title": format!("Map {i}") }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{made}");
+    }
+
+    // A project holds ONE brainstorm, and the refusal names the map it already
+    // has — the caller almost always wanted that one.
+    let (s, second) = app
+        .post(
             &app.worker,
             "/v1/mindmaps",
-            json!({ "project": "tp", "title": format!("Map {i}") }),
+            json!({ "project": "mm0", "title": "A second map" }),
         )
         .await;
-    }
+    assert_eq!(s, StatusCode::CONFLICT, "{second}");
+    assert_eq!(second["code"], "mindmap.project_has_one");
+    assert!(
+        second["message"].as_str().unwrap().contains("mm-"),
+        "the refusal should name the existing map: {second}"
+    );
+    assert!(
+        second["remedy"].as_str().unwrap().contains("promote"),
+        "and point at the way out: {second}"
+    );
+
     let (s, page) = app.get(&app.worker, "/v1/mindmaps?limit=2").await;
     assert_eq!(s, StatusCode::OK, "{page}");
     assert_eq!(page["items"].as_array().unwrap().len(), 2, "{page}");
@@ -18431,7 +18460,8 @@ async fn mindmaps_list_is_a_bounded_envelope_and_the_archive_gate_applies() {
     );
 
     // Archiving a project freezes brainstorming under it like every other write —
-    // the guard lives in the store, so this route inherits it for free.
+    // the guard lives in the store, so this route inherits it for free. `tp` has
+    // no map of its own, so this reaches the archive gate rather than the cap.
     app.post(&app.admin, "/v1/projects/tp/archive", json!({}))
         .await;
     let (s, frozen) = app

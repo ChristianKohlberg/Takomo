@@ -40,6 +40,24 @@ use serde_json::{json, Value};
 /// Page ceiling for the map listing.
 pub const MAX_MINDMAPS_PAGE: i64 = 200;
 
+/// How many mindmaps a project may hold.
+///
+/// One, for now. A project has one brainstorm the way it has one board: the
+/// question "which map?" is not one anybody wanted to answer, and a rail of
+/// half-started maps is how a surface stops being used. A branch that turns out
+/// to be its own subject promotes into an initiative or an epic — that is the
+/// way out, and it always was.
+///
+/// The DATA MODEL is deliberately untouched: `mindmaps` is still a table keyed
+/// by project, every read still filters and pages, and lifting this to several
+/// per project is deleting the check rather than a migration. It is a product
+/// decision expressed as a cap, which is the cheapest kind to reverse.
+///
+/// It bounds creation only. A project that already holds more than one — from
+/// before this existed — keeps them, lists them and can open them; nothing here
+/// deletes somebody's thinking to enforce a new rule.
+pub const MAX_MINDMAPS_PER_PROJECT: i64 = 1;
+
 const MAX_TITLE: usize = 300;
 const MAX_SUMMARY: usize = 2000;
 
@@ -240,6 +258,35 @@ impl Store {
             if exists.is_none() {
                 return Err(ApiError::not_found("project", project));
             }
+
+            let held: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM mindmaps WHERE project = ?1 ORDER BY created_at, id LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(
+                    params![project, MAX_MINDMAPS_PER_PROJECT],
+                    |r| r.get::<_, String>(0),
+                )?;
+                rows.collect::<rusqlite::Result<Vec<String>>>()?
+            };
+            if held.len() as i64 >= MAX_MINDMAPS_PER_PROJECT {
+                // The existing id is in the message on purpose: the caller
+                // almost always wanted that map, and this saves them a list
+                // call to find out which one it is.
+                return Err(ApiError::conflict(
+                    "mindmap.project_has_one",
+                    format!(
+                        "Project '{project}' already has a mindmap ({}). A project has one brainstorm, the way it has one board.",
+                        held.join(", ")
+                    ),
+                )
+                .remedy(format!(
+                    "Grow that one instead (POST /v1/mindmaps/{}/nodes), promote the branch that turned out to be its own subject into an initiative or an epic, or throw the map away first (DELETE /v1/mindmaps/{}) — deleting one is ordinary.",
+                    held.first().map(String::as_str).unwrap_or("{id}"),
+                    held.first().map(String::as_str).unwrap_or("{id}")
+                )));
+            }
+
             let id = mindmap_id();
             tx.execute(
                 "INSERT INTO mindmaps (id, project, title, summary, status, metadata, created_by, created_at, updated_at) \

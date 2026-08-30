@@ -74,6 +74,30 @@ remedy: Shorten it, move the detail into the node's notes, split it into two
 nodes, or promote the branch to an initiative where the long form belongs.
 ```
 
+## One per project
+
+A project holds one brainstorm, the way it holds one board. "Which map?" is not a
+question anybody wanted to answer, and a rail of half-started maps is how a
+surface stops being used — so starting a second is refused, and the refusal names
+the one that exists, because that is almost always the one you wanted:
+
+```
+Project 'tp' already has a mindmap (mm-1cslpg34). A project has one brainstorm,
+the way it has one board.
+remedy: Grow that one instead, promote the branch that turned out to be its own
+subject into an initiative or an epic, or throw the map away first — deleting one
+is ordinary.
+```
+
+The branch that has become its own subject is what promotion is for, and it was
+always the way out.
+
+**The data model is untouched.** `mindmaps` is still a table keyed by project,
+every read still filters and pages, and a project that already holds more than
+one keeps them, lists them and can open them — nothing deletes somebody's
+thinking to enforce a new rule. Allowing several again is deleting a check, not
+running a migration.
+
 ## Growing one
 
 ```sh

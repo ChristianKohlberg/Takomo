@@ -60,7 +60,7 @@ pub use initiatives::{
 };
 pub use mindmaps::{
     validate_promotion_target, BranchPromotion, MindmapChange, MindmapCreate, MindmapListFilter,
-    MindmapPatch, MAX_MINDMAPS_PAGE, MINDMAP_STATUSES, PROMOTION_TARGETS,
+    MindmapPatch, MAX_MINDMAPS_PAGE, MAX_MINDMAPS_PER_PROJECT, MINDMAP_STATUSES, PROMOTION_TARGETS,
 };
 pub use model::*;
 pub use moves::{MoveOutcome, MoveRequest, MovedTicket, MAX_MOVE_TICKETS};

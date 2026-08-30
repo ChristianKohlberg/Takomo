@@ -338,6 +338,8 @@ added — notes do not render in the outline, so detail has somewhere to go with
 stopping being readable. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id`
 link, so a map that produced work becomes a picture of that work.
 
+**A project holds ONE map** (`MAX_MINDMAPS_PER_PROJECT`), enforced at creation so REST, MCP and the CLI all inherit it, and the refusal names the existing map because that is the one the caller wanted. The schema is deliberately unchanged — still keyed by project, still paged — so this is a cap to delete rather than a shape to migrate, and a project that already holds several keeps them.
+
 **A map is a CRDT, not rows** — one Yjs document per map over the same in-process `yrs` machinery
 `/documents` runs, because a brainstorm is a conversation and rows where the last writer wins throw
 one participant away silently. Three consequences. A node carries a **parent pointer**, so a move is
