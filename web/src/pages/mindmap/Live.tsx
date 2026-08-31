@@ -407,6 +407,17 @@ export default function Live({
         onError(labels.capNodes.replace('{max}', String(MAX_NODES)))
         return
       }
+      // A child added to a FOLDED parent would be created somewhere nobody can
+      // see — the dialog opens, you name the thought, and the canvas shows
+      // nothing new. Adding to a branch is a reason to open it.
+      if (parent) {
+        setCollapsed((folded) => {
+          if (!folded.has(parent)) return folded
+          const next = new Set(folded)
+          next.delete(parent)
+          return next
+        })
+      }
       setSelected(id)
       // Created and named in one gesture: Enter, Tab and the `+` all land in the
       // dialog with the placeholder title selected, so typing a name and pressing

@@ -33,6 +33,7 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   NODE_HEIGHT,
+  AFFORDANCE_WIDTH,
   NODE_WIDTH,
   edgePath,
   fit,
@@ -374,7 +375,12 @@ export function Canvas({
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (drag.kind === 'none') {
-      const over = nodeAt(placed.nodes, toWorld(pointIn(e), viewport))?.node.id ?? null
+      // Strict first, so a point genuinely inside another node belongs to that
+      // node; only then the affordance strip, so the `+` stays reachable.
+      const world = toWorld(pointIn(e), viewport)
+      const over =
+        (nodeAt(placed.nodes, world) ?? nodeAt(placed.nodes, world, AFFORDANCE_WIDTH))?.node.id ??
+        null
       if (over !== hovered) setHovered(over)
       return
     }

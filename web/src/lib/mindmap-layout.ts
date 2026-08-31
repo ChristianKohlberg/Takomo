@@ -55,6 +55,17 @@ export const MIN_ZOOM = 0.25
 export const MAX_ZOOM = 2.5
 
 /** Node box, in world units. Fixed size: a mindmap node is a sentence or two. */
+/**
+ * How far past a node's right edge its hover affordances reach.
+ *
+ * The `+` that adds a child is drawn just outside the box, where the child will
+ * appear. Hover has to reach it: tested against the box alone, moving the
+ * pointer toward the button leaves the node, un-hovers it, and unmounts the
+ * button before the click can land — so the affordance is only usable on a node
+ * that happens to be selected. That is a bug you can only find with a mouse.
+ */
+export const AFFORDANCE_WIDTH = 30
+
 export const NODE_WIDTH = 190
 export const NODE_HEIGHT = 52
 /** Gap between a parent's column and its children's. */
@@ -237,13 +248,14 @@ export function clamp(value: number, min: number, max: number): number {
 export function nodeAt<T extends LayoutNode>(
   placed: readonly PlacedNode<T>[],
   world: Point,
+  padRight = 0,
 ): PlacedNode<T> | null {
   // Reverse order so a node drawn on top wins, matching what the eye expects.
   for (let i = placed.length - 1; i >= 0; i -= 1) {
     const p = placed[i]!
     if (
       world.x >= p.x &&
-      world.x <= p.x + NODE_WIDTH &&
+      world.x <= p.x + NODE_WIDTH + padRight &&
       world.y >= p.y &&
       world.y <= p.y + NODE_HEIGHT
     ) {

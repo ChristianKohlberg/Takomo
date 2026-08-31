@@ -7,6 +7,7 @@
 // which is the failure mode worth spending tests on.
 import { describe, expect, it } from 'vitest'
 import {
+  AFFORDANCE_WIDTH,
   centreOn,
   childrenOf,
   edgePath,
@@ -212,6 +213,23 @@ describe('hit testing', () => {
     const api = nodes.find((p) => p.node.id === 'api')!
     expect(nodeAt(nodes, { x: api.x + 5, y: api.y + 5 })!.node.id).toBe('api')
     expect(nodeAt(nodes, { x: api.x - 40, y: api.y })).toBeNull()
+  })
+
+  it('reaches past the right edge for the affordances drawn there, but only on request', () => {
+    // The `+` that adds a child sits just outside the box. Hover tested against
+    // the box alone unmounts it as the pointer moves onto it, so the button is
+    // unusable on any node that is not already selected — a defect no test in
+    // jsdom would see, because jsdom has no pointer.
+    const placed = layout(TREE).nodes
+    const api = placed.find((p) => p.node.id === 'api')!
+    const justOutside = { x: api.x + NODE_WIDTH + 12, y: api.y + 10 }
+
+    expect(nodeAt(placed, justOutside), 'strict hit testing must not widen').toBe(null)
+    expect(nodeAt(placed, justOutside, AFFORDANCE_WIDTH)?.node.id).toBe('api')
+    expect(
+      nodeAt(placed, { x: api.x + NODE_WIDTH + AFFORDANCE_WIDTH + 4, y: api.y + 10 }, AFFORDANCE_WIDTH),
+      'and it stops where the affordance stops',
+    ).toBe(null)
   })
 
   it('counts the edges of a node as inside it', () => {
