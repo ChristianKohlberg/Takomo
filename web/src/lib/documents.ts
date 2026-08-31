@@ -148,48 +148,15 @@ export function syncBase(session: DocSession): string {
   return `${scheme}//${location.host}${session.url}`
 }
 
-/** A folder tree over the flat list, derived on every read and never stored. */
-export interface Folder {
-  path: string
-  name: string
-  children: Folder[]
-  docs: Doc[]
-}
-
-/**
- * Group documents into folders by their `path`.
- *
- * A folder exists because a document names it — the same rule
- * `initiative-tree.ts` follows, which is why neither needs a folder table nor
- * has an orphaned-directory problem: the last document to leave takes the folder
- * with it.
+/*
+ * The folder tree that used to live here — `buildTree` and `Folder` — is gone.
+ * It grouped documents into folders and listed the two kinds separately, which
+ * is a filing cabinet; `lib/document-outline.ts` replaces it with an outline in
+ * which a folder and the document that named it are ONE section. The behaviour
+ * it guaranteed (a folder exists because a document names it, intermediate
+ * folders are shared rather than duplicated, order is stable between reads) is
+ * guarded by that module's tests instead.
  */
-export function buildTree(docs: readonly Doc[]): Folder {
-  const root: Folder = { path: '', name: '', children: [], docs: [] }
-  const byPath = new Map<string, Folder>([['', root]])
-
-  const ensure = (path: string): Folder => {
-    const existing = byPath.get(path)
-    if (existing) return existing
-    const cut = path.lastIndexOf('/')
-    const parentPath = cut === -1 ? '' : path.slice(0, cut)
-    const name = cut === -1 ? path : path.slice(cut + 1)
-    const folder: Folder = { path, name, children: [], docs: [] }
-    byPath.set(path, folder)
-    ensure(parentPath).children.push(folder)
-    return folder
-  }
-
-  for (const doc of docs) ensure(doc.path).docs.push(doc)
-
-  const sort = (f: Folder): Folder => {
-    f.children.sort((a, b) => a.name.localeCompare(b.name))
-    f.docs.sort((a, b) => a.title.localeCompare(b.title))
-    f.children.forEach(sort)
-    return f
-  }
-  return sort(root)
-}
 
 export interface RunResult {
   proposal: string

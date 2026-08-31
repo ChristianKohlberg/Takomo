@@ -29,15 +29,15 @@ import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project } from '@/lib/initiatives'
 import {
   archiveDocument,
-  buildTree,
   createDocument,
   listDocuments,
   mintSession,
   unarchiveDocument,
   type Doc,
   type DocSession,
-  type Folder,
 } from '@/lib/documents'
+import { ancestorKeys, buildOutline } from '@/lib/document-outline'
+import { OutlineRail } from '@/components/documents/OutlineRail'
 import { STR } from './strings'
 import type { ConnectionState } from './Editor'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -46,6 +46,30 @@ import { Hint } from '@/components/Hint'
 const Editor = lazy(() => import('./Editor'))
 
 const LS_LANG = 'takomo.lang'
+/**
+ * Which sections this viewer has folded, by project.
+ *
+ * Per-viewer and browser-local, the same rule the mindmap's fold follows:
+ * closing a branch of the plan must not close it under somebody else who is
+ * reading it. One key holding a project→keys map rather than a key per project,
+ * because a key per project makes switching projects a two-effect dance in which
+ * one write lands under the wrong name.
+ */
+const LS_FOLD = 'takomo.documents.fold'
+
+function loadFolds(): Record<string, string[]> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(LS_FOLD) ?? '{}')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const out: Record<string, string[]> = {}
+    for (const [project, keys] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(keys)) out[project] = keys.filter((k): k is string => typeof k === 'string')
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
 
 export function App() {
   const navigate = useNavigate()
@@ -72,6 +96,7 @@ export function App() {
   const [creating, setCreating] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftPath, setDraftPath] = useState('')
+  const [folds, setFolds] = useState<Record<string, string[]>>(loadFolds)
 
   const t = useMemo(() => pick(STR, lang), [lang])
   const canWrite = scopes.includes('write')
@@ -209,7 +234,53 @@ export function App() {
     }
   }
 
-  const tree = useMemo(() => buildTree(docs), [docs])
+  // The rail is the outline of the whole undertaking, not a file browser: a
+  // folder and the document that named it are ONE section, because that is what
+  // writing a mindmap up produces. See lib/document-outline.ts.
+  const outline = useMemo(() => buildOutline(docs), [docs])
+  const collapsed = useMemo(() => new Set(folds[project] ?? []), [folds, project])
+
+  const onToggleSection = useCallback(
+    (key: string) => {
+      setFolds((prev) => {
+        const here = prev[project] ?? []
+        return {
+          ...prev,
+          [project]: here.includes(key) ? here.filter((k) => k !== key) : [...here, key],
+        }
+      })
+    },
+    [project],
+  )
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_FOLD, JSON.stringify(folds))
+    } catch {
+      // Private mode, or storage full. The fold still works for this visit.
+    }
+  }, [folds])
+
+  // Opening a document that sits inside a folded section — after creating it, or
+  // after a restore — must show it. Jumping to a row that is not drawn is worse
+  // than not jumping, so its ancestors are unfolded for this viewer.
+  useEffect(() => {
+    if (!selected) return
+    const needed = ancestorKeys(outline, selected)
+    if (needed.length === 0) return
+    setFolds((prev) => {
+      const here = prev[project] ?? []
+      if (!needed.some((k) => here.includes(k))) return prev
+      return { ...prev, [project]: here.filter((k) => !needed.includes(k)) }
+    })
+  }, [selected, outline, project])
+
+  /** Proposals waiting, by document. Only the OPEN document can be known: the
+   *  count comes out of its CRDT, and the others are not connected. */
+  const pendingByDoc = useMemo(
+    () => (selected && pending > 0 ? { [selected]: pending } : {}),
+    [selected, pending],
+  )
 
   if (!token) {
     return (
@@ -312,7 +383,7 @@ export function App() {
       {/* One breakpoint, `md`, meaning phone or not: the tree stacks above the
           document on a phone and sits beside it everywhere else. */}
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-        <aside className="border-b-border-soft flex max-h-[38vh] flex-none flex-col overflow-y-auto border-b px-3 py-3 md:max-h-none md:w-full md:max-w-72 md:border-r md:border-b-0">
+        <aside className="border-b-border-soft flex max-h-[38vh] flex-none flex-col overflow-y-auto border-b px-2 py-3 md:max-h-none md:w-full md:max-w-80 md:border-r md:border-b-0">
           {!project ? (
             <p className="text-muted-foreground px-1 py-4 text-[13px]">{t.pickProject}</p>
           ) : docs.length === 0 ? (
@@ -321,15 +392,24 @@ export function App() {
               <p className="mt-2 text-[12.5px] opacity-80">{t.emptyHint}</p>
             </div>
           ) : (
-            <FolderView
-              folder={tree}
-              depth={0}
+            <OutlineRail
+              sections={outline}
               selected={selected}
               onSelect={setSelected}
-              onArchiveToggle={onArchiveToggle}
-              archiveLabel={t.archive}
-              unarchiveLabel={t.unarchive}
-              archivedLabel={t.archived}
+              collapsed={collapsed}
+              onToggle={onToggleSection}
+              onArchiveToggle={canWrite ? onArchiveToggle : undefined}
+              pending={pendingByDoc}
+              labels={{
+                expand: t.outlineExpand,
+                collapse: t.outlineCollapse,
+                folded: t.outlineFolded,
+                group: t.outlineGroup,
+                archive: t.archive,
+                unarchive: t.unarchive,
+                archived: t.archived,
+                waiting: t.outlineWaiting,
+              }}
             />
           )}
 
@@ -377,7 +457,7 @@ export function App() {
             </p>
           ) : (
             <>
-              <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <div className="mb-3 flex w-full max-w-[720px] flex-wrap items-baseline gap-x-3 gap-y-1">
                 <h2 className="min-w-0 text-lg font-[750] tracking-[-0.02em]">{current.title}</h2>
                 <span
                   className={
@@ -472,83 +552,5 @@ export function App() {
         </section>
       </main>
     </AppShell>
-  )
-}
-
-interface FolderViewProps {
-  folder: Folder
-  depth: number
-  selected: string | null
-  onSelect: (id: string) => void
-  onArchiveToggle: (doc: Doc) => void
-  archiveLabel: string
-  unarchiveLabel: string
-  archivedLabel: string
-}
-
-function FolderView({
-  folder,
-  depth,
-  selected,
-  onSelect,
-  onArchiveToggle,
-  archiveLabel,
-  unarchiveLabel,
-  archivedLabel,
-}: FolderViewProps) {
-  return (
-    <div>
-      {folder.name && (
-        <p
-          className="text-muted-foreground mt-2 px-1 text-[11.5px] font-bold tracking-wide uppercase"
-          style={{ paddingLeft: `${depth * 10}px` }}
-        >
-          {folder.name}
-        </p>
-      )}
-      {folder.docs.map((doc) => (
-        <div
-          key={doc.id}
-          className="group flex items-center gap-1"
-          style={{ paddingLeft: `${depth * 10}px` }}
-        >
-          <button
-            type="button"
-            onClick={() => onSelect(doc.id)}
-            className={
-              'min-w-0 grow truncate rounded-md px-2 py-1.5 text-left text-[13.5px] ' +
-              (selected === doc.id ? 'bg-accent font-semibold' : 'hover:bg-accent/50')
-            }
-          >
-            {doc.title}
-            {doc.archived_at && (
-              <span className="text-muted-foreground ml-1.5 text-[11px]">({archivedLabel})</span>
-            )}
-          </button>
-          <Hint text={doc.archived_at ? unarchiveLabel : archiveLabel}>
-            <button
-              type="button"
-              onClick={() => onArchiveToggle(doc)}
-              className="text-muted-foreground hover:text-foreground flex-none px-1 text-[12px] opacity-0 group-hover:opacity-100 focus:opacity-100"
-            >
-              {doc.archived_at ? '↩' : '×'}
-            </button>
-          </Hint>
-        </div>
-      ))}
-      {folder.children.map((child) => (
-        <FolderView
-          key={child.path}
-          folder={child}
-          depth={depth + 1}
-          selected={selected}
-          onSelect={onSelect}
-          onArchiveToggle={onArchiveToggle}
-          archiveLabel={archiveLabel}
-          unarchiveLabel={unarchiveLabel}
-          archivedLabel={archivedLabel}
-        />
-      ))}
-    </div>
   )
 }

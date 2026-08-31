@@ -52,6 +52,12 @@ export const STR = defineStrings({
     alsoHere: 'Also here',
     justYou: 'Just you',
 
+    outlineExpand: 'Open this section',
+    outlineCollapse: 'Close this section',
+    outlineFolded: '{n} sections inside',
+    outlineGroup: 'A folder. No document of this name — open it to see what is filed here.',
+    outlineWaiting: '{n} proposals waiting',
+
     archive: 'Archive',
     unarchive: 'Restore',
     archived: 'archived',
@@ -160,6 +166,12 @@ export const STR = defineStrings({
     placeholder: 'Dokumenttext',
     alsoHere: 'Auch hier',
     justYou: 'Nur du',
+
+    outlineExpand: 'Abschnitt aufklappen',
+    outlineCollapse: 'Abschnitt zuklappen',
+    outlineFolded: '{n} Abschnitte darin',
+    outlineGroup: 'Ein Ordner. Kein Dokument dieses Namens — aufklappen zeigt, was darin liegt.',
+    outlineWaiting: '{n} Vorschläge offen',
 
     archive: 'Archivieren',
     unarchive: 'Zurückholen',

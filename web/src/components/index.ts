@@ -187,6 +187,10 @@ export type { UndoSnackbarProps } from './inbox/UndoSnackbar'
 export { AnswerLinkDialog } from './inbox/AnswerLinkDialog'
 export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
+// ---- documents ----
+export { OutlineRail } from './documents/OutlineRail'
+export type { OutlineRailProps, OutlineRailLabels } from './documents/OutlineRail'
+
 // ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'
 export type { CanvasProps, CanvasLabels, CanvasMode, CanvasPeer } from './mindmap/Canvas'

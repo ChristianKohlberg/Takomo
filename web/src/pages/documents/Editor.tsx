@@ -345,7 +345,9 @@ export default function Editor({
 
   return (
     <div className="flex min-w-0 grow flex-col gap-4 overflow-y-auto md:flex-row">
-      <div className="min-w-0 grow">
+      {/* A measure, not a width: prose running the full width of a desktop
+          window is unreadable, and `max-w-*` cannot overflow a phone. */}
+      <div className="min-w-0 grow max-w-[720px]">
         {!session.can_write && (
           <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
             {labels.readOnly}
