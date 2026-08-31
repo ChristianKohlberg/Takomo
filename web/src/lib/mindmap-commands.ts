@@ -15,8 +15,8 @@
 export const NODE_COMMANDS = [
   'node.child',
   'node.sibling',
+  'node.open',
   'node.rename',
-  'node.notes',
   'node.relate',
   'node.attach',
   'node.ask',
@@ -75,8 +75,12 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   const out: CommandId[] = []
   const n = ctx.node
   if (n) {
+    // Opening a thought is a READ — it is where the notes, the attachments and
+    // the lines to other branches are, now that selecting a node no longer
+    // throws a panel over the map — so it survives a read-only token.
+    out.push('node.open')
     if (ctx.canWrite) {
-      out.push('node.child', 'node.sibling', 'node.rename', 'node.notes')
+      out.push('node.child', 'node.sibling', 'node.rename')
       if (ctx.nodeCount >= 2) out.push('node.relate')
       // Offered at the cap too, now that it opens the manager rather than an
       // inline add row: a node with twenty attachments is exactly the one whose
@@ -201,17 +205,18 @@ export function isTextEntry(
  * child has its own `+` beside the node, attachments have the badge on it, and
  * removing it is on the right-click menu, so none of those is here. What is left
  * is what somebody reaches for while THINKING rather than while arranging:
- * renaming the thought they just wrote, opening its notes, folding the branch
- * they have finished reading, and drawing a line to something else.
+ * opening the thought, renaming it, folding the branch they have finished
+ * reading, and drawing a line to something else.
  *
- * The fold verb survives a read-only token on purpose: fold is per-viewer and
- * never touches the document, so it is the one thing a reader can still do.
+ * Opening it is FIRST and survives a read-only token, because selecting a node
+ * no longer expands it into a reading panel — this is the way in. Fold survives
+ * for its own reason: it is per-viewer and never touches the document.
  */
 export function pillVerbsFor(ctx: CommandContext): CommandId[] {
   const n = ctx.node
   if (!n) return []
-  const out: CommandId[] = []
-  if (ctx.canWrite) out.push('node.rename', 'node.notes')
+  const out: CommandId[] = ['node.open']
+  if (ctx.canWrite) out.push('node.rename')
   if (n.collapsed) out.push('node.expand')
   else if (n.hasChildren) out.push('node.collapse')
   if (ctx.canWrite && ctx.nodeCount >= 2) out.push('node.relate')
@@ -229,7 +234,9 @@ export function pillVerbsFor(ctx: CommandContext): CommandId[] {
 export function menuVerbsFor(ctx: CommandContext): CommandId[] {
   const n = ctx.node
   if (!n) return []
-  const out: CommandId[] = []
+  // First, and unconditional: right-click is the one gesture that reaches a node
+  // without selecting it, so it has to be able to open one.
+  const out: CommandId[] = ['node.open']
   if (ctx.canWrite) out.push('node.child', 'node.sibling', 'node.rename', 'node.attach')
   if (n.collapsed) out.push('node.expand')
   else if (n.hasChildren) out.push('node.collapse')

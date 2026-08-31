@@ -1,19 +1,23 @@
-// Editing one thought, in one place.
+// Reading and changing one thought, in one place.
 //
-// The canvas card used to be the editor: a title textarea drawn over the node, a
-// notes box, two selects, a colour row and a checkbox, all inside a 300×320 box
-// that is itself drawn OVER its neighbours. It worked, and it cost more than it
-// was worth. A form on the canvas has to fight the canvas for the keyboard —
-// Space folds a branch, Enter grows one, Backspace prunes — so the card swallowed
-// every keystroke, which then swallowed the keys the canvas needs and pushed ⌘K
-// into the capture phase to get out from under it. Reading a map and typing into
-// it are two different postures, and only one of them belongs on the map.
+// Two moves made this the only detail surface there is. The canvas card used to
+// be the editor — a title textarea drawn over the node, a notes box, two selects,
+// a colour row and a checkbox, all inside a box drawn OVER its neighbours — and a
+// form on the canvas has to fight the canvas for the keyboard, so the card
+// swallowed every keystroke and then swallowed the keys the canvas needs. And
+// SELECTING a node used to expand that card into a 300×320 reading panel, so
+// every click on the map threw a panel across it whether or not anybody had asked
+// to open anything. Selecting is not opening.
 //
-// So the card is text you read, and this is where it is changed — modelled on
-// `AttachmentsDialog`, which had already made the same move for the same reason.
-// Everything that was editable inline is here and nothing was dropped on the way:
-// title, notes, kind, shape, colour, edge label, the reviewed flag, the relations
-// touching this node, and a question's answer.
+// So the card is a title and its marks, and this is where a thought is read and
+// changed. Everything the expanded card showed is here — who wrote it, what it
+// became, the whole notes, what is attached, the lines running to other branches
+// — alongside everything that was ever editable inline.
+//
+// THE ONE FIELD THAT IS NOT HERE IS THE TITLE. It is the heading instead, read
+// only: a title is typed on the node itself, with the inline caret that opens on
+// creation, on rename, on F2 and on double-click. Two ways to edit one field is
+// the trap this repo names elsewhere, so there is exactly one.
 //
 // The explicit-fields decision is what makes this safe to hand to two people at
 // once: `color`, `shape`, `kind` and `edge_label` are separate keys in the
@@ -41,7 +45,6 @@ import {
 } from '@/components/ui/dialog'
 import {
   MAX_NOTES,
-  MAX_TITLE,
   NODE_KINDS,
   type MapNode,
   type NodeFields,
@@ -59,21 +62,21 @@ export type NodeShape = (typeof NODE_SHAPES)[number]
  *  question whose useful answers number about six. */
 export const NODE_COLORS = ['', '#fee2e2', '#ffedd5', '#fef9c3', '#dcfce7', '#dbeafe', '#f3e8ff']
 
-/**
- * Which field the dialog opens on.
- *
- * Rename and "write notes on it" are the same dialog reached by two verbs, and
- * the only difference between them is where the caret lands — which is the whole
- * reason they can be one dialog rather than two.
- */
-export type NodeDialogFocus = 'title' | 'notes'
-
 export interface NodeDialogLabels {
-  /** `{title}` is the thought being edited. */
+  /** `{title}` is the thought being read. The title itself is not a field here. */
   heading: string
   subtitle: string
-  titleField: string
-  titleHint: string
+  /** Who wrote the thought — what the expanded card carried in its top strip. */
+  origin: string
+  originHuman: string
+  originAgent: string
+  /** What this branch became, when it graduated. */
+  promoted: string
+  /** The attachment list's heading. `{n}` is the count. */
+  attachments: string
+  noAttachments: string
+  /** Through to the manager, which is where one is added or corrected. */
+  openAttachments: string
   notes: string
   notesHint: string
   notesCount: string
@@ -102,16 +105,17 @@ export interface NodeDialogLabels {
 }
 
 export interface NodeDialogProps {
-  /** The thought being edited, or null while closed. */
+  /** The thought being read, or null while closed. */
   node: MapNode | null
   canWrite: boolean
-  focus: NodeDialogFocus
   /** Only the relations touching this node. */
   relations: readonly Relationship[]
   /** Titles for the far end of each relation, so a row reads as prose. */
   titleOf: ReadonlyMap<string, string>
   onOpenChange: (open: boolean) => void
-  onTitle: (id: string, title: string) => void
+  /** Hands over to `AttachmentsDialog`. Attachments are READ here and changed
+   *  there, which is the same one-surface-per-field rule the title follows. */
+  onOpenAttachments: (id: string) => void
   onNotes: (id: string, notes: string) => void
   onFields: (id: string, fields: Partial<NodeFields>) => void
   onRemoveRelation: (relationId: string) => void
@@ -126,11 +130,10 @@ const FIELD =
 export function NodeDialog({
   node,
   canWrite,
-  focus,
   relations,
   titleOf,
   onOpenChange,
-  onTitle,
+  onOpenAttachments,
   onNotes,
   onFields,
   onRemoveRelation,
@@ -140,7 +143,6 @@ export function NodeDialog({
   // Every text field is a draft until it is left. Writing every keystroke into
   // the document would be correct and unkind: it is one shared history, and a
   // paragraph typed slowly would arrive at a collaborator letter by letter.
-  const [title, setTitle] = useState(node?.title ?? '')
   const [notes, setNotes] = useState(node?.notes ?? '')
   const [edgeLabel, setEdgeLabel] = useState(node?.edge_label ?? '')
   // A question's answer is never written into the document as it is typed: it is
@@ -156,35 +158,23 @@ export function NodeDialog({
   const [seeded, setSeeded] = useState<string | null>(node?.id ?? null)
   if (seeded !== (node?.id ?? null)) {
     setSeeded(node?.id ?? null)
-    setTitle(node?.title ?? '')
     setNotes(node?.notes ?? '')
     setEdgeLabel(node?.edge_label ?? '')
     setAnswer('')
   }
 
-  const titleRef = useRef<HTMLInputElement | null>(null)
   const notesRef = useRef<HTMLTextAreaElement | null>(null)
   const id = node?.id ?? null
-  // Rename lands in the title with it selected — the common edit is replacing a
-  // first-draft thought, not appending to it, and a node created by Enter or Tab
-  // arrives here holding a placeholder that is meant to be typed over.
-  const focusRef = useRef(focus)
-  focusRef.current = focus
-  const takeFocus = useCallback(() => {
-    if (focusRef.current === 'notes') notesRef.current?.focus()
-    else {
-      titleRef.current?.focus()
-      titleRef.current?.select()
-    }
-  }, [])
+  // The notes are what somebody came here to write: the title is typed on the
+  // node itself, and everything else on this surface is a control rather than a
+  // caret.
+  const takeFocus = useCallback(() => notesRef.current?.focus(), [])
   // On open, from the dialog's own focus event — the effect below runs before
-  // Radix has finished settling focus, so it cannot be the only path. The effect
-  // is what moves the caret when the SAME open dialog is asked for by the other
-  // verb, which fires no open event.
+  // Radix has finished settling focus, so it cannot be the only path.
   useEffect(() => {
     if (!id) return
     takeFocus()
-  }, [id, focus, takeFocus])
+  }, [id, takeFocus])
 
   if (!node) return null
 
@@ -193,9 +183,6 @@ export function NodeDialog({
   const aboutId = isQuestion ? questionTarget(relations, node.id) : null
   const about = aboutId ? (titleOf.get(aboutId) ?? aboutId) : null
 
-  const commitTitle = () => {
-    if (canWrite && title !== node.title) onTitle(node.id, title)
-  }
   const commitNotes = () => {
     if (canWrite && notes !== node.notes) onNotes(node.id, notes)
   }
@@ -206,7 +193,6 @@ export function NodeDialog({
   const close = () => {
     // Whatever is still in a field is part of the thought, whether it was left
     // by Tab, by Escape or by the close button.
-    commitTitle()
     commitNotes()
     commitEdgeLabel()
     onOpenChange(false)
@@ -223,8 +209,8 @@ export function NodeDialog({
         // One close, in the footer: the corner cross would be a second one with
         // the same name, and the footer button is the reachable one on a phone.
         showCloseButton={false}
-        // The caret goes where the verb asked for it, which is not the first
-        // focusable thing in the dialog whenever the verb was "write notes".
+        // The caret goes to the notes rather than to the first focusable thing,
+        // which would be a select nobody opened this to change.
         onOpenAutoFocus={(e) => {
           e.preventDefault()
           takeFocus()
@@ -242,31 +228,18 @@ export function NodeDialog({
             </div>
           )}
 
-          <label className="flex flex-col gap-0.5">
-            <span className="text-muted-foreground text-[10.5px] font-[650]">
-              {labels.titleField}
+          {/* Who wrote it, and what it became. The expanded card carried both in
+              its top strip; with that card gone this is where they are read. */}
+          <div className="text-muted-foreground flex flex-wrap items-center gap-2 font-mono text-[10.5px]">
+            <span>
+              {labels.origin} {node.origin === 'agent' ? labels.originAgent : labels.originHuman}
             </span>
-            <Input
-              ref={titleRef}
-              aria-label={labels.titleField}
-              value={title}
-              disabled={!canWrite}
-              maxLength={MAX_TITLE}
-              placeholder={labels.titleHint}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={commitTitle}
-              onKeyDown={(e) => {
-                // Enter is done: naming a thought somebody just created should
-                // cost a name and one key, the way it did when the editor was on
-                // the canvas.
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  close()
-                }
-              }}
-              className="h-8 text-[12.5px]"
-            />
-          </label>
+            {node.promoted && (
+              <span className="text-foreground">
+                → {labels.promoted} {node.promoted.kind} {node.promoted.id}
+              </span>
+            )}
+          </div>
 
           <label className="flex flex-col gap-0.5">
             <span className="text-muted-foreground text-[10.5px] font-[650]">{labels.notes}</span>
@@ -396,10 +369,8 @@ export function NodeDialog({
                 className="w-fit"
                 disabled={!canWrite || !answer.trim()}
                 onClick={() => {
-                  // The notes and the title are part of the thought too, and
-                  // answering ends this question — so they go first or they go
-                  // nowhere.
-                  commitTitle()
+                  // The notes are part of the thought too, and answering ends
+                  // this question — so they go first or they go nowhere.
                   commitNotes()
                   commitEdgeLabel()
                   onAnswer(node.id, answer)
@@ -410,6 +381,36 @@ export function NodeDialog({
               </Button>
             </div>
           )}
+
+          {/* ---- attachments ---- */}
+          {/* Read here, changed next door. The count badge on the node is the
+              other way into the same manager; this is so that nothing the
+              expanded card used to show became unreachable when it went. */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground text-[10.5px] font-[650]">
+              {labels.attachments.replace('{n}', String(node.attachments.length))}
+            </span>
+            {node.attachments.length === 0 ? (
+              <span className="text-muted-foreground text-[10.5px]">{labels.noAttachments}</span>
+            ) : (
+              <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+                {node.attachments.map((a) => (
+                  <li key={a.id} className="text-foreground truncate text-[12px]">
+                    ⎘ {a.name}
+                    {a.gist ? ` · ${a.gist}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="w-fit"
+              onClick={() => onOpenAttachments(node.id)}
+            >
+              {labels.openAttachments}
+            </Button>
+          </div>
 
           {/* ---- relations ---- */}
           <div className="flex flex-col gap-1">

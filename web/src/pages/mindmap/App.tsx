@@ -457,9 +457,14 @@ export function App() {
                 trustMachine: t.trustMachine,
                 trustUnverified: t.trustUnverified,
                 cutEdge: t.cutEdge,
+                nameField: t.nameField,
+                nameHint: t.nameHint,
               }}
               outlineLabels={{
                 edit: t.editThought,
+                rename: t.renameThought,
+                nameField: t.nameField,
+                nameHint: t.nameHint,
                 addChild: t.addChild,
                 addSibling: t.addSibling,
                 empty: t.canvasEmptyHint,
@@ -474,13 +479,7 @@ export function App() {
                 trustUnverified: t.trustUnverified,
               }}
               cardLabels={{
-                notes: t.notes,
-                attachments: t.attachmentsBadge,
-                relations: t.relations,
-                noRelations: t.noRelations,
                 promoted: t.promotedLabel,
-                origin: t.origin,
-                originHuman: t.originHuman,
                 originAgent: t.originAgent,
                 hasNotes: t.hasNotes,
                 hasRelations: t.hasRelations,
@@ -493,8 +492,13 @@ export function App() {
               nodeLabels={{
                 heading: t.nodeDialogTitle,
                 subtitle: t.nodeDialogSubtitle,
-                titleField: t.titleField,
-                titleHint: t.titleHint,
+                origin: t.origin,
+                originHuman: t.originHuman,
+                originAgent: t.originAgent,
+                promoted: t.promotedLabel,
+                attachments: t.attachmentsBadge,
+                noAttachments: t.attachmentsEmpty,
+                openAttachments: t.openAttachments,
                 notes: t.notes,
                 notesHint: t.notesHint,
                 notesCount: t.notesCount,
@@ -589,7 +593,7 @@ export function App() {
                 'node.child': t.cmdChild,
                 'node.sibling': t.cmdSibling,
                 'node.rename': t.cmdRename,
-                'node.notes': t.cmdNotes,
+                'node.open': t.cmdOpen,
                 'node.relate': t.cmdRelate,
                 'node.attach': t.cmdAttach,
                 'node.ask': t.cmdAsk,
@@ -608,6 +612,7 @@ export function App() {
                 'map.delete': t.cmdDeleteMap,
               }}
               commandHints={{
+                'node.open': t.cmdOpenHint,
                 'node.relate': t.cmdRelateHint,
                 'node.ask': t.cmdAskHint,
                 'map.trust': t.trustLensHint,

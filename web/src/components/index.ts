@@ -192,15 +192,16 @@ export { Canvas } from './mindmap/Canvas'
 export type { CanvasProps, CanvasLabels, CanvasMode, CanvasPeer } from './mindmap/Canvas'
 export { Outline } from './mindmap/Outline'
 export type { OutlineProps, OutlineLabels } from './mindmap/Outline'
-export { NodeCard, EXPANDED_WIDTH, EXPANDED_HEIGHT } from './mindmap/NodeCard'
-export type { NodeCardProps, NodeCardLabels } from './mindmap/NodeCard'
-export { NodeDialog, NODE_COLORS, NODE_SHAPES } from './mindmap/NodeDialog'
+export { NodeCard } from './mindmap/NodeCard'
+export type { NodeCardProps, NodeCardLabels, NodeNaming } from './mindmap/NodeCard'
+export { NodeNameInput } from './mindmap/NodeNameInput'
 export type {
-  NodeDialogProps,
-  NodeDialogLabels,
-  NodeDialogFocus,
-  NodeShape,
-} from './mindmap/NodeDialog'
+  NodeNameInputProps,
+  NodeNameInputLabels,
+  NameThen,
+} from './mindmap/NodeNameInput'
+export { NodeDialog, NODE_COLORS, NODE_SHAPES } from './mindmap/NodeDialog'
+export type { NodeDialogProps, NodeDialogLabels, NodeShape } from './mindmap/NodeDialog'
 export { CommandPalette } from './mindmap/CommandPalette'
 export type { CommandPaletteProps, CommandPaletteLabels, PaletteItem } from './mindmap/CommandPalette'
 export { PruneDialog } from './mindmap/PruneDialog'

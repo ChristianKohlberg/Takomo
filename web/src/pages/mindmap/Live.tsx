@@ -45,11 +45,8 @@ import {
   type PaletteItem,
 } from '@/components/mindmap/CommandPalette'
 import type { NodeCardLabels } from '@/components/mindmap/NodeCard'
-import {
-  NodeDialog,
-  type NodeDialogFocus,
-  type NodeDialogLabels,
-} from '@/components/mindmap/NodeDialog'
+import type { NameThen } from '@/components/mindmap/NodeNameInput'
+import { NodeDialog, type NodeDialogLabels } from '@/components/mindmap/NodeDialog'
 import {
   AttachmentsDialog,
   type AttachmentsDialogLabels,
@@ -80,6 +77,7 @@ import {
   type CommandId,
 } from '@/lib/mindmap-commands'
 import { cutTarget, foldSummary } from '@/lib/mindmap-lens'
+import { resolveName } from '@/lib/mindmap-naming'
 import { draftsForDrop, type DropPayload } from '@/lib/mindmap-attach'
 import {
   addAttachment,
@@ -121,8 +119,8 @@ function colorFor(name: string): string {
  * label — a glyph is a reminder for somebody who already knows, never the name.
  */
 const VERB_GLYPH: Partial<Record<CommandId, string>> = {
+  'node.open': '≋',
   'node.rename': '✎',
-  'node.notes': '≋',
   'node.collapse': '⊟',
   'node.expand': '⊞',
   'node.relate': '⇢',
@@ -264,13 +262,27 @@ export default function Live({
   /** The node whose attachments are open in the manager, or null. */
   const [attaching, setAttaching] = useState<string | null>(null)
   /**
-   * The node being edited, and which field the verb that opened it asked for.
+   * The node whose whole self is open, or null.
    *
-   * One dialog for every editing path there is — rename, notes, double-click, the
-   * context menu, and the row on the phone — because they only ever differed in
-   * where the caret lands.
+   * One dialog for every path that means "look at this thought properly" — the
+   * pill's open verb, ⌘K, the right-click menu, and the `✎` on a phone row.
+   * Selecting a node is deliberately NOT one of them.
    */
-  const [editing, setEditing] = useState<{ id: string; focus: NodeDialogFocus } | null>(null)
+  const [viewing, setViewing] = useState<string | null>(null)
+  /**
+   * The node whose TITLE is being typed, and what to do if it is abandoned.
+   *
+   * `fresh` is the whole of the difference between creating and renaming:
+   * Escape on a thought that was never named removes it, because the gesture
+   * made a box rather than a thought. `from` is where the selection goes back to
+   * in that case, so the Enter-Enter-Enter loop survives a change of mind.
+   */
+  const [naming, setNaming] = useState<{
+    id: string
+    fresh: boolean
+    previous: string
+    from: string | null
+  } | null>(null)
 
   // ⌘K, and the asks it hands the canvas. Each ask is cleared the moment the
   // canvas honours it, so none of them can fire twice.
@@ -419,10 +431,10 @@ export default function Live({
         })
       }
       setSelected(id)
-      // Created and named in one gesture: Enter, Tab and the `+` all land in the
-      // dialog with the placeholder title selected, so typing a name and pressing
-      // Enter costs what it cost when the editor was drawn on the node.
-      setEditing({ id, focus: 'title' })
+      // Created and named in ONE gesture, on the map: the node appears where it
+      // will live with a caret in its title. A modal per new thought is too heavy
+      // for the ten minutes a brainstorm is for.
+      setNaming({ id, fresh: true, previous: '', from: after ?? parent })
     },
     [guard, ydoc, labels.newThought, labels.capNodes, session.display, onError],
   )
@@ -436,21 +448,62 @@ export default function Live({
   )
   const onChild = useCallback((id: string) => add(id, null), [add])
 
-  const onTitle = useCallback(
-    (id: string, next: string) => {
-      if (!guard()) return
-      const trimmed = next.trim()
+  /**
+   * The title caret closed.
+   *
+   * Every ending it has is decided by `resolveName`, which is pure and tested —
+   * the four of them are easy to get subtly wrong and impossible to test through
+   * a canvas jsdom cannot lay out.
+   */
+  const finishNaming = useCallback(
+    (id: string, input: { text: string; cancelled: boolean }, then: NameThen = 'stay') => {
+      const session = naming?.id === id ? naming : null
+      setNaming(null)
+      if (!session || !guard()) return
+      const outcome = resolveName(session, input)
+      if (outcome.kind === 'discard') {
+        // Nothing was ever created, so nothing is left behind — and the
+        // selection goes back where it came from, or Enter would have nothing
+        // to grow the next thought from.
+        deleteSubtree(ydoc, id)
+        setSelected(session.from)
+        setFocusRequest(Date.now())
+        return
+      }
       // An emptied node is a deletion in every outliner, and typing over a
       // first-draft thought then clearing it is the commonest way to say
-      // "actually, no" — but it still goes through the same questions.
-      if (!trimmed) {
-        setEditing(null)
+      // "actually, no" — but it still goes through the same two questions.
+      if (outcome.kind === 'prune') {
         setPruning(id)
         return
       }
-      setTitle(ydoc, id, trimmed)
+      if (outcome.kind === 'rename') setTitle(ydoc, id, outcome.title)
+      // Enter keeps the node selected so the next Enter makes its next sibling;
+      // Tab goes a level deeper, which opens the next caret by itself.
+      if (then === 'child') onChild(id)
+      else setFocusRequest(Date.now())
     },
-    [guard, ydoc],
+    [naming, guard, ydoc, onChild],
+  )
+
+  const onNameCommit = useCallback(
+    (id: string, text: string, then: NameThen) => finishNaming(id, { text, cancelled: false }, then),
+    [finishNaming],
+  )
+  const onNameCancel = useCallback(
+    (id: string) => finishNaming(id, { text: '', cancelled: true }),
+    [finishNaming],
+  )
+  /** F2, double-click, the pill, the menu and ⌘K all land here. One caret. */
+  const onRenameNode = useCallback(
+    (id: string) => {
+      if (!guard()) return
+      const node = nodes.find((n) => n.id === id)
+      if (!node) return
+      setSelected(id)
+      setNaming({ id, fresh: false, previous: node.title, from: id })
+    },
+    [guard, nodes],
   )
 
   const onReparent = useCallback(
@@ -562,7 +615,7 @@ export default function Live({
       }
       place(ydoc, id, at)
       setSelected(id)
-      setEditing({ id, focus: 'title' })
+      setNaming({ id, fresh: true, previous: '', from: null })
     },
     [guard, ydoc, session.display, onError, labels.capNodes, labels.newThought],
   )
@@ -577,7 +630,7 @@ export default function Live({
         return
       }
       setSelected(id)
-      setEditing({ id, focus: 'title' })
+      setNaming({ id, fresh: true, previous: '', from: about })
     },
     [guard, ydoc, session.display, onError, labels.capNodes, labels.newQuestion],
   )
@@ -595,7 +648,7 @@ export default function Live({
       const landed = answerQuestion(ydoc, id, answer)
       // An answered question is not a question any more — it is removed — so the
       // dialog cannot stay open on it.
-      setEditing(null)
+      setViewing(null)
       if (landed) setSelected(landed)
     },
     [guard, ydoc],
@@ -655,25 +708,37 @@ export default function Live({
   // right-click menu. They differ in WHICH verbs they offer and never in what
   // applies, which is the only way three affordances over one node can stay
   // consistent with each other.
-  const commandContext = useMemo(
-    () => ({
-      canWrite,
-      canManageMap,
-      nodeCount: nodes.length,
-      projectCount: projects.length,
-      node: selectedNode
-        ? {
-            id: selectedNode.id,
-            title: selectedNode.title,
-            promoted: !!selectedNode.promoted,
-            attachments: selectedNode.attachments.length,
-            hasChildren: (descendantCounts.get(selectedNode.id) ?? 0) > 0,
-            collapsed: collapsed.has(selectedNode.id),
-          }
-        : null,
-    }),
-    [canWrite, canManageMap, nodes.length, projects.length, selectedNode, descendantCounts, collapsed],
+  /**
+   * The command context for ONE node, or for the map when there is none.
+   *
+   * A function rather than a value because the right-click menu acts on the node
+   * under the pointer, which is deliberately not the selected one: right-click
+   * opens a menu and selects nothing, since selecting is what brings the pill up.
+   */
+  const contextFor = useCallback(
+    (id: string | null) => {
+      const node = id ? (nodes.find((n) => n.id === id) ?? null) : null
+      return {
+        canWrite,
+        canManageMap,
+        nodeCount: nodes.length,
+        projectCount: projects.length,
+        node: node
+          ? {
+              id: node.id,
+              title: node.title,
+              promoted: !!node.promoted,
+              attachments: node.attachments.length,
+              hasChildren: (descendantCounts.get(node.id) ?? 0) > 0,
+              collapsed: collapsed.has(node.id),
+            }
+          : null,
+      }
+    },
+    [canWrite, canManageMap, nodes, projects.length, descendantCounts, collapsed],
   )
+
+  const commandContext = useMemo(() => contextFor(selected), [contextFor, selected])
 
   const commands = useMemo(() => commandsFor(commandContext), [commandContext])
 
@@ -687,14 +752,14 @@ export default function Live({
     [commandContext, commandLabels],
   )
 
-  const menuItems: MenuItem[] = useMemo(
-    () =>
-      menuVerbsFor(commandContext).map((id) => ({
-        id,
-        label: commandLabels[id],
-        danger: id === 'node.delete',
+  const menuItemsFor = useCallback(
+    (id: string): MenuItem[] =>
+      menuVerbsFor(contextFor(id)).map((verb) => ({
+        id: verb,
+        label: commandLabels[verb],
+        danger: verb === 'node.delete',
       })),
-    [commandContext, commandLabels],
+    [contextFor, commandLabels],
   )
 
   const items: PaletteItem[] = useMemo(() => {
@@ -745,7 +810,7 @@ export default function Live({
   )
 
   const run = useCallback(
-    (id: string) => {
+    (id: string, target?: string) => {
       if (stage === 'goto') {
         closePalette()
         goTo(id)
@@ -756,7 +821,9 @@ export default function Live({
         onProject(id)
         return
       }
-      const node = selected
+      // The menu names the node it acts on, because it never selected one; the
+      // pill and ⌘K act on the selection.
+      const node = target ?? selected
       // A second stage keeps the palette open and re-aims the same input.
       if (id === 'map.goto' || id === 'map.project') {
         setStage(id === 'map.goto' ? 'goto' : 'project')
@@ -773,10 +840,10 @@ export default function Live({
           if (node) onSibling(node)
           break
         case 'node.rename':
-          if (node) setEditing({ id: node, focus: 'title' })
+          if (node) onRenameNode(node)
           break
-        case 'node.notes':
-          if (node) setEditing({ id: node, focus: 'notes' })
+        case 'node.open':
+          if (node) setViewing(node)
           break
         case 'node.attach':
           setAttaching(node)
@@ -833,6 +900,7 @@ export default function Live({
       selected,
       onChild,
       onSibling,
+      onRenameNode,
       onAsk,
       onPromote,
       onToggleCollapse,
@@ -846,11 +914,11 @@ export default function Live({
   const onCentred = useCallback(() => setCentreNode(null), [])
   const onFitted = useCallback(() => setFitRequest(null), [])
   const onFocused = useCallback(() => setFocusRequest(null), [])
-  /** Opening the dialog by double-click or F2 — the canvas has no editor of its
-   *  own to open any more. */
-  const onEditNode = useCallback((id: string) => setEditing({ id, focus: 'title' }), [])
-  const closeEditing = useCallback(() => {
-    setEditing(null)
+  /** The phone's `✎`, and the canvas's open verb. Present on a read-only token:
+   *  it is where the whole of a thought is READ, and it writes nothing itself. */
+  const onOpenNode = useCallback((id: string) => setViewing(id), [])
+  const closeViewing = useCallback(() => {
+    setViewing(null)
     // The map keyboard only works while the canvas has the focus, and the dialog
     // took it. Without this, Enter stops growing the map the moment somebody
     // names a node.
@@ -866,7 +934,7 @@ export default function Live({
   const attachingNode = attaching ? (nodes.find((n) => n.id === attaching) ?? null) : null
   // Read from the live tree for the same reason, and so a node somebody else
   // removes closes the dialog rather than leaving a form over nothing.
-  const editingNode = editing ? (nodes.find((n) => n.id === editing.id) ?? null) : null
+  const viewingNode = viewing ? (nodes.find((n) => n.id === viewing) ?? null) : null
 
   return (
     <>
@@ -923,7 +991,10 @@ export default function Live({
           peers={peers}
           selected={selected}
           onSelect={setSelected}
-          onEditNode={onEditNode}
+          naming={naming?.id ?? null}
+          onNameCommit={onNameCommit}
+          onNameCancel={onNameCancel}
+          onRenameNode={onRenameNode}
           onSibling={onSibling}
           onChild={onChild}
           onDelete={setPruning}
@@ -946,7 +1017,7 @@ export default function Live({
           onOpenAttachments={setAttaching}
           onAttachDrop={onAttachDrop}
           pillVerbs={pillVerbs}
-          menuItems={menuItems}
+          menuItemsFor={menuItemsFor}
           onRunVerb={run}
           centreNode={centreNode}
           onCentred={onCentred}
@@ -971,7 +1042,11 @@ export default function Live({
           selected={selected}
           canWrite={canWrite}
           onSelect={setSelected}
-          onEdit={onEditNode}
+          onEdit={onOpenNode}
+          naming={naming?.id ?? null}
+          onRename={onRenameNode}
+          onNameCommit={onNameCommit}
+          onNameCancel={onNameCancel}
           onChild={onChild}
           onSibling={onSibling}
           onAttachments={setAttaching}
@@ -1007,13 +1082,12 @@ export default function Live({
       )}
 
       <NodeDialog
-        node={editingNode}
+        node={viewingNode}
         canWrite={canWrite}
-        focus={editing?.focus ?? 'title'}
-        relations={editingNode ? relationsFor(editingNode.id) : []}
+        relations={viewingNode ? relationsFor(viewingNode.id) : []}
         titleOf={titleOf}
-        onOpenChange={(open) => !open && closeEditing()}
-        onTitle={onTitle}
+        onOpenChange={(open) => !open && closeViewing()}
+        onOpenAttachments={setAttaching}
         onNotes={onNotes}
         onFields={onFields}
         onRemoveRelation={onRemoveRelation}

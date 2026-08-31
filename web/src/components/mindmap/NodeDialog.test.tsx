@@ -1,9 +1,10 @@
-// The one editor on this surface, and the rules that made it worth moving off
-// the canvas. jsdom has no layout engine, so nothing here says the dialog is
-// drawn correctly; what it says is that every field the card used to carry
-// inline is still reachable, that a field commits when you leave it rather than
-// on every keystroke, that Enter finishes naming a node, and that a read-only
-// token gets a dialog it cannot type into.
+// The one place a thought is read in full and the one place its fields are
+// changed. jsdom has no layout engine, so nothing here says the dialog is drawn
+// correctly; what it says is that everything the expanded canvas card used to
+// show is still reachable here, that the TITLE is a heading rather than a field
+// (it is typed on the node), that a field commits when you leave it rather than
+// on every keystroke, and that a read-only token gets a dialog it cannot type
+// into.
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
@@ -11,10 +12,15 @@ import { NodeDialog, type NodeDialogLabels } from './NodeDialog'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
 
 const LABELS: NodeDialogLabels = {
-  heading: 'Editing “{title}”',
+  heading: '“{title}”',
   subtitle: 'Everything this thought holds.',
-  titleField: 'Title',
-  titleHint: 'A few words.',
+  origin: 'Written by',
+  originHuman: 'person',
+  originAgent: 'agent',
+  promoted: 'became',
+  attachments: 'Attachments ({n})',
+  noAttachments: 'Nothing attached to this thought yet.',
+  openAttachments: 'Attachments…',
   notes: 'Notes',
   notesHint: 'The long form.',
   notesCount: '{n} of {max} characters',
@@ -73,11 +79,10 @@ function mount(over: Partial<Parameters<typeof NodeDialog>[0]> = {}) {
   const props = {
     node: node(),
     canWrite: true,
-    focus: 'title' as const,
     relations: [] as Relationship[],
     titleOf: new Map<string, string>(),
     onOpenChange: vi.fn(),
-    onTitle: vi.fn(),
+    onOpenAttachments: vi.fn(),
     onNotes: vi.fn(),
     onFields: vi.fn(),
     onRemoveRelation: vi.fn(),
@@ -92,7 +97,6 @@ function mount(over: Partial<Parameters<typeof NodeDialog>[0]> = {}) {
 describe('NodeDialog', () => {
   it('carries every field the card used to edit inline', () => {
     mount({ node: node({ edge_label: 'costs' }) })
-    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Pricing')
     expect((screen.getByLabelText('Notes') as HTMLTextAreaElement).value).toBe('the long form')
     expect(screen.getByLabelText('Kind')).toBeTruthy()
     expect(screen.getByLabelText('Shape')).toBeTruthy()
@@ -101,30 +105,40 @@ describe('NodeDialog', () => {
     expect(screen.getByLabelText('A person has looked at this')).toBeTruthy()
   })
 
-  it('opens on the field the verb asked for', () => {
-    // Rename and "write notes on it" are one dialog reached two ways, and the
-    // only difference between them is where the caret lands.
-    mount({ focus: 'notes' })
+  it('shows the title as its heading and offers no way to type one', () => {
+    // The title is typed on the NODE, with the inline caret. Two ways to edit one
+    // field is the trap; there is exactly one.
+    mount()
+    expect(screen.getByText('“Pricing”')).toBeTruthy()
+    expect(screen.queryByLabelText('Title')).toBeNull()
+  })
+
+  it('opens with the caret in the notes', () => {
+    // The notes are what somebody came here to write; everything else on this
+    // surface is a control rather than a caret.
+    mount()
     expect(document.activeElement).toBe(screen.getByLabelText('Notes'))
   })
 
-  it('selects the title so a placeholder is typed over rather than edited', () => {
-    mount({ node: node({ title: 'New thought' }) })
-    const input = screen.getByLabelText('Title') as HTMLInputElement
-    expect(document.activeElement).toBe(input)
-    expect(input.selectionStart).toBe(0)
-    expect(input.selectionEnd).toBe('New thought'.length)
+  it('reads out what the expanded card used to, now that there is no expanded card', () => {
+    mount({
+      node: node({
+        origin: 'agent',
+        promoted: { kind: 'epic', id: 'tk-9' },
+        attachments: [{ id: 'ma-1', kind: 'pdf', name: 'spec.pdf', gist: 'the rules', ref: '' }],
+      }),
+    })
+    expect(screen.getByText(/Written by agent/)).toBeTruthy()
+    expect(screen.getByText(/became epic tk-9/)).toBeTruthy()
+    expect(screen.getByText('Attachments (1)')).toBeTruthy()
+    expect(screen.getByText(/spec\.pdf/)).toBeTruthy()
   })
 
-  it('writes the title once, on Enter, and closes', () => {
-    // Not per keystroke: this is one shared history, and a name typed slowly
-    // would arrive at a collaborator letter by letter.
+  it('reads attachments here and hands over to the manager to change one', () => {
     const props = mount()
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Pricing v2' } })
-    expect(props.onTitle).not.toHaveBeenCalled()
-    fireEvent.keyDown(screen.getByLabelText('Title'), { key: 'Enter' })
-    expect(props.onTitle).toHaveBeenCalledWith('mn-1', 'Pricing v2')
-    expect(props.onOpenChange).toHaveBeenCalledWith(false)
+    expect(screen.getByText('Nothing attached to this thought yet.')).toBeTruthy()
+    fireEvent.click(screen.getByText('Attachments…'))
+    expect(props.onOpenAttachments).toHaveBeenCalledWith('mn-1')
   })
 
   it('writes notes when the field is left, not while it is typed in', () => {
@@ -188,8 +202,8 @@ describe('NodeDialog', () => {
       relations: [{ id: 'mr-1', from: 'mn-1', to: 'mn-2', label: '' }],
       titleOf: new Map([['mn-2', 'Billing']]),
     })
-    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Pricing')
-    for (const field of ['Title', 'Notes', 'Kind', 'Shape', 'Edge label']) {
+    expect(screen.getByText('“Pricing”')).toBeTruthy()
+    for (const field of ['Notes', 'Kind', 'Shape', 'Edge label']) {
       expect((screen.getByLabelText(field) as HTMLInputElement).disabled).toBe(true)
     }
     expect((screen.getByLabelText('No colour') as HTMLButtonElement).disabled).toBe(true)

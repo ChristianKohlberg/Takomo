@@ -16,16 +16,20 @@
 // It takes a tree, not a document: the CRDT lives one level up, so this stays a
 // renderer with no idea that the nodes it is drawing arrived over a socket.
 //
-// The side panel is gone and its job moved ONTO the node: the selected card
-// grows into `NodeCard`'s full form, every other one stays a title and its marks.
-// That card READS a node and never writes one — there is no editor on this
-// canvas, so nothing in here has to swallow a keystroke to keep Space from
-// folding a branch. Double-click and F2 ask the page for `NodeDialog` instead.
-// That is why the card's size is not a layout decision — the geometry in
-// `lib/mindmap-layout.ts` still places every node by `NODE_WIDTH`/`NODE_HEIGHT`,
-// and the expanded card is drawn over its neighbours rather than pushing them.
-// Re-laying out the map around whatever is selected would move every other node
-// under a collaborator's cursor on every click.
+// SELECTING A NODE DOES NOT OPEN IT. Selection highlights it, brings up the pill
+// and the `+`, and changes nothing else. It used to expand the card into a
+// 300×320 reading panel over its neighbours, so every click on the map threw a
+// panel across it whether or not the reader wanted one — which is why every node
+// is now drawn at exactly `NODE_WIDTH`×`NODE_HEIGHT` and the geometry in
+// `lib/mindmap-layout.ts` is the only thing that decides where anything is.
+// Reading a thought properly is `NodeDialog`, reached by the pill, ⌘K and the
+// right-click menu.
+//
+// THE ONE TEXT CARET ON THIS CANVAS IS A TITLE. A node being named draws its
+// title as an input, so a new thought is typed straight onto the map instead of
+// through a modal; `NodeNameInput` stops every event that would otherwise pan,
+// zoom, fold or prune while somebody is typing. Everything else about a thought
+// is a field in the dialog.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   DEFAULT_VIEWPORT,
@@ -52,12 +56,8 @@ import { trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
 import type { DropPayload } from '@/lib/mindmap-attach'
 import { Hint } from '@/components/Hint'
-import {
-  EXPANDED_HEIGHT,
-  EXPANDED_WIDTH,
-  NodeCard,
-  type NodeCardLabels,
-} from '@/components/mindmap/NodeCard'
+import { NodeCard, type NodeCardLabels } from '@/components/mindmap/NodeCard'
+import type { NameThen } from '@/components/mindmap/NodeNameInput'
 import { NodeMenu, type MenuItem } from '@/components/mindmap/NodeMenu'
 import { NodePill, type PillVerb } from '@/components/mindmap/NodePill'
 
@@ -105,6 +105,9 @@ export interface CanvasLabels {
   trustUnverified: string
   /** Clicking the line to a parent. `{title}` and `{parent}` name both ends. */
   cutEdge: string
+  /** The inline title caret: its accessible name, and its placeholder. */
+  nameField: string
+  nameHint: string
 }
 
 export interface CanvasProps {
@@ -121,9 +124,20 @@ export interface CanvasProps {
   peers: CanvasPeer[]
   selected: string | null
   onSelect: (id: string | null) => void
-  /** Open the editing dialog on a node — double-click, F2, and nothing else here.
-   *  There is no editor on the canvas any more; the canvas asks for one. */
-  onEditNode: (id: string) => void
+  /**
+   * The node whose title is being typed right now, or null.
+   *
+   * Owned one level up because creating a node and naming it are one gesture,
+   * and the create half is a document write the canvas does not do.
+   */
+  naming: string | null
+  /** The caret closed with a name in it. `then` is what the key that closed it
+   *  asked for next: Enter stays on this thought, Tab goes a level deeper. */
+  onNameCommit: (id: string, title: string, then: NameThen) => void
+  /** Escape. What that does to the node is the page's decision. */
+  onNameCancel: (id: string) => void
+  /** Rename in place — F2 and double-click. The one way a title is changed. */
+  onRenameNode: (id: string) => void
   /** Enter: a sibling after this node. Tab: a child of it. */
   onSibling: (id: string) => void
   onChild: (id: string) => void
@@ -142,8 +156,8 @@ export interface CanvasProps {
   onCancelRelation: () => void
   canWrite: boolean
   labels: CanvasLabels
-  /** Everything the selected card needs to be the detail surface. It READS the
-   *  node; changing one is the dialog's job, one level up. */
+  /** What a card's marks are called. A card is a title and its marks; the whole
+   *  of a thought is the dialog, one level up. */
   cardLabels: NodeCardLabels
   relationsFor: (id: string) => Relationship[]
   titleOf: ReadonlyMap<string, string>
@@ -158,10 +172,16 @@ export interface CanvasProps {
   onAttachDrop: (id: string, payload: DropPayload) => void
   /** The three or four verbs the pill offers over the selected node. */
   pillVerbs: readonly PillVerb[]
-  /** What right-clicking the selected node offers. */
-  menuItems: readonly MenuItem[]
-  /** Runs a pill verb or a menu entry. Both are command ids. */
-  onRunVerb: (id: string) => void
+  /**
+   * What right-clicking a node offers — a function of the node, not of the
+   * selection, because right-click opens the menu WITHOUT selecting anything.
+   * Selecting is what brings the pill up, and a menu that selected as a side
+   * effect would be doing two things when one was asked for.
+   */
+  menuItemsFor: (id: string) => readonly MenuItem[]
+  /** Runs a pill verb or a menu entry. Both are command ids; `target` names the
+   *  node a menu entry acts on, since that node need not be the selected one. */
+  onRunVerb: (id: string, target?: string) => void
   /**
    * Asks from the page, each cleared the moment it is honoured: bring a node into
    * the middle of the view, fit the map, or take the keyboard back.
@@ -248,7 +268,10 @@ export function Canvas({
   peers,
   selected,
   onSelect,
-  onEditNode,
+  naming,
+  onNameCommit,
+  onNameCancel,
+  onRenameNode,
   onSibling,
   onChild,
   onDelete,
@@ -268,7 +291,7 @@ export function Canvas({
   onOpenAttachments,
   onAttachDrop,
   pillVerbs,
-  menuItems,
+  menuItemsFor,
   onRunVerb,
   centreNode,
   onCentred,
@@ -290,19 +313,22 @@ export function Canvas({
   // when it CHANGES — a 500-node map re-rendering on every mousemove is the one
   // way a hover affordance could cost more than it is worth.
   const [hovered, setHovered] = useState<string | null>(null)
-  // Where the right-click menu is, in container pixels, or null.
-  const [menuAt, setMenuAt] = useState<Point | null>(null)
+  // The open right-click menu: where it is drawn, in container pixels, and which
+  // node it acts on. The node is carried here rather than taken from `selected`
+  // because opening this menu selects nothing.
+  const [menu, setMenu] = useState<{ at: Point; id: string } | null>(null)
   // The node a file or link is hovering over, mid-drag.
   const [dropOver, setDropOver] = useState<string | null>(null)
   const fitted = useRef(false)
 
   const placed = mode === 'radial' ? radialLayout(nodes) : layout(nodes)
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
-  // The selected card is drawn LAST, because it is the only one that grows: in
-  // SVG there is no z-index, so paint order is the only way it lands over its
-  // neighbours rather than under them.
+  // The node being named is drawn LAST. Every card is the same size now, so
+  // nothing overlaps by design — but a hand-placed thought can sit on top of
+  // another, and in SVG there is no z-index, so paint order is the only way to
+  // keep an open caret from ending up underneath one.
   const ordered = [...placed.nodes].sort(
-    (a, b) => Number(a.node.id === selected) - Number(b.node.id === selected),
+    (a, b) => Number(a.node.id === naming) - Number(b.node.id === naming),
   )
 
   // Fit once, when the map first arrives with something in it. Refitting on every
@@ -322,29 +348,19 @@ export function Canvas({
   }, [])
 
   /**
-   * The node under a point — including the SELECTED one's expanded card.
+   * The node under a point.
    *
-   * `nodeAt` knows only the layout's box, and the expanded card is wider than
-   * it. The card itself stops every pointer event except on its grip, so what
-   * reaches here from that region is exactly the press that means "drag me" —
-   * and without this it would land in empty space and deselect instead.
+   * Every card is drawn at its layout box now, so this is the layout's own
+   * hit-test and nothing else — the special case for a selected card wider than
+   * its box went with the expanded card.
    */
-  const hitAt = (world: Point) => {
-    const direct = nodeAt(placed.nodes, world)
-    if (direct) return direct
-    const p = selected ? byId.get(selected) : undefined
-    if (!p) return null
-    const at = positionOf(p.node.id)
-    const left = at.x + (NODE_WIDTH - EXPANDED_WIDTH) / 2
-    const inside =
-      world.x >= left &&
-      world.x <= left + EXPANDED_WIDTH &&
-      world.y >= at.y &&
-      world.y <= at.y + EXPANDED_HEIGHT
-    return inside ? p : null
-  }
+  const hitAt = (world: Point) => nodeAt(placed.nodes, world)
 
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    // Only the primary button does anything on the map. The right button ran the
+    // whole select-and-begin-drag path before `contextmenu` ever fired, so a
+    // right-click both opened a node and opened a menu over it.
+    if (e.button !== 0) return
     const screen = pointIn(e)
     const world = toWorld(screen, viewport)
     const hit = hitAt(world)
@@ -425,14 +441,14 @@ export function Canvas({
   }
 
   /**
-   * Ask the page for the dialog on a node.
+   * Open the title caret on a node.
    *
-   * Deliberately NOT gated on `canWrite`: the dialog is the only place the whole
-   * of a thought can be read, and it refuses every write on a read-only token by
-   * itself. The verbs that mean "change this" stay absent for such a token, the
-   * way every other inapplicable command does.
+   * Gated on `canWrite`, unlike the dialog: a caret is a write, and a read-only
+   * token must never get one from any entrance.
    */
-  const edit = onEditNode
+  const rename = (id: string) => {
+    if (canWrite) onRenameNode(id)
+  }
 
   // ⌘K asked for a node. Centring is deliberately not a fit: it keeps the zoom
   // the reader chose, because jumping AND rezooming loses them twice. The layout
@@ -478,6 +494,9 @@ export function Canvas({
   // the canvas rather than only inside a text box: with a node selected, Enter
   // and Tab grow the map without the mouse.
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // While a title is being typed the caret owns the keyboard — it stops every
+    // key itself, and this is the belt to that pair of braces.
+    if (naming) return
     if (e.key === 'Escape' && relationFrom) {
       e.preventDefault()
       onCancelRelation()
@@ -501,7 +520,7 @@ export function Canvas({
       onChild(selected)
     } else if (e.key === 'F2') {
       e.preventDefault()
-      edit(selected)
+      rename(selected)
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault()
       onDelete(selected)
@@ -530,10 +549,10 @@ export function Canvas({
    * rendering it off-screen first and moving it, which is a visible jump, and
    * being a few pixels out on the clamp costs nothing.
    */
-  const clampMenu = (screen: Point): Point => {
+  const clampMenu = (screen: Point, rows: number): Point => {
     const box = svgRef.current?.getBoundingClientRect()
     const width = 232
-    const height = 34 * Math.max(menuItems.length, 1) + 16
+    const height = 34 * Math.max(rows, 1) + 16
     return {
       x: Math.max(4, Math.min(screen.x, (box?.width ?? width) - width - 4)),
       y: Math.max(4, Math.min(screen.y, (box?.height ?? height) - height - 4)),
@@ -544,7 +563,13 @@ export function Canvas({
    *  has no pointer to anchor on. */
   const openMenuFor = (id: string) => {
     const at = positionOf(id)
-    setMenuAt(clampMenu(toScreen({ x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT }, viewport)))
+    setMenu({
+      id,
+      at: clampMenu(
+        toScreen({ x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT }, viewport),
+        menuItemsFor(id).length,
+      ),
+    })
   }
 
   const closeMenu = () => {
@@ -552,7 +577,7 @@ export function Canvas({
     // press somewhere else also closes this, and stealing the focus away from
     // wherever that press landed is worse than leaving it alone.
     const fromMenu = document.activeElement?.closest?.('[role="menu"]') != null
-    setMenuAt(null)
+    setMenu(null)
     if (fromMenu) svgRef.current?.focus()
   }
 
@@ -587,9 +612,6 @@ export function Canvas({
   /** The node a drag is over, or null. Shared by the dragover and drop paths so
    *  the highlight and the write can never disagree about the target. */
   const nodeUnderDrag = (e: { clientX: number; clientY: number }) =>
-    // `hitAt`, not `nodeAt`: the selected node is drawn as a card wider than its
-    // layout box, and a drop aimed at what is on screen must land on what is on
-    // screen.
     hitAt(toWorld(pointIn(e), viewport))?.node.id ?? null
 
   return (
@@ -646,20 +668,23 @@ export function Canvas({
           const screen = pointIn(e)
           const hit = hitAt(toWorld(screen, viewport))
           if (!hit) {
-            setMenuAt(null)
+            setMenu(null)
             return
           }
-          onSelect(hit.node.id)
-          setMenuAt(clampMenu(screen))
+          // The menu, and ONLY the menu. Selecting here would bring the pill up
+          // under a menu nobody asked to have a node opened by.
+          setMenu({
+            id: hit.node.id,
+            at: clampMenu(screen, menuItemsFor(hit.node.id).length),
+          })
         }}
         onDoubleClick={(e) => {
           const world = toWorld(pointIn(e), viewport)
-          // `hitAt`, not `nodeAt`: the selected node is drawn as a card wider
-          // than its layout box, and a double-click on what is on screen must
-          // reach what is on screen.
           const hit = hitAt(world)
           if (hit) {
-            edit(hit.node.id)
+            // Double-click is rename, not open: the title is the one thing typed
+            // on the map, and everything else about a thought is the dialog.
+            rename(hit.node.id)
             return
           }
           // Empty space: a loose thought, pinned where it was dropped and opened
@@ -784,16 +809,14 @@ export function Canvas({
           {ordered.map((p) => {
             const at = positionOf(p.node.id)
             const isSelected = selected === p.node.id
+            // A caret only ever opens on a node this token may write to, and it
+            // is checked here as well as at every entrance: a read-only token
+            // must not get one by any route.
+            const isNaming = naming === p.node.id && canWrite
             const target = dropTarget?.id === p.node.id ? dropTarget : null
             const watchers = peersOn(p.node.id)
             const hidden = descendantCounts.get(p.node.id) ?? 0
             const folded = collapsed.has(p.node.id)
-            // Only the selected card carries its detail. At the 500-node cap
-            // every card in full would be unreadable, so the rest keep their
-            // marks and the reader still sees where the substance is.
-            const width = isSelected ? EXPANDED_WIDTH : NODE_WIDTH
-            const height = isSelected ? EXPANDED_HEIGHT : NODE_HEIGHT
-            const offset = (NODE_WIDTH - width) / 2
             const attachments = p.node.attachments.length
             const dropping = dropOver === p.node.id
             // The `+` is on hover OR selection, never permanently: 500 nodes
@@ -823,12 +846,11 @@ export function Canvas({
                   />
                 ))}
                 <rect
-                  x={offset}
-                  width={width}
-                  height={height}
+                  width={NODE_WIDTH}
+                  height={NODE_HEIGHT}
                   // A question is squarer than a thought: it is a different kind
                   // of thing on the map, and shape says so before colour does.
-                  rx={isSelected ? 12 : isQuestion ? 4 : cornerRadius(p.node.shape)}
+                  rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
                   className={cn(
                     'fill-card stroke-border',
                     trust && TRUST_FILL[trust],
@@ -839,20 +861,25 @@ export function Canvas({
                     target && !target.allowed && 'stroke-destructive',
                   )}
                   style={
-                    p.node.color && !isSelected && !trust && !isQuestion
-                      ? { fill: p.node.color }
-                      : undefined
+                    p.node.color && !trust && !isQuestion ? { fill: p.node.color } : undefined
                   }
                   strokeWidth={isSelected || target || relationFrom === p.node.id ? 2 : 1}
                 />
-                <foreignObject x={offset} width={width} height={height}>
+                <foreignObject width={NODE_WIDTH} height={NODE_HEIGHT}>
                   <NodeCard
                     node={p.node}
-                    expanded={isSelected}
                     relations={relationsFor(p.node.id)}
-                    titleOf={titleOf}
                     fold={fold}
                     trust={trust}
+                    naming={
+                      isNaming
+                        ? {
+                            onCommit: (text, then) => onNameCommit(p.node.id, text, then),
+                            onCancel: () => onNameCancel(p.node.id),
+                            labels: { field: labels.nameField, hint: labels.nameHint },
+                          }
+                        : null
+                    }
                     labels={cardLabels}
                   />
                 </foreignObject>
@@ -862,10 +889,10 @@ export function Canvas({
                     something else entirely. */}
                 {dropping && (
                   <rect
-                    x={offset - 5}
+                    x={-5}
                     y={-5}
-                    width={width + 10}
-                    height={height + 10}
+                    width={NODE_WIDTH + 10}
+                    height={NODE_HEIGHT + 10}
                     rx={14}
                     fill="none"
                     strokeWidth={2}
@@ -880,7 +907,7 @@ export function Canvas({
                     the selected one — it is how you see there is something
                     there at all. Clicking it opens the manager. */}
                 {attachments > 0 && (
-                  <foreignObject x={offset + width - 54} y={-11} width={56} height={22}>
+                  <foreignObject x={NODE_WIDTH - 54} y={-11} width={56} height={22}>
                     <div className="pointer-events-none flex h-full items-center justify-end">
                       <button
                         type="button"
@@ -899,7 +926,7 @@ export function Canvas({
 
                 {/* Add a child, right where the child will appear. */}
                 {showAdd && (
-                  <foreignObject x={offset + width + 1} y={height / 2 - 12} width={26} height={24}>
+                  <foreignObject x={NODE_WIDTH + 1} y={NODE_HEIGHT / 2 - 12} width={26} height={24}>
                     <div className="pointer-events-none flex h-full items-center">
                       <button
                         type="button"
@@ -916,24 +943,26 @@ export function Canvas({
                   </foreignObject>
                 )}
 
-                {/* The verbs, only on selection, in the margin above the node. */}
-                {isSelected && pillVerbs.length > 0 && (
-                  <foreignObject x={offset} y={-38} width={width} height={34}>
+                {/* The verbs, only on selection, in the margin above the node.
+                    Not while it is being named: the caret is one thought's worth
+                    of attention and a toolbar over it is the rest of them. */}
+                {isSelected && !isNaming && pillVerbs.length > 0 && (
+                  <foreignObject x={0} y={-38} width={NODE_WIDTH} height={34}>
                     <div className="pointer-events-none flex h-full items-end justify-center">
                       <NodePill
                         className="pointer-events-auto"
                         verbs={pillVerbs}
-                        onRun={onRunVerb}
+                        onRun={(verb) => onRunVerb(verb)}
                         ariaLabel={labels.nodeActions}
                       />
                     </div>
                   </foreignObject>
                 )}
 
-                {/* The fold handle. Only where there is something to fold, only
-                    ever for this viewer, and never under the expanded card —
-                    ⌘K and Space fold the selected node instead. */}
-                {!isSelected && (hidden > 0 || folded) && (
+                {/* The fold handle. Only where there is something to fold, and
+                    only ever for this viewer. It is drawn on the selected node
+                    too, now that selecting one no longer covers its corner. */}
+                {(hidden > 0 || folded) && (
                   <g
                     onPointerDown={(e) => {
                       e.stopPropagation()
@@ -979,14 +1008,15 @@ export function Canvas({
         </div>
       )}
 
-      {menuAt && selected && menuItems.length > 0 && (
+      {menu && menuItemsFor(menu.id).length > 0 && (
         <NodeMenu
-          items={menuItems}
-          at={menuAt}
+          items={menuItemsFor(menu.id)}
+          at={menu.at}
           ariaLabel={labels.nodeMenu}
-          onRun={(id) => {
+          onRun={(verb) => {
+            const target = menu.id
             closeMenu()
-            onRunVerb(id)
+            onRunVerb(verb, target)
           }}
           onClose={closeMenu}
         />

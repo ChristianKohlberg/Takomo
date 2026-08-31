@@ -186,48 +186,68 @@ navigated; both are gone, and so is the project picker in `NavRail` on that rout
 alone. The header keeps what a shared document needs — its title, whether this
 browser is connected, who else is in it — and everything else is a command.
 
-Node detail moved ONTO the node: the selected card grows into `NodeCard`'s full
-form — title, the whole notes, what is attached, the lines running to other
-branches, what it became, who wrote it — and every other card stays a title, its
-marks (`≋` notes, `¶` relations) and one line of substance. Only one card
-is ever expanded, which is what keeps a 500-node map readable, and the expanded
-card is drawn OVER its neighbours rather than laid out around — re-laying the map
-out on selection would move every node under a collaborator's cursor on every
-click. `lib/mindmap-layout.ts` is untouched by any of it.
+**SELECTING A NODE IS NOT OPENING IT.** Selection used to expand the card into a
+300×320 reading panel drawn over its neighbours, so every click on the map threw a
+panel across it whether or not anybody had asked to open anything. Selection now
+highlights the node, brings up the pill and the `+`, and does nothing else. Every
+card is drawn at `NODE_WIDTH`×`NODE_HEIGHT`, so `lib/mindmap-layout.ts` is the only
+thing that decides where anything is and there is no size that varies by state.
 
-**The card is text you READ; editing one thought is `NodeDialog`.** There is no
-input, textarea, select or checkbox anywhere on the canvas, and no title editor
-drawn over a node either. A form on the canvas has to fight the canvas for the
-keyboard — Space folds a branch, Enter grows one, Backspace prunes — so the card
-had to swallow every keystroke, which then swallowed the keys the canvas needs and
-pushed ⌘K into the capture phase to get out from under it. The dialog carries
-everything that was inline (title, notes, kind, shape, colour, edge label, the
-reviewed flag, this node's relations, and a question's answer) and every path
-leads to it: the pill's rename and notes verbs, ⌘K's `node.rename` and
-`node.notes`, double-click, the right-click menu, and the `✎` on an `Outline` row.
-Creating a node opens it with the placeholder title selected, so Enter, Tab and
-`+` still cost a name and one key. Attachments keep their own badge and their own
-dialog. It commits a field when you leave it and when it closes — no save button,
-for the reason `/documents` has none — and closing hands the keyboard back to the
-canvas, or Enter would stop growing the map the moment somebody named a node.
+What a card carries is a title and the always-on marks that say WHERE the
+substance is — `≋` notes, `¶ n` relations, `→` what it became, `⌁` an agent wrote
+it, the trust mark, `⊞ n` for a folded branch — plus one quiet line of the notes'
+first sentence, or the titles a fold is standing in for. That is what turns a map
+of thirty labels into a map of thirty thoughts while keeping 500 of them readable.
+
+**Reading a thought properly is `NodeDialog`**, which already existed, is already
+the editing surface and already has a read-only state; one surface rather than a
+canvas panel and a dialog that overlap. It holds who wrote it, what it became, the
+notes, kind, shape, colour, edge label, the reviewed flag, this node's relations,
+a question's answer, and a read-only attachment list with a button through to
+`AttachmentsDialog`. It opens from the pill's `node.open`, ⌘K, the right-click
+menu, and the `✎` on an `Outline` row — deliberately NOT from selection and not
+from double-click. It commits a field when you leave it and when it closes — no
+save button, for the reason `/documents` has none — and closing hands the keyboard
+back to the canvas.
+
+**THE ONE TEXT CARET ON THE CANVAS IS A TITLE.** A modal per new thought is too
+heavy for the ten minutes a brainstorm is for, so creating a node — Enter, Tab, the
+`+`, `+ Branch`, ⌘K's add verbs, a double-click into empty space — makes it appear
+where it will live showing only its title, with the caret in it. Enter commits and
+KEEPS the node selected, so the next Enter makes the next sibling and the fast loop
+is a loop; Tab commits and goes a level deeper. Escape abandons: a thought that was
+never named is removed, because the gesture made a box rather than a thought, and a
+node that had a title keeps it. Emptying an existing title and committing is still
+a deletion, behind `PruneDialog`'s two questions. Renaming uses the same caret from
+F2, double-click, the pill, the menu and ⌘K, so there is exactly ONE way to change
+a title — which is why `NodeDialog` shows it as a heading and has no title field.
+The four endings are `lib/mindmap-naming.ts`, pure and tested, because jsdom can
+prove nothing about a canvas. `NodeNameInput` stops every event that would
+otherwise pan, zoom, fold or prune while somebody is typing, and a read-only token
+never gets a caret from any entrance.
 
 **The affordances live in the margin and appear on selection.** Unselected, a
 node is a title, its marks, and a count badge if anything is attached — nothing
 else. Hovered, a `+` appears at its right edge and adds a child. Selected, a
-small pill floats above it with THREE OR FOUR verbs and no more: rename, notes,
+small pill floats above it with THREE OR FOUR verbs and no more: open, rename,
 fold/unfold, and relate. Which four is a pure function (`pillVerbsFor`), tested
 rather than reviewed, and the choice is by what the other affordances already
 cover — `+` adds, the badge attaches, right-click removes, and ⌘K carries the
 long tail. A fifth verb wanting onto the pill is the signal it belongs in ⌘K,
 because a pill that lists everything is the side panel coming back in a rounder
-shape. Fold survives a read-only token, since fold is per-viewer and never
-touches the document.
+shape. Opening survives a read-only token because it is a read; fold survives
+because it is per-viewer and never touches the document.
 
-Right-click opens `NodeMenu` — the occasional verbs, with removal last and apart.
-It is not right-click only: Shift+F10 and the ContextMenu key open the same menu
-anchored on the selected node, because a menu reachable by one gesture no
-keyboard has is a set of commands a keyboard user does not have. Deleting a
-branch still goes through `PruneDialog`'s two questions from every entrance.
+**Right-click opens `NodeMenu` and NOTHING else.** It does not select the node,
+because selection is what brings the pill up and doing two things when one was
+asked for is the bug — so `onPointerDown` ignores every non-primary button, and
+the menu carries the id of the node under the pointer rather than reading
+`selected`. Its verbs are therefore `menuItemsFor(id)`, and running one passes
+that id back as an explicit target. It is not right-click only: Shift+F10 and the
+ContextMenu key open the same menu anchored on the selected node, because a menu
+reachable by one gesture no keyboard has is a set of commands a keyboard user does
+not have. Deleting a branch still goes through `PruneDialog`'s two questions from
+every entrance.
 
 **Attachments are a badge and a dialog, not chips on the card.** The badge shows
 the current count on EVERY node that has one, which is how you see there is
@@ -247,13 +267,14 @@ space would otherwise navigate the browser to it and throw away the map, the
 connection and whatever anyone was typing.
 
 The phone gets all of that as plain buttons on each `Outline` row — attachments
-(with the count), edit, add after, add underneath, detach, remove — because every
-canvas affordance here is pointer-driven and a phone has neither hover nor a right
-button. The list is not an editor itself: `✎` opens the same `NodeDialog` the
-canvas opens, rather than growing a second, worse editor for a small screen.
+(with the count), open, rename, add after, add underneath, detach, remove —
+because every canvas affordance here is pointer-driven and a phone has neither
+hover nor a right button. It carries the same one caret the canvas does and no
+more: a row being named shows a title caret in place, `Aa` opens it on a row that
+already has a name, and `✎` opens the same `NodeDialog` for everything else.
 
-**Every card carries a line of substance, and folding SUMMARISES.** An unselected
-card used to be a title and its marks; it now also carries one quiet line saying
+**Every card carries a line of substance, and folding SUMMARISES.** A card used to
+be a title and its marks; it now also carries one quiet line saying
 what the node actually says — the first sentence of its notes, or, where this
 viewer has folded the branch, `⊞ n` plus the titles of what went, joined with
 ` · ` and clamped. That is the difference between a map of thirty labels and a map
@@ -287,9 +308,9 @@ about nothing in particular keeps its own answer and stops being a question. The
 is no model call in this path and none is wanted.
 
 **Double-clicking empty canvas captures a loose thought** — a first-ring node
-pinned where it was dropped, straight into `NodeDialog` with its placeholder title
-selected. You do not always know where a thought goes, and forcing a parent is
-wrong for the ten minutes a brainstorm is for.
+pinned where it was dropped, with the title caret already in it. You do not always
+know where a thought goes, and forcing a parent is wrong for the ten minutes a
+brainstorm is for.
 
 **Clicking the line to a parent offers to cut it, behind two questions.** The
 child becomes a first-ring thought and nothing is removed, but the gesture is one
@@ -305,11 +326,12 @@ tested rather than reviewed: scope is the selected node else the map, and a
 command that does not apply is ABSENT rather than disabled — on a read-only token
 that would otherwise be most of the list. The same module owns the fuzzy match
 behind "go to node…", which is how you reach a node off screen now that there is
-no rail. The shortcut listener is registered in the CAPTURE phase. The card no longer
-swallows anything, but the pill and the right-click menu still stop every keydown —
-a button in a toolbar must not fold a branch — and React attaches its handlers at
-the root container, so a synthetic stopPropagation there stops the native event
-before it reaches the window.
+no rail. The shortcut listener is registered in the CAPTURE phase. The pill, the right-click
+menu and the title caret all stop every keydown — a button in a toolbar must not
+fold a branch, and `Delete` typed into a name must not prune one — and React
+attaches its handlers at the root container, so a synthetic stopPropagation there
+stops the native event before it reaches the window. Capture is what keeps ⌘K out
+from under all three, and it refuses to OPEN over a text field of its own accord.
 
 **One app, one router, one bundle.** This replaced four independently-built
 self-contained documents. That shape let the binary `include_str!` a whole page

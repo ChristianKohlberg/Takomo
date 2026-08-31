@@ -47,10 +47,10 @@ describe('commandsFor', () => {
   it('puts the node scope first when a node is selected', () => {
     const ids = commandsFor(ctx({ node: node({ hasChildren: true }) }))
     expect(ids.slice(0, 11)).toEqual([
+      'node.open',
       'node.child',
       'node.sibling',
       'node.rename',
-      'node.notes',
       'node.relate',
       'node.attach',
       'node.ask',
@@ -70,7 +70,16 @@ describe('commandsFor', () => {
     )
     // Switching project is a read, so it survives; everything that would write
     // is absent.
-    expect(ids).toEqual(['node.collapse', 'map.goto', 'map.fit', 'map.trust', 'map.project'])
+    // Opening a thought is a READ, and with no expanded card on the canvas it is
+    // the only way to see its notes — so it survives where every write does not.
+    expect(ids).toEqual([
+      'node.open',
+      'node.collapse',
+      'map.goto',
+      'map.fit',
+      'map.trust',
+      'map.project',
+    ])
   })
 
   it('does not offer to promote a branch that already graduated', () => {
@@ -198,7 +207,7 @@ describe('isTextEntry', () => {
 describe('pillVerbsFor', () => {
   it('offers four verbs on a branch somebody can write to, and no more', () => {
     const verbs = pillVerbsFor(ctx({ node: node({ hasChildren: true }) }))
-    expect(verbs).toEqual(['node.rename', 'node.notes', 'node.collapse', 'node.relate'])
+    expect(verbs).toEqual(['node.open', 'node.rename', 'node.collapse', 'node.relate'])
     expect(verbs.length).toBeLessThanOrEqual(4)
   })
 
@@ -213,8 +222,8 @@ describe('pillVerbsFor', () => {
 
   it('drops the fold verb on a leaf, leaving three', () => {
     expect(pillVerbsFor(ctx({ node: node() }))).toEqual([
+      'node.open',
       'node.rename',
-      'node.notes',
       'node.relate',
     ])
   })
@@ -229,10 +238,11 @@ describe('pillVerbsFor', () => {
     // Fold is per-viewer and never touches the document, so it survives; every
     // other verb would be refused and is therefore absent.
     expect(pillVerbsFor(ctx({ canWrite: false, node: node({ hasChildren: true }) }))).toEqual([
+      'node.open',
       'node.collapse',
     ])
-    // …and on a leaf a read-only token gets no pill at all.
-    expect(pillVerbsFor(ctx({ canWrite: false, node: node() }))).toEqual([])
+    // …and on a leaf a read-only token gets the way in and nothing else.
+    expect(pillVerbsFor(ctx({ canWrite: false, node: node() }))).toEqual(['node.open'])
   })
 
   it('needs a second node before offering to draw a relation', () => {
@@ -258,7 +268,11 @@ describe('menuVerbsFor', () => {
   })
 
   it('offers a read-only token nothing that would be refused', () => {
-    expect(menuVerbsFor(ctx({ canWrite: false, canManageMap: false, node: node() }))).toEqual([])
+    // Right-click is the one gesture that reaches a node without selecting it, so
+    // opening one stays; everything that would write is gone.
+    expect(menuVerbsFor(ctx({ canWrite: false, canManageMap: false, node: node() }))).toEqual([
+      'node.open',
+    ])
   })
 
   it('does not offer to promote a branch that already graduated', () => {

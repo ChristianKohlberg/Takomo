@@ -6,16 +6,22 @@
 // though it worked. The list also happens to be the fastest thing to *add* to
 // with a thumb, which is what somebody on a phone is doing with a brainstorm.
 //
-// It is deliberately not an editor ITSELF: no row here has a text box in it. A
-// row that wants changing opens the same `NodeDialog` the canvas opens, which is
-// the only place a thought is typed into on either surface — the phone gets a
-// route to it, not a second, worse editor of its own.
+// It carries the same one caret the canvas does, and no more. Naming a thought is
+// what a brainstorm is made of, so a row being named shows a title caret in place
+// — `Aa` opens it on a row that already has a name — and everything else about a
+// thought is `NodeDialog` behind the `✎`. That is the same split as on the canvas
+// rather than a second, worse editor for a small screen.
 //
 // Those last two are here because the affordances that carry them on the canvas
 // are pointer-driven — a badge, a `+` on hover, a right-click menu — and a phone
 // has no hover and no right button. Rather than give the list a worse version of
 // each, every row carries the same four verbs as plain buttons.
 import { Button } from '@/components/ui/button'
+import {
+  NodeNameInput,
+  type NameThen,
+  type NodeNameInputLabels,
+} from '@/components/mindmap/NodeNameInput'
 import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
 import type { MapNode } from '@/lib/mindmap-doc'
@@ -23,8 +29,13 @@ import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mind
 import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
-  /** Opens the editing dialog on this row. */
+  /** Opens the reading-and-editing dialog on this row. */
   edit: string
+  /** Opens the title caret in place — the phone's F2. */
+  rename: string
+  /** The caret itself: its accessible name, and its placeholder. */
+  nameField: string
+  nameHint: string
   addChild: string
   addSibling: string
   empty: string
@@ -52,10 +63,16 @@ export interface OutlineProps {
   selected: string | null
   canWrite: boolean
   onSelect: (id: string) => void
-  /** Opens the same dialog double-click opens on the canvas. Present on a
-   *  read-only token too: it is where the whole of a thought can be READ, and it
-   *  refuses every write by itself. */
+  /** Opens the same dialog the pill's open verb opens on the canvas. Present on
+   *  a read-only token too: it is where the whole of a thought can be READ, and
+   *  it refuses every write by itself. */
   onEdit: (id: string) => void
+  /** The row whose title is being typed right now, or null. */
+  naming: string | null
+  /** Opens the caret on a row that already has a name. */
+  onRename: (id: string) => void
+  onNameCommit: (id: string, title: string, then: NameThen) => void
+  onNameCancel: (id: string) => void
   onChild: (id: string) => void
   onSibling: (id: string) => void
   /** Opens the same manager the canvas badge opens. */
@@ -78,6 +95,10 @@ export function Outline({
   canWrite,
   onSelect,
   onEdit,
+  naming,
+  onRename,
+  onNameCommit,
+  onNameCancel,
   onChild,
   onSibling,
   onAttachments,
@@ -116,6 +137,10 @@ export function Outline({
         const substance = fold ? fold.text : firstSentence(node.notes, 140)
         const trust: Trust | null =
           trustLens && node.kind !== 'question' ? trustOf(node) : null
+        const nameLabels: NodeNameInputLabels = {
+          field: labels.nameField,
+          hint: labels.nameHint,
+        }
         const trustLabel =
           trust === 'confirmed'
             ? labels.trustConfirmed
@@ -134,6 +159,18 @@ export function Outline({
           // without generating a class per level.
           style={{ paddingLeft: `${12 + depth * 16}px` }}
         >
+          {naming === node.id && canWrite ? (
+            // Named in place, for the same reason the canvas is: a modal per new
+            // thought is too heavy for what a brainstorm is for.
+            <div className="min-w-0 grow">
+              <NodeNameInput
+                value={node.title}
+                onCommit={(text, then) => onNameCommit(node.id, text, then)}
+                onCancel={() => onNameCancel(node.id)}
+                labels={nameLabels}
+              />
+            </div>
+          ) : (
           <button
             type="button"
             onClick={() => onSelect(node.id)}
@@ -178,6 +215,7 @@ export function Outline({
               </div>
             )}
           </button>
+          )}
           <div className="flex shrink-0 items-center">
             <Hint text={labels.attachments.replace('{n}', String(node.attachments.length))}>
               <Button
@@ -201,6 +239,16 @@ export function Outline({
             </Hint>
             {canWrite && (
               <>
+                <Hint text={labels.rename}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={labels.rename}
+                    onClick={() => onRename(node.id)}
+                  >
+                    Aa
+                  </Button>
+                </Hint>
                 <Hint text={labels.addSibling}>
                   <Button
                     variant="ghost"
