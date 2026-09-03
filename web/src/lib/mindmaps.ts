@@ -108,11 +108,14 @@ export type TraceKind = (typeof TRACE_KINDS)[number]
  * The kinds a client may write.
  *
  * The rest are recorded by the paths that perform them, so nobody can claim to
- * have moved a node they did not move. These two are here because the document
+ * have moved a node they did not move. These four are here because the document
  * view is where they happen: prose is edited over the sync socket, which the
- * server never sees as a request, and a review is somebody saying so.
+ * server never sees as a request; a review is somebody saying so; and accepting
+ * or rejecting a proposal is a decision the BROWSER carries out, because
+ * markdown becomes nodes in the editor's own schema and only the editor has it.
+ * Mirrors `CLIENT_TRACE_KINDS` in `src/store/trace.rs`.
  */
-export const CLIENT_TRACE_KINDS = ['edited', 'reviewed'] as const
+export const CLIENT_TRACE_KINDS = ['edited', 'reviewed', 'accepted', 'rejected'] as const
 
 export type ClientTraceKind = (typeof CLIENT_TRACE_KINDS)[number]
 

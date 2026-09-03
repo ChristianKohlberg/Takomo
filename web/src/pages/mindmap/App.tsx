@@ -32,6 +32,7 @@ import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
+import { planLink } from '@/lib/plan-url'
 import {
   createMindmap,
   deleteMindmap,
@@ -262,6 +263,26 @@ export function App() {
       .catch(handleErr)
   }, [open, t, token, refreshList, toast, handleErr])
 
+  /**
+   * The way to the other rendering of this plan.
+   *
+   * The project is saved on the way through, because `/documents` shows the plan
+   * of the SELECTED project — a project holds exactly one — and arriving at
+   * somebody else's plan because the picker still pointed elsewhere would be a
+   * hand-off to the wrong document. The section rides in the hash, honoured once
+   * and then cleared, exactly as `#n=` is in the other direction.
+   */
+  const openPlan = useCallback(
+    (node: string | null) => {
+      if (open) {
+        setProject(open.project)
+        saveProject(open.project)
+      }
+      navigate(planLink(node))
+    },
+    [open, navigate],
+  )
+
   const chooseProject = useCallback((id: string) => {
     setProject(id)
     saveProject(id)
@@ -408,6 +429,7 @@ export function App() {
               currentProject={open.project}
               onProject={chooseProject}
               canManageMap={canWrite}
+              onOpenPlan={openPlan}
               onRenameMap={renameMap}
               focusNode={focusNode}
               onFocusedNode={clearFocusNode}
@@ -427,6 +449,7 @@ export function App() {
                 attachmentsFull: t.attachmentsFull,
                 newQuestion: t.newQuestion,
                 trustLens: t.trustLens,
+                openPlan: t.openPlan,
               }}
               canvasLabels={{
                 empty: t.canvasEmpty,
@@ -597,6 +620,7 @@ export function App() {
                 'node.collapse': t.cmdCollapse,
                 'node.expand': t.cmdExpand,
                 'node.delete': t.cmdDelete,
+                'map.plan': t.cmdPlan,
                 'map.goto': t.cmdGoto,
                 'map.fit': t.cmdFit,
                 'map.trust': t.trustLensCmd,
@@ -613,6 +637,7 @@ export function App() {
                 'node.promoteEpic': t.promoteEpicHint,
                 'node.promoteInitiative': t.promoteIniHint,
                 'node.delete': t.cmdDeleteHint,
+                'map.plan': t.cmdPlanHint,
                 'map.goto': t.cmdGotoHint,
                 'map.delete': t.cmdDeleteMapHint,
               }}

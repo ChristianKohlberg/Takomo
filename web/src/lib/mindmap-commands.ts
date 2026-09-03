@@ -28,6 +28,7 @@ export const NODE_COMMANDS = [
 ] as const
 
 export const MAP_COMMANDS = [
+  'map.plan',
   'map.goto',
   'map.fit',
   'map.trust',
@@ -95,6 +96,12 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
     else if (n.hasChildren) out.push('node.collapse')
     if (ctx.canWrite) out.push('node.delete')
   }
+  // The plan is this map written out — the same tree, read as reading order —
+  // so it is the one map command that is always offered: it survives a
+  // read-only token (reading the plan is a read) and an empty map (which is a
+  // plan with no sections rather than no plan). With a node selected it lands on
+  // that section; `spec/one-model-two-views.md`.
+  out.push('map.plan')
   if (ctx.nodeCount > 0) out.push('map.goto')
   out.push('map.fit')
   // The trust lens is per-viewer and reads nothing but fields already on screen,

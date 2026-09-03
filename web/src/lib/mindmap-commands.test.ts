@@ -33,6 +33,7 @@ const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
 describe('commandsFor', () => {
   it('offers only map commands when nothing is selected', () => {
     expect(commandsFor(ctx())).toEqual([
+      'map.plan',
       'map.goto',
       'map.fit',
       'map.trust',
@@ -74,6 +75,7 @@ describe('commandsFor', () => {
     expect(ids).toEqual([
       'node.open',
       'node.collapse',
+      'map.plan',
       'map.goto',
       'map.fit',
       'map.trust',
@@ -127,6 +129,8 @@ describe('commandsFor', () => {
     // Nothing to tint either.
     expect(ids).not.toContain('map.trust')
     expect(ids).toContain('map.fit')
+    // The plan of an empty map is an empty plan, which is a thing to open.
+    expect(ids).toContain('map.plan')
   })
 })
 

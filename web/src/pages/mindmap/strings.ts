@@ -154,6 +154,7 @@ export const STR = defineStrings({
     cmdCollapse: 'Fold this branch',
     cmdExpand: 'Unfold this branch',
     cmdDelete: 'Remove this branch',
+    cmdPlan: 'Read it as the plan',
     cmdGoto: 'Go to a thought…',
     cmdFit: 'Fit the whole map',
     cmdTidy: 'Tidy up',
@@ -163,6 +164,7 @@ export const STR = defineStrings({
     cmdNewMap: 'Start a brainstorm here',
     cmdRelateHint: 'Then click the other thought and name the line.',
     cmdDeleteHint: 'Everything under it goes too.',
+    cmdPlanHint: 'The same tree written out, at the selected thought.',
     cmdGotoHint: 'Selects it and brings it into view.',
     cmdDeleteMapHint: 'What its branches became stays.',
 
@@ -177,6 +179,7 @@ export const STR = defineStrings({
 
     foldedSummary: 'Folded — {n} thoughts under this one',
     trustLens: 'Trust',
+    openPlan: 'Plan',
     trustLensCmd: 'Turn the trust lens on or off',
     trustLensHint: 'Tints every thought by how much anybody has confirmed about it.',
     trustLegend: 'How sure are we?',
@@ -358,6 +361,7 @@ export const STR = defineStrings({
     cmdCollapse: 'Ast einklappen',
     cmdExpand: 'Ast aufklappen',
     cmdDelete: 'Diesen Ast entfernen',
+    cmdPlan: 'Als Plan lesen',
     cmdGoto: 'Zu einem Gedanken springen…',
     cmdFit: 'Ganze Map einpassen',
     cmdTidy: 'Aufräumen',
@@ -367,6 +371,7 @@ export const STR = defineStrings({
     cmdNewMap: 'Hier ein Brainstorm starten',
     cmdRelateHint: 'Dann den anderen Gedanken anklicken und die Linie benennen.',
     cmdDeleteHint: 'Alles darunter geht mit.',
+    cmdPlanHint: 'Derselbe Baum ausgeschrieben, beim gewählten Gedanken.',
     cmdGotoHint: 'Wählt ihn aus und holt ihn ins Bild.',
     cmdDeleteMapHint: 'Was aus ihren Ästen wurde, bleibt.',
 
@@ -381,6 +386,7 @@ export const STR = defineStrings({
 
     foldedSummary: 'Eingeklappt — {n} Gedanken darunter',
     trustLens: 'Vertrauen',
+    openPlan: 'Plan',
     trustLensCmd: 'Vertrauenslinse ein- oder ausschalten',
     trustLensHint: 'Färbt jeden Gedanken danach, wie viel jemand daran bestätigt hat.',
     trustLegend: 'Wie sicher sind wir?',

@@ -31,7 +31,10 @@ import { ySyncPluginKey } from 'y-prosemirror'
 import type { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 
+import type { Editor } from '@tiptap/react'
+
 import { BlockId } from '@/lib/block-id'
+import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 
 /** How long a person stops typing before the edit counts as settled. */
 const SETTLE_MS = 2500
@@ -54,6 +57,24 @@ export interface SectionEditorProps {
    * two sections would each file entries for the other.
    */
   onSettled: () => void
+  /**
+   * The blocks a pending proposal is about, as a sorted space-joined string.
+   *
+   * A string rather than a `Set` on purpose: highlighting goes through a
+   * ProseMirror transaction, so the effect that dispatches it must fire when the
+   * SET changed and not merely when the page re-rendered — and a fresh `Set` is
+   * a new identity every render. See `highlightKeyFor`.
+   */
+  highlight?: string
+  /**
+   * The editor, handed up as it mounts and `null` as it goes.
+   *
+   * Accepting a proposal means applying its ops to THIS section's document, and
+   * building ProseMirror content needs the editor's exact schema — the same
+   * reason the server does not do it. So the page holds the editors and the
+   * decision is made against the right one.
+   */
+  onEditor?: (editor: Editor | null) => void
   label: string
 }
 
@@ -65,6 +86,8 @@ export default function SectionEditor({
   color,
   canWrite,
   onSettled,
+  highlight = '',
+  onEditor,
   label,
 }: SectionEditorProps) {
   const dirty = useRef(false)
@@ -87,6 +110,10 @@ export default function SectionEditor({
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
         BlockId,
+        // A decoration, never a mark: a mark would be content, written into the
+        // shared document and synced to everybody, which would break the very
+        // rule the highlight illustrates. See `lib/block-highlight.ts`.
+        HighlightBlocks,
       ],
       editorProps: {
         attributes: {
@@ -100,6 +127,21 @@ export default function SectionEditor({
     },
     [ydoc, fragment, provider, canWrite],
   )
+
+  // The page keeps a handle on this editor while it is mounted, and loses it the
+  // moment it is not — an offscreen section has no editor, and a decision made
+  // against a stale one would apply ops to a document nobody is looking at.
+  const register = useRef(onEditor)
+  register.current = onEditor
+  useEffect(() => {
+    register.current?.(editor ?? null)
+    return () => register.current?.(null)
+  }, [editor])
+
+  useEffect(() => {
+    if (!editor) return
+    setHighlightedBlocks(editor.view, new Set(highlight ? highlight.split(' ') : []))
+  }, [editor, highlight])
 
   useEffect(() => {
     if (!editor) return

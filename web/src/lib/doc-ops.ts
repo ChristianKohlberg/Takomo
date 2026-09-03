@@ -20,10 +20,21 @@ export interface Op {
   op: OpKind
   id: string
   markdown?: string
+  /** Why this one op, in the agent's words. Optional: the server stores it when
+   *  an agent sends it, and a proposal is readable without it. */
+  rationale?: string
 }
 
 export interface Proposal {
   id: string
+  /**
+   * The section this is about, when the document is a PLAN.
+   *
+   * A standalone document has no sections, so it is null there — which is why
+   * this is read rather than required: one `proposals` map serves both, and the
+   * plan view filters by it (`lib/plan-proposals.ts`).
+   */
+  node?: string | null
   status: 'pending' | 'accepted' | 'rejected'
   author: string
   instruction: string

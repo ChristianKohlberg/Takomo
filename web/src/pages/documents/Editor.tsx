@@ -26,8 +26,9 @@ import { runAgent } from '@/lib/documents'
 import { CommandMenu, type CommandMenuLabels } from './CommandMenu'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { applyOps, blockText, parseProposal, touchedBlocks, type Proposal } from '@/lib/doc-ops'
+import { byUndecidedThenNewest } from '@/lib/plan-proposals'
 import { syncBase, type DocSession } from '@/lib/documents'
-import { Proposals, type ProposalsProps } from './Proposals'
+import { ProposalPanel, type ProposalPanelLabels } from '@/components/documents/ProposalPanel'
 import { Hint } from '@/components/Hint'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable. */
@@ -70,7 +71,7 @@ export interface EditorProps {
     askHint: string
     agentOff: string
   }
-  proposalLabels: ProposalsProps['labels']
+  proposalLabels: ProposalPanelLabels
   menuLabels: CommandMenuLabels
   suggestionLabels: SuggestionLabels
 }
@@ -259,6 +260,10 @@ export default function Editor({
 
   const onReject = useCallback((p: Proposal) => decide(p, 'rejected') && undefined, [decide])
 
+  // Pending first, newest first within that — the panel takes the order it is
+  // given, because the plan view groups by section before ordering.
+  const ordered = useMemo(() => [...proposals].sort(byUndecidedThenNewest), [proposals])
+
   const textFor = useCallback(
     (id: string) => (editor ? blockText(editor.state.doc, id) : null),
     [editor],
@@ -382,8 +387,8 @@ export default function Editor({
       {/* The review column. Below the document on a phone, beside it otherwise —
           one breakpoint, `md`, meaning "phone or not". */}
       <aside className="border-border-soft flex-none border-t pt-3 md:w-full md:max-w-80 md:border-t-0 md:border-l md:pt-0 md:pl-4">
-        <Proposals
-          proposals={proposals}
+        <ProposalPanel
+          proposals={ordered}
           textFor={textFor}
           canWrite={session.can_write}
           onAccept={onAccept}

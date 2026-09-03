@@ -20,6 +20,15 @@
 // section shows its prose as plain text, which is also what holds its height, so
 // scrolling does not jump as editors mount behind you.
 //
+// **Proposals belong to a SECTION.** They live in the same document, in the
+// top-level `proposals` map, each carrying the node it is about — so an agent's
+// offer arrives in an open browser at once, and the section it is about is the
+// one that says something is waiting. Accepting one applies its ops to that
+// section's fragment THROUGH ITS EDITOR, because markdown→ProseMirror needs the
+// editor's exact schema and only the editor has it; the server deliberately does
+// not construct nodes (`src/api/docprops.rs`). A decision is recorded on the
+// proposal, never erased.
+//
 // **Titles are not edited here.** A heading is read-only and the section offers
 // "show it on the map" instead: the title caret lives on the canvas, and two
 // carets on one Y.Text in two layouts is a fight rather than a feature.
@@ -27,8 +36,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
+import type { Editor } from '@tiptap/react'
+
 import { OutlineRail, type OutlineRailLabels } from '@/components/documents/OutlineRail'
+import {
+  ProposalPanel,
+  type ProposalPanelLabels,
+} from '@/components/documents/ProposalPanel'
 import { SectionPanel, type SectionPanelLabels } from '@/components/documents/SectionPanel'
+import { applyOps, blockText, type Proposal } from '@/lib/doc-ops'
+import {
+  decideProposal,
+  highlightKeyFor,
+  pendingByNode,
+  proposalsByNode,
+  readProposals,
+  PROPOSALS_KEY,
+} from '@/lib/plan-proposals'
 import type { TraceEntry } from '@/lib/mindmaps'
 import { mindmapSyncBase, type MindmapSession } from '@/lib/mindmaps'
 import {
@@ -102,9 +126,18 @@ export interface PlanProps {
   /** A local edit settled. Debounced in the editor — see `SectionEditor`. */
   onEdited: (node: string) => void
   onShowOnMap: (node: string) => void
+  /** A decision on a proposal, for the plan's history. */
+  onDecided: (node: string, kind: 'accepted' | 'rejected') => void
+  /** Ops that could not be applied after all, so they are reported rather than
+   *  silently dropped. */
+  onSkipped: (messages: string[]) => void
+  /** A section handed over by link (`/documents#n=`), or null. Honoured once. */
+  focusSection?: string | null
+  onFocusedSection?: () => void
   labels: PlanLabels
   railLabels: OutlineRailLabels
   sectionLabels: SectionPanelLabels
+  proposalLabels: ProposalPanelLabels
 }
 
 export default function Plan({
@@ -116,9 +149,14 @@ export default function Plan({
   onReview,
   onEdited,
   onShowOnMap,
+  onDecided,
+  onSkipped,
+  focusSection = null,
+  onFocusedSection,
   labels,
   railLabels,
   sectionLabels,
+  proposalLabels,
 }: PlanProps) {
   // One Y.Doc and one provider per map, rebuilt only when the ticket changes.
   // Recreating either on an unrelated render would drop the connection and
@@ -139,6 +177,8 @@ export default function Plan({
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [selected, setSelected] = useState<string | null>(null)
   const [openHistory, setOpenHistory] = useState<Set<string>>(() => new Set())
+  const [openProposals, setOpenProposals] = useState<Set<string>>(() => new Set())
+  const [proposals, setProposals] = useState<Proposal[]>([])
   const canWrite = session.can_write
   const color = useMemo(() => colorFor(session.display), [session.display])
 
@@ -156,6 +196,19 @@ export default function Plan({
     nm.observeDeep(read)
     return () => nm.unobserveDeep(read)
   }, [ydoc])
+
+  // Proposals live BESIDE the prose in the same document, which is what makes
+  // one appear in an open browser the moment an agent writes it and what keeps
+  // it there across a disconnect. A proposal parked server-side until somebody
+  // reloaded would be a second source of truth about the same plan.
+  const proposalMap = useMemo(() => ydoc.getMap<string>(PROPOSALS_KEY), [ydoc])
+
+  useEffect(() => {
+    const read = () => setProposals(readProposals(proposalMap))
+    read()
+    proposalMap.observe(read)
+    return () => proposalMap.unobserve(read)
+  }, [proposalMap])
 
   useEffect(() => {
     const onStatus = ({ status }: { status: string }) => {
@@ -205,6 +258,16 @@ export default function Plan({
     for (const row of rows) out[row.key] = standingOf(standing[row.key])
     return out
   }, [rows, standing])
+
+  const proposalsFor = useMemo(() => proposalsByNode(proposals), [proposals])
+  const pending = useMemo(() => pendingByNode(proposals), [proposals])
+  /** The blocks each section's pending proposals are about, as a value the
+   *  editor's effect can compare. See `highlightKeyFor`. */
+  const highlights = useMemo(() => {
+    const out: Record<string, string> = {}
+    for (const [node, list] of proposalsFor) out[node] = highlightKeyFor(list)
+    return out
+  }, [proposalsFor])
 
   /**
    * A line or two of each section, for the ones no editor is mounted on.
@@ -333,6 +396,15 @@ export default function Plan({
     if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }, [selected, rows])
 
+  // A section handed over by link. Waits for the section to exist: the ask
+  // arrives with the URL and the document is still syncing.
+  useEffect(() => {
+    if (!focusSection) return
+    if (!rows.some((row) => row.key === focusSection)) return
+    onSelect(focusSection)
+    onFocusedSection?.()
+  }, [focusSection, rows, onSelect, onFocusedSection])
+
   const onToggleHistory = useCallback((key: string) => {
     setOpenHistory((current) => {
       const next = new Set(current)
@@ -341,7 +413,80 @@ export default function Plan({
     })
   }, [])
 
+  const onToggleProposals = useCallback((key: string) => {
+    setOpenProposals((current) => {
+      const next = new Set(current)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  }, [])
+
   const visible = useMemo(() => visibleSections(sections, collapsed), [sections, collapsed])
+
+  // ---- deciding on a proposal ---------------------------------------------
+
+  /**
+   * The mounted editors, by section.
+   *
+   * Accepting means applying ops to a real ProseMirror document, and only the
+   * editor knows the schema those ops have to become nodes in. A section that is
+   * not mounted has no editor and therefore no decision to make — which is
+   * consistent, because its panel is not on screen either.
+   *
+   * Memoised per section for the same reason `refFor` is: an inline arrow would
+   * re-register every editor on every render.
+   */
+  const editors = useRef(new Map<string, Editor>())
+  const editorRefs = useRef(new Map<string, (editor: Editor | null) => void>())
+  const editorRefFor = useCallback((key: string) => {
+    const existing = editorRefs.current.get(key)
+    if (existing) return existing
+    const fn = (editor: Editor | null) => {
+      if (editor) editors.current.set(key, editor)
+      else editors.current.delete(key)
+    }
+    editorRefs.current.set(key, fn)
+    return fn
+  }, [])
+
+  /** The current text of a block, for the before-side of a diff. */
+  const textForIn = useCallback(
+    (key: string) => (id: string) => {
+      const editor = editors.current.get(key)
+      return editor ? blockText(editor.state.doc, id) : null
+    },
+    [],
+  )
+
+  const onAccept = useCallback(
+    (key: string, p: Proposal) => {
+      const editor = editors.current.get(key)
+      if (!editor) return
+      const tr = editor.state.tr
+      const { applied, skipped } = applyOps(tr, editor.schema, p.ops)
+      // The decision goes in FIRST and its answer is obeyed: it fails when
+      // somebody else decided this one meanwhile, and applying the ops anyway
+      // would land the same change twice.
+      if (!decideProposal(proposalMap, p.id, 'accepted', session.display)) return
+      if (applied) editor.view.dispatch(tr)
+      // An op whose block has gone since the proposal was made is dropped —
+      // reported rather than silently, because a reviewer who thinks they
+      // accepted the whole change has not reviewed it.
+      if (skipped.length) onSkipped(skipped)
+      onDecided(key, 'accepted')
+    },
+    [proposalMap, session.display, onSkipped, onDecided],
+  )
+
+  const onReject = useCallback(
+    (key: string, p: Proposal) => {
+      // Nothing is applied and nothing is removed: the record stays, as
+      // rejected, because it is a signal about the plan somebody was wrong about.
+      if (!decideProposal(proposalMap, p.id, 'rejected', session.display)) return
+      onDecided(key, 'rejected')
+    },
+    [proposalMap, session.display, onDecided],
+  )
 
   /**
    * The prose fragment each mounted section is bound to.
@@ -381,6 +526,7 @@ export default function Plan({
           collapsed={collapsed}
           onToggle={onToggleFold}
           standing={standings}
+          pending={pending}
           labels={railLabels}
         />
       </aside>
@@ -405,6 +551,7 @@ export default function Plan({
               const mounted = near === null || near.has(row.key)
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null
               const preview = previews.get(row.key) ?? ''
+              const offered = proposalsFor.get(row.key) ?? []
               return (
                 <SectionPanel
                   key={row.key}
@@ -417,6 +564,23 @@ export default function Plan({
                   onToggleHistory={() => onToggleHistory(row.key)}
                   onReview={() => onReview(row.key)}
                   onShowOnMap={() => onShowOnMap(row.key)}
+                  pending={pending[row.key] ?? 0}
+                  proposalCount={offered.length}
+                  proposalsOpen={openProposals.has(row.key)}
+                  onToggleProposals={() => onToggleProposals(row.key)}
+                  proposals={
+                    <ProposalPanel
+                      proposals={offered}
+                      textFor={textForIn(row.key)}
+                      // Deciding writes the plan, so a reader gets the
+                      // proposals and no buttons. An unmounted section has no
+                      // editor to apply anything to either.
+                      canWrite={canWrite && mounted}
+                      onAccept={(p) => onAccept(row.key, p)}
+                      onReject={(p) => onReject(row.key, p)}
+                      labels={proposalLabels}
+                    />
+                  }
                   canWrite={canWrite}
                   active={selected === row.key}
                   sectionRef={refFor(row.key)}
@@ -431,6 +595,8 @@ export default function Plan({
                       color={color}
                       canWrite={canWrite}
                       onSettled={() => onEdited(row.key)}
+                      highlight={highlights[row.key] ?? ''}
+                      onEditor={editorRefFor(row.key)}
                       label={labels.proseLabel.replace('{n}', row.number)}
                     />
                   ) : (

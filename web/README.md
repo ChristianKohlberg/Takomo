@@ -205,7 +205,28 @@ Three consequences worth knowing before editing `pages/documents/`:
 - **A heading is read-only here.** The title caret lives on the canvas; two
   carets on one `Y.Text` in two layouts is a fight, not a feature. The section
   offers "show it on the map" instead, which hands over by link (`#m=…&n=…`) and
-  the canvas selects and centres what arrives.
+  the canvas selects and centres what arrives. The other direction is the map's
+  ⌘K "read it as the plan" and the `≣ Plan` button, which land on `#n=…`; both
+  links are built and read in `lib/plan-url.ts`, and both are honoured once and
+  then cleared, because a cursor kept in step between two views drags a reader
+  back every time the other one moves.
+
+**An agent proposes to a SECTION; a person accepts it there.** Proposals live in
+the map's own document, in the top-level `proposals` map, each record carrying
+the `node` it is about — so one an agent writes appears in an open browser at
+once and survives a disconnect. `lib/plan-proposals.ts` groups them by section
+and counts what is waiting; the outline and the section header both say so
+before anything is opened, and a folded branch reports what is waiting inside
+it. Accepting applies the ops to that section's fragment THROUGH ITS EDITOR,
+because markdown becomes nodes in the editor's exact schema and only the editor
+has it — which is the same reason the server refuses to construct them
+(`src/api/docprops.rs`). Three rules the panel keeps and a change here must not
+break: the blocks a pending proposal touches are marked with a ProseMirror
+**decoration** and never a mark (a mark would be content, which is the very rule
+the highlight illustrates); an op the browser cannot apply after all is
+**reported**, not dropped quietly; and a decision is **recorded** — a rejected
+proposal stays visible as rejected, because it is a signal about the plan
+somebody was wrong about. A reader gets the proposals and no buttons.
 
 What the page shows beside the prose is where each section STANDS — agreed,
 changed since somebody agreed, or never read — plus its history. Both come from

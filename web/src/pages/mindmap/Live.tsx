@@ -172,6 +172,8 @@ export interface LiveLabels {
   newQuestion: string
   /** The trust lens toggle in the top strip, where a phone can reach it. */
   trustLens: string
+  /** The top-strip button that opens this map written out as the plan. */
+  openPlan: string
 }
 
 export interface LiveProps {
@@ -197,6 +199,14 @@ export interface LiveProps {
   onFocusedNode?: () => void
   /** Map-level commands. They go over REST, so they are the page's to run. */
   canManageMap: boolean
+  /**
+   * Open the plan — this map read as reading order — at the selected section
+   * when there is one.
+   *
+   * The page's rather than the canvas's, because it is navigation: the mirror of
+   * "show it on the map", which `/documents` offers in the other direction.
+   */
+  onOpenPlan: (node: string | null) => void
   onRenameMap: () => void
   onDeleteMap: () => void
   onPromote: (node: string, target: 'epic' | 'initiative') => void
@@ -226,6 +236,7 @@ export default function Live({
   currentProject,
   onProject,
   canManageMap,
+  onOpenPlan,
   focusNode = null,
   onFocusedNode,
   onRenameMap,
@@ -885,6 +896,9 @@ export default function Live({
         case 'node.delete':
           setPruning(node)
           break
+        case 'map.plan':
+          onOpenPlan(node ?? null)
+          break
         case 'map.fit':
           setFitRequest(Date.now())
           break
@@ -912,6 +926,7 @@ export default function Live({
       closePalette,
       goTo,
       onProject,
+      onOpenPlan,
       selected,
       onChild,
       onSibling,
@@ -962,6 +977,16 @@ export default function Live({
           className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650] disabled:opacity-40"
         >
           + {labels.branch}
+        </button>
+        {/* ⌘K carries the long tail, but the way to the OTHER view of the same
+            plan is not a long-tail command — and `/documents` offers "show it on
+            the map" as a visible control, so this mirrors it. */}
+        <button
+          type="button"
+          onClick={() => onOpenPlan(selected)}
+          className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650]"
+        >
+          ≣ {labels.openPlan}
         </button>
         <button
           type="button"

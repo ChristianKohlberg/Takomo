@@ -11,6 +11,12 @@
 // layouts, and the map is where naming a thought belongs. So this offers to show
 // the section on the map instead.
 //
+// Proposals hang off it for the same reason the review button does: an agent
+// proposes and a person confirms, and the person confirming is reading the
+// section. A section with something waiting SAYS SO in its header, before
+// anything is opened — a proposal a reader has to go looking for is one that
+// gets accepted by whoever happens to find it, which is not review.
+//
 // History is the point of this view. `standing` says whether anybody agrees with
 // the section as it now reads, and the trace says who did what — the pair is
 // what "better diffs" actually comes from, and it is why the review button is
@@ -39,6 +45,11 @@ export interface SectionPanelLabels {
   historyEmpty: string
   /** `{n}` more entries than are shown. */
   historyMore: string
+  /** The toggle that opens what an agent has offered here. */
+  proposals: string
+  hideProposals: string
+  /** The header badge. `{n}` is how many are waiting on a person. */
+  pendingBadge: string
   /** What each kind of act is called. */
   kinds: Record<TraceKind, string>
   needWrite: string
@@ -57,6 +68,17 @@ export interface SectionPanelProps {
   onToggleHistory: () => void
   onReview: () => void
   onShowOnMap: () => void
+  /** How many proposals are waiting on a person here. Drawn in the header, so a
+   *  reader finds them without opening anything. */
+  pending?: number
+  /** How many there are at all, decided ones included — a rejected proposal
+   *  stays readable, so the toggle survives its decision. */
+  proposalCount?: number
+  proposalsOpen?: boolean
+  onToggleProposals?: () => void
+  /** The review panel itself, when it is open. A slot rather than props,
+   *  because what it needs — the section's live editor — is the page's. */
+  proposals?: ReactNode
   canWrite: boolean
   /** Highlighted because the rail points at it. */
   active?: boolean
@@ -98,6 +120,11 @@ export function SectionPanel({
   onToggleHistory,
   onReview,
   onShowOnMap,
+  pending = 0,
+  proposalCount = 0,
+  proposalsOpen = false,
+  onToggleProposals,
+  proposals,
   canWrite,
   active = false,
   historyLimit = 6,
@@ -141,6 +168,11 @@ export function SectionPanel({
         >
           {standingLabel[standing]}
         </span>
+        {pending > 0 && (
+          <span className="flex-none rounded-sm border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-[650] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+            ◆ {labels.pendingBadge.replace('{n}', String(pending))}
+          </span>
+        )}
       </div>
 
       <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
@@ -161,6 +193,19 @@ export function SectionPanel({
         >
           ⌖ {labels.showOnMap}
         </button>
+        {proposalCount > 0 && onToggleProposals && (
+          <button
+            type="button"
+            onClick={onToggleProposals}
+            aria-expanded={proposalsOpen}
+            className={cn(
+              'hover:text-foreground',
+              pending > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
+            )}
+          >
+            ◆ {proposalsOpen ? labels.hideProposals : labels.proposals}
+          </button>
+        )}
         <button
           type="button"
           onClick={onToggleHistory}
@@ -187,6 +232,8 @@ export function SectionPanel({
       )}
 
       {children}
+
+      {proposalsOpen && proposals}
     </section>
   )
 }

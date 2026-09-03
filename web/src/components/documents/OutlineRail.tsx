@@ -22,6 +22,7 @@
 // and this file decides nothing.
 import type { PlanSection } from '@/lib/plan-sections'
 import { sectionCount, visibleSections } from '@/lib/plan-sections'
+import { pendingInSubtree } from '@/lib/plan-proposals'
 import type { Standing } from '@/lib/plan-trace'
 import { cn } from '@/lib/utils'
 
@@ -36,6 +37,8 @@ export interface OutlineRailLabels {
   standingConfirmed: string
   standingChanged: string
   standingUnseen: string
+  /** What the ◆ beside a row means. `{n}` is how many are waiting. */
+  pending: string
 }
 
 export interface OutlineRailProps {
@@ -48,6 +51,10 @@ export interface OutlineRailProps {
   onToggle: (key: string) => void
   /** Where each section stands, by key. Absent means the plan has no history yet. */
   standing?: Readonly<Record<string, Standing>>
+  /** Proposals waiting on a person, by section key. A FOLDED row reports what
+   *  is waiting beneath it too — folding a branch is not a decision to stop
+   *  caring what an agent offered inside it. */
+  pending?: Readonly<Record<string, number>>
   labels: OutlineRailLabels
   className?: string
 }
@@ -97,6 +104,7 @@ export function OutlineRail({
   collapsed,
   onToggle,
   standing,
+  pending,
   labels,
   className,
 }: OutlineRailProps) {
@@ -115,6 +123,11 @@ export function OutlineRail({
         const folded = hasChildren && collapsed.has(section.key)
         const hidden = folded ? sectionCount(section) : 0
         const stands = standing?.[section.key]
+        const waiting = pending
+          ? folded
+            ? pendingInSubtree(section, pending)
+            : (pending[section.key] ?? 0)
+          : 0
         return (
           <li
             key={section.key}
@@ -175,6 +188,15 @@ export function OutlineRail({
                 title={labels.folded.replace('{n}', String(hidden))}
               >
                 ⊞ {hidden}
+              </span>
+            )}
+            {waiting > 0 && (
+              <span
+                className="flex-none px-1 font-mono text-[11px] text-amber-600 dark:text-amber-400"
+                title={labels.pending.replace('{n}', String(waiting))}
+              >
+                <span aria-hidden="true">◆{waiting}</span>
+                <span className="sr-only">{labels.pending.replace('{n}', String(waiting))}</span>
               </span>
             )}
             {stands && (

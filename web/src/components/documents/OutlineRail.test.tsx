@@ -20,6 +20,7 @@ const labels = {
   standingConfirmed: 'agreed',
   standingChanged: 'changed since',
   standingUnseen: 'unread',
+  pending: '{n} proposals waiting for a decision',
 }
 
 const sections = planSections([
@@ -107,5 +108,36 @@ describe('OutlineRail', () => {
     expect(screen.getByTitle('changed since')).toBeTruthy()
     // A section with no history at all carries no mark, rather than a wrong one.
     expect(screen.queryByTitle('unread')).toBeNull()
+  })
+
+  it('marks the rows an agent is waiting on, and rolls a folded branch up', () => {
+    const { rerender } = render(
+      <OutlineRail
+        sections={sections}
+        selected={null}
+        onSelect={() => {}}
+        collapsed={new Set()}
+        onToggle={() => {}}
+        pending={{ c: 2 }}
+        labels={labels}
+      />,
+    )
+    expect(screen.getByTitle('2 proposals waiting for a decision')).toBeTruthy()
+
+    // Folded, the branch reports what is waiting INSIDE it: folding is not a
+    // decision to stop caring what an agent offered in there.
+    rerender(
+      <OutlineRail
+        sections={sections}
+        selected={null}
+        onSelect={() => {}}
+        collapsed={new Set(['a'])}
+        onToggle={() => {}}
+        pending={{ c: 2 }}
+        labels={labels}
+      />,
+    )
+    expect(screen.queryByText('Versioning')).toBeNull()
+    expect(screen.getByTitle('2 proposals waiting for a decision')).toBeTruthy()
   })
 })

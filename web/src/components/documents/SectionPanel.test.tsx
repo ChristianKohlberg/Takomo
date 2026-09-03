@@ -18,6 +18,9 @@ const labels = {
   hideHistory: 'Hide history',
   historyEmpty: 'Nothing recorded for this section yet.',
   historyMore: '{n} older entries',
+  proposals: 'Proposals',
+  hideProposals: 'Hide proposals',
+  pendingBadge: '{n} waiting',
   needWrite: "This needs a token with the 'write' scope.",
   kinds: {
     authored: 'written',
@@ -114,6 +117,62 @@ describe('SectionPanel', () => {
       </SectionPanel>,
     )
     expect(screen.getByText('✓ I have read this').closest('button')?.disabled).toBe(true)
+  })
+
+  it('says a proposal is waiting without anything being opened', () => {
+    // The reader has to be able to FIND one. A proposal only visible after
+    // somebody opens the right panel is one that gets accepted by whoever
+    // happens to look, which is not review.
+    panel({ pending: 2, proposalCount: 3 })
+    expect(screen.getByText('◆ 2 waiting')).toBeTruthy()
+  })
+
+  it('offers no proposal toggle where nothing has been offered', () => {
+    panel()
+    expect(screen.queryByText('◆ Proposals')).toBeNull()
+  })
+
+  it('keeps the toggle after the last one is decided, because a decision is a record', () => {
+    panel({ pending: 0, proposalCount: 1, onToggleProposals: () => {} })
+    expect(screen.getByText('◆ Proposals')).toBeTruthy()
+    expect(screen.queryByText(/waiting/)).toBeNull()
+  })
+
+  it('shows the review panel only once it is opened', () => {
+    const onToggleProposals = vi.fn()
+    const { rerender } = panel({
+      pending: 1,
+      proposalCount: 1,
+      onToggleProposals,
+      proposals: <p>the offer</p>,
+    })
+    expect(screen.queryByText('the offer')).toBeNull()
+    screen.getByText('◆ Proposals').click()
+    expect(onToggleProposals).toHaveBeenCalled()
+
+    rerender(
+      <SectionPanel
+        number="2.1"
+        depth={1}
+        title="Versioning"
+        standing="unseen"
+        entries={[]}
+        historyOpen={false}
+        onToggleHistory={() => {}}
+        onReview={() => {}}
+        onShowOnMap={() => {}}
+        canWrite
+        pending={1}
+        proposalCount={1}
+        proposalsOpen
+        onToggleProposals={onToggleProposals}
+        proposals={<p>the offer</p>}
+        labels={labels}
+      >
+        <p>prose</p>
+      </SectionPanel>,
+    )
+    expect(screen.getByText('the offer')).toBeTruthy()
   })
 
   it('names the person behind an act where there is one, and the actor otherwise', () => {

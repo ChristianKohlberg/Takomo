@@ -41,6 +41,7 @@ import {
   type TraceEntry,
 } from '@/lib/mindmaps'
 import { traceByNode } from '@/lib/plan-trace'
+import { mapLink, readPlanFocus } from '@/lib/plan-url'
 import { STR } from './strings'
 import type { ConnectionState } from './Plan'
 
@@ -74,6 +75,16 @@ export function App() {
   const [session, setSession] = useState<MindmapSession | null>(null)
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [peers, setPeers] = useState<string[]>([])
+  /**
+   * `#n=<node>`, the section the map asked to be shown.
+   *
+   * Read once, at mount, and cleared the moment the plan honours it: it is a
+   * hand-off rather than state the two views keep in step, exactly as `#n=` is
+   * in the other direction.
+   */
+  const [focusSection, setFocusSection] = useState<string | null>(() =>
+    readPlanFocus(window.location.hash),
+  )
   const [standing, setStanding] = useState<PlanStanding>({})
   const [entries, setEntries] = useState<TraceEntry[]>([])
 
@@ -245,9 +256,38 @@ export function App() {
   const onShowOnMap = useCallback(
     (node: string) => {
       if (!mapId) return
-      navigate(`/mindmaps#m=${encodeURIComponent(mapId)}&n=${encodeURIComponent(node)}`)
+      navigate(mapLink(mapId, node))
     },
     [navigate, mapId],
+  )
+
+  const onFocusedSection = useCallback(() => setFocusSection(null), [])
+
+  /**
+   * A decision on an agent's proposal, filed as an act on the section.
+   *
+   * The plan applies the change itself — the browser is the only place that can,
+   * because markdown becomes nodes in the editor's own schema — so the server
+   * never sees the edit as a request. What it gets is the record of who decided
+   * what, which is the half that has to survive compaction.
+   */
+  const onDecided = useCallback(
+    (node: string, kind: 'accepted' | 'rejected') => {
+      if (!mapId) return
+      recordTrace(token, mapId, { kind, node })
+        .then(() => scheduleRefresh())
+        .catch(handleErr)
+    },
+    [token, mapId, scheduleRefresh, handleErr],
+  )
+
+  /** Ops an accepted proposal could not apply, said out loud. A reviewer who
+   *  believes they accepted the whole change has not reviewed it. */
+  const onSkipped = useCallback(
+    (messages: string[]) => {
+      toast(`${t.applySkipped.replace('{n}', String(messages.length))} ${messages.join('; ')}`, 'err')
+    },
+    [toast, t],
   )
 
   const trace = useMemo(() => traceByNode(entries), [entries])
@@ -386,6 +426,10 @@ export function App() {
             onReview={onReview}
             onEdited={onEdited}
             onShowOnMap={onShowOnMap}
+            onDecided={onDecided}
+            onSkipped={onSkipped}
+            focusSection={focusSection}
+            onFocusedSection={onFocusedSection}
             labels={{
               readOnly: t.readOnlyBanner,
               empty: t.empty,
@@ -401,6 +445,7 @@ export function App() {
               standingConfirmed: t.standingConfirmed,
               standingChanged: t.standingChanged,
               standingUnseen: t.standingUnseen,
+              pending: t.railPending,
             }}
             sectionLabels={{
               untitled: t.untitled,
@@ -414,6 +459,9 @@ export function App() {
               hideHistory: t.hideHistory,
               historyEmpty: t.historyEmpty,
               historyMore: t.historyMore,
+              proposals: t.proposals,
+              hideProposals: t.hideProposals,
+              pendingBadge: t.pendingBadge,
               needWrite: t.needWrite,
               kinds: {
                 authored: t.kindAuthored,
@@ -426,6 +474,21 @@ export function App() {
                 accepted: t.kindAccepted,
                 rejected: t.kindRejected,
               },
+            }}
+            proposalLabels={{
+              heading: t.proposalsHeading,
+              empty: t.proposalsEmpty,
+              pending: t.proposalPending,
+              accepted: t.proposalAccepted,
+              rejected: t.proposalRejected,
+              accept: t.accept,
+              reject: t.reject,
+              by: t.proposalBy,
+              partial: t.proposalPartial,
+              opReplace: t.opReplace,
+              opInsert: t.opInsert,
+              opDelete: t.opDelete,
+              readOnly: t.proposalReadOnly,
             }}
           />
         </Suspense>
