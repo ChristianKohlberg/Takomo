@@ -19159,6 +19159,114 @@ fn peer_node_update(doc: &yrs::Doc, id: &str, title: &str, order: &str) -> Vec<u
     txn.encode_update_v1()
 }
 
+/// The plan's history: what happened, and WHO did it.
+///
+/// The CRDT update log rebuilds the text. It cannot answer "who changed 2.1,
+/// and has anybody agreed with it since" — it is written per flush, merged, and
+/// rewritten by compaction. This is the record of acts somebody would name, and
+/// the reason the document view is worth having.
+#[tokio::test]
+async fn the_plan_keeps_a_trace_of_what_people_did_to_it() {
+    let app = TestApp::spawn().await;
+    let ada = app.add_user("ada", Some("tp"));
+    let ada_token = app.mint_as_user("human:ada", &["read", "write", "human"], &ada);
+
+    let (_, made) = app
+        .post(
+            &ada_token,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+
+    let (s, out) = app
+        .post(
+            &ada_token,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "API" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{out}");
+    let node = out["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        out["nodes"][0]["created_by_user"],
+        json!(ada),
+        "the node records the PERSON, not only the actor string: {out}"
+    );
+
+    // Rename and write into it: two different acts, two entries.
+    app.patch(
+        &ada_token,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({ "title": "The API", "notes": "v1 forever, additive only." }),
+    )
+    .await;
+
+    let (s, trace) = app
+        .get(&ada_token, &format!("/v1/mindmaps/{map}/trace"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{trace}");
+    let kinds: Vec<&str> = trace["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"authored"), "{trace}");
+    assert!(kinds.contains(&"renamed"), "{trace}");
+    assert!(kinds.contains(&"edited"), "{trace}");
+    for entry in trace["items"].as_array().unwrap() {
+        assert_eq!(
+            entry["user"],
+            json!(ada),
+            "every act names the person behind the credential: {entry}"
+        );
+    }
+
+    // Nothing is confirmed until somebody says so.
+    let (_, read) = app.get(&ada_token, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(read["standing"][&node]["confirmed"], json!(false), "{read}");
+
+    let (s, ok) = app
+        .post(
+            &ada_token,
+            &format!("/v1/mindmaps/{map}/trace"),
+            json!({ "node": node, "kind": "reviewed" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{ok}");
+
+    let (_, read) = app.get(&ada_token, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(read["standing"][&node]["confirmed"], json!(true), "{read}");
+
+    // And a confirmation is only good until the next change — which is exactly
+    // what a stored boolean could not express.
+    app.patch(
+        &ada_token,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({ "notes": "Changed my mind: dated versions." }),
+    )
+    .await;
+    let (_, read) = app.get(&ada_token, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        read["standing"][&node]["confirmed"],
+        json!(false),
+        "an edit after a review un-confirms the section: {read}"
+    );
+
+    // A caller may not claim to have done what the server records itself.
+    let (s, refused) = app
+        .post(
+            &ada_token,
+            &format!("/v1/mindmaps/{map}/trace"),
+            json!({ "node": node, "kind": "moved" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "validation.trace_kind");
+}
+
 /// An API write that answered has to have been written down.
 ///
 /// The map's replica lives in memory and a debounced flusher writes it out every

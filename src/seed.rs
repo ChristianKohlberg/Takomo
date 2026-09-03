@@ -982,6 +982,7 @@ fn mindmap(store: &Store) -> ApiResult<()> {
             .iter()
             .map(|(title, notes, origin)| crate::store::mindmapdoc::NodeAdd {
                 parent: parent.map(str::to_string),
+                by_user: None,
                 title: (*title).to_string(),
                 notes: (!notes.is_empty()).then(|| (*notes).to_string()),
                 origin: Some((*origin).to_string()),

@@ -29,6 +29,7 @@ mod shares;
 mod tags;
 mod tickets;
 mod tokens;
+pub mod trace;
 mod transition;
 mod users;
 mod workflows;
@@ -86,6 +87,7 @@ pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, T
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
 };
+pub use trace::{TraceEntry, CLIENT_TRACE_KINDS, MAX_TRACE_PAGE, TRACE_KINDS};
 pub use users::{validate_user_handle, UserCreate, UserListFilter, UserPatch, MAX_USERS_PAGE};
 
 use crate::error::{ApiError, ApiResult};
@@ -1437,6 +1439,43 @@ CREATE INDEX IF NOT EXISTS idx_mindmaps_project ON mindmaps(project, status);
 -- One thought. Capped short on purpose (see MAX_NODE_TEXT): a sentence or two IS
 -- the method, and a node that outgrows it has stopped being a brainstorm node and
 -- wants to be an initiative.
+-- What happened to a section of the plan, who did it, and when.
+--
+-- The plan is one thing the map and the document render two ways, and this is
+-- its history. Not the CRDT update log — that is the mechanism which rebuilds
+-- the text, is written per flush, and is REWRITTEN by compaction. This is the
+-- record of acts somebody would name: a thought written, renamed, moved,
+-- reviewed, a proposal accepted.
+--
+-- In SQL rather than in the document for three reasons: it references a real
+-- person and wants a real foreign key; "everything Ada reviewed this week" is a
+-- query and not a document walk; and it has to survive compaction.
+--
+-- SPARSE by construction. Keystrokes reach nothing, the same rule the event log
+-- follows — an entry per keystroke-batch buries every entry worth reading. The
+-- document view posts one when an edit settles, not while somebody types.
+CREATE TABLE IF NOT EXISTS plan_trace (
+  id       TEXT PRIMARY KEY,
+  project  TEXT NOT NULL,
+  mindmap  TEXT NOT NULL,
+  -- The section. NULL for something that happened to the plan as a whole.
+  node     TEXT,
+  kind     TEXT NOT NULL,
+  -- The free-form actor string the credential carried.
+  actor    TEXT NOT NULL,
+  -- WHICH PERSON, when the credential was bound to one (`users.id`). This is
+  -- the column an audit reads: two `human:alice` tokens are indistinguishable,
+  -- and an actor string does not survive somebody leaving. Kept for an agent's
+  -- entry too — an agent token can belong to somebody's own automation, and
+  -- whose agent is worth knowing.
+  "user"   TEXT REFERENCES users(id),
+  note     TEXT,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plan_trace_map ON plan_trace(mindmap, at);
+CREATE INDEX IF NOT EXISTS idx_plan_trace_node ON plan_trace(node, at) WHERE node IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_plan_trace_user ON plan_trace("user", at) WHERE "user" IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS mindmap_nodes (
   id            TEXT PRIMARY KEY,
   mindmap       TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,

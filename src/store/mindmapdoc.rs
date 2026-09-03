@@ -46,7 +46,7 @@ use std::collections::{HashMap, HashSet};
 use yrs::types::text::TextPrelim;
 use yrs::{
     Any, Array, ArrayPrelim, Doc, GetString, Map, MapPrelim, MapRef, Out, ReadTxn, Text, Transact,
-    TransactionMut,
+    TransactionMut, XmlFragmentPrelim, XmlFragmentRef,
 };
 
 use crate::error::{ApiError, ApiResult};
@@ -56,6 +56,14 @@ use crate::ids::{iso, now_ms};
 /// The two roots. Named here so the browser and the server cannot drift.
 pub const NODES_FIELD: &str = "nodes";
 pub const RELATIONSHIPS_FIELD: &str = "relationships";
+
+/// A node's own prose, as a nested `XmlFragment`.
+///
+/// The map and the document are two renderings of one thing, so a section's text
+/// lives IN its node rather than in a document row copied from it. Tiptap binds
+/// to a fragment handed to it directly, which is what makes this possible at
+/// all — see `spec/one-model-two-views.md`.
+pub const PROSE_KEY: &str = "prose";
 
 /// A node title is a sentence or two, and that brevity is the method rather
 /// than a limitation: a branch you cannot read at a glance has stopped being a
@@ -146,6 +154,11 @@ pub struct DocNode {
     pub parent: Option<String>,
     pub order: String,
     pub title: String,
+    /// The section's prose as plain text — one line per block.
+    ///
+    /// The prose itself is an `XmlFragment` inside the node, edited by the same
+    /// editor `/documents` uses. This is what a CARD shows: a canvas cannot
+    /// render ProseMirror and should not try.
     pub notes: String,
     pub x: Option<f64>,
     pub y: Option<f64>,
@@ -167,6 +180,15 @@ pub struct DocNode {
     /// branch had graduated into.
     pub document: Option<String>,
     pub created_by: String,
+    /// WHICH PERSON made it (`users.id`), where `created_by` is only the
+    /// free-form actor string the credential carried.
+    ///
+    /// The same distinction `cases.human_user` draws, for the same reason: two
+    /// `human:alice` tokens are indistinguishable and nothing survives somebody
+    /// leaving. Null for a credential bound to nobody — an agent's own token,
+    /// or a machine account — which is also how "written by an agent" is read,
+    /// rather than by trusting a scope.
+    pub created_by_user: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -209,6 +231,7 @@ impl DocNode {
             },
             "document": self.document,
             "created_by": self.created_by,
+            "created_by_user": self.created_by_user,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
         })
@@ -309,7 +332,13 @@ pub fn read_nodes<T: ReadTxn>(txn: &T, nodes: &MapRef) -> Vec<DocNode> {
             parent: string_of(txn, &entry, "parent"),
             order: string_of(txn, &entry, "order").unwrap_or_default(),
             title: text_of(txn, &entry, "title"),
-            notes: text_of(txn, &entry, "notes"),
+            // The prose fragment is the truth. A plain `notes` text is what
+            // nodes carried before prose existed and is still read, so a map
+            // written before the upgrade is legible until `ensure_prose` runs.
+            notes: match entry.get(txn, PROSE_KEY) {
+                Some(Out::YXmlFragment(frag)) => super::prose::plain_text(txn, &frag),
+                _ => text_of(txn, &entry, "notes"),
+            },
             x: number_of(txn, &entry, "x"),
             y: number_of(txn, &entry, "y"),
             edge_label: string_of(txn, &entry, "edge_label").unwrap_or_default(),
@@ -324,6 +353,7 @@ pub fn read_nodes<T: ReadTxn>(txn: &T, nodes: &MapRef) -> Vec<DocNode> {
             promoted_id: string_of(txn, &entry, "promoted_id"),
             document: string_of(txn, &entry, "document"),
             created_by: string_of(txn, &entry, "created_by").unwrap_or_default(),
+            created_by_user: string_of(txn, &entry, "created_by_user"),
             created_at: int_of(txn, &entry, "created_at"),
             updated_at: int_of(txn, &entry, "updated_at"),
         });
@@ -720,6 +750,8 @@ pub fn roots(doc: &Doc) -> (MapRef, MapRef) {
 #[derive(Debug, Clone, Default)]
 pub struct NodeAdd {
     pub parent: Option<String>,
+    /// The person behind the credential, when it is bound to one.
+    pub by_user: Option<String>,
     pub title: String,
     pub notes: Option<String>,
     /// Where among its siblings, as an index. `None` appends.
@@ -900,11 +932,14 @@ fn put_node(
     };
     entry.insert(txn, "order", order.to_string());
     entry.insert(txn, "title", TextPrelim::new(add.title.clone()));
-    entry.insert(
-        txn,
-        "notes",
-        TextPrelim::new(add.notes.clone().unwrap_or_default()),
-    );
+    // The section's prose, empty until somebody writes in it. A fragment rather
+    // than a text, because this is what the document view's editor binds to.
+    let prose: XmlFragmentRef = entry.insert(txn, PROSE_KEY, XmlFragmentPrelim::default());
+    if let Some(notes) = add.notes.as_deref() {
+        if !notes.trim().is_empty() {
+            super::prose::set_plain_text(txn, &prose, notes);
+        }
+    }
     entry.insert(txn, "x", Any::Null);
     entry.insert(txn, "y", Any::Null);
     entry.insert(
@@ -931,6 +966,10 @@ fn put_node(
     entry.insert(txn, "promoted_id", Any::Null);
     entry.insert(txn, "document", Any::Null);
     entry.insert(txn, "created_by", actor.to_string());
+    match &add.by_user {
+        Some(user) => entry.insert(txn, "created_by_user", user.clone()),
+        None => entry.insert(txn, "created_by_user", Any::Null),
+    };
     entry.insert(txn, "created_at", now);
     entry.insert(txn, "updated_at", now);
 }
@@ -1031,6 +1070,7 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
             id,
             NodeAdd {
                 parent: add.parent.clone(),
+                by_user: add.by_user.clone(),
                 title,
                 notes: Some(notes),
                 position: add.position,
@@ -1052,6 +1092,7 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
         put_node(&mut txn, &nodes_map, id, add, &order, actor, now);
         working.push(DocNode {
             id: id.clone(),
+            created_by_user: add.by_user.clone(),
             parent: add.parent.clone(),
             order,
             title: add.title.clone(),
@@ -1076,6 +1117,47 @@ pub fn add_nodes(doc: &Doc, adds: &[NodeAdd], actor: &str) -> ApiResult<Vec<(Str
     }
 
     Ok(prepared)
+}
+
+/// A node's prose fragment, made if this node predates prose.
+fn prose_of(txn: &mut TransactionMut, entry: &MapRef) -> XmlFragmentRef {
+    match entry.get(txn, PROSE_KEY) {
+        Some(Out::YXmlFragment(frag)) => frag,
+        _ => entry.insert(txn, PROSE_KEY, XmlFragmentPrelim::default()),
+    }
+}
+
+/// Move a map written before prose existed into it.
+///
+/// Nodes used to carry `notes` as a plain `Y.Text`. The document view edits a
+/// fragment, so every node needs one — and leaving both would be exactly the
+/// two-places-for-one-paragraph the whole design removes. Returns whether it
+/// changed anything, so an untouched map broadcasts nothing.
+///
+/// Idempotent, and safe to run on every room open: a node that already has
+/// prose is skipped, and a node whose legacy notes are empty is left alone.
+pub fn ensure_prose(doc: &Doc) -> bool {
+    let (nodes_map, _) = roots(doc);
+    let mut txn = doc.transact_mut();
+    let ids: Vec<String> = nodes_map.iter(&txn).map(|(id, _)| id.to_string()).collect();
+    let mut changed = false;
+    for id in ids {
+        let Some(Out::YMap(entry)) = nodes_map.get(&txn, &id) else {
+            continue;
+        };
+        if matches!(entry.get(&txn, PROSE_KEY), Some(Out::YXmlFragment(_))) {
+            continue;
+        }
+        let legacy = text_of(&txn, &entry, "notes");
+        let prose = entry.insert(&mut txn, PROSE_KEY, XmlFragmentPrelim::default());
+        if !legacy.trim().is_empty() {
+            super::prose::set_plain_text(&mut txn, &prose, &legacy);
+        }
+        // The old field goes, so nobody can write to a place nothing reads.
+        entry.remove(&mut txn, "notes");
+        changed = true;
+    }
+    changed
 }
 
 fn node_map<T: ReadTxn>(txn: &T, nodes: &MapRef, id: &str) -> ApiResult<MapRef> {
@@ -1228,7 +1310,12 @@ pub fn patch_node(doc: &Doc, id: &str, patch: &NodePatch, _actor: &str) -> ApiRe
         set_text(&mut txn, &entry, "title", &title);
     }
     if let Some(notes) = notes {
-        set_text(&mut txn, &entry, "notes", &notes);
+        // `notes` on the wire is the section's prose as plain text. A caller
+        // that sends a finished string replaces the prose with it; somebody
+        // typing in the document view edits the same fragment through the
+        // editor, which is where the merge actually matters.
+        let prose = prose_of(&mut txn, &entry);
+        super::prose::set_plain_text(&mut txn, &prose, &notes);
     }
     if let Some(at) = &patch.at {
         match at {
@@ -1639,6 +1726,7 @@ mod tests {
             promoted_id: None,
             document: None,
             created_by: "t".to_string(),
+            created_by_user: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -2221,6 +2309,113 @@ mod tests {
         a.document = Some("doc-already01".into());
         let plan = plan_documents(&[a], "root");
         assert_eq!(plan[0].existing.as_deref(), Some("doc-already01"));
+    }
+
+    #[test]
+    fn a_section_keeps_its_prose_inside_the_node() {
+        // The map and the document are two renderings of one thing, so a
+        // section's text lives IN its node — not in a document row copied from
+        // it, which is what left one paragraph in two places that disagreed.
+        let doc = Doc::new();
+        let created = add_nodes(
+            &doc,
+            &[NodeAdd {
+                title: "API".to_string(),
+                notes: Some("The surface everything hangs off.\nAnd a second line.".to_string()),
+                by_user: Some("usr-ada".to_string()),
+                ..Default::default()
+            }],
+            "human:ada",
+        )
+        .expect("add");
+        let id = created[0].0.clone();
+
+        let (nodes, _, raw) = snapshot(&doc, "mm-test");
+        assert_eq!(
+            nodes[0]["notes"], "The surface everything hangs off.\nAnd a second line.",
+            "read back as plain text, one line per block"
+        );
+        assert_eq!(
+            nodes[0]["created_by_user"], "usr-ada",
+            "the PERSON, not only the actor string"
+        );
+        assert_eq!(raw[0].created_by, "human:ada");
+
+        // And it is a fragment, which is what the document editor binds to.
+        let (nodes_map, _) = roots(&doc);
+        let txn = doc.transact();
+        let entry = node_map(&txn, &nodes_map, &id).expect("node");
+        assert!(
+            matches!(entry.get(&txn, PROSE_KEY), Some(Out::YXmlFragment(_))),
+            "a section's prose must be a fragment, or no editor can bind to it"
+        );
+    }
+
+    #[test]
+    fn writing_notes_over_the_api_writes_the_section_prose() {
+        let doc = Doc::new();
+        let id = add_nodes(
+            &doc,
+            &[NodeAdd {
+                title: "API".to_string(),
+                ..Default::default()
+            }],
+            "t",
+        )
+        .expect("add")[0]
+            .0
+            .clone();
+
+        patch_node(
+            &doc,
+            &id,
+            &NodePatch {
+                notes: Some("Decided: v1 forever.".to_string()),
+                ..Default::default()
+            },
+            "t",
+        )
+        .expect("patch");
+
+        let (nodes, _, _) = snapshot(&doc, "mm-test");
+        assert_eq!(nodes[0]["notes"], "Decided: v1 forever.");
+    }
+
+    #[test]
+    fn a_map_written_before_prose_is_moved_into_it_once() {
+        // Nodes used to carry `notes` as a plain Y.Text. Leaving both would be
+        // exactly the two-places-for-one-paragraph the design removes.
+        let doc = Doc::new();
+        let id = "mn-legacy01";
+        {
+            let (nodes_map, _) = roots(&doc);
+            let mut txn = doc.transact_mut();
+            let entry = nodes_map.insert(&mut txn, id.to_string(), MapPrelim::default());
+            entry.insert(&mut txn, "parent", Any::Null);
+            entry.insert(&mut txn, "order", "V".to_string());
+            entry.insert(&mut txn, "title", TextPrelim::new("API"));
+            entry.insert(&mut txn, "notes", TextPrelim::new("written the old way"));
+        }
+
+        assert!(ensure_prose(&doc), "the first run moves it");
+        let (nodes, _, _) = snapshot(&doc, "mm-test");
+        assert_eq!(nodes[0]["notes"], "written the old way", "nothing is lost");
+
+        {
+            let (nodes_map, _) = roots(&doc);
+            let txn = doc.transact();
+            let entry = node_map(&txn, &nodes_map, id).expect("node");
+            assert!(matches!(
+                entry.get(&txn, PROSE_KEY),
+                Some(Out::YXmlFragment(_))
+            ));
+            assert!(
+                entry.get(&txn, "notes").is_none(),
+                "the old field goes, so nothing can write where nothing reads"
+            );
+        }
+
+        assert!(!ensure_prose(&doc), "and running it again changes nothing");
     }
 
     #[test]

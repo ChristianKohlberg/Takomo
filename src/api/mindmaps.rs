@@ -209,6 +209,10 @@ async fn join(
         .ok_or_else(|| ApiError::not_found("mindmap", id))?;
     ctx.require_project(&map.project)?;
     let room = open_room(state, id).await?;
+    // A map written before sections had prose is moved into it here, once, on
+    // the first open. Cheap, idempotent, and it broadcasts only if it changed
+    // something.
+    room.mutate(|doc| Ok(mindmapdoc::ensure_prose(doc)))?;
     Ok((map, room))
 }
 
@@ -234,10 +238,15 @@ pub async fn get_one(
     // a write nobody asked for. The flusher keeps the row current instead.
     map.nodes = nodes.len() as i64;
     let total = nodes.len();
+    // Where each section stands, in one grouped query rather than one per node,
+    // because a map is drawn all at once. It is a reading and not a stored flag:
+    // a section confirmed BEFORE its last edit is not confirmed any more.
+    let standing = state.store.plan_standing(&id)?;
     Ok(Json(json!({
         "mindmap": map.to_json(),
         "nodes": nodes,
         "relationships": relationships,
+        "standing": standing,
         "total": total,
     })))
 }
@@ -292,7 +301,11 @@ fn origin_of(ctx: &AuthCtx) -> String {
     }
 }
 
-fn parse_node_add(obj: &serde_json::Map<String, Value>, origin: &str) -> ApiResult<NodeAdd> {
+fn parse_node_add(
+    obj: &serde_json::Map<String, Value>,
+    origin: &str,
+    by_user: Option<&str>,
+) -> ApiResult<NodeAdd> {
     reject_unknown(obj, &NODE_FIELDS)?;
     // `title` is the field's name now; `text` is what every existing caller
     // sends. Both are accepted and mean the same thing — renaming a field is not
@@ -303,6 +316,7 @@ fn parse_node_add(obj: &serde_json::Map<String, Value>, origin: &str) -> ApiResu
     };
     Ok(NodeAdd {
         parent: get_str(obj, "parent")?,
+        by_user: by_user.map(str::to_string),
         title,
         notes: get_str(obj, "notes")?,
         position: get_i64(obj, "position")?.map(|p| p.max(0) as usize),
@@ -338,7 +352,7 @@ pub async fn add_nodes(
                         "Every entry in 'nodes' must be an object like {\"text\":\"…\",\"parent\":\"mn-…\"}.",
                     )
                 })?;
-                adds.push(parse_node_add(entry, &origin)?);
+                adds.push(parse_node_add(entry, &origin, ctx.user.as_deref())?);
             }
             adds
         }
@@ -348,10 +362,10 @@ pub async fn add_nodes(
                 "Field 'nodes' must be an array of {text, parent?, position?} objects.",
             ))
         }
-        None => vec![parse_node_add(obj, &origin)?],
+        None => vec![parse_node_add(obj, &origin, ctx.user.as_deref())?],
     };
 
-    let (_, room) = join(&state, &ctx, &id).await?;
+    let (map, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
 
     let actor = ctx.actor.clone();
@@ -369,6 +383,21 @@ pub async fn add_nodes(
         .collect();
 
     state.store.note_mindmap_size(&id, all.len() as i64)?;
+    // One trace entry PER node, unlike the event log's one per batch: the event
+    // log answers "what is happening in this project", where ten nodes from one
+    // agent turn are one act; the trace answers "what happened to this section",
+    // and a section was either written or it was not.
+    for (node_id, _) in &created {
+        state.store.record_trace(&crate::store::trace::Record {
+            project: &map.project,
+            mindmap: &id,
+            node: Some(node_id),
+            kind: "authored",
+            actor: &ctx.actor,
+            user: ctx.user.as_deref(),
+            note: None,
+        })?;
+    }
     // One event for the batch, not one per node: ten nodes from an agent turn
     // are one act of brainstorming.
     state.store.note_mindmap_event(
@@ -461,13 +490,29 @@ pub async fn patch_node(
         reviewed: obj.get("reviewed").and_then(Value::as_bool),
     };
 
-    let (_, room) = join(&state, &ctx, &id).await?;
+    let (map, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
 
     let moved = patch.parent.is_some();
+    let renamed = patch.title.is_some();
+    let edited = patch.notes.is_some();
     let actor = ctx.actor.clone();
     room.mutate(|doc| mindmapdoc::patch_node(doc, &node, &patch, &actor))?;
     persist(&state, &room, &ctx).await;
+
+    for (happened, kind) in [(renamed, "renamed"), (edited, "edited"), (moved, "moved")] {
+        if happened {
+            state.store.record_trace(&crate::store::trace::Record {
+                project: &map.project,
+                mindmap: &id,
+                node: Some(&node),
+                kind,
+                actor: &ctx.actor,
+                user: ctx.user.as_deref(),
+                note: None,
+            })?;
+        }
+    }
 
     if moved {
         // A reparent is the only node edit that reaches the event log. Text and
@@ -492,10 +537,19 @@ pub async fn delete_node(
     Path((id, node)): Path<(String, String)>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let (_, room) = join(&state, &ctx, &id).await?;
+    let (map, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
 
     let removed = room.mutate(|doc| mindmapdoc::delete_node(doc, &node))?;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "pruned",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: None,
+    })?;
     persist(&state, &room, &ctx).await;
     let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
     state.store.note_mindmap_size(&id, all.len() as i64)?;
@@ -883,4 +937,86 @@ pub async fn to_documents(
             "note": "One document per thought that had something to say; a bare leaf became a bullet in its parent. Run it again after reshaping the map and the documents are refiled, never rewritten.",
         })),
     ))
+}
+
+/// GET /v1/mindmaps/{id}/trace?node=&limit= (read) — the plan's history.
+///
+/// What happened to the plan, newest first, or to one section of it. This is
+/// NOT the CRDT update log: that is the mechanism that rebuilds the text, is
+/// written per flush, and is rewritten by compaction. This is the record of
+/// acts somebody would name, each carrying the person behind the credential.
+pub async fn trace(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let map = state
+        .store
+        .get_mindmap(&id)?
+        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
+    ctx.require_project(&map.project)?;
+
+    let pairs = query_pairs(raw.as_deref());
+    let limit = parse_i64_param(&pairs, "limit")?
+        .unwrap_or(crate::store::MAX_TRACE_PAGE)
+        .clamp(1, crate::store::MAX_TRACE_PAGE);
+    let node = first(&pairs, "node");
+    let (entries, total) = state.store.plan_trace(&id, node, limit)?;
+
+    Ok(Json(paged(
+        entries.iter().map(|e| e.to_json()).collect(),
+        total,
+        limit,
+        "Raise 'limit' (max 500) or narrow with 'node'; the newest act is first.",
+    )))
+}
+
+/// POST /v1/mindmaps/{id}/trace (write) — record an act the server cannot see.
+///
+/// Prose is edited over the sync socket, which never reaches the server as a
+/// request, and a review is somebody saying so. Those two are the only kinds a
+/// caller may write: everything else is recorded by the path that performs it,
+/// so nobody can claim to have moved a node they did not move.
+pub async fn add_trace(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["node", "kind", "note"])?;
+    let kind = require_str(obj, "kind")?;
+    if !crate::store::CLIENT_TRACE_KINDS.contains(&kind.as_str()) {
+        return Err(ApiError::validation(
+            "validation.trace_kind",
+            format!(
+                "'{kind}' is not a kind a caller may record. Use one of: {}. The rest are written by the paths that perform them, so nobody can claim to have done something they did not.",
+                crate::store::CLIENT_TRACE_KINDS.join(", ")
+            ),
+        ));
+    }
+    let node = get_str(obj, "node")?;
+    let note = get_str(obj, "note")?;
+
+    let map = state
+        .store
+        .get_mindmap(&id)?
+        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
+    ctx.require_project(&map.project)?;
+    state.store.ensure_collab_writable(&id)?;
+
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: node.as_deref(),
+        kind: &kind,
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: note.as_deref(),
+    })?;
+    state.wake();
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
 }

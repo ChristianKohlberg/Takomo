@@ -3887,6 +3887,20 @@ paths:
                 properties:
                   mindmap: { $ref: "#/components/schemas/Mindmap" }
                   nodes: { type: array, items: { $ref: "#/components/schemas/MindmapNode" } }
+                  standing:
+                    type: object
+                    description: |
+                      Where each section stands, keyed by node id: when it last
+                      changed, when it was last confirmed, and whether the
+                      confirmation is still good. A READING and not a stored
+                      flag — a section confirmed BEFORE its last edit is not
+                      confirmed any more, which no boolean can express.
+                    additionalProperties:
+                      type: object
+                      properties:
+                        changed_at: { type: [string, "null"], format: date-time }
+                        reviewed_at: { type: [string, "null"], format: date-time }
+                        confirmed: { type: boolean }
                   relationships:
                     type: array
                     items: { $ref: "#/components/schemas/MindmapRelationship" }
@@ -4140,6 +4154,88 @@ paths:
                         description: 'ticket ids, on an epic promotion only'
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { description: "Already promoted (`mindmap.already_promoted`)" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/trace:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: What happened to the plan, and who did it (read scope)
+      description: |
+        The plan's history, newest first — or one section's, with `node`.
+
+        **This is not the CRDT update log.** That is the mechanism which rebuilds
+        the text: written on every flush, merged, and rewritten wholesale by
+        compaction. Asking it "who changed 2.1, and has anybody agreed with it
+        since?" is asking a storage format a question about people. This answers
+        that one.
+
+        Sparse by construction: an act somebody would name — a thought written,
+        renamed, moved, pruned, reviewed, a proposal accepted — never a
+        keystroke. Every entry carries the free-form actor string AND the person
+        behind the credential (`users.id`) where it was bound to one, because a
+        scope is not an identity and an actor string does not survive somebody
+        leaving.
+      parameters:
+        - { name: node, in: query, schema: { type: string }, description: 'one section' }
+        - { name: limit, in: query, schema: { type: integer, default: 500, maximum: 500 } }
+      responses:
+        "200":
+          description: A bounded envelope of acts, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        node: { type: [string, "null"], description: 'the section, or null for the plan as a whole' }
+                        kind: { type: string, enum: [authored, renamed, edited, moved, pruned, reviewed, proposed, accepted, rejected] }
+                        actor: { type: string, description: 'the free-form actor string the credential carried' }
+                        user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
+                        note: { type: [string, "null"] }
+                        at: { type: string, format: date-time }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  note: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [mindmaps]
+      summary: Record an act the server cannot see (write scope)
+      description: |
+        Only `edited` and `reviewed`. Prose is edited over the sync socket, which
+        never reaches the server as a request, and a review is somebody saying so
+        — those are the two the server cannot observe. Everything else is
+        recorded by the path that performs it, so a caller cannot claim to have
+        moved a node it did not move.
+
+        Post one when an edit SETTLES, not while somebody types: a history with
+        an entry per keystroke buries every entry worth reading.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [edited, reviewed] }
+                node: { type: string, description: 'the section; omit for the plan as a whole' }
+                note: { type: string }
+      responses:
+        "201":
+          description: Recorded.
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /mindmaps/{id}/documents:
@@ -8573,6 +8669,7 @@ x-error-codes:
   validation.mindmap_update_empty: "a mindmap flush carried no bytes. The mindmap counterpart of `validation.doc_update_empty`; the two are separate codes because a client written against one surface should never have to parse the other's vocabulary."
   validation.mindmap_update_too_large: "one mindmap flush is over its byte cap. See `validation.doc_update_too_large` for why a flush is bounded at all."
   validation.mindmap_too_large: "this mindmap's update log is at its byte cap. Every peer replays the whole log to open the map, so the cap is what bounds that allocation. Promote its branches and start a second map."
+  validation.trace_kind: "that is not a kind of act the plan's history records, or not one a caller may record itself. The rest — authored, renamed, moved, pruned, accepted — are written by the paths that perform them, so nobody can claim to have done something they did not; a caller may record only `edited` (prose changes over the sync socket, which the server never sees as a request) and `reviewed` (somebody saying they agree)."
   validation.mindmap_position: "`position` is out of range for that ring. It is an INDEX among a node's siblings now (0 is first, and the ring's length appends), not the gapped 1000/2000 ordering it used to be — a stale gapped value is refused rather than silently appending the node in the wrong place."
   notfound.object: "that id names no collaborative object. A room id carries its own kind — `doc-…` is a document, `mm-…` is a mindmap — and a prefix that is neither reaches nothing, so it reads as absent rather than as a malformed id."
 

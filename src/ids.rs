@@ -57,6 +57,11 @@ pub fn mindmap_node_id() -> String {
     format!("mn-{}", random_chars(BASE36, 8))
 }
 
+/// One thing that happened to the plan.
+pub fn trace_id() -> String {
+    format!("tr-{}", random_chars(BASE36, 8))
+}
+
 /// One block of a document's prose.
 ///
 /// The same shape `web/src/lib/block-id.ts` mints, because an agent addresses a

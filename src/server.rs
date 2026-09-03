@@ -483,6 +483,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/mindmaps/{id}/nodes/{node}/promote",
             post(crate::api::mindmaps::promote),
         )
+        // What happened to the plan, and who did it.
+        .route(
+            "/v1/mindmaps/{id}/trace",
+            get(crate::api::mindmaps::trace).post(crate::api::mindmaps::add_trace),
+        )
         // The sync ticket, minted exactly as a document's is — a browser
         // WebSocket cannot carry an Authorization header, so the credential has
         // to ride the handshake.

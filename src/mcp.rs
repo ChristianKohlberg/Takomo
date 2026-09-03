@@ -2318,6 +2318,7 @@ impl TakomoMcp {
             .into_iter()
             .map(|n| crate::store::mindmapdoc::NodeAdd {
                 parent: n.parent,
+                by_user: auth.user.clone(),
                 title: n.text,
                 // An agent's branch is marked as an agent's. Nothing renders it
                 // yet, but a map that cannot say which thoughts a person had is
@@ -2330,6 +2331,7 @@ impl TakomoMcp {
         // The SAME replica the browsers are on, so a branch added while somebody
         // is looking at the map appears as it is written rather than on reload.
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
         let actor = auth.actor.clone();
         let created = room.mutate(|doc| crate::store::mindmapdoc::add_nodes(doc, &adds, &actor))?;
         // The same rule the REST writes follow: a tool call that answers "done"
@@ -2374,6 +2376,7 @@ impl TakomoMcp {
         auth.require_project(&map.project)?;
 
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
         let (nodes, relationships, outline) = room.read(|doc| {
             let (nodes, relationships, raw) = crate::store::mindmapdoc::snapshot(doc, &a.id);
             let text = match a.node.as_deref() {

@@ -14,7 +14,10 @@
 //! paragraph`). Nothing else is generated, and nothing here ever touches a
 //! document that already has content.
 
-use yrs::{Doc, ReadTxn, Transact, Xml, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+use yrs::{
+    Doc, GetString, ReadTxn, Transact, TransactionMut, Xml, XmlElementPrelim, XmlFragment,
+    XmlFragmentRef, XmlOut, XmlTextPrelim,
+};
 
 /// The field a Tiptap document keeps its prose in. Must match
 /// `docprops::PROSE_FIELD` and the editor's `field: 'prose'`.
@@ -62,6 +65,71 @@ pub fn initial_update(blocks: &[Block]) -> Vec<u8> {
     drop(txn);
     let txn = doc.transact();
     txn.encode_state_as_update_v1(&yrs::StateVector::default())
+}
+
+/// The text of one block, with any nesting flattened.
+///
+/// Not `get_string`, which serialises the element back to XML and would hand a
+/// reader `<paragraph id="blk_x">…</paragraph>` as if it were prose. The same
+/// trap `docprops::element_text` documents, and the same answer.
+fn element_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
+    let mut out = String::new();
+    for child in el.children(txn) {
+        match child {
+            XmlOut::Text(text) => out.push_str(&text.get_string(txn)),
+            XmlOut::Element(inner) => out.push_str(&element_text(txn, &inner)),
+            XmlOut::Fragment(_) => {}
+        }
+    }
+    out
+}
+
+/// A fragment's prose as plain text, one line per block.
+///
+/// This is what a canvas card, an outline and a search read. The map's cards
+/// cannot render ProseMirror and should not try: one line of what a section says
+/// is the entire job.
+pub fn plain_text<T: ReadTxn>(txn: &T, frag: &XmlFragmentRef) -> String {
+    let mut lines = Vec::new();
+    for node in frag.children(txn) {
+        match node {
+            XmlOut::Element(el) => {
+                let text = element_text(txn, &el);
+                if !text.trim().is_empty() {
+                    lines.push(text);
+                }
+            }
+            XmlOut::Text(text) => {
+                let text = text.get_string(txn);
+                if !text.trim().is_empty() {
+                    lines.push(text);
+                }
+            }
+            XmlOut::Fragment(_) => {}
+        }
+    }
+    lines.join("\n")
+}
+
+/// Replace a fragment's whole content with these paragraphs.
+///
+/// A wholesale replace, because this is the path a caller takes when it sends a
+/// finished string over the API. Somebody typing in the browser edits the same
+/// fragment character by character through the editor, which is where the merge
+/// actually matters.
+pub fn set_plain_text(txn: &mut TransactionMut, frag: &XmlFragmentRef, text: &str) {
+    let len = frag.len(txn);
+    if len > 0 {
+        frag.remove_range(txn, 0, len);
+    }
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let el = frag.push_back(txn, XmlElementPrelim::empty("paragraph"));
+        el.insert_attribute(txn, "id", crate::ids::block_id());
+        el.push_back(txn, XmlTextPrelim::new(line));
+    }
 }
 
 #[cfg(test)]
