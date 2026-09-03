@@ -20659,3 +20659,49 @@ fn mindmap_titles(whole: &Value) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// A ticket minted before the freeze cannot open a writable room after it.
+///
+/// The sibling above keeps one socket open ACROSS the archive, which
+/// `resync_frozen` covers because the room is there to be found. This is the
+/// other order, and it is the one that got away: mint a ticket while the project
+/// is live, archive, and only then connect. No room exists at archive time, so
+/// nothing is re-asked — and the room that opens afterwards decided its own
+/// writability from a comment claiming a ticket could only be minted for a
+/// writable object, which is true only at the moment of minting.
+///
+/// Found on a running server after the first fix was already in, by re-running
+/// the probe that found the original bug instead of trusting the green test.
+#[tokio::test]
+async fn a_ticket_minted_before_archiving_cannot_write_after_it() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive?force=true", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    // The ticket is still valid, and opening the socket still works: archiving
+    // does not restrict reading, and this peer may legitimately read.
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("an archived object is still readable over its socket");
+    let mine = yrs::Doc::new();
+    let update = peer_node_update(&mine, "mn-stale001", "Mit altem Ticket", "a0");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &update).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    assert!(
+        !mindmap_titles(&whole).contains(&"Mit altem Ticket".to_string()),
+        "a ticket minted before the freeze must not write after it: {whole}"
+    );
+}

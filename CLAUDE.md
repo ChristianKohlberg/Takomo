@@ -324,9 +324,11 @@ predated the freeze, and the server persisted it. So each `Room` carries a
 `ensure_collab_writable` the REST handlers ask, so there is one predicate rather
 than a second copy of the archive rules — after anything archives, restores or
 deletes. It runs there rather than per frame because archiving is rare and
-keystrokes are not. `archiving_freezes_a_socket_that_was_already_open` pins it,
-and asserts on CONTENT: an earlier version of that test counted rows in the
-update log and passed with the fix removed.
+keystrokes are not. A room also asks that question as it OPENS, because a ticket
+minted before the freeze stays valid after it and can open the first room for an
+object with nobody there for `resync_frozen` to have found. Two tests pin the two
+orders, and both assert on CONTENT: an earlier version counted rows in the update
+log and passed with the fix removed.
 
 **State changes only through transitions** (`src/store/transition.rs`) against the per-project
 state machine (`src/workflow.rs`, format in `spec/workflow-format.md`). A transition's `requires`

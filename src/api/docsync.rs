@@ -286,6 +286,21 @@ impl Rooms {
         let updates =
             super::blocking_read(move || store.store.load_collab_updates(&store_id)).await?;
 
+        // Whether this object may be written, asked once as the room opens.
+        //
+        // NOT assumed writable because minting a ticket is refused for an
+        // archived object: a ticket minted BEFORE the freeze is still valid
+        // afterwards, and opens the first room for that object with nobody
+        // present for `resync_frozen` to have found. That assumption was written
+        // here as a comment and was wrong — a stale ticket wrote into an
+        // archived project on a running server with it in place.
+        let writable_id = id.to_string();
+        let writable = state.clone();
+        let frozen = super::blocking_read(move || {
+            Ok(writable.store.ensure_collab_writable(&writable_id).is_err())
+        })
+        .await?;
+
         let doc = Doc::new();
         let rows = updates.len() as u64;
         {
@@ -315,10 +330,7 @@ impl Rooms {
             tx,
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
-            // A room can only be opened with a freshly minted ticket, and
-            // minting one is already refused for an archived object — so a room
-            // that exists at all started out writable.
-            frozen: AtomicBool::new(false),
+            frozen: AtomicBool::new(frozen),
             flushing: tokio::sync::Mutex::new(()),
         });
 
