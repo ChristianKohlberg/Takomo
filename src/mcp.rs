@@ -2320,8 +2320,12 @@ impl TakomoMcp {
             let blocks = crate::api::docprops::read_blocks(&txn, &frag);
             drop(txn);
 
-            let validated =
-                crate::api::docprops::validate_ops(&ops_raw, &blocks, scope.as_deref())?;
+            let validated = crate::api::docprops::validate_ops(
+                &ops_raw,
+                &blocks,
+                scope.as_deref(),
+                "takomo_document_read",
+            )?;
             let id = crate::api::docprops::write_proposal(
                 d,
                 None,
@@ -2437,8 +2441,12 @@ impl TakomoMcp {
             let txn = yrs::Transact::transact(doc);
             let blocks = crate::api::docprops::read_blocks(&txn, &frag);
             drop(txn);
-            let validated =
-                crate::api::docprops::validate_ops(&ops_raw, &blocks, scope.as_deref())?;
+            let validated = crate::api::docprops::validate_ops(
+                &ops_raw,
+                &blocks,
+                scope.as_deref(),
+                "takomo_plan_read",
+            )?;
             let id = crate::api::docprops::write_proposal(
                 doc,
                 Some(&node),

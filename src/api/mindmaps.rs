@@ -662,6 +662,12 @@ pub async fn promote(
     })?;
 
     state.wake();
+    // The epic is in SQL and committed; the back-link saying which branch became
+    // it is in the CRDT. Losing the second leaves a map that has forgotten what
+    // it produced while the epic still exists — and the "promoting it again
+    // would make a second one" refusal above reads that back-link, so the next
+    // caller would get the duplicate this route exists to prevent.
+    persist(&state, &room, &ctx).await;
     let json =
         node_json(&room, &id, &node).ok_or_else(|| ApiError::not_found("mindmap_node", &node))?;
     Ok((
@@ -747,6 +753,7 @@ pub async fn add_attachment(
     let created =
         room.mutate(|doc| mindmapdoc::add_attachment(doc, &node, &kind, &name, &gist, &reference))?;
     state.wake();
+    persist(&state, &room, &ctx).await;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -960,7 +967,12 @@ pub async fn propose(
         let txn = doc.transact();
         let blocks = crate::api::docprops::read_blocks(&txn, &frag);
         drop(txn);
-        let validated = crate::api::docprops::validate_ops(&operations, &blocks, scope.as_deref())?;
+        let validated = crate::api::docprops::validate_ops(
+            &operations,
+            &blocks,
+            scope.as_deref(),
+            "takomo_plan_read",
+        )?;
         let pid = crate::api::docprops::write_proposal(
             doc,
             Some(&target),
@@ -1125,7 +1137,12 @@ pub async fn run_agent(
         let txn = doc.transact();
         let blocks = crate::api::docprops::read_blocks(&txn, &frag);
         drop(txn);
-        let validated = crate::api::docprops::validate_ops(&plan.ops, &blocks, scope.as_deref())?;
+        let validated = crate::api::docprops::validate_ops(
+            &plan.ops,
+            &blocks,
+            scope.as_deref(),
+            "takomo_plan_read",
+        )?;
         let pid = crate::api::docprops::write_proposal(
             doc,
             Some(&target),

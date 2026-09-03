@@ -267,7 +267,12 @@ pub async fn run_agent(
         let blocks = crate::api::docprops::read_blocks(&txn, &frag);
         drop(txn);
 
-        let validated = crate::api::docprops::validate_ops(&plan.ops, &blocks, scope.as_deref())?;
+        let validated = crate::api::docprops::validate_ops(
+            &plan.ops,
+            &blocks,
+            scope.as_deref(),
+            "takomo_document_read",
+        )?;
         let pid = crate::api::docprops::write_proposal(
             d,
             None,

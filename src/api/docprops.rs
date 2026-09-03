@@ -252,10 +252,18 @@ pub struct Validated {
 /// an error: a human may legitimately have deleted that paragraph while the
 /// model was thinking, and failing the whole run over it would make every
 /// concurrent edit a lost agent run.
+///
+/// `read_tool` is the MCP tool that re-reads THIS surface. It is a parameter
+/// rather than a constant because two surfaces share this function: a plan
+/// section is read with `takomo_plan_read`, and telling its agent to call
+/// `takomo_document_read` sends it to a tool that cannot see the section it is
+/// being asked to look at again. A remedy that names the wrong tool is worse
+/// than none, because the agent will follow it.
 pub fn validate_ops(
     raw: &Value,
     blocks: &[Block],
     scope: Option<&[String]>,
+    read_tool: &str,
 ) -> ApiResult<Validated> {
     let list = raw.as_array().ok_or_else(|| {
         ApiError::validation(
@@ -410,11 +418,10 @@ pub fn validate_ops(
                 }
             ),
         )
-        .remedy(
-            "Re-read the document with takomo_document_read — the block ids may have \
-             moved on — and address only the blocks it lists."
-                .to_string(),
-        ));
+        .remedy(format!(
+            "Re-read it with {read_tool} — the block ids may have moved on — and \
+             address only the blocks it lists."
+        )));
     }
 
     Ok(Validated { ops, skipped })

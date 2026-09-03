@@ -20524,3 +20524,41 @@ async fn position_is_a_rank_among_siblings_and_places_a_node_among_them_on_write
         .collect();
     assert_eq!(roots, vec!["API", "integrations"], "{whole}");
 }
+
+/// Every mindmap handler that changes the CRDT must get it on disk before it
+/// answers.
+///
+/// A `room.mutate` writes to the document in MEMORY. The room's flusher is
+/// debounced, so between the write and the flush there is a window in which the
+/// room can be dropped and reloaded from its persisted updates — and everything
+/// written in that window is simply gone. The handler has already answered 201.
+///
+/// This is not hypothetical: `add_attachment` and `promote` both shipped without
+/// it. `promote` was the dangerous one, because it writes the epic to SQL and
+/// only the back-link to the CRDT, so losing the back-link leaves an epic that
+/// exists beside a map that has forgotten it — and the refusal that stops a
+/// branch being promoted twice reads exactly that back-link, so the next call
+/// would cheerfully make a second epic from the same thought.
+///
+/// Scanning the source is what makes this hold for the NEXT handler as well as
+/// these ten. A behavioural test can only pin the routes somebody remembered to
+/// write one for, which is the same memory that missed these two.
+#[test]
+fn every_mindmap_write_is_persisted_before_it_answers() {
+    let src = include_str!("../src/api/mindmaps.rs");
+    let mut missing = Vec::new();
+    for part in src.split("\npub async fn ").skip(1) {
+        let name = part.split('(').next().unwrap_or_default().to_string();
+        // The body ends at the first column-0 closing brace.
+        let body = part.split("\n}\n").next().unwrap_or_default();
+        if body.contains("room.mutate") && !body.contains("persist(&state") {
+            missing.push(name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these handlers change the document but never persist it, so the write is \
+         lost if the room is dropped before the debounced flush: {missing:?}. Add \
+         `persist(&state, &room, &ctx).await;` before answering."
+    );
+}
