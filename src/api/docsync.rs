@@ -473,6 +473,47 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         }
     };
 
+    // A quiet second failure mode of the same mismatch: every individual update
+    // fits a row, but two seconds of them merged together do not. Merging is an
+    // optimisation, not a requirement — the log is replayed in order either way
+    // — so when the merge does not fit, write the batch as the rows it already
+    // is instead of refusing it.
+    if merged.len() > crate::store::MAX_UPDATE_BYTES {
+        for (i, one) in batch.iter().enumerate() {
+            let store = state.clone();
+            let id = room.id.clone();
+            let writer = actor.to_string();
+            let blob = one.clone();
+            let rows = tokio::task::spawn_blocking(move || {
+                store.store.append_collab_update(&id, &blob, &writer)
+            })
+            .await;
+            match rows {
+                Ok(Ok(rows)) => room.rows.store(rows as u64, Ordering::SeqCst),
+                Ok(Err(e)) => {
+                    eprintln!("{}: flush failed: {}", room.id, e.body.message);
+                    // Keep what is not yet written, oldest first, and stop.
+                    let mut pending = room.pending.lock().expect("pending mutex");
+                    for (j, rest) in batch[i..].iter().enumerate() {
+                        pending.insert(j, rest.clone());
+                    }
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("{}: flush task failed: {e}", room.id);
+                    let mut pending = room.pending.lock().expect("pending mutex");
+                    for (j, rest) in batch[i..].iter().enumerate() {
+                        pending.insert(j, rest.clone());
+                    }
+                    return;
+                }
+            }
+        }
+        room.overloaded.store(false, Ordering::SeqCst);
+        note_size_if_mindmap(state, room).await;
+        return;
+    }
+
     // Held so a failed write can put the work back rather than drop it.
     let merged = Arc::new(merged);
 
@@ -839,10 +880,17 @@ async fn session_loop(
                     _ => continue,
                 };
 
-                if let Some(reply) = handle_frame(&room, &session, me, &bytes) {
-                    if sink.send(Message::Binary(reply.into())).await.is_err() {
+                match handle_frame(&room, &session, me, &bytes) {
+                    Some(FrameAction::Reply(reply)) => {
+                        if sink.send(Message::Binary(reply.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(FrameAction::Close) => {
+                        let _ = sink.send(Message::Close(None)).await;
                         break;
                     }
+                    None => {}
                 }
             }
         }
@@ -855,6 +903,17 @@ async fn session_loop(
     }
 }
 
+/// What the socket owes after one frame.
+enum FrameAction {
+    /// Send this back to the peer that sent the frame.
+    Reply(Vec<u8>),
+    /// Close the connection. Used only for an update that can never be stored:
+    /// the peer's own replica has already applied it, so leaving the socket open
+    /// would let it keep building on something the server will never keep. A
+    /// reconnect resyncs it to what the server actually holds.
+    Close,
+}
+
 /// Decode one frame, act on it, and return anything owed straight back.
 ///
 /// Returns `None` when there is nothing to reply — a relayed update, an ignored
@@ -862,7 +921,12 @@ async fn session_loop(
 /// than closing the socket: the peer may simply be a newer client sending a
 /// message type this server does not know, and disconnecting them over it would
 /// be worse than ignoring it.
-fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> Option<Vec<u8>> {
+fn handle_frame(
+    room: &Room,
+    session: &CollabSession,
+    me: u64,
+    bytes: &[u8],
+) -> Option<FrameAction> {
     let mut dec = Cursor::new(bytes);
     let kind: u64 = dec.read_var().ok()?;
 
@@ -873,10 +937,34 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
                 SYNC_STEP1 => {
                     let sv_bytes = dec.read_buf().ok()?;
                     let sv = StateVector::decode_v1(sv_bytes).ok()?;
-                    Some(sync_message(SYNC_STEP2, &room.diff(&sv)))
+                    Some(FrameAction::Reply(sync_message(
+                        SYNC_STEP2,
+                        &room.diff(&sv),
+                    )))
                 }
                 SYNC_STEP2 | SYNC_UPDATE => {
                     let update = dec.read_buf().ok()?;
+                    // An update larger than one log row can hold must be refused
+                    // HERE, before it is applied and relayed.
+                    //
+                    // The socket's frame cap and the store's row cap were set
+                    // independently and did not agree, so a frame in between was
+                    // accepted, applied, broadcast as confirmed — and then
+                    // refused by every flush for the life of the room. Because a
+                    // refused batch is now kept rather than dropped, it merged
+                    // with everything typed afterwards and took that down with
+                    // it: measured as a map that read back EMPTY after one large
+                    // paste and one ordinary edit. Refusing costs the peer the
+                    // paste; accepting cost it everything after the paste too.
+                    if update.len() > crate::store::MAX_UPDATE_BYTES {
+                        eprintln!(
+                            "{}: refusing a {} byte update; one row holds at most {}",
+                            room.id,
+                            update.len(),
+                            crate::store::MAX_UPDATE_BYTES
+                        );
+                        return Some(FrameAction::Close);
+                    }
                     // A read-only peer is silently not applied rather than
                     // disconnected: it can legitimately hold a document open, and
                     // its own editor will simply never see its change confirmed.

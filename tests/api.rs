@@ -21021,3 +21021,69 @@ async fn a_read_only_token_cannot_change_the_plan_by_reading_it() {
          the shared document"
     );
 }
+
+/// An update too big to store must not take everything after it down.
+///
+/// The socket's frame cap and the store's row cap were set independently and did
+/// not agree: a frame between them was accepted, applied, and broadcast as
+/// confirmed, then refused by every flush for the life of the room. Once a
+/// refused batch was KEPT rather than dropped, it merged with everything typed
+/// afterwards, so one large paste destroyed every later edit in that room —
+/// measured as a map that read back empty. Nothing was sent to the client and
+/// nothing closed; each peer's own editor went on showing text no reader would
+/// ever get back.
+///
+/// Refusing costs the peer the paste. Accepting cost it the paste AND everything
+/// after it, which is the trade this test pins.
+#[tokio::test]
+async fn an_unstorable_update_does_not_poison_the_edits_after_it() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::{Map, Transact};
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mine = yrs::Doc::new();
+
+    let big = {
+        let nodes = mine.get_or_insert_map("nodes");
+        let mut txn = mine.transact_mut();
+        let entry = nodes.insert(&mut txn, "mn-bigpaste", yrs::MapPrelim::default());
+        entry.insert(&mut txn, "title", "a big paste");
+        entry.insert(&mut txn, "position", 0.0);
+        entry.insert(&mut txn, "notes", "x".repeat(1_500_000));
+        txn.encode_update_v1()
+    };
+    assert!(
+        big.len() > takomo::store::MAX_UPDATE_BYTES,
+        "the fixture must exceed one row's cap to test anything"
+    );
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &big).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // The peer is disconnected, so reconnect the way a browser would and carry
+    // on with something ordinary.
+    let (mut peer2, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("a peer reconnects after being closed");
+    let after = yrs::Doc::new();
+    let small = peer_node_update(&after, "mn-ordinary1", "an ordinary thought", "a1");
+    peer2
+        .send(WsMessage::Binary(sync_message(SYNC_UPDATE, &small).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    drop(peer);
+    drop(peer2);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        mindmap_titles(&whole).contains(&"an ordinary thought".to_string()),
+        "an edit made after an unstorable one must still be there: {whole}"
+    );
+}
