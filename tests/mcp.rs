@@ -3477,9 +3477,16 @@ async fn a_written_up_map_produces_prose_an_agent_can_read_and_address() {
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{written}");
-    let doc = written["documents"][0]["document"]
+    // By NODE, not by position: the first entry is the plan's front page, which
+    // is named for the map and carries its summary rather than a thought.
+    let doc = written["documents"]
+        .as_array()
+        .expect("documents")
+        .iter()
+        .find(|d| d["node"] == json!(api))
+        .expect("the API node's document")["document"]
         .as_str()
-        .expect("a document")
+        .expect("a document id")
         .to_string();
 
     let (read, err) = app

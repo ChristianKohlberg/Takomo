@@ -747,6 +747,76 @@ pub async fn to_documents(
     let mut created = 0usize;
     let mut refiled = 0usize;
 
+    // The plan's own front page.
+    //
+    // Without it the top of the outline is a FOLDER — a row you cannot open,
+    // sitting above your whole plan. The map's title already names that folder,
+    // so the document belongs at its parent with that name, which is exactly the
+    // fold `/documents` performs to turn a folder and its namesake into one
+    // section. Its id lives in the map's metadata, because a map has no root
+    // node to hang it from: every first-ring branch has `parent: null`.
+    if !root.is_empty() {
+        let (parent, name) = match root.rsplit_once('/') {
+            Some((parent, name)) => (parent.to_string(), name.to_string()),
+            None => (String::new(), root.clone()),
+        };
+        let existing = map
+            .metadata
+            .get("document")
+            .and_then(Value::as_str)
+            .and_then(|doc_id| state.store.get_document(doc_id).ok());
+
+        let front = match existing {
+            Some(document) => {
+                refiled += 1;
+                state.store.patch_document(
+                    &document.id,
+                    &crate::store::DocumentPatch {
+                        title: Some(name.clone()),
+                        path: Some(parent.clone()),
+                        ..Default::default()
+                    },
+                    &ctx.actor,
+                )?
+            }
+            None => {
+                let document = state.store.create_document(
+                    &crate::store::DocumentCreate {
+                        project: map.project.clone(),
+                        title: name.clone(),
+                        path: Some(parent.clone()),
+                        ..Default::default()
+                    },
+                    &ctx.actor,
+                )?;
+                if !map.summary.trim().is_empty() {
+                    let update = crate::store::prose::initial_update(&[
+                        crate::store::prose::Block::Paragraph(map.summary.trim().to_string()),
+                    ]);
+                    state
+                        .store
+                        .append_collab_update(&document.id, &update, &ctx.actor)?;
+                }
+                state.store.patch_mindmap(
+                    &id,
+                    &MindmapPatch {
+                        metadata_merge: Some(json!({ "document": document.id })),
+                        ..Default::default()
+                    },
+                    &ctx.actor,
+                )?;
+                created += 1;
+                document
+            }
+        };
+        made.push(json!({
+            "node": Value::Null,
+            "document": front.id,
+            "title": front.title,
+            "path": front.path,
+        }));
+    }
+
     for entry in &plan {
         let existing = entry
             .existing

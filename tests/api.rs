@@ -19294,7 +19294,8 @@ async fn a_map_is_written_up_as_one_document_per_thought_that_had_something_to_s
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{out}");
-    assert_eq!(out["created"], json!(2), "{out}");
+    // Two thoughts with something to say, plus the plan's own front page.
+    assert_eq!(out["created"], json!(3), "{out}");
     assert_eq!(out["refiled"], json!(0), "{out}");
 
     let (s, page) = app
@@ -19316,6 +19317,10 @@ async fn a_map_is_written_up_as_one_document_per_thought_that_had_something_to_s
     assert_eq!(
         filed,
         vec![
+            // The front page sits at the top level, named for the map, so the
+            // outline's first row is a document somebody can open rather than a
+            // folder they cannot.
+            (String::new(), "Payments rebuild".to_string()),
             ("Payments rebuild".to_string(), "API".to_string()),
             ("Payments rebuild/API".to_string(), "versioning".to_string()),
         ],
@@ -19353,14 +19358,14 @@ async fn a_map_is_written_up_as_one_document_per_thought_that_had_something_to_s
         .await;
     assert_eq!(s, StatusCode::CREATED, "{again}");
     assert_eq!(again["created"], json!(0), "nothing new: {again}");
-    assert_eq!(again["refiled"], json!(2), "{again}");
+    assert_eq!(again["refiled"], json!(3), "{again}");
 
     let (_, page) = app
         .get(&app.worker, "/v1/projects/tp/documents?limit=50")
         .await;
     assert_eq!(
         page["total"],
-        json!(2),
+        json!(3),
         "a second run must not duplicate: {page}"
     );
     let mut filed: Vec<(String, String)> = page["items"]
@@ -19378,6 +19383,7 @@ async fn a_map_is_written_up_as_one_document_per_thought_that_had_something_to_s
     assert_eq!(
         filed,
         vec![
+            (String::new(), "Payments rebuild".to_string()),
             ("Payments rebuild".to_string(), "The API".to_string()),
             (
                 "Payments rebuild/The API".to_string(),

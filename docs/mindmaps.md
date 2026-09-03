@@ -237,6 +237,7 @@ document. Without it, every six-word thought is its own page and a map of forty
 converts into forty documents nobody opens.
 
 ```
+(top level)/                         Payments rebuild   <- the plan's front page
 Payments rebuild/                    API
 Payments rebuild/API/                versioning: v1 forever, or dated?
 Payments rebuild/                    integrations

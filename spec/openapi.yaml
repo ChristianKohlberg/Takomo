@@ -4159,6 +4159,13 @@ paths:
         parent's document. Without it every six-word thought is its own page, and
         a map of forty converts into forty documents nobody opens.
 
+        It also writes **the plan's own front page**: a document named for the
+        map, at the top level, carrying its summary. Without it the top of the
+        outline is a folder — a row nobody can open, sitting above the whole
+        plan. Its id is kept in the map's `metadata.document`, because a map has
+        no root node to hang it from: every first-ring branch has a null parent.
+        That entry comes back with `node: null`.
+
         **Running it again refiles; it never rewrites.** A node that already made
         a document keeps it — the title and folder are brought back in line with
         the map, and the prose is left alone, because somebody has probably been
