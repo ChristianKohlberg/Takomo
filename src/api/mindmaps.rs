@@ -188,7 +188,13 @@ pub async fn delete(
 /// which is most of them.
 fn section_text(room: &crate::api::docsync::RoomGuard, node: &str) -> Option<String> {
     room.read(|doc| {
-        mindmapdoc::section_prose(doc, node).ok().map(|frag| {
+        // The NON-creating read, and that matters more here than it looks. A
+        // mutation made inside `room.read` never reaches `room.mutate`, so it is
+        // not queued for the flush and not broadcast: the server's replica would
+        // quietly hold a fragment no peer knows about and nothing persists.
+        // Reading what a section says must not be able to do that, and a section
+        // with no fragment has no prose to record.
+        mindmapdoc::read_section_prose(doc, node).map(|frag| {
             let txn = doc.transact();
             crate::store::prose::plain_text(&txn, &frag)
         })
