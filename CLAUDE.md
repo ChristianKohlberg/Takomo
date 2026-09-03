@@ -246,7 +246,10 @@ reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
   exists because a browser `WebSocket` cannot set an `Authorization` header — the same limitation
   that keeps `/board` polling `/v1/events` rather than using SSE — so the credential must ride the
   query string, and a real `tk_` token there would land in every access log. Scoped to one document,
-  expiring, revocable, and never more permissive than the token that minted it.
+  expiring, revocable, and never more permissive than the token that minted it — which is why it
+  carries `minted_by`: revoking that `tk_` revokes these too, and an open socket re-asks every 30s
+  so revocation reaches a connection that is already up. Before that link existed a revoked token's
+  ticket went on writing for hours, which is precisely "more permissive than the token".
 
 **OAuth adds a *route group*, deliberately not a credential type of its own.** `/oauth/*` and the
 two `.well-known` documents sit OUTSIDE every middleware — they are what a client reads *in order to*
