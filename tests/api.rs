@@ -20705,3 +20705,60 @@ async fn a_ticket_minted_before_archiving_cannot_write_after_it() {
         "a ticket minted before the freeze must not write after it: {whole}"
     );
 }
+
+/// A flush the store refuses must not throw away what people typed.
+///
+/// `flush` takes the pending batch before writing it, so any failure used to end
+/// with the work discarded and a single line on stderr. Nothing looked wrong at
+/// the time — the room keeps serving its replica from memory, so every peer
+/// still saw their own words — until the room was dropped and they were gone.
+///
+/// The trigger here is ordinary rather than exotic: somebody is typing when an
+/// admin archives the project. Their words were written while it was live and
+/// are perfectly legitimate; the flush that carries them lands after the freeze,
+/// the store refuses it, and before this fix the map came back EMPTY.
+///
+/// Found by auditing the flush path after the archive work, not by a report.
+#[tokio::test]
+async fn typing_survives_a_flush_the_store_refuses() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mine = yrs::Doc::new();
+
+    // Legitimate typing, while the project is live.
+    let u = peer_node_update(&mine, "mn-legit001", "Vor dem Archivieren", "a0");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &u).into()))
+        .await
+        .unwrap();
+
+    // Archive inside the flush window, so the batch is still only in memory and
+    // the write that carries it will be refused.
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive?force=true", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    // Empty the room, so the read below rebuilds from the log rather than from
+    // the memory that would agree either way.
+    drop(peer);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "{whole}");
+    assert!(
+        mindmap_titles(&whole).contains(&"Vor dem Archivieren".to_string()),
+        "typing done BEFORE the archive must be kept and written once the store \
+         will take it again: {whole}"
+    );
+}

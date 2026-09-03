@@ -381,6 +381,31 @@ fn kind_of(id: &str) -> CollabKind {
 ///
 /// Runs on the blocking pool: both calls take the process-wide write mutex, and
 /// blocking an async worker on it would be the very stall this design avoids.
+/// Put a batch the store would not take back on the queue, ahead of whatever
+/// arrived while the write was in flight.
+///
+/// `flush` TAKES `pending` before writing, so a failed write used to end with the
+/// work discarded and one line on stderr. Nobody noticed at the time: the room
+/// keeps serving its replica from memory, so every peer still saw their words —
+/// until the room was dropped and they were simply gone. A project archived
+/// within the flush window was enough to do it, and that is not an exotic race:
+/// somebody typing when an admin archives is the ordinary case.
+///
+/// Restoring it in ORDER matters. These updates are older than anything queued
+/// since, and while a CRDT converges regardless of the order updates are
+/// applied, the log is also replayed to rebuild a room — so keeping it in the
+/// order it happened is what stops a compaction reading a partial history.
+///
+/// A permanently unwritable object retries every tick and never grows, because a
+/// room that cannot be written is also frozen; when its last peer leaves it is
+/// dropped, which is the right end for a batch with nothing left to be written
+/// into.
+fn requeue(room: &Arc<Room>, batch: Arc<Vec<u8>>) {
+    let batch = Arc::try_unwrap(batch).unwrap_or_else(|shared| (*shared).clone());
+    let mut pending = room.pending.lock().expect("pending mutex");
+    pending.insert(0, batch);
+}
+
 pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
     // Serialize with any flush already running, so returning from here means the
     // log has caught up with everything queued before the call.
@@ -401,22 +426,27 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         }
     };
 
+    // Held so a failed write can put the work back rather than drop it.
+    let merged = Arc::new(merged);
+
     let store = state.clone();
     let id = room.id.clone();
     let writer = actor.to_string();
-    let rows = tokio::task::spawn_blocking(move || {
-        store.store.append_collab_update(&id, &merged, &writer)
-    })
-    .await;
+    let blob = merged.clone();
+    let rows =
+        tokio::task::spawn_blocking(move || store.store.append_collab_update(&id, &blob, &writer))
+            .await;
 
     let rows = match rows {
         Ok(Ok(rows)) => rows,
         Ok(Err(e)) => {
             eprintln!("{}: flush failed: {}", room.id, e.body.message);
+            requeue(room, merged);
             return;
         }
         Err(e) => {
             eprintln!("{}: flush task failed: {e}", room.id);
+            requeue(room, merged);
             return;
         }
     };

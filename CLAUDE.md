@@ -199,8 +199,11 @@ WebSocket, so there is no Node sidecar and the one-binary property survives; the
 out rather than taken from `yrs-axum`, which pins `yrs ^0.18` against a current 0.27. The
 load-bearing rule is that **broadcast is memory and persistence is batched**: a per-keystroke insert
 would put every claim, transition and heartbeat behind somebody's typing, because they all share the
-one write mutex. Compaction needs no snapshot table — a Yjs document's whole state *is* an ordinary
-update. `/documents` is the only code-split route, and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
+one write mutex. Batching makes a refused write somebody's lost work, so a flush the store will not
+take puts the batch BACK, in order, and the next tick retries it — it used to be dropped with one
+line on stderr, and nothing looked wrong until the room was evicted
+(`typing_survives_a_flush_the_store_refuses`). Compaction needs no snapshot table — a Yjs document's
+whole state *is* an ordinary update. `/documents` is the only code-split route, and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
 is what keeps the split real: a blanket vendor chunk sweeps Tiptap back onto the critical path while
 the build output still looks split.
 
