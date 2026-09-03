@@ -614,6 +614,15 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     // databases predate the column; add it only when PRAGMA table_info shows it
     // absent. `CREATE TABLE IF NOT EXISTS` above already carries it for a fresh
     // DB, so on those this ALTER is skipped.
+    let trace_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(plan_trace)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    if !trace_columns.is_empty() && !trace_columns.iter().any(|c| c == "text") {
+        conn.execute("ALTER TABLE plan_trace ADD COLUMN text TEXT", [])?;
+    }
+
     let mindmap_columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(mindmaps)")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
@@ -1470,6 +1479,17 @@ CREATE TABLE IF NOT EXISTS plan_trace (
   -- whose agent is worth knowing.
   "user"   TEXT REFERENCES users(id),
   note     TEXT,
+  -- What the section SAID at that moment, as plain text.
+  --
+  -- This is what makes a diff possible at all. The CRDT log cannot answer it:
+  -- compaction rewrites it into one blob, so "what did 2.1 say last Tuesday" has
+  -- no answer there by design. Keeping the text on the acts that changed it is
+  -- cheap precisely because the trace is sparse — an entry per keystroke would
+  -- make this ruinous, which is the same reason the trace is sparse anyway.
+  --
+  -- Null for an act that did not change the prose, and for anything past the
+  -- cap: a diff is worth having, an unbounded copy of every revision is not.
+  text     TEXT,
   at       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plan_trace_map ON plan_trace(mindmap, at);

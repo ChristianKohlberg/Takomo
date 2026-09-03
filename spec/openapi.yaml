@@ -4290,6 +4290,17 @@ paths:
                         actor: { type: string, description: 'the free-form actor string the credential carried' }
                         user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
                         note: { type: [string, "null"] }
+                        text:
+                          type: [string, "null"]
+                          description: |
+                            What the section SAID at that moment, as plain text —
+                            which is what makes a diff possible. The CRDT log
+                            cannot answer it: compaction rewrites it into one
+                            blob, so "what did 2.1 say last Tuesday" has no
+                            answer there by design. Null for an act that did not
+                            change the prose, and read from the replica rather
+                            than taken from the caller, because a history
+                            somebody can write is not a history.
                         at: { type: string, format: date-time }
                   total: { type: integer }
                   limit: { type: integer }
@@ -4373,6 +4384,17 @@ paths:
                         actor: { type: string, description: 'the free-form actor string the credential carried' }
                         user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
                         note: { type: [string, "null"] }
+                        text:
+                          type: [string, "null"]
+                          description: |
+                            What the section SAID at that moment, as plain text —
+                            which is what makes a diff possible. The CRDT log
+                            cannot answer it: compaction rewrites it into one
+                            blob, so "what did 2.1 say last Tuesday" has no
+                            answer there by design. Null for an act that did not
+                            change the prose, and read from the replica rather
+                            than taken from the caller, because a history
+                            somebody can write is not a history.
                         at: { type: string, format: date-time }
                   total: { type: integer }
                   limit: { type: integer }

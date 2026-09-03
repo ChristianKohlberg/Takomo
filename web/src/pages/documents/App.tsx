@@ -1,21 +1,22 @@
-// /documents — prose humans and agents write at the same time.
+// /documents — the project's plan, written out.
 //
-// The surface `/initiatives` could not be. An initiative's document is *reduced*
-// from an append-only entry log, "latest view per pane wins", which is
-// last-write-wins merge dressed as an audit trail: revising a paragraph means
-// appending a whole new copy of the pane, and whatever somebody else wrote in
-// the meantime loses. This page is the other answer — one CRDT, every
-// participant an ordinary peer, merges handled by the data structure rather than
-// by a policy anybody has to remember.
+// A project has ONE plan. The map and this page are two renderings of it, not
+// two things kept in step: a node is a section, its title is the heading, its
+// depth is the heading level, and tree order is reading order
+// (`spec/one-model-two-views.md`). The canvas is for growing and grouping
+// thoughts fast; this is where they are spelled out, and where the history of
+// who wrote and who agreed is visible.
 //
-// It sits BESIDE /initiatives rather than replacing it. Nothing here writes to an
-// initiative and nothing there is disturbed; a document can name the initiative
-// it was distilled from, which is what makes an eventual migration expressible.
+// What used to be here was a FILE BROWSER over `documents` rows, filled by
+// converting a map into a tree of them. That conversion is gone, and the reason
+// it had to go is worth keeping written down: a node's notes and its document's
+// prose were two places one paragraph lived, and they disagreed after the first
+// edit. Linking two copies is not the same as having one thing.
 //
-// The editor itself is a lazy import and must stay one: Tiptap + ProseMirror +
-// Yjs outweigh the rest of the app, and every other surface would pay for them
-// on first paint.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+// So this page owns exactly three things: the map's socket ticket, the plan's
+// history (which is SQL, not CRDT — see `src/store/trace.rs`), and the shell
+// around them. `Plan` owns the document.
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
@@ -23,53 +24,36 @@ import { AppShell } from '@/components/AppShell'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
+import { Hint } from '@/components/Hint'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project } from '@/lib/initiatives'
 import {
-  archiveDocument,
-  createDocument,
-  listDocuments,
-  mintSession,
-  unarchiveDocument,
-  type Doc,
-  type DocSession,
-} from '@/lib/documents'
-import { ancestorKeys, buildOutline } from '@/lib/document-outline'
-import { OutlineRail } from '@/components/documents/OutlineRail'
+  getMindmap,
+  getTrace,
+  listMindmaps,
+  mintMindmapSession,
+  recordTrace,
+  type Mindmap,
+  type MindmapSession,
+  type PlanStanding,
+  type TraceEntry,
+} from '@/lib/mindmaps'
+import { traceByNode } from '@/lib/plan-trace'
 import { STR } from './strings'
-import type { ConnectionState } from './Editor'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Hint } from '@/components/Hint'
+import type { ConnectionState } from './Plan'
 
-const Editor = lazy(() => import('./Editor'))
+// Tiptap, ProseMirror, Yjs and the socket together outweigh the rest of the app,
+// and every other surface would pay for them on first paint. This must stay a
+// lazy import.
+const Plan = lazy(() => import('./Plan'))
 
 const LS_LANG = 'takomo.lang'
-/**
- * Which sections this viewer has folded, by project.
- *
- * Per-viewer and browser-local, the same rule the mindmap's fold follows:
- * closing a branch of the plan must not close it under somebody else who is
- * reading it. One key holding a project→keys map rather than a key per project,
- * because a key per project makes switching projects a two-effect dance in which
- * one write lands under the wrong name.
- */
-const LS_FOLD = 'takomo.documents.fold'
 
-function loadFolds(): Record<string, string[]> {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(LS_FOLD) ?? '{}')
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const out: Record<string, string[]> = {}
-    for (const [project, keys] of Object.entries(parsed as Record<string, unknown>)) {
-      if (Array.isArray(keys)) out[project] = keys.filter((k): k is string => typeof k === 'string')
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
+/** How much of the plan's history one read brings back. The server's ceiling is
+ *  500; a plan is capped at 500 sections, so this is a page, not everything. */
+const TRACE_LIMIT = 500
 
 export function App() {
   const navigate = useNavigate()
@@ -85,28 +69,20 @@ export function App() {
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
 
-  const [docs, setDocs] = useState<Doc[]>([])
-  const [showArchived, setShowArchived] = useState(false)
-  const [selected, setSelected] = useState<string | null>(null)
-  const [session, setSession] = useState<DocSession | null>(null)
+  const [map, setMap] = useState<Mindmap | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [session, setSession] = useState<MindmapSession | null>(null)
   const [connection, setConnection] = useState<ConnectionState>('connecting')
   const [peers, setPeers] = useState<string[]>([])
-  const [pending, setPending] = useState(0)
-  const [agentEnabled, setAgentEnabled] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftPath, setDraftPath] = useState('')
-  const [folds, setFolds] = useState<Record<string, string[]>>(loadFolds)
+  const [standing, setStanding] = useState<PlanStanding>({})
+  const [entries, setEntries] = useState<TraceEntry[]>([])
 
   const t = useMemo(() => pick(STR, lang), [lang])
-  const canWrite = scopes.includes('write')
-  const current = useMemo(() => docs.find((d) => d.id === selected) ?? null, [docs, selected])
 
   function signOut() {
     saveToken('')
     setToken('')
-    setDocs([])
-    setSelected(null)
+    setMap(null)
     setSession(null)
   }
 
@@ -124,15 +100,6 @@ export function App() {
     [toast, t],
   )
 
-  const fetchAll = useCallback(async () => {
-    if (!project) {
-      setDocs([])
-      return
-    }
-    const page = await listDocuments(token, project, showArchived)
-    setDocs(page.items)
-  }, [token, project, showArchived])
-
   useEffect(() => {
     if (!token) return
     let cancelled = false
@@ -149,7 +116,6 @@ export function App() {
         }
         setActor(who.actor ?? '')
         setScopes(sc)
-        setAgentEnabled(Boolean(who.features?.doc_agent))
         setProjects(await listProjects(token).catch(() => []))
       } catch (e) {
         if (!cancelled) handleErr(e)
@@ -160,16 +126,55 @@ export function App() {
     }
   }, [token, handleErr, t])
 
+  // A project holds exactly one plan, so this is a lookup rather than a list.
+  const findMap = useCallback(async () => {
+    if (!project) {
+      setMap(null)
+      setLoaded(true)
+      return null
+    }
+    const page = await listMindmaps(token, { project, limit: 1 })
+    const found = page.items[0] ?? null
+    setMap(found)
+    setLoaded(true)
+    return found
+  }, [token, project])
+
   useEffect(() => {
     if (!token) return
-    fetchAll().catch(handleErr)
-  }, [token, fetchAll, handleErr])
+    setLoaded(false)
+    setSession(null)
+    findMap().catch(handleErr)
+  }, [token, findMap, handleErr])
 
-  // Opening a document means minting a ticket for its socket. Done here rather
-  // than inside the editor so the editor never has to know about tokens — it
-  // receives a session and connects.
+  /**
+   * The plan's history, in two reads that go together.
+   *
+   * Standing rides on the map's own detail read because the server computes it
+   * there in one grouped query — a section confirmed BEFORE its last edit is not
+   * confirmed any more, which no stored flag can say. The trace is the acts
+   * behind that reading.
+   */
+  const mapId = map?.id ?? null
+  const refreshHistory = useCallback(async () => {
+    if (!mapId) return
+    const [detail, page] = await Promise.all([
+      getMindmap(token, mapId),
+      getTrace(token, mapId, { limit: TRACE_LIMIT }),
+    ])
+    setStanding(detail.standing ?? {})
+    setEntries(page.items)
+  }, [token, mapId])
+
   useEffect(() => {
-    if (!token || !selected) {
+    if (!token || !mapId) return
+    refreshHistory().catch(handleErr)
+  }, [token, mapId, refreshHistory, handleErr])
+
+  // Opening the plan means minting a ticket for the map's socket. Done here so
+  // the view never has to know about tokens — it receives a session and connects.
+  useEffect(() => {
+    if (!token || !mapId) {
       setSession(null)
       return
     }
@@ -177,8 +182,7 @@ export function App() {
     setSession(null)
     setConnection('connecting')
     setPeers([])
-    setPending(0)
-    mintSession(token, selected)
+    mintMindmapSession(token, mapId)
       .then((s) => {
         if (!cancelled) setSession(s)
       })
@@ -188,99 +192,65 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [token, selected, handleErr])
+  }, [token, mapId, handleErr])
 
   const onConnection = useCallback((s: ConnectionState) => setConnection(s), [])
   const onPeers = useCallback((names: string[]) => setPeers(names), [])
-  const onPending = useCallback((n: number) => setPending(n), [])
 
-  async function onCreate() {
-    if (!canWrite) {
-      toast(t.needWrite, 'err')
-      return
-    }
-    const title = draftTitle.trim()
-    if (!title) return
-    try {
-      const doc = await createDocument(token, project, {
-        title,
-        path: draftPath.trim() || undefined,
-      })
-      setCreating(false)
-      setDraftTitle('')
-      setDraftPath('')
-      await fetchAll()
-      setSelected(doc.id)
-    } catch (e) {
-      handleErr(e)
-    }
-  }
+  /**
+   * Bring the history back in line, once, after a burst of writes.
+   *
+   * Somebody typing in three sections files three `edited` entries, and each of
+   * them would otherwise refetch the whole plan's history. The trace is sparse
+   * by contract; the reads of it should be too.
+   */
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleRefresh = useCallback(() => {
+    if (pending.current) clearTimeout(pending.current)
+    pending.current = setTimeout(() => {
+      pending.current = null
+      refreshHistory().catch(handleErr)
+    }, 1500)
+  }, [refreshHistory, handleErr])
 
-  async function onArchiveToggle(doc: Doc) {
-    if (!canWrite) {
-      toast(t.needWrite, 'err')
-      return
-    }
-    if (!doc.archived_at && !confirm(t.confirmArchive)) return
-    try {
-      if (doc.archived_at) await unarchiveDocument(token, doc.id)
-      else {
-        await archiveDocument(token, doc.id)
-        if (selected === doc.id) setSelected(null)
-      }
-      await fetchAll()
-    } catch (e) {
-      handleErr(e)
-    }
-  }
-
-  // The rail is the outline of the whole undertaking, not a file browser: a
-  // folder and the document that named it are ONE section, because that is what
-  // writing a mindmap up produces. See lib/document-outline.ts.
-  const outline = useMemo(() => buildOutline(docs), [docs])
-  const collapsed = useMemo(() => new Set(folds[project] ?? []), [folds, project])
-
-  const onToggleSection = useCallback(
-    (key: string) => {
-      setFolds((prev) => {
-        const here = prev[project] ?? []
-        return {
-          ...prev,
-          [project]: here.includes(key) ? here.filter((k) => k !== key) : [...here, key],
-        }
-      })
+  useEffect(
+    () => () => {
+      if (pending.current) clearTimeout(pending.current)
     },
-    [project],
+    [],
   )
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(LS_FOLD, JSON.stringify(folds))
-    } catch {
-      // Private mode, or storage full. The fold still works for this visit.
-    }
-  }, [folds])
-
-  // Opening a document that sits inside a folded section — after creating it, or
-  // after a restore — must show it. Jumping to a row that is not drawn is worse
-  // than not jumping, so its ancestors are unfolded for this viewer.
-  useEffect(() => {
-    if (!selected) return
-    const needed = ancestorKeys(outline, selected)
-    if (needed.length === 0) return
-    setFolds((prev) => {
-      const here = prev[project] ?? []
-      if (!needed.some((k) => here.includes(k))) return prev
-      return { ...prev, [project]: here.filter((k) => !needed.includes(k)) }
-    })
-  }, [selected, outline, project])
-
-  /** Proposals waiting, by document. Only the OPEN document can be known: the
-   *  count comes out of its CRDT, and the others are not connected. */
-  const pendingByDoc = useMemo(
-    () => (selected && pending > 0 ? { [selected]: pending } : {}),
-    [selected, pending],
+  const onReview = useCallback(
+    (node: string) => {
+      if (!mapId) return
+      recordTrace(token, mapId, { kind: 'reviewed', node })
+        .then(() => scheduleRefresh())
+        .catch(handleErr)
+    },
+    [token, mapId, scheduleRefresh, handleErr],
   )
+
+  const onEdited = useCallback(
+    (node: string) => {
+      if (!mapId) return
+      recordTrace(token, mapId, { kind: 'edited', node })
+        .then(() => scheduleRefresh())
+        .catch(handleErr)
+    },
+    [token, mapId, scheduleRefresh, handleErr],
+  )
+
+  /** The map is where a section is named, moved and pruned. This hands it over
+   *  by link, and the canvas selects and centres what arrives. */
+  const onShowOnMap = useCallback(
+    (node: string) => {
+      if (!mapId) return
+      navigate(`/mindmaps#m=${encodeURIComponent(mapId)}&n=${encodeURIComponent(node)}`)
+    },
+    [navigate, mapId],
+  )
+
+  const trace = useMemo(() => traceByNode(entries), [entries])
 
   if (!token) {
     return (
@@ -301,7 +271,11 @@ export function App() {
   }
 
   const connectionLabel =
-    connection === 'connected' ? t.connected : connection === 'connecting' ? t.connecting : t.disconnected
+    connection === 'connected'
+      ? t.connected
+      : connection === 'connecting'
+        ? t.connecting
+        : t.disconnected
 
   return (
     <AppShell
@@ -328,7 +302,6 @@ export function App() {
         onProject: (id) => {
           setProject(id)
           saveProject(id)
-          setSelected(null)
         },
         projectLabels: {
           project: t.project,
@@ -351,206 +324,114 @@ export function App() {
       }}
     >
       <AppHeader
-        title={t.documents}
+        title={map ? map.title : t.documents}
         lang={lang}
         onLang={(l) => {
           setLang(l)
           localStorage.setItem(LS_LANG, l)
         }}
       >
-        <Button
-          onClick={() => {
-            if (!canWrite) {
-              toast(t.needWrite, 'err')
-              return
-            }
-            setCreating(true)
-          }}
-        >
-          + {t.newDocument}
-        </Button>
+        {session && (
+          <>
+            <span
+              className={
+                'text-[11.5px] font-bold ' +
+                (connection === 'connected'
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-muted-foreground')
+              }
+            >
+              ● {connectionLabel}
+            </span>
+            <span className="text-muted-foreground text-[11.5px]">
+              {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
+            </span>
+          </>
+        )}
         <Hint text={t.refresh}>
           <Button
             variant="outline"
             size="icon"
-            onClick={() => fetchAll().catch(handleErr)}
+            onClick={() => {
+              findMap().catch(handleErr)
+              refreshHistory().catch(handleErr)
+            }}
           >
             ↻
           </Button>
         </Hint>
       </AppHeader>
 
-      {/* One breakpoint, `md`, meaning phone or not: the tree stacks above the
-          document on a phone and sits beside it everywhere else. */}
-      <main className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-        <aside className="border-b-border-soft flex max-h-[38vh] flex-none flex-col overflow-y-auto border-b px-2 py-3 md:max-h-none md:w-full md:max-w-80 md:border-r md:border-b-0">
-          {!project ? (
-            <p className="text-muted-foreground px-1 py-4 text-[13px]">{t.pickProject}</p>
-          ) : docs.length === 0 ? (
-            <div className="text-muted-foreground px-1 py-6 text-[13px]">
-              <p>{t.empty}</p>
-              <p className="mt-2 text-[12.5px] opacity-80">{t.emptyHint}</p>
-            </div>
-          ) : (
-            <OutlineRail
-              sections={outline}
-              selected={selected}
-              onSelect={setSelected}
-              collapsed={collapsed}
-              onToggle={onToggleSection}
-              onArchiveToggle={canWrite ? onArchiveToggle : undefined}
-              pending={pendingByDoc}
-              labels={{
-                expand: t.outlineExpand,
-                collapse: t.outlineCollapse,
-                folded: t.outlineFolded,
-                group: t.outlineGroup,
-                archive: t.archive,
-                unarchive: t.unarchive,
-                archived: t.archived,
-                waiting: t.outlineWaiting,
-              }}
-            />
-          )}
-
-          <label className="text-muted-foreground mt-3 flex items-center gap-2 px-1 text-[12.5px]">
-            <Checkbox
-              checked={showArchived}
-              onCheckedChange={(e) => setShowArchived(e === true)}
-            />
-            {t.showArchived}
-          </label>
-        </aside>
-
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden px-4 py-4 md:px-6">
-          {creating && (
-            <div className="border-border-soft mb-4 flex flex-col gap-2 rounded-md border p-3">
-              <input
-                className="border-border-soft rounded-md border px-2 py-1.5 text-sm"
-                placeholder={t.newDocumentTitle}
-                value={draftTitle}
-                autoFocus
-                onChange={(e) => setDraftTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void onCreate()
-                  if (e.key === 'Escape') setCreating(false)
-                }}
-              />
-              <input
-                className="border-border-soft rounded-md border px-2 py-1.5 text-sm"
-                placeholder={t.newDocumentFolder}
-                value={draftPath}
-                onChange={(e) => setDraftPath(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <Button onClick={() => void onCreate()}>{t.create}</Button>
-                <Button variant="outline" onClick={() => setCreating(false)}>
-                  {t.cancel}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {!current ? (
-            <p className="text-muted-foreground px-1 py-8 text-center text-[13.5px]">
-              {t.selectPrompt}
-            </p>
-          ) : (
-            <>
-              <div className="mb-3 flex w-full max-w-[720px] flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="min-w-0 text-lg font-[750] tracking-[-0.02em]">{current.title}</h2>
-                <span
-                  className={
-                    'text-[11.5px] font-bold ' +
-                    (connection === 'connected'
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-muted-foreground')
-                  }
-                >
-                  ● {connectionLabel}
-                </span>
-                <span className="text-muted-foreground text-[11.5px]">
-                  {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
-                </span>
-                <span className="text-muted-foreground text-[11.5px]">
-                  {current.updates === 1
-                    ? t.historyOne
-                    : t.historyMany.replace('{n}', String(current.updates))}
-                </span>
-                {pending > 0 && (
-                  <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 text-[11px] font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                    {pending === 1 ? t.waitingOne : t.waitingMany.replace('{n}', String(pending))}
-                  </span>
-                )}
-              </div>
-
-              {session && (
-                <Suspense
-                  fallback={<p className="text-muted-foreground text-[13px]">{t.connecting}</p>}
-                >
-                  <Editor
-                    key={session.session}
-                    session={session}
-                    onConnection={onConnection}
-                    onPeers={onPeers}
-                    onPending={onPending}
-                    token={token}
-                    agentEnabled={agentEnabled}
-                    onError={handleErr}
-                    labels={{
-                      placeholder: t.placeholder,
-                      readOnly: t.readOnlyBanner,
-                      askHint: t.askHint,
-                      agentOff: t.agentOff,
-                    }}
-                    menuLabels={{
-                      placeholder: t.menuPlaceholder,
-                      runFreeText: t.menuFreeText,
-                      scoped: t.menuScoped,
-                      whole: t.menuWhole,
-                      close: t.menuClose,
-                      running: t.menuRunning,
-                    }}
-                    suggestionLabels={{
-                      tighten: t.sTighten,
-                      simpler: t.sSimpler,
-                      asCommitment: t.sAsCommitment,
-                      asCommitmentHint: t.sAsCommitmentHint,
-                      findContradiction: t.sFindContradiction,
-                      findContradictionHint: t.sFindContradictionHint,
-                      asList: t.sAsList,
-                      expandSection: t.sExpandSection,
-                      splitSection: t.sSplitSection,
-                      addMissingItems: t.sAddMissingItems,
-                      whatIsMissing: t.sWhatIsMissing,
-                      whatIsMissingHint: t.sWhatIsMissingHint,
-                      contradictions: t.sContradictions,
-                      summarize: t.sSummarize,
-                      addHeadings: t.sAddHeadings,
-                      addHeadingsHint: t.sAddHeadingsHint,
-                    }}
-                    proposalLabels={{
-                      heading: t.proposalsHeading,
-                      empty: t.proposalsEmpty,
-                      pending: t.proposalPending,
-                      accepted: t.proposalAccepted,
-                      rejected: t.proposalRejected,
-                      accept: t.proposalAccept,
-                      reject: t.proposalReject,
-                      by: t.proposalBy,
-                      partial: t.proposalPartial,
-                      opReplace: t.opReplace,
-                      opInsert: t.opInsert,
-                      opDelete: t.opDelete,
-                      needWrite: t.proposalNeedWrite,
-                    }}
-                  />
-                </Suspense>
-              )}
-            </>
-          )}
-        </section>
-      </main>
+      {!project ? (
+        <p className="text-muted-foreground px-4 py-8 text-[13.5px]">{t.pickProject}</p>
+      ) : loaded && !map ? (
+        <div className="text-muted-foreground px-4 py-8 text-[13.5px]">
+          <p>{t.noPlan}</p>
+          <p className="mt-2 opacity-80">{t.noPlanHint}</p>
+          <Button className="mt-3" variant="outline" onClick={() => navigate('/mindmaps')}>
+            {t.openMap}
+          </Button>
+        </div>
+      ) : session ? (
+        <Suspense
+          fallback={<p className="text-muted-foreground px-4 py-8 text-[13px]">{t.connecting}</p>}
+        >
+          <Plan
+            key={session.session}
+            session={session}
+            standing={standing}
+            trace={trace}
+            onConnection={onConnection}
+            onPeers={onPeers}
+            onReview={onReview}
+            onEdited={onEdited}
+            onShowOnMap={onShowOnMap}
+            labels={{
+              readOnly: t.readOnlyBanner,
+              empty: t.empty,
+              emptyHint: t.emptyHint,
+              proseEmpty: t.proseEmpty,
+              proseLabel: t.proseLabel,
+            }}
+            railLabels={{
+              expand: t.outlineExpand,
+              collapse: t.outlineCollapse,
+              folded: t.outlineFolded,
+              untitled: t.untitled,
+              standingConfirmed: t.standingConfirmed,
+              standingChanged: t.standingChanged,
+              standingUnseen: t.standingUnseen,
+            }}
+            sectionLabels={{
+              untitled: t.untitled,
+              standingConfirmed: t.standingConfirmed,
+              standingChanged: t.standingChanged,
+              standingUnseen: t.standingUnseen,
+              review: t.review,
+              reviewHint: t.reviewHint,
+              showOnMap: t.showOnMap,
+              history: t.history,
+              hideHistory: t.hideHistory,
+              historyEmpty: t.historyEmpty,
+              historyMore: t.historyMore,
+              needWrite: t.needWrite,
+              kinds: {
+                authored: t.kindAuthored,
+                renamed: t.kindRenamed,
+                edited: t.kindEdited,
+                moved: t.kindMoved,
+                pruned: t.kindPruned,
+                reviewed: t.kindReviewed,
+                proposed: t.kindProposed,
+                accepted: t.kindAccepted,
+                rejected: t.kindRejected,
+              },
+            }}
+          />
+        </Suspense>
+      ) : (
+        <p className="text-muted-foreground px-4 py-8 text-[13px]">{t.connecting}</p>
+      )}
     </AppShell>
   )
 }

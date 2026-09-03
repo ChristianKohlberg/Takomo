@@ -19255,6 +19255,35 @@ async fn the_plan_keeps_a_trace_of_what_people_did_to_it() {
         "an edit after a review un-confirms the section: {read}"
     );
 
+    // History keeps what the section SAID, which is what a diff needs two of.
+    let (_, trace) = app
+        .get(&ada_token, &format!("/v1/mindmaps/{map}/trace?node={node}"))
+        .await;
+    let said: Vec<&str> = trace["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["text"].as_str())
+        .collect();
+    assert!(
+        said.iter().any(|t| t.contains("Changed my mind")),
+        "the newest edit kept what it left behind: {trace}"
+    );
+    assert!(
+        said.iter().any(|t| t.contains("v1 forever")),
+        "and the one before it kept what IT said — two sides, which is a diff: {trace}"
+    );
+    let moved: Vec<&Value> = trace["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == json!("moved"))
+        .collect();
+    assert!(
+        moved.iter().all(|e| e["text"].is_null()),
+        "an act that did not touch the prose keeps no copy of it"
+    );
+
     // A caller may not claim to have done what the server records itself.
     let (s, refused) = app
         .post(

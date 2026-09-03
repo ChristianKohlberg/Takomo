@@ -2463,6 +2463,8 @@ impl TakomoMcp {
                 actor: &auth.actor,
                 user: auth.user.as_deref(),
                 note: (!summary.is_empty()).then_some(summary.as_str()),
+                // A proposal changes nothing yet.
+                text: None,
             })?;
         self.state.wake();
 

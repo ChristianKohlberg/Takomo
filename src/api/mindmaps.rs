@@ -177,6 +177,20 @@ pub async fn delete(
     Ok(Json(json!({ "ok": true, "removed_nodes": nodes })))
 }
 
+/// What a section says right now, for the acts that changed it.
+///
+/// Read from the replica rather than taken from the caller: a history somebody
+/// can write is not a history. `None` for an act that did not touch the prose,
+/// which is most of them.
+fn section_text(room: &crate::api::docsync::RoomGuard, node: &str) -> Option<String> {
+    room.read(|doc| {
+        mindmapdoc::section_prose(doc, node).ok().map(|frag| {
+            let txn = doc.transact();
+            crate::store::prose::plain_text(&txn, &frag)
+        })
+    })
+}
+
 /// Write the replica's pending edits to the log before answering.
 ///
 /// **An API call that returns 201 has to have happened.** The debounced flusher
@@ -397,6 +411,7 @@ pub async fn add_nodes(
             actor: &ctx.actor,
             user: ctx.user.as_deref(),
             note: None,
+            text: section_text(&room, node_id).as_deref(),
         })?;
     }
     // One event for the batch, not one per node: ten nodes from an agent turn
@@ -511,6 +526,11 @@ pub async fn patch_node(
                 actor: &ctx.actor,
                 user: ctx.user.as_deref(),
                 note: None,
+                // Only the acts that changed the prose carry what it now says.
+                text: (kind != "moved")
+                    .then(|| section_text(&room, &node))
+                    .flatten()
+                    .as_deref(),
             })?;
         }
     }
@@ -550,6 +570,7 @@ pub async fn delete_node(
         actor: &ctx.actor,
         user: ctx.user.as_deref(),
         note: None,
+        text: None,
     })?;
     persist(&state, &room, &ctx).await;
     let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
@@ -817,12 +838,16 @@ pub async fn add_trace(
     let node = get_str(obj, "node")?;
     let note = get_str(obj, "note")?;
 
-    let map = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
+    let (map, room) = join(&state, &ctx, &id).await?;
     state.store.ensure_collab_writable(&id)?;
+
+    // Read what the section says from the REPLICA, not from the caller: an
+    // `edited` entry is only worth having if the text on it is the text that is
+    // actually there, and a history somebody can write is not a history.
+    let text = match (&node, kind.as_str()) {
+        (Some(node), "edited" | "accepted") => section_text(&room, node),
+        _ => None,
+    };
 
     state.store.record_trace(&crate::store::trace::Record {
         project: &map.project,
@@ -832,6 +857,7 @@ pub async fn add_trace(
         actor: &ctx.actor,
         user: ctx.user.as_deref(),
         note: note.as_deref(),
+        text: text.as_deref(),
     })?;
     state.wake();
     Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
@@ -957,6 +983,8 @@ pub async fn propose(
         actor: &ctx.actor,
         user: ctx.user.as_deref(),
         note: (!summary.is_empty()).then_some(summary.as_str()),
+        // A proposal changes nothing yet, so the section still says what it did.
+        text: None,
     })?;
     state.wake();
 

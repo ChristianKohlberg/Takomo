@@ -29,6 +29,9 @@ use super::Store;
 /// The most entries one read returns.
 pub const MAX_TRACE_PAGE: i64 = 500;
 
+/// The most of a section's prose one entry keeps.
+pub const MAX_TRACE_TEXT: usize = 8_000;
+
 /// What can happen to a section.
 ///
 /// A closed set, and deliberately small: a vocabulary anybody can hold in their
@@ -56,6 +59,9 @@ pub struct TraceEntry {
     pub actor: String,
     pub user: Option<String>,
     pub note: Option<String>,
+    /// What the section said at that moment. `None` when the act did not change
+    /// the prose.
+    pub text: Option<String>,
     pub at: i64,
 }
 
@@ -68,6 +74,7 @@ impl TraceEntry {
             "actor": self.actor,
             "user": self.user,
             "note": self.note,
+            "text": self.text,
             "at": iso(self.at),
         })
     }
@@ -82,6 +89,8 @@ pub struct Record<'a> {
     pub actor: &'a str,
     pub user: Option<&'a str>,
     pub note: Option<&'a str>,
+    /// The section's prose as it stands, for the acts that changed it.
+    pub text: Option<&'a str>,
 }
 
 /// Write one entry on a transaction the caller already holds.
@@ -91,8 +100,8 @@ pub struct Record<'a> {
 /// disagree with the state it records is worse than none.
 pub(crate) fn record(tx: &Connection, entry: &Record) -> ApiResult<()> {
     tx.execute(
-        "INSERT INTO plan_trace (id, project, mindmap, node, kind, actor, \"user\", note, at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO plan_trace (id, project, mindmap, node, kind, actor, \"user\", note, text, at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             crate::ids::trace_id(),
             entry.project,
@@ -102,6 +111,11 @@ pub(crate) fn record(tx: &Connection, entry: &Record) -> ApiResult<()> {
             entry.actor,
             entry.user,
             entry.note,
+            // Bounded: a diff is worth keeping, an unbounded copy of every
+            // revision is not.
+            entry.text.map(|t| {
+                t.chars().take(MAX_TRACE_TEXT).collect::<String>()
+            }),
             now_ms(),
         ],
     )?;
@@ -145,7 +159,7 @@ impl Store {
             )?;
 
             let mut stmt = conn.prepare(&format!(
-                "SELECT id, node, kind, actor, \"user\", note, at FROM plan_trace \
+                "SELECT id, node, kind, actor, \"user\", note, text, at FROM plan_trace \
                  WHERE {where_sql} ORDER BY at DESC, id DESC LIMIT {limit}"
             ))?;
             let rows = stmt.query_map(args.as_slice(), |r| {
@@ -156,7 +170,8 @@ impl Store {
                     actor: r.get(3)?,
                     user: r.get(4)?,
                     note: r.get(5)?,
-                    at: r.get(6)?,
+                    text: r.get(6)?,
+                    at: r.get(7)?,
                 })
             })?;
             let mut out = Vec::new();
