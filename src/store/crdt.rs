@@ -283,13 +283,12 @@ impl Store {
             if object.archived {
                 return Err(archived_error(&object));
             }
+            // Compaction rewrites the LOG and nothing else. The plan trace is
+            // not part of the log — it is the separate record of who changed
+            // what, and it is the only place the earlier wording of a section
+            // survives compaction at all. Deleting it here would make ordinary
+            // editing erase the history, which is the opposite of its purpose.
             tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
-        // The trace goes with it. `plan_trace.text` is what a section SAID at the
-        // moment somebody changed it — that is the point of the column, and it
-        // means the history is a copy of the prose. Leaving it behind would make
-        // "delete the map" keep the very words the delete was for. A no-op for a
-        // document id, which has no trace.
-        tx.execute("DELETE FROM plan_trace WHERE mindmap = ?1", params![id])?;
             tx.execute(
                 "INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -352,6 +351,12 @@ impl Store {
             "DELETE FROM crdt_sessions WHERE object_id = ?1",
             params![id],
         )?;
+        // The trace goes with it. `plan_trace.text` is what a section SAID at the
+        // moment somebody changed it — that is the point of the column, and it
+        // means the history is a copy of the prose. Leaving it behind would make
+        // "delete the map" keep the very words the delete was for. A no-op for a
+        // document id, which has no trace.
+        tx.execute("DELETE FROM plan_trace WHERE mindmap = ?1", params![id])?;
         Ok(())
     }
 }

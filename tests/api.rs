@@ -20882,3 +20882,69 @@ async fn deleting_a_project_takes_the_plan_history_with_it() {
          prose — with it, not leave {left} row(s) behind"
     );
 }
+
+/// Compaction rewrites the log and must not touch the plan's history.
+///
+/// The two are different records and only one of them is the log. Compaction
+/// replaces every update row with a single blob of the document's state — which
+/// is why `plan_trace` exists at all: the CRDT log cannot answer "what did 2.1
+/// say last Tuesday" after a compaction, and the trace can, because it keeps the
+/// text on the acts that changed it.
+///
+/// This test exists because the author put the trace's deletion in
+/// `compact_collab` instead of `purge_collab` — one function too early in the
+/// same file, with the same first statement — which would have made ORDINARY
+/// EDITING erase the history, silently, every 256 flushes. The whole suite
+/// passed, because nothing checked that the trace survived a compaction. It does
+/// now.
+#[tokio::test]
+async fn compaction_rewrites_the_log_and_keeps_the_history() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (s, _) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "notes": "Leaning to v1-forever with additive-only changes." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (_, before) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/trace"))
+        .await;
+    let entries = before["total"].as_i64().unwrap();
+    assert!(entries > 0, "history to preserve: {before}");
+
+    // Compact directly rather than driving 256 flushes: the invariant is about
+    // what compaction does, not about how many writes it takes to reach one.
+    let store = app.open_store();
+    let state = {
+        use yrs::ReadTxn;
+        let doc = yrs::Doc::new();
+        let _ = doc.get_or_insert_map("nodes");
+        let txn = yrs::Transact::transact(&doc);
+        txn.encode_state_as_update_v1(&yrs::StateVector::default())
+    };
+    store.compact_collab(&map, &state, "test").expect("compact");
+
+    let (_, after) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/trace"))
+        .await;
+    assert_eq!(
+        after["total"].as_i64().unwrap(),
+        entries,
+        "compaction rewrites the LOG; the history is a separate record and every \
+         entry must survive it: {after}"
+    );
+}
