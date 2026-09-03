@@ -349,6 +349,14 @@ answering resumes it through the workflow's human-gated edge — but only once *
 blocking question on the ticket is answered (a barrier). An `advisory` question records a routed
 decision and never touches ticket state.
 
+**A cap on a node is a rule the writing surface keeps, not a server-side guarantee.** `MAX_NODES`
+(500) and the 280-character node cap are enforced in `add_nodes` — the REST and MCP path an agent
+uses — and the canvas keeps them client-side. They are NOT enforced on the sync socket, and cannot
+be: a CRDT update applies whole or not at all, so refusing one because it carries the 501st node
+would desynchronise that peer rather than teach it anything. Measured, not assumed — a socket peer
+wrote 713 nodes and a 5,000-character title straight past both. Treat them as the brainstorm
+discipline they are documented to be; what bounds the socket as a *resource* is `MAX_SYNC_MESSAGE`.
+
 **Mindmaps** (`src/store/mindmaps.rs`, `src/store/mindmapdoc.rs`, `docs/mindmaps.md`) are what
 comes *before* an initiative: a tree grown at conversation speed, six words a node, whose branches
 graduate into epics and initiatives. Two rules shape it and both are load-bearing. **Deleting one is
@@ -422,8 +430,10 @@ SPA that writes (a browser cannot call an MCP tool). `takomo initiative new|appe
 third caller of those routes, minus pane writing — prose through shell flags is what the pane editor
 exists to avoid, so the CLI carries what a shell is better at instead (`--text-file`, `--attach`).
 Entries stay append-only on every surface.
-Entries are the only place in the store that holds binary blobs, which is why they are the only
-thing with byte caps — an unbounded upload would hold the write mutex every claim waits on.
+Entries hold binary blobs, which is why they carry byte caps — an unbounded upload would hold the
+write mutex every claim waits on. They are no longer the *only* such place: `crdt_updates` stores
+Yjs updates as blobs too, and for the same reason the sync socket caps a single message
+(`MAX_SYNC_MESSAGE`) rather than taking the library's 64 MiB default.
 
 **Event log + long polling:** `emit_event` writes inside the same transaction as its mutation, so
 the log cannot drift from state. `AppState::notify` is woken after every commit and long-pollers

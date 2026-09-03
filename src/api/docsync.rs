@@ -94,6 +94,17 @@ const SESSION_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// sockets. Far above any real editing session.
 const MAX_PEERS_PER_ROOM: usize = 64;
 
+/// The largest single message this socket will accept.
+///
+/// Left at the library default (64 MiB) there was no bound on one write at all,
+/// and this is the one place in the store that takes binary blobs from a client
+/// — the same reason initiative entries have byte caps: an unbounded upload
+/// holds the write mutex that every claim, transition and heartbeat is queued
+/// behind. Generous rather than tight, because a first sync legitimately carries
+/// a whole document's state and a large paste is not abuse; what it rules out is
+/// the frame that is abuse.
+const MAX_SYNC_MESSAGE: usize = 8 * 1024 * 1024;
+
 /// One frame on its way to the other peers: who sent it, and the bytes.
 ///
 /// The sender id is what stops a peer receiving its own update back. Yjs would
@@ -683,10 +694,12 @@ pub async fn sync(
         Err(e) => return e.into_response(),
     };
 
-    ws.on_upgrade(move |socket| async move {
-        session_loop(socket, state.clone(), room.clone(), session).await;
-        Rooms::leave(&state, &room);
-    })
+    ws.max_message_size(MAX_SYNC_MESSAGE)
+        .max_frame_size(MAX_SYNC_MESSAGE)
+        .on_upgrade(move |socket| async move {
+            session_loop(socket, state.clone(), room.clone(), session).await;
+            Rooms::leave(&state, &room);
+        })
 }
 
 fn message(kind: u64, payload: &[u8]) -> Vec<u8> {

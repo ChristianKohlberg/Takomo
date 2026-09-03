@@ -185,6 +185,17 @@ The whole map comes back in one read (`GET /v1/mindmaps/{id}`) precisely because
 of the 500 cap: a canvas cannot draw half a tree, and paging one would be a
 worse contract than bounding it.
 
+**Where the caps hold.** They are enforced on the REST and MCP path, and the
+canvas keeps them as it writes. They are not enforced on the sync socket, and
+cannot be: a CRDT update applies whole or not at all, so refusing one for
+carrying the 501st node would desynchronise that peer rather than teach it
+anything. A peer that ignores them can therefore exceed them — measured at 713
+nodes and a 5,000-character title. That is the honest position: these caps are
+the brainstorm discipline this page describes, kept by the surfaces people write
+through, not a boundary the server can hold against a determined client. What the
+socket does bound is the resource — one message is capped, so no single write can
+sit on the store's write mutex.
+
 ## Placement, order and shape
 
 `position` on the wire is the node's **rank among its siblings** — 0, 1, 2. The
