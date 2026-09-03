@@ -190,6 +190,8 @@ export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 // ---- documents ----
 export { OutlineRail } from './documents/OutlineRail'
 export type { OutlineRailProps, OutlineRailLabels } from './documents/OutlineRail'
+export { SectionPanel } from './documents/SectionPanel'
+export type { SectionPanelProps, SectionPanelLabels } from './documents/SectionPanel'
 
 // ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'

@@ -1,0 +1,1 @@
+function e(e){return!e||!e.reviewed_at?`unseen`:e.confirmed?`confirmed`:`changed`}function t(e){let t=new Map;for(let n of e){if(!n.node)continue;let e=t.get(n.node);e?e.push(n):t.set(n.node,[n])}return t}function n(e,t){return e.user?t?.get(e.user)??e.user:e.actor}export{n,t as r,e as t};

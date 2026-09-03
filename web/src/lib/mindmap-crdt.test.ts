@@ -10,6 +10,9 @@ import * as Y from 'yjs'
 
 import {
   answerQuestion,
+  fragmentText,
+  proseOf,
+  proseTextOf,
   createNode,
   createQuestion,
   detach,
@@ -56,7 +59,12 @@ describe('answerQuestion', () => {
     expect(answerQuestion(doc, q, '  Per project, for now.  ')).toBe(about)
 
     const target = nodeById(doc, about)!
-    expect(target.notes).toBe('Two models on the table.\n\nPer project, for now.')
+    // One line per BLOCK, not per keystroke of whitespace: a section's prose is
+    // an XmlFragment of paragraphs now, and a blank line is not a paragraph.
+    // `appendAnswer` still separates the answer with one, and the round trip
+    // through the fragment reads it back as two blocks — which is what the API
+    // returns as `notes` and what a card shows.
+    expect(target.notes).toBe('Two models on the table.\nPer project, for now.')
     expect(target.reviewed).toBe(true)
     expect(nodeById(doc, q)).toBeNull()
     // The relation went with it: an edge to a node that is gone is not an edge.
@@ -104,5 +112,68 @@ describe('detach', () => {
     // Everything under it came along.
     expect(nodeById(doc, grandchild)?.parent).toBe(child)
     expect(readNodes(doc)).toHaveLength(3)
+  })
+})
+
+
+describe('prose', () => {
+  it('gives a new node a fragment an editor can bind to', () => {
+    // The whole of phase 3 rests on this: a section's prose is a nested
+    // XmlFragment in the node's own map, so `/documents` can point an editor at
+    // it without a second document existing anywhere.
+    const doc = fresh()
+    const id = createNode(doc, { parent: null, title: 'Pricing', by: 'me' })!
+    const frag = doc.getMap<Y.Map<unknown>>('nodes').get(id)?.get('prose')
+    expect(frag).toBeInstanceOf(Y.XmlFragment)
+  })
+
+  it('reads a section back one line per block, the way the API does', () => {
+    const doc = fresh()
+    const id = createNode(doc, { parent: null, title: 'Pricing', by: 'me' })!
+    setNotes(doc, id, 'Two models.\n\nNeither is settled.')
+    expect(proseTextOf(doc, id)).toBe('Two models.\nNeither is settled.')
+    expect(nodeById(doc, id)?.notes).toBe('Two models.\nNeither is settled.')
+  })
+
+  it('gives every block an id, so an agent can address one', () => {
+    const doc = fresh()
+    const id = createNode(doc, { parent: null, title: 'Pricing', by: 'me' })!
+    setNotes(doc, id, 'one\ntwo')
+    const frag = proseOf(doc, id)!
+    const ids = frag.toArray().map((el) => (el as Y.XmlElement).getAttribute('id'))
+    expect(ids.every((x) => typeof x === 'string' && x.startsWith('blk_'))).toBe(true)
+    expect(new Set(ids).size).toBe(2)
+  })
+
+  it('migrates a node written before prose existed, without losing its notes', () => {
+    // A map made by an older build carries `notes` as a Y.Text. It stays legible
+    // until something touches it, and touching it moves it into the fragment
+    // rather than leaving one paragraph in two places.
+    const doc = fresh()
+    const nodes = doc.getMap<Y.Map<unknown>>('nodes')
+    nodes.set('mn-old', new Y.Map())
+    const entry = nodes.get('mn-old') as Y.Map<unknown>
+    entry.set('parent', null)
+    entry.set('order', 'a0')
+    entry.set('title', new Y.Text('Legacy'))
+    entry.set('notes', new Y.Text('Written before prose.'))
+
+    expect(nodeById(doc, 'mn-old')?.notes).toBe('Written before prose.')
+
+    const frag = proseOf(doc, 'mn-old')!
+    expect(fragmentText(frag)).toBe('Written before prose.')
+  })
+
+  it('does not make a fragment just because somebody read the node', () => {
+    const doc = fresh()
+    const nodes = doc.getMap<Y.Map<unknown>>('nodes')
+    nodes.set('mn-old', new Y.Map())
+    const entry = nodes.get('mn-old') as Y.Map<unknown>
+    entry.set('parent', null)
+    entry.set('order', 'a0')
+    entry.set('title', new Y.Text('Legacy'))
+
+    expect(proseTextOf(doc, 'mn-old')).toBe('')
+    expect(entry.get('prose')).toBeUndefined()
   })
 })

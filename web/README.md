@@ -179,6 +179,47 @@ strip's place in the flow, and following a link closes it. That is a structural
 difference rather than a visual one, which is why it reads `useIsPhone` instead
 of taking a `md:` prefix.
 
+**/documents is the PLAN, not a filing cabinet.** A project has one plan, and
+the map and this page are two renderings of it: a node is a section, its title
+is the heading, its depth is the heading level, tree order is reading order
+(`spec/one-model-two-views.md`). The page opens the MAP's sync session — one
+socket for the whole view — and every section is an editor bound to that node's
+own `prose` fragment, which is available rather than hoped for:
+`@tiptap/extension-collaboration` resolves
+`this.options.fragment ? this.options.fragment : document.getXmlFragment(field)`.
+
+Three consequences worth knowing before editing `pages/documents/`:
+
+- **Structure comes from a light read.** With prose inside the nodes, "the
+  document changed" now fires on every character anybody types, and the outline
+  changes for none of them. `readPlanTree` reads only id/parent/order/title, and
+  `sameTree` keeps the projection when the shape did not move. Without that pair
+  a remote keystroke re-renders every section — and a section is a mounted
+  editor.
+- **Editors are mounted only near the viewport.** The cap is 500 sections and
+  500 ProseMirror instances is not a thing to do to a browser. An offscreen
+  section renders its prose as plain text, which is also what holds its height,
+  so nothing jumps as editors mount behind you. jsdom has no
+  `IntersectionObserver`, so there everything mounts — which is what makes the
+  binding testable at all.
+- **A heading is read-only here.** The title caret lives on the canvas; two
+  carets on one `Y.Text` in two layouts is a fight, not a feature. The section
+  offers "show it on the map" instead, which hands over by link (`#m=…&n=…`) and
+  the canvas selects and centres what arrives.
+
+What the page shows beside the prose is where each section STANDS — agreed,
+changed since somebody agreed, or never read — plus its history. Both come from
+SQL rather than from the CRDT (`src/store/trace.rs`): the update log is the
+mechanism that rebuilds text and is rewritten by compaction, so asking it who
+changed §2.1 is asking a storage format a question about people. The trace is
+sparse by contract, which is why an edit is filed only once it SETTLES — on blur
+or after a pause — and never per keystroke.
+
+The conversion this replaced — `POST /v1/mindmaps/{id}/documents`, the ⌘K "write
+this map up", and `lib/document-outline.ts`'s folder model — is gone. It copied
+the map into `documents` rows, so a node's notes and its document's prose were
+two places one paragraph lived and disagreed after the first edit.
+
 **On /mindmaps the canvas IS the page, and ⌘K is the chrome.** A project holds
 exactly one brainstorm, so the rail that listed maps was a list of one and the
 rail that listed projects was navigation competing with the thing being

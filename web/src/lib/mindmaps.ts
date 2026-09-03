@@ -126,6 +126,16 @@ export interface TraceEntry {
   /** The person behind it, where the credential was bound to one. */
   user: string | null
   note: string | null
+  /**
+   * What the section said at that moment, or null when the act did not change
+   * its prose.
+   *
+   * Kept because the CRDT update log cannot answer "what did 2.1 say last
+   * Tuesday" — compaction rewrites it into one blob by design. A diff is two of
+   * these. Read from the replica server-side and never taken from the caller: a
+   * history somebody can write is not a history.
+   */
+  text: string | null
   at: string
 }
 

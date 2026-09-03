@@ -370,7 +370,7 @@ export default function Plan({
   }, [visible, near, canWrite, ydoc])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+    <main className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
       {/* One breakpoint, `md`, meaning phone or not: the outline stacks above
           the plan on a phone and sits beside it everywhere else. */}
       <aside className="border-b-border-soft flex max-h-[38vh] flex-none flex-col overflow-y-auto border-b px-2 py-3 md:max-h-none md:w-full md:max-w-80 md:border-r md:border-b-0">
@@ -447,6 +447,6 @@ export default function Plan({
           </div>
         )}
       </div>
-    </div>
+    </main>
   )
 }

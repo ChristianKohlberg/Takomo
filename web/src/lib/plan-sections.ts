@@ -78,7 +78,23 @@ export function planSections(nodes: readonly PlanNode[]): PlanSection[] {
     return out
   }
 
-  return build(null, 0, '')
+  const roots = build(null, 0, '')
+  // Anything the walk could not reach — a cycle nothing has repaired yet — is
+  // appended at the top level rather than dropped, for the same reason an orphan
+  // is: a section missing from the plan is worse than one in the wrong place.
+  for (const n of nodes) {
+    if (seen.has(n.id)) continue
+    seen.add(n.id)
+    const number = String(roots.length + 1)
+    roots.push({
+      key: n.id,
+      number,
+      depth: 0,
+      title: n.title.trim(),
+      children: build(n.id, 1, number),
+    })
+  }
+  return roots
 }
 
 /** Every section in reading order, parents before their children. */
