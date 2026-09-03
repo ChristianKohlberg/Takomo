@@ -186,6 +186,45 @@ impl TestApp {
         resp.text().await.unwrap()
     }
 
+    /// Everything the browser downloads before it can paint: `app.js` plus the
+    /// transitive closure of its STATIC imports.
+    ///
+    /// Chunk names are emergent. The bundler hoists shared modules into chunks of
+    /// its own choosing and renames them as the import graph shifts, so a chunk
+    /// called `initiatives.js` can appear in one build and be folded into
+    /// `app.js` in the next with no source change at all — which is exactly what
+    /// happened once, and cost a test that had encoded the name as if it were a
+    /// contract. What is stable is whether a module is reachable eagerly, and
+    /// that is the only thing worth asserting.
+    ///
+    /// Dynamic imports are deliberately NOT followed: a lazy route's chunk is
+    /// precisely what must not count as first load.
+    pub async fn eager_bundle(&self) -> String {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec!["app.js".to_string()];
+        let mut out = String::new();
+        while let Some(name) = queue.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let src = self.asset(&name).await;
+            // The two shapes a static import takes once minified: `from"./x.js"`
+            // and a side-effect-only `import"./x.js"`. A dynamic one is
+            // `import("./x.js")` and matches neither, which is the point.
+            for pat in ["from\"./", "import\"./"] {
+                let mut rest = src.as_str();
+                while let Some(at) = rest.find(pat) {
+                    rest = &rest[at + pat.len()..];
+                    if let Some(end) = rest.find('"') {
+                        queue.push(rest[..end].to_string());
+                    }
+                }
+            }
+            out.push_str(&src);
+        }
+        out
+    }
+
     pub async fn app_bundle(&self) -> String {
         let resp = self
             .request(Method::GET, "/assets/app.js")
