@@ -3522,3 +3522,79 @@ async fn an_agent_proposes_to_a_section_and_the_prose_does_not_move() {
         .collect();
     assert!(kinds.contains(&"proposed"), "{trace}");
 }
+
+/// A `read` MCP tool must not rewrite the plan, the way its REST twin must not.
+///
+/// `takomo_plan_read` and `takomo_mindmap_show` both opened the room and ran the
+/// legacy-notes conversion, which creates a fragment per node, drops the old
+/// field, broadcasts to every open canvas and persists. Both require only
+/// `read`, and both sit in `READ_TOOLS`, so the write was not even debited
+/// against the token's budget.
+///
+/// The REST path was fixed first and this twin was missed — twice, by me, in two
+/// separate audits of my own work. Two independent reviewers found it.
+#[tokio::test]
+async fn a_read_scoped_mcp_tool_does_not_rewrite_the_plan() {
+    let app = TestApp::spawn().await;
+
+    // A map whose nodes predate prose: written straight into the log the way an
+    // older version left one behind.
+    let (s, made) = app
+        .post(
+            &app.admin,
+            "/v1/mindmaps",
+            json!({ "project": "tp", "title": "Payments rebuild" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let map = made["mindmap"]["id"].as_str().unwrap().to_string();
+    let legacy = takomo::store::mindmapdoc::build_from_legacy(&[(
+        "mn-legacy001".to_string(),
+        None,
+        "API".to_string(),
+        None,
+        None,
+        None,
+        None,
+        "human:seed".to_string(),
+        0,
+        0,
+    )]);
+    app.open_store()
+        .append_collab_update(&map, &legacy, "test")
+        .expect("seed a legacy-shaped log");
+
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let rows = || -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let before = rows();
+
+    let reader = app.mint("agent:reader", &["read"], None);
+    let shown = app
+        .tool_ok(&reader, "takomo_mindmap_show", json!({ "id": map }))
+        .await;
+    assert!(
+        format!("{shown}").contains("API"),
+        "the reader still sees it: {shown}"
+    );
+    let read = app
+        .tool_ok(&reader, "takomo_plan_read", json!({ "id": map }))
+        .await;
+    assert!(
+        format!("{read}").contains("API"),
+        "and reads it as a plan: {read}"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert_eq!(
+        rows(),
+        before,
+        "a read-scoped tool must not add to the update log"
+    );
+}

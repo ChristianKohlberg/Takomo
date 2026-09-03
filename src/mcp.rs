@@ -2400,7 +2400,15 @@ impl TakomoMcp {
         auth.require_project(&map.project)?;
 
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
-        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        // Only for a caller that may WRITE — the same gate the REST twin
+        // carries. `ensure_prose` creates a fragment per node and drops the
+        // legacy field, so running it here made a `read` tool alter the shared
+        // replica, broadcast that to every open canvas, and persist it. Worse
+        // here than on REST: both these tools are in `READ_TOOLS`, so the write
+        // was not even debited against the token's budget.
+        if auth.require_scope("write").is_ok() {
+            room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        }
 
         let node = a.node.clone();
         let markdown = room.read(|doc| plan_markdown(doc, &a.id, node.as_deref()))?;
@@ -2584,7 +2592,15 @@ impl TakomoMcp {
         auth.require_project(&map.project)?;
 
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
-        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        // Only for a caller that may WRITE — the same gate the REST twin
+        // carries. `ensure_prose` creates a fragment per node and drops the
+        // legacy field, so running it here made a `read` tool alter the shared
+        // replica, broadcast that to every open canvas, and persist it. Worse
+        // here than on REST: both these tools are in `READ_TOOLS`, so the write
+        // was not even debited against the token's budget.
+        if auth.require_scope("write").is_ok() {
+            room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        }
         let (nodes, relationships, outline) = room.read(|doc| {
             let (nodes, relationships, raw) = crate::store::mindmapdoc::snapshot(doc, &a.id);
             let text = match a.node.as_deref() {
@@ -4341,19 +4357,40 @@ fn plan_markdown(doc: &yrs::Doc, map_id: &str, node: Option<&str>) -> ApiResult<
     use yrs::Transact;
     let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, map_id);
     if let Some(node) = node {
-        let frag = crate::store::mindmapdoc::section_prose(doc, node)?;
-        let txn = doc.transact();
-        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
-        return Ok(crate::api::docprops::annotate(&blocks));
+        // The NON-creating read: this is called inside `room.read`, where a
+        // mutation is never queued for the flush nor broadcast, so creating a
+        // fragment here would leave the server holding one no peer knows about.
+        // A section with no fragment yet reads as its legacy notes, which is what
+        // `read_nodes` does — otherwise a read-only agent sees blank sections on
+        // a map that simply has not been converted yet.
+        return Ok(
+            match crate::store::mindmapdoc::read_section_prose(doc, node) {
+                Some(frag) => {
+                    let txn = doc.transact();
+                    let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                    crate::api::docprops::annotate(&blocks)
+                }
+                None => nodes
+                    .iter()
+                    .find(|n| n.id == node)
+                    .map(|n| n.notes.clone())
+                    .unwrap_or_default(),
+            },
+        );
     }
     let mut out = String::new();
     for section in crate::store::mindmapdoc::tree_order(&nodes) {
         let level = crate::store::mindmapdoc::depth_of(&nodes, &section.id).min(6);
         out.push_str(&format!("{} {}\n\n", "#".repeat(level), section.title));
-        if let Ok(frag) = crate::store::mindmapdoc::section_prose(doc, &section.id) {
-            let txn = doc.transact();
-            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
-            let body = crate::api::docprops::annotate(&blocks);
+        let body = match crate::store::mindmapdoc::read_section_prose(doc, &section.id) {
+            Some(frag) => {
+                let txn = doc.transact();
+                let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                crate::api::docprops::annotate(&blocks)
+            }
+            None => section.notes.clone(),
+        };
+        {
             if !body.trim().is_empty() {
                 out.push_str(&body);
                 out.push_str("\n\n");

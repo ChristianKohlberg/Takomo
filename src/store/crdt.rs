@@ -453,6 +453,28 @@ impl Store {
         let session = self.with_tx(|tx| {
             let object = resolve(tx, object_id)?;
             ensure_project_writable(tx, &object.project)?;
+            // Never outlive the token this came from.
+            //
+            // The TTL is 12 hours and an OAuth access token lives one, so a
+            // hosted client's ticket kept WRITING to one object for eleven hours
+            // after the credential behind it had expired. Revocation was handled;
+            // ordinary expiry was not, and expiry is the common case — a refresh
+            // rotation or a lapsed consent leaves the old token dead exactly this
+            // way. Clamped rather than refused, because a short-lived token
+            // asking for a session is perfectly legitimate; it just gets a
+            // session that ends when it does.
+            // Nullable: a token with no expiry clamps nothing.
+            let token_expiry: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT expires_at FROM tokens WHERE id = ?1",
+                    params![minted_by],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let expires_at = match token_expiry.flatten() {
+                Some(t) if t < expires_at => t,
+                _ => expires_at,
+            };
             tx.execute(
                 "INSERT INTO crdt_sessions (id, token_hash, object_kind, object_id, project, \
                  actor, \"user\", display, can_write, expires_at, created_at, minted_by) \

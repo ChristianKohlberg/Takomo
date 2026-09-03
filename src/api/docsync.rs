@@ -696,7 +696,10 @@ async fn mint(
         "token": token,
         "can_write": can_write,
         "display": display,
-        "expires_at": crate::ids::iso(expires_at),
+        // The STORED expiry, which the clamp against the minting token may have
+        // brought forward — telling the client the value we asked for rather
+        // than the one we kept would have it trust a ticket past its life.
+        "expires_at": crate::ids::iso(session.expires_at),
         // Split into the base and the room because that is the shape
         // `y-websocket` takes: it appends `/<room>` and then `?<params>` itself,
         // so handing it a full URL with a query string produces a mangled one.

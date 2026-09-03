@@ -628,6 +628,17 @@ fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
     // schema batch is about to create it with the column already on it.
     if !columns.is_empty() && !columns.iter().any(|c| c == "minted_by") {
         conn.execute("ALTER TABLE crdt_sessions ADD COLUMN minted_by TEXT", [])?;
+        // Every ticket outstanding at the moment of the upgrade has no answer to
+        // "which token minted this", so `revoke_collab_sessions_of_token` can
+        // never match it: revoking a leaked credential would leave its ticket
+        // working for the rest of its 12 hours, which is the exact case the
+        // cascade was added for. They are revoked here instead. The cost is that
+        // an upgrade asks open browsers for a new ticket, which they do anyway
+        // on reconnect.
+        conn.execute(
+            "UPDATE crdt_sessions SET revoked_at = ?1 WHERE revoked_at IS NULL",
+            [crate::ids::now_ms()],
+        )?;
     }
     Ok(())
 }
@@ -2064,7 +2075,15 @@ CREATE TABLE IF NOT EXISTS crdt_sessions (
   -- from it: a `tkd_` ticket kept opening a socket and writing for its whole
   -- life, which made it MORE permissive than the token it came from — the one
   -- thing it is not allowed to be.
-  minted_by   TEXT REFERENCES tokens(id)
+  -- ON DELETE CASCADE, and both halves matter. Without any action the OAuth
+  -- sweep's `DELETE FROM tokens` hits this constraint and rolls back its WHOLE
+  -- transaction, so expired tokens, spent codes and retired refresh rows all
+  -- stop being reaped for as long as one session references a swept token —
+  -- which is reachable, because token retention (24h) is shorter than a
+  -- session's life (12h TTL plus its sweep grace). Cascading is also the right
+  -- semantic: the credential this was derived from no longer exists, so neither
+  -- should this.
+  minted_by   TEXT REFERENCES tokens(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_object ON crdt_sessions(object_id);
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_minted_by ON crdt_sessions(minted_by);

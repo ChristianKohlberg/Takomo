@@ -21087,3 +21087,89 @@ async fn an_unstorable_update_does_not_poison_the_edits_after_it() {
         "an edit made after an unstorable one must still be there: {whole}"
     );
 }
+
+/// A sync ticket must not outlive the token that minted it.
+///
+/// The TTL is 12 hours and an OAuth access token lives one, so a hosted client's
+/// ticket kept WRITING to one object for eleven hours after the credential behind
+/// it was dead. Revocation was handled and ordinary EXPIRY was not — and expiry
+/// is the common case, since a refresh rotation or a lapsed consent leaves the
+/// old token dead exactly this way.
+#[tokio::test]
+async fn a_sync_ticket_expires_no_later_than_its_token() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let short = app.mint("agent:short", &["read", "write"], None);
+    // Give that token an hour, the way an OAuth access token has one.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let in_an_hour = takomo::ids::now_ms() + 3_600_000;
+    conn.execute(
+        "UPDATE tokens SET expires_at = ?1 WHERE actor = 'agent:short'",
+        [in_an_hour],
+    )
+    .unwrap();
+
+    let (s, sess) = app
+        .post(&short, &format!("/v1/mindmaps/{map}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{sess}");
+    let expires: chrono::DateTime<chrono::Utc> =
+        sess["expires_at"].as_str().unwrap().parse().unwrap();
+    let ticket_ms = expires.timestamp_millis();
+    assert!(
+        ticket_ms <= in_an_hour,
+        "the ticket outlives its token by {}ms",
+        ticket_ms - in_an_hour
+    );
+}
+
+/// A live sync session must not block the OAuth sweep.
+///
+/// `crdt_sessions.minted_by` references `tokens(id)`. With no ON DELETE and
+/// foreign keys on, the sweep's `DELETE FROM tokens` raises a constraint failure
+/// and rolls back its WHOLE transaction — so expired tokens, spent codes,
+/// retired refresh rows and unused registrations all stop being reaped while one
+/// such session row exists. Reachable by construction, not contrivance: token
+/// retention is shorter than a session's life.
+#[tokio::test]
+async fn a_live_sync_session_does_not_block_the_oauth_sweep() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let token = app.mint("agent:oauthish", &["read", "write"], None);
+    let (s, sess) = app
+        .post(&token, &format!("/v1/mindmaps/{map}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{sess}");
+
+    // Make it look like an expired OAuth-issued token, which is what the sweep
+    // collects.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let id: String = conn
+        .query_row(
+            "SELECT id FROM tokens WHERE actor = 'agent:oauthish'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO oauth_issued (token_id, client_id, family, refresh_hash, created_at) \
+         VALUES (?1, 'client', 'fam', 'hash', 0)",
+        [&id],
+    )
+    .unwrap();
+    conn.execute("UPDATE tokens SET expires_at = 1 WHERE id = ?1", [&id])
+        .unwrap();
+
+    app.open_store()
+        .sweep_expired_oauth()
+        .expect("the sweep must not be blocked by a session referencing the token");
+
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tokens WHERE id = ?1", [&id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "the expired token should have been swept");
+}
