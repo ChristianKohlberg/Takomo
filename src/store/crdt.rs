@@ -267,7 +267,21 @@ impl Store {
     /// a shortcut: a document's entire state serialises as an ordinary update,
     /// so compaction is the same shape and the same format as an increment. One
     /// transaction, so no reader ever sees the empty moment between.
-    pub fn compact_collab(&self, id: &str, state: &[u8], actor: &str) -> ApiResult<()> {
+    /// `expected_rows` is what the caller believes the log holds. Compaction
+    /// DELETES every row and writes one, so a row the caller never saw — and
+    /// therefore never replayed into the state it is about to write — would be
+    /// destroyed. There is such a writer: `edit_mindmap_document` appends rather
+    /// than replaces, precisely so the CLI does not throw a live room's work
+    /// away, and compaction did the reverse damage to it. Refusing when the count
+    /// disagrees turns a silent loss into a skipped compaction, and the next
+    /// flush after the room has seen the new row compacts correctly.
+    pub fn compact_collab(
+        &self,
+        id: &str,
+        state: &[u8],
+        actor: &str,
+        expected_rows: i64,
+    ) -> ApiResult<()> {
         let kind = CollabKind::from_id(id).ok_or_else(|| unknown_kind(id))?;
         if state.is_empty() {
             return Err(update_empty(kind));
@@ -288,6 +302,23 @@ impl Store {
             // what, and it is the only place the earlier wording of a section
             // survives compaction at all. Deleting it here would make ordinary
             // editing erase the history, which is the opposite of its purpose.
+            let held: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            if held != expected_rows {
+                return Err(ApiError::conflict(
+                    "conflict.collab_compaction",
+                    format!(
+                        "The log holds {held} rows and this compaction was built from {expected_rows}.                          Something appended while it was being prepared, and replacing the log now                          would drop that write."
+                    ),
+                )
+                .remedy(
+                    "Nothing to do — the next flush compacts from a replica that has seen it."
+                        .to_string(),
+                ));
+            }
             tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
             tx.execute(
                 "INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) \

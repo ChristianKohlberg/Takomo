@@ -20936,7 +20936,19 @@ async fn compaction_rewrites_the_log_and_keeps_the_history() {
         let txn = yrs::Transact::transact(&doc);
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
     };
-    store.compact_collab(&map, &state, "test").expect("compact");
+    // Compaction now refuses to replace a log that has grown past what the
+    // caller replayed, so ask the log what it holds and compact from that.
+    let held: i64 = rusqlite::Connection::open(app.db_path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| r.get(0),
+        )
+        .unwrap();
+    store
+        .compact_collab(&map, &state, "test", held)
+        .expect("compact");
 
     let (_, after) = app
         .get(&app.worker, &format!("/v1/mindmaps/{map}/trace"))
@@ -21172,4 +21184,83 @@ async fn a_live_sync_session_does_not_block_the_oauth_sweep() {
         })
         .unwrap();
     assert_eq!(left, 0, "the expired token should have been swept");
+}
+
+/// Compaction must not delete a row it never replayed.
+///
+/// It replaces the whole log with the room's replica, on the argument that the
+/// replica "holds every update in the log plus anything that arrived while we
+/// were writing". That is true of updates this room produced and false of a row
+/// appended by anything else — and there is such a writer:
+/// `edit_mindmap_document` APPENDS rather than replaces, deliberately, so the CLI
+/// running against a database a server is serving does not throw a live room's
+/// work away. Compaction did the reverse damage to the CLI.
+///
+/// Refusing when the count disagrees turns a silent loss into a skipped
+/// compaction; the next flush, from a replica that has seen the row, compacts
+/// correctly.
+#[tokio::test]
+async fn compaction_refuses_to_drop_a_row_it_never_saw() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+
+    let store = app.open_store();
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let rows = || -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let seen = rows();
+
+    // Somebody else appends — the CLI's shape, out of any room.
+    let extra = {
+        use yrs::{Map, Transact};
+        let doc = yrs::Doc::new();
+        let nodes = doc.get_or_insert_map("nodes");
+        let mut txn = doc.transact_mut();
+        let entry = nodes.insert(&mut txn, "mn-fromcli1", yrs::MapPrelim::default());
+        entry.insert(&mut txn, "title", "written by the CLI");
+        entry.insert(&mut txn, "position", 9.0);
+        txn.encode_update_v1()
+    };
+    store
+        .append_collab_update(&map, &extra, "cli")
+        .expect("the CLI appends");
+    assert_eq!(rows(), seen + 1);
+
+    // A compaction prepared before that row must be refused, not silently
+    // destroy it.
+    let state = {
+        use yrs::ReadTxn;
+        let doc = yrs::Doc::new();
+        let _ = doc.get_or_insert_map("nodes");
+        let txn = yrs::Transact::transact(&doc);
+        txn.encode_state_as_update_v1(&yrs::StateVector::default())
+    };
+    let refused = store.compact_collab(&map, &state, "flusher", seen);
+    assert!(
+        refused.is_err(),
+        "compaction built from {seen} rows must not replace a log of {}",
+        rows()
+    );
+    assert_eq!(rows(), seen + 1, "and the CLI's row must still be there");
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        mindmap_titles(&whole).contains(&"written by the CLI".to_string()),
+        "the write it would have destroyed is still readable: {whole}"
+    );
 }

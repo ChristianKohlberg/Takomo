@@ -315,10 +315,42 @@ impl Rooms {
             return Ok(room);
         }
 
+        // The load AND the replay both go to the blocking pool.
+        //
+        // The comment above used to claim this, and only the load was on it: the
+        // replay — decoding and applying every row — ran inline on an async
+        // worker. With an object allowed to reach 32 MiB that is a multi-second
+        // CPU burn on a runtime thread, on a path any joiner can trigger. Doing
+        // both in one hop is also one fewer thread handoff than doing them in
+        // two.
         let store_id = id.to_string();
         let store = state.clone();
-        let updates =
-            super::blocking_read(move || store.store.load_collab_updates(&store_id)).await?;
+        let (doc, rows) = super::blocking_read(move || {
+            let updates = store.store.load_collab_updates(&store_id)?;
+            let doc = Doc::new();
+            let rows = updates.len() as u64;
+            {
+                let mut txn = doc.transact_mut();
+                for blob in &updates {
+                    // A blob that will not decode is skipped rather than failing
+                    // the open. Refusing to serve a document because one
+                    // historical row is unreadable would turn a recoverable
+                    // problem into a lost document; the rest of the log still
+                    // rebuilds most of it, and the next compaction quietly drops
+                    // the bad row.
+                    match Update::decode_v1(blob) {
+                        Ok(u) => {
+                            if let Err(e) = txn.apply_update(u) {
+                                eprintln!("{store_id}: skipping unapplicable update: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("{store_id}: skipping undecodable update: {e}"),
+                    }
+                }
+            }
+            Ok((doc, rows))
+        })
+        .await?;
 
         // Whether this object may be written, asked once as the room opens.
         //
@@ -334,27 +366,6 @@ impl Rooms {
             Ok(writable.store.ensure_collab_writable(&writable_id).is_err())
         })
         .await?;
-
-        let doc = Doc::new();
-        let rows = updates.len() as u64;
-        {
-            let mut txn = doc.transact_mut();
-            for blob in &updates {
-                // A blob that will not decode is skipped rather than failing the
-                // open. Refusing to serve a document because one historical row
-                // is unreadable would turn a recoverable problem into a lost
-                // document; the rest of the log still rebuilds most of it, and
-                // the next compaction quietly drops the bad row.
-                match Update::decode_v1(blob) {
-                    Ok(u) => {
-                        if let Err(e) = txn.apply_update(u) {
-                            eprintln!("{id}: skipping unapplicable update: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!("{id}: skipping undecodable update: {e}"),
-                }
-            }
-        }
 
         let (tx, _) = tokio::sync::broadcast::channel(256);
         let room = Arc::new(Room {
@@ -372,10 +383,25 @@ impl Rooms {
         // Re-check under the lock: two peers can race to open the same document,
         // and the loser must join the winner's room rather than install a second
         // replica of the same text.
+        // `frozen` was read before the replay, which can take seconds, and
+        // `resync_frozen` only reaches rooms that are already in the map — so an
+        // archive committing in that window is missed twice over and the room
+        // keeps `false` for the rest of its life. Re-asking once here, after the
+        // room is installed and therefore visible to any LATER resync, closes the
+        // window from the other side: either the archive's resync saw this room,
+        // or this read sees the archive.
+        let recheck_id = id.to_string();
+        let recheck = state.clone();
+        let frozen_now = super::blocking_read(move || {
+            Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
+        })
+        .await?;
+
         let mut rooms = state.rooms.0.lock().expect("rooms mutex");
         let room = match rooms.get(id) {
             Some(existing) => existing.clone(),
             None => {
+                room.frozen.store(frozen_now, Ordering::SeqCst);
                 rooms.insert(id.to_string(), room.clone());
                 spawn_flusher(state.clone(), room.clone());
                 room
@@ -548,11 +574,16 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         // every update in the log plus anything that arrived while we were
         // writing — so replacing the log with it cannot lose a concurrent edit.
         let state_blob = room.full_state();
+        // What this replica has actually seen. Compaction is refused if the log
+        // has grown past it, because those rows are not in `state_blob`.
+        let expected = room.rows.load(Ordering::SeqCst) as i64;
         let store = state.clone();
         let id = room.id.clone();
         let writer = actor.to_string();
         let done = tokio::task::spawn_blocking(move || {
-            store.store.compact_collab(&id, &state_blob, &writer)
+            store
+                .store
+                .compact_collab(&id, &state_blob, &writer, expected)
         })
         .await;
         match done {
