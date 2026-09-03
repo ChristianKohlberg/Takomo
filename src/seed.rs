@@ -960,6 +960,22 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
 /// what make the page read as more than a note-taker: a map is a picture of what
 /// the thinking turned into, and that only shows once something has.
 fn mindmap(store: &Store) -> ApiResult<()> {
+    // The seeded plan is written BY somebody. Without it `created_by_user` is
+    // null everywhere and the history reads as a machine talking to itself,
+    // which makes two features look broken rather than unused.
+    let ada = store
+        .get_user("ada")
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+        .unwrap_or_default();
+    let sam = store
+        .get_user("sam")
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+        .unwrap_or_default();
+
     let map = store.create_mindmap(
         PROJECT,
         &crate::store::MindmapCreate {
@@ -982,7 +998,13 @@ fn mindmap(store: &Store) -> ApiResult<()> {
             .iter()
             .map(|(title, notes, origin)| crate::store::mindmapdoc::NodeAdd {
                 parent: parent.map(str::to_string),
-                by_user: None,
+                // An agent-written thought belongs to the person whose agent
+                // wrote it; "whose agent" is worth knowing.
+                by_user: Some(if *origin == "agent" {
+                    sam.clone()
+                } else {
+                    ada.clone()
+                }),
                 title: (*title).to_string(),
                 notes: (!notes.is_empty()).then(|| (*notes).to_string()),
                 origin: Some((*origin).to_string()),
@@ -992,7 +1014,26 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         let created = store.edit_mindmap_document(&map.id, |doc| {
             crate::store::mindmapdoc::add_nodes(doc, &adds, SEEDER)
         })?;
-        Ok(created.into_iter().map(|(id, _)| id).collect())
+        let ids: Vec<String> = created.into_iter().map(|(id, _)| id).collect();
+        // Every thought was written by somebody at some point, and a plan whose
+        // history is empty tells you nothing about itself.
+        for (id, (_, _, origin)) in ids.iter().zip(nodes.iter()) {
+            store.record_trace(&crate::store::trace::Record {
+                project: PROJECT,
+                mindmap: &map.id,
+                node: Some(id),
+                kind: "authored",
+                actor: if *origin == "agent" {
+                    "agent:seed"
+                } else {
+                    SEEDER
+                },
+                user: Some(if *origin == "agent" { &sam } else { &ada }),
+                note: None,
+                text: None,
+            })?;
+        }
+        Ok(ids)
     };
 
     let branches = grow(
@@ -1074,6 +1115,21 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         crate::store::mindmapdoc::add_relationship(doc, &question[0], &branches[0], "questions")?;
         Ok(())
     })?;
+
+    // Somebody has read some of it and not the rest, which is the only state a
+    // trust view is interesting in.
+    for node in [&branches[0], &branches[1]] {
+        store.record_trace(&crate::store::trace::Record {
+            project: PROJECT,
+            mindmap: &map.id,
+            node: Some(node),
+            kind: "reviewed",
+            actor: "human:sam",
+            user: Some(&sam),
+            note: None,
+            text: None,
+        })?;
+    }
 
     // One branch became work, one became a direction, two are still thoughts —
     // which is what a real brainstorm looks like halfway through.
