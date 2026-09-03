@@ -1019,6 +1019,10 @@ impl Store {
                 params![id],
             )?;
             tx.execute("DELETE FROM crdt_sessions WHERE project = ?1", params![id])?;
+            // And the plan history, for the same reason and with more force:
+            // `plan_trace.text` holds what each section said, so a project whose
+            // prose was deleted above would still have that prose here.
+            tx.execute("DELETE FROM plan_trace WHERE project = ?1", params![id])?;
             // `mindmaps.project` has no ON DELETE CASCADE, so with foreign keys
             // on, a project holding a map would otherwise abort the whole delete.
             tx.execute("DELETE FROM mindmaps WHERE project = ?1", params![id])?;

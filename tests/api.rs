@@ -20819,3 +20819,66 @@ async fn revoking_a_token_kills_the_sync_tickets_it_minted() {
         "a ticket from a revoked token must not open a socket"
     );
 }
+
+/// Deleting a map or its project takes the plan's history with it.
+///
+/// `plan_trace.text` is what a section SAID at the moment somebody changed it —
+/// that is the whole point of the column, and it means the history is a copy of
+/// the prose. Nothing deleted from that table, so a deleted project left every
+/// section's words behind in it, which is exactly what `delete_project`'s own
+/// comment says must not happen: "delete the project" has to mean the text goes
+/// too. The CRDT log was purged and the copy of it was not.
+///
+/// Reproduced on a running server before the fix: a project was created, a
+/// sentence written into a node, the project deleted with `?force=true`, and the
+/// sentence read straight back out of `plan_trace`.
+#[tokio::test]
+async fn deleting_a_project_takes_the_plan_history_with_it() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "secret plan" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+    let (s, _) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "notes": "CONFIDENTIAL: the acquisition price is 4.2m" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (_, trace) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/trace"))
+        .await;
+    assert!(
+        trace["total"].as_i64().unwrap() > 0,
+        "the history must exist before we prove it is removed: {trace}"
+    );
+
+    let (s, _) = app.delete(&app.admin, "/v1/projects/tp?force=true").await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // Read straight out of SQLite, because the route that would report it is
+    // gone with the project — and a row left behind is exactly the failure.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plan_trace WHERE project = 'tp'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        left, 0,
+        "deleting a project must take the plan history — and its copy of the \
+         prose — with it, not leave {left} row(s) behind"
+    );
+}

@@ -658,6 +658,19 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         )?;
     }
 
+    // Sweep plan history whose project or map is already gone.
+    //
+    // Deleting a project or a map used to leave `plan_trace` behind, and that
+    // table carries `text` — what each section SAID — so the prose outlived the
+    // delete that was supposed to remove it. The delete paths take it now; this
+    // clears what earlier ones left. Unreachable rows either way: the routes
+    // that read them resolve the map first.
+    conn.execute(
+        "DELETE FROM plan_trace WHERE project NOT IN (SELECT id FROM projects) \
+         OR mindmap NOT IN (SELECT id FROM mindmaps)",
+        [],
+    )?;
+
     let columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(tickets)")?;
         let cols = stmt
