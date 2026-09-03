@@ -438,8 +438,13 @@ fn record_json(value: &Out) -> Option<Value> {
 /// nested Yjs structure: nothing merges *within* a proposal — it is written once
 /// and then only its status changes — so the structure would buy concurrency
 /// nobody needs and cost a schema both sides must agree on.
+#[allow(clippy::too_many_arguments)]
 pub fn write_proposal(
     doc: &yrs::Doc,
+    // The section this is about, when the document is a PLAN rather than a
+    // standalone document. `None` for a document, whose proposals are about the
+    // whole of it.
+    node: Option<&str>,
     author: &str,
     instruction: &str,
     summary: &str,
@@ -481,6 +486,9 @@ pub fn write_proposal(
 
     let record = json!({
         "id": id,
+        // Which section, when the document is a plan. A standalone document has
+        // no sections, so this is null there.
+        "node": node,
         "status": "pending",
         "author": author,
         "instruction": instruction,

@@ -483,6 +483,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/mindmaps/{id}/nodes/{node}/promote",
             post(crate::api::mindmaps::promote),
         )
+        // The plan as an agent reads it, and what it may offer back.
+        .route("/v1/mindmaps/{id}/prose", get(crate::api::mindmaps::prose))
+        .route(
+            "/v1/mindmaps/{id}/proposals",
+            get(crate::api::mindmaps::proposals).post(crate::api::mindmaps::propose),
+        )
         // What happened to the plan, and who did it.
         .route(
             "/v1/mindmaps/{id}/trace",
@@ -491,11 +497,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // The sync ticket, minted exactly as a document's is — a browser
         // WebSocket cannot carry an Authorization header, so the credential has
         // to ride the handshake.
-        // Write the map up: one document per thought, filed by its branch.
-        .route(
-            "/v1/mindmaps/{id}/documents",
-            post(crate::api::mindmaps::to_documents),
-        )
         .route(
             "/v1/mindmaps/{id}/session",
             post(crate::api::docsync::create_mindmap_session),

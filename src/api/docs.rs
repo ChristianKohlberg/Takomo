@@ -270,6 +270,7 @@ pub async fn run_agent(
         let validated = crate::api::docprops::validate_ops(&plan.ops, &blocks, scope.as_deref())?;
         let pid = crate::api::docprops::write_proposal(
             d,
+            None,
             &actor,
             trimmed,
             &summary,

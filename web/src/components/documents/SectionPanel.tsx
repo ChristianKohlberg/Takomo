@@ -1,0 +1,192 @@
+// One section of the plan, written out.
+//
+// A heading, where it stands, what has happened to it, and the prose itself —
+// which arrives as `children`, because the prose is a live editor bound to this
+// node's own fragment and an editor is not something a presentational component
+// can build from props.
+//
+// The heading is READ-ONLY here, and that is a decision rather than an omission.
+// A node's title is the one thing both views show, and the title caret lives on
+// the map: typing a heading here would put two carets on one Y.Text in two
+// layouts, and the map is where naming a thought belongs. So this offers to show
+// the section on the map instead.
+//
+// History is the point of this view. `standing` says whether anybody agrees with
+// the section as it now reads, and the trace says who did what — the pair is
+// what "better diffs" actually comes from, and it is why the review button is
+// beside the prose rather than in a panel somewhere else.
+import type { ReactNode } from 'react'
+
+import type { TraceEntry, TraceKind } from '@/lib/mindmaps'
+import type { Standing } from '@/lib/plan-trace'
+import { traceActor } from '@/lib/plan-trace'
+import { fmtAge } from '@/lib/format'
+import { Hint } from '@/components/Hint'
+import { cn } from '@/lib/utils'
+
+export interface SectionPanelLabels {
+  /** A section nobody has given a title yet. */
+  untitled: string
+  standingConfirmed: string
+  standingChanged: string
+  standingUnseen: string
+  /** The button that records `reviewed`. */
+  review: string
+  reviewHint: string
+  showOnMap: string
+  history: string
+  hideHistory: string
+  historyEmpty: string
+  /** `{n}` more entries than are shown. */
+  historyMore: string
+  /** What each kind of act is called. */
+  kinds: Record<TraceKind, string>
+  needWrite: string
+}
+
+export interface SectionPanelProps {
+  /** `2.1.3`. The shared address of this part of the plan. */
+  number: string
+  /** 0 for a first-ring node. Heading level, indent and quiet all read it. */
+  depth: number
+  title: string
+  standing: Standing
+  /** This section's history, newest first. */
+  entries: readonly TraceEntry[]
+  historyOpen: boolean
+  onToggleHistory: () => void
+  onReview: () => void
+  onShowOnMap: () => void
+  canWrite: boolean
+  /** Highlighted because the rail points at it. */
+  active?: boolean
+  /** How many entries to show before saying there are more. */
+  historyLimit?: number
+  /** The page's handle on this section's element, for scrolling to it. */
+  sectionRef?: (el: HTMLElement | null) => void
+  labels: SectionPanelLabels
+  children: ReactNode
+  className?: string
+}
+
+/** Heading level from depth. Stops at h6, which is where HTML stops. */
+const HEADINGS = ['h2', 'h3', 'h4', 'h5', 'h6'] as const
+
+const headingClass = (depth: number): string =>
+  depth === 0
+    ? 'text-[19px] font-[750] tracking-[-0.02em]'
+    : depth === 1
+      ? 'text-[16px] font-[700] tracking-[-0.01em]'
+      : depth === 2
+        ? 'text-[14.5px] font-[650]'
+        : 'text-[13.5px] font-[600] text-muted-foreground'
+
+const STANDING_CLASS: Record<Standing, string> = {
+  confirmed:
+    'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
+  changed: 'border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-300',
+  unseen: 'border-border-soft text-muted-foreground',
+}
+
+export function SectionPanel({
+  number,
+  depth,
+  title,
+  standing,
+  entries,
+  historyOpen,
+  onToggleHistory,
+  onReview,
+  onShowOnMap,
+  canWrite,
+  active = false,
+  historyLimit = 6,
+  sectionRef,
+  labels,
+  children,
+  className,
+}: SectionPanelProps) {
+  const Heading = HEADINGS[Math.min(depth, HEADINGS.length - 1)] as 'h2'
+  const standingLabel: Record<Standing, string> = {
+    confirmed: labels.standingConfirmed,
+    changed: labels.standingChanged,
+    unseen: labels.standingUnseen,
+  }
+  const shown = entries.slice(0, historyLimit)
+  const more = entries.length - shown.length
+
+  return (
+    <section
+      ref={sectionRef}
+      className={cn(
+        'border-border-soft border-t py-5 first:border-t-0',
+        active ? 'bg-accent/30' : '',
+        className,
+      )}
+      // Indentation is data: a depth-4 section needs a depth-4 inset, and
+      // Tailwind cannot spell an arbitrary one without a class per level. Phones
+      // get a third of it — the measure matters more there than the level does.
+      style={{ paddingLeft: `${Math.min(depth, 4) * 6}px` }}
+    >
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>
+        <Heading className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}>
+          {title || labels.untitled}
+        </Heading>
+        <span
+          className={cn(
+            'flex-none rounded-sm border px-1.5 py-0.5 text-[10.5px] font-[650]',
+            STANDING_CLASS[standing],
+          )}
+        >
+          {standingLabel[standing]}
+        </span>
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+        <Hint text={canWrite ? labels.reviewHint : labels.needWrite}>
+          <button
+            type="button"
+            disabled={!canWrite}
+            onClick={onReview}
+            className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            ✓ {labels.review}
+          </button>
+        </Hint>
+        <button
+          type="button"
+          onClick={onShowOnMap}
+          className="text-muted-foreground hover:text-foreground"
+        >
+          ⌖ {labels.showOnMap}
+        </button>
+        <button
+          type="button"
+          onClick={onToggleHistory}
+          aria-expanded={historyOpen}
+          className="text-muted-foreground hover:text-foreground"
+        >
+          ≡ {historyOpen ? labels.hideHistory : labels.history}
+        </button>
+      </div>
+
+      {historyOpen && (
+        <ul className="text-muted-foreground border-border-soft mb-3 flex flex-col gap-0.5 border-l pl-3 text-[11.5px]">
+          {shown.length === 0 && <li>{labels.historyEmpty}</li>}
+          {shown.map((entry) => (
+            <li key={entry.id} className="flex flex-wrap gap-x-2">
+              <span className="text-foreground font-medium">{labels.kinds[entry.kind] ?? entry.kind}</span>
+              <span>{traceActor(entry)}</span>
+              <span className="opacity-70">{fmtAge(entry.at)}</span>
+              {entry.note && <span className="opacity-80">— {entry.note}</span>}
+            </li>
+          ))}
+          {more > 0 && <li className="opacity-70">{labels.historyMore.replace('{n}', String(more))}</li>}
+        </ul>
+      )}
+
+      {children}
+    </section>
+  )
+}

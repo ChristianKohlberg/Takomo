@@ -63,7 +63,104 @@ export interface MindmapNode {
 export interface MindmapDetail {
   mindmap: Mindmap
   nodes: MindmapNode[]
+  /** Where each section stands, keyed by node id. See `plan-trace.ts`. */
+  standing: PlanStanding
   total: number
+}
+
+// ---- the plan's history ---------------------------------------------------
+
+/**
+ * When a section last changed, and when anybody last agreed with it.
+ *
+ * A reading rather than a stored flag: a section confirmed BEFORE its last edit
+ * is not confirmed any more, and no boolean can express that. The server groups
+ * it in one query because a plan is drawn all at once.
+ */
+export interface StandingRow {
+  /** ISO, or null when nothing has changed it since the trace began. */
+  changed_at: string | null
+  /** ISO, or null when nobody has ever said they read it. */
+  reviewed_at: string | null
+  /** Somebody agreed AFTER the last change. */
+  confirmed: boolean
+}
+
+export type PlanStanding = Record<string, StandingRow>
+
+/** What can happen to a section. A closed set, and small on purpose: a
+ *  vocabulary anybody can hold in their head is what makes a history readable. */
+export const TRACE_KINDS = [
+  'authored',
+  'renamed',
+  'edited',
+  'moved',
+  'pruned',
+  'reviewed',
+  'proposed',
+  'accepted',
+  'rejected',
+] as const
+
+export type TraceKind = (typeof TRACE_KINDS)[number]
+
+/**
+ * The kinds a client may write.
+ *
+ * The rest are recorded by the paths that perform them, so nobody can claim to
+ * have moved a node they did not move. These two are here because the document
+ * view is where they happen: prose is edited over the sync socket, which the
+ * server never sees as a request, and a review is somebody saying so.
+ */
+export const CLIENT_TRACE_KINDS = ['edited', 'reviewed'] as const
+
+export type ClientTraceKind = (typeof CLIENT_TRACE_KINDS)[number]
+
+export interface TraceEntry {
+  id: string
+  /** The section, or null for an act against the plan as a whole. */
+  node: string | null
+  kind: TraceKind
+  /** The free-form thing the credential carried. */
+  actor: string
+  /** The person behind it, where the credential was bound to one. */
+  user: string | null
+  note: string | null
+  at: string
+}
+
+export interface TracePage {
+  items: TraceEntry[]
+  total: number
+  limit: number
+  note?: string
+}
+
+/** The plan's history, newest first. One request for the whole plan: a view that
+ *  draws every section would otherwise open with one request per section. */
+export function getTrace(
+  token: string,
+  id: string,
+  filter: { node?: string; limit?: number } = {},
+): Promise<TracePage> {
+  const p = new URLSearchParams()
+  if (filter.node) p.set('node', filter.node)
+  if (filter.limit) p.set('limit', String(filter.limit))
+  const qs = p.toString()
+  return api<TracePage>(token, `/mindmaps/${encodeURIComponent(id)}/trace${qs ? `?${qs}` : ''}`)
+}
+
+/** Record an act the server cannot see for itself. */
+export function recordTrace(
+  token: string,
+  id: string,
+  entry: { kind: ClientTraceKind; node?: string; note?: string },
+): Promise<unknown> {
+  return api(token, `/mindmaps/${encodeURIComponent(id)}/trace`, {
+    method: 'POST',
+    headers: json,
+    body: JSON.stringify(entry),
+  })
 }
 
 export interface MindmapsPage {
@@ -248,34 +345,4 @@ export function mintMindmapSession(token: string, id: string): Promise<MindmapSe
 export function mindmapSyncBase(session: MindmapSession): string {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${scheme}//${location.host}${session.url}`
-}
-
-/** One document a write-up made, or brought back in line. */
-export interface WrittenDocument {
-  node: string
-  document: string
-  title: string
-  path: string
-}
-
-export interface WriteUp {
-  documents: WrittenDocument[]
-  created: number
-  refiled: number
-  note?: string
-}
-
-/**
- * Turn the map into a tree of documents — one per thought that had something to
- * say, filed under folders that mirror its branches.
- *
- * Running it again REFILES rather than rewrites: a node that already made a
- * document keeps it, its title and folder come back in line with the map, and
- * its prose is left alone, because by then somebody has been writing in it.
- */
-export function writeUpMindmap(token: string, id: string, path?: string): Promise<WriteUp> {
-  return api<WriteUp>(token, `/mindmaps/${encodeURIComponent(id)}/documents`, {
-    method: 'POST',
-    body: JSON.stringify(path === undefined ? {} : { path }),
-  })
 }

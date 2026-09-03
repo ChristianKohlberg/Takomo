@@ -34,7 +34,6 @@ import { listProjects, whoami, type Project } from '@/lib/initiatives'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
 import {
   createMindmap,
-  writeUpMindmap,
   deleteMindmap,
   listMindmaps,
   mintMindmapSession,
@@ -67,6 +66,16 @@ export function App() {
   // and `/inbox#q=` already are.
   const [openId, setOpenId] = useState<string | null>(
     () => new URLSearchParams(window.location.hash.slice(1)).get('m'),
+  )
+  /**
+   * `#n=<node>`, the section `/documents` asked to be shown.
+   *
+   * Read once, at mount: it is a hand-off, not a piece of state the two views
+   * keep in step. It is cleared the moment the canvas honours it, so panning
+   * away and reloading does not drag the reader back.
+   */
+  const [focusNode, setFocusNode] = useState<string | null>(
+    () => new URLSearchParams(window.location.hash.slice(1)).get('n'),
   )
   const [session, setSession] = useState<MindmapSession | null>(null)
   const [connection, setConnection] = useState<ConnectionState>('connecting')
@@ -159,7 +168,11 @@ export function App() {
       setSession(null)
       return
     }
-    window.history.replaceState(null, '', `#m=${encodeURIComponent(openId)}`)
+    window.history.replaceState(
+      null,
+      '',
+      `#m=${encodeURIComponent(openId)}${focusNode ? `&n=${encodeURIComponent(focusNode)}` : ''}`,
+    )
     let cancelled = false
     setSession(null)
     setConnection('connecting')
@@ -174,8 +187,13 @@ export function App() {
     return () => {
       cancelled = true
     }
+    // `focusNode` is deliberately not a dependency: it changes exactly once,
+    // when the canvas honours it, and re-minting the socket ticket for that
+    // would drop the connection under somebody's cursor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, openId, handleErr])
 
+  const clearFocusNode = useCallback(() => setFocusNode(null), [])
   const onConnection = useCallback((s: ConnectionState) => setConnection(s), [])
   const onPeers = useCallback((names: string[]) => setPeers(names), [])
   const onLiveError = useCallback((message: string) => toast(message, 'err'), [toast])
@@ -222,30 +240,6 @@ export function App() {
     },
     [canWrite, toast, t, selectedProject, token, refreshList, handleErr],
   )
-
-  /**
-   * Write the map up as documents.
-   *
-   * A REST call rather than a document write, because it makes DOCUMENTS in the
-   * project — the map's own replica only receives the link back to each one, and
-   * the server writes that before it answers.
-   */
-  const writeUp = useCallback(() => {
-    if (!openId || !canWrite) {
-      toast(t.needWrite, 'err')
-      return
-    }
-    writeUpMindmap(token, openId)
-      .then((out) => {
-        toast(
-          t.wroteUp
-            .replace('{created}', String(out.created))
-            .replace('{refiled}', String(out.refiled)),
-          'success',
-        )
-      })
-      .catch(handleErr)
-  }, [openId, canWrite, token, toast, t, handleErr])
 
   const renameMap = useCallback(() => {
     if (!open) return
@@ -414,8 +408,9 @@ export function App() {
               currentProject={open.project}
               onProject={chooseProject}
               canManageMap={canWrite}
-              onWriteUp={writeUp}
               onRenameMap={renameMap}
+              focusNode={focusNode}
+              onFocusedNode={clearFocusNode}
               onDeleteMap={removeMap}
               onPromote={promote}
               labels={{
@@ -606,7 +601,6 @@ export function App() {
                 'map.fit': t.cmdFit,
                 'map.trust': t.trustLensCmd,
                 'map.tidy': t.cmdTidy,
-                'map.writeup': t.cmdWriteUp,
                 'map.rename': t.cmdRenameMap,
                 'map.project': t.cmdProject,
                 'map.delete': t.cmdDeleteMap,
@@ -616,7 +610,6 @@ export function App() {
                 'node.relate': t.cmdRelateHint,
                 'node.ask': t.cmdAskHint,
                 'map.trust': t.trustLensHint,
-                'map.writeup': t.cmdWriteUpHint,
                 'node.promoteEpic': t.promoteEpicHint,
                 'node.promoteInitiative': t.promoteIniHint,
                 'node.delete': t.cmdDeleteHint,

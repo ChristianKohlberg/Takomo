@@ -4156,6 +4156,96 @@ paths:
         "409": { description: "Already promoted (`mindmap.already_promoted`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /mindmaps/{id}/prose:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: The plan as an agent reads it (read scope)
+      description: |
+        Annotated with block ids, which is what makes a reply addressable: an
+        agent answers with OPERATIONS against block ids, never with a document.
+        One section with `node`, or the whole plan — headings from the tree,
+        each section's blocks beneath its own.
+      parameters:
+        - { name: node, in: query, schema: { type: string }, description: 'one section' }
+      responses:
+        "200":
+          description: The plan, or one section of it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mindmap: { type: string }
+                  node: { type: [string, "null"] }
+                  markdown: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /mindmaps/{id}/proposals:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: What has been proposed, and what became of it (read scope)
+      parameters:
+        - { name: node, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, accepted, rejected] } }
+      responses:
+        "200":
+          description: Proposals against this plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { type: object } }
+                  total: { type: integer }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [mindmaps]
+      summary: Propose a change to one section (write scope)
+      description: |
+        **An agent proposes; a person accepts.** Nothing here goes live: the
+        operations are validated against the section as it stands and stored as
+        a proposal for somebody to decide on.
+
+        Operations address BLOCK IDS — `replace`, `insert_after`, `delete` — and
+        never carry a document, which is what keeps a person's concurrent typing.
+        An op naming a block that is gone, or outside `scope`, is dropped and
+        reported in `skipped` rather than silently applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node, operations]
+              properties:
+                node: { type: string, description: 'the section' }
+                operations: { type: array, items: { type: object } }
+                instruction: { type: string, description: 'what you were asked to do, in one line' }
+                summary: { type: string, description: 'what you changed and WHY — the reason, not a restatement of the edit' }
+                scope: { type: array, items: { type: string }, description: 'restrict to these block ids; enforced server-side' }
+      responses:
+        "201":
+          description: Offered, not applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { type: string }
+                  mindmap: { type: string }
+                  node: { type: string }
+                  status: { type: string }
+                  operations: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+                  note: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
   /mindmaps/{id}/trace:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -4209,11 +4299,12 @@ paths:
       tags: [mindmaps]
       summary: Record an act the server cannot see (write scope)
       description: |
-        Only `edited` and `reviewed`. Prose is edited over the sync socket, which
-        never reaches the server as a request, and a review is somebody saying so
-        — those are the two the server cannot observe. Everything else is
-        recorded by the path that performs it, so a caller cannot claim to have
-        moved a node it did not move.
+        Only the four acts the server cannot OBSERVE. It performs a move, a
+        rename, a prune and a proposal, so it records those itself and a caller
+        cannot claim to have done them. It cannot see prose edited over the sync
+        socket, a review (somebody saying they agree), or a proposal accepted or
+        rejected — which the browser does by applying ops to the replica. Those
+        four are reported, and reporting is all anybody could do.
 
         Post one when an edit SETTLES, not while somebody types: a history with
         an entry per keystroke buries every entry worth reading.
@@ -4225,7 +4316,7 @@ paths:
               type: object
               required: [kind]
               properties:
-                kind: { type: string, enum: [edited, reviewed] }
+                kind: { type: string, enum: [edited, reviewed, accepted, rejected] }
                 node: { type: string, description: 'the section; omit for the plan as a whole' }
                 note: { type: string }
       responses:
@@ -4238,71 +4329,87 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
-  /mindmaps/{id}/documents:
+  /mindmaps/{id}/trace:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
-    post:
+    get:
       tags: [mindmaps]
-      summary: Write the map up as a tree of documents (write scope)
+      summary: What happened to the plan, and who did it (read scope)
       description: |
-        The map becomes one document per thought that had something to say, filed
-        under folders that mirror its branches. `/documents` already builds its
-        tree from paths, so a map needs no section model inside a single document
-        to convert into something navigable — the folder tree IS the outline.
+        The plan's history, newest first — or one section's, with `node`.
 
-        The rule that makes the result readable: a node becomes a document when
-        it has children or notes, and a bare leaf becomes a **bullet** in its
-        parent's document. Without it every six-word thought is its own page, and
-        a map of forty converts into forty documents nobody opens.
+        **This is not the CRDT update log.** That is the mechanism which rebuilds
+        the text: written on every flush, merged, and rewritten wholesale by
+        compaction. Asking it "who changed 2.1, and has anybody agreed with it
+        since?" is asking a storage format a question about people. This answers
+        that one.
 
-        It also writes **the plan's own front page**: a document named for the
-        map, at the top level, carrying its summary. Without it the top of the
-        outline is a folder — a row nobody can open, sitting above the whole
-        plan. Its id is kept in the map's `metadata.document`, because a map has
-        no root node to hang it from: every first-ring branch has a null parent.
-        That entry comes back with `node: null`.
-
-        **Running it again refiles; it never rewrites.** A node that already made
-        a document keeps it — the title and folder are brought back in line with
-        the map, and the prose is left alone, because somebody has probably been
-        writing in there and that is the entire point of turning a map into
-        documents. The link lives in the node's own `document` field, separate
-        from `promoted`, so writing a map up cannot erase what a branch had
-        already graduated into.
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                path:
-                  type: string
-                  description: 'The folder everything lands under. Defaults to the map''s title; `""` files at the top level.'
+        Sparse by construction: an act somebody would name — a thought written,
+        renamed, moved, pruned, reviewed, a proposal accepted — never a
+        keystroke. Every entry carries the free-form actor string AND the person
+        behind the credential (`users.id`) where it was bound to one, because a
+        scope is not an identity and an actor string does not survive somebody
+        leaving.
+      parameters:
+        - { name: node, in: query, schema: { type: string }, description: 'one section' }
+        - { name: limit, in: query, schema: { type: integer, default: 500, maximum: 500 } }
       responses:
-        "201":
-          description: What the map produced.
+        "200":
+          description: A bounded envelope of acts, newest first.
           content:
             application/json:
               schema:
                 type: object
-                required: [documents, created, refiled]
+                required: [items, total, limit]
                 properties:
-                  documents:
+                  items:
                     type: array
                     items:
                       type: object
                       properties:
-                        node: { type: string, description: 'the thought it came from' }
-                        document: { type: string }
-                        title: { type: string }
-                        path: { type: string }
-                  created: { type: integer, description: 'documents made by this run' }
-                  refiled: { type: integer, description: 'documents that already existed and were brought back in line' }
+                        id: { type: string }
+                        node: { type: [string, "null"], description: 'the section, or null for the plan as a whole' }
+                        kind: { type: string, enum: [authored, renamed, edited, moved, pruned, reviewed, proposed, accepted, rejected] }
+                        actor: { type: string, description: 'the free-form actor string the credential carried' }
+                        user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
+                        note: { type: [string, "null"] }
+                        at: { type: string, format: date-time }
+                  total: { type: integer }
+                  limit: { type: integer }
                   note: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [mindmaps]
+      summary: Record an act the server cannot see (write scope)
+      description: |
+        Only the four acts the server cannot OBSERVE. It performs a move, a
+        rename, a prune and a proposal, so it records those itself and a caller
+        cannot claim to have done them. It cannot see prose edited over the sync
+        socket, a review (somebody saying they agree), or a proposal accepted or
+        rejected — which the browser does by applying ops to the replica. Those
+        four are reported, and reporting is all anybody could do.
+
+        Post one when an edit SETTLES, not while somebody types: a history with
+        an entry per keystroke buries every entry worth reading.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [edited, reviewed, accepted, rejected] }
+                node: { type: string, description: 'the section; omit for the plan as a whole' }
+                note: { type: string }
+      responses:
+        "201":
+          description: Recorded.
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "409": { description: "The project is archived (`project.archived`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /mindmaps/{id}/session:
@@ -7153,14 +7260,6 @@ components:
             Who put it there. Stored from the start even though nothing renders it
             yet, because adding a field to a shared document later means converting
             everybody's map a second time.
-        document:
-          type: [string, "null"]
-          description: |
-            The document this thought became, once the map has been written up.
-            A SEPARATE slot from `promoted`, because a branch can be an epic and
-            also appear in the written-up plan, and those are two different facts
-            about it — sharing one slot would make a conversion quietly erase
-            what a branch had graduated into.
         reviewed:
           type: boolean
           description: 'An agent-written node a person has looked at. Settable on the node PATCH; nothing renders it yet.'

@@ -37,6 +37,7 @@ import {
   type RawNode,
   type Relationship,
 } from './mindmap-doc'
+import type { PlanNode } from './plan-sections'
 import { appendAnswer, questionTarget } from './mindmap-lens'
 import type { Point } from './mindmap-layout'
 
@@ -61,6 +62,57 @@ function readText(m: Inner, key: string): string {
 function readString(m: Inner, key: string, fallback = ''): string {
   const value = m.get(key)
   return typeof value === 'string' ? value : fallback
+}
+
+/** The key a node keeps its own prose under. Mirrors `PROSE_KEY` in Rust. */
+export const PROSE_KEY = 'prose'
+
+/**
+ * The text of one block, with any nesting flattened.
+ *
+ * Not `toString()`, which serialises the element back to XML and would hand a
+ * card `<paragraph id="blk_x">…</paragraph>` as if it were prose. The same trap
+ * `element_text` documents in `src/store/prose.rs`, and the same answer.
+ */
+function elementText(el: Y.XmlElement | Y.XmlText): string {
+  if (el instanceof Y.XmlText) return el.toString()
+  let out = ''
+  for (const child of el.toArray()) {
+    if (child instanceof Y.XmlText) out += child.toString()
+    else if (child instanceof Y.XmlElement) out += elementText(child)
+  }
+  return out
+}
+
+/**
+ * A prose fragment as plain text, one line per block.
+ *
+ * The mirror of `prose::plain_text` in Rust, and it has to stay one: this is
+ * what a canvas card, the outline and the API's `notes` field all read, and a
+ * card that disagreed with what the API returned for the same node would be a
+ * second reading of one paragraph.
+ */
+export function fragmentText(frag: Y.XmlFragment): string {
+  const lines: string[] = []
+  for (const child of frag.toArray()) {
+    if (!(child instanceof Y.XmlElement) && !(child instanceof Y.XmlText)) continue
+    const text = elementText(child)
+    if (text.trim().length > 0) lines.push(text)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * A node's prose as plain text.
+ *
+ * The fragment is the truth. A plain `notes` Y.Text is what nodes carried before
+ * prose existed and is still read, so a map written before the upgrade stays
+ * legible until the server's `ensure_prose` has run over it.
+ */
+function readProse(m: Inner): string {
+  const value = m.get(PROSE_KEY)
+  if (value instanceof Y.XmlFragment) return fragmentText(value)
+  return readText(m, 'notes')
 }
 
 /**
@@ -130,7 +182,7 @@ export function readRawNode(id: string, m: Inner): RawNode {
     parent: typeof parent === 'string' && parent.length > 0 ? parent : null,
     order: readString(m, 'order'),
     title: readText(m, 'title'),
-    notes: readText(m, 'notes'),
+    notes: readProse(m),
     at: x !== null && y !== null ? { x, y } : null,
     edge_label: readString(m, 'edge_label'),
     kind: (NODE_KINDS as readonly string[]).includes(kind) ? (kind as NodeKind) : 'thought',
@@ -158,6 +210,31 @@ export function readNodes(doc: Y.Doc): MapNode[] {
   const raw: RawNode[] = []
   nodesMap(doc).forEach((m, id) => {
     if (m instanceof Y.Map) raw.push(readRawNode(id, m))
+  })
+  return normaliseNodes(raw)
+}
+
+/**
+ * The plan's SHAPE — id, parent, order and title — and nothing else.
+ *
+ * The document view redraws its outline whenever the document changes, and with
+ * a section's prose living inside its node, "the document changed" now includes
+ * every character anybody types anywhere. `readNodes` walks each node's prose to
+ * produce `notes`, so using it here would make one person's keystroke cost a
+ * walk of every section's text on every other screen. This reads the four fields
+ * the outline is made of and leaves the prose where it is.
+ */
+export function readPlanTree(doc: Y.Doc): PlanNode[] {
+  const raw: Omit<PlanNode, 'position'>[] = []
+  nodesMap(doc).forEach((m, id) => {
+    if (!(m instanceof Y.Map)) return
+    const parent = m.get('parent')
+    raw.push({
+      id,
+      parent: typeof parent === 'string' && parent.length > 0 ? parent : null,
+      order: readString(m, 'order'),
+      title: readText(m, 'title'),
+    })
   })
   return normaliseNodes(raw)
 }
@@ -261,7 +338,9 @@ export function createNode(doc: Y.Doc, opts: CreateNode): string | null {
     m.set('parent', opts.parent)
     m.set('order', order)
     m.set('title', new Y.Text())
-    m.set('notes', new Y.Text())
+    // The section's prose, empty until somebody writes in it. A fragment rather
+    // than a Y.Text because this is what an editor binds to — see `proseOf`.
+    m.set(PROSE_KEY, new Y.XmlFragment())
     m.set('x', null)
     m.set('y', null)
     m.set('edge_label', '')
@@ -309,11 +388,94 @@ export function setTitle(doc: Y.Doc, id: string, title: string): void {
   })
 }
 
+/**
+ * A node's prose fragment, made if this node predates prose.
+ *
+ * What `/documents` binds a section's editor to, and what every plain-text read
+ * and write below goes through. Lazy rather than eager because a map written
+ * before prose existed is still a map somebody is reading.
+ */
+export function proseOf(doc: Y.Doc, id: string): Y.XmlFragment | null {
+  const m = node(doc, id)
+  if (!m) return null
+  const existing = m.get(PROSE_KEY)
+  if (existing instanceof Y.XmlFragment) return existing
+  // Making one is a WRITE, so a reader gets `readProseOf` instead: a token that
+  // may not change the plan must not change it by looking at it.
+  const legacy = readText(m, 'notes')
+  let made: Y.XmlFragment | null = null
+  doc.transact(() => {
+    m.set(PROSE_KEY, new Y.XmlFragment())
+    made = m.get(PROSE_KEY) as Y.XmlFragment
+    if (legacy) writeParagraphs(made, legacy)
+  })
+  return made
+}
+
+/** A node's prose fragment as it stands, without making one. What a reader and
+ *  a read-only session use. */
+export function readProseOf(doc: Y.Doc, id: string): Y.XmlFragment | null {
+  const m = node(doc, id)
+  const value = m?.get(PROSE_KEY)
+  return value instanceof Y.XmlFragment ? value : null
+}
+
+/** A node's prose as plain text — one line per block, the same reading the API
+ *  returns as `notes`. */
+export function proseTextOf(doc: Y.Doc, id: string): string {
+  const m = node(doc, id)
+  return m ? readProse(m) : ''
+}
+
+/**
+ * Replace a fragment's whole content with these paragraphs.
+ *
+ * The mirror of `prose::set_plain_text` in Rust, blank lines and all: a blank
+ * line is not a block, so it does not become an empty paragraph. Wholesale,
+ * because this is the path a caller takes when it hands over a finished string.
+ * Somebody typing in the document view edits the same fragment character by
+ * character through the editor, which is where the merge actually matters.
+ */
+function blockId(): string {
+  // `blk_` + six base36 characters, the shape `ids::block_id` and the editor's
+  // own `blockId()` both mint. Minted here rather than imported from
+  // `block-id.ts`, which pulls in Tiptap: this module is loaded by the canvas,
+  // and the editor's ~100 kB must not arrive with it.
+  return `blk_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function writeParagraphs(frag: Y.XmlFragment, text: string): void {
+  if (frag.length > 0) frag.delete(0, frag.length)
+  const blocks: Y.XmlElement[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    const el = new Y.XmlElement('paragraph')
+    el.setAttribute('id', blockId())
+    el.insert(0, [new Y.XmlText(line)])
+    blocks.push(el)
+  }
+  if (blocks.length > 0) frag.insert(0, blocks)
+}
+
+/**
+ * Replace a node's prose with plain text.
+ *
+ * `notes` on the wire is a section's prose as plain text, so this is the same
+ * write the API performs — and it is deliberately the same wholesale replace,
+ * rather than a second representation living beside the fragment. A node dialog
+ * that wrote to a `notes` Y.Text while an editor wrote to the fragment would put
+ * one paragraph in two places, which is the whole failure this phase removes.
+ */
 export function setNotes(doc: Y.Doc, id: string, notes: string): void {
   const m = node(doc, id)
   if (!m) return
+  const frag = proseOf(doc, id)
+  if (!frag) return
   doc.transact(() => {
-    applyText(ytext(m, 'notes'), notes.slice(0, MAX_NOTES))
+    writeParagraphs(frag, notes.slice(0, MAX_NOTES))
+    // The legacy field is dropped rather than kept in step: two readings of one
+    // paragraph is exactly what prose replaced.
+    if (m.get('notes') !== undefined) m.delete('notes')
     touch(m)
   })
 }
@@ -460,8 +622,8 @@ export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): 
   if (!target) {
     const m = node(doc, questionId)
     if (!m) return null
+    setNotes(doc, questionId, appendAnswer(question.notes, text))
     doc.transact(() => {
-      applyText(ytext(m, 'notes'), appendAnswer(question.notes, text).slice(0, MAX_NOTES))
       m.set('kind', 'thought')
       m.set('reviewed', true)
       touch(m)
@@ -471,8 +633,8 @@ export function answerQuestion(doc: Y.Doc, questionId: string, answer: string): 
 
   const m = node(doc, target.id)
   if (!m) return null
+  setNotes(doc, target.id, appendAnswer(target.notes, text))
   doc.transact(() => {
-    applyText(ytext(m, 'notes'), appendAnswer(target.notes, text).slice(0, MAX_NOTES))
     m.set('reviewed', true)
     touch(m)
   })

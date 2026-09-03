@@ -185,12 +185,20 @@ export interface LiveProps {
   projects: { id: string; name: string }[]
   currentProject: string
   onProject: (id: string) => void
+  /**
+   * A section to select and centre once the map is here, or null.
+   *
+   * `/documents` renders the same plan as prose, and a heading there is not
+   * editable — the title caret lives on the map. So that view offers "show it on
+   * the map", and this is where the map honours it. It is cleared the moment it
+   * is honoured, so a later fold or pan is not undone by a stale ask.
+   */
+  focusNode?: string | null
+  onFocusedNode?: () => void
   /** Map-level commands. They go over REST, so they are the page's to run. */
   canManageMap: boolean
   onRenameMap: () => void
   onDeleteMap: () => void
-  /** Turn the map into a tree of documents. */
-  onWriteUp: () => void
   onPromote: (node: string, target: 'epic' | 'initiative') => void
   labels: LiveLabels
   canvasLabels: CanvasLabels
@@ -218,9 +226,10 @@ export default function Live({
   currentProject,
   onProject,
   canManageMap,
+  focusNode = null,
+  onFocusedNode,
   onRenameMap,
   onDeleteMap,
-  onWriteUp,
   onPromote,
   labels,
   canvasLabels,
@@ -809,6 +818,15 @@ export default function Live({
     [nodes],
   )
 
+  // A section handed over from the document view. Waits for the node to exist:
+  // the ask arrives with the URL, and the document is still syncing.
+  useEffect(() => {
+    if (!focusNode) return
+    if (!nodes.some((n) => n.id === focusNode)) return
+    goTo(focusNode)
+    onFocusedNode?.()
+  }, [focusNode, nodes, goTo, onFocusedNode])
+
   const run = useCallback(
     (id: string, target?: string) => {
       if (stage === 'goto') {
@@ -879,9 +897,6 @@ export default function Live({
         case 'map.tidy':
           onTidy()
           break
-        case 'map.writeup':
-          onWriteUp()
-          break
         case 'map.rename':
           onRenameMap()
           break
@@ -905,7 +920,6 @@ export default function Live({
       onPromote,
       onToggleCollapse,
       onTidy,
-      onWriteUp,
       onRenameMap,
       onDeleteMap,
     ],

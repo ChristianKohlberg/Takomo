@@ -158,8 +158,22 @@ function breakCycles(parents: Map<string, string | null>): void {
   }
 }
 
+/**
+ * The three fields the tree is built out of.
+ *
+ * Named separately from `RawNode` so the repair below can run over a LIGHT read
+ * of the document — the document view needs the shape of the plan on every
+ * keystroke, and pulling each node's prose through just to sort siblings would
+ * make somebody else's typing cost a walk of every section's text.
+ */
+export interface TreeShape {
+  id: string
+  parent: string | null
+  order: string
+}
+
 /** Sibling order: valid keys first and in key order, invalid keys last, id breaks ties. */
-export function compareSiblings(a: RawNode, b: RawNode): number {
+export function compareSiblings(a: TreeShape, b: TreeShape): number {
   const av = isValid(a.order)
   const bv = isValid(b.order)
   // An order key this module could not have produced sorts last rather than
@@ -184,7 +198,7 @@ export function compareSiblings(a: RawNode, b: RawNode): number {
  *
  * Returned depth-first, parents before children.
  */
-export function normaliseNodes(raw: readonly RawNode[]): MapNode[] {
+export function normaliseNodes<T extends TreeShape>(raw: readonly T[]): (T & { position: number })[] {
   const known = new Set(raw.map((n) => n.id))
   const parents = new Map<string, string | null>()
   for (const n of raw) {
@@ -192,7 +206,7 @@ export function normaliseNodes(raw: readonly RawNode[]): MapNode[] {
   }
   breakCycles(parents)
 
-  const kids = new Map<string | null, RawNode[]>()
+  const kids = new Map<string | null, T[]>()
   for (const n of raw) {
     const parent = parents.get(n.id) ?? null
     const list = kids.get(parent)
@@ -201,7 +215,7 @@ export function normaliseNodes(raw: readonly RawNode[]): MapNode[] {
   }
   for (const list of kids.values()) list.sort(compareSiblings)
 
-  const out: MapNode[] = []
+  const out: (T & { position: number })[] = []
   const walk = (parent: string | null): void => {
     const list = kids.get(parent) ?? []
     list.forEach((n, index) => {

@@ -35,6 +35,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use yrs::Transact;
 
 const CREATE_FIELDS: [&str; 4] = ["project", "title", "summary", "metadata"];
 const PATCH_FIELDS: [&str; 4] = ["title", "summary", "status", "metadata_merge"];
@@ -754,191 +755,6 @@ pub async fn delete_attachment(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// POST /v1/mindmaps/{id}/documents (write) — write the map up.
-///
-/// The map becomes a TREE OF DOCUMENTS, one per thought that has something to
-/// say, filed under folders that mirror the branches. `/documents` already
-/// builds its tree from paths, so a map needs no section model inside a single
-/// document to convert into something navigable — the folder tree is the
-/// outline.
-///
-/// The rule that makes the result readable: a node becomes a document when it
-/// has children or notes; a bare leaf becomes a **bullet** in its parent's
-/// document. Without it, every six-word thought is its own page and a map of
-/// forty converts into forty documents nobody opens.
-///
-/// **Running it again refiles, it never rewrites.** A node that already made a
-/// document keeps it: the title and folder are brought back in line with the
-/// map, and the prose is not touched, because somebody has probably been
-/// writing in there and that is the entire point of turning a map into
-/// documents.
-pub async fn to_documents(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<AuthCtx>,
-    Path(id): Path<String>,
-    ApiJson(body): ApiJson<Value>,
-) -> ApiResult<impl IntoResponse> {
-    ctx.require_scope("write")?;
-    let obj = body_object(&body)?;
-    reject_unknown(obj, &["path"])?;
-
-    let (map, room) = join(&state, &ctx, &id).await?;
-    state.store.ensure_collab_writable(&id)?;
-
-    // The map's own title is the folder everything lands under, unless the
-    // caller says otherwise. `""` puts it at the top level.
-    let root = match get_str(obj, "path")? {
-        Some(path) => path,
-        None => map.title.clone(),
-    };
-
-    let plan = room.read(|doc| {
-        let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
-        mindmapdoc::plan_documents(&nodes, &root)
-    });
-
-    let mut made = Vec::new();
-    let mut created = 0usize;
-    let mut refiled = 0usize;
-
-    // The plan's own front page.
-    //
-    // Without it the top of the outline is a FOLDER — a row you cannot open,
-    // sitting above your whole plan. The map's title already names that folder,
-    // so the document belongs at its parent with that name, which is exactly the
-    // fold `/documents` performs to turn a folder and its namesake into one
-    // section. Its id lives in the map's metadata, because a map has no root
-    // node to hang it from: every first-ring branch has `parent: null`.
-    if !root.is_empty() {
-        let (parent, name) = match root.rsplit_once('/') {
-            Some((parent, name)) => (parent.to_string(), name.to_string()),
-            None => (String::new(), root.clone()),
-        };
-        let existing = map
-            .metadata
-            .get("document")
-            .and_then(Value::as_str)
-            .and_then(|doc_id| state.store.get_document(doc_id).ok());
-
-        let front = match existing {
-            Some(document) => {
-                refiled += 1;
-                state.store.patch_document(
-                    &document.id,
-                    &crate::store::DocumentPatch {
-                        title: Some(name.clone()),
-                        path: Some(parent.clone()),
-                        ..Default::default()
-                    },
-                    &ctx.actor,
-                )?
-            }
-            None => {
-                let document = state.store.create_document(
-                    &crate::store::DocumentCreate {
-                        project: map.project.clone(),
-                        title: name.clone(),
-                        path: Some(parent.clone()),
-                        ..Default::default()
-                    },
-                    &ctx.actor,
-                )?;
-                if !map.summary.trim().is_empty() {
-                    let update = crate::store::prose::initial_update(&[
-                        crate::store::prose::Block::Paragraph(map.summary.trim().to_string()),
-                    ]);
-                    state
-                        .store
-                        .append_collab_update(&document.id, &update, &ctx.actor)?;
-                }
-                state.store.patch_mindmap(
-                    &id,
-                    &MindmapPatch {
-                        metadata_merge: Some(json!({ "document": document.id })),
-                        ..Default::default()
-                    },
-                    &ctx.actor,
-                )?;
-                created += 1;
-                document
-            }
-        };
-        made.push(json!({
-            "node": Value::Null,
-            "document": front.id,
-            "title": front.title,
-            "path": front.path,
-        }));
-    }
-
-    for entry in &plan {
-        let existing = entry
-            .existing
-            .as_deref()
-            .and_then(|doc_id| state.store.get_document(doc_id).ok());
-
-        let document = match existing {
-            Some(document) => {
-                // Refile only. Its prose belongs to whoever has been writing it.
-                refiled += 1;
-                state.store.patch_document(
-                    &document.id,
-                    &crate::store::DocumentPatch {
-                        title: Some(entry.title.clone()),
-                        path: Some(entry.path.clone()),
-                        ..Default::default()
-                    },
-                    &ctx.actor,
-                )?
-            }
-            None => {
-                let document = state.store.create_document(
-                    &crate::store::DocumentCreate {
-                        project: map.project.clone(),
-                        title: entry.title.clone(),
-                        path: Some(entry.path.clone()),
-                        ..Default::default()
-                    },
-                    &ctx.actor,
-                )?;
-                if !entry.blocks.is_empty() {
-                    let update = crate::store::prose::initial_update(&entry.blocks);
-                    state
-                        .store
-                        .append_collab_update(&document.id, &update, &ctx.actor)?;
-                }
-                let node = entry.node.clone();
-                let doc_id = document.id.clone();
-                room.mutate(move |doc| mindmapdoc::set_document(doc, &node, &doc_id))?;
-                created += 1;
-                document
-            }
-        };
-
-        made.push(json!({
-            "node": entry.node,
-            "document": document.id,
-            "title": document.title,
-            "path": document.path,
-        }));
-    }
-
-    // The links back into the map would otherwise sit in memory, and a
-    // conversion that lost them would make a second set of documents next time.
-    persist(&state, &room, &ctx).await;
-    state.wake();
-
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "documents": made,
-            "created": created,
-            "refiled": refiled,
-            "note": "One document per thought that had something to say; a bare leaf became a bullet in its parent. Run it again after reshaping the map and the documents are refiled, never rewritten.",
-        })),
-    ))
-}
-
 /// GET /v1/mindmaps/{id}/trace?node=&limit= (read) — the plan's history.
 ///
 /// What happened to the plan, newest first, or to one section of it. This is
@@ -1019,4 +835,165 @@ pub async fn add_trace(
     })?;
     state.wake();
     Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
+}
+
+/// GET /v1/mindmaps/{id}/prose?node= (read) — the plan as an agent reads it.
+///
+/// Annotated with block ids, because that is what makes a reply addressable: an
+/// agent answers with operations against block ids, never with a document. One
+/// section with `node`, or the whole plan — headings from the tree, each
+/// section's blocks beneath its own.
+pub async fn prose(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    let pairs = query_pairs(raw.as_deref());
+    let node = first(&pairs, "node").map(str::to_string);
+
+    let markdown = room.read(|doc| {
+        let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
+        match node.as_deref() {
+            Some(node) => mindmapdoc::section_prose(doc, node).map(|frag| {
+                let txn = doc.transact();
+                let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                crate::api::docprops::annotate(&blocks)
+            }),
+            None => {
+                let ordered = mindmapdoc::tree_order(&nodes);
+                let mut out = String::new();
+                for section in ordered {
+                    let level = mindmapdoc::depth_of(&nodes, &section.id).min(6);
+                    out.push_str(&format!("{} {}\n\n", "#".repeat(level), section.title));
+                    if let Ok(frag) = mindmapdoc::section_prose(doc, &section.id) {
+                        let txn = doc.transact();
+                        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                        let body = crate::api::docprops::annotate(&blocks);
+                        if !body.trim().is_empty() {
+                            out.push_str(&body);
+                            out.push_str("\n\n");
+                        }
+                    }
+                }
+                Ok(out.trim_end().to_string())
+            }
+        }
+    })?;
+
+    Ok(Json(
+        json!({ "mindmap": id, "node": node, "markdown": markdown }),
+    ))
+}
+
+/// POST /v1/mindmaps/{id}/proposals (write) — an agent proposes to a section.
+///
+/// The rule is unchanged and is the whole point: an agent returns OPERATIONS
+/// against block ids and never a document, so a person's concurrent typing
+/// survives, and nothing is live until somebody accepts it.
+pub async fn propose(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(
+        obj,
+        &["node", "operations", "instruction", "summary", "scope"],
+    )?;
+    let node = require_str(obj, "node")?;
+    let operations = obj
+        .get("operations")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
+    let instruction = get_str(obj, "instruction")?.unwrap_or_default();
+    let summary = get_str(obj, "summary")?.unwrap_or_default();
+    let scope = match obj.get("scope") {
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_string))
+                .collect::<Vec<String>>(),
+        ),
+        _ => None,
+    };
+
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let actor = ctx.actor.clone();
+    let now = crate::ids::now_ms();
+    let target = node.clone();
+    let why = summary.clone();
+    let (proposal, applied, skipped) = room.mutate(move |doc| {
+        let frag = mindmapdoc::section_prose(doc, &target)?;
+        let txn = doc.transact();
+        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+        drop(txn);
+        let validated = crate::api::docprops::validate_ops(&operations, &blocks, scope.as_deref())?;
+        let pid = crate::api::docprops::write_proposal(
+            doc,
+            Some(&target),
+            &actor,
+            &instruction,
+            &why,
+            &validated.ops,
+            &validated.skipped,
+            now,
+        )?;
+        Ok((pid, validated.ops.len(), validated.skipped))
+    })?;
+
+    persist(&state, &room, &ctx).await;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "proposed",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: (!summary.is_empty()).then_some(summary.as_str()),
+    })?;
+    state.wake();
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "proposal": proposal,
+            "mindmap": id,
+            "node": node,
+            "status": "pending",
+            "operations": applied,
+            "skipped": skipped,
+            "note": "Offered, not applied. A person accepts or rejects it in the document view.",
+        })),
+    ))
+}
+
+/// GET /v1/mindmaps/{id}/proposals?node=&status= (read).
+pub async fn proposals(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    let pairs = query_pairs(raw.as_deref());
+    let node = first(&pairs, "node");
+    let status = first(&pairs, "status");
+
+    let mut items = room.read(crate::api::docprops::read_proposals);
+    if let Some(node) = node {
+        items.retain(|p| p.get("node").and_then(Value::as_str) == Some(node));
+    }
+    if let Some(status) = status {
+        items.retain(|p| p.get("status").and_then(Value::as_str) == Some(status));
+    }
+    let total = items.len() as i64;
+    Ok(Json(json!({ "items": items, "total": total })))
 }

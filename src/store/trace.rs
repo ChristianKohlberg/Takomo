@@ -40,12 +40,13 @@ pub const TRACE_KINDS: [&str; 9] = [
 
 /// The kinds a client may write directly.
 ///
-/// The rest are recorded by the paths that perform them — a caller cannot claim
-/// to have moved a node it did not move. `edited` and `reviewed` are here
-/// because the document view is where they happen: prose is edited over the sync
-/// socket, which the server never sees as a request, and a review is somebody
-/// saying so.
-pub const CLIENT_TRACE_KINDS: [&str; 2] = ["edited", "reviewed"];
+/// The line is what the server can OBSERVE. It performs a move, a rename, a
+/// prune and a proposal, so it records those and a caller cannot claim to have
+/// done them. It cannot observe the other four: prose is edited over the sync
+/// socket and never reaches it as a request, a review is somebody saying they
+/// agree, and accepting or rejecting a proposal is the browser applying ops to
+/// the replica. Those four are reported, and reporting is all anybody could do.
+pub const CLIENT_TRACE_KINDS: [&str; 4] = ["edited", "reviewed", "accepted", "rejected"];
 
 #[derive(Debug, Clone)]
 pub struct TraceEntry {

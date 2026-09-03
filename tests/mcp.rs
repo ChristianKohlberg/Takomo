@@ -3422,19 +3422,14 @@ async fn proposing_to_a_document_needs_the_write_scope() {
     assert_eq!(refused["code"], "auth.scope", "{refused}");
 }
 
-/// The prose a conversion writes has to be prose the EDITOR can render.
+/// An agent proposes to a SECTION of the plan; nothing goes live.
 ///
-/// Rust reads the CRDT and the browser applies changes to it — that is the
-/// standing rule, and writing blocks from Rust is the one case it does not
-/// cover, because a document made by converting a map has no live text and
-/// nothing to merge with. The risk that buys is a block shape only the writer
-/// understands: a bullet list flattened to `bulletList > text` reads back
-/// correctly through our own reader and renders as NOTHING in Tiptap.
-///
-/// So this reads the result through the same annotated-markdown path an agent
-/// uses, which walks the real block structure.
+/// The rule survived the move from documents to the plan, which is the point:
+/// an agent returns operations against block ids and never a document, so
+/// somebody's concurrent typing is kept and a person decides. Only the target
+/// changed.
 #[tokio::test]
-async fn a_written_up_map_produces_prose_an_agent_can_read_and_address() {
+async fn an_agent_proposes_to_a_section_and_the_prose_does_not_move() {
     let app = TestApp::spawn().await;
     let (_, made) = app
         .post(
@@ -3445,71 +3440,85 @@ async fn a_written_up_map_produces_prose_an_agent_can_read_and_address() {
         .await;
     let map = made["mindmap"]["id"].as_str().unwrap().to_string();
 
-    let (s, node) = app
+    let (s, out) = app
         .post(
             &app.admin,
             &format!("/v1/mindmaps/{map}/nodes"),
-            json!({
-                "text": "API",
-                "notes": "The surface everything else hangs off."
-            }),
+            json!({ "text": "API", "notes": "Versioning is undecided." }),
         )
         .await;
-    assert_eq!(s, StatusCode::CREATED, "{node}");
-    let api = node["nodes"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(s, StatusCode::CREATED, "{out}");
+    let node = out["nodes"][0]["id"].as_str().unwrap().to_string();
 
-    for leaf in ["idempotent retries on capture", "rate limits per merchant"] {
-        let (s, out) = app
-            .post(
-                &app.admin,
-                &format!("/v1/mindmaps/{map}/nodes"),
-                json!({ "text": leaf, "parent": api }),
-            )
-            .await;
-        assert_eq!(s, StatusCode::CREATED, "{out}");
-    }
-
-    let (s, written) = app
-        .post(
-            &app.admin,
-            &format!("/v1/mindmaps/{map}/documents"),
-            json!({}),
-        )
-        .await;
-    assert_eq!(s, StatusCode::CREATED, "{written}");
-    // By NODE, not by position: the first entry is the plan's front page, which
-    // is named for the map and carries its summary rather than a thought.
-    let doc = written["documents"]
-        .as_array()
-        .expect("documents")
-        .iter()
-        .find(|d| d["node"] == json!(api))
-        .expect("the API node's document")["document"]
-        .as_str()
-        .expect("a document id")
-        .to_string();
-
+    // Read it the way an agent must: annotated, so a reply is addressable.
     let (read, err) = app
-        .tool(&app.admin, "takomo_document_read", json!({ "id": doc }))
+        .tool(
+            &app.admin,
+            "takomo_plan_read",
+            json!({ "id": map, "node": node }),
+        )
         .await;
     assert!(!err, "read failed: {read}");
     let markdown = read["markdown"].as_str().unwrap_or_default();
+    assert!(markdown.contains("Versioning is undecided."), "{markdown}");
+    let block = markdown
+        .split("blk_")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_alphanumeric()).next())
+        .map(|id| format!("blk_{id}"))
+        .expect("a block id to address");
 
+    let (prop, err) = app
+        .tool(
+            &app.admin,
+            "takomo_plan_propose",
+            json!({
+                "id": map,
+                "node": node,
+                "ops": [{ "op": "replace", "id": block, "markdown": "Decided: v1 forever." }],
+                "summary": "The decision was made in review."
+            }),
+        )
+        .await;
+    assert!(!err, "propose failed: {prop}");
+    assert_eq!(prop["status"], "pending", "{prop}");
+    assert_eq!(prop["operations"], json!(1), "{prop}");
+
+    // The section is UNCHANGED. This is the assertion the whole rule is for.
+    let (after, _) = app
+        .tool(
+            &app.admin,
+            "takomo_plan_read",
+            json!({ "id": map, "node": node }),
+        )
+        .await;
     assert!(
-        markdown.contains("The surface everything else hangs off."),
-        "the node's notes become the document's first paragraph: {markdown}"
+        after["markdown"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Versioning is undecided."),
+        "an agent must not write live text: {after}"
     );
-    assert!(
-        markdown.contains("- idempotent retries on capture"),
-        "a bare leaf becomes a BULLET, and a bullet has to read back as one — a \
-         flattened list renders as nothing in the editor: {markdown}"
-    );
-    assert!(
-        markdown.contains("- rate limits per merchant"),
-        "{markdown}"
-    );
-    assert!(
-        markdown.contains("blk_"),
-        "every block carries an id, or an agent cannot propose against it: {markdown}"
-    );
+
+    let (listed, _) = app
+        .tool(
+            &app.admin,
+            "takomo_plan_proposals",
+            json!({ "id": map, "node": node }),
+        )
+        .await;
+    assert_eq!(listed["total"], json!(1), "{listed}");
+    assert_eq!(listed["items"][0]["node"], json!(node), "{listed}");
+
+    // And proposing is an act the plan's history records.
+    let (_, trace) = app
+        .get(&app.admin, &format!("/v1/mindmaps/{map}/trace?node={node}"))
+        .await;
+    let kinds: Vec<&str> = trace["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    assert!(kinds.contains(&"proposed"), "{trace}");
 }

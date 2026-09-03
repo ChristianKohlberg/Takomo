@@ -37,7 +37,6 @@ describe('commandsFor', () => {
       'map.fit',
       'map.trust',
       'map.tidy',
-      'map.writeup',
       'map.rename',
       'map.project',
       'map.delete',

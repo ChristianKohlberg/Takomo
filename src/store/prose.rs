@@ -1,4 +1,4 @@
-//! Writing a document's FIRST prose, and only its first.
+//! A section's prose, as plain text.
 //!
 //! The standing rule in this codebase is that Rust reads the CRDT and the
 //! browser applies changes to it — `markdown → ProseMirror` needs the editor's
@@ -15,57 +15,9 @@
 //! document that already has content.
 
 use yrs::{
-    Doc, GetString, ReadTxn, Transact, TransactionMut, Xml, XmlElementPrelim, XmlFragment,
-    XmlFragmentRef, XmlOut, XmlTextPrelim,
+    GetString, ReadTxn, TransactionMut, Xml, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlOut,
+    XmlTextPrelim,
 };
-
-/// The field a Tiptap document keeps its prose in. Must match
-/// `docprops::PROSE_FIELD` and the editor's `field: 'prose'`.
-const PROSE_FIELD: &str = "prose";
-
-/// One block of a freshly made document.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Block {
-    Paragraph(String),
-    Bullets(Vec<String>),
-}
-
-/// Build the single update that IS a new document's opening content.
-///
-/// A Yjs document's whole state serialises as one ordinary update, so this
-/// returns exactly what `append_collab_update` wants — the same shape a
-/// compaction writes.
-pub fn initial_update(blocks: &[Block]) -> Vec<u8> {
-    let doc = Doc::new();
-    let frag = doc.get_or_insert_xml_fragment(PROSE_FIELD);
-    let mut txn = doc.transact_mut();
-    for block in blocks {
-        match block {
-            Block::Paragraph(text) => {
-                let el = frag.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
-                el.insert_attribute(&mut txn, "id", crate::ids::block_id());
-                el.push_back(&mut txn, XmlTextPrelim::new(text.as_str()));
-            }
-            Block::Bullets(items) => {
-                let list = frag.push_back(&mut txn, XmlElementPrelim::empty("bulletList"));
-                list.insert_attribute(&mut txn, "id", crate::ids::block_id());
-                for item in items {
-                    // `bulletList > listItem > paragraph > text` is ProseMirror's
-                    // own nesting. Flattening it to `bulletList > text` reads back
-                    // correctly through `read_blocks` and renders as nothing in the
-                    // editor, which is the failure that looks like success.
-                    let li = list.push_back(&mut txn, XmlElementPrelim::empty("listItem"));
-                    let para = li.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
-                    para.insert_attribute(&mut txn, "id", crate::ids::block_id());
-                    para.push_back(&mut txn, XmlTextPrelim::new(item.as_str()));
-                }
-            }
-        }
-    }
-    drop(txn);
-    let txn = doc.transact();
-    txn.encode_state_as_update_v1(&yrs::StateVector::default())
-}
 
 /// The text of one block, with any nesting flattened.
 ///
@@ -135,81 +87,71 @@ pub fn set_plain_text(txn: &mut TransactionMut, frag: &XmlFragmentRef, text: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yrs::updates::decoder::Decode;
+    use yrs::{Doc, Out, Transact, XmlFragmentPrelim};
 
-    /// Read it back the way the rest of the system does, so a shape that only
-    /// this file understands cannot pass.
-    fn read_back(update: &[u8]) -> Vec<(String, String, Vec<String>)> {
+    fn round_trip(text: &str) -> String {
         let doc = Doc::new();
-        {
-            let mut txn = doc.transact_mut();
-            txn.apply_update(yrs::Update::decode_v1(update).expect("decode"))
-                .expect("apply");
-        }
-        let frag = doc.get_or_insert_xml_fragment(PROSE_FIELD);
+        let frag = doc.get_or_insert_xml_fragment("prose");
+        let mut txn = doc.transact_mut();
+        set_plain_text(&mut txn, &frag, text);
+        drop(txn);
         let txn = doc.transact();
-        crate::api::docprops::read_blocks(&txn, &frag)
-            .into_iter()
-            .map(|b| (b.kind, b.text, b.items))
-            .collect()
+        plain_text(&txn, &frag)
     }
 
     #[test]
-    fn a_paragraph_round_trips_through_the_reader_every_agent_uses() {
-        let update =
-            initial_update(&[Block::Paragraph("Where the billing work came from.".into())]);
-        let blocks = read_back(&update);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].0, "paragraph");
-        assert_eq!(blocks[0].1, "Where the billing work came from.");
-    }
-
-    #[test]
-    fn bullets_come_back_as_items_rather_than_as_one_run_of_text() {
-        let update = initial_update(&[Block::Bullets(vec![
-            "versioning: v1 forever, or dated?".into(),
-            "idempotent retries on capture".into(),
-        ])]);
-        let blocks = read_back(&update);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].0, "bulletList");
+    fn a_section_reads_back_the_way_it_was_written() {
         assert_eq!(
-            blocks[0].2,
-            vec![
-                "versioning: v1 forever, or dated?".to_string(),
-                "idempotent retries on capture".to_string()
-            ],
-            "each bullet must be its own item — a flattened list reads as one line"
+            round_trip("The surface everything hangs off."),
+            "The surface everything hangs off."
         );
     }
 
     #[test]
+    fn each_line_is_its_own_block_and_comes_back_as_its_own_line() {
+        // A card shows one line of this and the document view renders the
+        // blocks. Both need the paragraphs to be paragraphs, not one run.
+        assert_eq!(round_trip("first\nsecond\nthird"), "first\nsecond\nthird");
+    }
+
+    #[test]
+    fn blank_lines_do_not_become_empty_paragraphs() {
+        assert_eq!(round_trip("first\n\n\nsecond"), "first\nsecond");
+    }
+
+    #[test]
     fn every_block_carries_an_id_so_an_agent_can_address_it() {
-        let update = initial_update(&[
-            Block::Paragraph("first".into()),
-            Block::Bullets(vec!["a".into()]),
-        ]);
         let doc = Doc::new();
-        {
-            let mut txn = doc.transact_mut();
-            txn.apply_update(yrs::Update::decode_v1(&update).expect("decode"))
-                .expect("apply");
-        }
-        let frag = doc.get_or_insert_xml_fragment(PROSE_FIELD);
+        let frag = doc.get_or_insert_xml_fragment("prose");
+        let mut txn = doc.transact_mut();
+        set_plain_text(&mut txn, &frag, "one\ntwo");
+        drop(txn);
+
         let txn = doc.transact();
-        for block in crate::api::docprops::read_blocks(&txn, &frag) {
+        for node in frag.children(&txn) {
+            let XmlOut::Element(el) = node else { continue };
+            let id = match el.get_attribute(&txn, "id") {
+                Some(Out::Any(yrs::Any::String(id))) => id.to_string(),
+                other => panic!("a block with no readable id: {other:?}"),
+            };
             assert!(
-                block.id.starts_with("blk_"),
-                "a block with no id cannot be proposed against: {} {}",
-                block.kind,
-                block.text
+                id.starts_with("blk_"),
+                "a block with no id cannot be proposed against: {id:?}"
             );
         }
     }
 
     #[test]
-    fn an_empty_conversion_produces_an_empty_document_rather_than_junk() {
-        let update = initial_update(&[]);
-        assert!(read_back(&update).is_empty());
+    fn rewriting_replaces_rather_than_appends() {
+        let doc = Doc::new();
+        let frag: yrs::XmlFragmentRef = doc.get_or_insert_xml_fragment("prose");
+        {
+            let mut txn = doc.transact_mut();
+            set_plain_text(&mut txn, &frag, "the first thing");
+            set_plain_text(&mut txn, &frag, "the second thing");
+        }
+        let txn = doc.transact();
+        assert_eq!(plain_text(&txn, &frag), "the second thing");
+        let _ = XmlFragmentPrelim::default();
     }
 }

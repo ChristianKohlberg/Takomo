@@ -32,7 +32,6 @@ export const MAP_COMMANDS = [
   'map.fit',
   'map.trust',
   'map.tidy',
-  'map.writeup',
   'map.rename',
   'map.project',
   'map.delete',
@@ -102,10 +101,6 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   // so it survives a read-only token exactly as fold does.
   if (ctx.nodeCount > 0) out.push('map.trust')
   if (ctx.canWrite && ctx.nodeCount > 0) out.push('map.tidy')
-  // Writing the map up makes documents in the project, so it needs the same
-  // write scope as growing the map — and there is nothing to write up when the
-  // map is empty.
-  if (ctx.canWrite && ctx.nodeCount > 0) out.push('map.writeup')
   if (ctx.canManageMap) out.push('map.rename')
   if (ctx.projectCount > 1) out.push('map.project')
   if (ctx.canManageMap) out.push('map.delete')

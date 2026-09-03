@@ -1,5 +1,4 @@
-// The left rail of `/documents` — the outline of the whole undertaking rather
-// than a list of files.
+// The left rail of `/documents` — the plan's own outline.
 //
 // Every row is a section: a number, a dot whose size reads its level, a title
 // that quiets as it goes deeper, and a fold. The number is the load-bearing
@@ -12,13 +11,18 @@
 // borrowed from the design it follows is that depth never shouts: a level-3
 // heading is quieter than a level-1, never louder.
 //
+// What changed with one plan seen two ways: the sections are NODES now, not
+// folders holding documents. The rail used to fold a folder and the document
+// that named it into one row, because writing a map up produced exactly that
+// pair — and with the conversion gone there is no pair, just the tree the canvas
+// draws, read as reading order.
+//
 // Props-only, as everything in the barrel is: the fold lives in the page (it is
-// a browser-local viewer preference), the sections come from
-// `lib/document-outline`, and this file decides nothing.
-import type { Doc } from '@/lib/documents'
-import type { OutlineSection } from '@/lib/document-outline'
-import { sectionCount, visibleSections } from '@/lib/document-outline'
-import { Hint } from '@/components/Hint'
+// a browser-local viewer preference), the sections come from `lib/plan-sections`,
+// and this file decides nothing.
+import type { PlanSection } from '@/lib/plan-sections'
+import { sectionCount, visibleSections } from '@/lib/plan-sections'
+import type { Standing } from '@/lib/plan-trace'
 import { cn } from '@/lib/utils'
 
 export interface OutlineRailLabels {
@@ -26,27 +30,24 @@ export interface OutlineRailLabels {
   collapse: string
   /** What a folded section is holding. `{n}` is the count, at any depth. */
   folded: string
-  /** A folder no document is filed as — a group, with nothing to open. */
-  group: string
-  archive: string
-  unarchive: string
-  archived: string
-  /** Proposals waiting on a document. `{n}`. */
-  waiting: string
+  /** A section nobody has given a title yet. */
+  untitled: string
+  /** Read out beside the mark. */
+  standingConfirmed: string
+  standingChanged: string
+  standingUnseen: string
 }
 
 export interface OutlineRailProps {
-  sections: OutlineSection[]
-  /** The open document's id. */
+  sections: PlanSection[]
+  /** The section the column is scrolled to, if any. */
   selected: string | null
-  onSelect: (id: string) => void
+  onSelect: (key: string) => void
   /** Section keys this viewer has folded. Never shared. */
   collapsed: ReadonlySet<string>
   onToggle: (key: string) => void
-  /** Absent on a read-only token: nothing to offer. */
-  onArchiveToggle?: (doc: Doc) => void
-  /** Proposals waiting, by document id. Only the open document can be known. */
-  pending?: Readonly<Record<string, number>>
+  /** Where each section stands, by key. Absent means the plan has no history yet. */
+  standing?: Readonly<Record<string, Standing>>
   labels: OutlineRailLabels
   className?: string
 }
@@ -75,28 +76,45 @@ const dotClass = (depth: number, active: boolean): string =>
         ? 'bg-muted-foreground/70'
         : 'bg-muted-foreground/40'
 
+/** One character per standing. A glyph is a reminder for somebody who already
+ *  knows; the accessible name is always the sentence. */
+const MARK: Record<Standing, string> = {
+  confirmed: '✓',
+  changed: '~',
+  unseen: '·',
+}
+
+const markClass: Record<Standing, string> = {
+  confirmed: 'text-emerald-600 dark:text-emerald-400',
+  changed: 'text-amber-600 dark:text-amber-400',
+  unseen: 'text-muted-foreground/60',
+}
+
 export function OutlineRail({
   sections,
   selected,
   onSelect,
   collapsed,
   onToggle,
-  onArchiveToggle,
-  pending,
+  standing,
   labels,
   className,
 }: OutlineRailProps) {
   const rows = visibleSections(sections, collapsed)
+  const standingLabel: Record<Standing, string> = {
+    confirmed: labels.standingConfirmed,
+    changed: labels.standingChanged,
+    unseen: labels.standingUnseen,
+  }
 
   return (
     <ul className={cn('flex flex-col', className)}>
       {rows.map((section) => {
-        const doc = section.doc
-        const active = doc !== null && doc.id === selected
+        const active = section.key === selected
         const hasChildren = section.children.length > 0
         const folded = hasChildren && collapsed.has(section.key)
         const hidden = folded ? sectionCount(section) : 0
-        const waiting = doc ? (pending?.[doc.id] ?? 0) : 0
+        const stands = standing?.[section.key]
         return (
           <li
             key={section.key}
@@ -125,47 +143,31 @@ export function OutlineRail({
             <span className="flex w-2.5 flex-none justify-center" aria-hidden="true">
               <span
                 className={cn('block rounded-full', dotClass(section.depth, active))}
-                style={{ width: `${dotSize(section.depth)}px`, height: `${dotSize(section.depth)}px` }}
+                style={{
+                  width: `${dotSize(section.depth)}px`,
+                  height: `${dotSize(section.depth)}px`,
+                }}
               />
             </span>
 
-            {doc ? (
-              <button
-                type="button"
-                onClick={() => onSelect(doc.id)}
-                className="flex min-w-0 grow items-baseline gap-1.5 py-1.5 pr-1 text-left"
-              >
-                <span className="text-muted-foreground flex-none font-mono text-[10.5px]">
-                  {section.number}
-                </span>
-                <span className={cn('min-w-0 truncate', titleClass(section.depth))}>
-                  {section.title}
-                </span>
-                {doc.archived_at && (
-                  <span className="text-muted-foreground flex-none text-[10.5px]">
-                    ({labels.archived})
-                  </span>
+            <button
+              type="button"
+              onClick={() => onSelect(section.key)}
+              className="flex min-w-0 grow items-baseline gap-1.5 py-1.5 pr-1 text-left"
+            >
+              <span className="text-muted-foreground flex-none font-mono text-[10.5px]">
+                {section.number}
+              </span>
+              <span
+                className={cn(
+                  'min-w-0 truncate',
+                  titleClass(section.depth),
+                  section.title ? '' : 'italic opacity-70',
                 )}
-              </button>
-            ) : (
-              // A folder nothing is filed as. It groups, so it opens and closes,
-              // but there is no prose behind it to read.
-              <button
-                type="button"
-                title={labels.group}
-                onClick={() => onToggle(section.key)}
-                className="flex min-w-0 grow items-baseline gap-1.5 py-1.5 pr-1 text-left"
               >
-                <span className="text-muted-foreground flex-none font-mono text-[10.5px]">
-                  {section.number}
-                </span>
-                <span
-                  className={cn('min-w-0 truncate italic opacity-80', titleClass(section.depth))}
-                >
-                  {section.title}
-                </span>
-              </button>
-            )}
+                {section.title || labels.untitled}
+              </span>
+            </button>
 
             {folded && (
               <span
@@ -175,25 +177,14 @@ export function OutlineRail({
                 ⊞ {hidden}
               </span>
             )}
-            {waiting > 0 && (
+            {stands && (
               <span
-                className="flex-none rounded-sm bg-amber-100 px-1 text-[10px] font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-                title={labels.waiting.replace('{n}', String(waiting))}
+                className={cn('flex-none px-1 font-mono text-[11px]', markClass[stands])}
+                title={standingLabel[stands]}
               >
-                {waiting}
+                <span aria-hidden="true">{MARK[stands]}</span>
+                <span className="sr-only">{standingLabel[stands]}</span>
               </span>
-            )}
-            {doc && onArchiveToggle && (
-              <Hint text={doc.archived_at ? labels.unarchive : labels.archive}>
-                <button
-                  type="button"
-                  aria-label={doc.archived_at ? labels.unarchive : labels.archive}
-                  onClick={() => onArchiveToggle(doc)}
-                  className="text-muted-foreground hover:text-foreground flex-none px-1 text-[12px] opacity-0 group-hover:opacity-100 focus:opacity-100"
-                >
-                  {doc.archived_at ? '↩' : '×'}
-                </button>
-              </Hint>
             )}
           </li>
         )
