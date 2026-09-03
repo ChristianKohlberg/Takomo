@@ -231,7 +231,16 @@ async fn join(
     // A map written before sections had prose is moved into it here, once, on
     // the first open. Cheap, idempotent, and it broadcasts only if it changed
     // something.
-    room.mutate(|doc| Ok(mindmapdoc::ensure_prose(doc)))?;
+    //
+    // Only for a caller that may WRITE. This is a mutation — it creates a
+    // fragment per node and drops the legacy field — so running it for a `read`
+    // token meant a read changed the shared document, broadcast that change to
+    // every open canvas, and persisted it. Measured: a read-only GET added a row
+    // to `crdt_updates`. A reader loses nothing by skipping it, because the read
+    // paths fall back to the legacy field.
+    if ctx.require_scope("write").is_ok() {
+        room.mutate(|doc| Ok(mindmapdoc::ensure_prose(doc)))?;
+    }
     Ok((map, room))
 }
 
@@ -894,10 +903,15 @@ pub async fn prose(
     let markdown = room.read(|doc| {
         let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
         match node.as_deref() {
-            Some(node) => mindmapdoc::section_prose(doc, node).map(|frag| {
-                let txn = doc.transact();
-                let blocks = crate::api::docprops::read_blocks(&txn, &frag);
-                crate::api::docprops::annotate(&blocks)
+            Some(node) => ApiResult::Ok(match mindmapdoc::read_section_prose(doc, node) {
+                Some(frag) => {
+                    let txn = doc.transact();
+                    let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                    crate::api::docprops::annotate(&blocks)
+                }
+                // No fragment yet: the honest answer is that this section has no
+                // prose, not a fragment conjured by the act of asking.
+                None => String::new(),
             }),
             None => {
                 let ordered = mindmapdoc::tree_order(&nodes);
@@ -905,7 +919,7 @@ pub async fn prose(
                 for section in ordered {
                     let level = mindmapdoc::depth_of(&nodes, &section.id).min(6);
                     out.push_str(&format!("{} {}\n\n", "#".repeat(level), section.title));
-                    if let Ok(frag) = mindmapdoc::section_prose(doc, &section.id) {
+                    if let Some(frag) = mindmapdoc::read_section_prose(doc, &section.id) {
                         let txn = doc.transact();
                         let blocks = crate::api::docprops::read_blocks(&txn, &frag);
                         let body = crate::api::docprops::annotate(&blocks);

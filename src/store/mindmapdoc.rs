@@ -1008,6 +1008,24 @@ fn prose_of(txn: &mut TransactionMut, entry: &MapRef) -> XmlFragmentRef {
 /// This is what an agent proposes against and what the document view's editor
 /// binds to. `XmlFragmentRef` is a handle rather than a borrow, so it outlives
 /// the transaction that found it.
+/// A section's prose fragment as it stands, WITHOUT making one.
+///
+/// What a read uses. `section_prose` creates the fragment when it is missing,
+/// which is right on a write path and wrong on a read: a `read` token calling
+/// `GET .../prose` would otherwise change the shared document by looking at it,
+/// and that change is broadcast to every open canvas and persisted. The mirror
+/// of `readProseOf` in `web/src/lib/mindmap-crdt.ts`, which already made this
+/// distinction on the browser side.
+pub fn read_section_prose(doc: &Doc, node: &str) -> Option<XmlFragmentRef> {
+    let (nodes_map, _) = roots(doc);
+    let txn = doc.transact();
+    let entry = node_map(&txn, &nodes_map, node).ok()?;
+    match entry.get(&txn, PROSE_KEY) {
+        Some(Out::YXmlFragment(frag)) => Some(frag),
+        _ => None,
+    }
+}
+
 pub fn section_prose(doc: &Doc, node: &str) -> ApiResult<XmlFragmentRef> {
     let (nodes_map, _) = roots(doc);
     let txn = doc.transact();

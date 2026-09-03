@@ -20948,3 +20948,76 @@ async fn compaction_rewrites_the_log_and_keeps_the_history() {
          entry must survive it: {after}"
     );
 }
+
+/// A token that may only read must not change the plan by reading it.
+///
+/// Opening a map converts any node still carrying the legacy `notes` field into
+/// a prose fragment, and `GET .../prose` used to create a fragment for a section
+/// that had none. Both are WRITES — they alter the shared document, broadcast to
+/// every open canvas, and land in the update log. Both ran for a `read` token.
+///
+/// Measured before the fix: a read-only `GET /v1/mindmaps/{id}` took the log from
+/// one row to two. The browser side had made this distinction from the start
+/// (`readProseOf` beside `proseOf`, with a comment saying a token that may not
+/// change the plan must not change it by looking at it); the server had not.
+///
+/// A reader loses nothing, because the read paths fall back to the legacy field
+/// and an absent fragment honestly reads as no prose.
+#[tokio::test]
+async fn a_read_only_token_cannot_change_the_plan_by_reading_it() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mine = yrs::Doc::new();
+    // A node written the way a canvas writes one: title and position, no prose.
+    let u = peer_node_update(&mine, "mn-nopros01", "no prose here", "a0");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &u).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    drop(peer);
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let rows = |c: &rusqlite::Connection| -> i64 {
+        c.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let before = rows(&conn);
+    assert!(before > 0, "the socket write must have landed first");
+
+    let reader = app.mint("reader", &["read"], None);
+    let (s, whole) = app.get(&reader, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(s, StatusCode::OK, "reading stays allowed: {whole}");
+    let (s, prose) = app.get(&reader, &format!("/v1/mindmaps/{map}/prose")).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "and so does reading it as a document: {prose}"
+    );
+    // The node is still there to be read — the point is that reading did not
+    // rewrite it, not that reading returned nothing.
+    assert!(
+        prose["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("no prose here"),
+        "the reader must still see the section: {prose}"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert_eq!(
+        rows(&conn),
+        before,
+        "a read-only token's GET must not add to the update log — reading changed \
+         the shared document"
+    );
+}
