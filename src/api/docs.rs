@@ -169,6 +169,9 @@ pub async fn archive(
     let existing = state.store.get_document(&id)?;
     ctx.require_project(&existing.project)?;
     let doc = state.store.archive_document(&id, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(doc.to_json()))
 }
@@ -183,6 +186,9 @@ pub async fn unarchive(
     let existing = state.store.get_document(&id)?;
     ctx.require_project(&existing.project)?;
     let doc = state.store.unarchive_document(&id, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(doc.to_json()))
 }

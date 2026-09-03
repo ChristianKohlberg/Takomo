@@ -290,6 +290,9 @@ pub async fn archive(
     let project = state
         .store
         .set_project_archived(&project, true, force, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     // Wakes the long-pollers so a worker parked on /v1/ready re-runs the query
     // and stops seeing this project's tickets, instead of waiting out its poll
     // against a queue that has already changed.
@@ -312,6 +315,9 @@ pub async fn unarchive(
     let project = state
         .store
         .set_project_archived(&project, false, false, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(project.to_json()))
 }
@@ -333,6 +339,10 @@ pub async fn delete(
     let pairs = query_pairs(raw.as_deref());
     let force = matches!(first(&pairs, "force"), Some("true" | "1"));
     state.store.delete_project(&project, force, &ctx.actor)?;
+    // A socket held open on something that no longer exists must not go on
+    // writing into it; `resync_frozen` reads "I cannot resolve this" as
+    // "do not write".
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(StatusCode::NO_CONTENT)
 }

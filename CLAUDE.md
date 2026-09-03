@@ -315,6 +315,19 @@ nothing about it. If you add a mutating store call, add the guard —
 `project_archive_refuses_every_write_and_allows_every_read` in `tests/api.rs` is
 what notices when you don't.
 
+**The sync socket needs its own half of that promise.** A `tkd_` session decides
+`can_write` once, when the ticket is minted, and a ticket lives for hours — so
+archiving refused every REST write and refused to mint a NEW ticket while
+somebody who already had the page open kept typing into a socket whose answer
+predated the freeze, and the server persisted it. So each `Room` carries a
+`frozen` flag and `Rooms::resync_frozen` re-asks the store — the same
+`ensure_collab_writable` the REST handlers ask, so there is one predicate rather
+than a second copy of the archive rules — after anything archives, restores or
+deletes. It runs there rather than per frame because archiving is rare and
+keystrokes are not. `archiving_freezes_a_socket_that_was_already_open` pins it,
+and asserts on CONTENT: an earlier version of that test counted rows in the
+update log and passed with the fix removed.
+
 **State changes only through transitions** (`src/store/transition.rs`) against the per-project
 state machine (`src/workflow.rs`, format in `spec/workflow-format.md`). A transition's `requires`
 entries are `claim`, `scope:<s>`, or `guard:<id>` — guards being `no_open_children`,

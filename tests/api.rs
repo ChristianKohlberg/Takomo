@@ -20562,3 +20562,100 @@ fn every_mindmap_write_is_persisted_before_it_answers() {
          `persist(&state, &room, &ctx).await;` before answering."
     );
 }
+
+/// Archiving freezes the sync socket too, not just every REST route.
+///
+/// `can_write` is decided once, when a session ticket is minted, and a ticket
+/// lives for hours. So archiving refused every REST write and refused to mint a
+/// new ticket, while somebody who already had the page open went on typing into
+/// a socket whose answer to "may this peer write" predated the freeze — and the
+/// server applied and persisted it. Reproduced against a running server before
+/// this was fixed: the project was archived, every REST path answered
+/// `project.archived`, and a node title written over the socket afterwards came
+/// back from `GET /v1/mindmaps/{id}`.
+///
+/// Asserted on CONTENT rather than on the size of the update log, because the
+/// log is the wrong instrument: a refused write and a write merged into a batch
+/// that was going to be flushed anyway can leave the same number of rows, and a
+/// first attempt at this test passed with the fix removed for exactly that
+/// reason.
+///
+/// Reads stay open throughout, because archiving has never restricted reading.
+#[tokio::test]
+async fn archiving_freezes_a_socket_that_was_already_open() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("the canvas opens while the project is live");
+    let mine = yrs::Doc::new();
+
+    // One branch BEFORE the freeze, so this proves the socket was working and
+    // then stopped — not that it never worked.
+    let before = peer_node_update(&mine, "mn-before01", "Vor dem Archivieren", "a0");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &before).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        mindmap_titles(&whole).contains(&"Vor dem Archivieren".to_string()),
+        "the socket must work before the freeze: {whole}"
+    );
+
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive?force=true", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    // The socket is still open and the peer has no idea anything changed.
+    let after = peer_node_update(&mine, "mn-after001", "Nach dem Archivieren", "a1");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &after).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let (s, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "reading an archived map stays allowed: {whole}"
+    );
+    assert!(
+        !mindmap_titles(&whole).contains(&"Nach dem Archivieren".to_string()),
+        "an archived project must not accept a write over a socket that was \
+         already open: {whole}"
+    );
+
+    // And it thaws, because archiving is reversible by design.
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let again = peer_node_update(&mine, "mn-again001", "Wieder offen", "a2");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &again).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        mindmap_titles(&whole).contains(&"Wieder offen".to_string()),
+        "unarchiving must let the same socket write again: {whole}"
+    );
+}
+
+/// Node titles as the REST read reports them.
+fn mindmap_titles(whole: &Value) -> Vec<String> {
+    whole["nodes"]
+        .as_array()
+        .map(|ns| {
+            ns.iter()
+                .filter_map(|n| n["text"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}

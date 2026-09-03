@@ -61,7 +61,7 @@ use axum::{Extension, Json};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use yrs::encoding::read::{Cursor, Read as _};
 use yrs::encoding::write::Write as _;
@@ -106,6 +106,15 @@ pub struct Room {
     peers: AtomicUsize,
     /// Rows in the persisted log, tracked so compaction does not need a query.
     rows: AtomicU64,
+    /// Set when the object, or the project above it, has been archived.
+    ///
+    /// `can_write` on a session is decided once, when the ticket is minted, and
+    /// a ticket lives for hours. Archiving refuses every REST write and refuses
+    /// to mint a new ticket — but somebody who already had the page open kept a
+    /// socket whose `can_write` was decided before the freeze, and their typing
+    /// went on being applied and persisted. Archiving is meant to freeze every
+    /// write beneath a project, so this is the socket's half of that promise.
+    frozen: AtomicBool,
     /// Held for the length of a flush, so only one runs at a time.
     ///
     /// Without it `flush` is not a durability barrier, only a nudge: it takes
@@ -232,6 +241,32 @@ pub async fn open_room(state: &Arc<AppState>, id: &str) -> ApiResult<RoomGuard> 
 pub struct Rooms(Mutex<HashMap<String, Arc<Room>>>);
 
 impl Rooms {
+    /// Re-decide, for every room currently open, whether it may still be written.
+    ///
+    /// Called after anything that archives or restores — a project or a single
+    /// object. It asks the STORE the same question the REST handlers ask
+    /// (`ensure_collab_writable`), so there is one predicate rather than a second
+    /// copy of the archive rules that could drift from the first. Archiving is
+    /// rare and open rooms are few, so a store read each is affordable; doing it
+    /// here rather than per frame keeps it off the path every keystroke takes.
+    ///
+    /// A room whose object has gone is frozen rather than left alone: the safe
+    /// reading of "I cannot tell" is "do not write".
+    pub fn resync_frozen(state: &Arc<AppState>) {
+        let rooms: Vec<(String, Arc<Room>)> = state
+            .rooms
+            .0
+            .lock()
+            .expect("rooms mutex")
+            .iter()
+            .map(|(id, room)| (id.clone(), room.clone()))
+            .collect();
+        for (id, room) in rooms {
+            let frozen = state.store.ensure_collab_writable(&id).is_err();
+            room.frozen.store(frozen, Ordering::SeqCst);
+        }
+    }
+
     /// Join a document, creating and hydrating the room if this is the first peer.
     ///
     /// The replay is a blocking store read, so it runs on the blocking pool: a
@@ -280,6 +315,10 @@ impl Rooms {
             tx,
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
+            // A room can only be opened with a freshly minted ticket, and
+            // minting one is already refused for an archived object — so a room
+            // that exists at all started out writable.
+            frozen: AtomicBool::new(false),
             flushing: tokio::sync::Mutex::new(()),
         });
 
@@ -718,7 +757,7 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
                     // A read-only peer is silently not applied rather than
                     // disconnected: it can legitimately hold a document open, and
                     // its own editor will simply never see its change confirmed.
-                    if !session.can_write {
+                    if !session.can_write || room.frozen.load(Ordering::SeqCst) {
                         return None;
                     }
                     if let Err(e) = room.apply(update) {

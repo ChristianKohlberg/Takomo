@@ -173,6 +173,10 @@ pub async fn delete(
         .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
     ctx.require_project(&existing.project)?;
     let nodes = state.store.delete_mindmap(&id, &ctx.actor)?;
+    // A socket held open on something that no longer exists must not go on
+    // writing into it; `resync_frozen` reads "I cannot resolve this" as
+    // "do not write".
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(json!({ "ok": true, "removed_nodes": nodes })))
 }
