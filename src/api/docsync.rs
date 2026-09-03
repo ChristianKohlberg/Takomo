@@ -105,6 +105,17 @@ const MAX_PEERS_PER_ROOM: usize = 64;
 /// the frame that is abuse.
 const MAX_SYNC_MESSAGE: usize = 8 * 1024 * 1024;
 
+/// How much unwritten work one room may hold before it stops taking more.
+///
+/// `requeue` keeps a batch the store refused instead of dropping it, which is
+/// what stops a failed flush losing somebody's typing — but a store that keeps
+/// refusing turns "keep it" into unbounded growth, because peers go on typing
+/// into a queue that never drains. Neither losing the work nor running the
+/// process out of memory is acceptable, so past this the room stops ACCEPTING
+/// writes and holds what it already has: the work that exists is preserved, and
+/// the failure is bounded and visible instead of quiet.
+const MAX_PENDING_BYTES: usize = 32 * 1024 * 1024;
+
 /// One frame on its way to the other peers: who sent it, and the bytes.
 ///
 /// The sender id is what stops a peer receiving its own update back. Yjs would
@@ -133,6 +144,11 @@ pub struct Room {
     /// went on being applied and persisted. Archiving is meant to freeze every
     /// write beneath a project, so this is the socket's half of that promise.
     frozen: AtomicBool,
+    /// Set when `pending` has outgrown [`MAX_PENDING_BYTES`] because the store
+    /// keeps refusing the flush. Separate from `frozen` on purpose: that one is
+    /// recomputed from the archive state, so sharing it would let an unrelated
+    /// unarchive clear a backpressure stop that nothing had resolved.
+    overloaded: AtomicBool,
     /// Held for the length of a flush, so only one runs at a time.
     ///
     /// Without it `flush` is not a durability barrier, only a nudge: it takes
@@ -349,6 +365,7 @@ impl Rooms {
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
             frozen: AtomicBool::new(frozen),
+            overloaded: AtomicBool::new(false),
             flushing: tokio::sync::Mutex::new(()),
         });
 
@@ -422,6 +439,18 @@ fn requeue(room: &Arc<Room>, batch: Arc<Vec<u8>>) {
     let batch = Arc::try_unwrap(batch).unwrap_or_else(|shared| (*shared).clone());
     let mut pending = room.pending.lock().expect("pending mutex");
     pending.insert(0, batch);
+    let held: usize = pending.iter().map(Vec::len).sum();
+    if held > MAX_PENDING_BYTES {
+        // Stop taking more rather than lose what is here or grow without end.
+        // Cleared when a flush finally succeeds.
+        if !room.overloaded.swap(true, Ordering::SeqCst) {
+            eprintln!(
+                "{}: holding {held} bytes the store will not take; refusing further \
+                 writes until it does",
+                room.id
+            );
+        }
+    }
 }
 
 pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
@@ -469,6 +498,8 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         }
     };
     room.rows.store(rows as u64, Ordering::SeqCst);
+    // The store took it, so whatever backpressure was on can come off.
+    room.overloaded.store(false, Ordering::SeqCst);
     note_size_if_mindmap(state, room).await;
 
     if rows >= COMPACT_AFTER_UPDATES {
@@ -849,7 +880,10 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
                     // A read-only peer is silently not applied rather than
                     // disconnected: it can legitimately hold a document open, and
                     // its own editor will simply never see its change confirmed.
-                    if !session.can_write || room.frozen.load(Ordering::SeqCst) {
+                    if !session.can_write
+                        || room.frozen.load(Ordering::SeqCst)
+                        || room.overloaded.load(Ordering::SeqCst)
+                    {
                         return None;
                     }
                     if let Err(e) = room.apply(update) {
