@@ -1,6 +1,6 @@
 # One plan, two renderings: the map and the document
 
-Status: design, for a decision · supersedes the conversion in `spec/mindmap-crdt.md` §"Writing it up"
+Status: **built** · supersedes the conversion in `spec/mindmap-crdt.md` §"Writing it up", which is deleted
 
 > Mindmap and Document is just a different way of rendering the same
 > information. Both have their place. Mindmap for fast brainstorming and
@@ -137,7 +137,27 @@ tools grow a "which section" argument; their contract otherwise holds.
 sub-documents a split will create. It stops offering to make one inside a
 project that has a map.
 
-## 7. Order of work
+## 7. What was built
+
+All five, in this order, each landing on its own:
+
+1. **Node prose and identity** — `prose` as a nested `XmlFragment` on the node,
+   the legacy `notes` moved into it once on first open and then removed,
+   `created_by_user` recorded from `AuthCtx.user`.
+2. **The trace** — `plan_trace`, the acts that deserve an entry, and `standing`
+   on the map read as a derived reading rather than a stored flag.
+3. **The document view** — `/documents` is the plan: the rail is the node tree
+   numbered by position, the column is the sections with an editor bound to each
+   node's own fragment. The conversion is deleted, with no migration: the branch
+   never shipped it.
+4. **Proposals re-aimed** — `GET /v1/mindmaps/{id}/prose`, `POST …/proposals`,
+   and `takomo_plan_read` / `_propose` / `_proposals`, plus `POST …/run` for the
+   one route that calls a model. An agent proposes; a person accepts. Unchanged.
+5. **History with two sides** — each act that changed the prose keeps what it
+   then said, which is what a diff is made of. Affordable only because the trace
+   is sparse.
+
+## 8. The order it was done in
 
 1. **Node prose and identity.** `prose` fragment on the node, `notes` migrated
    into it, `created_by_user` recorded, the canvas reading the first line.

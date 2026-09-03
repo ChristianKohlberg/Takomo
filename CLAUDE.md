@@ -355,20 +355,33 @@ on REST/MCP/CLI writes but not on individual keystrokes over the socket, which i
 `/documents` already ran. `mindmaps.nodes` is denormalised for exactly one reason: an honest count
 means replaying the document, affordable for one map and not for a list of two hundred.
 
-**A map is written up as a TREE OF DOCUMENTS** (`POST /v1/mindmaps/{id}/documents`,
-`mindmapdoc::plan_documents`), one per thought that had something to say, filed under folders that
-mirror its branches. It needs no section model inside a document, which is the point: `/documents`
-already builds its tree from paths, so the shape of the thinking becomes the folder tree. The rule
-that makes it readable is that a node becomes a document when it has children or notes and a **bare
-leaf becomes a bullet** in its parent's — without it forty six-word thoughts become forty pages
-nobody opens. Re-running **refiles and never rewrites**: titles and folders come back in line with
-the map, prose is left alone, because by then somebody has been writing in it. The link lives in the
-node's own `document` field, separate from `promoted`, so writing a map up cannot erase what a
-branch had graduated into. `src/store/prose.rs` builds that first content and is the ONE place Rust
-writes blocks rather than reading them — permitted only because a converted document has no live
-text and nothing to merge with, and its shape is asserted by reading it back through the annotated
-markdown an agent uses (`tests/mcp.rs`), because a bullet list flattened to `bulletList > text`
-reads back fine from our own reader and renders as nothing in the editor.
+**The map and the document are ONE PLAN, rendered twice** (`spec/one-model-two-views.md`). A node
+IS a section: its title is the heading, its depth the heading level, tree order the reading order,
+and **its prose lives inside the node** as a nested `XmlFragment`. `/documents` binds an editor per
+section to that fragment — `Collaboration.configure({ document, fragment })`, which is the whole
+reason this shape works — so both views write one CRDT and cannot drift. There is no conversion and
+no document row behind plan content; `notes` on the wire is that prose as plain text, which is what
+a canvas card shows. The earlier map→documents conversion was deleted before it ever shipped.
+
+**Authorship names a PERSON, never a capability.** A node carries `created_by_user` (a `users.id`)
+beside the free-form `created_by`, and so does every trace entry — the rule `AuthCtx.user`,
+`cases.human_user` and `a_user_scope_string_cannot_forge_assignee_identity` already set, because a
+scope is free-form and a `user:…` scope would be a forgeable identity.
+
+**`plan_trace` is the plan's history** — authored, renamed, edited, moved, pruned, reviewed,
+proposed, accepted, rejected — in SQL rather than in the document because it references `users(id)`,
+because "everything Ada reviewed this week" is a query, and because it must survive compaction,
+which rewrites the update log by design. **Sparse**: an act somebody would name, never a keystroke.
+The server records what it PERFORMS, so a caller may report only the four it cannot observe
+(`edited`, `reviewed`, `accepted`, `rejected` — prose moves over the socket, agreement is somebody
+saying so, and a decision is the browser applying ops). Each act that changed prose keeps what it
+then said, which is what makes a diff possible; `GET /v1/mindmaps/{id}` returns `standing` per
+section — a READING, since a section confirmed before its last edit is not confirmed any more.
+
+**An agent proposes to a section; a person accepts** — the document rule, only re-aimed.
+`takomo_plan_read` returns a section annotated with block ids, `takomo_plan_propose` takes
+operations against them, `POST /v1/mindmaps/{id}/run` is the one route that calls a model and lands
+its answer as a proposal like any other.
 
 **Relationships** are the edge that is *not* the hierarchy — `{from, to, label}`, so a question
 hanging off what it questions and a screen navigating to another are one mechanism instead of three

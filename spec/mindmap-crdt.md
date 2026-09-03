@@ -1,6 +1,24 @@
 # Mindmaps as a collaborative object
 
-Status: spec for implementation · replaces the relational mindmap in place
+Status: built · **superseded in part by `spec/one-model-two-views.md`**
+
+Two things below are no longer true, and the newer spec says why:
+
+- **`notes` is not a `Y.Text`.** A node carries its own `XmlFragment` — the
+  section's prose — because the map and the document are two renderings of one
+  plan rather than two stores kept in step. `notes` survives on the wire as that
+  prose in plain text.
+- **`origin` is not a stored human/agent flag.** A node records the PERSON who
+  wrote it, and where a section stands is read from the plan's trace, because a
+  capability is not an identity and a boolean cannot say "confirmed, until it
+  changed again".
+
+Everything else here — the CRDT, the shared log, the fractional index, the tree
+repair, relationships, attachments, the caps — stands as written.
+
+---
+
+Replaces the relational mindmap in place
 
 A mindmap stops being rows and becomes a CRDT, so two people (and an agent) can
 grow one at the same time. This is the same machinery `/documents` already runs,

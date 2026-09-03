@@ -218,41 +218,58 @@ A relationship whose end no longer resolves is dropped when the map is read,
 never repaired: there is no node to point at, and half an edge is not a fact
 about anything. Pruning a branch takes its relationships with it.
 
-## Writing it up — the map becomes documents
+## The map and the document are one plan
+
+A project has **one plan**, and two ways of looking at it. The map is for
+thinking — grouping topics fast, before anybody knows what they are. The
+document view at `/documents` is for writing them out.
+
+They are not two things kept in step. **A node IS a section**: its title is the
+heading, its depth is the heading level, tree order is reading order, and its
+prose lives inside the node itself. Both views write the same document, so they
+cannot drift, and two people can be in different views of the same thought at
+the same time.
+
+There is nothing to convert and nothing to re-run.
 
 ```
-POST /v1/mindmaps/{id}/documents     {"path": "optional root folder"}
+the map                          the document view
+─────────                        ─────────────────
+API                              1    API
+  versioning?                    1.1    versioning?
+integrations                     2    integrations
 ```
 
-The map turns into a **tree of documents**, one per thought that had something
-to say, filed under folders that mirror its branches.
+### Where each section stands
 
-This needs no section model inside a document, and that is the point:
-`/documents` already builds its tree from folder paths, so the shape of the
-thinking becomes the shape of the folder tree directly.
+`GET /v1/mindmaps/{id}` carries `standing` per section: when it last changed,
+when it was last confirmed, and whether that confirmation still holds. It is a
+**reading**, not a stored flag — a section confirmed before its last edit is not
+confirmed any more, and no boolean can say that.
 
-**The rule that makes the result readable** — a node becomes a document when it
-has children or notes; a **bare leaf becomes a bullet** in its parent's
-document. Without it, every six-word thought is its own page and a map of forty
-converts into forty documents nobody opens.
+### The trace
 
-```
-(top level)/                         Payments rebuild   <- the plan's front page
-Payments rebuild/                    API
-Payments rebuild/API/                versioning: v1 forever, or dated?
-Payments rebuild/                    integrations
-Payments rebuild/integrations/       Stripe first, then the bank file
-```
+`GET /v1/mindmaps/{id}/trace` is what happened to the plan and who did it:
+`authored`, `renamed`, `edited`, `moved`, `pruned`, `reviewed`, `proposed`,
+`accepted`, `rejected`. Every entry names the person behind the credential, not
+just the actor string, because a scope is not an identity.
 
-**Running it again refiles; it never rewrites.** A node that already made a
-document keeps it: rename a branch and its document is renamed and its children
-re-filed underneath. The prose is never touched, because by then somebody has
-been writing in there, and that is the entire point of turning a map into
-documents.
+It is sparse on purpose — an act somebody would name, never a keystroke — and
+the acts that changed the prose keep what it then said, which is what a diff is
+made of. The CRDT update log cannot answer that: compaction rewrites it into one
+blob by design.
 
-The link lives in the node's own `document` field, separate from `promoted` — a
-branch can be an epic *and* appear in the written-up plan, and sharing one slot
-would make writing the map up quietly erase what a branch had graduated into.
+A caller may record only `edited`, `reviewed`, `accepted` and `rejected` — the
+four the server cannot observe. It records what it performs itself, so nobody
+can claim to have moved a node they did not move.
+
+### An agent proposes; a person accepts
+
+Unchanged, and only re-aimed. An agent reads a section annotated with block ids
+(`takomo_plan_read`) and replies with OPERATIONS against those ids
+(`takomo_plan_propose`) — never with a document, which is what keeps somebody's
+concurrent typing. Nothing is live until a person accepts it in the document
+view.
 
 ## Attachments — a pointer, never the file
 
