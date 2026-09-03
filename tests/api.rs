@@ -20735,6 +20735,12 @@ async fn typing_survives_a_flush_the_store_refuses() {
     peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &u).into()))
         .await
         .unwrap();
+    // Let the frame actually be applied before archiving. Without this the two
+    // race, and the archive can win — at which point the freeze refuses an
+    // in-flight frame, which is correct behaviour and NOT what this test is
+    // about. The first version had no pause and failed intermittently for
+    // exactly that reason: it was exercising the freeze rather than the flush.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Archive inside the flush window, so the batch is still only in memory and
     // the write that carries it will be refused.
@@ -20760,5 +20766,56 @@ async fn typing_survives_a_flush_the_store_refuses() {
         mindmap_titles(&whole).contains(&"Vor dem Archivieren".to_string()),
         "typing done BEFORE the archive must be kept and written once the store \
          will take it again: {whole}"
+    );
+}
+
+/// Revoking a token kills the sync tickets minted from it.
+///
+/// A `tkd_` ticket may never be more permissive than the `tk_` token it came
+/// from — that is the whole basis for letting it travel in a query string. But
+/// `crdt_sessions` recorded no link back to the minting token, so revocation
+/// could not reach it: revoking a leaked credential left its holder writing to
+/// that one object for the rest of the session's life, which is hours.
+/// `revoked_at` was even read at the handshake, with a comment in the source
+/// saying nothing wrote it.
+///
+/// Reproduced on a running server: a token was minted, took a ticket, was
+/// revoked, answered 401 on REST, and its ticket then opened a socket and wrote
+/// a node that `GET /v1/mindmaps/{id}` handed back.
+#[tokio::test]
+async fn revoking_a_token_kills_the_sync_tickets_it_minted() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, minted) = app
+        .post(
+            &app.admin,
+            "/v1/tokens",
+            json!({ "actor": "leaky", "scopes": ["read", "write"] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{minted}");
+    let leaky = minted["token"].as_str().unwrap().to_string();
+    let leaky_id = minted["id"].as_str().unwrap().to_string();
+
+    let (s, sess) = app
+        .post(&leaky, &format!("/v1/mindmaps/{map}/session"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{sess}");
+    let ticket = sess["token"].as_str().unwrap().to_string();
+    assert_eq!(sess["can_write"], json!(true), "{sess}");
+
+    let (s, _) = app
+        .delete(&app.admin, &format!("/v1/tokens/{leaky_id}"))
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    // The ticket must now be refused at the handshake, exactly as the token is
+    // refused on REST.
+    let ws = app.base.replacen("http://", "ws://", 1);
+    let url = format!("{ws}/v1/docsync/{map}?ticket={ticket}");
+    assert!(
+        tokio_tungstenite::connect_async(&url).await.is_err(),
+        "a ticket from a revoked token must not open a socket"
     );
 }

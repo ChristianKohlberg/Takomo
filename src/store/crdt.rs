@@ -298,6 +298,48 @@ impl Store {
     /// `crdt_updates.object_id` carries no foreign key — it points at one of two
     /// tables — so the cascade the FK used to provide is this call instead, made
     /// from each kind's own delete path.
+    /// Revoke every sync session derived from one `tk_` token.
+    ///
+    /// Called when that token is revoked. Without this a `tkd_` ticket outlived
+    /// the credential it came from — a leaked token could be revoked and its
+    /// holder would keep writing to that one object until the session expired,
+    /// which is hours. The whole contract for a `tkd_` is that it is never more
+    /// permissive than the token that minted it, and surviving revocation is
+    /// exactly that.
+    ///
+    /// Sessions written before the `minted_by` column existed have no answer and
+    /// are not reached; they expire on their own.
+    /// Is this session still good — not revoked, not expired?
+    ///
+    /// Asked by an open socket on a timer. Keyed on the session id rather than
+    /// the ticket, so nothing has to carry the secret around to ask.
+    pub fn collab_session_is_live(&self, session_id: &str) -> ApiResult<bool> {
+        self.with_conn(|conn| {
+            let row: Option<(Option<i64>, i64)> = conn
+                .query_row(
+                    "SELECT revoked_at, expires_at FROM crdt_sessions WHERE id = ?1",
+                    params![session_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            Ok(match row {
+                Some((revoked_at, expires_at)) => revoked_at.is_none() && expires_at > now_ms(),
+                // The row is gone — swept, or its object was deleted. Either way
+                // there is nothing left to be a session for.
+                None => false,
+            })
+        })
+    }
+
+    pub fn revoke_collab_sessions_of_token(tx: &Connection, token_id: &str) -> ApiResult<usize> {
+        let now = now_ms();
+        Ok(tx.execute(
+            "UPDATE crdt_sessions SET revoked_at = ?2 \
+             WHERE minted_by = ?1 AND revoked_at IS NULL",
+            params![token_id, now],
+        )?)
+    }
+
     pub(crate) fn purge_collab(tx: &Connection, id: &str) -> ApiResult<()> {
         tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
         tx.execute(
@@ -339,11 +381,11 @@ fn touch(tx: &Connection, object: &CollabObject, now: i64) -> ApiResult<()> {
 /// sixth token prefix of its own: it is the same credential doing the same job,
 /// and a new prefix would imply a new auth path when there is not one.
 ///
-/// **`revoked_at` is read but nothing writes it yet.** The column and the check
-/// are here so revocation is a row update when it is built; until then a
-/// ticket's only bound is [`SESSION_TTL_SECONDS`], and revoking the `tk_` token
-/// it came from does not reach it. Said plainly here rather than left implied by
-/// the column's existence.
+/// Revoking the `tk_` token it came from revokes it too, through `minted_by`.
+/// That is what keeps the promise above: a ticket that outlived the revocation
+/// of its own token would be MORE permissive than the token, which is the one
+/// thing it may not be. An open socket re-asks on a timer, so the window is that
+/// interval rather than the rest of the ticket's life.
 #[derive(Debug, Clone)]
 pub struct CollabSession {
     pub id: String,
@@ -358,18 +400,40 @@ pub struct CollabSession {
     pub revoked_at: Option<i64>,
 }
 
+/// What one sync ticket is minted from.
+///
+/// A struct rather than eight positional arguments, the way `BranchPromotion`
+/// is: the last two are both `&str` and both about provenance, and getting
+/// `actor` and `minted_by` the wrong way round would compile and quietly file
+/// every session against the wrong token — which is the field revocation now
+/// follows.
+pub struct NewCollabSession<'a> {
+    pub object_id: &'a str,
+    pub actor: &'a str,
+    pub display: &'a str,
+    pub user: Option<&'a str>,
+    pub can_write: bool,
+    pub expires_at: i64,
+    /// The `tk_` token this is derived from, so revoking that reaches this.
+    pub minted_by: &'a str,
+}
+
 impl Store {
     /// Mint a ticket for one object. The plaintext is returned once and never
     /// stored; only its hash is kept.
     pub fn create_collab_session(
         &self,
-        object_id: &str,
-        actor: &str,
-        display: &str,
-        user: Option<&str>,
-        can_write: bool,
-        expires_at: i64,
+        new: &NewCollabSession<'_>,
     ) -> ApiResult<(CollabSession, String)> {
+        let &NewCollabSession {
+            object_id,
+            actor,
+            display,
+            user,
+            can_write,
+            expires_at,
+            minted_by,
+        } = new;
         let plaintext = crate::ids::doc_session_token_plaintext();
         let hash = crate::ids::token_hash(&plaintext);
         let id = crate::ids::doc_session_id();
@@ -380,8 +444,8 @@ impl Store {
             ensure_project_writable(tx, &object.project)?;
             tx.execute(
                 "INSERT INTO crdt_sessions (id, token_hash, object_kind, object_id, project, \
-                 actor, \"user\", display, can_write, expires_at, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 actor, \"user\", display, can_write, expires_at, created_at, minted_by) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id,
                     hash,
@@ -394,6 +458,7 @@ impl Store {
                     i64::from(can_write),
                     expires_at,
                     now,
+                    minted_by,
                 ],
             )?;
             Ok(CollabSession {

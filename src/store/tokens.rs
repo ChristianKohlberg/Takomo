@@ -223,6 +223,10 @@ impl Store {
             if n == 0 {
                 return Ok(false);
             }
+            // A `tkd_` sync ticket derived from this token must die with it —
+            // otherwise revoking a leaked credential leaves its holder writing
+            // to one document for the rest of the session's life.
+            Store::revoke_collab_sessions_of_token(tx, id)?;
             let family: Option<String> = tx
                 .query_row(
                     "SELECT family FROM oauth_issued WHERE token_id = ?1",

@@ -83,6 +83,13 @@ const SYNC_UPDATE: u64 = 2;
 /// traffic it shares the mutex with.
 const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How often an open socket re-asks whether its session is still good.
+///
+/// The window a revoked credential keeps working for. Short enough that
+/// revocation means something, long enough that it is one small read per socket
+/// per half minute rather than one per keystroke.
+const SESSION_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Ceiling on peers in one room, so a loop cannot exhaust memory by opening
 /// sockets. Far above any real editing session.
 const MAX_PEERS_PER_ROOM: usize = 64;
@@ -582,14 +589,19 @@ async fn mint(
     // never the token or its id.
     let display = ctx.user.clone().unwrap_or_else(|| ctx.actor.clone());
 
-    let (session, token) = state.store.create_collab_session(
-        &id,
-        &ctx.actor,
-        &display,
-        ctx.user.as_deref(),
-        can_write,
-        expires_at,
-    )?;
+    let (session, token) =
+        state
+            .store
+            .create_collab_session(&crate::store::crdt::NewCollabSession {
+                object_id: &id,
+                actor: &ctx.actor,
+                display: &display,
+                user: ctx.user.as_deref(),
+                can_write,
+                expires_at,
+                // So revoking this token reaches the session it just minted.
+                minted_by: &ctx.token_id,
+            })?;
 
     let mut body = json!({
         // `object` is the field to read. The kind-specific key beside it stays
@@ -717,8 +729,33 @@ async fn session_loop(
         return;
     }
 
+    // A session is checked once, at the handshake, and then lives for hours. So
+    // revoking the token it came from has to reach a socket that is ALREADY open,
+    // or revocation only stops the next connection and the leaked one keeps
+    // writing. Re-asking on a timer rather than per frame keeps a database read
+    // off the path every keystroke takes; the cost is that the window is this
+    // interval rather than nothing, which is the trade the flush interval makes
+    // too.
+    let mut recheck = tokio::time::interval(SESSION_RECHECK_INTERVAL);
+    recheck.tick().await; // the first tick completes immediately
+
     loop {
         tokio::select! {
+            _ = recheck.tick() => {
+                let store = state.clone();
+                let sid = session.id.clone();
+                let still_valid = tokio::task::spawn_blocking(move || {
+                    store.store.collab_session_is_live(&sid)
+                })
+                .await;
+                // A read that FAILED is not proof of revocation — a busy database
+                // must not sign everybody out — so only a definite "no" closes it.
+                if matches!(still_valid, Ok(Ok(false))) {
+                    let _ = sink.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+
             // Fan-out from other peers.
             frame = rx.recv() => {
                 match frame {

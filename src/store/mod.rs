@@ -150,6 +150,8 @@ impl Store {
         // step that has to precede the schema batch.
         rename_lanes_to_checks(&conn)?;
         widen_doc_log_to_collab_objects(&conn)?;
+        // Also before the batch: the batch indexes the column it adds.
+        add_collab_session_minted_by(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         // After the schema and the additive migrations, because it writes into
@@ -609,6 +611,27 @@ fn rename_lanes_to_checks(conn: &Connection) -> ApiResult<()> {
 ///
 /// The one step that does not fit that description is `rename_lanes_to_checks`,
 /// which is why it lives in its own function and runs before the schema.
+/// Add `crdt_sessions.minted_by` to a database that predates it.
+///
+/// BEFORE the schema batch, not in `migrate` with the other additive columns,
+/// because the batch also creates an INDEX on this column: on an older database
+/// `CREATE TABLE IF NOT EXISTS crdt_sessions` correctly does nothing, and the
+/// index then refers to a column that is not there yet and the open fails. The
+/// same ordering trap `rename_lanes_to_checks` carries a note about.
+fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(crdt_sessions)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    // Empty means the table does not exist yet — a fresh database, where the
+    // schema batch is about to create it with the column already on it.
+    if !columns.is_empty() && !columns.iter().any(|c| c == "minted_by") {
+        conn.execute("ALTER TABLE crdt_sessions ADD COLUMN minted_by TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> ApiResult<()> {
     // archived_at (nullable) separates archived tickets from active ones. Older
     // databases predate the column; add it only when PRAGMA table_info shows it
@@ -2021,9 +2044,17 @@ CREATE TABLE IF NOT EXISTS crdt_sessions (
   can_write   INTEGER NOT NULL,
   expires_at  INTEGER NOT NULL,
   created_at  INTEGER NOT NULL,
-  revoked_at  INTEGER
+  revoked_at  INTEGER,
+  -- The `tk_` token this session was derived from.
+  --
+  -- Without it, revoking a leaked token could not reach the sessions minted
+  -- from it: a `tkd_` ticket kept opening a socket and writing for its whole
+  -- life, which made it MORE permissive than the token it came from — the one
+  -- thing it is not allowed to be.
+  minted_by   TEXT REFERENCES tokens(id)
 );
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_object ON crdt_sessions(object_id);
+CREATE INDEX IF NOT EXISTS idx_crdt_sessions_minted_by ON crdt_sessions(minted_by);
 
 -- Named workflows that can be applied to any project.
 --
