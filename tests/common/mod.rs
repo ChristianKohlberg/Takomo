@@ -166,6 +166,26 @@ impl TestApp {
     /// ships X are gone, and correctly so: there is one document now, and a
     /// test claiming `/inbox` carries something `/board` does not would be
     /// asserting a distinction that no longer exists.
+    /// One emitted asset, by name.
+    ///
+    /// A lazily-loaded route's code is not in `app.js` — that is the point of
+    /// splitting it — so a test about what a route ships has to ask for that
+    /// route's chunk.
+    pub async fn asset(&self, name: &str) -> String {
+        let resp = self
+            .request(Method::GET, &format!("/assets/{name}"))
+            .send()
+            .await
+            .expect("the asset should be served");
+        assert!(
+            resp.status().is_success(),
+            "GET /assets/{name} returned {} — the build emits it, so the binary \
+             should embed and serve it",
+            resp.status()
+        );
+        resp.text().await.unwrap()
+    }
+
     pub async fn app_bundle(&self) -> String {
         let resp = self
             .request(Method::GET, "/assets/app.js")

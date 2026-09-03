@@ -483,6 +483,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/mindmaps/{id}/nodes/{node}/promote",
             post(crate::api::mindmaps::promote),
         )
+        // Ask a model for a change to one section. The one route that calls one.
+        .route("/v1/mindmaps/{id}/run", post(crate::api::mindmaps::run_agent))
         // The plan as an agent reads it, and what it may offer back.
         .route("/v1/mindmaps/{id}/prose", get(crate::api::mindmaps::prose))
         .route(

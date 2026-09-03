@@ -4156,6 +4156,63 @@ paths:
         "409": { description: "Already promoted (`mindmap.already_promoted`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /mindmaps/{id}/run:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [mindmaps]
+      summary: Ask a model for a change to one section (write scope)
+      description: |
+        The ONE route in this codebase that calls a language model, pointed at a
+        section of the plan. A deliberate exception to "Takomo stores, the agent
+        computes", made because a prompt bar that only filed a request nobody
+        would answer is not a feature.
+
+        What the exception does NOT change: the model is schema-constrained to
+        operations against block ids, its answer goes through the same
+        validation a fleet agent's does, and it lands as a **proposal a person
+        accepts**. Nothing here writes live text.
+
+        The section is re-read inside the write and the operations validated
+        against THAT, because it may have moved while the model was thinking —
+        which is the failure this whole surface exists to remove.
+
+        Off unless the model key is configured; `/v1/whoami` reports
+        `features.doc_agent` so a page can explain the absence rather than
+        offering a bar that fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node, instruction]
+              properties:
+                node: { type: string, description: 'the section to change' }
+                instruction: { type: string, description: 'what you want changed, in a sentence' }
+                scope: { type: [array, "null"], items: { type: string }, description: 'restrict to these block ids' }
+                model: { type: string }
+      responses:
+        "200":
+          description: Offered, not applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { type: string }
+                  mindmap: { type: string }
+                  node: { type: string }
+                  status: { type: string }
+                  operations: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+                  summary: { type: string }
+                  note: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { description: "No model is configured (`doc_agent.not_configured`); `/v1/whoami` reports this as `features.doc_agent: false`" }
+
   /mindmaps/{id}/prose:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }

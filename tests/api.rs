@@ -12557,8 +12557,19 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
         bundle.contains("md-table"),
         "the markdown renderer is missing"
     );
+
+    // The initiatives client ships in the ROUTE's chunk, not the eager bundle —
+    // and that is worth asserting in both directions. Every surface is a lazy
+    // route now, so a client turning up in `app.js` means something imported it
+    // on the critical path, which is what the size budget exists to prevent.
     assert!(
-        bundle.contains("/v1/initiatives"),
+        !bundle.contains("/v1/initiatives"),
+        "the initiatives client is on the critical path; it belongs in its own chunk"
+    );
+    assert!(
+        app.asset("initiatives.js")
+            .await
+            .contains("/v1/initiatives"),
         "the initiatives client is missing from the bundle"
     );
 }

@@ -1025,3 +1025,141 @@ pub async fn proposals(
     let total = items.len() as i64;
     Ok(Json(json!({ "items": items, "total": total })))
 }
+
+/// POST /v1/mindmaps/{id}/run (write) — ask for a change to one section.
+///
+/// The ONE route in this codebase that calls a language model, now pointed at a
+/// section of the plan rather than a standalone document. It is a deliberate
+/// exception to "Takomo stores, the agent computes", made for the same reason it
+/// was made before: a prompt bar that only filed a request nobody would answer
+/// is not a feature.
+///
+/// What the exception does not change: the model is schema-constrained to
+/// operations against block ids, its answer goes through the same `validate_ops`
+/// a fleet agent's does, and it lands as a proposal a person accepts. Nothing
+/// here writes live text.
+///
+/// Off unless the model key is configured; `/v1/whoami` reports
+/// `features.doc_agent` so a page can explain the absence rather than offering a
+/// bar that fails.
+pub async fn run_agent(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let cfg = state
+        .doc_agent
+        .as_ref()
+        .ok_or_else(crate::docagent::not_configured)?;
+
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["node", "instruction", "scope", "model"])?;
+    let node = require_str(obj, "node")?;
+    let instruction = require_str(obj, "instruction")?;
+    let trimmed = instruction.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() > crate::docagent::MAX_INSTRUCTION {
+        return Err(ApiError::validation(
+            "validation.document_instruction",
+            format!(
+                "An instruction must be 1..={} characters; got {}.",
+                crate::docagent::MAX_INSTRUCTION,
+                trimmed.len()
+            ),
+        )
+        .remedy("Say what you want changed in a sentence.".to_string()));
+    }
+    let scope: Option<Vec<String>> = match obj.get("scope") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        ),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.field_type",
+                "Field 'scope' must be an array of block ids or null.".to_string(),
+            ))
+        }
+    };
+    let model = get_str(obj, "model")?;
+
+    // Read the LIVE replica rather than the log: the log is up to a flush
+    // behind, and block ids the reader has already moved past would make every
+    // op the model wrote get dropped as stale.
+    let annotated = {
+        let target = node.clone();
+        room.read(move |doc| {
+            let frag = mindmapdoc::section_prose(doc, &target)?;
+            let txn = doc.transact();
+            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+            Ok::<String, ApiError>(crate::api::docprops::annotate(&blocks))
+        })?
+    };
+
+    let plan = crate::docagent::run(
+        cfg,
+        &trimmed,
+        &annotated,
+        scope.as_deref(),
+        model.as_deref(),
+    )
+    .await?;
+
+    let actor = format!("{} (prompt)", ctx.actor);
+    let now = crate::ids::now_ms();
+    let summary = plan.summary.clone();
+    let target = node.clone();
+    let instruction_for_record = trimmed.clone();
+    let summary_for_record = summary.clone();
+    let (proposal, applied, skipped) = room.mutate(move |doc| {
+        // Re-read INSIDE the mutation and validate against that: the section may
+        // have moved while the model was thinking, which is the failure this
+        // whole surface exists to remove.
+        let frag = mindmapdoc::section_prose(doc, &target)?;
+        let txn = doc.transact();
+        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+        drop(txn);
+        let validated = crate::api::docprops::validate_ops(&plan.ops, &blocks, scope.as_deref())?;
+        let pid = crate::api::docprops::write_proposal(
+            doc,
+            Some(&target),
+            &actor,
+            &instruction_for_record,
+            &summary_for_record,
+            &validated.ops,
+            &validated.skipped,
+            now,
+        )?;
+        Ok((pid, validated.ops.len(), validated.skipped))
+    })?;
+
+    persist(&state, &room, &ctx).await;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "proposed",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: (!summary.is_empty()).then_some(summary.as_str()),
+        text: None,
+    })?;
+    state.wake();
+
+    Ok(Json(json!({
+        "proposal": proposal,
+        "mindmap": id,
+        "node": node,
+        "status": "pending",
+        "operations": applied,
+        "skipped": skipped,
+        "summary": summary,
+        "note": "Offered, not applied. Accept it in the document view.",
+    })))
+}
