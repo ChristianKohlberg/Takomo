@@ -125,11 +125,15 @@ line('└─ of which vendor', gz('assets/vendor.js'), BUDGET_KB.vendor)
 const lazy = present.filter(
   (f) => f.startsWith('assets/') && f.endsWith('.js') && !FIRST_LOAD.includes(f),
 )
-const heaviest = lazy.reduce((worst, f) => (gz(f) > gz(worst) ? f : worst), lazy[0] ?? 'assets/app.js')
 for (const f of lazy) {
   console.log(`     ${f.padEnd(22)} ${gz(f).toFixed(1).padStart(7)} kB gz   (lazy)`)
 }
-line('heaviest lazy chunk', gz(heaviest), BUDGET_KB.lazyChunk)
+// Zero when there are none, rather than falling back to a file that is not lazy.
+// The line this replaced reported a number it had not measured; a fallback of
+// `assets/app.js` would have done the same thing one step more subtly, printing
+// the EAGER bundle's size under a label that says lazy.
+const heaviest = lazy.length ? Math.max(...lazy.map(gz)) : 0
+line('heaviest lazy chunk', heaviest, BUDGET_KB.lazyChunk)
 
 // The stylesheet must not contain utilities that exist only inside Tailwind's
 // own output.
