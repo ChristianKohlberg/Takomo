@@ -32,10 +32,25 @@ export interface CheckCardLabels {
   markFail: string
   notePlaceholder: string
   archiveCheck: string
+  /** "Verifies <section>" — the part of the plan this check is about. */
+  verifiesSection: string
+  /** The link from a check to the section it verifies, on the map. */
+  openOnMap: string
 }
 
 export interface CheckCardProps {
   check: Check
+  /**
+   * The title of the section this check verifies, resolved from the plan.
+   *
+   * Resolved rather than stored, so a section renamed on the map is renamed here
+   * at once. `undefined` where the check names no section, or names one that has
+   * since been pruned — the id is kept either way, because losing the link would
+   * be worse than showing one whose section is gone.
+   */
+  nodeTitle?: string
+  /** Show this check's section on the map. Absent when there is no section. */
+  onOpenNode?: () => void
   cases: CaseRow[] | undefined
   loadingCases: boolean
   canWrite: boolean
@@ -223,6 +238,8 @@ function CaseLine({
 
 export function CheckCard({
   check,
+  nodeTitle,
+  onOpenNode,
   cases,
   loadingCases,
   canWrite,
@@ -246,6 +263,26 @@ export function CheckCard({
         <Badge className="bg-muted text-muted-foreground">{check.severity}</Badge>
         <Badge className="bg-muted text-muted-foreground">{check.layer}</Badge>
       </div>
+
+      {/* The part of the plan this verifies. A check nobody filed under a
+          section shows nothing rather than an empty label. */}
+      {check.node && (
+        <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1.5 text-[12px]">
+          <span className="shrink-0">{labels.verifiesSection}</span>
+          {onOpenNode ? (
+            <button
+              type="button"
+              onClick={onOpenNode}
+              className="text-foreground min-w-0 cursor-pointer truncate underline underline-offset-2"
+              title={labels.openOnMap}
+            >
+              {nodeTitle ?? check.node}
+            </button>
+          ) : (
+            <span className="text-foreground min-w-0 truncate">{nodeTitle ?? check.node}</span>
+          )}
+        </div>
+      )}
 
       {parts.length > 0 && (
         <div className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">

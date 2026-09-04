@@ -337,3 +337,24 @@ event.
   keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
   back to the layout. On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.
+
+## Dictation
+
+**A brainstorm arrives faster than it can be typed.** The 280-character node cap exists precisely
+because a thought that size is one sentence somebody said, so the map takes dictation: press
+**Dictate** in the action bar, talk, and every finished sentence lands as a thought. They grow one
+branch under whatever was selected when the microphone opened — fixed at that moment rather than
+read per sentence, because following the selection would deepen a chain a node per sentence, which
+is not what a spoken list is. A partial transcript is shown and thrown away; only a finished turn
+becomes a node.
+
+**The audio never reaches this server.** The page streams it straight to AssemblyAI over a
+WebSocket, which keeps a recording out of the request log and off the disk. What the page must not
+hold is the account key — a key in a page is a key on every machine that loads it — so
+`POST /v1/speech/token` exchanges it for a token good for ten minutes and one session. That route
+takes `write`, not `read`: dictation exists to change a map, and it costs the operator money per
+minute.
+
+**Off unless `TAKOMO_ASSEMBLYAI_API_KEY` is set.** `/v1/whoami` reports `features.voice`, so the map
+leaves the button out rather than offering one that answers `503 speech.not_configured` — the same
+rule `/documents` follows for its prompt bar.

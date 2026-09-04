@@ -21,6 +21,8 @@ const LABELS: NodeCardLabels = {
   folded: 'Folded — {n} thoughts under this one',
   trustConfirmed: 'A person wrote this and confirmed it',
   trustMachine: 'An agent wrote it and nobody has checked it',
+  tests: '{n} tests',
+  testsFailing: '{n} tests, {m} not passing',
   trustUnverified: 'A thought nobody has confirmed yet',
 }
 
@@ -207,5 +209,21 @@ describe('a card being named', () => {
     // it again for the same reason every entrance does.
     const { container } = mount({ naming: null })
     expect(container.querySelectorAll('input')).toHaveLength(0)
+  })
+
+  it('says how many tests a section carries, and calls out the failing ones', () => {
+    // A count and never a verdict: the map says where the verification is, and
+    // /verification is where you read what it says.
+    const { unmount } = mount({ tests: { total: 3, failing: 0 } })
+    expect(screen.getByTitle('3 tests')).toBeTruthy()
+    unmount()
+
+    mount({ tests: { total: 3, failing: 1 } })
+    expect(screen.getByTitle('3 tests, 1 not passing')).toBeTruthy()
+  })
+
+  it('draws no test mark for a section with none', () => {
+    mount({ tests: null })
+    expect(screen.queryByTitle(/tests/)).toBeNull()
   })
 })

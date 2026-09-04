@@ -35,7 +35,7 @@
 // from a button in a toolbar. React attaches its handlers at the root container,
 // so a synthetic stopPropagation there also stops the native event before it
 // reaches the window. Capturing runs first and cannot be stopped from inside.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
@@ -55,6 +55,7 @@ import {
 import type { MenuItem } from '@/components/mindmap/NodeMenu'
 import type { PillVerb } from '@/components/mindmap/NodePill'
 import { Outline, type OutlineLabels } from '@/components/mindmap/Outline'
+import { VoiceButton, type VoiceButtonLabels } from '@/components/mindmap/VoiceButton'
 import { PruneDialog, type PruneDialogLabels } from '@/components/mindmap/PruneDialog'
 import { DetachDialog, type DetachDialogLabels } from '@/components/mindmap/DetachDialog'
 import {
@@ -208,6 +209,27 @@ export interface LiveProps {
    * "show it on the map", which `/documents` offers in the other direction.
    */
   onOpenPlan: (node: string | null) => void
+  /** The third view: what has to pass before this part is done. */
+  onOpenTests: (node: string | null) => void
+  /**
+   * The tests filed against a section, or null where there are none.
+   *
+   * The map draws a count, never a verdict — where the verification is, and
+   * where it is failing. Without it the tests screen would be a third view of
+   * this plan that the plan itself never mentions.
+   */
+  testsFor?: (node: string) => { total: number; failing: number } | null
+  /**
+   * The credential dictation mints its provider token with, and whether the
+   * server has dictation configured at all.
+   *
+   * A button that offered dictation and then answered 503 would be worse than no
+   * button, so an unconfigured server simply has none — the same rule
+   * `/documents` follows for its prompt bar.
+   */
+  token: string
+  voiceEnabled: boolean
+  voiceLabels: VoiceButtonLabels
   onRenameMap: () => void
   onDeleteMap: () => void
   onPromote: (node: string, target: 'epic' | 'initiative') => void
@@ -238,6 +260,11 @@ export default function Live({
   onProject,
   canManageMap,
   onOpenPlan,
+  onOpenTests,
+  testsFor,
+  token,
+  voiceEnabled,
+  voiceLabels,
   focusNode = null,
   onFocusedNode,
   onRenameMap,
@@ -458,6 +485,49 @@ export default function Live({
       setNaming({ id, fresh: true, previous: '', from: after ?? parent })
     },
     [guard, ydoc, labels.newThought, labels.capNodes, session.display, onError],
+  )
+
+  /**
+   * Where the sentences of one dictation session land.
+   *
+   * Fixed when the microphone opens rather than read per sentence, so a session
+   * grows ONE branch under the thought that was selected when you started
+   * talking. Following the selection instead would deepen a chain a node per
+   * sentence, which is not what a spoken list is.
+   */
+  const voiceAnchor = useRef<{ parent: string | null; after: string | null } | null>(null)
+  const onVoiceStart = useCallback(() => {
+    voiceAnchor.current = { parent: selected, after: null }
+  }, [selected])
+
+  const onDictated = useCallback(
+    (text: string) => {
+      if (!guard()) return
+      const anchor = voiceAnchor.current ?? { parent: null, after: null }
+      const id = createNode(ydoc, {
+        parent: anchor.parent,
+        after: anchor.after,
+        title: text,
+        by: session.display,
+      })
+      if (!id) {
+        onError(labels.capNodes.replace('{max}', String(MAX_NODES)))
+        return
+      }
+      voiceAnchor.current = { parent: anchor.parent, after: id }
+      if (anchor.parent) {
+        setCollapsed((folded) => {
+          if (!folded.has(anchor.parent!)) return folded
+          const next = new Set(folded)
+          next.delete(anchor.parent!)
+          return next
+        })
+      }
+      // Selected, but NOT named: the words are already there, and opening the
+      // caret would put a text cursor in the way of the next sentence.
+      setSelected(id)
+    },
+    [guard, ydoc, session.display, onError, labels.capNodes],
   )
 
   const onSibling = useCallback(
@@ -913,6 +983,9 @@ export default function Live({
         case 'map.plan':
           onOpenPlan(node ?? null)
           break
+        case 'map.tests':
+          onOpenTests(node ?? null)
+          break
         case 'map.fit':
           setFitRequest(Date.now())
           break
@@ -941,6 +1014,7 @@ export default function Live({
       goTo,
       onProject,
       onOpenPlan,
+      onOpenTests,
       selected,
       onChild,
       onSibling,
@@ -992,6 +1066,18 @@ export default function Live({
         >
           + {labels.branch}
         </button>
+        {/* Talking is faster than typing and a node is one sentence, so the map
+            takes dictation. Absent unless the server has it configured. */}
+        {voiceEnabled && (
+          <VoiceButton
+            token={token}
+            onStart={onVoiceStart}
+            onText={onDictated}
+            onError={onError}
+            disabled={!canWrite}
+            labels={voiceLabels}
+          />
+        )}
         {/* ⌘K carries the long tail, but the way to the OTHER view of the same
             plan is not a long-tail command — and `/documents` offers "show it on
             the map" as a visible control, so this mirrors it. */}
@@ -1079,6 +1165,7 @@ export default function Live({
           focusRequest={focusRequest}
           onFocused={onFocused}
           foldSummaryOf={foldSummaryOf}
+          testsFor={testsFor}
           trustLens={trustLens}
           onTrustLens={(on) => {
             localStorage.setItem(TRUST_KEY, on ? 'on' : 'off')

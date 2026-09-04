@@ -1,7 +1,7 @@
 // Handing a section between the two views of one plan.
 import { describe, expect, it } from 'vitest'
 
-import { mapLink, planLink, readPlanFocus } from './plan-url'
+import { testsLink, mapLink, planLink, readPlanFocus } from './plan-url'
 
 describe('planLink', () => {
   it('carries the section the map was looking at', () => {
@@ -42,5 +42,21 @@ describe('mapLink', () => {
   it('names the map as well as the section, because /mindmaps opens what it is given', () => {
     expect(mapLink('mm-1', 'mn-7')).toBe('/mindmaps#m=mm-1&n=mn-7')
     expect(mapLink('mm-1')).toBe('/mindmaps#m=mm-1')
+  })
+})
+
+describe('testsLink', () => {
+  it('carries the section in the same `n=` hash the other two links use', () => {
+    // One reader, `readPlanFocus`, for all three directions — a fourth spelling
+    // would be a fourth thing to keep in step.
+    expect(testsLink('mn-7')).toBe('/verification#n=mn-7')
+    expect(readPlanFocus(testsLink('mn-7'))).toBe('mn-7')
+    expect(testsLink(null)).toBe('/verification')
+    expect(testsLink()).toBe('/verification')
+  })
+
+  it('escapes an id that would otherwise change the hash', () => {
+    expect(testsLink('mn-a&n=mn-b')).toBe('/verification#n=mn-a%26n%3Dmn-b')
+    expect(readPlanFocus(testsLink('mn-a&n=mn-b'))).toBe('mn-a&n=mn-b')
   })
 })

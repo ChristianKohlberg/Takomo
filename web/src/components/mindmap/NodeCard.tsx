@@ -55,6 +55,10 @@ export interface NodeCardLabels {
   trustConfirmed: string
   trustMachine: string
   trustUnverified: string
+  /** The tests filed against this section. `{n}` is how many. */
+  tests: string
+  /** `{n}` tests, `{m}` of them not passing. */
+  testsFailing: string
 }
 
 /** Non-null exactly while this node is the one being named. */
@@ -73,6 +77,15 @@ export interface NodeCardProps {
   fold: FoldSummary | null
   /** How confident we are in this node, or null when the lens is off. */
   trust: Trust | null
+  /**
+   * The tests filed against this section, or null where there are none.
+   *
+   * A COUNT and not a verdict: the map says where the verification is and where
+   * it is failing, and `/verification` is where you read what any of it says.
+   * Without this the tests screen is a third view of the plan that the plan
+   * itself never mentions.
+   */
+  tests?: { total: number; failing: number } | null
   /** The title caret, when this is the node being named. Null on every other
    *  node, and null on a read-only token, which never gets a caret at all. */
   naming?: NodeNaming | null
@@ -85,6 +98,7 @@ export function NodeCard({
   relations,
   fold,
   trust,
+  tests = null,
   naming = null,
   labels,
   className,
@@ -159,7 +173,13 @@ export function NodeCard({
           something a click does to you. Absent rather than empty: with an
           eyebrow and a line of substance above and below it, a blank row is a
           line of card height spent on nothing. */}
-      {(node.promoted || node.notes || context || node.origin === 'agent' || trust || fold) && (
+      {(node.promoted ||
+        node.notes ||
+        context ||
+        node.origin === 'agent' ||
+        trust ||
+        tests ||
+        fold) && (
         <div className="text-muted-foreground flex items-center gap-1.5 truncate font-mono text-[10px]">
           {node.promoted && (
             <span title={`${labels.promoted} ${node.promoted.id}`}>→ {node.promoted.kind}</span>
@@ -168,6 +188,23 @@ export function NodeCard({
           {context && <span title={labels.hasRelations}>¶ {relations.length}</span>}
           {node.origin === 'agent' && <span title={labels.originAgent}>⌁</span>}
           {trust && <span title={trustLabel[trust]}>{TRUST_MARK[trust]}</span>}
+          {/* Failing is louder than covered: a section with tests that do not
+              pass is the one thing on this map somebody has to act on. */}
+          {tests && (
+            <span
+              className={cn(tests.failing > 0 && 'text-nf font-[650]')}
+              title={
+                tests.failing > 0
+                  ? labels.testsFailing
+                      .replace('{n}', String(tests.total))
+                      .replace('{m}', String(tests.failing))
+                  : labels.tests.replace('{n}', String(tests.total))
+              }
+            >
+              ⛉ {tests.total}
+              {tests.failing > 0 ? ` · ${tests.failing}` : ''}
+            </span>
+          )}
           {fold && (
             <span
               className="ml-auto shrink-0"

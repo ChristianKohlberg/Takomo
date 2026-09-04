@@ -43,6 +43,9 @@ pub struct AppState {
     /// `/documents` prompt bar off; everything else on that surface works
     /// without it, because an agent over MCP proposes through the same path.
     pub doc_agent: Option<crate::docagent::DocAgentConfig>,
+    /// Dictation, from `TAKOMO_ASSEMBLYAI_API_KEY`. `None` leaves the map's mic
+    /// button out rather than offering one that cannot work.
+    pub speech: Option<crate::speech::SpeechConfig>,
     /// The OAuth authorization server's identity, from `TAKOMO_PUBLIC_URL`.
     /// `None` disables the OAuth endpoints and the `WWW-Authenticate` challenge
     /// on `/mcp` — a server that cannot state its own issuer identity cannot run
@@ -61,12 +64,14 @@ impl AppState {
         store: Store,
         oauth: Option<crate::api::oauth::OauthConfig>,
         doc_agent: Option<crate::docagent::DocAgentConfig>,
+        speech: Option<crate::speech::SpeechConfig>,
     ) -> Arc<Self> {
         let state = AppState::new_with_oauth(store, oauth);
         // `new_with_oauth` hands back an Arc that nothing else holds yet, so
         // this is the one moment the field can still be set.
         let mut state = Arc::try_unwrap(state).map_err(|_| ()).expect("sole owner");
         state.doc_agent = doc_agent;
+        state.speech = speech;
         Arc::new(state)
     }
 
@@ -86,6 +91,7 @@ impl AppState {
             oauth_register_rate: Mutex::new(HashMap::new()),
             rooms: crate::api::docsync::Rooms::default(),
             doc_agent: None,
+            speech: None,
             oauth,
         })
     }
@@ -473,6 +479,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(axum::routing::delete(crate::api::mindmaps::delete)),
         )
         .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
+        // The plan's sections, flat: what resolves a check's `node` to a title.
+        .route(
+            "/v1/projects/{project}/nodes",
+            get(crate::api::mindmaps::project_nodes),
+        )
         .route("/v1/mindmaps/{id}/nodes", post(crate::api::mindmaps::add_nodes))
         .route(
             "/v1/mindmaps/{id}/nodes/{node}",
@@ -485,6 +496,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // Ask a model for a change to one section. The one route that calls one.
         .route("/v1/mindmaps/{id}/run", post(crate::api::mindmaps::run_agent))
+        // Dictation's only route: a short-lived token, never the account key.
+        .route("/v1/speech/token", post(crate::api::speech::mint_token))
         // The plan as an agent reads it, and what it may offer back.
         .route("/v1/mindmaps/{id}/prose", get(crate::api::mindmaps::prose))
         .route(
@@ -775,7 +788,12 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         std::env::var("TAKOMO_DOC_MODEL").ok(),
     );
     let store = Store::open(db_path).map_err(|e| e.into_message())?;
-    let state = AppState::new_with_agent(store, oauth, doc_agent);
+    let state = AppState::new_with_agent(
+        store,
+        oauth,
+        doc_agent,
+        crate::speech::SpeechConfig::from_env(std::env::var("TAKOMO_ASSEMBLYAI_API_KEY").ok()),
+    );
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)

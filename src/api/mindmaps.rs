@@ -285,6 +285,70 @@ pub async fn get_one(
     })))
 }
 
+/// Every section of a project's plan, flat, id and title and where it sits.
+///
+/// A project holds at most one plan, which is what makes a bare node id
+/// resolvable at all — and this is the read that resolves it. `/verification`
+/// needs it twice: to say which section a check verifies rather than printing an
+/// opaque id, and to offer the list when somebody files a check against one.
+///
+/// Bounded by the map's own 500-node cap, so it is one call rather than a page.
+pub async fn project_node_index(
+    state: &Arc<AppState>,
+    project: &str,
+) -> ApiResult<Vec<(String, crate::store::mindmapdoc::DocNode)>> {
+    let (maps, _) = state
+        .store
+        .list_mindmaps(&crate::store::MindmapListFilter {
+            project: Some(project.to_string()),
+            allowed_projects: None,
+            status: None,
+            q: None,
+            limit: 50,
+            offset: 0,
+        })?;
+    let mut out = Vec::new();
+    for map in &maps {
+        let room = crate::api::docsync::open_room(state, &map.id).await?;
+        // The third element is the typed node list; the first two are the JSON
+        // the read routes serve.
+        let nodes = room.read(|doc| mindmapdoc::snapshot(doc, &map.id).2);
+        for node in nodes {
+            out.push((map.id.clone(), node));
+        }
+    }
+    Ok(out)
+}
+
+/// GET /v1/projects/{project}/nodes (read) — the plan's sections, flat.
+pub async fn project_nodes(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let index = project_node_index(&state, &project).await?;
+    let total = index.len() as i64;
+    let items: Vec<Value> = index
+        .into_iter()
+        .map(|(map, n)| {
+            json!({
+                "id": n.id,
+                "mindmap": map,
+                "title": n.title,
+                "parent": n.parent,
+            })
+        })
+        .collect();
+    Ok(Json(crate::api::paged(
+        items,
+        total,
+        total,
+        "A plan caps at 500 sections, so this is never a page.",
+    )))
+}
+
 /// GET /v1/mindmaps/{id}/outline?node= (read) — the map as indented text.
 ///
 /// The cheapest shape for a model to reason about, and the one to read before

@@ -202,6 +202,8 @@ export interface CanvasProps {
   /** What each folded branch is holding. Only this viewer's folds have one, and
    *  the canvas cannot compute it — the hidden nodes are not among `nodes`. */
   foldSummaryOf: (id: string) => FoldSummary | null
+  /** The tests filed against a section, or null where there are none. */
+  testsFor?: (id: string) => { total: number; failing: number } | null
   /** Tint every node by how confident we are in it. A lens, off by default. */
   trustLens: boolean
   onTrustLens: (on: boolean) => void
@@ -301,6 +303,7 @@ export function Canvas({
   focusRequest,
   onFocused,
   foldSummaryOf,
+  testsFor,
   trustLens,
   onTrustLens,
   onCreateAt,
@@ -885,6 +888,7 @@ export function Canvas({
                     relations={relationsFor(p.node.id)}
                     fold={fold}
                     trust={trust}
+                    tests={testsFor?.(p.node.id) ?? null}
                     naming={
                       isNaming
                         ? {

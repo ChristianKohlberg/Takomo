@@ -4217,6 +4217,42 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { description: "No model is configured (`doc_agent.not_configured`); `/v1/whoami` reports this as `features.doc_agent: false`" }
 
+  /speech/token:
+    post:
+      tags: [mindmaps]
+      summary: A short-lived token for dictation (write scope)
+      description: |
+        Dictation on `/mindmaps`: you talk, and each finished sentence lands as a
+        thought. This is the whole server side of it.
+
+        The audio never reaches this server — the browser streams it straight to
+        the speech provider, which keeps a recording out of the request log and
+        off this disk. What the browser must not hold is the account key (a key
+        in a page is a key on every machine that loads it), so this exchanges it
+        for a token that is good for ten minutes and nothing else.
+
+        `write`, not `read`: dictation exists to change a map, and it costs the
+        operator money per minute. Off unless `TAKOMO_ASSEMBLYAI_API_KEY` is set;
+        `/v1/whoami` reports `features.voice`, so a page leaves the button out
+        rather than offering one that fails.
+      responses:
+        "200":
+          description: A token to open the provider's socket with.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_in: { type: integer, description: 'seconds' }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { description: "The speech provider could not be reached or refused the key (`speech.upstream`)" }
+        "503": { description: "Dictation is not configured (`speech.not_configured`); `/v1/whoami` reports this as `features.voice: false`" }
+
   /mindmaps/{id}/prose:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -5770,6 +5806,39 @@ paths:
         "409": { description: "That ref is already recorded for this project" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /projects/{project}/nodes:
+    get:
+      tags: [mindmaps]
+      summary: The project plan's sections, flat (read scope)
+      description: |
+        Every section of the project's plan as `{id, mindmap, title, parent}`.
+
+        What resolves a check's `node` into the name of the thing it verifies,
+        and what fills the picker when somebody files a check against a section.
+        A plan caps at 500 sections, so this is one call rather than a page.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The sections, in tree order per plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        mindmap: { type: string }
+                        title: { type: string }
+                        parent: { type: [string, "null"] }
+                  total: { type: integer }
+                  limit: { type: integer }
+        "403": { description: Token lacks the read scope or the project }
+
   /projects/{project}/checks:
     get:
       tags: [checklist]
@@ -5781,6 +5850,7 @@ paths:
         - { $ref: "#/components/parameters/project" }
         - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped checks' }
         - { name: initiative, in: query, schema: { type: string }, description: 'an initiative id; the literal "none" narrows to checks no initiative claims — the gap between what was agreed and what got written down' }
+        - { name: node, in: query, schema: { type: string }, description: 'a plan section node id; the literal "none" narrows to checks attached to no part of the plan' }
         - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
         - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
         - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived checks' }
@@ -8070,6 +8140,7 @@ components:
         project: { type: string }
         epic: { type: [string, "null"], description: 'a ticket of type epic this check groups under' }
         initiative: { type: [string, "null"], description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
+        node: { type: [string, "null"], description: 'the section of the project plan this check verifies — a mindmap node id. Resolved rather than copied, so a section renamed on the map is renamed here at once; null is a legitimate steady state, meaning a check about no part in particular' }
         title: { type: string }
         body: { type: string, description: 'the traversal to follow' }
         precondition: { type: string, description: 'the data state and permissions needed to start' }
@@ -8126,6 +8197,7 @@ components:
         epic: { type: string }
         environments: { type: array, items: { type: string }, description: 'environments this check must be verified in, by id or slug. Each case is then tracked per environment, so "passes on staging, never run on production" is expressible instead of collapsing into one verdict. Empty leaves the check environment-agnostic, which is the original behaviour and still the right one for a check whose result does not depend on where it runs' }
         initiative: { type: string, description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
+        node: { type: string, description: 'the section of the project plan this check verifies. Validated against the plan, because a node id that names nothing is a link nobody can follow' }
         body: { type: string }
         precondition: { type: string }
         layer: { type: string, enum: [ui, api, other], default: api }
@@ -8779,6 +8851,8 @@ x-error-codes:
   conflict.document_archived: "the document is archived and cannot be written to. Restore it first if the work still belongs to it."
 
   # -- the prompt bar: the one route that calls a model -------------------------
+  speech.not_configured: "dictation is off on this server, so no token can be minted. Set TAKOMO_ASSEMBLYAI_API_KEY and restart. /v1/whoami reports features.voice, so a page can leave the button out rather than offering one that cannot work."
+  speech.upstream: "the speech provider could not be reached, or refused the key. Its own message is passed through, because it is the only thing that distinguishes a bad key from a rate limit."
   document.agent_not_configured: "this server has no document agent configured, so the prompt bar cannot run. Set TAKOMO_TENSORX_API_KEY (optionally TAKOMO_TENSORX_BASE_URL and TAKOMO_DOC_MODEL) and restart. Everything else on /documents works without it — an agent connected over MCP proposes through the same path."
   document.agent_failed: "the model provider could not be reached, refused the request, or answered with something that was not a usable plan. Nothing was written to the document. The provider's own message is passed through, because it is the only thing that distinguishes a bad key from an unknown model from a rate limit."
   validation.document_unchanged: "every proposed change was the text the document already has. A model asked for something the document already satisfies should say so, not offer a replacement that changes nothing — a no-op a reviewer accepts costs them a decision and gives them nothing."

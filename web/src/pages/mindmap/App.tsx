@@ -32,8 +32,9 @@ import { useToast } from '@/components/Toaster'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
+import { listChecks, worstState } from '@/lib/verification'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
-import { planLink } from '@/lib/plan-url'
+import { planLink, testsLink } from '@/lib/plan-url'
 import {
   createMindmap,
   deleteMindmap,
@@ -59,6 +60,20 @@ export function App() {
   const [gateError, setGateError] = useState('')
 
   const [actor, setActor] = useState('')
+  /**
+   * How many tests each section of the plan carries, and how many are failing.
+   *
+   * Read once per map rather than subscribed: a check changes when somebody
+   * records a verdict on the other screen, which is not something the canvas has
+   * to follow live. A project with no tests, or a token that cannot read them,
+   * simply draws none.
+   */
+  const [testCounts, setTestCounts] = useState<Map<string, { total: number; failing: number }>>(
+    new Map(),
+  )
+  /** Whether this SERVER has dictation configured — not whether this credential
+   *  may use it. A button that 503'd would be worse than no button. */
+  const [voice, setVoice] = useState(false)
   const [scopes, setScopes] = useState<string[]>([])
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [projects, setProjects] = useState<Project[]>([])
@@ -134,6 +149,7 @@ export function App() {
           return
         }
         setActor(who.actor ?? '')
+        setVoice(who.features?.voice === true)
         setScopes(sc)
         setProjects(await listProjects(token).catch(() => []))
       } catch (e) {
@@ -161,6 +177,40 @@ export function App() {
       })
       .catch(handleErr)
   }, [token, refreshList, handleErr, project])
+
+  // What the map draws over each section: how many tests it carries and how
+  // many are failing. A soft failure draws nothing rather than taking the map
+  // down — the canvas is the page, and tests are an annotation on it.
+  useEffect(() => {
+    const p = open?.project
+    if (!token || !p) {
+      setTestCounts(new Map())
+      return
+    }
+    let cancelled = false
+    listChecks(token, p)
+      .then((page) => {
+        if (cancelled) return
+        const counts = new Map<string, { total: number; failing: number }>()
+        for (const c of page.items) {
+          if (!c.node || c.archived_at) continue
+          const at = counts.get(c.node) ?? { total: 0, failing: 0 }
+          at.total += 1
+          // Only an outright failure counts as failing here. Stale and
+          // never-run are work outstanding, and colouring them red on the map
+          // would make the mark mean "unfinished", which every new section is.
+          if (worstState(c.cases) === 'failed') at.failing += 1
+          counts.set(c.node, at)
+        }
+        setTestCounts(counts)
+      })
+      .catch(() => setTestCounts(new Map()))
+    return () => {
+      cancelled = true
+    }
+  }, [token, open?.project])
+
+  const testsFor = useCallback((node: string) => testCounts.get(node) ?? null, [testCounts])
 
   // Opening a map means minting a ticket for its socket. Done here rather than
   // inside the canvas so the canvas never has to know about tokens — it receives
@@ -280,6 +330,18 @@ export function App() {
         saveProject(open.project)
       }
       navigate(planLink(node))
+    },
+    [open, navigate],
+  )
+
+  /** The tests for the selected thought, on the same terms as the plan link. */
+  const openTests = useCallback(
+    (node: string | null) => {
+      if (open) {
+        setProject(open.project)
+        saveProject(open.project)
+      }
+      navigate(testsLink(node))
     },
     [open, navigate],
   )
@@ -436,6 +498,18 @@ export function App() {
               onProject={chooseProject}
               canManageMap={canWrite}
               onOpenPlan={openPlan}
+              onOpenTests={openTests}
+              testsFor={testsFor}
+              token={token}
+              voiceEnabled={voice}
+              voiceLabels={{
+                start: t.voiceStart,
+                stop: t.voiceStop,
+                starting: t.voiceStarting,
+                hearing: t.voiceHearing,
+                noMic: t.voiceNoMic,
+                lost: t.voiceLost,
+              }}
               onRenameMap={renameMap}
               focusNode={focusNode}
               onFocusedNode={clearFocusNode}
@@ -512,6 +586,8 @@ export function App() {
                 trustConfirmed: t.trustConfirmed,
                 trustMachine: t.trustMachine,
                 trustUnverified: t.trustUnverified,
+                tests: t.nodeTests,
+                testsFailing: t.nodeTestsFailing,
               }}
               nodeLabels={{
                 heading: t.nodeDialogTitle,
@@ -627,6 +703,7 @@ export function App() {
                 'node.expand': t.cmdExpand,
                 'node.delete': t.cmdDelete,
                 'map.plan': t.cmdPlan,
+                'map.tests': t.cmdTests,
                 'map.goto': t.cmdGoto,
                 'map.fit': t.cmdFit,
                 'map.trust': t.trustLensCmd,
@@ -644,6 +721,7 @@ export function App() {
                 'node.promoteInitiative': t.promoteIniHint,
                 'node.delete': t.cmdDeleteHint,
                 'map.plan': t.cmdPlanHint,
+                'map.tests': t.cmdTestsHint,
                 'map.goto': t.cmdGotoHint,
                 'map.delete': t.cmdDeleteMapHint,
               }}

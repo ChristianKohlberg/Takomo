@@ -95,6 +95,38 @@ was made deliberately. Two consequences are built in rather than hoped away:
   this time — and a real pass recorded later still wins, because the pass is
   evidence about correctness and the blocked verdict never was.
 
+## The part of the plan a check verifies
+
+A check may also name the **section of the project's plan** it is about — a
+mindmap node, which is the same tree `/documents` reads as prose:
+
+```sh
+POST /v1/projects/{project}/checks
+{ "title": "v1 stays v1", "node": "mn-7k2p" }
+
+GET /v1/projects/{project}/checks?node=mn-7k2p    # this section's tests
+GET /v1/projects/{project}/checks?node=none       # about no part in particular
+GET /v1/projects/{project}/nodes                  # every section, id and title
+```
+
+**Resolved, never copied.** The check stores the id; the title comes from the
+plan when it is read. A section renamed on the map is renamed everywhere at once,
+which a copied string could not be.
+
+**Validated on the way in, and dangling on the way out.** A node id that names no
+section of this project's plan is a teaching 422 — the mistake is refused where
+it happens. But a section later *pruned* leaves the check alone: deleting part of
+a brainstorm is ordinary, and losing the record of what was verified is not, so
+the id stays and the screen shows it rather than hiding the link.
+
+The validation lives in the API layer rather than the store, and that is the
+point: nodes live in the CRDT document, not in a table, so only the layer that
+can open the room can answer the question.
+
+The three views of one plan reach each other by the same `#n=<node>` hash —
+`/mindmaps` ⇄ `/documents` ⇄ `/verification` — read once on arrival and then
+cleared, so a filter you clear stays cleared.
+
 ## The initiative that agreed the check
 
 A characterisation test is usually settled while a feature is being *discussed* —

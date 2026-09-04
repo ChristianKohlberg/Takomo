@@ -34,6 +34,7 @@ describe('commandsFor', () => {
   it('offers only map commands when nothing is selected', () => {
     expect(commandsFor(ctx())).toEqual([
       'map.plan',
+      'map.tests',
       'map.goto',
       'map.fit',
       'map.trust',
@@ -76,6 +77,7 @@ describe('commandsFor', () => {
       'node.open',
       'node.collapse',
       'map.plan',
+      'map.tests',
       'map.goto',
       'map.fit',
       'map.trust',

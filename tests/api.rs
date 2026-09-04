@@ -21668,6 +21668,43 @@ async fn the_plan_prompt_bar_refuses_clearly_when_no_model_is_configured() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
 }
 
+/// Dictation refuses in a way the page can act on, and a reader cannot spend it.
+///
+/// `POST /v1/speech/token` is the whole server side of dictation on the map. The
+/// suite configures no provider key, so this is the path every reader of this
+/// branch hits; the mint itself needs a live provider and is deliberately not
+/// exercised here rather than implied.
+///
+/// The scope check is the part worth pinning: dictation exists to CHANGE a map
+/// and it costs the operator money per minute, so a read-only credential must
+/// not be able to open a session — and `whoami` must tell a page the feature is
+/// off, so it leaves the button out instead of offering one that 503s.
+#[tokio::test]
+async fn dictation_refuses_clearly_when_unconfigured_and_never_for_a_reader() {
+    let app = TestApp::spawn().await;
+
+    let (s, body) = app.post(&app.worker, "/v1/speech/token", json!({})).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "speech.not_configured", "{body}");
+    assert!(
+        body["remedy"].as_str().unwrap_or_default().len() > 10,
+        "a refusal a caller cannot act on is not a teaching error: {body}"
+    );
+
+    // A read token is refused BEFORE the feature check, so turning dictation on
+    // never turns this into a route a reader can spend the operator's money at.
+    let reader = app.mint("agent:reader", &["read"], None);
+    let (s, denied) = app.post(&reader, "/v1/speech/token", json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+
+    let (s, who) = app.get(&app.worker, "/v1/whoami").await;
+    assert_eq!(s, StatusCode::OK, "{who}");
+    assert_eq!(
+        who["features"]["voice"], false,
+        "the page decides whether to show the microphone from this: {who}"
+    );
+}
+
 /// Deleting a project takes the CRDT log of BOTH object kinds with it.
 ///
 /// `delete_project` used to hand-roll the cascade `purge_collab` performs, and
@@ -21725,6 +21762,68 @@ async fn deleting_a_project_purges_documents_and_mindmaps_alike() {
         0,
         "and the DOCUMENT's — the kind a per-object loop can miss"
     );
+}
+
+/// The plan's sections are readable as a flat list, which is what names them.
+///
+/// A check stores a node ID, so every reader of `/verification` would otherwise
+/// print `mn-…` where the section's name belongs, and filing a check against a
+/// section would mean typing an opaque id. Resolved rather than copied on
+/// purpose: a section renamed on the map is renamed everywhere at once.
+#[tokio::test]
+async fn a_projects_plan_sections_are_readable_by_id_and_title() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    let (s, list) = app.get(&app.worker, "/v1/projects/tp/nodes").await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    let found = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(node))
+        .unwrap_or_else(|| panic!("the section just written is missing: {list}"));
+    assert_eq!(found["title"], json!("versioning"), "{found}");
+    assert_eq!(found["mindmap"], json!(map), "{found}");
+    assert_eq!(
+        list["total"],
+        json!(list["items"].as_array().unwrap().len()),
+        "a plan caps at 500 sections, so this is never a page: {list}"
+    );
+
+    // The title tracks the map. Copying it into the check row would have frozen
+    // it at the moment the check was filed.
+    let (s, renamed) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({ "text": "version pinning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{renamed}");
+    let (_, again) = app.get(&app.worker, "/v1/projects/tp/nodes").await;
+    let after = again["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == json!(node))
+        .unwrap()
+        .clone();
+    assert_eq!(after["title"], json!("version pinning"), "{after}");
+
+    // A project this token cannot reach is not readable through it.
+    let stranger = app.mint("agent:stranger", &["read"], Some(&["other"]));
+    let (s, denied) = app.get(&stranger, "/v1/projects/tp/nodes").await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
 }
 
 /// A check says which part of the plan it verifies.

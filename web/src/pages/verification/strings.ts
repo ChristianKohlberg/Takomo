@@ -86,6 +86,15 @@ export const STR = defineStrings({
     notePlaceholder: 'What went wrong?',
     recorded: 'Recorded.',
     archiveCheck: 'Archive',
+    /** The link between a check and the part of the plan it verifies. */
+    verifiesSection: 'Verifies',
+    openOnMap: 'Show on the map',
+    filteredToSection: 'Tests for',
+    showAllChecks: 'Show all tests',
+    emptyForSection: 'No tests for this section yet.',
+    fNode: 'Part of the plan',
+    fNodeHint: 'The section this test verifies. Optional — a test about no part in particular is fine.',
+    fNodeNone: 'No particular section',
     confirmArchiveCheck:
       'Archive this check? Its cases and their verdict history are kept — a check no longer worth running is still evidence of what was once verified.',
 
@@ -201,6 +210,14 @@ export const STR = defineStrings({
     notePlaceholder: 'Was ging schief?',
     recorded: 'Festgehalten.',
     archiveCheck: 'Archivieren',
+    verifiesSection: 'Prüft',
+    openOnMap: 'Auf der Karte zeigen',
+    filteredToSection: 'Tests für',
+    showAllChecks: 'Alle Tests zeigen',
+    emptyForSection: 'Für diesen Abschnitt gibt es noch keine Tests.',
+    fNode: 'Teil des Plans',
+    fNodeHint: 'Der Abschnitt, den dieser Test prüft. Optional — ein Test ohne bestimmten Teil ist in Ordnung.',
+    fNodeNone: 'Kein bestimmter Abschnitt',
     confirmArchiveCheck:
       'Diese Prüfung archivieren? Ihre Fälle und deren Urteilsverlauf bleiben erhalten — eine Prüfung, die sich nicht mehr lohnt, belegt weiterhin, was einmal verifiziert war.',
 

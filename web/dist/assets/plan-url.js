@@ -1,1 +1,0 @@
-var e=encodeURIComponent;function t(t){return t?`/documents#n=${e(t)}`:`/documents`}function n(t,n){return n?`/mindmaps#m=${e(t)}&n=${e(n)}`:`/mindmaps#m=${e(t)}`}function r(e){let t=e.indexOf(`#`),n=t>=0?e.slice(t+1):e,r=new URLSearchParams(n).get(`n`);return r&&r.trim()?r:null}export{t as n,r,n as t};

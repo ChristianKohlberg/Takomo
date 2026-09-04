@@ -173,27 +173,9 @@ pub async fn list_releases(
 /// A project holds at most one plan, which is what makes a bare node id
 /// resolvable at all.
 async fn validate_check_node(state: &Arc<AppState>, project: &str, node: &str) -> ApiResult<()> {
-    let (maps, _) = state
-        .store
-        .list_mindmaps(&crate::store::MindmapListFilter {
-            project: Some(project.to_string()),
-            allowed_projects: None,
-            status: None,
-            q: None,
-            limit: 2,
-            offset: 0,
-        })?;
-    for map in &maps {
-        let room = crate::api::docsync::open_room(state, &map.id).await?;
-        let found = room.read(|doc| {
-            // The third element is the typed node list; the first two are the
-            // JSON the read routes serve.
-            let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, &map.id);
-            nodes.iter().any(|n| n.id == node)
-        });
-        if found {
-            return Ok(());
-        }
+    let index = crate::api::mindmaps::project_node_index(state, project).await?;
+    if index.iter().any(|(_, n)| n.id == node) {
+        return Ok(());
     }
     Err(ApiError::validation(
         "validation.check_node",

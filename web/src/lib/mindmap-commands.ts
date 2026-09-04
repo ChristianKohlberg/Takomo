@@ -29,6 +29,7 @@ export const NODE_COMMANDS = [
 
 export const MAP_COMMANDS = [
   'map.plan',
+  'map.tests',
   'map.goto',
   'map.fit',
   'map.trust',
@@ -102,6 +103,10 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
   // plan with no sections rather than no plan). With a node selected it lands on
   // that section; `spec/one-model-two-views.md`.
   out.push('map.plan')
+  // The third view of the same tree: what has to pass before this part is done.
+  // A read like the plan, and offered on the same terms — with a node selected
+  // it lands filtered to that section.
+  out.push('map.tests')
   if (ctx.nodeCount > 0) out.push('map.goto')
   out.push('map.fit')
   // The trust lens is per-viewer and reads nothing but fields already on screen,

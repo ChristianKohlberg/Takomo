@@ -15,5 +15,6 @@ pub mod notify;
 pub mod schedule;
 pub mod seed;
 pub mod server;
+pub mod speech;
 pub mod store;
 pub mod workflow;

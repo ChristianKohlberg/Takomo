@@ -32,14 +32,17 @@ import {
   listCases,
   listChecks,
   listEnvironments,
+  listPlanNodes,
   recordVerdict,
   type CaseRow,
   type Check,
   type CheckFields,
   type Environment,
   type Gate,
+  type PlanNode,
   type Worklist,
 } from '@/lib/verification'
+import { mapLink, readPlanFocus } from '@/lib/plan-url'
 import { CheckCard } from '@/components/verification/CheckCard'
 import { CheckDialog } from '@/components/verification/CheckDialog'
 import { STR } from './strings'
@@ -76,6 +79,16 @@ export function App() {
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [cases, setCases] = useState<Record<string, CaseRow[]>>({})
   const [loadingCases, setLoadingCases] = useState<Record<string, boolean>>({})
+  const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
+  /**
+   * The section this screen is narrowed to, or ''.
+   *
+   * Read ONCE from the link that brought you here and then kept in state, the
+   * same hand-off `/documents` and `/mindmaps` make between themselves: a filter
+   * that stayed pinned to the URL would drag you back to it every time you
+   * cleared it.
+   */
+  const [nodeFilter, setNodeFilter] = useState(() => readPlanFocus(window.location.hash) ?? '')
   const [creating, setCreating] = useState(false)
   const [createUnder, setCreateUnder] = useState<string | undefined>(undefined)
 
@@ -110,7 +123,7 @@ export function App() {
       setGate(null)
       return
     }
-    const [c, w, g, inis, envs] = await Promise.all([
+    const [c, w, g, inis, envs, plan] = await Promise.all([
       listChecks(token, project),
       // The reports are a header, not the content: a soft failure in either
       // must not take the checks down with it.
@@ -120,6 +133,10 @@ export function App() {
       // Only to populate the "where must it pass" picker — a project with none
       // still shows the page, it just cannot declare environments yet.
       listEnvironments(token, project).catch(() => ({ items: [] as Environment[] })),
+      // The plan is what turns a check's node id into the name of the section it
+      // verifies. A project with no plan yet is not an error — the checks simply
+      // name no section.
+      listPlanNodes(token, project).catch(() => ({ items: [] as PlanNode[] })),
     ])
     setChecks(c.items)
     setWorklist(w)
@@ -128,6 +145,7 @@ export function App() {
     for (const i of inis.items) titles[i.id] = i.title
     setInitiativeTitles(titles)
     setEnvironments(envs.items.filter((e) => !e.archived_at))
+    setPlanNodes(plan.items)
     setCases({})
   }, [token, project])
 
@@ -161,6 +179,14 @@ export function App() {
     if (!token) return
     fetchAll().catch(handleErr)
   }, [token, fetchAll, handleErr])
+
+  // The link is spent once it has been read: clearing the filter must not be
+  // undone by a reload, and the address bar should say where you are.
+  useEffect(() => {
+    if (window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
+  }, [])
 
   const toggleCases = useCallback(
     async (check: string) => {
@@ -240,10 +266,13 @@ export function App() {
     )
   }
 
+  const nodeTitles = new Map(planNodes.map((n) => [n.id, n]))
+  const filtered = nodeFilter ? checks.filter((c) => c.node === nodeFilter) : checks
+
   // Group by initiative, with the unassigned bucket last: it is a finding, but
   // it is not the thing you came to read.
   const groups = new Map<string, Check[]>()
-  for (const c of checks) {
+  for (const c of filtered) {
     const key = c.initiative ?? UNASSIGNED
     const list = groups.get(key)
     if (list) list.push(c)
@@ -273,6 +302,8 @@ export function App() {
     markFail: t.markFail,
     notePlaceholder: t.notePlaceholder,
     archiveCheck: t.archiveCheck,
+    verifiesSection: t.verifiesSection,
+    openOnMap: t.openOnMap,
   }
 
   return (
@@ -299,6 +330,9 @@ export function App() {
         onProject: (id) => {
           setProject(id)
           saveProject(id)
+          // A section belongs to ONE project's plan, so carrying the filter
+          // across would show an empty list under a name from somewhere else.
+          setNodeFilter('')
         },
         projectLabels: {
           project: t.project,
@@ -400,9 +434,37 @@ export function App() {
             </Card>
           )}
 
-          {checks.length === 0 ? (
+          {/* What you are looking at, when it is not everything. A filter with
+              no way back to the whole list is a dead end. */}
+          {nodeFilter && (
+            <div className="border-border-soft text-muted-foreground flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-[12.5px]">
+              <span>{t.filteredToSection}</span>
+              <span className="text-foreground font-[650]">
+                {nodeTitles.get(nodeFilter)?.title ?? nodeFilter}
+              </span>
+              <span className="grow" />
+              {nodeTitles.get(nodeFilter) && (
+                <button
+                  type="button"
+                  className="text-primary cursor-pointer font-[650]"
+                  onClick={() => navigate(mapLink(nodeTitles.get(nodeFilter)!.mindmap, nodeFilter))}
+                >
+                  {t.openOnMap}
+                </button>
+              )}
+              <button
+                type="button"
+                className="text-primary cursor-pointer font-[650]"
+                onClick={() => setNodeFilter('')}
+              >
+                {t.showAllChecks}
+              </button>
+            </div>
+          )}
+
+          {filtered.length === 0 ? (
             <div className="text-muted-foreground px-1 py-7.5 text-center text-[13.5px]">
-              <p>{t.empty}</p>
+              <p>{nodeFilter ? t.emptyForSection : t.empty}</p>
               <p className="mt-2 text-[12.5px] opacity-80">{t.emptyHint}</p>
             </div>
           ) : (
@@ -436,6 +498,12 @@ export function App() {
                   <CheckCard
                     key={c.id}
                     check={c}
+                    nodeTitle={c.node ? nodeTitles.get(c.node)?.title : undefined}
+                    onOpenNode={
+                      c.node && nodeTitles.get(c.node)
+                        ? () => navigate(mapLink(nodeTitles.get(c.node!)!.mindmap, c.node))
+                        : undefined
+                    }
                     cases={cases[c.id]}
                     loadingCases={!!loadingCases[c.id]}
                     canWrite={canWrite}
@@ -465,6 +533,8 @@ export function App() {
         initiatives={Object.entries(initiativeTitles).map(([id, title]) => ({ id, title }))}
         environments={environments.map((e) => ({ id: e.id, slug: e.slug }))}
         defaultInitiative={createUnder}
+        nodes={planNodes.map((n) => ({ id: n.id, title: n.title }))}
+        defaultNode={nodeFilter || undefined}
         labels={t}
         onSubmit={async (fields: CheckFields) => {
           await createCheck(token, project, fields)

@@ -102,6 +102,14 @@ export interface Check {
   epic: string | null
   /** The initiative whose conversation agreed this check should exist. */
   initiative: string | null
+  /**
+   * The section of the plan this check verifies.
+   *
+   * A node id, resolved against the project's plan rather than copied: a section
+   * renamed on the map is renamed here at once. Null is a legitimate steady
+   * state — a check about no part in particular.
+   */
+  node: string | null
   globs: string[]
   /** Globs that matched NO file in the newest release — the rot, made visible. */
   orphan_globs: string[]
@@ -218,10 +226,11 @@ const enc = encodeURIComponent
 export function listChecks(
   token: string,
   project: string,
-  opts: { initiative?: string; severity?: string; layer?: string } = {},
+  opts: { initiative?: string; severity?: string; layer?: string; node?: string } = {},
 ): Promise<Paged<Check>> {
   const qs = new URLSearchParams()
   if (opts.initiative) qs.set('initiative', opts.initiative)
+  if (opts.node) qs.set('node', opts.node)
   if (opts.severity) qs.set('severity', opts.severity)
   if (opts.layer) qs.set('layer', opts.layer)
   const tail = qs.toString() ? `?${qs}` : ''
@@ -231,6 +240,8 @@ export function listChecks(
 export interface CheckFields {
   title: string
   initiative?: string
+  /** The section of the plan this check verifies. */
+  node?: string
   /** Environment ids or slugs this check must be verified in. */
   environments?: string[]
   epic?: string
@@ -446,4 +457,24 @@ export function spread(c: CaseCounts): { state: CaseState; n: number }[] {
   push('verified', c.verified)
   push('unreachable', c.unreachable)
   return out
+}
+
+
+/** One section of a project's plan, as `/verification` needs it. */
+export interface PlanNode {
+  id: string
+  mindmap: string
+  title: string
+  parent: string | null
+}
+
+/**
+ * Every section of a project's plan, flat.
+ *
+ * What turns a check's `node` from an opaque id into the name of the thing it
+ * verifies, and what fills the picker when somebody files one. A plan caps at
+ * 500 sections, so this is one call rather than a page.
+ */
+export function listPlanNodes(token: string, project: string): Promise<Paged<PlanNode>> {
+  return api<Paged<PlanNode>>(token, `/projects/${enc(project)}/nodes`)
 }

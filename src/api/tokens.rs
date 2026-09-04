@@ -67,6 +67,7 @@ pub async fn whoami(
         // that offered the bar and then 503'd would be the worse failure.
         "features": {
             "doc_agent": state.doc_agent.is_some(),
+            "voice": state.speech.is_some(),
         },
     })))
 }

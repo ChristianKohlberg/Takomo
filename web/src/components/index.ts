@@ -200,6 +200,8 @@ export type { SectionPanelProps, SectionPanelLabels } from './documents/SectionP
 // ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'
 export type { CanvasProps, CanvasLabels, CanvasMode, CanvasPeer } from './mindmap/Canvas'
+export { VoiceButton } from './mindmap/VoiceButton'
+export type { VoiceButtonProps, VoiceButtonLabels } from './mindmap/VoiceButton'
 export { Outline } from './mindmap/Outline'
 export type { OutlineProps, OutlineLabels } from './mindmap/Outline'
 export { NodeCard } from './mindmap/NodeCard'
