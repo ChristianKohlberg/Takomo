@@ -21552,3 +21552,67 @@ async fn compaction_refuses_to_grow_an_object_or_exceed_its_cap() {
         stale.body.code
     );
 }
+
+/// The map and the plan must not hold different answers to "has a person looked
+/// at this".
+///
+/// This is the property the whole branch exists to establish, and the two views
+/// disagreed. The canvas draws its trust lens from the node's own `reviewed`
+/// flag in the CRDT; `/documents` reads `plan_standing`, built from the trace
+/// table. Nothing wrote both. Measured on a running server before the fix:
+/// confirming a section from the plan left standing saying `confirmed: true`
+/// while the node still said `reviewed: false`, so the map went on drawing it
+/// unverified.
+///
+/// Found by a whole-branch review. Eleven per-commit reviews could not see it,
+/// because each half was correct in the commit that added it.
+#[tokio::test]
+async fn confirming_a_section_agrees_across_both_views() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    let reviewed_flag = |whole: &Value| -> bool {
+        whole["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == node.as_str())
+            .and_then(|n| n["reviewed"].as_bool())
+            .unwrap()
+    };
+
+    let (_, before) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(!reviewed_flag(&before), "nobody has looked at it yet");
+
+    // Confirm it the way `/documents` does.
+    let (s, body) = app
+        .post(
+            &app.human,
+            &format!("/v1/mindmaps/{map}/trace"),
+            json!({ "kind": "reviewed", "node": node }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+
+    let (_, after) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert_eq!(
+        after["standing"][&node]["confirmed"],
+        json!(true),
+        "the plan must call it confirmed: {after}"
+    );
+    assert!(
+        reviewed_flag(&after),
+        "and the MAP must agree — it drew the section unverified while the plan \
+         called it confirmed: {after}"
+    );
+}

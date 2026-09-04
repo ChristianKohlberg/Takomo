@@ -102,7 +102,7 @@ import {
   updateAttachment,
 } from '@/lib/mindmap-crdt'
 import type { Point } from '@/lib/mindmap-layout'
-import { mindmapSyncBase, type MindmapSession } from '@/lib/mindmaps'
+import { mindmapSyncBase, recordTrace, type MindmapSession } from '@/lib/mindmaps'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable —
  *  the same function `/documents` uses, for the same reason. */
@@ -550,9 +550,22 @@ export default function Live({
 
   const onFields = useCallback(
     (id: string, fields: Partial<NodeFields>) => {
-      if (guard()) setFields(ydoc, id, fields)
+      if (!guard()) return
+      setFields(ydoc, id, fields)
+      // Ticking "a person has looked at this" also records it in the plan's
+      // history, because both surfaces must not hold different answers to one
+      // question. They did: the canvas drew its trust lens from this CRDT flag
+      // while `/documents` read the trace, and neither wrote the other — so a
+      // section confirmed on the map still read as unconfirmed in the plan.
+      // The server does the mirror of this for a review recorded there.
+      if (fields.reviewed === true) {
+        recordTrace(session.token, session.mindmap, { kind: 'reviewed', node: id }).catch(() => {
+          // The flag is already set in the shared document; a failed history
+          // write must not undo somebody's tick.
+        })
+      }
     },
-    [guard, ydoc],
+    [guard, ydoc, session],
   )
   const onNotes = useCallback(
     (id: string, notes: string) => {

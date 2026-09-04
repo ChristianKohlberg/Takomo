@@ -875,6 +875,35 @@ pub async fn add_trace(
         _ => None,
     };
 
+    // A review recorded here also sets the node's own flag, because the two
+    // views must not hold different answers to the same question.
+    //
+    // They did. The canvas draws its trust lens from the CRDT `reviewed`
+    // boolean; the plan reads `plan_standing`, built from this table. Nothing
+    // wrote both, so confirming a section in `/documents` left the map still
+    // drawing it unverified — measured, on a running server: standing said
+    // `confirmed: true` while the node said `reviewed: false`. That is the one
+    // property this whole branch exists to establish, so it is fixed at the
+    // point both surfaces already go through rather than in one of them.
+    if kind == "reviewed" {
+        if let Some(node) = node.as_deref() {
+            let target = node.to_string();
+            let actor = ctx.actor.clone();
+            room.mutate(|doc| {
+                mindmapdoc::patch_node(
+                    doc,
+                    &target,
+                    &mindmapdoc::NodePatch {
+                        reviewed: Some(true),
+                        ..Default::default()
+                    },
+                    &actor,
+                )
+            })?;
+            persist(&state, &room, &ctx).await;
+        }
+    }
+
     state.store.record_trace(&crate::store::trace::Record {
         project: &map.project,
         mindmap: &id,

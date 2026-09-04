@@ -4208,7 +4208,11 @@ paths:
                   skipped: { type: array, items: { type: string } }
                   summary: { type: string }
                   note: { type: string }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "503": { description: "No model is configured (`doc_agent.not_configured`); `/v1/whoami` reports this as `features.doc_agent: false`" }
@@ -4299,7 +4303,11 @@ paths:
                   operations: { type: integer }
                   skipped: { type: array, items: { type: string } }
                   note: { type: string }
-        "403": { $ref: "#/components/responses/Forbidden" }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
@@ -4393,101 +4401,11 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { ok: { type: boolean } } }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-
-  /mindmaps/{id}/trace:
-    parameters:
-      - { name: id, in: path, required: true, schema: { type: string } }
-    get:
-      tags: [mindmaps]
-      summary: What happened to the plan, and who did it (read scope)
-      description: |
-        The plan's history, newest first — or one section's, with `node`.
-
-        **This is not the CRDT update log.** That is the mechanism which rebuilds
-        the text: written on every flush, merged, and rewritten wholesale by
-        compaction. Asking it "who changed 2.1, and has anybody agreed with it
-        since?" is asking a storage format a question about people. This answers
-        that one.
-
-        Sparse by construction: an act somebody would name — a thought written,
-        renamed, moved, pruned, reviewed, a proposal accepted — never a
-        keystroke. Every entry carries the free-form actor string AND the person
-        behind the credential (`users.id`) where it was bound to one, because a
-        scope is not an identity and an actor string does not survive somebody
-        leaving.
-      parameters:
-        - { name: node, in: query, schema: { type: string }, description: 'one section' }
-        - { name: limit, in: query, schema: { type: integer, default: 500, maximum: 500 } }
-      responses:
-        "200":
-          description: A bounded envelope of acts, newest first.
+        "403":
+          description: Token lacks the scope this route needs
           content:
             application/json:
-              schema:
-                type: object
-                required: [items, total, limit]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id: { type: string }
-                        node: { type: [string, "null"], description: 'the section, or null for the plan as a whole' }
-                        kind: { type: string, enum: [authored, renamed, edited, moved, pruned, reviewed, proposed, accepted, rejected] }
-                        actor: { type: string, description: 'the free-form actor string the credential carried' }
-                        user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
-                        note: { type: [string, "null"] }
-                        text:
-                          type: [string, "null"]
-                          description: |
-                            What the section SAID at that moment, as plain text —
-                            which is what makes a diff possible. The CRDT log
-                            cannot answer it: compaction rewrites it into one
-                            blob, so "what did 2.1 say last Tuesday" has no
-                            answer there by design. Null for an act that did not
-                            change the prose, and read from the replica rather
-                            than taken from the caller, because a history
-                            somebody can write is not a history.
-                        at: { type: string, format: date-time }
-                  total: { type: integer }
-                  limit: { type: integer }
-                  note: { type: string }
-        "404": { $ref: "#/components/responses/NotFound" }
-    post:
-      tags: [mindmaps]
-      summary: Record an act the server cannot see (write scope)
-      description: |
-        Only the four acts the server cannot OBSERVE. It performs a move, a
-        rename, a prune and a proposal, so it records those itself and a caller
-        cannot claim to have done them. It cannot see prose edited over the sync
-        socket, a review (somebody saying they agree), or a proposal accepted or
-        rejected — which the browser does by applying ops to the replica. Those
-        four are reported, and reporting is all anybody could do.
-
-        Post one when an edit SETTLES, not while somebody types: a history with
-        an entry per keystroke buries every entry worth reading.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [kind]
-              properties:
-                kind: { type: string, enum: [edited, reviewed, accepted, rejected] }
-                node: { type: string, description: 'the section; omit for the plan as a whole' }
-                note: { type: string }
-      responses:
-        "201":
-          description: Recorded.
-          content:
-            application/json:
-              schema: { type: object, properties: { ok: { type: boolean } } }
-        "403": { $ref: "#/components/responses/Forbidden" }
+              schema: { $ref: "#/components/schemas/Error" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
