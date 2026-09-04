@@ -51,6 +51,7 @@ import {
   type Point,
   type Viewport,
 } from '@/lib/mindmap-layout'
+import { PlusIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
@@ -823,6 +824,9 @@ export function Canvas({
             // with a plus sign each is 500 things to look past.
             const showAdd = canWrite && (hovered === p.node.id || isSelected)
             const isQuestion = p.node.kind === 'question'
+            // One value, used by the rect and by its inset — they must agree or
+            // the border lands half a pixel off its own box.
+            const strokeW = isSelected || target || relationFrom === p.node.id ? 2 : 1
             // The lens is a lens: while it is on it OVERRIDES a hand-picked
             // colour, because a map half tinted by confidence and half by
             // somebody's palette answers neither question.
@@ -845,9 +849,19 @@ export function Canvas({
                     strokeWidth={2}
                   />
                 ))}
+                {/* Inset by half the stroke, so the border is drawn INSIDE the
+                    node's own box.
+                    An SVG stroke straddles the path, so a rect flush at
+                    0..NODE_WIDTH puts half its width outside — and that half is
+                    what an ancestor's clip, the svg viewport at the edge of the
+                    canvas, or a sibling drawn on top takes away. Hence borders
+                    that looked cut on their outer edge. Inside the box, nothing
+                    can cut them. */}
                 <rect
-                  width={NODE_WIDTH}
-                  height={NODE_HEIGHT}
+                  x={strokeW / 2}
+                  y={strokeW / 2}
+                  width={NODE_WIDTH - strokeW}
+                  height={NODE_HEIGHT - strokeW}
                   // A question is squarer than a thought: it is a different kind
                   // of thing on the map, and shape says so before colour does.
                   rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
@@ -863,7 +877,7 @@ export function Canvas({
                   style={
                     p.node.color && !trust && !isQuestion ? { fill: p.node.color } : undefined
                   }
-                  strokeWidth={isSelected || target || relationFrom === p.node.id ? 2 : 1}
+                  strokeWidth={strokeW}
                 />
                 <foreignObject width={NODE_WIDTH} height={NODE_HEIGHT}>
                   <NodeCard
@@ -924,9 +938,21 @@ export function Canvas({
                   </foreignObject>
                 )}
 
-                {/* Add a child, right where the child will appear. */}
+                {/* Add a child, right where the child will appear.
+                    It used to be a 20px muted circle holding a text "+", one
+                    pixel off the node's edge — the same weight as the node's own
+                    border, so it read as a speck rather than a control. It is
+                    the primary verb on this surface and now looks like one:
+                    accent-filled, 28px (a real pointer target), and overlapping
+                    the node's edge so it belongs to that node rather than
+                    floating between two. Centred on that edge, so its far side
+                    lands at NODE_WIDTH + 14 — inside `AFFORDANCE_WIDTH` (30),
+                    which is the padding `nodeAt` uses to keep the button alive
+                    as the pointer travels to it. A button reaching past that
+                    padding would unmount as you approached, which is a bug this
+                    surface has had once already. */}
                 {showAdd && (
-                  <foreignObject x={NODE_WIDTH + 1} y={NODE_HEIGHT / 2 - 12} width={26} height={24}>
+                  <foreignObject x={NODE_WIDTH - 14} y={NODE_HEIGHT / 2 - 18} width={36} height={36}>
                     <div className="pointer-events-none flex h-full items-center">
                       <button
                         type="button"
@@ -935,9 +961,9 @@ export function Canvas({
                         onPointerDown={(e) => e.stopPropagation()}
                         onKeyDown={(e) => e.stopPropagation()}
                         onClick={() => onChild(p.node.id)}
-                        className="bg-card border-border text-muted-foreground hover:text-foreground pointer-events-auto h-5 w-5 cursor-pointer rounded-full border text-[12px] leading-none"
+                        className="bg-primary text-primary-foreground ring-card hover:bg-primary/90 focus-visible:ring-ring pointer-events-auto flex h-7 w-7 cursor-pointer items-center justify-center rounded-full shadow-md ring-2 focus-visible:ring-4 focus-visible:outline-none"
                       >
-                        +
+                        <PlusIcon className="size-4" aria-hidden="true" />
                       </button>
                     </div>
                   </foreignObject>
