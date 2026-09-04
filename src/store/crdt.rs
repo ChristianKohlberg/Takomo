@@ -350,6 +350,26 @@ impl Store {
         }
         let now = now_ms();
         let bytes = state.len() as i64;
+        // Compaction must not write the object past the cap it exists to get
+        // under. Nothing checked this, so the escape hatch — which runs when an
+        // append has ALREADY been refused for size — could replace a log that
+        // was under the cap with one row over it, after which every append is
+        // refused for every room that will ever open the object, permanently and
+        // on disk. Measured: 28 000 404 bytes in four rows became 35 000 457 in
+        // one.
+        if bytes > MAX_OBJECT_BYTES {
+            return Err(ApiError::conflict(
+                "conflict.collab_compaction",
+                format!(
+                    "Compacting would write a single {bytes} byte row, over the \
+                     {MAX_OBJECT_BYTES} byte cap for one object."
+                ),
+            )
+            .remedy(
+                "Nothing to retry — the document's content is larger than one object may hold."
+                    .to_string(),
+            ));
+        }
         self.with_tx(|tx| {
             let object = resolve(tx, id)?;
             ensure_project_writable(tx, &object.project)?;
@@ -381,6 +401,30 @@ impl Store {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
+            // And it must actually help. A state that is no smaller than the log
+            // it replaces buys nothing, and retrying it is how the escape became
+            // a loop: four distinct large pastes have no redundancy to squeeze
+            // out, so `full_state()` comes back the same size or bigger, for ever.
+            let held_bytes: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(SUM(bytes), 0) FROM crdt_updates WHERE object_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if held_bytes > 0 && bytes >= held_bytes {
+                return Err(ApiError::conflict(
+                    "conflict.collab_compaction",
+                    format!(
+                        "Compacting would write {bytes} bytes over a log of {held_bytes}, so it \
+                         would not free anything. The document's content is simply that large."
+                    ),
+                )
+                .remedy(
+                    "Nothing to retry — this is a size problem, not a fragmentation one."
+                        .to_string(),
+                ));
+            }
             if since != own_appends {
                 return Err(ApiError::conflict(
                     "conflict.collab_compaction",

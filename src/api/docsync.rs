@@ -150,6 +150,15 @@ pub struct Room {
     /// went on being applied and persisted. Archiving is meant to freeze every
     /// write beneath a project, so this is the socket's half of that promise.
     frozen: AtomicBool,
+    /// Set when compaction has refused this object for SIZE, cleared by the next
+    /// successful append.
+    ///
+    /// The store can only refuse after it has been handed the blob, and building
+    /// that blob is the expensive half: a permanently wedged room would encode
+    /// the whole document — measured at 35 MB — on the blocking pool every two
+    /// seconds and throw it away. This is the caller-side stop, which ends the
+    /// work rather than only the damage.
+    escape_refused: AtomicBool,
     /// Set when `pending` has outgrown [`MAX_PENDING_BYTES`] because the store
     /// keeps refusing the flush. Separate from `frozen` on purpose: that one is
     /// recomputed from the archive state, so sharing it would let an unrelated
@@ -287,7 +296,8 @@ pub async fn open_room(state: &Arc<AppState>, id: &str) -> ApiResult<RoomGuard> 
 #[derive(Default)]
 pub struct Rooms {
     map: Mutex<HashMap<String, Arc<Room>>>,
-    /// Bumped, under the map's lock, every time `resync_frozen` publishes.
+    /// Bumped once per `resync_frozen`, under the map's lock, together with the
+    /// snapshot of which rooms that call will publish to.
     ///
     /// A joining room reads the store to decide whether it is frozen, and that
     /// read is a blocking round-trip: an archive can commit during it, and
@@ -297,6 +307,9 @@ pub struct Rooms {
     /// moved while it was reading, under the same lock the publisher takes, and
     /// re-reads if it has.
     freeze_epoch: AtomicU64,
+    /// Held for the whole of `resync_frozen`, so two of them cannot read in one
+    /// order and publish in the other.
+    resyncing: Mutex<()>,
 }
 
 impl Rooms {
@@ -312,23 +325,30 @@ impl Rooms {
     /// A room whose object has gone is frozen rather than left alone: the safe
     /// reading of "I cannot tell" is "do not write".
     pub fn resync_frozen(state: &Arc<AppState>) {
-        let rooms: Vec<(String, Arc<Room>)> = state
-            .rooms
-            .map
-            .lock()
-            .expect("rooms mutex")
-            .iter()
-            .map(|(id, room)| (id.clone(), room.clone()))
-            .collect();
-        // Bumped BEFORE the reads as well as after publishing.
+        // Only one publisher at a time, so publish order is read order.
         //
-        // Without the first bump the guard did not cover the window it claimed:
-        // a join whose own read overlapped the archive, and whose install landed
-        // after this snapshot but before the publish, saw an unchanged epoch,
-        // installed `false`, and was not in `decided` — so nothing corrected it.
-        // The window was the whole read phase, one store read per open room, not
-        // the microseconds the comment implied.
-        state.rooms.freeze_epoch.fetch_add(1, Ordering::SeqCst);
+        // The lock below orders each publish against a join, but two concurrent
+        // resyncs — archive one document while another is unarchived — could
+        // read in one order and publish in the other, landing the stale answer
+        // last. Archives are rare; serialising them costs nothing.
+        let _one_at_a_time = state.rooms.resyncing.lock().expect("resync mutex");
+
+        // The snapshot and the bump happen under ONE hold of the map lock.
+        //
+        // Split across two, the bump landed after the guard was released, so a
+        // join that acquired the lock in that gap loaded an unchanged epoch,
+        // installed `false`, and was not in the snapshot to be corrected. Taken
+        // together, a join installing after the snapshot necessarily locks after
+        // the bump, and a join whose epoch post-dates the bump necessarily read
+        // after the commit. That is the whole ordering argument, and it only
+        // holds while these two stay in the same scope.
+        let rooms: Vec<(String, Arc<Room>)> = {
+            let map = state.rooms.map.lock().expect("rooms mutex");
+            state.rooms.freeze_epoch.fetch_add(1, Ordering::SeqCst);
+            map.iter()
+                .map(|(id, room)| (id.clone(), room.clone()))
+                .collect()
+        };
         let decided: Vec<(Arc<Room>, bool)> = rooms
             .into_iter()
             .map(|(id, room)| {
@@ -336,13 +356,14 @@ impl Rooms {
                 (room, frozen)
             })
             .collect();
-        // Published under the lock, with the epoch, so a join cannot check and
-        // then be overtaken between the check and its own store.
+        // Published under the map lock, so a join cannot check its epoch and then
+        // be overtaken between that check and its own store. No second bump: the
+        // one taken with the snapshot is what every reader compares against, and
+        // a second only halved the join's retry budget.
         let _guard = state.rooms.map.lock().expect("rooms mutex");
         for (room, frozen) in decided {
             room.frozen.store(frozen, Ordering::SeqCst);
         }
-        state.rooms.freeze_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Join a document, creating and hydrating the room if this is the first peer.
@@ -424,6 +445,7 @@ impl Rooms {
             // Decided before this room is installed, and set under the same lock
             // as the insert; see the loop below.
             frozen: AtomicBool::new(false),
+            escape_refused: AtomicBool::new(false),
             overloaded: AtomicBool::new(false),
             base_seq: AtomicI64::new(seen_seq),
             own_appends: AtomicI64::new(0),
@@ -619,6 +641,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
                 Ok(Ok((rows, _seq))) => {
                     room.rows.store(rows as u64, Ordering::SeqCst);
                     room.own_appends.fetch_add(1, Ordering::SeqCst);
+                    room.escape_refused.store(false, Ordering::SeqCst);
                 }
                 Ok(Err(e)) => {
                     eprintln!("{}: flush failed: {}", room.id, e.body.message);
@@ -628,7 +651,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
                     // batches too big to merge wedged permanently — the fourth
                     // road to that failure, and this path simply did not have the
                     // way out the other one had been given.
-                    if wedged(&e) {
+                    if wedged(&e) && !room.escape_refused.load(Ordering::SeqCst) {
                         compact(state, room, actor).await;
                     }
                     return;
@@ -677,7 +700,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
             // with FOUR rows, so requiring 256 of them meant the escape was never
             // attempted for exactly the large-paste shape it was written for. The
             // error itself is the signal.
-            if wedged(&e) {
+            if wedged(&e) && !room.escape_refused.load(Ordering::SeqCst) {
                 compact(state, room, actor).await;
             }
             return;
@@ -690,6 +713,8 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
     };
     room.rows.store(rows as u64, Ordering::SeqCst);
     room.own_appends.fetch_add(1, Ordering::SeqCst);
+    // The store took something, so a previous size refusal may no longer hold.
+    room.escape_refused.store(false, Ordering::SeqCst);
     // The store took it, so whatever backpressure was on can come off.
     room.overloaded.store(false, Ordering::SeqCst);
     note_size_if_mindmap(state, room).await;
@@ -740,6 +765,12 @@ async fn compact(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
                 "document {}: compaction deferred: {}",
                 room.id, e.body.message
             );
+            // A refusal for SIZE is not something the next tick improves on — the
+            // content is simply that large — so stop paying for the encode until
+            // an append succeeds again.
+            if e.body.code == "conflict.collab_compaction" && e.body.message.contains("byte") {
+                room.escape_refused.store(true, Ordering::SeqCst);
+            }
             let store = state.clone();
             let id = room.id.clone();
             let from = base;

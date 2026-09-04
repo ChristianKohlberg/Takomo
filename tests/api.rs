@@ -21437,3 +21437,78 @@ async fn a_room_agrees_with_the_store_about_being_frozen() {
          vanishes with no word to them: {whole}"
     );
 }
+
+/// Compaction must never make an object bigger, or write it past its own cap.
+///
+/// The escape hatch runs when an append has ALREADY been refused for size, and
+/// it replaces the whole log with one row. Nothing checked the size of that row,
+/// so it could take a log that was UNDER the cap and write it over — after which
+/// every append is refused for every room that will ever open the object,
+/// permanently and on disk. A reviewer measured it: 28,000,404 bytes in four rows
+/// became 35,000,457 in one, and the escape then re-ran every two seconds.
+///
+/// The two guards are pinned directly rather than through a shape that produces
+/// them, because "a state larger than its log" depends on Yjs encoding and a test
+/// that merely happens to hit it today is not a test. A first version of this did
+/// exactly that and passed for the wrong reason — the merge saved four bytes.
+#[tokio::test]
+async fn compaction_refuses_to_grow_an_object_or_exceed_its_cap() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let store = app.open_store();
+
+    let blob = {
+        use yrs::{Map, Transact};
+        let doc = yrs::Doc::new();
+        let nodes = doc.get_or_insert_map("nodes");
+        let mut txn = doc.transact_mut();
+        let entry = nodes.insert(&mut txn, "mn-paste", yrs::MapPrelim::default());
+        entry.insert(&mut txn, "title", "a paste");
+        entry.insert(&mut txn, "position", 0.0);
+        entry.insert(&mut txn, "notes", "x".repeat(200_000));
+        txn.encode_update_v1()
+    };
+    store.append_collab_update(&map, &blob, "paste").unwrap();
+
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let held = || -> (i64, i64) {
+        conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let before = held();
+
+    // Frees nothing: the same bytes the log already holds.
+    assert!(
+        store
+            .compact_collab(&map, &blob, "flusher", 0, before.0)
+            .is_err(),
+        "a compaction that frees nothing must be refused, or the escape retries \
+         it every two seconds for ever"
+    );
+
+    // Over the cap for one object. Never decoded, so arbitrary bytes are a fair
+    // stand-in for a state that large.
+    //
+    // Checked but NOT independently pinned, and worth saying: for any log under
+    // the cap the guard above already refuses this, so removing the cap check
+    // leaves this test green. It earns its place for a log that is ALREADY over
+    // the cap — which a database written before these guards can hold — where it
+    // is the only thing stopping the escape from writing it further over.
+    let huge = vec![7u8; (takomo::store::MAX_OBJECT_BYTES + 1) as usize];
+    assert!(
+        store
+            .compact_collab(&map, &huge, "flusher", 0, before.0)
+            .is_err(),
+        "compaction must not write the object past the cap it exists to get under"
+    );
+
+    assert_eq!(
+        held(),
+        before,
+        "a refused compaction must leave the log exactly as it was"
+    );
+}
