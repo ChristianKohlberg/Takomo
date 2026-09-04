@@ -61,7 +61,7 @@ use axum::{Extension, Json};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use yrs::encoding::read::{Cursor, Read as _};
 use yrs::encoding::write::Write as _;
@@ -149,6 +149,13 @@ pub struct Room {
     /// recomputed from the archive state, so sharing it would let an unrelated
     /// unarchive clear a backpressure stop that nothing had resolved.
     overloaded: AtomicBool,
+    /// Where this replica started: the highest log `seq` at the moment it
+    /// replayed. Everything above this arrived afterwards.
+    base_seq: AtomicI64,
+    /// How many rows this replica has written since. Compaction compares the two
+    /// against the log; anything unaccounted for is a row nobody here replayed,
+    /// and replacing the log would destroy it.
+    own_appends: AtomicI64,
     /// Held for the length of a flush, so only one runs at a time.
     ///
     /// Without it `flush` is not a durability barrier, only a nudge: it takes
@@ -325,8 +332,9 @@ impl Rooms {
         // two.
         let store_id = id.to_string();
         let store = state.clone();
-        let (doc, rows) = super::blocking_read(move || {
+        let (doc, rows, seen_seq) = super::blocking_read(move || {
             let updates = store.store.load_collab_updates(&store_id)?;
+            let seen_seq = store.store.max_collab_seq(&store_id)?;
             let doc = Doc::new();
             let rows = updates.len() as u64;
             {
@@ -348,7 +356,7 @@ impl Rooms {
                     }
                 }
             }
-            Ok((doc, rows))
+            Ok((doc, rows, seen_seq))
         })
         .await?;
 
@@ -360,12 +368,6 @@ impl Rooms {
         // present for `resync_frozen` to have found. That assumption was written
         // here as a comment and was wrong — a stale ticket wrote into an
         // archived project on a running server with it in place.
-        let writable_id = id.to_string();
-        let writable = state.clone();
-        let frozen = super::blocking_read(move || {
-            Ok(writable.store.ensure_collab_writable(&writable_id).is_err())
-        })
-        .await?;
 
         let (tx, _) = tokio::sync::broadcast::channel(256);
         let room = Arc::new(Room {
@@ -375,8 +377,11 @@ impl Rooms {
             tx,
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
-            frozen: AtomicBool::new(frozen),
+            // Set from `frozen_now` after this room is in the map; see below.
+            frozen: AtomicBool::new(false),
             overloaded: AtomicBool::new(false),
+            base_seq: AtomicI64::new(seen_seq),
+            own_appends: AtomicI64::new(0),
             flushing: tokio::sync::Mutex::new(()),
         });
 
@@ -401,8 +406,16 @@ impl Rooms {
         let room = match rooms.get(id) {
             Some(existing) => existing.clone(),
             None => {
-                room.frozen.store(frozen_now, Ordering::SeqCst);
                 rooms.insert(id.to_string(), room.clone());
+                // AFTER the insert, and only ever raising it. Setting it before
+                // left the same hole one step smaller: an archive committing
+                // between the read and the insert runs `resync_frozen` while
+                // this room is not yet in the map, and a stale `false` written
+                // afterwards would overwrite what that resync would have set.
+                // Raising only means the two orders agree.
+                if frozen_now {
+                    room.frozen.store(true, Ordering::SeqCst);
+                }
                 spawn_flusher(state.clone(), room.clone());
                 room
             }
@@ -463,8 +476,20 @@ fn kind_of(id: &str) -> CollabKind {
 /// into.
 fn requeue(room: &Arc<Room>, batch: Arc<Vec<u8>>) {
     let batch = Arc::try_unwrap(batch).unwrap_or_else(|shared| (*shared).clone());
+    requeue_all(room, std::slice::from_ref(&batch));
+}
+
+/// Put several unwritten updates back, oldest first, and apply the same cap.
+///
+/// The per-row path used to re-insert by hand and so bypassed both
+/// [`MAX_PENDING_BYTES`] and `overloaded` — which mattered most in the one case
+/// that reaches it permanently: once a log nears [`MAX_OBJECT_BYTES`] every
+/// append fails, and an uncapped queue then grows for as long as the room lives.
+fn requeue_all(room: &Arc<Room>, rest: &[Vec<u8>]) {
     let mut pending = room.pending.lock().expect("pending mutex");
-    pending.insert(0, batch);
+    for (i, one) in rest.iter().enumerate() {
+        pending.insert(i, one.clone());
+    }
     let held: usize = pending.iter().map(Vec::len).sum();
     if held > MAX_PENDING_BYTES {
         // Stop taking more rather than lose what is here or grow without end.
@@ -515,22 +540,18 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
             })
             .await;
             match rows {
-                Ok(Ok(rows)) => room.rows.store(rows as u64, Ordering::SeqCst),
+                Ok(Ok((rows, _seq))) => {
+                    room.rows.store(rows as u64, Ordering::SeqCst);
+                    room.own_appends.fetch_add(1, Ordering::SeqCst);
+                }
                 Ok(Err(e)) => {
                     eprintln!("{}: flush failed: {}", room.id, e.body.message);
-                    // Keep what is not yet written, oldest first, and stop.
-                    let mut pending = room.pending.lock().expect("pending mutex");
-                    for (j, rest) in batch[i..].iter().enumerate() {
-                        pending.insert(j, rest.clone());
-                    }
+                    requeue_all(room, &batch[i..]);
                     return;
                 }
                 Err(e) => {
                     eprintln!("{}: flush task failed: {e}", room.id);
-                    let mut pending = room.pending.lock().expect("pending mutex");
-                    for (j, rest) in batch[i..].iter().enumerate() {
-                        pending.insert(j, rest.clone());
-                    }
+                    requeue_all(room, &batch[i..]);
                     return;
                 }
             }
@@ -551,8 +572,8 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         tokio::task::spawn_blocking(move || store.store.append_collab_update(&id, &blob, &writer))
             .await;
 
-    let rows = match rows {
-        Ok(Ok(rows)) => rows,
+    let (rows, _seq) = match rows {
+        Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
             eprintln!("{}: flush failed: {}", room.id, e.body.message);
             requeue(room, merged);
@@ -565,6 +586,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         }
     };
     room.rows.store(rows as u64, Ordering::SeqCst);
+    room.own_appends.fetch_add(1, Ordering::SeqCst);
     // The store took it, so whatever backpressure was on can come off.
     room.overloaded.store(false, Ordering::SeqCst);
     note_size_if_mindmap(state, room).await;
@@ -574,20 +596,25 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         // every update in the log plus anything that arrived while we were
         // writing — so replacing the log with it cannot lose a concurrent edit.
         let state_blob = room.full_state();
-        // What this replica has actually seen. Compaction is refused if the log
-        // has grown past it, because those rows are not in `state_blob`.
-        let expected = room.rows.load(Ordering::SeqCst) as i64;
+        // Where this replica started, and how much of what followed it wrote.
+        let base = room.base_seq.load(Ordering::SeqCst);
+        let mine = room.own_appends.load(Ordering::SeqCst);
         let store = state.clone();
         let id = room.id.clone();
         let writer = actor.to_string();
         let done = tokio::task::spawn_blocking(move || {
             store
                 .store
-                .compact_collab(&id, &state_blob, &writer, expected)
+                .compact_collab(&id, &state_blob, &writer, base, mine)
         })
         .await;
         match done {
-            Ok(Ok(())) => room.rows.store(1, Ordering::SeqCst),
+            Ok(Ok(())) => {
+                room.rows.store(1, Ordering::SeqCst);
+                // The log is now exactly the row this replica just wrote, so the
+                // accounting restarts from it.
+                room.own_appends.store(1, Ordering::SeqCst);
+            }
             Ok(Err(e)) => eprintln!(
                 "document {}: compaction failed: {}",
                 room.id, e.body.message
@@ -914,17 +941,10 @@ async fn session_loop(
                     _ => continue,
                 };
 
-                match handle_frame(&room, &session, me, &bytes) {
-                    Some(FrameAction::Reply(reply)) => {
-                        if sink.send(Message::Binary(reply.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(FrameAction::Close) => {
-                        let _ = sink.send(Message::Close(None)).await;
+                if let Some(reply) = handle_frame(&room, &session, me, &bytes) {
+                    if sink.send(Message::Binary(reply.into())).await.is_err() {
                         break;
                     }
-                    None => {}
                 }
             }
         }
@@ -937,17 +957,6 @@ async fn session_loop(
     }
 }
 
-/// What the socket owes after one frame.
-enum FrameAction {
-    /// Send this back to the peer that sent the frame.
-    Reply(Vec<u8>),
-    /// Close the connection. Used only for an update that can never be stored:
-    /// the peer's own replica has already applied it, so leaving the socket open
-    /// would let it keep building on something the server will never keep. A
-    /// reconnect resyncs it to what the server actually holds.
-    Close,
-}
-
 /// Decode one frame, act on it, and return anything owed straight back.
 ///
 /// Returns `None` when there is nothing to reply — a relayed update, an ignored
@@ -955,12 +964,7 @@ enum FrameAction {
 /// than closing the socket: the peer may simply be a newer client sending a
 /// message type this server does not know, and disconnecting them over it would
 /// be worse than ignoring it.
-fn handle_frame(
-    room: &Room,
-    session: &CollabSession,
-    me: u64,
-    bytes: &[u8],
-) -> Option<FrameAction> {
+fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> Option<Vec<u8>> {
     let mut dec = Cursor::new(bytes);
     let kind: u64 = dec.read_var().ok()?;
 
@@ -971,34 +975,24 @@ fn handle_frame(
                 SYNC_STEP1 => {
                     let sv_bytes = dec.read_buf().ok()?;
                     let sv = StateVector::decode_v1(sv_bytes).ok()?;
-                    Some(FrameAction::Reply(sync_message(
-                        SYNC_STEP2,
-                        &room.diff(&sv),
-                    )))
+                    Some(sync_message(SYNC_STEP2, &room.diff(&sv)))
                 }
                 SYNC_STEP2 | SYNC_UPDATE => {
                     let update = dec.read_buf().ok()?;
-                    // An update larger than one log row can hold must be refused
-                    // HERE, before it is applied and relayed.
+                    // No size check here. `MAX_SYNC_MESSAGE` and the store's
+                    // `MAX_UPDATE_BYTES` are equal, so anything this socket
+                    // accepts is storable — which is what removes the class.
+                    // They were 8 MiB and 1 MiB, and a frame in between was
+                    // accepted, applied and broadcast as confirmed, then refused
+                    // by every flush for the life of the room; with a refused
+                    // batch kept rather than dropped it merged with everything
+                    // typed since, and the map read back EMPTY.
                     //
-                    // The socket's frame cap and the store's row cap were set
-                    // independently and did not agree, so a frame in between was
-                    // accepted, applied, broadcast as confirmed — and then
-                    // refused by every flush for the life of the room. Because a
-                    // refused batch is now kept rather than dropped, it merged
-                    // with everything typed afterwards and took that down with
-                    // it: measured as a map that read back EMPTY after one large
-                    // paste and one ordinary edit. Refusing costs the peer the
-                    // paste; accepting cost it everything after the paste too.
-                    if update.len() > crate::store::MAX_UPDATE_BYTES {
-                        eprintln!(
-                            "{}: refusing a {} byte update; one row holds at most {}",
-                            room.id,
-                            update.len(),
-                            crate::store::MAX_UPDATE_BYTES
-                        );
-                        return Some(FrameAction::Close);
-                    }
+                    // Refusing the frame here was the first fix and was worse: a
+                    // browser keeps its replica across a reconnect and answers
+                    // the handshake with the same oversized diff, so the tab
+                    // looped and the ordinary edits riding in that diff went with
+                    // the paste. Measured both ways.
                     // A read-only peer is silently not applied rather than
                     // disconnected: it can legitimately hold a document open, and
                     // its own editor will simply never see its change confirmed.

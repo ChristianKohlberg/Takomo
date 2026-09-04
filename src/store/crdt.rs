@@ -35,7 +35,20 @@ use crate::ids::now_ms;
 use super::Store;
 
 /// The largest single flush, in decoded bytes.
-pub const MAX_UPDATE_BYTES: usize = 1024 * 1024;
+///
+/// EQUAL to the socket's `MAX_SYNC_MESSAGE` on purpose, and the two must move
+/// together. They were set independently — 8 MiB at the socket, 1 MiB here — and
+/// a frame in between was accepted, applied and broadcast as confirmed, then
+/// refused by every flush for the life of the room. The first attempt at a fix
+/// refused the frame at the socket instead, which turned out worse: a browser
+/// keeps its replica across a reconnect and answers the handshake with the same
+/// oversized diff, so the tab looped, and the ordinary edits riding in that same
+/// diff were lost with it.
+///
+/// The rule that removes the whole class is that anything the socket will accept
+/// must be storable. A single row is bounded here; the total is bounded by
+/// [`MAX_OBJECT_BYTES`].
+pub const MAX_UPDATE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The largest an object's whole log may grow to. This bounds what a join has
 /// to allocate when it replays, which is why it is a store-side cap and not a
@@ -194,6 +207,22 @@ impl Store {
         })
     }
 
+    /// The highest `seq` in this object's log, or 0 when it has none.
+    ///
+    /// What a room records as it opens, so a later compaction can tell a row it
+    /// replayed from one somebody else appended afterwards.
+    pub fn max_collab_seq(&self, id: &str) -> ApiResult<i64> {
+        self.with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM crdt_updates WHERE object_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0))
+        })
+    }
+
     /// Every update ever written for this object, oldest first.
     ///
     /// Replayed in `seq` order to rebuild the replica when the first peer
@@ -218,7 +247,14 @@ impl Store {
     /// Deliberately emits no event. These arrive every couple of seconds while
     /// somebody is typing, and one event per flush would bury every other event
     /// in the project under one person's keyboard.
-    pub fn append_collab_update(&self, id: &str, blob: &[u8], actor: &str) -> ApiResult<i64> {
+    /// Returns how many rows the log now holds, and the `seq` of the row just
+    /// written — the caller needs the second to know what its replica has seen.
+    pub fn append_collab_update(
+        &self,
+        id: &str,
+        blob: &[u8],
+        actor: &str,
+    ) -> ApiResult<(i64, i64)> {
         let kind = CollabKind::from_id(id).ok_or_else(|| unknown_kind(id))?;
         if blob.is_empty() {
             return Err(update_empty(kind));
@@ -252,12 +288,13 @@ impl Store {
             )?;
             touch(tx, &object, now)?;
 
+            let seq = tx.last_insert_rowid();
             let rows: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
                 params![id],
                 |r| r.get(0),
             )?;
-            Ok(rows)
+            Ok((rows, seq))
         })
     }
 
@@ -280,7 +317,8 @@ impl Store {
         id: &str,
         state: &[u8],
         actor: &str,
-        expected_rows: i64,
+        base_seq: i64,
+        own_appends: i64,
     ) -> ApiResult<()> {
         let kind = CollabKind::from_id(id).ok_or_else(|| unknown_kind(id))?;
         if state.is_empty() {
@@ -302,16 +340,28 @@ impl Store {
             // what, and it is the only place the earlier wording of a section
             // survives compaction at all. Deleting it here would make ordinary
             // editing erase the history, which is the opposite of its purpose.
-            let held: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            if held != expected_rows {
+            // How many rows have appeared since this replica loaded, against how
+            // many it wrote itself. Anything else is a row it never replayed.
+            //
+            // Two earlier attempts got this wrong and both looked right. A row
+            // COUNT is a no-op, because the append that precedes compaction
+            // re-reads the count from the log with the foreign row already in it.
+            // The HIGHEST seq is no better, because that same append pushes the
+            // maximum past the foreign row and covers it. Only the pair —
+            // where this replica started, and how much of what followed was its
+            // own — can tell the difference.
+            let since: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1 AND seq > ?2",
+                    params![id, base_seq],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if since != own_appends {
                 return Err(ApiError::conflict(
                     "conflict.collab_compaction",
                     format!(
-                        "The log holds {held} rows and this compaction was built from {expected_rows}.                          Something appended while it was being prepared, and replacing the log now                          would drop that write."
+                        "The log has gained {since} rows since this replica loaded and it wrote                          {own_appends} of them. Something else appended, that row is not in the                          state this compaction was built from, and replacing the log now would                          destroy it."
                     ),
                 )
                 .remedy(

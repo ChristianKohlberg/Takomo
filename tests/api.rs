@@ -20936,9 +20936,10 @@ async fn compaction_rewrites_the_log_and_keeps_the_history() {
         let txn = yrs::Transact::transact(&doc);
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
     };
-    // Compaction now refuses to replace a log that has grown past what the
-    // caller replayed, so ask the log what it holds and compact from that.
-    let held: i64 = rusqlite::Connection::open(app.db_path())
+    // Compaction refuses a log that has gained rows this caller did not write,
+    // so present the honest pair: this caller loaded at seq 0 and everything
+    // since is accounted to it.
+    let since: i64 = rusqlite::Connection::open(app.db_path())
         .unwrap()
         .query_row(
             "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
@@ -20947,7 +20948,7 @@ async fn compaction_rewrites_the_log_and_keeps_the_history() {
         )
         .unwrap();
     store
-        .compact_collab(&map, &state, "test", held)
+        .compact_collab(&map, &state, "test", 0, since)
         .expect("compact");
 
     let (_, after) = app
@@ -21034,21 +21035,25 @@ async fn a_read_only_token_cannot_change_the_plan_by_reading_it() {
     );
 }
 
-/// An update too big to store must not take everything after it down.
+/// A large paste is stored, and the edits after it survive.
 ///
-/// The socket's frame cap and the store's row cap were set independently and did
-/// not agree: a frame between them was accepted, applied, and broadcast as
-/// confirmed, then refused by every flush for the life of the room. Once a
-/// refused batch was KEPT rather than dropped, it merged with everything typed
-/// afterwards, so one large paste destroyed every later edit in that room —
-/// measured as a map that read back empty. Nothing was sent to the client and
-/// nothing closed; each peer's own editor went on showing text no reader would
-/// ever get back.
+/// The socket's frame cap and the store's row cap were set independently — 8 MiB
+/// and 1 MiB — so a frame in between was accepted, applied and broadcast as
+/// confirmed, then refused by every flush for the life of the room. With a
+/// refused batch kept rather than dropped it merged with everything typed since,
+/// and the map read back EMPTY.
 ///
-/// Refusing costs the peer the paste. Accepting cost it the paste AND everything
-/// after it, which is the trade this test pins.
+/// The first fix refused the frame at the socket and closed the connection. That
+/// was worse, and an independent reviewer proved it: a browser keeps its replica
+/// across a reconnect and answers the handshake with the same oversized diff, so
+/// the tab looped, and the ordinary edits riding in that diff were lost with the
+/// paste. The test I wrote for it passed only because its reconnecting peer was a
+/// FRESH `yrs::Doc`, which no browser is.
+///
+/// So the caps are equal now and anything the socket accepts is storable. This
+/// asserts the stronger property that follows: the paste itself survives too.
 #[tokio::test]
-async fn an_unstorable_update_does_not_poison_the_edits_after_it() {
+async fn a_large_paste_is_stored_and_the_edits_after_it_survive() {
     use docsync_support::*;
     use futures::SinkExt;
     use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -21069,34 +21074,37 @@ async fn an_unstorable_update_does_not_poison_the_edits_after_it() {
         txn.encode_update_v1()
     };
     assert!(
-        big.len() > takomo::store::MAX_UPDATE_BYTES,
-        "the fixture must exceed one row's cap to test anything"
+        big.len() > 1024 * 1024,
+        "the fixture must be a genuinely large paste"
+    );
+    assert!(
+        big.len() <= takomo::store::MAX_UPDATE_BYTES,
+        "and one the store can hold — the caps must agree, which is the fix"
     );
     peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &big).into()))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    // The peer is disconnected, so reconnect the way a browser would and carry
-    // on with something ordinary.
-    let (mut peer2, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .expect("a peer reconnects after being closed");
-    let after = yrs::Doc::new();
-    let small = peer_node_update(&after, "mn-ordinary1", "an ordinary thought", "a1");
-    peer2
-        .send(WsMessage::Binary(sync_message(SYNC_UPDATE, &small).into()))
+    // The SAME peer carries on, which is what a browser does — it does not get a
+    // fresh replica between one edit and the next.
+    let small = peer_node_update(&mine, "mn-ordinary1", "an ordinary thought", "a1");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &small).into()))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     drop(peer);
-    drop(peer2);
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    let titles = mindmap_titles(&whole);
     assert!(
-        mindmap_titles(&whole).contains(&"an ordinary thought".to_string()),
-        "an edit made after an unstorable one must still be there: {whole}"
+        titles.contains(&"an ordinary thought".to_string()),
+        "the edit made after the paste must still be there: {whole}"
+    );
+    assert!(
+        titles.contains(&"a big paste".to_string()),
+        "and so must the paste, now that the caps agree: {whole}"
     );
 }
 
@@ -21189,41 +21197,45 @@ async fn a_live_sync_session_does_not_block_the_oauth_sweep() {
 /// Compaction must not delete a row it never replayed.
 ///
 /// It replaces the whole log with the room's replica, on the argument that the
-/// replica "holds every update in the log plus anything that arrived while we
-/// were writing". That is true of updates this room produced and false of a row
-/// appended by anything else — and there is such a writer:
-/// `edit_mindmap_document` APPENDS rather than replaces, deliberately, so the CLI
-/// running against a database a server is serving does not throw a live room's
-/// work away. Compaction did the reverse damage to the CLI.
+/// replica holds everything the log does. True of updates this room produced,
+/// false of a row appended by anything else — and `edit_mindmap_document`
+/// APPENDS deliberately, so the CLI does not throw a live room's work away.
+/// Compaction did the reverse damage to it.
 ///
-/// Refusing when the count disagrees turns a silent loss into a skipped
-/// compaction; the next flush, from a replica that has seen the row, compacts
-/// correctly.
+/// The first guard compared row COUNTS and was a no-op: the append that precedes
+/// compaction re-reads the count from the log, foreign rows included, so it
+/// always agreed with itself. The test written for it passed only because it
+/// called `compact_collab` directly with a deliberately stale count, which the
+/// flusher never passes. An independent reviewer caught both, and the guard is on
+/// `seq` identity now.
+///
+/// So this drives the REAL path: a room open, a foreign append, then an edit that
+/// takes the log over the threshold.
 #[tokio::test]
-async fn compaction_refuses_to_drop_a_row_it_never_saw() {
+async fn compaction_does_not_drop_a_row_the_room_never_saw() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::ReadTxn;
+
     let app = TestApp::spawn().await;
-    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
-
-    let (s, made) = app
-        .post(
-            &app.worker,
-            &format!("/v1/mindmaps/{map}/nodes"),
-            json!({ "text": "versioning" }),
-        )
-        .await;
-    assert_eq!(s, StatusCode::CREATED, "{made}");
-
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
     let store = app.open_store();
-    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
-    let rows = || -> i64 {
-        conn.query_row(
-            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
-            [&map],
-            |r| r.get(0),
-        )
-        .unwrap()
+
+    // Pad the log to just under the compaction threshold, before anyone joins.
+    let filler = {
+        let doc = yrs::Doc::new();
+        let _ = doc.get_or_insert_map("nodes");
+        let txn = yrs::Transact::transact(&doc);
+        txn.encode_state_as_update_v1(&yrs::StateVector::default())
     };
-    let seen = rows();
+    for _ in 0..(takomo::store::COMPACT_AFTER_UPDATES - 2) {
+        store.append_collab_update(&map, &filler, "pad").unwrap();
+    }
+
+    // Now a room opens and replays what exists.
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // Somebody else appends — the CLI's shape, out of any room.
     let extra = {
@@ -21239,28 +21251,26 @@ async fn compaction_refuses_to_drop_a_row_it_never_saw() {
     store
         .append_collab_update(&map, &extra, "cli")
         .expect("the CLI appends");
-    assert_eq!(rows(), seen + 1);
 
-    // A compaction prepared before that row must be refused, not silently
-    // destroy it.
-    let state = {
-        use yrs::ReadTxn;
-        let doc = yrs::Doc::new();
-        let _ = doc.get_or_insert_map("nodes");
-        let txn = yrs::Transact::transact(&doc);
-        txn.encode_state_as_update_v1(&yrs::StateVector::default())
-    };
-    let refused = store.compact_collab(&map, &state, "flusher", seen);
-    assert!(
-        refused.is_err(),
-        "compaction built from {seen} rows must not replace a log of {}",
-        rows()
-    );
-    assert_eq!(rows(), seen + 1, "and the CLI's row must still be there");
+    // One ordinary edit takes the log over the threshold, so the flusher
+    // compacts — the moment the CLI's row used to disappear.
+    let mine = yrs::Doc::new();
+    let small = peer_node_update(&mine, "mn-ordinary1", "an ordinary thought", "a1");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &small).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    drop(peer);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    let titles = mindmap_titles(&whole);
     assert!(
-        mindmap_titles(&whole).contains(&"written by the CLI".to_string()),
-        "the write it would have destroyed is still readable: {whole}"
+        titles.contains(&"written by the CLI".to_string()),
+        "compaction destroyed a row the room never replayed: {whole}"
+    );
+    assert!(
+        titles.contains(&"an ordinary thought".to_string()),
+        "and the room's own edit must survive too: {whole}"
     );
 }
