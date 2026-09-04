@@ -26,7 +26,7 @@ import { runAgent } from '@/lib/documents'
 import { CommandMenu, type CommandMenuLabels } from './CommandMenu'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { applyOps, blockText, parseProposal, touchedBlocks, type Proposal } from '@/lib/doc-ops'
-import { byUndecidedThenNewest } from '@/lib/plan-proposals'
+import { byUndecidedThenNewest, decideProposal } from '@/lib/plan-proposals'
 import { syncBase, type DocSession } from '@/lib/documents'
 import { ProposalPanel, type ProposalPanelLabels } from '@/components/documents/ProposalPanel'
 import { Hint } from '@/components/Hint'
@@ -226,23 +226,15 @@ export default function Editor({
   }, [editor, proposals])
 
   /** Record a decision on the proposal itself, so it stays readable afterwards. */
+  // The SHARED decision, not a second copy of it.
+  //
+  // This surface had its own inline version, which is why a fix to the rule
+  // "nothing applied is not an acceptance" landed on the plan view and missed
+  // here entirely — two places deciding one thing, and only one of them
+  // corrected. One function decides now, and the test on it covers both.
   const decide = useCallback(
-    (p: Proposal, status: 'accepted' | 'rejected', dropped: readonly string[] = []) => {
-      const raw = proposalMap.get(p.id)
-      const current = parseProposal(raw)
-      if (!current || current.status !== 'pending') return false
-      proposalMap.set(
-        p.id,
-        JSON.stringify({
-          ...current,
-          status,
-          decided_by: session.display,
-          decided_at: Date.now(),
-          ...(dropped.length ? { dropped: [...dropped] } : {}),
-        }),
-      )
-      return true
-    },
+    (p: Proposal, status: 'accepted' | 'rejected', dropped: readonly string[] = []) =>
+      decideProposal(proposalMap, p.id, status, session.display, Date.now(), dropped),
     [proposalMap, session.display],
   )
 

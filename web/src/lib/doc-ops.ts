@@ -190,6 +190,12 @@ export function applyOps(
 
     if (op.op === 'delete') {
       tr.delete(pos, pos + node.nodeSize)
+      // Forget what trailed it. `trailing` is keyed by id and `findBlock` takes
+      // the FIRST match, so with two blocks sharing an id — which `block-id.ts`
+      // calls the ordinary result of a concurrent split — a stale count is
+      // applied to whatever the id resolves to next, and the following insert
+      // walks past an unrelated block.
+      trailing.delete(op.id)
       applied++
       continue
     }

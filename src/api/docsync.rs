@@ -285,7 +285,19 @@ pub async fn open_room(state: &Arc<AppState>, id: &str) -> ApiResult<RoomGuard> 
 /// flushed). Nothing is cached between sessions, which is what keeps this from
 /// becoming a second, divergent copy of the store.
 #[derive(Default)]
-pub struct Rooms(Mutex<HashMap<String, Arc<Room>>>);
+pub struct Rooms {
+    map: Mutex<HashMap<String, Arc<Room>>>,
+    /// Bumped, under the map's lock, every time `resync_frozen` publishes.
+    ///
+    /// A joining room reads the store to decide whether it is frozen, and that
+    /// read is a blocking round-trip: an archive can commit during it, and
+    /// `resync_frozen` — which releases the lock BEFORE it stores — can publish
+    /// `true` that a stale `false` then overwrites, leaving an archived object
+    /// writable for the life of the room. The join checks this counter has not
+    /// moved while it was reading, under the same lock the publisher takes, and
+    /// re-reads if it has.
+    freeze_epoch: AtomicU64,
+}
 
 impl Rooms {
     /// Re-decide, for every room currently open, whether it may still be written.
@@ -302,16 +314,26 @@ impl Rooms {
     pub fn resync_frozen(state: &Arc<AppState>) {
         let rooms: Vec<(String, Arc<Room>)> = state
             .rooms
-            .0
+            .map
             .lock()
             .expect("rooms mutex")
             .iter()
             .map(|(id, room)| (id.clone(), room.clone()))
             .collect();
-        for (id, room) in rooms {
-            let frozen = state.store.ensure_collab_writable(&id).is_err();
+        let decided: Vec<(Arc<Room>, bool)> = rooms
+            .into_iter()
+            .map(|(id, room)| {
+                let frozen = state.store.ensure_collab_writable(&id).is_err();
+                (room, frozen)
+            })
+            .collect();
+        // Published under the lock, with the epoch, so a join cannot check and
+        // then be overtaken between the check and its own store.
+        let _guard = state.rooms.map.lock().expect("rooms mutex");
+        for (room, frozen) in decided {
             room.frozen.store(frozen, Ordering::SeqCst);
         }
+        state.rooms.freeze_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Join a document, creating and hydrating the room if this is the first peer.
@@ -320,7 +342,14 @@ impl Rooms {
     /// large document must not occupy an async worker thread while it loads.
     async fn join(state: &Arc<AppState>, id: &str) -> ApiResult<Arc<Room>> {
         // Fast path: somebody is already in the room.
-        if let Some(room) = state.rooms.0.lock().expect("rooms mutex").get(id).cloned() {
+        if let Some(room) = state
+            .rooms
+            .map
+            .lock()
+            .expect("rooms mutex")
+            .get(id)
+            .cloned()
+        {
             if room.peers.load(Ordering::SeqCst) >= MAX_PEERS_PER_ROOM {
                 return Err(too_many_peers(id));
             }
@@ -397,7 +426,7 @@ impl Rooms {
         // Scoped so the map's lock is released before the await below: a guard
         // held across one would make this future non-Send.
         let room = {
-            let mut rooms = state.rooms.0.lock().expect("rooms mutex");
+            let mut rooms = state.rooms.map.lock().expect("rooms mutex");
             let room = match rooms.get(id) {
                 Some(existing) => existing.clone(),
                 None => {
@@ -413,24 +442,47 @@ impl Rooms {
             room
         };
 
-        // Ask whether this object may be written AFTER the room is in the map,
-        // and with the map's lock released.
+        // Decide whether this object may be written, AFTER the room is in the map
+        // so a later `resync_frozen` can find it — and publish that decision only
+        // if no resync happened while we were reading.
         //
-        // Both halves matter, and an earlier attempt had neither: reading before
-        // the insert leaves an archive that commits in between invisible, because
-        // its `resync_frozen` snapshots a map this room is not in yet — and doing
-        // it inside the lock cannot help, since that is the very lock `resync`
-        // must take, so no interleaving can tell the two orders apart. Once the
-        // room is installed and the lock is free, the two paths cover each other:
-        // either the archive's resync finds this room, or this read finds the
-        // archive.
-        let recheck_id = id.to_string();
-        let recheck = state.clone();
-        let frozen_now = super::blocking_read(move || {
-            Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
-        })
-        .await?;
-        room.frozen.store(frozen_now, Ordering::SeqCst);
+        // The claim in the commit that removed the previous guard was simply
+        // wrong: `resync_frozen` releases the map's lock BEFORE it stores, so the
+        // two stores race freely, and a stale `false` from this read could land
+        // on top of an archive's `true` and leave the object writable for the
+        // life of the room. The epoch check runs under the same lock the
+        // publisher now takes, so check-and-store cannot be overtaken.
+        for attempt in 0..3 {
+            let before = state.rooms.freeze_epoch.load(Ordering::SeqCst);
+            let recheck_id = id.to_string();
+            let recheck = state.clone();
+            let frozen_now = match super::blocking_read(move || {
+                Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
+            })
+            .await
+            {
+                Ok(frozen) => frozen,
+                Err(e) => {
+                    // The peer count is already ours; give it back before
+                    // leaving, or the room is never dropped and its flusher
+                    // ticks for the life of the process.
+                    Rooms::leave(state, &room);
+                    return Err(e);
+                }
+            };
+            let guard = state.rooms.map.lock().expect("rooms mutex");
+            if state.rooms.freeze_epoch.load(Ordering::SeqCst) == before {
+                room.frozen.store(frozen_now, Ordering::SeqCst);
+                break;
+            }
+            drop(guard);
+            if attempt == 2 {
+                // Out of attempts: never CLEAR a freeze we could not confirm.
+                if frozen_now {
+                    room.frozen.store(true, Ordering::SeqCst);
+                }
+            }
+        }
 
         Ok(room)
     }
@@ -587,11 +639,18 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
             requeue(room, merged);
             // A log that has reached `MAX_OBJECT_BYTES` refuses every append, and
             // compaction — the only thing that shrinks it — was attempted only
-            // AFTER a successful one. So the object wedged permanently, for every
+            // AFTER a successful one. So the object wedged permanently for every
             // room that would ever open it, and raising the row cap to match the
             // socket made that four times cheaper to reach. Compacting on the way
             // out gives it the one escape it has.
-            if room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
+            //
+            // ONLY for that failure. Trying it on any failed flush meant an
+            // archived room with a requeued batch ran a whole-document encode and
+            // took the store's write mutex every two seconds for ever, against a
+            // compaction that is itself refused for being archived — the same
+            // spinning this path was added to cure, by a third road.
+            let wedged = e.body.code.ends_with("_too_large");
+            if wedged && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
                 compact(state, room, actor).await;
             }
             return;
@@ -707,7 +766,7 @@ fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
             if room.peers.load(Ordering::SeqCst) == 0 {
                 // Empty the room under the same lock a joiner takes, so nobody
                 // can join the room we are about to drop.
-                let mut rooms = state.rooms.0.lock().expect("rooms mutex");
+                let mut rooms = state.rooms.map.lock().expect("rooms mutex");
                 if room.peers.load(Ordering::SeqCst) == 0 {
                     rooms.remove(&room.id);
                     break;

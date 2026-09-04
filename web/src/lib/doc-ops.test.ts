@@ -189,3 +189,51 @@ describe('a batch of ops lands the way it was written', () => {
     expect(texts(tr.doc)).toEqual(['Rewritten.', 'Added after.'])
   })
 })
+
+describe('a batch whose ops change the shape under each other', () => {
+  it('does not split a paragraph when a replace grows the anchor mid-batch', () => {
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_a', markdown: 'X' },
+      { op: 'replace', id: 'blk_a', markdown: 'PP\n\nQQ' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Y' },
+    ])
+    // Tracking this as a BYTE offset put the third op at a position that was no
+    // longer a block boundary once the replace had changed the anchor's size,
+    // and ProseMirror split a paragraph in half — silently, reporting every op
+    // applied. Counting nodes survives a change of size.
+    expect(applied).toBe(3)
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['PP', 'QQ', 'X', 'Y', 'Tail.'])
+  })
+
+  it('inserts after the WHOLE of a multi-node replacement, not inside it', () => {
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    const { skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_a', markdown: 'First half.\n\nSecond half.' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Added after.' },
+    ])
+    // Only the first replacement node carries the id, so the anchor's own size
+    // no longer covers what the block became.
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['First half.', 'Second half.', 'Added after.', 'Tail.'])
+  })
+
+  it('forgets what trailed an id when that block is deleted', () => {
+    // TWO blocks sharing an id, which `block-id.ts` calls the ordinary result of
+    // a concurrent split. `findBlock` takes the first, so a count left over from
+    // the deleted one is applied to the survivor and the insert walks past an
+    // unrelated block.
+    const tr = stateWith(
+      para('blk_dup', 'one'),
+      para('blk_dup', 'two'),
+      para('blk_other', 'three'),
+    ).tr
+    applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_dup', markdown: 'X' },
+      { op: 'delete', id: 'blk_dup' },
+      { op: 'insert_after', id: 'blk_dup', markdown: 'Y' },
+    ])
+    expect(texts(tr.doc)).toEqual(['X', 'two', 'Y', 'three'])
+  })
+})
