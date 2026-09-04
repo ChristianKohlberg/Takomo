@@ -21726,3 +21726,73 @@ async fn deleting_a_project_purges_documents_and_mindmaps_alike() {
         "and the DOCUMENT's — the kind a per-object loop can miss"
     );
 }
+
+/// A check says which part of the plan it verifies.
+///
+/// Checks could name an epic and an initiative but not a NODE — so the tests
+/// view could say what a check was for only in prose, and "which parts of this
+/// plan are actually verified" had no answer the software could give. It is the
+/// same shape as the two links beside it, validated in Rust rather than by a
+/// foreign key: a wrong id is a teaching 422, and a node later pruned from the
+/// brainstorm leaves the check readable rather than taking it down. Deleting a
+/// map is ordinary; losing what was verified is not.
+#[tokio::test]
+async fn a_check_names_the_section_of_the_plan_it_verifies() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    let (s, check) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({ "title": "v1 stays v1", "node": node }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{check}");
+    assert_eq!(
+        check["node"],
+        json!(node),
+        "the link must come back: {check}"
+    );
+
+    // And it is findable from the plan's side, which is the point.
+    let (_, mine) = app
+        .get(&app.worker, &format!("/v1/projects/tp/checks?node={node}"))
+        .await;
+    assert_eq!(mine["total"], json!(1), "{mine}");
+    let (_, orphans) = app
+        .get(&app.worker, "/v1/projects/tp/checks?node=none")
+        .await;
+    assert_eq!(
+        orphans["total"],
+        json!(0),
+        "every check here is about a section: {orphans}"
+    );
+
+    // A node that is not in this project's plan is refused, and says why.
+    let (s, bad) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({ "title": "nowhere", "node": "mn-nosuchnode" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    assert_eq!(bad["code"], "validation.check_node", "{bad}");
+    assert!(
+        bad["remedy"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("node id"),
+        "a refusal must say how to find a real one: {bad}"
+    );
+}

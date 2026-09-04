@@ -1488,6 +1488,8 @@ pub struct Check {
     /// Direct, not derived through the epic: the agreement usually predates any
     /// epic, so deriving it would make the link unstateable when it is made.
     pub initiative: Option<String>,
+    /// The mindmap node this check verifies — the part of the plan it is about.
+    pub node: Option<String>,
     pub title: String,
     pub body: String,
     pub precondition: String,
@@ -1525,6 +1527,7 @@ impl Check {
             "project": self.project,
             "epic": self.epic,
             "initiative": self.initiative,
+            "node": self.node,
             "title": self.title,
             "body": self.body,
             "precondition": self.precondition,

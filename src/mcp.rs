@@ -3892,6 +3892,7 @@ impl TakomoMcp {
             other => other.map(str::to_string),
         };
         let filter = crate::store::CheckFilter {
+            node: None,
             project: a.project.clone(),
             epic,
             initiative,
@@ -3949,6 +3950,7 @@ impl TakomoMcp {
         auth.require_scope("write")?;
         auth.require_project(&a.project)?;
         let req = crate::store::CheckCreate {
+            node: None,
             project: a.project.clone(),
             epic: a.epic,
             initiative: a.initiative,

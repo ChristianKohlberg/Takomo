@@ -152,6 +152,9 @@ impl Store {
         widen_doc_log_to_collab_objects(&conn)?;
         // Also before the batch: the batch indexes the column it adds.
         add_collab_session_minted_by(&conn)?;
+        // Same reason: the batch indexes the column this adds. It must run after
+        // `rename_lanes_to_checks`, because before that the table is `lanes`.
+        add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         // After the schema and the additive migrations, because it writes into
@@ -639,6 +642,25 @@ fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
             "UPDATE crdt_sessions SET revoked_at = ?1 WHERE revoked_at IS NULL",
             [crate::ids::now_ms()],
         )?;
+    }
+    Ok(())
+}
+
+/// Add `checks.node` to a database that predates it.
+///
+/// BEFORE the schema batch, for the reason `add_collab_session_minted_by` gives
+/// and I got wrong here first: the batch creates an INDEX on this column, and on
+/// an existing `checks` table `CREATE TABLE IF NOT EXISTS` correctly does
+/// nothing — so the index would name a column that is not there yet and the open
+/// would fail. Caught by the test that opens a pre-rename database.
+fn add_check_node(conn: &Connection) -> ApiResult<()> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(checks)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    if !columns.is_empty() && !columns.iter().any(|c| c == "node") {
+        conn.execute("ALTER TABLE checks ADD COLUMN node TEXT", [])?;
     }
     Ok(())
 }
@@ -1788,6 +1810,20 @@ CREATE TABLE IF NOT EXISTS checks (
   -- failure, and a dangling reference stays readable rather than blocking the
   -- row.
   initiative TEXT,
+  -- The mindmap node this check verifies.
+  --
+  -- The same shape as `epic` and `initiative` above, and for the same reason: a
+  -- check is agreed while somebody is looking at a part of the plan, and the
+  -- plan's parts are nodes. Without this the tests view can say what a check is
+  -- FOR only in prose, and "which parts of this plan are actually verified" has
+  -- no answer the software can give.
+  --
+  -- No REFERENCES clause, matching the two above: validity is checked in Rust so
+  -- a wrong id is a teaching 422 rather than an opaque FOREIGN KEY failure, and
+  -- a node deleted from a brainstorm leaves the check readable rather than
+  -- taking it with it. Deleting a map is ordinary; losing its verification
+  -- record is not.
+  node TEXT,
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
   precondition TEXT NOT NULL DEFAULT '',
@@ -1807,6 +1843,7 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS idx_checks_project ON checks(project);
 CREATE INDEX IF NOT EXISTS idx_checks_epic ON checks(epic) WHERE epic IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_checks_node ON checks(node) WHERE node IS NOT NULL;
 -- The index on `initiative` is created in `migrate()`, NOT here. This batch runs
 -- before the ALTER that adds the column to a pre-rename database, so indexing it
 -- here fails on exactly the databases the migration exists for.
