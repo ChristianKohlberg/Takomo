@@ -120,9 +120,19 @@ export function highlightKeyFor(list: readonly Proposal[]): string {
  * The record is UPDATED, never removed: a rejected proposal stays visible as
  * rejected, because it is a signal about the plan somebody was wrong about.
  *
- * Returns false when the proposal is gone or somebody else decided it first,
- * which is what stops two reviewers each applying the same ops — the caller
- * checks this BEFORE dispatching the edit.
+ * Returns false when the proposal is already decided in THIS replica — which
+ * catches a double click, and a second reviewer whose peer has already seen the
+ * first decision.
+ *
+ * It is NOT consensus, and the comment here used to say it was. The map is a
+ * CRDT with last-write-wins per key, so two peers that have not yet seen each
+ * other both read `pending`, both return true, and both apply — measured, with
+ * the paragraph inserted twice and one `decided_by` surviving. Closing that
+ * needs the decision to converge before the ops are applied, which cannot be
+ * done offline; the honest position is that this narrows the window rather than
+ * removing it. `dropped` exists because of it: what an accept could not apply is
+ * written onto the record, so a reader afterwards can see the difference between
+ * "accepted" and "accepted and landed whole".
  */
 export function decideProposal(
   map: ProposalMap,
@@ -130,12 +140,19 @@ export function decideProposal(
   status: 'accepted' | 'rejected',
   by: string,
   now: number = Date.now(),
+  dropped: readonly string[] = [],
 ): boolean {
   const current = parseProposal(map.get(id))
   if (!current || current.status !== 'pending') return false
   map.set(
     id,
-    JSON.stringify({ ...current, status, decided_by: by, decided_at: now }),
+    JSON.stringify({
+      ...current,
+      status,
+      decided_by: by,
+      decided_at: now,
+      ...(dropped.length ? { dropped: [...dropped] } : {}),
+    }),
   )
   return true
 }

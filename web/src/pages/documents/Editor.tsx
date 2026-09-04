@@ -201,7 +201,8 @@ export default function Editor({
           provider,
           user: { name: session.display, color: colorFor(session.display) },
         }),
-        BlockId,
+        // Readers do not mint ids — see block-id.ts.
+        BlockId.configure({ canWrite: session.can_write }),
         HighlightBlocks,
       ],
       editorProps: {

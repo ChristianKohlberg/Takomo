@@ -464,14 +464,25 @@ export default function Plan({
       if (!editor) return
       const tr = editor.state.tr
       const { applied, skipped } = applyOps(tr, editor.schema, p.ops)
-      // The decision goes in FIRST and its answer is obeyed: it fails when
-      // somebody else decided this one meanwhile, and applying the ops anyway
-      // would land the same change twice.
-      if (!decideProposal(proposalMap, p.id, 'accepted', session.display)) return
-      if (applied) editor.view.dispatch(tr)
+      // Nothing applied is not an acceptance. Recording one would leave a
+      // durable claim that somebody accepted a change the document never
+      // received — the reviewer saw only a toast, and after a reload there was
+      // no trace at all. Say so and leave it pending, so it can be re-read
+      // against the document as it now stands.
+      if (!applied) {
+        onSkipped(skipped.length ? skipped : [p.id])
+        return
+      }
+      // Checked before dispatching, which catches a double click and a peer that
+      // has already seen another reviewer's decision. It is not consensus — see
+      // `decideProposal`.
+      if (!decideProposal(proposalMap, p.id, 'accepted', session.display, Date.now(), skipped))
+        return
+      editor.view.dispatch(tr)
       // An op whose block has gone since the proposal was made is dropped —
       // reported rather than silently, because a reviewer who thinks they
-      // accepted the whole change has not reviewed it.
+      // accepted the whole change has not reviewed it. It is also written onto
+      // the record above, so the difference survives a reload.
       if (skipped.length) onSkipped(skipped)
       onDecided(key, 'accepted')
     },

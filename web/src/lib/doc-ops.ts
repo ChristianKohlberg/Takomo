@@ -166,6 +166,15 @@ export function applyOps(
 ): { applied: number; skipped: string[] } {
   const skipped: string[] = []
   let applied = 0
+  // How much has already been inserted after each anchor in THIS batch.
+  //
+  // Every op re-finds its block in the current document, so two `insert_after`
+  // ops naming the same block both landed immediately after it — and the second
+  // therefore landed ABOVE the first. The reviewer accepted an ordered list and
+  // got it backwards, with `applied: 2` and nothing skipped to hint at it. The
+  // nodes a previous op inserted sit directly after the anchor, so stepping past
+  // them keeps the batch in the order it was written.
+  const insertedAfter = new Map<string, number>()
 
   for (const op of ops) {
     // Re-find against the CURRENT doc each time: earlier ops in this batch have
@@ -185,9 +194,24 @@ export function applyOps(
 
     const nodes = markdownToNodes(schema, op.markdown ?? '')
     if (op.op === 'replace') {
-      tr.replaceWith(pos, pos + node.nodeSize, nodes)
+      // Carry the block id onto the replacement, so the block a later op in the
+      // same batch names still exists. Without it a `replace` followed by an
+      // `insert_after` on the same block dropped the insert and reported "that
+      // block is no longer in the document" — blaming a peer for a removal this
+      // very accept had just performed.
+      const kept = nodes.map((n, i) =>
+        i === 0 && n.type.spec.attrs && 'id' in n.type.spec.attrs
+          ? n.type.create({ ...n.attrs, id: op.id }, n.content, n.marks)
+          : n,
+      )
+      tr.replaceWith(pos, pos + node.nodeSize, kept)
     } else {
-      tr.insert(pos + node.nodeSize, nodes)
+      const already = insertedAfter.get(op.id) ?? 0
+      tr.insert(pos + node.nodeSize + already, nodes)
+      insertedAfter.set(
+        op.id,
+        already + nodes.reduce((total, n) => total + n.nodeSize, 0),
+      )
     }
     applied++
   }

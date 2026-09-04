@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Schema } from '@tiptap/pm/model'
+import { Schema, type Node as PMNode } from '@tiptap/pm/model'
 import { EditorState } from '@tiptap/pm/state'
 
 import { applyOps, markdownToNodes, parseProposal, touchedBlocks, type Proposal } from './doc-ops'
@@ -31,6 +31,13 @@ const schema = new Schema({
 
 const para = (id: string, text: string) =>
   schema.nodes.paragraph!.create({ id }, schema.text(text))
+
+/** The text of each top-level block, in order. */
+function texts(doc: PMNode): string[] {
+  const out: string[] = []
+  doc.forEach((n) => out.push(n.textContent))
+  return out
+}
 
 function stateWith(...nodes: ReturnType<typeof para>[]) {
   return EditorState.create({ schema, doc: schema.nodes.doc!.create(null, nodes) })
@@ -150,5 +157,35 @@ describe('touchedBlocks', () => {
     })
     const ids = touchedBlocks([p('p1', 'pending', 'blk_a'), p('p2', 'accepted', 'blk_b')])
     expect([...ids]).toEqual(['blk_a'])
+  })
+})
+
+describe('a batch of ops lands the way it was written', () => {
+  it('keeps two insertions after one block in their order', () => {
+    const tr = stateWith(para('blk_one', 'Original.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_one', markdown: 'First addition.' },
+      { op: 'insert_after', id: 'blk_one', markdown: 'Second addition.' },
+    ])
+    expect(applied).toBe(2)
+    expect(skipped).toEqual([])
+    // Both re-found the same anchor, so the second used to land ABOVE the
+    // first: a reviewer accepted an ordered list and got it backwards, with
+    // nothing skipped to hint at it.
+    expect(texts(tr.doc)).toEqual(['Original.', 'First addition.', 'Second addition.'])
+  })
+
+  it('lets a later op still address a block an earlier op replaced', () => {
+    const tr = stateWith(para('blk_one', 'Original.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_one', markdown: 'Rewritten.' },
+      { op: 'insert_after', id: 'blk_one', markdown: 'Added after.' },
+    ])
+    // The replacement carries the id forward. Without that the insert was
+    // dropped and reported as "that block is no longer in the document" —
+    // blaming a peer for a removal this very accept had just performed.
+    expect(skipped).toEqual([])
+    expect(applied).toBe(2)
+    expect(texts(tr.doc)).toEqual(['Rewritten.', 'Added after.'])
   })
 })
