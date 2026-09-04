@@ -320,6 +320,15 @@ impl Rooms {
             .iter()
             .map(|(id, room)| (id.clone(), room.clone()))
             .collect();
+        // Bumped BEFORE the reads as well as after publishing.
+        //
+        // Without the first bump the guard did not cover the window it claimed:
+        // a join whose own read overlapped the archive, and whose install landed
+        // after this snapshot but before the publish, saw an unchanged epoch,
+        // installed `false`, and was not in `decided` — so nothing corrected it.
+        // The window was the whole read phase, one store read per open room, not
+        // the microseconds the comment implied.
+        state.rooms.freeze_epoch.fetch_add(1, Ordering::SeqCst);
         let decided: Vec<(Arc<Room>, bool)> = rooms
             .into_iter()
             .map(|(id, room)| {
@@ -412,7 +421,8 @@ impl Rooms {
             tx,
             peers: AtomicUsize::new(0),
             rows: AtomicU64::new(rows),
-            // Set from `frozen_now` after this room is in the map; see below.
+            // Decided before this room is installed, and set under the same lock
+            // as the insert; see the loop below.
             frozen: AtomicBool::new(false),
             overloaded: AtomicBool::new(false),
             base_seq: AtomicI64::new(seen_seq),
@@ -618,9 +628,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
                     // batches too big to merge wedged permanently — the fourth
                     // road to that failure, and this path simply did not have the
                     // way out the other one had been given.
-                    if wedged(&e)
-                        && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES
-                    {
+                    if wedged(&e) {
                         compact(state, room, actor).await;
                     }
                     return;
@@ -665,7 +673,11 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
             // took the store's write mutex every two seconds for ever, against a
             // compaction that is itself refused for being archived — the same
             // spinning this path was added to cure, by a third road.
-            if wedged(&e) && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
+            // No row-count condition: four 8 MiB frames reach the object cap
+            // with FOUR rows, so requiring 256 of them meant the escape was never
+            // attempted for exactly the large-paste shape it was written for. The
+            // error itself is the signal.
+            if wedged(&e) {
                 compact(state, room, actor).await;
             }
             return;
@@ -786,6 +798,7 @@ fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
             // life of the room, because nothing ever asked again. A read per open
             // room per tick, on the reader pool, buys "wrong for at most one
             // tick" instead.
+            let before = state.rooms.freeze_epoch.load(Ordering::SeqCst);
             let ask = state.clone();
             let ask_id = room.id.clone();
             if let Ok(Ok(frozen)) = tokio::task::spawn_blocking(move || {
@@ -805,7 +818,15 @@ fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
             })
             .await
             {
-                room.frozen.store(frozen, Ordering::SeqCst);
+                // Published under the same discipline as the join: only if no
+                // resync has run since the read. Without this the backstop was
+                // itself a way to overwrite a correct freeze with a stale answer
+                // — a smaller version of the bug it exists to insure against.
+                let guard = state.rooms.map.lock().expect("rooms mutex");
+                if state.rooms.freeze_epoch.load(Ordering::SeqCst) == before {
+                    room.frozen.store(frozen, Ordering::SeqCst);
+                }
+                drop(guard);
             }
 
             flush(&state, &room, "docsync").await;

@@ -239,23 +239,25 @@ describe('a batch whose ops change the shape under each other', () => {
 })
 
 describe('the split the byte offset caused', () => {
-  it('leaves every block whole, with nothing empty or cut', () => {
-    // The corruption itself. A byte offset held against an anchor whose size
-    // changed lands mid-block, and ProseMirror breaks the block in two — which
-    // shows up as an EMPTY block and a fragment. The multi-node replacement is
-    // the shape that reaches it.
+  it('never cuts a block in half, whatever an earlier op did to sizes', () => {
+    // THE corruption, on an input that actually produces it. Under the
+    // byte-offset version this yields ["PP","QQQQQ","Y","Q","XXXX","Tail."] —
+    // `QQQQQQ` cut in two — with `applied: 3` and `skipped: []`.
     //
-    // A first version of this test used a single long replacement and passed
-    // under the broken code, which is the third time in this file's history that
-    // a test proved something other than its name. The assertion is on the
-    // property now: no block comes out empty.
+    // Four earlier attempts in this file claimed to pin this and did not. Each
+    // used a shape where the stale offset landed at the END of a block, where
+    // ProseMirror's split leaves nothing behind, so no block came out empty and
+    // the assertion never discriminated. This input puts it in the middle. The
+    // input came from a reviewer, not from me — I had already convinced myself
+    // three times.
     const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
-    applyOps(tr, schema, [
-      { op: 'replace', id: 'blk_a', markdown: 'First half.\n\nSecond half.' },
-      { op: 'insert_after', id: 'blk_a', markdown: 'Added after.' },
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_a', markdown: 'XXXX' },
+      { op: 'replace', id: 'blk_a', markdown: 'PP\n\nQQQQQQ' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Y' },
     ])
-    const blocks = texts(tr.doc)
-    expect(blocks.filter((b) => b === '')).toEqual([])
-    expect(blocks).toEqual(['First half.', 'Second half.', 'Added after.', 'Tail.'])
+    expect(applied).toBe(3)
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['PP', 'QQQQQQ', 'XXXX', 'Y', 'Tail.'])
   })
 })

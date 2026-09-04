@@ -21375,9 +21375,17 @@ async fn compaction_does_not_drop_a_row_the_room_never_saw() {
 /// and freeze a room on a LIVE project, with the socket then dropping that
 /// person's typing and telling them nothing.
 ///
-/// Both fixes shipped without a test. This is that test: it drives the two
-/// orders through the real routes and asserts the room ends up agreeing with the
-/// store, not with whatever it read first.
+/// What it covers, stated exactly, because an earlier version of this comment
+/// claimed more: it pins the PROPERTY — a room opened after an archive comes up
+/// frozen, and thaws when the project does. Neutering the join's read fails it.
+///
+/// It does NOT cover the concurrency work those fixes were about: it passes
+/// verbatim against the parent commit, so it says nothing about the ordering of
+/// the decision against the install, the epoch guard, or the backstop. A
+/// reviewer measured that. Those races need two commits interleaved inside a
+/// microsecond window, which is reachable with fault injection and not with a
+/// socket and a sleep; the honest position is that the property is pinned and
+/// the mechanism is argued, not tested.
 #[tokio::test]
 async fn a_room_agrees_with_the_store_about_being_frozen() {
     use docsync_support::*;
