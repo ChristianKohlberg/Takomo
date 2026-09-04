@@ -359,7 +359,7 @@ impl Store {
         // one.
         if bytes > MAX_OBJECT_BYTES {
             return Err(ApiError::conflict(
-                "conflict.collab_compaction",
+                "conflict.collab_compaction_size",
                 format!(
                     "Compacting would write a single {bytes} byte row, over the \
                      {MAX_OBJECT_BYTES} byte cap for one object."
@@ -414,7 +414,7 @@ impl Store {
                 .unwrap_or(0);
             if held_bytes > 0 && bytes >= held_bytes {
                 return Err(ApiError::conflict(
-                    "conflict.collab_compaction",
+                    "conflict.collab_compaction_size",
                     format!(
                         "Compacting would write {bytes} bytes over a log of {held_bytes}, so it \
                          would not free anything. The document's content is simply that large."

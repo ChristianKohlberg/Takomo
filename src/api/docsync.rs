@@ -122,6 +122,13 @@ const _: () = assert!(MAX_SYNC_MESSAGE == crate::store::MAX_UPDATE_BYTES);
 /// the failure is bounded and visible instead of quiet.
 const MAX_PENDING_BYTES: usize = 32 * 1024 * 1024;
 
+/// How many flush ticks before a size refusal is retried once.
+///
+/// Thirty ticks is a minute. The refusal exists so a hopeless compaction is not
+/// attempted every two seconds; this exists so a compaction that has BECOME
+/// possible — because somebody deleted something — is not refused for ever.
+const RE_ARM_ESCAPE_EVERY: u64 = 30;
+
 /// One frame on its way to the other peers: who sent it, and the bytes.
 ///
 /// The sender id is what stops a peer receiving its own update back. Yjs would
@@ -767,8 +774,14 @@ async fn compact(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
             );
             // A refusal for SIZE is not something the next tick improves on — the
             // content is simply that large — so stop paying for the encode until
-            // an append succeeds again.
-            if e.body.code == "conflict.collab_compaction" && e.body.message.contains("byte") {
+            // an append succeeds, or until the periodic re-arm below.
+            //
+            // Matched on the CODE. It was matched on the message containing
+            // "byte", which happened to be true of the two size refusals and not
+            // the row-mismatch one — a property of prose, three functions away,
+            // that nothing pinned. Rewording that message would have disabled
+            // this silently and permanently.
+            if e.body.code == "conflict.collab_compaction_size" {
                 room.escape_refused.store(true, Ordering::SeqCst);
             }
             let store = state.clone();
@@ -816,10 +829,26 @@ async fn note_size_if_mindmap(state: &Arc<AppState>, room: &Arc<Room>) {
 
 fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
     tokio::spawn(async move {
+        let mut ticks: u64 = 0;
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
+            ticks = ticks.wrapping_add(1);
+
+            // Re-arm the size refusal periodically.
+            //
+            // Its only other clear is a successful append — which is exactly what
+            // a wedged object cannot do, so in the narrow band where the log has
+            // less headroom than a small update, the room could never retry even
+            // after somebody DELETED enough to make compaction succeed. Measured
+            // by a reviewer: dropping three of four 7 MB pastes takes the state
+            // from 28 MB to 7 MB, so the escape would have worked. One retry a
+            // minute costs an encode a minute in the hopeless case and restores
+            // the recoverable one.
+            if ticks.is_multiple_of(RE_ARM_ESCAPE_EVERY) {
+                room.escape_refused.store(false, Ordering::SeqCst);
+            }
 
             // Re-decide whether this object may be written, as a BACKSTOP.
             //
