@@ -1,10 +1,11 @@
 // The live map: one Y.Doc, one socket, and everybody's edits arriving as they
 // happen.
 //
-// This is `/documents`' Editor.tsx applied to a canvas, and the shape is
-// deliberately the same one — a page mints the session, this component owns the
-// document and the provider, and the surfaces below it are renderers that never
-// learn where their nodes came from.
+// The shape `/documents` uses too, applied to a canvas: a page mints the session,
+// this component owns the document and the provider, and the surfaces below it
+// are renderers that never learn where their nodes came from. (It named
+// `Editor.tsx` until that surface was replaced by the plan view and the file
+// removed; `SectionEditor.tsx` is the piece that still does this over there.)
 //
 // The two rules worth carrying over verbatim:
 //

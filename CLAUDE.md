@@ -203,7 +203,8 @@ one write mutex. Batching makes a refused write somebody's lost work, so a flush
 take puts the batch BACK, in order, and the next tick retries it — it used to be dropped with one
 line on stderr, and nothing looked wrong until the room was evicted
 (`typing_survives_a_flush_the_store_refuses`). Compaction needs no snapshot table — a Yjs document's
-whole state *is* an ordinary update. `/documents` is the only code-split route, and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
+whole state *is* an ordinary update. `/documents` and `/mindmaps` are the code-split routes — both are collaborative and pull the CRDT runtime,
+and the editor pulls Tiptap on top — and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
 is what keeps the split real: a blanket vendor chunk sweeps Tiptap back onto the critical path while
 the build output still looks split.
 
@@ -219,7 +220,7 @@ editor has it. Scope is enforced server-side rather than prompted, dropped ops c
 a ProseMirror **decoration**, never a mark — a mark would be content, which would break the very rule
 it illustrates. See `docs/documents.md`.
 
-**`POST /v1/documents/{id}/run` is the ONE route that calls a language model** (`src/docagent.rs`) —
+**`POST /v1/documents/{id}/run` and `POST /v1/mindmaps/{id}/run` are the ONLY routes that call a language model** (`src/docagent.rs`) —
 a deliberate exception to "Takomo stores, the agent computes", made because a prompt bar that only
 filed a request nobody would answer is not a feature. **Off unless `TAKOMO_TENSORX_API_KEY` is set**;
 `/v1/whoami` reports `features.doc_agent` so the page explains the absence instead of offering a bar

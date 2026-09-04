@@ -1,5 +1,14 @@
 # Documents: prose humans and agents write at the same time
 
+> **The browser surface this page describes is gone.** `/documents` now renders
+> the PLAN — the mindmap's own nodes as prose — and the standalone document
+> editor, its list and its ⌘K menu were removed with it. What survives, and what
+> the rest of this page is still accurate about, is the model underneath: the
+> `documents` table, `/v1/documents/*`, the `tkd_` sync socket, the Yjs
+> update log and the four `takomo_document_*` tools. Read it as the API's
+> documentation, not the page's. See `spec/one-model-two-views.md`.
+
+
 A ticket is work. An initiative is an idea being nurtured. A **document** is the text itself —
 edited live, by several people and several agents at once, with nobody overwriting anybody.
 
@@ -27,8 +36,8 @@ remember.
 | | |
 |---|---|
 | `documents` | the **filing**: title, folder, status, and the initiative it came from |
-| `doc_updates` | the CRDT **update log**: opaque Yjs blobs, replayed in `seq` order |
-| `doc_sessions` | short-lived tickets for the sync socket |
+| `crdt_updates` | the CRDT **update log**: opaque Yjs blobs, replayed in `seq` order. Named `doc_updates` until it was widened to carry mindmaps too |
+| `crdt_sessions` | short-lived tickets for the sync socket, for any collaborative object |
 
 There is deliberately **no `body` column**, and no JSON route accepts prose. A text column would be
 the last-write-wins merge this exists to remove, wearing a different hat. `version` therefore counts

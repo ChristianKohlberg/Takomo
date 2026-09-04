@@ -14,9 +14,11 @@ built there is one that reached into page state instead of taking props.
 
 ## Status: complete — every surface is built from here
 
-Six routes now: `/board`, `/inbox`, `/initiatives`, `/schedules`, `/verification`
-and `/environments`. They are one bundle behind a router, so a route costs
-nothing at first load — the size budget measures FIRST LOAD for that reason.
+Nine routes now: `/board`, `/inbox`, `/documents`, `/initiatives`, `/mindmaps`, `/schedules`, `/verification`
+and `/environments`. Most are one bundle behind a router, so moving between them
+costs nothing. `/documents` and `/mindmaps` are code-split, because both pull the
+CRDT runtime and the editor pulls Tiptap on top — the size budget measures FIRST
+LOAD for that reason, and separately caps the heaviest lazy chunk.
 
 `src/api/mod.rs` serves every page from `web/dist/`. Every hand-written page is
 gone, and with them `src/spa-common.js`, `scripts/lint-spa.sh`,
@@ -66,7 +68,7 @@ why a held-but-idle epic is worth a surface at all.
 ```sh
 npm install
 npm run dev          # vite on :5173, /v1 proxied — NO Rust rebuild in the loop
-npm test             # vitest (113 tests)
+npm test             # vitest
 npm run check        # tsc --noEmit
 npm run lint         # eslint, defect rules only
 npm run build        # every page

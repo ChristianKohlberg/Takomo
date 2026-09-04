@@ -7,7 +7,7 @@
 // same tree the canvas draws, and nothing about a section's number, level or
 // order is stored anywhere.
 //
-// This replaces `document-outline.ts`, which folded FOLDERS and documents into
+// This replaced `document-outline.ts` (since deleted), which folded FOLDERS and documents into
 // sections because the plan used to be converted into a tree of document rows.
 // The conversion is gone, so the folder model went with it — but the three
 // things that module got right are kept intact and still tested here: the

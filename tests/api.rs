@@ -21616,3 +21616,54 @@ async fn confirming_a_section_agrees_across_both_views() {
          called it confirmed: {after}"
     );
 }
+
+/// The plan's prompt bar route answers, and says so when no model is configured.
+///
+/// `POST /v1/mindmaps/{id}/run` was added by this branch and shipped without an
+/// integration test, which this repo's own rule forbids — a whole-branch review
+/// found it, eleven per-commit reviews did not. It is the one route here that
+/// calls a language model, so the interesting behaviour without a key is that it
+/// refuses in a way a caller can act on rather than 500ing or pretending.
+///
+/// The test suite configures no key, so this is the path every reader of this
+/// branch will hit; the model path itself needs a live provider and is not
+/// exercised here, which is worth stating rather than implying coverage.
+#[tokio::test]
+async fn the_plan_prompt_bar_refuses_clearly_when_no_model_is_configured() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (s, made) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({ "text": "versioning" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let node = made["nodes"][0]["id"].as_str().unwrap().to_string();
+
+    let (s, body) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/run"),
+            json!({ "node": node, "instruction": "Say what additive-only forbids." }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "document.agent_not_configured", "{body}");
+    assert!(
+        body["remedy"].as_str().unwrap_or_default().len() > 10,
+        "a refusal a caller cannot act on is not a teaching error: {body}"
+    );
+
+    // A reader may not drive it at all.
+    let reader = app.mint("agent:reader", &["read"], None);
+    let (s, denied) = app
+        .post(
+            &reader,
+            &format!("/v1/mindmaps/{map}/run"),
+            json!({ "node": node, "instruction": "anything" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
+}

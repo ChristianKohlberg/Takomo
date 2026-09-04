@@ -53,7 +53,7 @@ use yrs::types::xml::XmlOut;
 use yrs::{Any, GetString, Map, ReadTxn, Transact, Xml, XmlFragment};
 
 /// The Y.Doc key the editor binds its prose to. Must match the `field` given to
-/// Tiptap's `Collaboration` extension in `web/src/pages/documents/Editor.tsx` —
+/// Tiptap's `Collaboration` extension in `web/src/pages/documents/SectionEditor.tsx` —
 /// they are the same string on two sides of a wire.
 pub const PROSE_FIELD: &str = "prose";
 

@@ -69,7 +69,14 @@ const FIRST_LOAD = firstLoadFiles()
  * again. Raising them a second time would be the moment this check became
  * decorative.
  */
-const BUDGET_KB = { firstLoad: 320, vendor: 180 }
+const BUDGET_KB = {
+  firstLoad: 320,
+  vendor: 180,
+  // The largest single chunk a route may pull on top of first load. Roomy in the
+  // same spirit as the others — the point is to notice a step change, not to
+  // police every kilobyte.
+  lazyChunk: 220,
+}
 
 const gz = (file) => gzipSync(readFileSync(resolve(dist, file))).length / 1024
 
@@ -107,7 +114,22 @@ const line = (label, value, budget) => {
 
 line('first load', firstLoad, BUDGET_KB.firstLoad)
 line('└─ of which vendor', gz('assets/vendor.js'), BUDGET_KB.vendor)
-console.log(`ok   every later route         0.0 kB gz   (client-side routing)`)
+// What a lazy route costs on top of first load.
+//
+// This line used to be a hardcoded "0.0 kB — client-side routing", printed with
+// nothing behind it. That was TRUE when every route was eager and moving between
+// them fetched nothing. Two routes are lazy now, and `/documents` pulls its own
+// chunk plus the CRDT runtime — more than vendor.js — while this line went on
+// reporting zero. A guard that prints a number it did not measure is worse than
+// no guard: it reads as coverage.
+const lazy = present.filter(
+  (f) => f.startsWith('assets/') && f.endsWith('.js') && !FIRST_LOAD.includes(f),
+)
+const heaviest = lazy.reduce((worst, f) => (gz(f) > gz(worst) ? f : worst), lazy[0] ?? 'assets/app.js')
+for (const f of lazy) {
+  console.log(`     ${f.padEnd(22)} ${gz(f).toFixed(1).padStart(7)} kB gz   (lazy)`)
+}
+line('heaviest lazy chunk', gz(heaviest), BUDGET_KB.lazyChunk)
 
 // The stylesheet must not contain utilities that exist only inside Tailwind's
 // own output.
