@@ -21667,3 +21667,62 @@ async fn the_plan_prompt_bar_refuses_clearly_when_no_model_is_configured() {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{denied}");
 }
+
+/// Deleting a project takes the CRDT log of BOTH object kinds with it.
+///
+/// `delete_project` used to hand-roll the cascade `purge_collab` performs, and
+/// now enumerates the project's objects and calls it per object. That changed
+/// how the objects are found — a `UNION ALL` over two tables — so a mistake
+/// there would silently leave one kind behind, which is exactly the failure the
+/// refactor was meant to make impossible.
+#[tokio::test]
+async fn deleting_a_project_purges_documents_and_mindmaps_alike() {
+    let app = TestApp::spawn().await;
+    let (map, _) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let (s, made) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/documents",
+            json!({ "title": "scratch" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let doc = made["id"].as_str().unwrap().to_string();
+
+    // Give each object a log row and the map a history entry.
+    let store = app.open_store();
+    let blob = {
+        use yrs::{Map, Transact};
+        let d = yrs::Doc::new();
+        let nodes = d.get_or_insert_map("nodes");
+        let mut txn = d.transact_mut();
+        nodes.insert(&mut txn, "mn-x", yrs::MapPrelim::default());
+        txn.encode_update_v1()
+    };
+    store.append_collab_update(&map, &blob, "t").unwrap();
+    store.append_collab_update(&doc, &blob, "t").unwrap();
+
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let rows = |id: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        rows(&map) > 0 && rows(&doc) > 0,
+        "both objects must have a log first"
+    );
+
+    let (s, _) = app.delete(&app.admin, "/v1/projects/tp?force=true").await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    assert_eq!(rows(&map), 0, "the map's log must go with the project");
+    assert_eq!(
+        rows(&doc),
+        0,
+        "and the DOCUMENT's — the kind a per-object loop can miss"
+    );
+}
