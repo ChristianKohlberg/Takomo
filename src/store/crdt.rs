@@ -446,7 +446,10 @@ impl Store {
                 return Err(ApiError::conflict(
                     "conflict.collab_compaction",
                     format!(
-                        "The log has gained {since} rows since this replica loaded and it wrote                          {own_appends} of them. Something else appended, that row is not in the                          state this compaction was built from, and replacing the log now would                          destroy it."
+                        "The log has gained {since} rows since this replica loaded \
+                         and it wrote {own_appends} of them. Something else appended, \
+                         that row is not in the state this compaction was built from, \
+                         and replacing the log now would destroy it."
                     ),
                 )
                 .remedy(
