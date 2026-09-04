@@ -21365,3 +21365,67 @@ async fn compaction_does_not_drop_a_row_the_room_never_saw() {
         "and the room's own edit must survive too: {whole}"
     );
 }
+
+/// A room opened while the archive state is moving must not settle on a stale
+/// answer — in either direction.
+///
+/// This flag has been wrong three times, and every one of them stayed wrong for
+/// the life of the room. Twice it was a stale `false` leaving an archived object
+/// writable; the fix for that introduced a path that could store a stale `true`
+/// and freeze a room on a LIVE project, with the socket then dropping that
+/// person's typing and telling them nothing.
+///
+/// Both fixes shipped without a test. This is that test: it drives the two
+/// orders through the real routes and asserts the room ends up agreeing with the
+/// store, not with whatever it read first.
+#[tokio::test]
+async fn a_room_agrees_with_the_store_about_being_frozen() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+
+    // Archive, then open. The room must come up frozen.
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/archive?force=true", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("reading an archived object stays allowed");
+    let mine = yrs::Doc::new();
+    let u = peer_node_update(&mine, "mn-whilearch", "written while archived", "a0");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &u).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        !mindmap_titles(&whole).contains(&"written while archived".to_string()),
+        "a room opened after an archive must come up frozen: {whole}"
+    );
+
+    // Unarchive. The same room must stop being frozen — the failure mode the
+    // 'never clear what you could not confirm' fallback could have made
+    // permanent.
+    let (s, body) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let again = peer_node_update(&mine, "mn-afterthaw", "written after the thaw", "a1");
+    peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &again).into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    drop(peer);
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    assert!(
+        mindmap_titles(&whole).contains(&"written after the thaw".to_string()),
+        "a room frozen by an archive must thaw with it, or somebody's typing \
+         vanishes with no word to them: {whole}"
+    );
+}

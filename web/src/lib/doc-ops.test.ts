@@ -191,17 +191,17 @@ describe('a batch of ops lands the way it was written', () => {
 })
 
 describe('a batch whose ops change the shape under each other', () => {
-  it('does not split a paragraph when a replace grows the anchor mid-batch', () => {
+  it('keeps the order when a replace changes the anchor size mid-batch', () => {
     const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
     const { applied, skipped } = applyOps(tr, schema, [
       { op: 'insert_after', id: 'blk_a', markdown: 'X' },
       { op: 'replace', id: 'blk_a', markdown: 'PP\n\nQQ' },
       { op: 'insert_after', id: 'blk_a', markdown: 'Y' },
     ])
-    // Tracking this as a BYTE offset put the third op at a position that was no
-    // longer a block boundary once the replace had changed the anchor's size,
-    // and ProseMirror split a paragraph in half — silently, reporting every op
-    // applied. Counting nodes survives a change of size.
+    // Named for what it actually pins. The byte-offset version fails this on
+    // ORDER (`PP QQ Y X`), not by splitting anything — a reviewer checked, and
+    // the first version of this test claimed the split in its name and comment
+    // while proving something else. The split has its own case below.
     expect(applied).toBe(3)
     expect(skipped).toEqual([])
     expect(texts(tr.doc)).toEqual(['PP', 'QQ', 'X', 'Y', 'Tail.'])
@@ -235,5 +235,27 @@ describe('a batch whose ops change the shape under each other', () => {
       { op: 'insert_after', id: 'blk_dup', markdown: 'Y' },
     ])
     expect(texts(tr.doc)).toEqual(['X', 'two', 'Y', 'three'])
+  })
+})
+
+describe('the split the byte offset caused', () => {
+  it('leaves every block whole, with nothing empty or cut', () => {
+    // The corruption itself. A byte offset held against an anchor whose size
+    // changed lands mid-block, and ProseMirror breaks the block in two — which
+    // shows up as an EMPTY block and a fragment. The multi-node replacement is
+    // the shape that reaches it.
+    //
+    // A first version of this test used a single long replacement and passed
+    // under the broken code, which is the third time in this file's history that
+    // a test proved something other than its name. The assertion is on the
+    // property now: no block comes out empty.
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_a', markdown: 'First half.\n\nSecond half.' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Added after.' },
+    ])
+    const blocks = texts(tr.doc)
+    expect(blocks.filter((b) => b === '')).toEqual([])
+    expect(blocks).toEqual(['First half.', 'Second half.', 'Added after.', 'Tail.'])
   })
 })

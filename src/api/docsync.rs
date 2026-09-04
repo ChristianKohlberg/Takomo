@@ -420,16 +420,51 @@ impl Rooms {
             flushing: tokio::sync::Mutex::new(()),
         });
 
-        // Re-check under the lock: two peers can race to open the same document,
-        // and the loser must join the winner's room rather than install a second
-        // replica of the same text.
-        // Scoped so the map's lock is released before the await below: a guard
-        // held across one would make this future non-Send.
-        let room = {
+        // Decide whether this object may be written BEFORE installing the room,
+        // and let the epoch guard the install itself.
+        //
+        // The ordering argument: every caller runs `resync_frozen` AFTER its
+        // store commit, so a read that missed an archive necessarily happened
+        // before that resync's epoch bump — and the bump is published under this
+        // same lock. Either the epoch still matches, and no resync has run since
+        // our read, or it does not and we read again.
+        //
+        // Deciding before the insert is what removes the last unserialised
+        // store. The previous shape installed the room first and stored the flag
+        // afterwards, so a fallback arm that ran out of retries wrote outside the
+        // lock — and could freeze a room on a LIVE project for its whole life,
+        // with the socket then dropping that person's typing and telling them
+        // nothing. Refusing to open is the safe end of that branch; a retry costs
+        // a reconnect, a wrong freeze costs somebody their words.
+        for attempt in 0..3 {
+            let before = state.rooms.freeze_epoch.load(Ordering::SeqCst);
+            let recheck_id = id.to_string();
+            let recheck = state.clone();
+            let frozen_now = super::blocking_read(move || {
+                Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
+            })
+            .await?;
+
             let mut rooms = state.rooms.map.lock().expect("rooms mutex");
+            if state.rooms.freeze_epoch.load(Ordering::SeqCst) != before {
+                drop(rooms);
+                if attempt == 2 {
+                    return Err(ApiError::conflict(
+                        "conflict.collab_busy",
+                        "The project's archive state changed while this document was \
+                         being opened. Nothing is wrong with it — open it again."
+                            .to_string(),
+                    ));
+                }
+                continue;
+            }
+
+            // Two peers can race to open the same object, and the loser must join
+            // the winner's room rather than install a second replica of one text.
             let room = match rooms.get(id) {
                 Some(existing) => existing.clone(),
                 None => {
+                    room.frozen.store(frozen_now, Ordering::SeqCst);
                     rooms.insert(id.to_string(), room.clone());
                     spawn_flusher(state.clone(), room.clone());
                     room
@@ -439,52 +474,9 @@ impl Rooms {
                 return Err(too_many_peers(id));
             }
             room.peers.fetch_add(1, Ordering::SeqCst);
-            room
-        };
-
-        // Decide whether this object may be written, AFTER the room is in the map
-        // so a later `resync_frozen` can find it — and publish that decision only
-        // if no resync happened while we were reading.
-        //
-        // The claim in the commit that removed the previous guard was simply
-        // wrong: `resync_frozen` releases the map's lock BEFORE it stores, so the
-        // two stores race freely, and a stale `false` from this read could land
-        // on top of an archive's `true` and leave the object writable for the
-        // life of the room. The epoch check runs under the same lock the
-        // publisher now takes, so check-and-store cannot be overtaken.
-        for attempt in 0..3 {
-            let before = state.rooms.freeze_epoch.load(Ordering::SeqCst);
-            let recheck_id = id.to_string();
-            let recheck = state.clone();
-            let frozen_now = match super::blocking_read(move || {
-                Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
-            })
-            .await
-            {
-                Ok(frozen) => frozen,
-                Err(e) => {
-                    // The peer count is already ours; give it back before
-                    // leaving, or the room is never dropped and its flusher
-                    // ticks for the life of the process.
-                    Rooms::leave(state, &room);
-                    return Err(e);
-                }
-            };
-            let guard = state.rooms.map.lock().expect("rooms mutex");
-            if state.rooms.freeze_epoch.load(Ordering::SeqCst) == before {
-                room.frozen.store(frozen_now, Ordering::SeqCst);
-                break;
-            }
-            drop(guard);
-            if attempt == 2 {
-                // Out of attempts: never CLEAR a freeze we could not confirm.
-                if frozen_now {
-                    room.frozen.store(true, Ordering::SeqCst);
-                }
-            }
+            return Ok(room);
         }
-
-        Ok(room)
+        unreachable!("the loop returns or errors on its last attempt")
     }
 
     /// Leave a room. The last one out takes the room with them.
@@ -515,6 +507,20 @@ fn kind_of(id: &str) -> CollabKind {
 ///
 /// Runs on the blocking pool: both calls take the process-wide write mutex, and
 /// blocking an async worker on it would be the very stall this design avoids.
+/// Is this the one failure compaction can actually fix — a log at its size cap?
+///
+/// Named rather than matched by suffix. `ends_with("_too_large")` also catches
+/// the per-UPDATE cap, and while that one happens to be unreachable here (the
+/// merged path diverts oversized batches before the store sees them), a gate
+/// whose correctness depends on an invariant three functions away is a gate that
+/// will be wrong after the next change.
+fn wedged(e: &ApiError) -> bool {
+    matches!(
+        e.body.code.as_str(),
+        "validation.document_too_large" | "validation.mindmap_too_large"
+    )
+}
+
 /// Put a batch the store would not take back on the queue, ahead of whatever
 /// arrived while the write was in flight.
 ///
@@ -607,6 +613,16 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
                 Ok(Err(e)) => {
                     eprintln!("{}: flush failed: {}", room.id, e.body.message);
                     requeue_all(room, &batch[i..]);
+                    // The same escape the merged path has. Without it an object
+                    // that reached its size cap while this room was producing
+                    // batches too big to merge wedged permanently — the fourth
+                    // road to that failure, and this path simply did not have the
+                    // way out the other one had been given.
+                    if wedged(&e)
+                        && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES
+                    {
+                        compact(state, room, actor).await;
+                    }
                     return;
                 }
                 Err(e) => {
@@ -649,8 +665,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
             // took the store's write mutex every two seconds for ever, against a
             // compaction that is itself refused for being archived — the same
             // spinning this path was added to cure, by a third road.
-            let wedged = e.body.code.ends_with("_too_large");
-            if wedged && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
+            if wedged(&e) && room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
                 compact(state, room, actor).await;
             }
             return;
@@ -762,6 +777,37 @@ fn spawn_flusher(state: Arc<AppState>, room: Arc<Room>) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
+
+            // Re-decide whether this object may be written, as a BACKSTOP.
+            //
+            // The join decides synchronously, so this is not what closes the
+            // window — it is what gives a wrong answer a way back. This flag has
+            // been wrong three times, and every one of them stayed wrong for the
+            // life of the room, because nothing ever asked again. A read per open
+            // room per tick, on the reader pool, buys "wrong for at most one
+            // tick" instead.
+            let ask = state.clone();
+            let ask_id = room.id.clone();
+            if let Ok(Ok(frozen)) = tokio::task::spawn_blocking(move || {
+                ask.store
+                    .ensure_collab_writable(&ask_id)
+                    .map(|()| false)
+                    .or_else(|e| {
+                        // A missing object reads as frozen; a failed read is not
+                        // evidence of anything and leaves the flag alone.
+                        if e.body.code.starts_with("notfound") || e.body.code.ends_with("archived")
+                        {
+                            Ok(true)
+                        } else {
+                            Err(e)
+                        }
+                    })
+            })
+            .await
+            {
+                room.frozen.store(frozen, Ordering::SeqCst);
+            }
+
             flush(&state, &room, "docsync").await;
             if room.peers.load(Ordering::SeqCst) == 0 {
                 // Empty the room under the same lock a joiner takes, so nobody
@@ -939,12 +985,22 @@ pub async fn sync(
         Ok(room) => room,
         Err(e) => return e.into_response(),
     };
+    // Held by a guard, not left to an explicit `leave` at the end of the
+    // callback. An upgrade that never completes drops the callback without
+    // running it, and the peer count then stays above zero for ever: the room is
+    // never removed from the map and its flusher ticks for the life of the
+    // process. The same leak was fixed one function up and left open here.
+    let guard = RoomGuard {
+        state: state.clone(),
+        room,
+    };
 
     ws.max_message_size(MAX_SYNC_MESSAGE)
         .max_frame_size(MAX_SYNC_MESSAGE)
         .on_upgrade(move |socket| async move {
-            session_loop(socket, state.clone(), room.clone(), session).await;
-            Rooms::leave(&state, &room);
+            let room = guard.room.clone();
+            session_loop(socket, state.clone(), room, session).await;
+            drop(guard);
         })
 }
 
