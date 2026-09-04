@@ -225,6 +225,14 @@ impl TestApp {
         out
     }
 
+    /// `assets/app.js` alone.
+    ///
+    /// Kept because a few checks are genuinely about that ONE file — that the
+    /// page shell's script is served at all, and that something is NOT on the
+    /// critical path. Every "the app ships X" assertion uses `eager_bundle`
+    /// instead: which shared chunk the bundler puts a module in is its business
+    /// and changes without a source change, which is how one of these tests
+    /// started failing with nothing edited.
     pub async fn app_bundle(&self) -> String {
         let resp = self
             .request(Method::GET, "/assets/app.js")

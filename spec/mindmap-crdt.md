@@ -117,8 +117,9 @@ looks like success.
 
 ### 2.3 Sync route
 
-`/v1/docsync/{id}` stays reachable, and a `/v1/sync/{id}` alias is added with the
-old path kept so open browser sessions do not break.
+`/v1/docsync/{id}` stays reachable and carries mindmaps too. The `/v1/sync/{id}`
+alias this section proposed was NOT added — one path for one job turned out to be
+the simpler answer, and nothing had been written against the new name yet.
 
 **The id must remain the last path segment.** This is a wire requirement, not a
 preference: `y-websocket` builds its URL as `serverUrl + "/" + room + "?" +
@@ -468,9 +469,11 @@ binaries are not keyed on the workspace and two sessions overwrite the same file
 - **Cross-map relationships** — `from`/`to` are node ids within one map. Spanning
   maps needs a qualified reference and a story for what happens when the other
   map is deleted.
-- **A trust lens** — `origin` and `reviewed` are stored so the lens is buildable,
-  but nothing renders them yet.
-- **Map ⇄ document round-trip** — the next conversation, and it needs the
-  document's section tree to exist first.
+- ~~**A trust lens**~~ — SHIPPED. `web/src/lib/mindmap-lens.ts` renders it, and a
+  review recorded on either surface now sets both the node's flag and the plan's
+  trace, because the two disagreed until a whole-branch review caught it.
+- ~~**Map ⇄ document round-trip**~~ — SHIPPED, and it turned out not to need a
+  conversion at all: the section tree IS the node tree, which is what
+  `spec/one-model-two-views.md` is about.
 - **Dictation, Cmd-K, question threads** — surface features on top of this model,
   not part of putting it in place.

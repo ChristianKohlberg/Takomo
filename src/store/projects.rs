@@ -1012,16 +1012,29 @@ impl Store {
             // Without this, deleting a project leaves every document's prose and
             // every map's nodes in the database forever — and live sync tickets
             // with them. "Delete the project" has to mean the text goes too.
-            tx.execute(
-                "DELETE FROM crdt_updates WHERE object_id IN \
-                   (SELECT id FROM documents WHERE project = ?1 \
-                    UNION ALL SELECT id FROM mindmaps WHERE project = ?1)",
-                params![id],
-            )?;
+            // Through `purge_collab`, one object at a time, rather than a second
+            // copy of what it deletes.
+            //
+            // This used to hand-roll the same three tables keyed by project. They
+            // agreed, but a fourth table added to one would have been silently
+            // missed by the other — and that is not hypothetical: the plan
+            // history was added to `purge_collab` and had to be added here in a
+            // separate commit, after a project delete was found leaving every
+            // section's prose behind in it.
+            let objects: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM documents WHERE project = ?1 \
+                     UNION ALL SELECT id FROM mindmaps WHERE project = ?1",
+                )?;
+                let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<String>>>()?
+            };
+            for object in &objects {
+                Store::purge_collab(tx, object)?;
+            }
+            // Then the project-level sweep, for rows whose owning object row has
+            // already gone — an orphan `purge_collab` can no longer be told about.
             tx.execute("DELETE FROM crdt_sessions WHERE project = ?1", params![id])?;
-            // And the plan history, for the same reason and with more force:
-            // `plan_trace.text` holds what each section said, so a project whose
-            // prose was deleted above would still have that prose here.
             tx.execute("DELETE FROM plan_trace WHERE project = ?1", params![id])?;
             // `mindmaps.project` has no ON DELETE CASCADE, so with foreign keys
             // on, a project holding a map would otherwise abort the whole delete.

@@ -1026,7 +1026,7 @@ fn resolve_ticket(
     ticket: Option<&str>,
 ) -> ApiResult<CollabSession> {
     let kind = kind_of(object);
-    let ticket = ticket.ok_or_else(|| crdt::session_missing(kind, object))?;
+    let ticket = ticket.ok_or_else(|| crdt::session_missing(kind))?;
 
     let session = state
         .store

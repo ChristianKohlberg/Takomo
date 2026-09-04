@@ -127,7 +127,8 @@ tools grow a "which section" argument; their contract otherwise holds.
 | built | becomes |
 |---|---|
 | `POST /v1/mindmaps/{id}/documents` | gone — nothing to convert |
-| `mindmapdoc::plan_documents`, `store::prose` | gone |
+| `mindmapdoc::plan_documents` | gone |
+| `store::prose` | KEPT — the conversion went, the map's plain notes box did not, and `patch_node` still writes a section's prose through it. See the module's own header for what that costs. |
 | the node's `document` field, the map's `metadata.document` | gone |
 | node `notes` (Y.Text) | node `prose` (XmlFragment) |
 | node `origin`, `reviewed` | the trace, plus the person who authored it |

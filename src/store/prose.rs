@@ -6,13 +6,23 @@
 //! agent's ops land as a proposal precisely so nobody's live text is rewritten
 //! by a process that does not know the schema.
 //!
-//! This is the one case the rule does not cover. A document made by converting
-//! a mindmap has no live text, no reader, and nothing to merge with — it does
-//! not exist until this runs. So it is written here, in the small subset of
-//! blocks `docprops::read_blocks` already round-trips: a paragraph and a bullet
-//! list, nested the way ProseMirror nests them (`bulletList > listItem >
-//! paragraph`). Nothing else is generated, and nothing here ever touches a
-//! document that already has content.
+//! This is the one case the rule does not cover, and the reason has CHANGED —
+//! the paragraph here used to justify it by the mindmap-to-document conversion,
+//! which was deleted when the plan became the document rather than a copy of it.
+//!
+//! What keeps it is the notes box: the map offers one plain-text field per node,
+//! and `patch_node` writes it through `set_plain_text`. So this DOES touch prose
+//! that already has content, which the sentence here used to deny — it replaces
+//! the section wholesale and re-mints every block id. That is a real trade and
+//! the browser side documents it deliberately: a section's headings and lists,
+//! written in `/documents`, do not survive somebody typing in the map's notes
+//! box, and a pending proposal addressing those blocks is invalidated. The plain
+//! field is the map's whole idea of prose; the structure lives on the other
+//! surface.
+//!
+//! What it generates is unchanged: the small subset of blocks
+//! `docprops::read_blocks` already round-trips — a paragraph and a bullet list,
+//! nested the way ProseMirror nests them (`bulletList > listItem > paragraph`).
 
 use yrs::{
     GetString, ReadTxn, TransactionMut, Xml, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlOut,

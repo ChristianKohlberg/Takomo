@@ -52,7 +52,7 @@ async fn inbox_and_board_pages_served_unauthenticated() {
     // The per-surface title used to live in each document's <head>; with one
     // document it is set from the path at runtime, so it is asserted in the
     // bundle instead. Losing it would leave every tab reading "takomo · board".
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     for title in [
         "takomo · board",
         "takomo · inbox",
@@ -157,7 +157,7 @@ async fn ticket_filter_contract_on_board_and_inbox() {
     // since takomo-4io8 — over the same two fields asserted above. They are one
     // bundle now, so this reads it once instead of fetching two documents that
     // would be byte-identical.
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     for (surface, control, wiring) in [
         // JSX compiles `id="tickfilter"` to a prop and the subtree walk is a
         // module whose local names the minifier renames. The stable signals are
@@ -264,7 +264,7 @@ async fn inbox_ticket_filter_has_titles_to_search() {
         "…and stay sparse — the filter needs five fields, not the whole ticket: {list}"
     );
 
-    let body = app.app_bundle().await;
+    let body = app.eager_bundle().await;
     assert!(
         body.contains("fields=id,title,tags,parent,type"),
         "/inbox must request `title`, `parent` and `type` on the ticket fetch it \
@@ -290,7 +290,7 @@ async fn inbox_ticket_filter_has_titles_to_search() {
 #[tokio::test]
 async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
     let app = TestApp::spawn().await;
-    let body = app.app_bundle().await;
+    let body = app.eager_bundle().await;
 
     assert!(
         body.contains("tagvalfilter"),
@@ -387,7 +387,7 @@ fn assert_app_shell(path: &str, page: &str) {
 #[tokio::test]
 async fn answer_link_page_ships_the_grant_view_and_the_renderer() {
     let app = TestApp::spawn().await;
-    let body = app.app_bundle().await;
+    let body = app.eager_bundle().await;
     assert!(
         body.contains("/answer/self"),
         "/board must carry the `#a=` grant view, which reads and writes /v1/answer/self"
@@ -4777,7 +4777,7 @@ async fn settings_page_serves_the_console_and_calls_the_admin_endpoints() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_app_shell("/settings", &resp.text().await.unwrap());
 
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     for path in ["/export/sqlite", "/tokens", "/projects"] {
         assert!(
             bundle.contains(path),
@@ -12552,7 +12552,7 @@ async fn initiatives_page_is_served_with_the_shared_renderer() {
     // 30 tests in web/src/lib/markdown.test.ts, including the scheme allowlist
     // and the markup-injection cases nothing verified before the port. What this
     // layer can still prove is that the initiatives vocabulary ships at all.
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     assert!(
         bundle.contains("md-table"),
         "the markdown renderer is missing"
@@ -15307,7 +15307,7 @@ async fn schedules_page_is_served_as_a_self_contained_build() {
 
     // The page exists to show a cadence and its history, and to let a human act
     // on a proposal. All three vocabularies must ship.
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     assert!(bundle.contains("/schedules"), "no schedules fetches");
     assert!(bundle.contains("occurrences"), "no occurrence history");
     assert!(bundle.contains("activate"), "no activate action");
@@ -15322,7 +15322,7 @@ async fn schedules_page_is_served_as_a_self_contained_build() {
 #[tokio::test]
 async fn every_spa_links_to_the_schedules_page() {
     let app = TestApp::spawn().await;
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     // One nav rail, one bundle — so this is asserted once rather than per page.
     // Every surface mounts that same rail, which is what makes the five read as
     // one product instead of five apps sharing a palette.
@@ -15367,7 +15367,7 @@ async fn the_verification_surfaces_are_served_and_carry_their_clients() {
         assert_app_shell(path, &resp.text().await.unwrap());
     }
 
-    let bundle = app.app_bundle().await;
+    let bundle = app.eager_bundle().await;
     for fragment in [
         "/checklist/worklist",
         "/checklist/gate",
@@ -15463,7 +15463,7 @@ async fn the_dev_seed_ships_schedules_worth_looking_at() {
 #[tokio::test]
 async fn the_board_marks_scheduled_and_not_fulfilled_cards() {
     let app = TestApp::spawn().await;
-    let page = app.app_bundle().await;
+    let page = app.eager_bundle().await;
     assert!(
         page.contains("fromSchedule") && page.contains("\u{21bb}"),
         "the board should carry the ↻ provenance chip"

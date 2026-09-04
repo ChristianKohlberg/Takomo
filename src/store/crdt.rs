@@ -801,7 +801,7 @@ pub fn too_many_peers(kind: CollabKind, id: &str) -> ApiError {
 }
 
 /// No ticket on the handshake at all.
-pub fn session_missing(kind: CollabKind, id: &str) -> ApiError {
+pub fn session_missing(kind: CollabKind) -> ApiError {
     let route = kind.session_route();
     match kind {
         CollabKind::Document => ApiError::new(
@@ -811,7 +811,6 @@ pub fn session_missing(kind: CollabKind, id: &str) -> ApiError {
         )
         .remedy(format!("Mint one with {route} and pass it as ?ticket=… — a browser WebSocket cannot send an Authorization header, which is why the credential rides the query string.")),
         CollabKind::Mindmap => {
-            let _ = id;
             ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "mindmap.session_missing",
