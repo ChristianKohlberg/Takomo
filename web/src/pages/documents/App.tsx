@@ -455,6 +455,7 @@ export function App() {
               pending: t.railPending,
             }}
             sectionLabels={{
+              renameSection: t.renameSection,
               untitled: t.untitled,
               standingConfirmed: t.standingConfirmed,
               standingChanged: t.standingChanged,

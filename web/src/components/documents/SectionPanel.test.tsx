@@ -1,12 +1,13 @@
 // What a section says about itself: where it stands, who did what to it, and
 // which of the two views owns its title.
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { SectionPanel } from './SectionPanel'
 import type { TraceEntry } from '@/lib/mindmaps'
 
 const labels = {
+  renameSection: 'Rename section',
   untitled: 'Untitled section',
   standingConfirmed: 'agreed',
   standingChanged: 'changed since',
@@ -82,10 +83,28 @@ describe('SectionPanel', () => {
     expect(screen.getByRole('heading', { level: 2 })).toBeTruthy()
   })
 
-  it('never offers to edit the title, because that caret lives on the map', () => {
-    panel()
-    expect(screen.queryByRole('textbox')).toBeNull()
+  it('renames the section in place, and still offers the map', async () => {
+    // This used to assert the opposite — the heading was read-only because a
+    // title is one `Y.Text` and a caret in two layouts is a fight. That holds
+    // for a LIVE caret; `EditableText` commits on blur, which is one diff, the
+    // same shape as the map's own rename. Writing a plan and naming its parts
+    // is one activity, so it happens where you are looking.
+    const onTitle = vi.fn()
+    panel({ canWrite: true, onTitle })
+    // `EditableText` is a `contentEditable` heading, not an input — queried by
+    // its label, which is the thing a screen reader announces.
+    const box = screen.getByLabelText('Rename section')
+    expect(box.getAttribute('contenteditable')).toBe('true')
+    box.textContent = 'versioning, decided'
+    fireEvent.blur(box)
+    expect(onTitle).toHaveBeenCalledWith('versioning, decided')
+    // Showing it on the map stays, for when the map is where you want to be.
     expect(screen.getByText('⌖ Show it on the map')).toBeTruthy()
+  })
+
+  it('leaves the heading static for a reader', () => {
+    panel({ canWrite: false })
+    expect(screen.queryByLabelText('Rename section')).toBeNull()
   })
 
   it('says where the section stands in words', () => {

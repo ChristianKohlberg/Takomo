@@ -62,6 +62,7 @@ import {
   proseTextOf,
   readPlanTree,
   readProseOf,
+  setTitle,
 } from '@/lib/mindmap-crdt'
 import {
   ancestorKeys,
@@ -490,6 +491,21 @@ export default function Plan({
     [proposalMap, session.display, onSkipped, onDecided],
   )
 
+  // Renaming a section from the plan.
+  //
+  // `setTitle` applies a DIFF to the title's `Y.Text`, which is what the map's
+  // own rename does — so two people renaming one section merge rather than one
+  // clobbering the other. It is only safe because `EditableText` commits on
+  // blur: a live caret here would be a second one on the same text.
+  const onTitle = useCallback(
+    (key: string, text: string) => {
+      if (!canWrite) return
+      setTitle(ydoc, key, text)
+      onEdited(key)
+    },
+    [canWrite, ydoc, onEdited],
+  )
+
   const onReject = useCallback(
     (key: string, p: Proposal) => {
       // Nothing is applied and nothing is removed: the record stays, as
@@ -623,6 +639,7 @@ export default function Plan({
                   number={row.number}
                   depth={row.depth}
                   title={row.title}
+                  onTitle={(text) => onTitle(row.key, text)}
                   standing={standings[row.key] ?? 'unseen'}
                   entries={trace.get(row.key) ?? []}
                   historyOpen={openHistory.has(row.key)}

@@ -5,11 +5,18 @@
 // node's own fragment and an editor is not something a presentational component
 // can build from props.
 //
-// The heading is READ-ONLY here, and that is a decision rather than an omission.
-// A node's title is the one thing both views show, and the title caret lives on
-// the map: typing a heading here would put two carets on one Y.Text in two
-// layouts, and the map is where naming a thought belongs. So this offers to show
-// the section on the map instead.
+// The heading is EDITABLE here, and the way it is edited is the whole point.
+//
+// It used to be read-only, on the argument that a title is one `Y.Text` and a
+// caret in two layouts is a fight. That argument holds for a LIVE caret and not
+// for this: `EditableText` saves on blur, so a commit here is one `applyText`
+// diff — the same shape as the map's own rename, which has always been allowed.
+// Two people renaming one section still merge rather than clobber.
+//
+// Writing a plan and naming its parts is one activity, and sending somebody to
+// another view to fix a heading they are looking at is the kind of seam this
+// branch exists to remove. "Show it on the map" stays, for when the map is where
+// you actually want to be.
 //
 // Proposals hang off it for the same reason the review button does: an agent
 // proposes and a person confirms, and the person confirming is reading the
@@ -27,10 +34,13 @@ import type { TraceEntry, TraceKind } from '@/lib/mindmaps'
 import type { Standing } from '@/lib/plan-trace'
 import { traceActor } from '@/lib/plan-trace'
 import { fmtAge } from '@/lib/format'
+import { EditableText } from '@/components/EditableText'
 import { Hint } from '@/components/Hint'
 import { cn } from '@/lib/utils'
 
 export interface SectionPanelLabels {
+  /** Read out by the heading's editor. */
+  renameSection: string
   /** A section nobody has given a title yet. */
   untitled: string
   standingConfirmed: string
@@ -61,6 +71,8 @@ export interface SectionPanelProps {
   /** 0 for a first-ring node. Heading level, indent and quiet all read it. */
   depth: number
   title: string
+  /** Rename the section from here. Absent leaves the heading static. */
+  onTitle?: (text: string) => Promise<unknown> | void
   standing: Standing
   /** This section's history, newest first. */
   entries: readonly TraceEntry[]
@@ -114,6 +126,7 @@ export function SectionPanel({
   number,
   depth,
   title,
+  onTitle,
   standing,
   entries,
   historyOpen,
@@ -157,9 +170,21 @@ export function SectionPanel({
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>
-        <Heading className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}>
-          {title || labels.untitled}
-        </Heading>
+        {canWrite && onTitle ? (
+          <EditableText
+            value={title}
+            editable
+            onCommit={async (next) => { await onTitle(next) }}
+            placeholder={labels.untitled}
+            aria-label={labels.renameSection}
+            as="h1"
+            className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}
+          />
+        ) : (
+          <Heading className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}>
+            {title || labels.untitled}
+          </Heading>
+        )}
         <span
           className={cn(
             'flex-none rounded-sm border px-1.5 py-0.5 text-[10.5px] font-[650]',
