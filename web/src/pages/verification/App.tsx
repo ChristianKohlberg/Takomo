@@ -9,6 +9,7 @@
 // this ship", the worklist answers "who has to do something" — and the split
 // between agent and human work is the product, not a formatting choice: a
 // hundred cases cost an agent minutes and cost a person most of a day.
+import { ViewSwitcher } from '@/components'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -278,18 +279,16 @@ export function App() {
     <AppShell
       rail={{
         onNavigate: navigate,
-        current: 'verification',
+        current: 'specification',
         nav: {
           board: t.board,
           inbox: t.inbox,
-          documents: t.documents,
+          specification: t.specification,
           initiatives: t.initiatives,
-          mindmaps: t.mindmaps,
           schedules: t.schedules,
-          verification: t.verification,
           environments: t.environments,
         },
-        badges: { verification: worklist?.human.cases ?? 0 },
+        badges: { specification: worklist?.human.cases ?? 0 },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
           id,
           name,
@@ -323,6 +322,13 @@ export function App() {
     >
       <AppHeader
         title={t.verification}
+        views={
+          <ViewSwitcher
+            current="tests"
+            onNavigate={navigate}
+            labels={{ map: t.viewMap, document: t.viewDocument, tests: t.viewTests }}
+          />
+        }
         lang={lang}
         onLang={(l) => {
           setLang(l)

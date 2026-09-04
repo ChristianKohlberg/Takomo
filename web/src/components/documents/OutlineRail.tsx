@@ -27,6 +27,8 @@ import type { Standing } from '@/lib/plan-trace'
 import { cn } from '@/lib/utils'
 
 export interface OutlineRailLabels {
+  /** The outline's own name, on the button that folds it away. */
+  outline: string
   expand: string
   collapse: string
   /** What a folded section is holding. `{n}` is the count, at any depth. */

@@ -32,6 +32,7 @@
 // **Titles are not edited here.** A heading is read-only and the section offers
 // "show it on the map" instead: the title caret lives on the canvas, and two
 // carets on one Y.Text in two layouts is a fight rather than a feature.
+import { ChevronDownIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
@@ -508,6 +509,24 @@ export default function Plan({
    * write behind, and a reader must not change the plan by looking at it — hence
    * the read-only path for a session that cannot write.
    */
+  // Remembered per browser, not per session: somebody who folds the outline away
+  // wants it folded next time too, and this is a per-viewer preference that
+  // never needs to reach the server or another peer.
+  const [outlineOpen, setOutlineOpen] = useState(() => {
+    try {
+      return localStorage.getItem('takomo.plan.outline') !== 'closed'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('takomo.plan.outline', outlineOpen ? 'open' : 'closed')
+    } catch {
+      // A private window refuses storage; the fold still works for this visit.
+    }
+  }, [outlineOpen])
+
   const [fragments, setFragments] = useState<Map<string, Y.XmlFragment>>(() => new Map())
   const known = useRef(fragments)
   useEffect(() => {
@@ -529,7 +548,32 @@ export default function Plan({
     <main className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
       {/* One breakpoint, `md`, meaning phone or not: the outline stacks above
           the plan on a phone and sits beside it everywhere else. */}
-      <aside className="border-b-border-soft flex max-h-[38vh] flex-none flex-col overflow-y-auto border-b px-2 py-3 md:max-h-none md:w-full md:max-w-80 md:border-r md:border-b-0">
+      {/* Collapsible, and the state is remembered.
+          On a long plan the outline is how you navigate; on a narrow window it
+          is competing with the prose for the only column that matters. Both are
+          true at different moments, so it folds to a strip you can open again
+          rather than a choice made once in the layout. */}
+      <aside
+        className={[
+          'border-b-border-soft flex flex-none flex-col border-b md:border-r md:border-b-0',
+          outlineOpen
+            ? 'max-h-[38vh] overflow-y-auto px-2 py-3 md:max-h-none md:w-full md:max-w-80'
+            : 'px-2 py-2 md:w-auto',
+        ].join(' ')}
+      >
+        <button
+          type="button"
+          onClick={() => setOutlineOpen((v) => !v)}
+          aria-expanded={outlineOpen}
+          className="text-muted-foreground hover:text-foreground mb-1 flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[12px] font-[650]"
+        >
+          <ChevronDownIcon
+            className={['size-3.5 flex-none transition-transform', outlineOpen ? '' : '-rotate-90'].join(' ')}
+            aria-hidden="true"
+          />
+          <span>{railLabels.outline}</span>
+        </button>
+        {outlineOpen && (
         <OutlineRail
           sections={sections}
           selected={selected}
@@ -540,9 +584,17 @@ export default function Plan({
           pending={pending}
           labels={railLabels}
         />
+        )}
       </aside>
 
-      <div ref={columnRef} className="min-w-0 flex-1 overflow-y-auto px-4 py-2 md:px-6">
+      {/* The document's own ground is white — the plan is the one surface here
+          meant to read like a page rather than like an app, so it does not take
+          the muted app background. In dark mode it stays on the card colour
+          rather than becoming a glaring white rectangle. */}
+      <div
+        ref={columnRef}
+        className="min-w-0 flex-1 overflow-y-auto bg-white px-4 py-2 md:px-6 dark:bg-[color:var(--card)]"
+      >
         {!canWrite && (
           <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
             {labels.readOnly}
@@ -557,7 +609,9 @@ export default function Plan({
         ) : (
           // A measure, not a width: prose running the full width of a desktop
           // window is unreadable, and `max-w-*` cannot overflow a phone.
-          <div className="min-w-0 max-w-[720px]">
+          // `mx-auto` centres that measure in whatever column is left once the
+          // outline has taken its share.
+          <div className="mx-auto min-w-0 max-w-[720px]">
             {visible.map((row) => {
               const mounted = near === null || near.has(row.key)
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null

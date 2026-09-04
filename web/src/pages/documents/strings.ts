@@ -4,6 +4,11 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    specification: 'Specification',
+    viewMap: 'Map',
+    viewDocument: 'Document',
+    viewTests: 'Tests',
+    outline: 'Outline',
     board: 'Board',
     inbox: 'Inbox',
     documents: 'Documents',
@@ -97,6 +102,11 @@ export const STR = defineStrings({
     kindRejected: 'rejected',
   },
   de: {
+    specification: 'Spezifikation',
+    viewMap: 'Karte',
+    viewDocument: 'Dokument',
+    viewTests: 'Tests',
+    outline: 'Gliederung',
     board: 'Board',
     inbox: 'Posteingang',
     documents: 'Dokumente',

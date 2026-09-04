@@ -93,6 +93,8 @@ export {
 export { Logo } from './Logo'
 export { AppHeader } from './AppHeader'
 export type { AppHeaderProps } from './AppHeader'
+export { ViewSwitcher } from './ViewSwitcher'
+export type { ViewSwitcherProps, ViewSwitcherLabels, SpecView } from './ViewSwitcher'
 export { NavRail } from './NavRail'
 export type { NavRailProps, NavRailLabels, NavLabels } from './NavRail'
 export { AppShell } from './AppShell'

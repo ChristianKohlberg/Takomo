@@ -16,6 +16,7 @@
 // So this page owns exactly three things: the map's socket ticket, the plan's
 // history (which is SQL, not CRDT — see `src/store/trace.rs`), and the shell
 // around them. `Plan` owns the document.
+import { ViewSwitcher } from '@/components'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -321,15 +322,13 @@ export function App() {
     <AppShell
       rail={{
         onNavigate: navigate,
-        current: 'documents',
+        current: 'specification',
         nav: {
           board: t.board,
           inbox: t.inbox,
-          documents: t.documents,
+          specification: t.specification,
           initiatives: t.initiatives,
-          mindmaps: t.mindmaps,
           schedules: t.schedules,
-          verification: t.verification,
           environments: t.environments,
         },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
@@ -365,6 +364,13 @@ export function App() {
     >
       <AppHeader
         title={map ? map.title : t.documents}
+        views={
+          <ViewSwitcher
+            current="document"
+            onNavigate={navigate}
+            labels={{ map: t.viewMap, document: t.viewDocument, tests: t.viewTests }}
+          />
+        }
         lang={lang}
         onLang={(l) => {
           setLang(l)
@@ -438,6 +444,7 @@ export function App() {
               proseLabel: t.proseLabel,
             }}
             railLabels={{
+              outline: t.outline,
               expand: t.outlineExpand,
               collapse: t.outlineCollapse,
               folded: t.outlineFolded,

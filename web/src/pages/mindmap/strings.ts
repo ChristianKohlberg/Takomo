@@ -4,6 +4,10 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    specification: 'Specification',
+    viewMap: 'Map',
+    viewDocument: 'Document',
+    viewTests: 'Tests',
     mindmaps: 'Mindmaps',
     board: 'Board',
     inbox: 'Inbox',
@@ -208,6 +212,10 @@ export const STR = defineStrings({
     cutEdge: 'Cut the line: “{title}” stops hanging off “{parent}”',
   },
   de: {
+    specification: 'Spezifikation',
+    viewMap: 'Karte',
+    viewDocument: 'Dokument',
+    viewTests: 'Tests',
     mindmaps: 'Mindmaps',
     board: 'Board',
     inbox: 'Posteingang',

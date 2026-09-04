@@ -13,6 +13,7 @@ function node(id: string, parent: string | null, title: string, position = 0): P
 }
 
 const labels = {
+  outline: 'Outline',
   expand: 'Open this section',
   collapse: 'Close this section',
   folded: '{n} sections inside',

@@ -18,6 +18,7 @@
 // agent — so there is no optimistic copy to keep, no refetch, no save button and
 // no dirty state. The page mints the socket ticket and owns the map's row
 // metadata; `Live` owns the document.
+import { ViewSwitcher } from '@/components'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -353,15 +354,13 @@ export function App() {
     <AppShell
       rail={{
         onNavigate: navigate,
-        current: 'mindmaps',
+        current: 'specification',
         nav: {
           board: t.board,
           inbox: t.inbox,
-          documents: t.documents,
+          specification: t.specification,
           initiatives: t.initiatives,
-          mindmaps: t.mindmaps,
           schedules: t.schedules,
-          verification: t.verification,
           environments: t.environments,
         },
         // No project picker here, deliberately: on this surface the project is a
@@ -388,6 +387,13 @@ export function App() {
           is, whether this browser is connected, and who else is in it. */}
       <AppHeader
         title={open ? open.title : t.mindmaps}
+        views={
+          <ViewSwitcher
+            current="map"
+            onNavigate={navigate}
+            labels={{ map: t.viewMap, document: t.viewDocument, tests: t.viewTests }}
+          />
+        }
         lang={lang}
         onLang={(l) => {
           setLang(l)
