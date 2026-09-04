@@ -207,6 +207,30 @@ impl Store {
         })
     }
 
+    /// Rows written after `since`, oldest first, with their `seq`.
+    ///
+    /// What a room reads to catch up when it discovers the log has grown past
+    /// what it replayed. Refusing to compact is only safe if there is a way back
+    /// — without this the room refuses forever and the log grows without bound,
+    /// which is the failure the refusal was added to prevent, arriving by the
+    /// other road.
+    pub fn collab_updates_since(&self, id: &str, since: i64) -> ApiResult<Vec<(i64, Vec<u8>)>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT seq, blob FROM crdt_updates WHERE object_id = ?1 AND seq > ?2 \
+                 ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map(params![id, since], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     /// The highest `seq` in this object's log, or 0 when it has none.
     ///
     /// What a room records as it opens, so a later compaction can tell a row it

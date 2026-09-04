@@ -166,15 +166,17 @@ export function applyOps(
 ): { applied: number; skipped: string[] } {
   const skipped: string[] = []
   let applied = 0
-  // How much has already been inserted after each anchor in THIS batch.
+  // How many top-level nodes sitting after each anchor belong to it: the extra
+  // nodes a `replace` produced, plus everything earlier ops inserted after it.
   //
-  // Every op re-finds its block in the current document, so two `insert_after`
-  // ops naming the same block both landed immediately after it — and the second
-  // therefore landed ABOVE the first. The reviewer accepted an ordered list and
-  // got it backwards, with `applied: 2` and nothing skipped to hint at it. The
-  // nodes a previous op inserted sit directly after the anchor, so stepping past
-  // them keeps the batch in the order it was written.
-  const insertedAfter = new Map<string, number>()
+  // Counted in NODES, not bytes. Two `insert_after` ops naming one block both
+  // landed immediately after it, so the second went in above the first. The
+  // first fix for that held a byte offset — which a later `replace` in the same
+  // batch invalidates, because the anchor's size changes underneath it. That
+  // inserted at a position which was no longer a block boundary and PROSEMIRROR
+  // SPLIT A PARAGRAPH IN HALF, silently, reporting every op applied. A count of
+  // nodes survives anything that changes their sizes.
+  const trailing = new Map<string, number>()
 
   for (const op of ops) {
     // Re-find against the CURRENT doc each time: earlier ops in this batch have
@@ -193,6 +195,7 @@ export function applyOps(
     }
 
     const nodes = markdownToNodes(schema, op.markdown ?? '')
+    const carried = trailing.get(op.id) ?? 0
     if (op.op === 'replace') {
       // Carry the block id onto the replacement, so the block a later op in the
       // same batch names still exists. Without it a `replace` followed by an
@@ -205,13 +208,21 @@ export function applyOps(
           : n,
       )
       tr.replaceWith(pos, pos + node.nodeSize, kept)
+      // Only the first replacement node keeps the id; the rest become blocks
+      // that follow it and belong to it, ahead of anything already trailing.
+      trailing.set(op.id, carried + kept.length - 1)
     } else {
-      const already = insertedAfter.get(op.id) ?? 0
-      tr.insert(pos + node.nodeSize + already, nodes)
-      insertedAfter.set(
-        op.id,
-        already + nodes.reduce((total, n) => total + n.nodeSize, 0),
-      )
+      // Walk past what already belongs to this anchor, so a later insert lands
+      // after the earlier one — and after the whole of a multi-node replacement
+      // rather than inside it.
+      let at = pos + node.nodeSize
+      for (let i = 0; i < carried; i++) {
+        const next = tr.doc.nodeAt(at)
+        if (!next) break
+        at += next.nodeSize
+      }
+      tr.insert(at, nodes)
+      trailing.set(op.id, carried + nodes.length)
     }
     applied++
   }

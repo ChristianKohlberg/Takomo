@@ -21194,6 +21194,97 @@ async fn a_live_sync_session_does_not_block_the_oauth_sweep() {
     assert_eq!(left, 0, "the expired token should have been swept");
 }
 
+/// A refused compaction must recover, not refuse for ever.
+///
+/// The guard that stops compaction destroying a row this replica never replayed
+/// compares where the room loaded against how much of what followed it wrote. A
+/// foreign append makes those disagree — and nothing advanced the baseline, so
+/// they disagreed for the life of the room: every flush refused, the log grew
+/// past the compaction threshold without bound, and a full state encode plus a
+/// database round-trip ran every two seconds for ever. That is the failure the
+/// refusal exists to prevent, arriving by the other road.
+///
+/// Found by an independent reviewer, who also measured it: eight edits after one
+/// foreign append took the log from 256 rows to 263, refusing every time.
+#[tokio::test]
+async fn a_refused_compaction_catches_up_instead_of_refusing_for_ever() {
+    use docsync_support::*;
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::ReadTxn;
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Payments rebuild").await;
+    let store = app.open_store();
+
+    let filler = {
+        let doc = yrs::Doc::new();
+        let _ = doc.get_or_insert_map("nodes");
+        let txn = yrs::Transact::transact(&doc);
+        txn.encode_state_as_update_v1(&yrs::StateVector::default())
+    };
+    for _ in 0..(takomo::store::COMPACT_AFTER_UPDATES - 2) {
+        store.append_collab_update(&map, &filler, "pad").unwrap();
+    }
+
+    let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let extra = {
+        use yrs::{Map, Transact};
+        let doc = yrs::Doc::new();
+        let nodes = doc.get_or_insert_map("nodes");
+        let mut txn = doc.transact_mut();
+        let entry = nodes.insert(&mut txn, "mn-fromcli1", yrs::MapPrelim::default());
+        entry.insert(&mut txn, "title", "written by the CLI");
+        entry.insert(&mut txn, "position", 9.0);
+        txn.encode_update_v1()
+    };
+    store.append_collab_update(&map, &extra, "cli").unwrap();
+
+    // Several ordinary edits, each of which would trip compaction.
+    let mine = yrs::Doc::new();
+    for i in 0..4 {
+        let u = peer_node_update(
+            &mine,
+            &format!("mn-edit{i:04}"),
+            &format!("edit {i}"),
+            &format!("a{i}"),
+        );
+        peer.send(WsMessage::Binary(sync_message(SYNC_UPDATE, &u).into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+    drop(peer);
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id = ?1",
+            [&map],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        rows < takomo::store::COMPACT_AFTER_UPDATES,
+        "the log must have been compacted once the room caught up, not grown to {rows} rows"
+    );
+
+    // And nothing was lost getting there.
+    let (_, whole) = app.get(&app.worker, &format!("/v1/mindmaps/{map}")).await;
+    let titles = mindmap_titles(&whole);
+    assert!(
+        titles.contains(&"written by the CLI".to_string()),
+        "the foreign row must survive the catch-up: {whole}"
+    );
+    assert!(
+        titles.contains(&"edit 3".to_string()),
+        "and so must the room's own last edit: {whole}"
+    );
+}
+
 /// Compaction must not delete a row it never replayed.
 ///
 /// It replaces the whole log with the room's replica, on the argument that the

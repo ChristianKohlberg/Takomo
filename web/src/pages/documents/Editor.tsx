@@ -227,7 +227,7 @@ export default function Editor({
 
   /** Record a decision on the proposal itself, so it stays readable afterwards. */
   const decide = useCallback(
-    (p: Proposal, status: 'accepted' | 'rejected') => {
+    (p: Proposal, status: 'accepted' | 'rejected', dropped: readonly string[] = []) => {
       const raw = proposalMap.get(p.id)
       const current = parseProposal(raw)
       if (!current || current.status !== 'pending') return false
@@ -238,6 +238,7 @@ export default function Editor({
           status,
           decided_by: session.display,
           decided_at: Date.now(),
+          ...(dropped.length ? { dropped: [...dropped] } : {}),
         }),
       )
       return true
@@ -249,12 +250,15 @@ export default function Editor({
     (p: Proposal) => {
       if (!editor) return
       const tr = editor.state.tr
-      const { applied } = applyOps(tr, editor.schema, p.ops)
-      // The decision and the edit go in together. Marking it accepted without
-      // applying it — or the reverse — leaves the document and its record
-      // disagreeing, and the record is the only durable half.
-      if (!decide(p, 'accepted')) return
-      if (applied) editor.view.dispatch(tr)
+      const { applied, skipped } = applyOps(tr, editor.schema, p.ops)
+      // Nothing applied is not an acceptance. Recording one leaves a durable
+      // claim that somebody accepted a change the document never received, and
+      // the record is the only half that survives a reload. The plan view was
+      // fixed for this first and THIS surface was missed — which is what an
+      // accept-semantics test would have caught, and there wasn't one.
+      if (!applied) return
+      if (!decide(p, 'accepted', skipped)) return
+      editor.view.dispatch(tr)
     },
     [editor, decide],
   )

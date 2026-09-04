@@ -103,7 +103,13 @@ const MAX_PEERS_PER_ROOM: usize = 64;
 /// behind. Generous rather than tight, because a first sync legitimately carries
 /// a whole document's state and a large paste is not abuse; what it rules out is
 /// the frame that is abuse.
-const MAX_SYNC_MESSAGE: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_SYNC_MESSAGE: usize = 8 * 1024 * 1024;
+
+/// The whole fix rests on these being equal, so the compiler holds it rather
+/// than a comment. Anything the socket accepts must be storable; when they
+/// disagreed, a frame in between was applied and broadcast and then refused by
+/// every flush for the life of the room.
+const _: () = assert!(MAX_SYNC_MESSAGE == crate::store::MAX_UPDATE_BYTES);
 
 /// How much unwritten work one room may hold before it stops taking more.
 ///
@@ -388,42 +394,44 @@ impl Rooms {
         // Re-check under the lock: two peers can race to open the same document,
         // and the loser must join the winner's room rather than install a second
         // replica of the same text.
-        // `frozen` was read before the replay, which can take seconds, and
-        // `resync_frozen` only reaches rooms that are already in the map — so an
-        // archive committing in that window is missed twice over and the room
-        // keeps `false` for the rest of its life. Re-asking once here, after the
-        // room is installed and therefore visible to any LATER resync, closes the
-        // window from the other side: either the archive's resync saw this room,
-        // or this read sees the archive.
+        // Scoped so the map's lock is released before the await below: a guard
+        // held across one would make this future non-Send.
+        let room = {
+            let mut rooms = state.rooms.0.lock().expect("rooms mutex");
+            let room = match rooms.get(id) {
+                Some(existing) => existing.clone(),
+                None => {
+                    rooms.insert(id.to_string(), room.clone());
+                    spawn_flusher(state.clone(), room.clone());
+                    room
+                }
+            };
+            if room.peers.load(Ordering::SeqCst) >= MAX_PEERS_PER_ROOM {
+                return Err(too_many_peers(id));
+            }
+            room.peers.fetch_add(1, Ordering::SeqCst);
+            room
+        };
+
+        // Ask whether this object may be written AFTER the room is in the map,
+        // and with the map's lock released.
+        //
+        // Both halves matter, and an earlier attempt had neither: reading before
+        // the insert leaves an archive that commits in between invisible, because
+        // its `resync_frozen` snapshots a map this room is not in yet — and doing
+        // it inside the lock cannot help, since that is the very lock `resync`
+        // must take, so no interleaving can tell the two orders apart. Once the
+        // room is installed and the lock is free, the two paths cover each other:
+        // either the archive's resync finds this room, or this read finds the
+        // archive.
         let recheck_id = id.to_string();
         let recheck = state.clone();
         let frozen_now = super::blocking_read(move || {
             Ok(recheck.store.ensure_collab_writable(&recheck_id).is_err())
         })
         .await?;
+        room.frozen.store(frozen_now, Ordering::SeqCst);
 
-        let mut rooms = state.rooms.0.lock().expect("rooms mutex");
-        let room = match rooms.get(id) {
-            Some(existing) => existing.clone(),
-            None => {
-                rooms.insert(id.to_string(), room.clone());
-                // AFTER the insert, and only ever raising it. Setting it before
-                // left the same hole one step smaller: an archive committing
-                // between the read and the insert runs `resync_frozen` while
-                // this room is not yet in the map, and a stale `false` written
-                // afterwards would overwrite what that resync would have set.
-                // Raising only means the two orders agree.
-                if frozen_now {
-                    room.frozen.store(true, Ordering::SeqCst);
-                }
-                spawn_flusher(state.clone(), room.clone());
-                room
-            }
-        };
-        if room.peers.load(Ordering::SeqCst) >= MAX_PEERS_PER_ROOM {
-            return Err(too_many_peers(id));
-        }
-        room.peers.fetch_add(1, Ordering::SeqCst);
         Ok(room)
     }
 
@@ -577,6 +585,15 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         Ok(Err(e)) => {
             eprintln!("{}: flush failed: {}", room.id, e.body.message);
             requeue(room, merged);
+            // A log that has reached `MAX_OBJECT_BYTES` refuses every append, and
+            // compaction — the only thing that shrinks it — was attempted only
+            // AFTER a successful one. So the object wedged permanently, for every
+            // room that would ever open it, and raising the row cap to match the
+            // socket made that four times cheaper to reach. Compacting on the way
+            // out gives it the one escape it has.
+            if room.rows.load(Ordering::SeqCst) as i64 >= COMPACT_AFTER_UPDATES {
+                compact(state, room, actor).await;
+            }
             return;
         }
         Err(e) => {
@@ -592,35 +609,72 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
     note_size_if_mindmap(state, room).await;
 
     if rows >= COMPACT_AFTER_UPDATES {
-        // The state we pass is the room's replica, which by construction holds
-        // every update in the log plus anything that arrived while we were
-        // writing — so replacing the log with it cannot lose a concurrent edit.
-        let state_blob = room.full_state();
-        // Where this replica started, and how much of what followed it wrote.
-        let base = room.base_seq.load(Ordering::SeqCst);
-        let mine = room.own_appends.load(Ordering::SeqCst);
-        let store = state.clone();
-        let id = room.id.clone();
-        let writer = actor.to_string();
-        let done = tokio::task::spawn_blocking(move || {
-            store
-                .store
-                .compact_collab(&id, &state_blob, &writer, base, mine)
-        })
-        .await;
-        match done {
-            Ok(Ok(())) => {
-                room.rows.store(1, Ordering::SeqCst);
-                // The log is now exactly the row this replica just wrote, so the
-                // accounting restarts from it.
-                room.own_appends.store(1, Ordering::SeqCst);
-            }
-            Ok(Err(e)) => eprintln!(
-                "document {}: compaction failed: {}",
-                room.id, e.body.message
-            ),
-            Err(e) => eprintln!("{}: compaction task failed: {e}", room.id),
+        compact(state, room, actor).await;
+    }
+}
+
+/// Replace the log with the replica, when the replica is entitled to.
+///
+/// Reached from a successful flush that crossed the threshold, and from a FAILED
+/// one on a log that has grown too large to append to — that second path is the
+/// only way a wedged object ever shrinks again.
+async fn compact(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
+    // The state we pass is the room's replica, which by construction holds
+    // every update in the log plus anything that arrived while we were
+    // writing — so replacing the log with it cannot lose a concurrent edit.
+    let state_blob = room.full_state();
+    // Where this replica started, and how much of what followed it wrote.
+    let base = room.base_seq.load(Ordering::SeqCst);
+    let mine = room.own_appends.load(Ordering::SeqCst);
+    let store = state.clone();
+    let id = room.id.clone();
+    let writer = actor.to_string();
+    let done = tokio::task::spawn_blocking(move || {
+        store
+            .store
+            .compact_collab(&id, &state_blob, &writer, base, mine)
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => {
+            room.rows.store(1, Ordering::SeqCst);
+            // The log is now exactly the row this replica just wrote, so the
+            // accounting restarts from it.
+            room.own_appends.store(1, Ordering::SeqCst);
         }
+        Ok(Err(e)) => {
+            // Refused because the log has rows this replica never replayed.
+            // Read them, apply them, and move the baseline — otherwise the
+            // refusal is permanent: `base_seq` never advances, every later
+            // flush is refused too, and the log grows without bound past the
+            // compaction threshold for the life of the room. That is the
+            // failure the refusal exists to prevent, arriving by the other
+            // road, and the remedy this error prints was untrue until now.
+            eprintln!(
+                "document {}: compaction deferred: {}",
+                room.id, e.body.message
+            );
+            let store = state.clone();
+            let id = room.id.clone();
+            let from = base;
+            let caught_up =
+                tokio::task::spawn_blocking(move || store.store.collab_updates_since(&id, from))
+                    .await;
+            if let Ok(Ok(rows)) = caught_up {
+                let mut highest = base;
+                for (seq, blob) in &rows {
+                    if room.apply(blob).is_err() {
+                        eprintln!("{}: skipping an uncatchable row {seq}", room.id);
+                    }
+                    highest = highest.max(*seq);
+                }
+                // Everything up to here is now IN the replica, so it is a
+                // baseline this room can honestly claim.
+                room.base_seq.store(highest, Ordering::SeqCst);
+                room.own_appends.store(0, Ordering::SeqCst);
+            }
+        }
+        Err(e) => eprintln!("{}: compaction task failed: {e}", room.id),
     }
 }
 
