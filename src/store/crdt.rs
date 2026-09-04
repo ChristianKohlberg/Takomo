@@ -188,6 +188,23 @@ fn archived_error(object: &CollabObject) -> ApiError {
     }
 }
 
+/// Is this refusal the SIZE one — compaction cannot help, as opposed to the log
+/// having moved under it?
+///
+/// Lives beside the constructors that emit it, and is the only thing the flusher
+/// matches on. The consumer previously compared its own copy of the code string,
+/// which the repo's drift guard structurally cannot see: it reads the first
+/// argument of `ApiError::` constructors, and an `==` is not a construction site.
+/// A rename that updated the emitters and the spec together — the natural way,
+/// because the guard trains you to keep those in step — would have left the
+/// consumer stale, the guard green, and a wedged room spinning again.
+///
+/// The literals stay at the call sites so the guard still reads them and still
+/// checks the spec; what this removes is the copy in another file.
+pub fn is_size_refusal(e: &ApiError) -> bool {
+    e.body.code == "conflict.collab_compaction_size"
+}
+
 impl Store {
     /// Resolve an id to its object, or 404.
     pub fn collab_object(&self, id: &str) -> ApiResult<CollabObject> {

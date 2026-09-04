@@ -162,9 +162,15 @@ pub struct Room {
     ///
     /// The store can only refuse after it has been handed the blob, and building
     /// that blob is the expensive half: a permanently wedged room would encode
-    /// the whole document — measured at 35 MB — on the blocking pool every two
-    /// seconds and throw it away. This is the caller-side stop, which ends the
-    /// work rather than only the damage.
+    /// the whole document — measured at 35 MB — every two seconds and throw it
+    /// away. This is the caller-side stop, which ends the work rather than only
+    /// the damage.
+    ///
+    /// Where that encode runs matters and an earlier version of this sentence
+    /// had it wrong. `full_state` is called on the flusher's own task, not the
+    /// blocking pool — only the store write goes there — and it takes the room's
+    /// doc lock, so it stalls that room's peers as well as occupying a runtime
+    /// thread. Anyone weighing a faster retry should price it against that.
     escape_refused: AtomicBool,
     /// Set when `pending` has outgrown [`MAX_PENDING_BYTES`] because the store
     /// keeps refusing the flush. Separate from `frozen` on purpose: that one is
@@ -781,7 +787,7 @@ async fn compact(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) {
             // the row-mismatch one — a property of prose, three functions away,
             // that nothing pinned. Rewording that message would have disabled
             // this silently and permanently.
-            if e.body.code == "conflict.collab_compaction_size" {
+            if crate::store::crdt::is_size_refusal(&e) {
                 room.escape_refused.store(true, Ordering::SeqCst);
             }
             let store = state.clone();

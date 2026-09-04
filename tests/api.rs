@@ -21511,4 +21511,44 @@ async fn compaction_refuses_to_grow_an_object_or_exceed_its_cap() {
         before,
         "a refused compaction must leave the log exactly as it was"
     );
+
+    // Emitter and consumer, bound together.
+    //
+    // The flusher decides whether to stop retrying by asking `is_size_refusal`,
+    // and that used to be a second copy of the code string in another file — a
+    // pairing the repo's drift guard cannot see, because it reads the first
+    // argument of `ApiError::` constructors and an `==` is not one. A rename
+    // that updated the emitters and the spec together would have left the
+    // consumer stale, the guard green, and a wedged room spinning again. This is
+    // what makes the two move together.
+    let size_refusal = store
+        .compact_collab(&map, &blob, "flusher", 0, before.0)
+        .unwrap_err();
+    assert!(
+        takomo::store::crdt::is_size_refusal(&size_refusal),
+        "a size refusal must be recognised as one, or the flusher never stops \
+         retrying it: {}",
+        size_refusal.body.code
+    );
+
+    // And the OTHER refusal must not be, because that one has to be retried on
+    // the very next tick rather than in a minute. It needs a state that WOULD
+    // free space — the size guards are checked first, so a fixture that trips
+    // them never reaches the mismatch.
+    let small = {
+        use yrs::{Map, Transact};
+        let doc = yrs::Doc::new();
+        let nodes = doc.get_or_insert_map("nodes");
+        let mut txn = doc.transact_mut();
+        nodes.insert(&mut txn, "mn-tiny", yrs::MapPrelim::default());
+        txn.encode_update_v1()
+    };
+    let stale = store
+        .compact_collab(&map, &small, "flusher", 0, before.0 + 99)
+        .unwrap_err();
+    assert!(
+        !takomo::store::crdt::is_size_refusal(&stale),
+        "the row-mismatch refusal is not a size refusal: {}",
+        stale.body.code
+    );
 }
