@@ -1,17 +1,4 @@
-// The project selector, as it lives in the nav rail.
-//
-// It was a native `<select>` in the header. That was the right call there — one
-// control, correct on mobile for free, no portalled listbox weight — but it
-// stops being right once the control moves into the rail and becomes the
-// scope-setter every surface reads. A `<select>` cannot be searched, and an
-// install with fifty projects turns it into a scroll hunt.
-//
-// So: a button showing the current scope, and a popover with a search field.
-// Distinct from `Typeahead` on purpose — that one is a FILTER, always showing
-// its input, sized for a toolbar. This is a NAVIGATION control that has to
-// render as a 40px square when the rail is collapsed. They share the part worth
-// sharing (`lib/typeahead`: ranking, truncation, honest counting) rather than
-// one growing a second layout it only sometimes uses.
+// Searchable project scope selector for the header and standalone navigation rail.
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronsUpDownIcon, LayersIcon, SearchIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -58,6 +45,8 @@ export interface ProjectPickerProps {
   labels: ProjectPickerLabels
   /** Icon-only, for a collapsed rail. */
   collapsed?: boolean
+  /** Responsive header trigger with its popover below. */
+  header?: boolean
 }
 
 /** Enough to fill the popover; the search field is how you reach the rest. */
@@ -69,6 +58,7 @@ export function ProjectPicker({
   onChange,
   labels,
   collapsed = false,
+  header = false,
 }: ProjectPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -144,7 +134,7 @@ export function ProjectPicker({
 
   return (
     <div ref={boxRef} className="relative">
-      <Hint text={collapsed ? `${labels.project}: ${currentLabel}` : undefined}>
+      <Hint text={(collapsed || header) ? `${labels.project}: ${currentLabel}` : undefined}>
         <button
           type="button"
           aria-haspopup="listbox"
@@ -153,12 +143,18 @@ export function ProjectPicker({
           onClick={() => setOpen((o) => !o)}
           className={cn(
             'border-border hover:border-ring hover:text-primary text-foreground flex cursor-pointer items-center rounded-lg border text-[13px] font-[650]',
-            collapsed
+            header ? 'h-10 max-w-48 gap-2 px-2.5' : collapsed
               ? 'size-10 justify-center'
               : 'bg-muted w-full gap-2 px-2.5 py-1.5 text-left',
           )}
         >
-          {collapsed ? (
+          {header ? (
+            <>
+              <LayersIcon size={17} className="flex-none" />
+              <span className="hidden min-w-0 truncate lg:block">{currentLabel}</span>
+              <ChevronsUpDownIcon size={14} className="text-muted-foreground flex-none" />
+            </>
+          ) : collapsed ? (
             // An initial carries more than a generic icon once you have picked
             // something; the icon is only for the unscoped state.
             initial ? <span>{initial}</span> : <LayersIcon size={17} />
@@ -177,7 +173,8 @@ export function ProjectPicker({
             'bg-card border-border absolute z-50 max-h-80 w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border shadow-[var(--shadow)]',
             // Collapsed, the rail is 56px wide and a popover under the trigger
             // would hang off it; beside it is the only place it fits.
-            collapsed ? 'top-0 left-full ml-1' : 'top-full left-0 mt-1',
+            collapsed && !header ? 'top-0 left-full ml-1' : 'top-full left-0 mt-1',
+            header && 'max-w-[calc(100vw-8rem)]',
           )}
         >
           <div className="border-b-border-soft flex items-center gap-1.5 border-b px-2.5 py-1.5">

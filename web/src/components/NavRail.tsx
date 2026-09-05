@@ -60,6 +60,8 @@ export interface NavRailLabels {
 }
 
 export interface NavRailProps {
+  /** AppShell moves global controls to AppHeader. */
+  navigationInHeader?: boolean
   nav: NavLabels
   /**
    * Which surface is current — highlighted, and not a link to itself — or
@@ -179,6 +181,7 @@ function IconButton({
 }
 
 export function NavRail({
+  navigationInHeader = false,
   nav,
   current,
   badges,
@@ -311,19 +314,20 @@ export function NavRail({
               </span>
             </div>
           )}
+          {navigationInHeader && collapsed && <Logo />}
           <span className={cn(expanded && 'grow')} />
-          <IconButton
+          {(!navigationInHeader || overlay) && <IconButton
             label={collapsed ? labels.expand : labels.collapse}
             onClick={() => onCollapsed(!collapsed)}
           >
             {collapsed ? <PanelLeftOpenIcon size={18} /> : <PanelLeftCloseIcon size={18} />}
-          </IconButton>
+          </IconButton>}
         </div>
 
         {/* The scope sits ABOVE the destinations, because it changes what each
             of them shows — reading it after picking a surface would be reading
             the qualifier after the noun. */}
-        {projects && projectLabels && (
+        {!navigationInHeader && projects && projectLabels && (
           <div className={cn('flex-none px-2 pb-1', collapsed && 'flex justify-center px-0')}>
             <ProjectPicker
               projects={projects}
@@ -336,7 +340,7 @@ export function NavRail({
         )}
 
         <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
-          {NAV_ORDER.map((key) => {
+          {NAV_ORDER.filter((key) => !navigationInHeader || key !== 'inbox').map((key) => {
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0
             const isCurrent = key === current

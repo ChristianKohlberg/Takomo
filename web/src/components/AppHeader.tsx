@@ -1,15 +1,6 @@
-// The shared header: the surface's title, its actions, and the DE/EN toggle.
-//
-// Three things have left it. The brand and the cross-surface nav went to
-// NavRail, because five surface names plus a picker plus four action buttons do
-// not fit one row and the strip was already scrolling sideways to hide the
-// overflow. The project picker followed them, because it is not about the
-// current surface — it SCOPES all of them, and a control every page obeys
-// belongs with the navigation rather than in each page's own toolbar.
-//
-// What is left is what is ABOUT THE CURRENT SURFACE. That is the line to apply
-// when deciding whether something new goes here or in the rail.
+// Shared page header with persistent project and Inbox navigation.
 import type { ReactNode } from 'react'
+import { AppNavigation } from './AppNavigation'
 import { cn } from '@/lib/utils'
 import type { Locale } from '@/lib/i18n'
 
@@ -43,7 +34,8 @@ export function AppHeader({
     </button>)}
   </div>
   if (views) return <header className="bg-card border-b-border-soft flex flex-none flex-col gap-2 border-b px-3 py-3 sm:px-5">
-    <div className="flex min-w-0 items-center gap-3">
+    <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+      <AppNavigation />
       <h1 className="text-foreground min-w-0 flex-1 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
       {languages}
     </div>
@@ -52,9 +44,9 @@ export function AppHeader({
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">{children}</div>
     </div>
   </header>
-  return <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
-    <h1 className="text-foreground min-w-0 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
-    <span className="grow" />
+  return <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-2 border-b px-2 py-2.5 sm:gap-3 sm:px-5">
+    <AppNavigation />
+    <h1 className="text-foreground min-w-0 flex-1 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
     {children}
     {languages}
   </header>

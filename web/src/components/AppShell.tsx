@@ -11,6 +11,7 @@
 // inside it would refuse to shrink and push the page sideways instead of
 // scrolling within itself.
 import type { ReactNode } from 'react'
+import { AppNavigationContext } from './AppNavigation'
 import { NavRail, type NavRailProps } from './NavRail'
 
 export interface AppShellProps {
@@ -22,9 +23,11 @@ export interface AppShellProps {
 
 export function AppShell({ rail, children }: AppShellProps) {
   return (
-    <div className="flex h-dvh overflow-hidden">
-      <NavRail {...rail} />
-      <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
-    </div>
+    <AppNavigationContext.Provider value={rail}>
+      <div className="flex h-dvh overflow-hidden">
+        <NavRail {...rail} navigationInHeader />
+        <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
+      </div>
+    </AppNavigationContext.Provider>
   )
 }
