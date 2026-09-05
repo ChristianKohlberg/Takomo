@@ -91,8 +91,9 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     }
   }, [token, project])
   const fetchAll = useCallback(async () => {
-    await refreshChecks()
     const epoch = ++listEpoch.current
+    await refreshChecks()
+    if (epoch !== listEpoch.current) return
     if (!project) {
       setChecks([])
       setWorklist(null)

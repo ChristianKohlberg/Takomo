@@ -36,10 +36,10 @@ export function AppHeader({
     </button>)}
   </div>
   if (views) return <header className="bg-card border-b-border-soft flex flex-none flex-col gap-2 border-b px-3 py-3 sm:px-5">
-    <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
       <AppNavigation />
-      <div className="min-w-0 flex-1"><h1 className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>{subtitle && <p className="truncate text-sm text-muted-foreground">{subtitle}</p>}</div>
-      {languages}
+      <div className="order-3 w-full min-w-0 md:order-none md:w-auto md:flex-1"><h1 className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>{subtitle && <p className="truncate text-sm text-muted-foreground">{subtitle}</p>}</div>
+      <div className="ml-auto md:ml-0">{languages}</div>
     </div>
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       {views}
