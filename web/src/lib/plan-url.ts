@@ -5,10 +5,9 @@
 // place rather than navigation between two features: "show it on the map" from a
 // section, and "read it in the plan" from a node.
 //
-// Both directions are a HASH, matching `/board#t=` and `/inbox#q=`: a link
-// somebody can send, and something the receiving page reads once at mount and
-// then clears. It is deliberately not kept in step — a shared cursor between two
-// views would drag a reader back every time the other view moved.
+// A section is kept in `#n=` across all three views. The workspace router adds
+// `?project=` so a bookmark and browser Back restore both scope and section.
+// Selection is personal navigation state, never a shared CRDT cursor.
 //
 // Pure and string-only, so both directions are testable without a router, a
 // canvas or a socket.

@@ -372,3 +372,38 @@ The view switcher remembers URLs per project and keeps native link behavior.
 Map selection follows browser history. Its compact controls have accessible
 names on phones. Project change notifications refresh metadata and lists while
 content continues to arrive through the existing CRDT connection.
+
+### Project navigation and local recovery
+
+The plan views use `?project=<id>` for explicit project scope and `#n=<node>` for
+personal section selection. The shared Document / Map / Tests switch carries
+both. Changing project clears its editor/filter selection; browser Back restores
+the earlier scope and section. A legacy `#m=` map link is resolved to the map's
+actual project. Selection does not move other collaborators' viewports.
+
+Editable map/document replicas and check definitions append their CRDT updates
+to IndexedDB, partitioned by server origin, actor, and object. Both plan views
+use the same log. Log compaction merges stored updates transactionally rather
+than overwriting another tab's unsent edits with a local snapshot. Navigation
+allows queued writes to finish. Restoring a replica requires a newly authorized
+session; a read-only session does not replay a writer's cached edits.
+
+`Saved` means the server acknowledged a persistence barrier covering this
+browser's preceding updates and its local writes have completed. `Syncing`
+means that acknowledgement is outstanding. `Offline · saved on this device`
+means local storage completed while the socket is disconnected. Storage errors
+and server refusals have separate visible states; neither claims success.
+
+The binary WebSocket extension is opt-in via `durability_ack` in the session
+response: message type **4**, followed by an unsigned sequence number, requests
+an ordered durability barrier. The reply carries **4**, the same sequence, and
+**1** for persisted or **0** for refused/pending. The barrier rechecks the session
+and serializes with the room flusher. It includes deletions, which cannot be
+acknowledged using a state vector alone. Older Yjs sync/awareness frames remain
+unchanged. Project notification sockets do not support this extension.
+
+Local recovery protects edits across reloads and reconnects. It does not install
+an offline application shell: opening/reloading the whole site without network
+access may require reconnecting before the editor can load and obtain a session.
+Clearing browser site data removes local drafts. Server-authorized verdicts,
+approvals, and configuration actions remain online operations.

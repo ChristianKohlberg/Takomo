@@ -396,3 +396,9 @@ carry no record payload; data is read through the authenticated API.
 Tickets renew before expiry without replacing the editor replica. During a
 network outage keep the editor open: its replica resynchronizes after reconnect.
 There is no offline persistence across reloads or leaving the editor.
+
+The test view now shares the plan's explicit `?project=` scope and `#n=` section
+selection. Its editor uses the same local CRDT recovery and server persistence
+acknowledgements as the plan views; see `docs/mindmaps.md`, “Project navigation
+and local recovery”. This supersedes the earlier open-replica-only offline
+limitation. Verdicts are still separate, server-validated recorded actions.

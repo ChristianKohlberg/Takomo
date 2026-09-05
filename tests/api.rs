@@ -22217,3 +22217,96 @@ async fn shared_check_migration_seeds_once_and_cleans_deleted_history() {
         .unwrap();
     assert_eq!(rows, 0, "deletion must remove shared history");
 }
+
+#[tokio::test]
+async fn collaboration_save_ack_is_a_durability_barrier_including_deletes_and_refusals() {
+    use docsync_support::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use yrs::encoding::read::{Cursor, Read as _};
+    use yrs::encoding::write::Write as _;
+    use yrs::updates::decoder::Decode;
+    use yrs::{GetString, Text, Transact};
+
+    let app = TestApp::spawn().await;
+    let (_, created) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Durable plan"}),
+        )
+        .await;
+    let id = created["mindmap"]["id"].as_str().unwrap();
+    let (_, session) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{id}/session"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(session["durability_ack"], true);
+    assert!(session["actor"].is_string());
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/sync/{id}?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let doc = yrs::Doc::new();
+    let text = doc.get_or_insert_text("durability-proof");
+    for sequence in 1..=3u64 {
+        if sequence == 3 {
+            let (status, _) = app
+                .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+                .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let update = {
+            let mut tx = doc.transact_mut();
+            if sequence == 2 {
+                text.remove_range(&mut tx, 0, 5);
+            } else {
+                text.insert(&mut tx, 0, "draft");
+            }
+            tx.encode_update_v1()
+        };
+        socket
+            .send(Message::Binary(sync_message(SYNC_UPDATE, &update).into()))
+            .await
+            .unwrap();
+        let mut barrier = Vec::new();
+        barrier.write_var(4u64);
+        barrier.write_var(sequence);
+        socket.send(Message::Binary(barrier.into())).await.unwrap();
+        let saved = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() {
+                    let mut decoder = Cursor::new(bytes.as_ref());
+                    if decoder.read_var::<u64>().ok() == Some(4) {
+                        assert_eq!(decoder.read_var::<u64>().unwrap(), sequence);
+                        break decoder.read_var::<u64>().unwrap() == 1;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(saved, sequence != 3);
+        // Read the database immediately after the acknowledgement, without any
+        // sleep or relying on another socket's in-memory room.
+        let restored = yrs::Doc::new();
+        for blob in app.open_store().load_collab_updates(id).unwrap() {
+            restored
+                .transact_mut()
+                .apply_update(yrs::Update::decode_v1(&blob).unwrap())
+                .unwrap();
+        }
+        assert_eq!(
+            restored
+                .get_or_insert_text("durability-proof")
+                .get_string(&restored.transact()),
+            if sequence == 1 { "draft" } else { "" }
+        );
+    }
+}

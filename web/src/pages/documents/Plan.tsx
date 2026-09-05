@@ -1,3 +1,4 @@
+import type { SaveState } from '@/lib/save-status'
 import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
 // The plan, written out: the map's tree read as reading order.
 //
@@ -34,7 +35,7 @@ import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnectio
 // "show it on the map" instead: the title caret lives on the canvas, and two
 // carets on one Y.Text in two layouts is a fight rather than a feature.
 import { ChevronDownIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
@@ -122,6 +123,7 @@ export interface PlanProps {
   standing: PlanStanding
   /** The plan's history, newest first, already split by section. */
   trace: ReadonlyMap<string, TraceEntry[]>
+  onSave?: (state: SaveState) => void
   onConnection: (state: ConnectionState) => void
   onPeers: (names: string[]) => void
   /** Somebody says they have read this section. */
@@ -136,7 +138,7 @@ export interface PlanProps {
   onSkipped: (messages: string[]) => void
   /** A section handed over by link (`/documents#n=`), or null. Honoured once. */
   focusSection?: string | null
-  onFocusedSection?: () => void
+  onSelection?: (node: string | null) => void
   labels: PlanLabels
   railLabels: OutlineRailLabels
   sectionLabels: SectionPanelLabels
@@ -144,7 +146,7 @@ export interface PlanProps {
 }
 
 export default function Plan(props: PlanProps) {
-  const connection = useSyncConnection(props.session, props.onError)
+  const connection = useSyncConnection(props.session, props.onError, props.onSave)
   return connection ? <ConnectedPlan {...props} connection={connection} /> : null
 }
 
@@ -161,7 +163,7 @@ function ConnectedPlan({
   onDecided,
   onSkipped,
   focusSection = null,
-  onFocusedSection,
+  onSelection,
   labels,
   railLabels,
   sectionLabels,
@@ -172,6 +174,15 @@ function ConnectedPlan({
   const [tree, setTree] = useState<PlanNode[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [selected, setSelected] = useState<string | null>(null)
+  const selectionChanged = useEffectEvent((node: string | null) => onSelection?.(node))
+  const didSelect = useRef(false)
+  useEffect(() => {
+    if (!selected && !didSelect.current) return
+    didSelect.current = true
+    selectionChanged(selected)
+  }, [selected])
+  const focused = useRef<string | null>(null)
+
   const [openHistory, setOpenHistory] = useState<Set<string>>(() => new Set())
   const [openProposals, setOpenProposals] = useState<Set<string>>(() => new Set())
   const [proposals, setProposals] = useState<Proposal[]>([])
@@ -389,16 +400,17 @@ function ConnectedPlan({
     if (!selected) return
     const el = elements.current.get(selected)
     if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  }, [selected, rows])
+  }, [selected])
 
   // A section handed over by link. Waits for the section to exist: the ask
   // arrives with the URL and the document is still syncing.
   useEffect(() => {
-    if (!focusSection) return
+    if (!focusSection) { focused.current = null; return }
+    if (focused.current === focusSection) return
     if (!rows.some((row) => row.key === focusSection)) return
     onSelect(focusSection)
-    onFocusedSection?.()
-  }, [focusSection, rows, onSelect, onFocusedSection])
+    focused.current = focusSection
+  }, [focusSection, rows, onSelect])
 
   const onToggleHistory = useCallback((key: string) => {
     setOpenHistory((current) => {
@@ -658,6 +670,7 @@ function ConnectedPlan({
                   }
                   canWrite={canWrite}
                   active={selected === row.key}
+                  onActivate={() => setSelected(row.key)}
                   sectionRef={refFor(row.key)}
                   labels={sectionLabels}
                 >

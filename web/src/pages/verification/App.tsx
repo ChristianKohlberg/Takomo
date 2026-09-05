@@ -1,3 +1,5 @@
+import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
+import { useWorkspaceProject, useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { CheckEditor } from '@/components/verification/CheckEditor'
 // /verification — whether the tests a feature was agreed on still pass.
@@ -13,7 +15,7 @@ import { CheckEditor } from '@/components/verification/CheckEditor'
 // hundred cases cost an agent minutes and cost a person most of a day.
 import { ViewSwitcher } from '@/components'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { useLocation } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
@@ -23,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
-import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadToken, saveProject, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, listInitiatives, type Project } from '@/lib/initiatives'
 import {
@@ -44,7 +46,7 @@ import {
   type PlanNode,
   type Worklist,
 } from '@/lib/verification'
-import { mapLink, readPlanFocus } from '@/lib/plan-url'
+import { mapLink } from '@/lib/plan-url'
 import { CheckCard } from '@/components/verification/CheckCard'
 import { CheckDialog } from '@/components/verification/CheckDialog'
 import { STR } from './strings'
@@ -61,14 +63,18 @@ const LS_LANG = 'takomo.lang'
 const UNASSIGNED = '__unassigned__'
 
 export function App() {
-  const navigate = useNavigate()
+  const [project, setProject] = useWorkspaceProject()
+  return <Workspace key={project} project={project} setProject={setProject} />
+}
+
+function Workspace({ project, setProject }: { project: string; setProject: (id: string) => void }) {
+  const navigate = useWorkspaceNavigate()
   const location = useLocation()
   const editing = new URLSearchParams(location.hash.slice(1)).get('c')
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
   const [actor, setActor] = useState('')
@@ -84,15 +90,8 @@ export function App() {
   const [cases, setCases] = useState<Record<string, CaseRow[]>>({})
   const [loadingCases, setLoadingCases] = useState<Record<string, boolean>>({})
   const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
-  /**
-   * The section this screen is narrowed to, or ''.
-   *
-   * Read ONCE from the link that brought you here and then kept in state, the
-   * same hand-off `/documents` and `/mindmaps` make between themselves: a filter
-   * that stayed pinned to the URL would drag you back to it every time you
-   * cleared it.
-   */
-  const [nodeFilter, setNodeFilter] = useState(() => readPlanFocus(window.location.hash) ?? '')
+  const [section, setNodeFilter] = useWorkspaceSection()
+  const nodeFilter = section ?? ''
   const [creating, setCreating] = useState(false)
   const [createUnder, setCreateUnder] = useState<string | undefined>(undefined)
 
@@ -186,16 +185,6 @@ export function App() {
     if (!token) return
     fetchAll().catch(handleErr)
   }, [token, fetchAll, handleErr])
-
-  // Consume only the initial plan filter. Keep the editor deep link and let
-  // the router observe the replacement so browser history stays consistent.
-  useEffect(() => {
-    const hash = new URLSearchParams(window.location.hash.slice(1))
-    if (hash.has('n')) {
-      hash.delete('n')
-      navigate({ hash: hash.toString() }, { replace: true })
-    }
-  }, [navigate])
 
   useProjectUpdates(token, project, async () => {
     try {
@@ -357,13 +346,11 @@ export function App() {
           saveProject(id)
           // A section belongs to ONE project's plan, so carrying the filter
           // across would show an empty list under a name from somewhere else.
-          setNodeFilter('')
         },
         projectLabels: {
           project: t.project,
           search: t.projectSearch,
           noMatch: t.projectNoMatch,
-          all: t.allProjects,
         },
         labels: {
           expand: t.navExpand,
@@ -480,7 +467,7 @@ export function App() {
               <button
                 type="button"
                 className="text-primary cursor-pointer font-[650]"
-                onClick={() => setNodeFilter('')}
+                onClick={() => setNodeFilter(null)}
               >
                 {t.showAllChecks}
               </button>
@@ -554,7 +541,7 @@ export function App() {
         </div>
       </main>
 
-      {editing && <CheckEditor key={editing} token={token} id={editing} labels={t} onError={handleErr}
+      {editing && checks.some(check => check.id === editing) && <CheckEditor lang={lang} key={editing} token={token} id={editing} labels={t} onError={handleErr}
         onClose={() => { const hash = new URLSearchParams(location.hash.slice(1)); hash.delete('c'); navigate({ hash: hash.toString() }) }} />}
       <CheckDialog
         open={creating}

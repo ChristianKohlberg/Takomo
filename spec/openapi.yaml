@@ -6611,6 +6611,8 @@ components:
         token: { type: string, description: Short-lived tkd_ ticket; stored hashed. }
         can_write: { type: boolean }
         display: { type: string }
+        actor: { type: string, description: Stable actor identity for partitioning local draft storage. }
+        durability_ack: { type: boolean, description: Supports ordered WebSocket persistence acknowledgements (message type 4). }
         expires_at: { type: string, format: date-time }
         url: { type: string, description: WebSocket base path without the room. }
         room: { type: string }

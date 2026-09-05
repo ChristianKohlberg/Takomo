@@ -1,14 +1,17 @@
+import { SaveStatus } from '@/components/SaveStatus'
+import type { Locale } from '@/lib/i18n'
 import { useEffect, useState } from 'react'
 import * as Y from 'yjs'
 import { SharedText } from '@/components/SharedText'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { useCollaboration } from '@/hooks/useCollaboration'
 
-export function CheckEditor({ token, id, onClose, onError, labels }: {
+export function CheckEditor({ token, id, onClose, onError, labels, lang }: {
+  lang: Locale
   token: string; id: string; onClose: () => void; onError: (error: unknown) => void
   labels: { fTitle: string; fBody: string; fPrecondition: string; liveEdit: string; liveHint: string; connecting: string; live: string; reconnecting: string }
 }) {
-  const { client, ready, state, peers } = useCollaboration(token, `/checks/${encodeURIComponent(id)}/session`, onError)
+  const { client, ready, peers, saveState } = useCollaboration(token, `/checks/${encodeURIComponent(id)}/session`, onError)
   const [definition, setDefinition] = useState<Y.Map<unknown> | null>(null)
   useEffect(() => {
     if (!client) { setDefinition(null); return }
@@ -23,7 +26,8 @@ export function CheckEditor({ token, id, onClose, onError, labels }: {
   return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
     <DialogContent className="max-h-[85dvh] overflow-y-auto">
       <DialogHeader><DialogTitle>{labels.liveEdit}</DialogTitle><DialogDescription>{labels.liveHint}</DialogDescription></DialogHeader>
-      <div role="status" className="text-xs text-muted-foreground">{labels[state]}{peers.length > 0 && ` · ${peers.map(p => p.name).join(', ')}`}</div>
+      <SaveStatus state={saveState} lang={lang} />
+      {peers.length > 0 && <p className="text-xs text-muted-foreground">{peers.map(p => p.name).join(', ')}</p>}
       {(['title', 'precondition', 'body'] as const).map(field => {
         const text = definition?.get(field)
         const label = field === 'title' ? labels.fTitle : field === 'body' ? labels.fBody : labels.fPrecondition

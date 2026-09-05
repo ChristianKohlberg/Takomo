@@ -1,3 +1,4 @@
+import type { SaveState } from '@/lib/save-status'
 import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
 // The live map: one Y.Doc, one socket, and everybody's edits arriving as they
 // happen.
@@ -36,7 +37,7 @@ import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnectio
 // from a button in a toolbar. React attaches its handlers at the root container,
 // so a synthetic stopPropagation there also stops the native event before it
 // reaches the window. Capturing runs first and cannot be stopped from inside.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 
 import { Canvas, type CanvasLabels, type CanvasMode, type CanvasPeer } from '@/components/mindmap/Canvas'
 import {
@@ -181,6 +182,7 @@ export interface LiveProps {
   session: MindmapSession
   /** The map's title. The root box is the map, not a node. */
   title: string
+  onSave?: (state: SaveState) => void
   onConnection: (state: ConnectionState) => void
   onPeers: (names: string[]) => void
   onError: (message: string) => void
@@ -197,7 +199,7 @@ export interface LiveProps {
    * is honoured, so a later fold or pan is not undone by a stale ask.
    */
   focusNode?: string | null
-  onFocusedNode?: () => void
+  onSelection?: (node: string | null) => void
   /** Map-level commands. They go over REST, so they are the page's to run. */
   canManageMap: boolean
   /**
@@ -249,7 +251,7 @@ export interface LiveProps {
 type Stage = 'commands' | 'goto' | 'project'
 
 export default function Live(props: LiveProps) {
-  const connection = useSyncConnection(props.session, error => props.onError(error instanceof Error ? error.message : String(error)))
+  const connection = useSyncConnection(props.session, error => props.onError(error instanceof Error ? error.message : String(error)), props.onSave)
   return connection ? <ConnectedLive {...props} connection={connection} /> : null
 }
 
@@ -271,7 +273,7 @@ function ConnectedLive({
   voiceEnabled,
   voiceLabels,
   focusNode = null,
-  onFocusedNode,
+  onSelection,
   onRenameMap,
   onDeleteMap,
   onPromote,
@@ -292,6 +294,15 @@ function ConnectedLive({
   const [nodes, setNodes] = useState<MapNode[]>([])
   const [relationships, setRelationships] = useState<Relationship[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const selectionChanged = useEffectEvent((node: string | null) => onSelection?.(node))
+  const didSelect = useRef(false)
+  useEffect(() => {
+    if (!selected && !didSelect.current) return
+    didSelect.current = true
+    selectionChanged(selected)
+  }, [selected])
+  const focused = useRef<string | null>(null)
+
   const [peers, setPeers] = useState<CanvasPeer[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [mode, setMode] = useState<CanvasMode>(() =>
@@ -910,11 +921,12 @@ function ConnectedLive({
   // A section handed over from the document view. Waits for the node to exist:
   // the ask arrives with the URL, and the document is still syncing.
   useEffect(() => {
-    if (!focusNode) return
+    if (!focusNode) { focused.current = null; return }
+    if (focused.current === focusNode) return
     if (!nodes.some((n) => n.id === focusNode)) return
     goTo(focusNode)
-    onFocusedNode?.()
-  }, [focusNode, nodes, goTo, onFocusedNode])
+    focused.current = focusNode
+  }, [focusNode, nodes, goTo])
 
   const run = useCallback(
     (id: string, target?: string) => {
@@ -1051,7 +1063,7 @@ function ConnectedLive({
     <>
       {/* A first branch has to come from somewhere: an empty map has no node to
           press Enter on, and the phone list has no keyboard shortcuts at all. */}
-      <div className="border-b-border-soft flex shrink-0 items-center gap-2 border-b px-4 py-1.5">
+      <div className="border-b-border-soft flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
         <button
           type="button"
           disabled={!canWrite}
@@ -1072,19 +1084,10 @@ function ConnectedLive({
             labels={voiceLabels}
           />
         )}
-        {/* ⌘K carries the long tail, but the way to the OTHER view of the same
-            plan is not a long-tail command — and `/documents` offers "show it on
-            the map" as a visible control, so this mirrors it. */}
-        <button
-          type="button"
-          onClick={() => onOpenPlan(selected)}
-          className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650]"
-        >
-          ≣ {labels.openPlan}
-        </button>
         <button
           type="button"
           onClick={openPalette}
+          aria-label={paletteLabels.placeholder}
           className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 font-mono text-[12px] font-[650]"
         >
           ⌘K

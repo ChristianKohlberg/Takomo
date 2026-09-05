@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { useLocation } from 'react-router'
 // The three views of one specification.
 //
@@ -29,24 +28,24 @@ export interface ViewSwitcherProps {
 }
 
 const VIEWS: { id: SpecView; href: string; Icon: typeof NetworkIcon }[] = [
-  { id: 'map', href: '/mindmaps', Icon: NetworkIcon },
   { id: 'document', href: '/documents', Icon: FileTextIcon },
+  { id: 'map', href: '/mindmaps', Icon: NetworkIcon },
   { id: 'tests', href: '/verification', Icon: ShieldCheckIcon },
 ]
 
 export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps) {
   const location = useLocation()
-  const project = localStorage.getItem('takomo.project') ?? ''
-  const key = (path: string) => `takomo.workspace:${project}:${path}`
-  useEffect(() => { sessionStorage.setItem(`takomo.workspace:${project}:${location.pathname}`, location.hash) }, [project, location.pathname, location.hash])
+  const project = new URLSearchParams(location.search).get('project') ?? localStorage.getItem('takomo.project') ?? ''
+  const section = new URLSearchParams(location.hash.slice(1)).get('n')
   return (
     <nav
-      aria-label={labels.map}
+      aria-label={[labels.document, labels.map, labels.tests].join(', ')}
       className="border-border-soft bg-muted/40 flex flex-none items-center gap-0.5 rounded-lg border p-0.5"
     >
       {VIEWS.map(({ id, href, Icon }) => {
         const active = id === current
-        const target = href + (active ? location.hash : sessionStorage.getItem(key(href)) ?? '')
+        const hash = active ? location.hash : section ? `#${new URLSearchParams({ n: section })}` : ''
+        const target = `${href}?${new URLSearchParams({ project })}${hash}`
         return (
           <a
             key={id}
@@ -60,14 +59,14 @@ export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps)
               onNavigate(target)
             }}
             className={[
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-[650] no-underline',
+              'flex items-center gap-1.5 rounded-md px-2 py-2 text-[13px] font-[650] no-underline',
               active
                 ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             ].join(' ')}
           >
-            <Icon className="size-4 flex-none" aria-hidden="true" />
-            <span className="hidden md:inline">{labels[id]}</span>
+            <Icon className="hidden size-4 flex-none sm:block" aria-hidden="true" />
+            <span>{labels[id]}</span>
           </a>
         )
       })}
