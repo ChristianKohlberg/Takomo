@@ -5113,6 +5113,47 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /specification:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Specification workspace entry point
+      description: Unauthenticated app shell. Opens the selected project's specification after sign-in.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
+  /projects/{project}/specification:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Unified project specification workspace
+      description: |
+        Unauthenticated app shell with Document, Map and Tests views. Data requests
+        require the viewer's bearer token. Document and Map share one plan CRDT
+        session across view changes. Legacy /documents, /mindmaps and /verification
+        links resolve to this workspace in the browser.
+      security: []
+      parameters:
+        - in: path
+          name: project
+          required: true
+          schema: { type: string }
+        - in: query
+          name: view
+          schema: { type: string, enum: [document, map, tests], default: document }
+        - in: query
+          name: section
+          schema: { type: string }
+        - in: query
+          name: check
+          schema: { type: string }
+        - in: query
+          name: panel
+          schema: { type: string, enum: [tests] }
+      responses:
+        "200": { description: HTML page }
+
   /documents:
     servers: [{ url: / }]
     get:

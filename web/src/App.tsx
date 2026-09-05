@@ -19,18 +19,13 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router'
 import { App as BoardApp } from './pages/board/App'
+import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
-import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as SchedulesApp } from './pages/schedules/App'
-const VerificationApp = lazy(() => import('./pages/verification/App').then(m => ({ default: m.App })))
 import { App as SettingsApp } from './pages/settings/App'
-
-/** The two lazy surfaces — see the note at the top of this file. */
-const DocumentsApp = lazy(() =>
-  import('./pages/documents/App').then((m) => ({ default: m.App })),
-)
-const MindmapApp = lazy(() => import('./pages/mindmap/App').then((m) => ({ default: m.App })))
+import { LegacySpecificationRedirect } from './pages/specification/LegacyRedirect'
+const SpecificationApp = lazy(() => import('./pages/specification/App'))
 
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
@@ -56,9 +51,21 @@ const TITLES: Record<string, string> = {
 function Root() {
   const { pathname } = useLocation()
   useEffect(() => {
-    document.title = TITLES[pathname] ?? 'takomo'
+    document.title = pathname.endsWith('/specification')
+      ? 'takomo · specification'
+      : (TITLES[pathname] ?? 'takomo')
   }, [pathname])
-  return <Suspense fallback={<div role="status" className="p-6 text-muted-foreground">Loading…</div>}><Outlet /></Suspense>
+  return (
+    <Suspense
+      fallback={
+        <div role="status" className="p-6 text-muted-foreground">
+          Loading…
+        </div>
+      }
+    >
+      <Outlet />
+    </Suspense>
+  )
 }
 
 const router = createBrowserRouter([
@@ -67,28 +74,13 @@ const router = createBrowserRouter([
     children: [
       { path: '/board', element: <BoardApp /> },
       { path: '/inbox', element: <InboxApp /> },
-      {
-        path: '/documents',
-        element: (
-          // No spinner: the chunk is fetched from the same origin and the shell
-          // it replaces is a blank page either way. A flash of "Loading…" on a
-          // fast connection reads as jank, not as feedback.
-          <Suspense fallback={null}>
-            <DocumentsApp />
-          </Suspense>
-        ),
-      },
+      { path: '/documents', element: <LegacySpecificationRedirect /> },
+      { path: '/specification', element: <SpecificationApp /> },
+      { path: '/projects/:project/specification', element: <SpecificationApp /> },
       { path: '/initiatives', element: <InitiativesApp /> },
-      {
-        path: '/mindmaps',
-        element: (
-          <Suspense fallback={null}>
-            <MindmapApp />
-          </Suspense>
-        ),
-      },
+      { path: '/mindmaps', element: <LegacySpecificationRedirect /> },
       { path: '/schedules', element: <SchedulesApp /> },
-      { path: '/verification', element: <VerificationApp /> },
+      { path: '/verification', element: <LegacySpecificationRedirect /> },
       { path: '/environments', element: <EnvironmentsApp /> },
       { path: '/settings', element: <SettingsApp /> },
       // Anything else the server handed this document for. The server serves it

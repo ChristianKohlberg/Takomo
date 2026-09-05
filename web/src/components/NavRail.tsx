@@ -19,7 +19,9 @@
 // OVERLAYS the content with a backdrop instead of pushing it, and a spacer keeps
 // the collapsed strip's place in the flow. That is a structural difference, not
 // a visual one, which is why it uses `useIsPhone` rather than a `md:` prefix.
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { Hint } from '@/components/Hint'
+import { useIsPhone } from '@/hooks/useIsPhone'
+import { cn } from '@/lib/utils'
 import {
   CalendarClockIcon,
   InboxIcon,
@@ -32,11 +34,9 @@ import {
   ServerIcon,
   SettingsIcon,
 } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Logo } from './Logo'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
-import { cn } from '@/lib/utils'
-import { useIsPhone } from '@/hooks/useIsPhone'
-import { Hint } from '@/components/Hint'
 
 export interface NavLabels {
   board: string
@@ -105,7 +105,7 @@ export interface NavRailProps {
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   inbox: '/inbox',
-  specification: '/mindmaps',
+  specification: '/specification',
   initiatives: '/initiatives',
   schedules: '/schedules',
   environments: '/environments',
@@ -154,7 +154,9 @@ function roleOf(scopes: string[] | undefined): string {
 
 /** A modified click means "open this somewhere else"; hijacking it is the classic SPA regression. */
 function plainLeftClick(e: React.MouseEvent): boolean {
-  return !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+  return (
+    !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey
+  )
 }
 
 function IconButton({
@@ -426,9 +428,7 @@ export function NavRail({
                   accountActive && 'text-primary bg-secondary',
                 )}
               >
-                <span
-                  className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold"
-                >
+                <span className="bg-secondary text-secondary-foreground flex size-8 flex-none items-center justify-center rounded-full text-[12.5px] font-bold">
                   {initial}
                 </span>
                 {expanded && (

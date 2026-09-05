@@ -7,6 +7,7 @@ import type { Locale } from '@/lib/i18n'
 export interface AppHeaderProps {
   /** The current surface's name — what the nav pill used to say. */
   title: string
+  subtitle?: string
   lang: Locale
   onLang: (l: Locale) => void
   /** Right-hand actions (a primary button, icon buttons). */
@@ -21,6 +22,7 @@ export interface AppHeaderProps {
 
 export function AppHeader({
   title,
+  subtitle,
   lang,
   onLang,
   children,
@@ -36,7 +38,7 @@ export function AppHeader({
   if (views) return <header className="bg-card border-b-border-soft flex flex-none flex-col gap-2 border-b px-3 py-3 sm:px-5">
     <div className="flex min-w-0 items-center gap-2 sm:gap-3">
       <AppNavigation />
-      <h1 className="text-foreground min-w-0 flex-1 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
+      <div className="min-w-0 flex-1"><h1 className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>{subtitle && <p className="truncate text-sm text-muted-foreground">{subtitle}</p>}</div>
       {languages}
     </div>
     <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">

@@ -1,7 +1,7 @@
-import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
-import { useWorkspaceProject, useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
-import { CheckEditor } from '@/components/verification/CheckEditor'
+import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
+import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
+import { useSpecification } from '../specification/context'
 // /verification — whether the tests a feature was agreed on still pass.
 //
 // Grouped by INITIATIVE, because that is where the agreement was made and where
@@ -13,21 +13,18 @@ import { CheckEditor } from '@/components/verification/CheckEditor'
 // this ship", the worklist answers "who has to do something" — and the split
 // between agent and human work is the product, not a formatting choice: a
 // hundred cases cost an agent minutes and cost a person most of a day.
-import { ViewSwitcher } from '@/components'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
 
-import { AppHeader } from '@/components/AppHeader'
-import { AppShell } from '@/components/AppShell'
-import { TokenGate } from '@/components/TokenGate'
+import { Hint } from '@/components/Hint'
 import { useToast } from '@/components/Toaster'
-import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { useNavCollapsed } from '@/hooks/useNavCollapsed'
-import { isAuthError, loadToken, saveProject, saveToken } from '@/lib/session'
-import { detectLocale, pick, type Locale } from '@/lib/i18n'
-import { whoami, listProjects, listInitiatives, type Project } from '@/lib/initiatives'
+import { CheckCard } from '@/components/verification/CheckCard'
+import { CheckDialog } from '@/components/verification/CheckDialog'
+import { pick } from '@/lib/i18n'
+import { listInitiatives } from '@/lib/initiatives'
+import { mapLink } from '@/lib/plan-url'
 import {
   archiveCheck,
   createCheck,
@@ -46,13 +43,7 @@ import {
   type PlanNode,
   type Worklist,
 } from '@/lib/verification'
-import { mapLink } from '@/lib/plan-url'
-import { CheckCard } from '@/components/verification/CheckCard'
-import { CheckDialog } from '@/components/verification/CheckDialog'
 import { STR } from './strings'
-import { Hint } from '@/components/Hint'
-
-const LS_LANG = 'takomo.lang'
 
 /**
  * Group key for checks nobody filed under an initiative.
@@ -62,27 +53,20 @@ const LS_LANG = 'takomo.lang'
  */
 const UNASSIGNED = '__unassigned__'
 
-export function App() {
-  const [project, setProject] = useWorkspaceProject()
-  return <Workspace key={project} project={project} setProject={setProject} />
-}
-
-function Workspace({ project, setProject }: { project: string; setProject: (id: string) => void }) {
+export function TestsView({ compact = false }: { compact?: boolean }) {
+  const {
+    token,
+    lang,
+    project,
+    scopes,
+    checks,
+    setChecks,
+    refreshChecks,
+    editCheck,
+    onError: handleErr,
+  } = useSpecification()
   const navigate = useWorkspaceNavigate()
-  const location = useLocation()
-  const editing = new URLSearchParams(location.hash.slice(1)).get('c')
   const { toast } = useToast()
-
-  const [token, setToken] = useState(() => loadToken())
-  const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [gateError, setGateError] = useState('')
-
-  const [actor, setActor] = useState('')
-  const [scopes, setScopes] = useState<string[]>([])
-  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
-  const [projects, setProjects] = useState<Project[]>([])
-
-  const [checks, setChecks] = useState<Check[]>([])
   const [initiativeTitles, setInitiativeTitles] = useState<Record<string, string>>({})
   const [worklist, setWorklist] = useState<Worklist | null>(null)
   const [gate, setGate] = useState<Gate | null>(null)
@@ -99,29 +83,15 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
   const canWrite = scopes.includes('write')
   const canApprove = scopes.includes('human')
 
-  function signOut() {
-    saveToken('')
-    setToken('')
-    setChecks([])
-  }
-
-  const handleErr = useCallback(
-    (e: unknown) => {
-      const err = e as { message?: string }
-      if (isAuthError(e)) {
-        saveToken('')
-        setToken('')
-        setGateError('')
-        return
-      }
-      toast(err?.message || t.requestFailed, 'err')
-    },
-    [toast, t],
-  )
-
   const listEpoch = useRef(0)
-  useEffect(() => { const epoch = listEpoch; return () => { epoch.current++ } }, [token, project])
+  useEffect(() => {
+    const epoch = listEpoch
+    return () => {
+      epoch.current++
+    }
+  }, [token, project])
   const fetchAll = useCallback(async () => {
+    await refreshChecks()
     const epoch = ++listEpoch.current
     if (!project) {
       setChecks([])
@@ -129,8 +99,7 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
       setGate(null)
       return
     }
-    const [c, w, g, inis, envs, plan] = await Promise.all([
-      listChecks(token, project),
+    const [w, g, inis, envs, plan] = await Promise.all([
       // The reports are a header, not the content: a soft failure in either
       // must not take the checks down with it.
       fetchWorklist(token, project).catch(() => null),
@@ -145,7 +114,6 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
       listPlanNodes(token, project).catch(() => ({ items: [] as PlanNode[] })),
     ])
     if (epoch !== listEpoch.current) return
-    setChecks(c.items)
     setWorklist(w)
     setGate(g)
     const titles: Record<string, string> = {}
@@ -153,33 +121,7 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
     setInitiativeTitles(titles)
     setEnvironments(envs.items.filter((e) => !e.archived_at))
     setPlanNodes(plan.items)
-  }, [token, project])
-
-  useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const who = await whoami(token)
-        if (cancelled) return
-        const sc = who.scopes ?? []
-        if (!sc.includes('read')) {
-          saveToken('')
-          setToken('')
-          setGateError(t.gateNoRead)
-          return
-        }
-        setActor(who.actor ?? '')
-        setScopes(sc)
-        setProjects(await listProjects(token).catch(() => []))
-      } catch (e) {
-        if (!cancelled) handleErr(e)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [token, handleErr, t])
+  }, [refreshChecks, project, token, setChecks])
 
   useEffect(() => {
     if (!token) return
@@ -191,16 +133,22 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
       const epoch = listEpoch.current + 1
       await fetchAll()
       if (epoch !== listEpoch.current) return
-      const entries = await Promise.all(Object.keys(cases).map(async id => [id, (await listCases(token, id)).items] as const))
+      const entries = await Promise.all(
+        Object.keys(cases).map(async (id) => [id, (await listCases(token, id)).items] as const),
+      )
       if (epoch !== listEpoch.current) return
-      setCases(current => {
+      setCases((current) => {
         const next = { ...current }
         for (const [id, items] of entries) if (current[id] !== undefined) next[id] = items
         return next
       })
-    } catch (error) { handleErr(error) }
+    } catch (error) {
+      handleErr(error)
+    }
   })
-  useEffect(() => { setCases({}) }, [project, token])
+  useEffect(() => {
+    setCases({})
+  }, [project, token])
 
   const toggleCases = useCallback(
     async (check: string) => {
@@ -259,26 +207,19 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
         handleErr(e)
       }
     },
-    [canApprove, canWrite, toast, t, token, project, handleErr],
+    [
+      canApprove,
+      canWrite,
+      toast,
+      t.needHuman,
+      t.needWrite,
+      t.recorded,
+      token,
+      project,
+      setChecks,
+      handleErr,
+    ],
   )
-
-  if (!token) {
-    return (
-      <TokenGate
-        title="takomo · verification"
-        subtitle={t.gateTokenSub}
-        tokenLabel={t.gateLabel}
-        openLabel={t.gateOpen}
-        emptyMessage={t.tokenNeeded}
-        error={gateError}
-        onSubmit={(tk) => {
-          saveToken(tk)
-          setGateError('')
-          setToken(tk)
-        }}
-      />
-    )
-  }
 
   const nodeTitles = new Map(planNodes.map((n) => [n.id, n]))
   const filtered = nodeFilter ? checks.filter((c) => c.node === nodeFilter) : checks
@@ -321,66 +262,8 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
   }
 
   return (
-    <AppShell
-      rail={{
-        onNavigate: navigate,
-        current: 'specification',
-        nav: {
-          board: t.board,
-          inbox: t.inbox,
-          specification: t.specification,
-          initiatives: t.initiatives,
-          schedules: t.schedules,
-          environments: t.environments,
-        },
-        badges: { specification: worklist?.human.cases ?? 0 },
-        projects: projects.map(({ id, name, archived, archived_at }) => ({
-          id,
-          name,
-          archived,
-          archived_at,
-        })),
-        project,
-        onProject: (id) => {
-          setProject(id)
-          saveProject(id)
-          // A section belongs to ONE project's plan, so carrying the filter
-          // across would show an empty list under a name from somewhere else.
-        },
-        projectLabels: {
-          project: t.project,
-          search: t.projectSearch,
-          noMatch: t.projectNoMatch,
-        },
-        labels: {
-          expand: t.navExpand,
-          collapse: t.navCollapse,
-          signOut: t.signOut,
-          account: t.navAccount,
-          settings: t.settings,
-        },
-        collapsed: navCollapsed,
-        onCollapsed: setNavCollapsed,
-        actor,
-        scopes,
-        onSignOut: signOut,
-      }}
-    >
-      <AppHeader
-        title={t.verification}
-        views={
-          <ViewSwitcher
-            current="tests"
-            onNavigate={navigate}
-            labels={{ map: t.viewMap, document: t.viewDocument, tests: t.viewTests }}
-          />
-        }
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
-      >
+    <>
+      <div className="flex flex-none items-center gap-2 border-b px-4 py-2">
         <Button
           onClick={() => {
             if (!canWrite) {
@@ -394,26 +277,19 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
           + {t.newCheck}
         </Button>
         <Hint text={t.refresh}>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => fetchAll().catch(handleErr)}
-          >
+          <Button variant="outline" size="icon" onClick={() => fetchAll().catch(handleErr)}>
             ↻
           </Button>
         </Hint>
-      </AppHeader>
-
+      </div>
       <main className="min-h-0 flex-1 overflow-y-auto px-4 pt-4.5 pb-15 md:px-5">
         <div className="mx-auto flex w-full max-w-240 flex-col gap-3.5">
-          {(gate || worklist) && (
+          {!compact && (gate || worklist) && (
             <Card size="sm" className="gap-2 px-(--card-spacing)">
               {gate && (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
-                    className={
-                      gate.blocked ? 'bg-nfbg text-nf border-nfbd' : 'bg-ok-bg text-ok'
-                    }
+                    className={gate.blocked ? 'bg-nfbg text-nf border-nfbd' : 'bg-ok-bg text-ok'}
                   >
                     {gate.blocked ? t.gateBlocked : t.gateClear}
                   </Badge>
@@ -448,7 +324,7 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
 
           {/* What you are looking at, when it is not everything. A filter with
               no way back to the whole list is a dead end. */}
-          {nodeFilter && (
+          {!compact && nodeFilter && (
             <div className="border-border-soft text-muted-foreground flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-[12.5px]">
               <span>{t.filteredToSection}</span>
               <span className="text-foreground font-[650]">
@@ -511,7 +387,7 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
                     key={c.id}
                     check={c}
                     editLabel={t.liveEdit}
-                    onEdit={() => { const hash = new URLSearchParams(location.hash.slice(1)); hash.set('c', c.id); navigate({ hash: hash.toString() }) }}
+                    onEdit={() => editCheck(c.id)}
                     nodeTitle={c.node ? nodeTitles.get(c.node)?.title : undefined}
                     onOpenNode={
                       c.node && nodeTitles.get(c.node)
@@ -541,8 +417,6 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
         </div>
       </main>
 
-      {editing && checks.some(check => check.id === editing) && <CheckEditor lang={lang} key={editing} token={token} id={editing} labels={t} onError={handleErr}
-        onClose={() => { const hash = new URLSearchParams(location.hash.slice(1)); hash.delete('c'); navigate({ hash: hash.toString() }) }} />}
       <CheckDialog
         open={creating}
         onOpenChange={setCreating}
@@ -557,6 +431,6 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
           await fetchAll()
         }}
       />
-    </AppShell>
+    </>
   )
 }
