@@ -536,7 +536,7 @@ function ConnectedPlan({
           rather than a choice made once in the layout. */}
       <aside
         className={[
-          'border-b-border-soft flex flex-none flex-col border-b md:border-r md:border-b-0',
+          'border-b-border-soft flex flex-none flex-col border-b bg-white md:border-r md:border-b-0 dark:bg-[color:var(--card)]',
           outlineOpen
             ? 'max-h-[38vh] overflow-y-auto px-2 py-3 md:max-h-none md:w-full md:max-w-80'
             : 'px-2 py-2 md:w-auto',
