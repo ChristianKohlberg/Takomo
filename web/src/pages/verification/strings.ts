@@ -35,6 +35,9 @@ export const STR = defineStrings({
     signOut: 'Sign out',
     refresh: 'Refresh',
 
+    liveEdit: 'Edit together',
+    liveHint: 'Text changes are shared as you type. Verdicts remain separate, recorded actions.',
+    connecting: 'Connecting…', live: 'Live', reconnecting: 'Reconnecting… keep this tab open',
     newCheck: 'New check',
     needWrite: "Filing a check needs a token with the 'write' scope.",
     needHuman:
@@ -157,6 +160,9 @@ export const STR = defineStrings({
     signOut: 'Abmelden',
     refresh: 'Aktualisieren',
 
+    liveEdit: 'Gemeinsam bearbeiten',
+    liveHint: 'Textänderungen werden beim Tippen geteilt. Testergebnisse bleiben separate, protokollierte Aktionen.',
+    connecting: 'Verbindung wird hergestellt…', live: 'Live', reconnecting: 'Verbindung wird wiederhergestellt… Tab offen lassen',
     newCheck: 'Neue Prüfung',
     needWrite: "Zum Anlegen einer Prüfung wird ein Token mit 'write' benötigt.",
     needHuman:

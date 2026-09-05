@@ -62,6 +62,8 @@ export interface CheckCardProps {
     verdict: 'pass' | 'fail',
     opts: { note?: string; human?: boolean; environment?: string },
   ) => void
+  onEdit?: () => void
+  editLabel?: string
   onArchive: () => void
 }
 
@@ -248,6 +250,8 @@ export function CheckCard({
   onToggleCases,
   onVerdict,
   onArchive,
+  onEdit,
+  editLabel,
 }: CheckCardProps) {
   const worst = worstState(check.cases)
   const parts = spread(check.cases)
@@ -258,7 +262,7 @@ export function CheckCard({
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <Badge className={stateTone(worst)}>{stateWord(worst, labels)}</Badge>
         <span className="text-foreground min-w-0 grow truncate text-[13.5px] font-[650]">
-          {check.title}
+          {onEdit ? <button type="button" className="text-left hover:underline" onClick={onEdit} aria-label={`${editLabel}: ${check.title}`}>{check.title}</button> : check.title}
         </span>
         <Badge className="bg-muted text-muted-foreground">{check.severity}</Badge>
         <Badge className="bg-muted text-muted-foreground">{check.layer}</Badge>

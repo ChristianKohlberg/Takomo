@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import { useLocation } from 'react-router'
 // The three views of one specification.
 //
 // A map, a written plan and a set of tests are not three destinations — they are
@@ -33,6 +35,10 @@ const VIEWS: { id: SpecView; href: string; Icon: typeof NetworkIcon }[] = [
 ]
 
 export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps) {
+  const location = useLocation()
+  const project = localStorage.getItem('takomo.project') ?? ''
+  const key = (path: string) => `takomo.workspace:${project}:${path}`
+  useEffect(() => { sessionStorage.setItem(`takomo.workspace:${project}:${location.pathname}`, location.hash) }, [project, location.pathname, location.hash])
   return (
     <nav
       aria-label={labels.map}
@@ -40,16 +46,18 @@ export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps)
     >
       {VIEWS.map(({ id, href, Icon }) => {
         const active = id === current
+        const target = href + (active ? location.hash : sessionStorage.getItem(key(href)) ?? '')
         return (
           <a
             key={id}
-            href={href}
+            href={target}
             aria-current={active ? 'page' : undefined}
+            aria-label={labels[id]}
             onClick={(e) => {
               // Let a modified click do what the browser would.
               if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
               e.preventDefault()
-              onNavigate(href)
+              onNavigate(target)
             }}
             className={[
               'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-[650] no-underline',

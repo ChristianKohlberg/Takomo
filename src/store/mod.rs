@@ -4,6 +4,7 @@
 //! added behind the same methods later.
 
 mod answer_grants;
+mod checkcollab;
 mod checklist;
 mod claims;
 pub mod crdt;
@@ -107,6 +108,8 @@ use std::sync::Mutex;
 const READ_CONNECTIONS: usize = 4;
 
 pub struct Store {
+    pub check_updates: tokio::sync::broadcast::Sender<(String, Vec<u8>)>,
+    pub changes: tokio::sync::watch::Sender<u64>,
     /// **The** writer. Every mutation goes through `with_tx` and this mutex, and
     /// that serialization is the exactly-one-claimant guarantee for the ready
     /// queue. There is deliberately never a second writer: no call site in this
@@ -157,6 +160,7 @@ impl Store {
         add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.
         mindmaps::adopt_legacy_nodes(&conn)?;
@@ -183,6 +187,8 @@ impl Store {
         };
 
         Ok(Store {
+            check_updates: tokio::sync::broadcast::channel(256).0,
+            changes: tokio::sync::watch::channel(0).0,
             conn: Mutex::new(conn),
             readers,
             next_reader: AtomicUsize::new(0),
@@ -211,6 +217,7 @@ impl Store {
             .map_err(ApiError::from)?;
         let out = f(&tx)?;
         tx.commit().map_err(ApiError::from)?;
+        self.changes.send_modify(|v| *v = v.wrapping_add(1));
         Ok(out)
     }
 
@@ -2124,6 +2131,16 @@ CREATE TABLE IF NOT EXISTS crdt_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_object ON crdt_sessions(object_id);
 CREATE INDEX IF NOT EXISTS idx_crdt_sessions_minted_by ON crdt_sessions(minted_by);
+CREATE TRIGGER IF NOT EXISTS cleanup_check_crdt AFTER DELETE ON checks
+BEGIN
+ DELETE FROM crdt_updates WHERE object_id=OLD.id;
+ DELETE FROM crdt_sessions WHERE object_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS cleanup_project_crdt_sessions AFTER DELETE ON projects
+BEGIN
+ DELETE FROM crdt_sessions WHERE project=OLD.id;
+END;
+
 
 -- Named workflows that can be applied to any project.
 --

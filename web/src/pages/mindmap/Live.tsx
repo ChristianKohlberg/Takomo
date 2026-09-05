@@ -1,3 +1,4 @@
+import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
 // The live map: one Y.Doc, one socket, and everybody's edits arriving as they
 // happen.
 //
@@ -36,8 +37,6 @@
 // so a synthetic stopPropagation there also stops the native event before it
 // reaches the window. Capturing runs first and cannot be stopped from inside.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { WebsocketProvider } from 'y-websocket'
-import * as Y from 'yjs'
 
 import { Canvas, type CanvasLabels, type CanvasMode, type CanvasPeer } from '@/components/mindmap/Canvas'
 import {
@@ -104,7 +103,7 @@ import {
   updateAttachment,
 } from '@/lib/mindmap-crdt'
 import type { Point } from '@/lib/mindmap-layout'
-import { mindmapSyncBase, recordTrace, type MindmapSession } from '@/lib/mindmaps'
+import { recordTrace, type MindmapSession } from '@/lib/mindmaps'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable —
  *  the same function `/documents` uses, for the same reason. */
@@ -249,7 +248,13 @@ export interface LiveProps {
 
 type Stage = 'commands' | 'goto' | 'project'
 
-export default function Live({
+export default function Live(props: LiveProps) {
+  const connection = useSyncConnection(props.session, error => props.onError(error instanceof Error ? error.message : String(error)))
+  return connection ? <ConnectedLive {...props} connection={connection} /> : null
+}
+
+function ConnectedLive({
+  connection,
   session,
   title,
   onConnection,
@@ -281,18 +286,8 @@ export default function Live({
   paletteLabels,
   commandLabels,
   commandHints,
-}: LiveProps) {
-  // One Y.Doc and one provider per map, rebuilt only when the ticket changes.
-  // Recreating either on an unrelated render would drop the connection and resync
-  // from scratch under somebody's cursor.
-  const { ydoc, provider } = useMemo(() => {
-    const ydoc = new Y.Doc()
-    const provider = new WebsocketProvider(mindmapSyncBase(session), session.room, ydoc, {
-      params: { ticket: session.token },
-      connect: true,
-    })
-    return { ydoc, provider }
-  }, [session])
+}: LiveProps & { connection: SyncConnection }) {
+  const { ydoc, provider } = connection
 
   const [nodes, setNodes] = useState<MapNode[]>([])
   const [relationships, setRelationships] = useState<Relationship[]>([])
@@ -401,13 +396,12 @@ export default function Live({
       name: session.display,
       color: colorFor(session.display),
     })
+    provider.connect()
 
     return () => {
       provider.off('status', onStatus)
       provider.off('sync', onSynced)
       provider.awareness.off('change', onAwareness)
-      provider.destroy()
-      ydoc.destroy()
     }
   }, [provider, ydoc, session.display, onConnection, onPeers])
 

@@ -1423,7 +1423,7 @@ impl Store {
         let initiative = req.initiative.clone();
         let node = req.node.clone();
 
-        self.with_tx(|tx| {
+        self.with_check_tx(&id, actor, |tx| {
             project_exists(tx, &project)?;
             ensure_project_writable(tx, &project)?;
             if let Some(e) = &epic {
@@ -1632,7 +1632,7 @@ impl Store {
 
         let now = now_ms();
         let id = id.to_string();
-        self.with_tx(|tx| {
+        self.with_check_tx(&id, actor, |tx| {
             let mut stmt = tx.prepare(&format!("SELECT {CHECK_COLS} FROM checks WHERE id = ?1"))?;
             let existing = stmt
                 .query_row(params![id], row_to_check)

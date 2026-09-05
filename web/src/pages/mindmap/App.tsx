@@ -1,3 +1,4 @@
+import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // /mindmaps — brainstorming, before any of it is an idea, with everyone in the
 // room at once.
 //
@@ -19,8 +20,8 @@
 // no dirty state. The page mints the socket ticket and owns the map's row
 // metadata; `Live` owns the document.
 import { ViewSwitcher } from '@/components'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
@@ -52,6 +53,7 @@ const LS_LANG = 'takomo.lang'
 
 export function App() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
@@ -81,9 +83,16 @@ export function App() {
   const [maps, setMaps] = useState<Mindmap[]>([])
   // `#m=<id>` so a map is a link somebody can send, the same way `/board#t=`
   // and `/inbox#q=` already are.
-  const [openId, setOpenId] = useState<string | null>(
-    () => new URLSearchParams(window.location.hash.slice(1)).get('m'),
-  )
+  const openId = new URLSearchParams(location.hash.slice(1)).get('m')
+  const setOpenId = useCallback((value: string | null | ((current: string | null) => string | null)) => {
+    const params = new URLSearchParams(location.hash.slice(1))
+    const current = params.get('m')
+    const next = typeof value === 'function' ? value(current) : value
+    if (next === current) return
+    if (next) params.set('m', next); else params.delete('m')
+    params.delete('n')
+    navigate({ hash: params.toString() }, { replace: !current })
+  }, [location.hash, navigate])
   /**
    * `#n=<node>`, the section `/documents` asked to be shown.
    *
@@ -128,9 +137,12 @@ export function App() {
   // Not filtered by project: ⌘K's "switch project…" needs to know which projects
   // HAVE a brainstorm, and one map per project keeps that list the size of the
   // project list rather than the size of the fleet's thinking.
+  const listEpoch = useRef(0)
+  useEffect(() => { const epoch = listEpoch; return () => { epoch.current++ } }, [token])
   const refreshList = useCallback(async () => {
+    const epoch = ++listEpoch.current
     const page = await listMindmaps(token, { limit: 100 })
-    setMaps(page.items)
+    if (epoch === listEpoch.current) setMaps(page.items)
     return page.items
   }, [token])
 
@@ -176,7 +188,7 @@ export function App() {
         )
       })
       .catch(handleErr)
-  }, [token, refreshList, handleErr, project])
+  }, [token, refreshList, handleErr, project, setOpenId])
 
   // What the map draws over each section: how many tests it carries and how
   // many are failing. A soft failure draws nothing rather than taking the map
@@ -212,6 +224,8 @@ export function App() {
 
   const testsFor = useCallback((node: string) => testCounts.get(node) ?? null, [testCounts])
 
+  useProjectUpdates(token, project, () => refreshList().catch(handleErr))
+
   // Opening a map means minting a ticket for its socket. Done here rather than
   // inside the canvas so the canvas never has to know about tokens — it receives
   // a session and connects.
@@ -220,11 +234,6 @@ export function App() {
       setSession(null)
       return
     }
-    window.history.replaceState(
-      null,
-      '',
-      `#m=${encodeURIComponent(openId)}${focusNode ? `&n=${encodeURIComponent(focusNode)}` : ''}`,
-    )
     let cancelled = false
     setSession(null)
     setConnection('connecting')
@@ -242,7 +251,6 @@ export function App() {
     // `focusNode` is deliberately not a dependency: it changes exactly once,
     // when the canvas honours it, and re-minting the socket ticket for that
     // would drop the connection under somebody's cursor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, openId, handleErr])
 
   const clearFocusNode = useCallback(() => setFocusNode(null), [])
@@ -290,7 +298,7 @@ export function App() {
         handleErr(e)
       }
     },
-    [canWrite, toast, t, selectedProject, token, refreshList, handleErr],
+    [canWrite, toast, t, selectedProject, token, refreshList, handleErr, setOpenId],
   )
 
   const renameMap = useCallback(() => {
@@ -312,7 +320,7 @@ export function App() {
         toast(t.mapDeleted, 'success')
       })
       .catch(handleErr)
-  }, [open, t, token, refreshList, toast, handleErr])
+  }, [open, t, token, refreshList, toast, handleErr, setOpenId])
 
   /**
    * The way to the other rendering of this plan.
@@ -350,7 +358,7 @@ export function App() {
     setProject(id)
     saveProject(id)
     setOpenId(null)
-  }, [])
+  }, [setOpenId])
 
   // The empty-state palette. `Live` owns the shortcut whenever a map is open, so
   // this listener stands down rather than competing with it.

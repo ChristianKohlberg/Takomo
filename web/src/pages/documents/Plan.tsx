@@ -1,3 +1,4 @@
+import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
 // The plan, written out: the map's tree read as reading order.
 //
 // This is `/mindmaps`' Live.tsx pointed at the same document from the other
@@ -34,7 +35,6 @@
 // carets on one Y.Text in two layouts is a fight rather than a feature.
 import { ChevronDownIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
@@ -55,7 +55,7 @@ import {
   PROPOSALS_KEY,
 } from '@/lib/plan-proposals'
 import type { TraceEntry } from '@/lib/mindmaps'
-import { mindmapSyncBase, type MindmapSession } from '@/lib/mindmaps'
+import { type MindmapSession } from '@/lib/mindmaps'
 import {
   nodesMap,
   proseOf,
@@ -117,6 +117,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  onError: (error: unknown) => void
   session: MindmapSession
   standing: PlanStanding
   /** The plan's history, newest first, already split by section. */
@@ -142,7 +143,13 @@ export interface PlanProps {
   proposalLabels: ProposalPanelLabels
 }
 
-export default function Plan({
+export default function Plan(props: PlanProps) {
+  const connection = useSyncConnection(props.session, props.onError)
+  return connection ? <ConnectedPlan {...props} connection={connection} /> : null
+}
+
+function ConnectedPlan({
+  connection,
   session,
   standing,
   trace,
@@ -159,21 +166,8 @@ export default function Plan({
   railLabels,
   sectionLabels,
   proposalLabels,
-}: PlanProps) {
-  // One Y.Doc and one provider per map, rebuilt only when the ticket changes.
-  // Recreating either on an unrelated render would drop the connection and
-  // resync from scratch under somebody's cursor.
-  const { ydoc, provider } = useMemo(() => {
-    const ydoc = new Y.Doc()
-    // Base, room and params passed SEPARATELY: y-websocket composes
-    // `serverUrl + "/" + room + "?" + params` itself, so a finished URL puts the
-    // room after the query string and the socket goes somewhere unrouted.
-    const provider = new WebsocketProvider(mindmapSyncBase(session), session.room, ydoc, {
-      params: { ticket: session.token },
-      connect: true,
-    })
-    return { ydoc, provider }
-  }, [session])
+}: PlanProps & { connection: SyncConnection }) {
+  const { ydoc, provider } = connection
 
   const [tree, setTree] = useState<PlanNode[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
@@ -242,13 +236,12 @@ export default function Plan({
     provider.on('sync', onSynced)
     provider.awareness.on('change', onAwareness)
     provider.awareness.setLocalStateField('user', { name: session.display, color })
+    provider.connect()
 
     return () => {
       provider.off('status', onStatus)
       provider.off('sync', onSynced)
       provider.awareness.off('change', onAwareness)
-      provider.destroy()
-      ydoc.destroy()
     }
   }, [provider, ydoc, session.display, color, onConnection, onPeers])
 
