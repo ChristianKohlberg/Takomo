@@ -1,1 +1,0 @@
-var e=encodeURIComponent;function t(t){return t?`/documents#n=${e(t)}`:`/documents`}function n(t,n){return n?`/mindmaps#m=${e(t)}&n=${e(n)}`:`/mindmaps#m=${e(t)}`}export{t as n,n as t};

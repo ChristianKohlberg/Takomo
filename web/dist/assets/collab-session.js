@@ -1,1 +1,0 @@
-function e(e){return/^wss?:/.test(e.url)?e.url:`${location.protocol===`https:`?`wss:`:`ws:`}//${location.host}${e.url}`}export{e as t};

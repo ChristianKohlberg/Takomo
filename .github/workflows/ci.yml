@@ -12,12 +12,19 @@ concurrency:
 
 jobs:
   rust:
+    needs: web
     name: Rust (build · clippy · fmt · test)
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -143,7 +150,7 @@ jobs:
         run: ruby -ryaml -e 'YAML.load_file("spec/openapi.yaml"); puts "ok - Psych accepts it too"'
 
   web:
-    name: web (typecheck, lint, tests, size, dist is current)
+    name: web (typecheck, lint, tests, size, generated assets)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -175,26 +182,24 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      # `web/dist/*.html` is COMMITTED, because `cargo build --release` embeds it
-      # with `include_str!` and must stay node-free on Render and in the
-      # Dockerfile. That makes it the one build output that can go stale in the
-      # repo: edit `web/src/`, forget `npm run build`, and the binary keeps
-      # serving the previous page while every test here passes. So rebuild it and
-      # fail if the result differs from what was committed.
       - name: Build the pages
         run: npm run build
 
-      - name: web/dist is current
+      - name: Generated assets stay ignored and untracked
         run: |
-          if ! git diff --quiet -- dist; then
-            echo "::error::web/dist/ is stale — run 'npm run build' in web/ and commit the result."
-            git diff --stat -- dist
-            exit 1
-          fi
-          echo "ok - web/dist matches a fresh build"
+          test -z "$(git ls-files -- dist)"
+          git check-ignore --quiet dist/index.html
 
       - name: Per-page size budget
         run: npm run size
+
+      - name: Upload frontend build for Rust
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 7
 
   docker:
     name: Docker image (builds · serves every page)

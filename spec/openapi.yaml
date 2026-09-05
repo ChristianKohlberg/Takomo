@@ -5196,7 +5196,7 @@ paths:
       summary: The app's JavaScript and CSS (unauthenticated, ETag-revalidated)
       description: |
         The bundle the page shell loads, embedded in the binary by `build.rs` from
-        the committed `web/dist/assets/` and served by exact name. This is NOT a
+        the generated `web/dist/assets/` and served by exact name. This is NOT a
         static-file handler: the manifest is an exact compile-time lookup table, so
         there is no directory to traverse and no path to sanitize — `..` is simply
         a name that is not in the table, and any unknown name 404s

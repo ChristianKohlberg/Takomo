@@ -19,21 +19,27 @@ name: takomo
 # name matches at any depth and short-circuits the walk into it.
 caches:
   - target
+  - node_modules
+  - dist
 
 # Bind order is: sync -> upkeep -> datastore create -> service build -> start.
 # The datastore's `create:` SEEDS by running the takomo binary, which is why the
 # build is declared here as well as on the service: a service `build:` runs
 # AFTER the datastore step and would be too late to seed with.
 upkeep:
+  - when: glob(web/**)
+    run: ./scripts/build.sh
+  - when: scripts/build.sh
+    run: ./scripts/build.sh
   - when: glob(src/**)
-    run: cargo build --release
+    run: ./scripts/build.sh
   - when: Cargo.lock
-    run: cargo build --release
+    run: ./scripts/build.sh
   # workflows/factory-default.yaml is include_str!'d by src/workflow.rs, so it
   # is a build input living outside src/. Without this rule a change to the
   # built-in state machine would leave a stale binary behind.
   - when: glob(workflows/**)
-    run: cargo build --release
+    run: ./scripts/build.sh
   # Content-derived template identity. The baked SQLite template is keyed on the
   # hash of these files, so a branch that changes the schema or the seed content
   # gets its own template instead of silently restoring a stale one.
@@ -58,7 +64,7 @@ services:
   server:
     # Gated on this service's own build fingerprint; a no-op when the upkeep
     # rule above already built this tree.
-    build: cargo build --release
+    build: ./scripts/build.sh
     # {{datastores.main.url}} is the SQLite file path (for sqlite the namespace
     # IS the file); {{ports.http}} is the engine-allocated port.
     run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}

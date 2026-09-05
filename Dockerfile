@@ -4,6 +4,13 @@
 # The image bundles Litestream for optional off-box backup. It stays dormant
 # unless LITESTREAM_BUCKET is set at runtime — the default start path is
 # unchanged. See litestream.yml and deploy/docker-entrypoint.sh.
+FROM node:22-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM rust:1.97-slim AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -12,12 +19,8 @@ COPY src ./src
 # workflows/factory-default.yaml, so the build fails without it. Anything else
 # the source embeds from outside src/ has to be copied here too.
 COPY workflows ./workflows
-# web/dist/ is the other one, and it is the reason this comment now has a CI job
-# behind it. The four pages used to live at src/*.html, so `COPY src ./src`
-# carried them; they are built from web/ now and `include_str!`d from
-# web/dist/*.html, which is outside every path above. Only the committed build
-# output is needed — no node here, which is the point of committing it.
-COPY web/dist ./web/dist
+# Only generated assets enter the Rust stage; Node stays out of the runtime image.
+COPY --from=web /web/dist ./web/dist
 # build.rs is the third, and it fails in the least obvious way of the three: with
 # no build script present cargo simply does not run one, so `OUT_DIR` is never
 # set and `include!(concat!(env!("OUT_DIR"), "/assets.rs"))` in src/api/mod.rs

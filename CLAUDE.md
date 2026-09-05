@@ -48,7 +48,7 @@ lease with `--ttl` and the store stays yours.
 ## Build, test, lint
 
 ```sh
-cargo build --release
+./scripts/build.sh                                       # frontend + embedded Rust binary
 cargo test --release                                     # unit + tests/api.rs + tests/mcp.rs
 cargo test --release --test api <substring>               # ONE integration test
 cargo test --release --test api <substring> -- --nocapture
@@ -60,6 +60,11 @@ shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
 (cd web && npm ci && npm run check && npm test)           # the six surfaces
 (cd web && npm run build)                                 # then cargo build — see below
 ```
+
+**Generated assets are not committed.** A fresh checkout needs Node 22 and Rust;
+`./scripts/build.sh` installs frontend dependencies, builds assets, then compiles Rust.
+Never force-add `web/dist/`. For subsequent Rust-only work, ordinary Cargo commands
+reuse the generated assets.
 
 **A page change needs TWO builds.** `npm run build` in `web/` regenerates
 `web/dist/`; `cargo build --release` embeds it. Editing `web/src/` alone changes nothing the
@@ -184,7 +189,7 @@ link, which is exactly the part that dominates here; measure before adopting it.
 | REST `/v1/*` | The contract. Hand-parsed from `serde_json::Value` so bad input gets teaching errors. |
 | MCP `/mcp` | `src/mcp.rs` — rmcp streamable-HTTP **in-process**; tools call `Store` directly, no HTTP loopback, no duplicated logic. |
 | OAuth `/oauth/*`, `/.well-known/oauth-*` | `src/api/oauth.rs` + `src/store/oauth.rs` — an OAuth 2.1 authorization server in front of `/mcp`, so **hosted** clients (claude.ai, ChatGPT, the Gemini app), which can only be handed a URL, can connect at all. Off unless `TAKOMO_PUBLIC_URL` is set to a usable issuer origin — that variable predates OAuth and has an older, tolerant reader (notification links), so an unusable value turns OAuth off on a startup line rather than stopping the server (`resolve_oauth` in `src/server.rs`). |
-| `/board`, `/inbox`, `/documents`, `/initiatives`, `/schedules`, `/verification`, `/environments` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). Every route serves the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus a `build.rs`-generated manifest of `web/dist/assets/` — an exact compile-time lookup table, not a static-file handler, so nothing to traverse. `/documents` is code-split; every other route is in the one eager bundle. `web/dist/` is **committed** so `cargo build --release` stays node-free on Render and in the Dockerfile. `/documents`, `/initiatives`, `/schedules`, `/verification` and `/environments` are the ones that WRITE. See `web/README.md`. |
+| `/board`, `/inbox`, `/documents`, `/initiatives`, `/schedules`, `/verification`, `/environments` | **ONE app built from `web/`** (React 19 + React Router + Tailwind + shadcn, TypeScript, vitest). Every route serves the same `index.html`; the router picks the surface from the path. The binary embeds the shell plus a `build.rs`-generated manifest of `web/dist/assets/` — an exact compile-time lookup table, not a static-file handler, so nothing to traverse. `/documents` is code-split; every other route is in the one eager bundle. `web/dist/` is generated and gitignored. Run `./scripts/build.sh` for a complete build; CI, Docker, Render and Backlot generate assets before compiling Rust. `/documents`, `/initiatives`, `/schedules`, `/verification` and `/environments` are the ones that WRITE. See `web/README.md`. |
 | CLI subcommands | `token`, `project`, `seed` in `src/main.rs` operate on the DB file directly — the server is not the root of trust, shell access is. |
 
 **Layering is strict:** all SQL lives under `src/store/`; handlers in `src/api/` never touch the

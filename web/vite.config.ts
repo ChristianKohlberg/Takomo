@@ -146,8 +146,8 @@ export default defineConfig({
     alias: { '@': resolve(import.meta.dirname, 'src') },
   },
   build: {
-    // Output lands in web/dist/ and is committed: that is what keeps
-    // `cargo build --release` node-free on Render and in the Dockerfile.
+    // Output lands in generated, gitignored web/dist/. Build it before Cargo
+    // embeds the assets; scripts/build.sh and the deployment pipelines do both.
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {

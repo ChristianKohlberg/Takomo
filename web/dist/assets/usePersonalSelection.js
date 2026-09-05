@@ -1,1 +1,0 @@
-import{n as e}from"./runtime.js";import{bt as t}from"./vendor.js";var n=e(t(),1);function r(e){let[t,r]=(0,n.useState)(null),i=(0,n.useRef)(e);return(0,n.useLayoutEffect)(()=>{i.current=e},[e]),[t,(0,n.useCallback)(e=>{r(e),i.current?.(e)},[])]}export{r as t};

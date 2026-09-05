@@ -650,7 +650,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/environments", get(crate::api::environments_page))
         .route("/settings", get(crate::api::settings_page))
         // The app's assets. Still not a static-file handler: `build.rs` bakes the
-        // committed `web/dist/assets/` into a compile-time name → bytes table and
+        // generated `web/dist/assets/` into a compile-time name → bytes table and
         // this route is an exact lookup in it, so there is no directory to
         // traverse and no path to sanitize. One route rather than four names
         // because the editor route is code-split, and the bundler names those

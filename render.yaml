@@ -17,10 +17,12 @@ services:
     plan: starter
     region: frankfurt
     branch: main
-    buildCommand: cargo build --release
+    buildCommand: ./scripts/build.sh
     startCommand: ./target/release/takomo --db /var/data/takomo.db serve --bind 0.0.0.0:$PORT
     healthCheckPath: /healthz
     envVars:
+      - key: NODE_VERSION
+        value: "22"
       # takomo refuses non-loopback binds unless this is set; Render
       # terminates TLS in front of the service.
       - key: TAKOMO_ALLOW_PUBLIC_BIND
