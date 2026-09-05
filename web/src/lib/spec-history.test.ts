@@ -79,3 +79,22 @@ it('keeps older pages across live refreshes without skipping an intervening gap'
     mergeHistoryPage(current, page([10, 9, 8], 8)).items.map((v) => v.version),
   ).toEqual([10, 9, 8])
 })
+
+it('does not mistake XML attribute order for a formatting edit', () => {
+  const structure = [
+    { tag: 'paragraph', attributes: { id: 'p1', align: 'left' }, children: [] },
+  ]
+  const a = version([
+    section('a', {
+      prose_xml: '<paragraph id="p1" align="left"></paragraph>',
+      prose_structure: structure,
+    }),
+  ])
+  const b = version([
+    section('a', {
+      prose_xml: '<paragraph align="left" id="p1"></paragraph>',
+      prose_structure: structure,
+    }),
+  ])
+  expect(compareVersions(a, b)).toEqual([])
+})

@@ -44,7 +44,8 @@ versions and checkpoints. This is not an offsite backup or a tamper-proof audit 
   first. Follow `next_cursor` as `before`; `total` counts all matching versions.
 - `GET /v1/mindmaps/{id}/versions/{version}` returns the full earlier section tree
   and relationships. `notes` is untruncated plain text; `prose_xml` retains rich
-  formatting for comparison. The UI reads plain text and exposes other changed
+  formatting for inspection; `prose_structure` gives canonical structured content
+  for comparisons independent of XML attribute order. The UI reads plain text and exposes other changed
   fields in expandable details.
 - `GET /v1/mindmaps/{id}/versions/{version}/state` downloads a Yjs v1 update that
   reconstructs the version in an **empty** Y.Doc, including rich content.

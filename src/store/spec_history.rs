@@ -12,6 +12,20 @@ use yrs::{
     Doc, GetString, IdSet, ReadTxn, StateVector, Transact, Update,
 };
 
+// XML serialization does not promise attribute order. Compare structured prose
+// so reconstructing an identical version never invents a formatting change.
+fn prose_structure<T: ReadTxn, F: yrs::XmlFragment>(txn: &T, fragment: &F) -> Value {
+    use yrs::{types::text::YChange, types::ToJson, Text, Xml, XmlOut};
+    json!(fragment.children(txn).map(|child| match child {
+        XmlOut::Element(element) => json!({
+            "tag": element.tag(),
+            "attributes": element.attributes(txn).map(|(key,value)|(key,value.to_json(txn))).collect::<std::collections::BTreeMap<_,_>>(),
+            "children": prose_structure(txn,&element),
+        }),
+        XmlOut::Text(text) => json!({"text":text.diff(txn,YChange::identity).into_iter().map(|part|json!({"insert":part.insert.to_json(txn),"attributes":part.attributes})).collect::<Vec<_>>()}),
+        XmlOut::Fragment(inner) => prose_structure(txn,&inner),
+    }).collect::<Vec<_>>())
+}
 fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::internal(e.to_string())
 }
@@ -164,6 +178,7 @@ impl Store {
                     mindmapdoc::read_section_prose(&doc, node["id"].as_str().unwrap_or_default())
                 {
                     node["prose_xml"] = json!(prose.get_string(&doc.transact()));
+                    node["prose_structure"] = prose_structure(&doc.transact(), &prose);
                 }
             }
             info["nodes"] = json!(nodes);

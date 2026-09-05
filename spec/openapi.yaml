@@ -4542,7 +4542,7 @@ paths:
       tags: [mindmaps]
       operationId: specificationVersion
       summary: Read an earlier specification without changing the live replica
-      description: Requires read and project access. Full section text is retained; prose_xml preserves rich text for comparison. Node IDs allow structural comparisons across versions.
+      description: Requires read and project access. Full section text is retained; prose_xml preserves rich text for inspection; prose_structure provides canonical structured content for comparisons independent of XML attribute order. Node IDs allow structural comparisons across versions.
       responses:
         "200":
           description: Version metadata and full section tree with relationships

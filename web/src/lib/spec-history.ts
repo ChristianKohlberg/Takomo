@@ -6,6 +6,7 @@ export interface SavedSection {
   title: string
   notes: string | null
   prose_xml?: string
+  prose_structure?: unknown
   edge_label: string
   kind: string
   color: string
@@ -89,7 +90,17 @@ export function compareVersions(before: VersionDetail, after: VersionDetail) {
     const changed =
       a && b
         ? fields.filter(
-            (field) => JSON.stringify(a[field]) !== JSON.stringify(b[field]),
+            (field) =>
+              JSON.stringify(
+                field === 'prose_xml'
+                  ? (a.prose_structure ?? a[field])
+                  : a[field],
+              ) !==
+              JSON.stringify(
+                field === 'prose_xml'
+                  ? (b.prose_structure ?? b[field])
+                  : b[field],
+              ),
           )
         : []
     return !a || !b || changed.length

@@ -39,7 +39,7 @@ async fn versions_keep_complete_content_after_edits_deletion_and_compaction() {
     let path = format!("/v1/mindmaps/{map}/versions/{version}");
     let (_, before) = app.get(&app.worker, &path).await;
     assert_eq!(before["nodes"][0]["notes"], "Old wording");
-    let long = "Complete prose survives. ".repeat(500);
+    let long = "Complete & rich prose survives. ".repeat(500);
     let (s, b) = app
         .patch(
             &app.worker,
@@ -61,6 +61,11 @@ async fn versions_keep_complete_content_after_edits_deletion_and_compaction() {
     let delta = {
         let mut tx = replica.transact_mut();
         takomo::store::prose::set_plain_text(&mut tx, &prose, &long);
+        use yrs::{Xml, XmlFragment, XmlOut};
+        let paragraph = prose.children(&tx).next().unwrap();
+        if let XmlOut::Element(paragraph) = paragraph {
+            paragraph.insert_attribute(&mut tx, "align", "left");
+        }
         tx.encode_update_v1()
     };
     store
@@ -74,6 +79,14 @@ async fn versions_keep_complete_content_after_edits_deletion_and_compaction() {
         )
         .await;
     assert_eq!(saved["nodes"][0]["notes"], long);
+    assert_eq!(
+        saved["nodes"][0]["prose_structure"][0]["attributes"]["align"],
+        "left"
+    );
+    assert_eq!(
+        saved["nodes"][0]["prose_structure"][0]["children"][0]["text"][0]["insert"],
+        long
+    );
     assert!(saved["nodes"][0]["prose_xml"]
         .as_str()
         .unwrap()
