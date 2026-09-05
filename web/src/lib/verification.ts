@@ -92,6 +92,8 @@ export interface CaseEnvState extends CheckEnvRef {
 }
 
 export interface Check {
+  /** Optional structured context; validate before displaying user-supplied values. */
+  metadata?: unknown
   id: string
   project: string
   title: string
