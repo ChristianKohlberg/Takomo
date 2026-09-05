@@ -9037,7 +9037,7 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
-  not_found.specification_version: "No saved version with that number exists in this specification. Read its version list."
+  notfound.specification_version: "No saved version with that number exists in this specification. Read its version list."
   validation.specification_history: "Invalid checkpoint or history query. Correct the named field and retry."
   conflict.specification_history: "The saved version changed, no saved content exists, or the checkpoint name belongs to another version. Refresh history and review the head."
   notfound.test_run: "No such test run. Check the run ID and project before retrying."

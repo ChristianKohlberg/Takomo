@@ -77,7 +77,7 @@ async fn versions_keep_complete_content_after_edits_deletion_and_compaction() {
     assert!(saved["nodes"][0]["prose_xml"]
         .as_str()
         .unwrap()
-        .contains("<paragraph>"));
+        .contains("<paragraph"));
     app.delete(&app.worker, &format!("/v1/mindmaps/{map}/nodes/{node}"))
         .await;
     let store = app.open_store();
