@@ -2,6 +2,7 @@ import { createContext, useContext, type Dispatch, type SetStateAction } from 'r
 import type { Locale } from '@/lib/i18n'
 import type { Project } from '@/lib/initiatives'
 import type { Mindmap, MindmapSession } from '@/lib/mindmaps'
+import type { PlanNode } from '@/lib/plan-sections'
 import type { Check } from '@/lib/verification'
 import type { SyncConnection } from '@/hooks/useSyncConnection'
 
@@ -16,6 +17,7 @@ export interface SpecificationState {
   map: Mindmap | null
   session: MindmapSession | null
   connection: SyncConnection | null
+  nodes: PlanNode[]
   checks: Check[]
   setChecks: Dispatch<SetStateAction<Check[]>>
   refreshMap: () => Promise<Mindmap | null>

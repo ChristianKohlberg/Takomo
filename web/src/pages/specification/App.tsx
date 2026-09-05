@@ -331,6 +331,7 @@ function SpecificationWorkspace({
       openTests,
       editCheck,
       testsFor,
+      nodes,
     }),
     [
       token,
@@ -351,6 +352,7 @@ function SpecificationWorkspace({
       openTests,
       editCheck,
       testsFor,
+      nodes,
     ],
   )
   if (!token)

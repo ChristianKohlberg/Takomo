@@ -33,14 +33,12 @@ import {
   listCases,
   listChecks,
   listEnvironments,
-  listPlanNodes,
   recordVerdict,
   type CaseRow,
   type Check,
   type CheckFields,
   type Environment,
   type Gate,
-  type PlanNode,
   type Worklist,
 } from '@/lib/verification'
 import { STR } from './strings'
@@ -60,6 +58,8 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     project,
     scopes,
     checks,
+    nodes: planNodes,
+    map,
     setChecks,
     refreshChecks,
     editCheck,
@@ -73,7 +73,6 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
   const [environments, setEnvironments] = useState<Environment[]>([])
   const [cases, setCases] = useState<Record<string, CaseRow[]>>({})
   const [loadingCases, setLoadingCases] = useState<Record<string, boolean>>({})
-  const [planNodes, setPlanNodes] = useState<PlanNode[]>([])
   const [section, setNodeFilter] = useWorkspaceSection()
   const nodeFilter = section ?? ''
   const [creating, setCreating] = useState(false)
@@ -100,7 +99,7 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
       setGate(null)
       return
     }
-    const [w, g, inis, envs, plan] = await Promise.all([
+    const [w, g, inis, envs] = await Promise.all([
       // The reports are a header, not the content: a soft failure in either
       // must not take the checks down with it.
       fetchWorklist(token, project).catch(() => null),
@@ -109,10 +108,7 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
       // Only to populate the "where must it pass" picker — a project with none
       // still shows the page, it just cannot declare environments yet.
       listEnvironments(token, project).catch(() => ({ items: [] as Environment[] })),
-      // The plan is what turns a check's node id into the name of the section it
-      // verifies. A project with no plan yet is not an error — the checks simply
-      // name no section.
-      listPlanNodes(token, project).catch(() => ({ items: [] as PlanNode[] })),
+
     ])
     if (epoch !== listEpoch.current) return
     setWorklist(w)
@@ -121,7 +117,6 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     for (const i of inis.items) titles[i.id] = i.title
     setInitiativeTitles(titles)
     setEnvironments(envs.items.filter((e) => !e.archived_at))
-    setPlanNodes(plan.items)
   }, [refreshChecks, project, token, setChecks])
 
   useEffect(() => {
@@ -222,7 +217,7 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     ],
   )
 
-  const nodeTitles = new Map(planNodes.map((n) => [n.id, n]))
+  const nodeTitles = new Map(planNodes.map((n) => [n.id, { ...n, mindmap: map?.id ?? '' }]))
   const filtered = nodeFilter ? checks.filter((c) => c.node === nodeFilter) : checks
 
   // Group by initiative, with the unassigned bucket last: it is a finding, but
