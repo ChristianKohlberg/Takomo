@@ -19,6 +19,7 @@ pub mod schedules;
 pub mod shares;
 pub mod speech;
 pub mod tags;
+pub mod testruns;
 pub mod tickets;
 pub mod tokens;
 pub mod transition;

@@ -1,5 +1,8 @@
 # Checklist — verifying that the work actually works
 
+For revision-pinned execution, use [test definitions and runs](test-runs.md). The
+legacy verdict APIs below remain compatible; new run results are kept separately.
+
 An agent finishes and says "done". `guard:has_link:commit` makes that claim
 *attributable* — any reader can check which commit closed the ticket — but not
 *verified*. Checklist is the missing half: a durable description of what "working"

@@ -39,7 +39,8 @@ import {
   type Mindmap,
   type MindmapSession,
 } from '@/lib/mindmaps'
-import { listChecks, worstState, type Check } from '@/lib/verification'
+import { listChecks, type Check } from '@/lib/verification'
+import { listDefinitions, type TestDefinition } from '@/lib/test-runs'
 import { readPlanTree, nodesMap } from '@/lib/mindmap-crdt'
 import { sameTree, type PlanNode } from '@/lib/plan-sections'
 import { retryConnection } from '@/lib/retry-connection'
@@ -128,6 +129,7 @@ function SpecificationWorkspace({
   const [loaded, setLoaded] = useState(false)
   const [session, setSession] = useState<MindmapSession | null>(null)
   const [checks, setChecks] = useState<Check[]>([])
+  const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>([])
   const [saveState, setSaveState] = useState<SaveState>('connecting')
   const [peers, setPeers] = useState<string[]>([])
   const [nodes, setNodes] = useState<PlanNode[]>([])
@@ -171,8 +173,10 @@ function SpecificationWorkspace({
   }, [project, token])
   const refreshChecks = useCallback(async () => {
     const epoch = ++epochs.current.checks
-    const items = project ? (await listChecks(token, project)).items : []
-    if (epochs.current.checks === epoch) setChecks(items)
+    const [items, definitions] = project ? await Promise.all([
+      listChecks(token, project).then(page => page.items), listDefinitions(token, project),
+    ]) : [[], []]
+    if (epochs.current.checks === epoch) { setChecks(items); setTestDefinitions(definitions) }
     return items
   }, [project, token])
   useEffect(() => {
@@ -287,15 +291,16 @@ function SpecificationWorkspace({
   const editCheck = useCallback((id: string) => changeQuery({ check: id }), [changeQuery])
   const counts = useMemo(() => {
     const result = new Map<string, { total: number; failing: number }>()
-    for (const check of checks) {
-      if (!check.node || check.archived_at) continue
+    for (const item of testDefinitions) {
+      const check = item.definition
+      if (!check.node) continue
       const count = result.get(check.node) ?? { total: 0, failing: 0 }
       count.total++
-      if (worstState(check.cases) === 'failed') count.failing++
+      if (item.execution.state === 'failed') count.failing++
       result.set(check.node, count)
     }
     return result
-  }, [checks])
+  }, [testDefinitions])
   const testsFor = useCallback((id: string) => counts.get(id) ?? { total: 0, failing: 0 }, [counts])
   const selected = nodes.find((node) => node.id === section)
   const breadcrumbs = useMemo(() => {
@@ -322,6 +327,7 @@ function SpecificationWorkspace({
       map,
       session,
       connection,
+      saveState,
       checks,
       setChecks,
       refreshMap,
@@ -344,6 +350,7 @@ function SpecificationWorkspace({
       map,
       session,
       connection,
+      saveState,
       checks,
       refreshMap,
       refreshChecks,

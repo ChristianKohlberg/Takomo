@@ -3598,3 +3598,90 @@ async fn a_read_scoped_mcp_tool_does_not_rewrite_the_plan() {
         "a read-scoped tool must not add to the update log"
     );
 }
+
+#[tokio::test]
+async fn mcp_executes_pinned_test_runs_and_enforces_human_review() {
+    let app = TestApp::spawn().await;
+    let (_, check) = app
+        .post(
+            &app.admin,
+            "/v1/projects/tp/checks",
+            json!({"title":"Pinned MCP","verification":"agent_then_human"}),
+        )
+        .await;
+    let id = check["id"].as_str().unwrap();
+    app.put(
+        &app.admin,
+        &format!("/v1/checks/{id}/cases"),
+        json!({"cases":[{"key":"one","label":"One case","assignment":{}}]}),
+    )
+    .await;
+    let defs = app
+        .tool_ok(
+            &app.worker,
+            "takomo_test_definitions",
+            json!({"project":"tp"}),
+        )
+        .await;
+    let d = &defs["items"][0];
+    let run=app.tool_ok(&app.worker,"takomo_test_run_create",json!({"project":"tp","request":{"definitions":[{"check":id,"definition_revision":d["definition_revision"],"specification_revision":d["specification_revision"]}],"code_ref":"mcp123","idempotency_key":"mcp"}})).await;
+    let id = run["id"].as_str().unwrap();
+    app.tool_ok(
+        &app.worker,
+        "takomo_test_run_transition",
+        json!({"id":id,"action":"start"}),
+    )
+    .await;
+    let req = json!({"case":run["cases"][0]["case"],"actor_kind":"agent","verdict":"pass","idempotency_key":"agent"});
+    app.tool_ok(
+        &app.worker,
+        "takomo_test_result",
+        json!({"id":id,"request":req}),
+    )
+    .await;
+    app.tool_ok(
+        &app.worker,
+        "takomo_test_run_transition",
+        json!({"id":id,"action":"complete"}),
+    )
+    .await;
+    let mut req = req;
+    req["actor_kind"] = json!("human");
+    req["idempotency_key"] = json!("human");
+    let (error, failed) = app
+        .tool(
+            &app.worker,
+            "takomo_test_result",
+            json!({"id":id,"request":req}),
+        )
+        .await;
+    assert!(failed, "{error}");
+    app.tool_ok(
+        &app.human,
+        "takomo_test_result",
+        json!({"id":id,"request":req}),
+    )
+    .await;
+    let reader = app.mint("agent:reader", &["read"], Some(&["tp"]));
+    assert_eq!(
+        app.tool_ok(&reader, "takomo_test_runs", json!({"project":"tp"}))
+            .await["total"],
+        1
+    );
+    assert_eq!(
+        app.tool_ok(&reader, "takomo_test_run", json!({"id":id}))
+            .await["cases"][0]["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let retry = app
+        .tool_ok(
+            &app.worker,
+            "takomo_test_run_retry",
+            json!({"id":id,"idempotency_key":"retry"}),
+        )
+        .await;
+    assert_eq!(retry["retry_of"], id);
+}

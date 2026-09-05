@@ -28,6 +28,7 @@ mod roadmap;
 mod schedules;
 mod shares;
 mod tags;
+pub mod testruns;
 mod tickets;
 mod tokens;
 pub mod trace;
@@ -1069,6 +1070,7 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
         "CREATE INDEX IF NOT EXISTS idx_questions_assignee ON questions(assignee) WHERE assignee IS NOT NULL",
         [],
     )?;
+    testruns::import_legacy(conn, None)?;
     Ok(())
 }
 
@@ -1925,6 +1927,69 @@ CREATE TABLE IF NOT EXISTS case_verdicts (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_case_verdicts_case ON case_verdicts(case_id);
+
+
+-- Editable checks/cases are definitions. Runs pin immutable snapshots; observations
+-- never overwrite the definition or a previous attempt.
+CREATE TABLE IF NOT EXISTS test_definition_revisions (
+  id TEXT PRIMARY KEY,
+  check_id TEXT NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+  snapshot TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_test_revisions_check ON test_definition_revisions(check_id, created_at);
+CREATE TABLE IF NOT EXISTS test_specification_revisions (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  snapshot TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS test_runs (
+  id TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'execution' CHECK(kind IN ('execution','legacy')),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','cancelled')),
+  environment TEXT,
+  environment_snapshot TEXT,
+  code_ref TEXT,
+  retry_of TEXT REFERENCES test_runs(id) ON DELETE SET NULL,
+  created_by TEXT NOT NULL,
+  executor TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  idempotency_key TEXT,
+  request_hash TEXT,
+  UNIQUE(project, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_test_runs_project ON test_runs(project, created_at DESC, id);
+CREATE TABLE IF NOT EXISTS test_run_cases (
+  run_id TEXT NOT NULL REFERENCES test_runs(id) ON DELETE CASCADE,
+  case_id TEXT NOT NULL,
+  check_id TEXT NOT NULL,
+  definition_revision TEXT REFERENCES test_definition_revisions(id),
+  specification_revision TEXT REFERENCES test_specification_revisions(id),
+  case_snapshot TEXT,
+  PRIMARY KEY(run_id, case_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_test_run_cases_check ON test_run_cases(check_id, run_id);
+CREATE TABLE IF NOT EXISTS test_run_results (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  case_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL CHECK(actor_kind IN ('agent','human')),
+  actor TEXT NOT NULL,
+  user_id TEXT,
+  verdict TEXT NOT NULL CHECK(verdict IN ('pass','fail','blocked','unreachable')),
+  note TEXT,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  recorded_at INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  legacy_verdict TEXT UNIQUE,
+  FOREIGN KEY(run_id, case_id) REFERENCES test_run_cases(run_id, case_id) ON DELETE CASCADE,
+  UNIQUE(run_id, idempotency_key),
+  UNIQUE(run_id, case_id, actor_kind)
+);
 
 -- Which environments a check must be verified in.
 --

@@ -36,7 +36,7 @@ export const STR = defineStrings({
     refresh: 'Refresh',
 
     liveEdit: 'Edit together',
-    liveHint: 'Text changes are shared as you type. Verdicts remain separate, recorded actions.',
+    liveHint: 'Text changes are shared as you type. Test runs keep the revisions they executed.',
     connecting: 'Connecting…', live: 'Live', reconnecting: 'Reconnecting… keep this tab open',
     newCheck: 'New check',
     needWrite: "Filing a check needs a token with the 'write' scope.",
@@ -115,7 +115,7 @@ export const STR = defineStrings({
     fSeverityHint: 'Only blocking severity blocks a release gate.',
     fPrecondition: 'Entry precondition',
     fPreconditionPh: 'A finalised invoice with at least two billable entities on it.',
-    fBody: 'The traversal to follow',
+    fBody: 'Steps and expected outcome',
     fBodyPh: 'Open the invoice, split it, confirm each share reaches AP.',
     fEnvironments: 'Where it must pass',
     fEnvironmentsHint:
@@ -161,7 +161,7 @@ export const STR = defineStrings({
     refresh: 'Aktualisieren',
 
     liveEdit: 'Gemeinsam bearbeiten',
-    liveHint: 'Textänderungen werden beim Tippen geteilt. Testergebnisse bleiben separate, protokollierte Aktionen.',
+    liveHint: 'Textänderungen werden beim Tippen geteilt. Testläufe behalten den ausgeführten Stand.',
     connecting: 'Verbindung wird hergestellt…', live: 'Live', reconnecting: 'Verbindung wird wiederhergestellt… Tab offen lassen',
     newCheck: 'Neue Prüfung',
     needWrite: "Zum Anlegen einer Prüfung wird ein Token mit 'write' benötigt.",
@@ -241,7 +241,7 @@ export const STR = defineStrings({
     fSeverityHint: 'Nur „blocking“ blockiert ein Release-Gate.',
     fPrecondition: 'Eingangsbedingung',
     fPreconditionPh: 'Eine abgeschlossene Rechnung mit mindestens zwei abrechenbaren Einheiten.',
-    fBody: 'Der abzulaufende Weg',
+    fBody: 'Schritte und erwartetes Ergebnis',
     fBodyPh: 'Rechnung öffnen, aufteilen, prüfen, dass jeder Anteil in der Kreditorenbuchhaltung ankommt.',
     fEnvironments: 'Wo sie bestehen muss',
     fEnvironmentsHint:
