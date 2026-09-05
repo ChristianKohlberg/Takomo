@@ -82,8 +82,8 @@ const gz = (file) => gzipSync(readFileSync(resolve(dist, file))).length / 1024
 
 // A misplaced file in dist/ means the build emitted something the server cannot
 // serve: build.rs embeds assets/ flat and the route is `/assets/{file}`, one path
-// segment. vite.config.ts fails the build on that, but dist/ is committed and
-// could be edited by hand, so say so here too rather than quietly ignoring it.
+// segment. vite.config.ts fails the build on that, but an artifact could still
+// be edited by hand, so check here too rather than quietly ignoring it.
 //
 // This no longer checks against FIRST_LOAD. It used to, back when those two sets
 // were the same thing — with code splitting they are not, and a lazy chunk is
@@ -138,7 +138,7 @@ line('heaviest lazy chunk', heaviest, BUDGET_KB.lazyChunk)
 // The stylesheet must not contain utilities that exist only inside Tailwind's
 // own output.
 //
-// `dist/` is committed, so it is not gitignored, and Tailwind's automatic
+// `dist/` used to be committed, and Tailwind's automatic
 // content detection used to scan the bundle it had just written — finding the
 // utility names in there and keeping them "in use" forever. `@source not` in
 // globals.css stops that (see the note there). Nothing else would notice if

@@ -19,12 +19,17 @@ name: takomo
 # name matches at any depth and short-circuits the walk into it.
 caches:
   - target
+  - node_modules
+  - dist
 
 # Bind order is: sync -> upkeep -> datastore create -> service build -> start.
 # The datastore's `create:` SEEDS by running the takomo binary, which is why the
 # build is declared here as well as on the service: a service `build:` runs
 # AFTER the datastore step and would be too late to seed with.
 upkeep:
+  # Generate assets once; subsequent Rust steps reuse them without rebuilding JS.
+  - when: glob(web/**)
+    run: ./scripts/build.sh
   - when: glob(src/**)
     run: cargo build --release
   - when: Cargo.lock

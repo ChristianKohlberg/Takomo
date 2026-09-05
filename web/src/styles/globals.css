@@ -34,11 +34,10 @@
  *
  * `source(none)` turns OFF Tailwind's automatic content detection, and the
  * `@source` lines below are then the whole list. The default is to scan the
- * project directory minus whatever is gitignored, and two things here are NOT
- * gitignored but must never be treated as templates:
+ * project directory minus whatever is gitignored. Keep the explicit source
+ * boundary to prevent scripts and generated output becoming templates:
  *
- *   - `web/dist/` is COMMITTED — that is what keeps `cargo build --release`
- *     node-free on Render and in the Dockerfile — so Tailwind was scanning the
+ *   - `web/dist/` used to be committed, so Tailwind was scanning the
  *     bundle it had itself just written, finding the utility names in there and
  *     keeping them "in use" forever. The emitted CSS became a FIXED POINT of
  *     "sources + the previous dist" rather than a function of the sources: the

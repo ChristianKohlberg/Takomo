@@ -428,7 +428,7 @@ it under somebody else mid-conversation.
 **Tailwind scans `src/` and nothing else.** `globals.css` opens with
 `@import 'tailwindcss' source(none)` plus two explicit `@source` lines, because
 automatic content detection scans the project minus whatever is gitignored — and
-`dist/` is COMMITTED here. Tailwind was therefore scanning the bundle it had just
+`dist/` used to be committed here. Tailwind was therefore scanning the bundle it had just
 written, which made the emitted CSS a fixed point of "sources + previous dist"
 instead of a function of the sources: the first build after a merge was stale
 (this failed CI's `dist is current` gate on two separate PRs, each time looking
@@ -494,7 +494,12 @@ could not see a new one; this cannot be forgotten.
 
 ## What is committed
 
-`dist/` **is** committed once pages are ported — that is what keeps
-`cargo build --release` node-free on Render (`runtime: rust`) and in the
-Dockerfile. Builds are byte-identical across rebuilds (verified), so a CI gate
-can rebuild and diff. `dist-lib/` is not committed; it is regenerated on demand.
+Frontend source and the lockfile are committed. `dist/` and `dist-lib/` are
+generated and gitignored; never force-add them. From a fresh checkout, use
+`./scripts/build.sh` at the repository root (Node 22 and Rust required), or
+`npm ci && npm run build` here before running Cargo.
+
+CI builds the frontend once and passes its artifact to the Rust job. Docker uses
+a Node build stage and copies its assets into the Rust stage. Render and Backlot
+use the same build script. The final server binary still embeds all assets and
+does not need Node or a separate frontend server at runtime.

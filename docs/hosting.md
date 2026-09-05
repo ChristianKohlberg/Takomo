@@ -4,7 +4,7 @@ Takomo is a single Rust + SQLite binary you run yourself. The [README](../README
 
 ## The two supported deploys
 
-**Render (Blueprint).** [`render.yaml`](../render.yaml) provisions a `rust` web service that builds with `cargo build --release`, serves on `$PORT`, mounts a 1 GB persistent disk at `/var/data` (SQLite durability across deploys), sets `TAKOMO_ALLOW_PUBLIC_BIND=1`, and health-checks `/healthz`. Render terminates TLS for you. Deploy with the button in the README or via Dashboard → New → Blueprint.
+**Render (Blueprint).** [`render.yaml`](../render.yaml) provisions a `rust` web service that builds the frontend with Node 22 and the Rust binary via `./scripts/build.sh`, serves on `$PORT`, mounts a 1 GB persistent disk at `/var/data` (SQLite durability across deploys), sets `TAKOMO_ALLOW_PUBLIC_BIND=1`, and health-checks `/healthz`. Render terminates TLS for you. Deploy with the button in the README or via Dashboard → New → Blueprint.
 
 **Docker (portable).** The [`Dockerfile`](../Dockerfile) builds a small image and also bundles [Litestream](https://litestream.io/) (dormant unless you set a bucket — see [Backups](#backups-litestream)).
 
@@ -18,7 +18,7 @@ docker run -d -p 8080:8080 -v takomo-data:/var/data --name takomo takomo
 One binary is both the HTTP server and the `token` / `project` admin CLI.
 
 ```sh
-cargo build --release
+./scripts/build.sh
 alias takomo=./target/release/takomo
 
 # mint the first admin token (root of trust: shell access to the DB)
