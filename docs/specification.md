@@ -1,5 +1,9 @@
 # Project specification workspace
 
+The shared header also opens [version history](specification-history.md):
+automatic saved CRDT versions, named agreements, comparisons, and downloads.
+Reviewing an earlier version keeps the live editor and collaboration session open.
+
 Open `/projects/{project}/specification?view=document`. Document, Map and Tests
 are views within this workspace; the project and selected section stay in the
 URL. Use `view=map` or `view=tests`, and `section={node-id}` to share a selection.

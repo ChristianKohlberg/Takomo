@@ -50,6 +50,8 @@ import { STR as CHECK_STR } from '../verification/strings'
 import { SpecificationContext } from './context'
 import { SpecificationViews } from './Views'
 
+const History = lazy(() => import('./History'))
+
 const DocumentView = lazy(() =>
   import('../documents/App').then((m) => ({ default: m.DocumentView })),
 )
@@ -443,6 +445,7 @@ function SpecificationWorkspace({
             }
           >
             {session && <SaveStatus state={saveState} lang={lang} />}
+            {map && <Suspense fallback={null}><History /></Suspense>}
             {peers.length > 0 && (
               <span
                 className="max-w-60 truncate text-xs text-muted-foreground"

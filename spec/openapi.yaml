@@ -4500,6 +4500,121 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /mindmaps/{id}/versions:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [mindmaps]
+      operationId: specificationVersions
+      summary: List immutable saved specification versions
+      description: |
+        Requires read and project access. Newest first; follow next_cursor as before.
+        History begins on the first saved edit after upgrade; older compacted states cannot be recovered.
+        Each version is one durable CRDT batch, potentially containing several collaborators' edits.
+        recorded_by identifies the flusher, not every author. Reads never mutate the live document.
+      parameters:
+        - {name: before, in: query, schema: {type: integer, minimum: 1}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 30}}
+        - {name: checkpoints, in: query, schema: {type: boolean, default: false}}
+      responses:
+        "200":
+          description: Saved versions and stable descending continuation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, head, next_cursor, note]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/SpecificationVersion'}}
+                  total: {type: integer, description: Total matching the checkpoint filter across all pages}
+                  limit: {type: integer}
+                  head: {type: integer, description: Latest saved version; zero if history has not started}
+                  next_cursor: {type: [integer, "null"]}
+                  note: {type: string}
+        "401": {$ref: '#/components/responses/Error'}
+        "403": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+  /mindmaps/{id}/versions/{version}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+      - {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      tags: [mindmaps]
+      operationId: specificationVersion
+      summary: Read an earlier specification without changing the live replica
+      description: Requires read and project access. Full section text is retained; prose_xml preserves rich text for comparison. Node IDs allow structural comparisons across versions.
+      responses:
+        "200":
+          description: Version metadata and full section tree with relationships
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/SpecificationVersion'}
+                  - type: object
+                    required: [nodes, relationships]
+                    properties:
+                      nodes: {type: array, items: {type: object, additionalProperties: true}}
+                      relationships: {type: array, items: {type: object, additionalProperties: true}}
+        "401": {$ref: '#/components/responses/Error'}
+        "403": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+  /mindmaps/{id}/versions/{version}/state:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+      - {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
+    get:
+      tags: [mindmaps]
+      operationId: specificationVersionState
+      summary: Download the complete historical Yjs update
+      description: |
+        Requires read and project access. Apply the v1-encoded update to an EMPTY Y.Doc to inspect it.
+        It includes rich text and map data. Applying it to the live replica is NOT a restore operation;
+        CRDT merges do not reverse deletions. This API does not restore live content.
+      responses:
+        "200":
+          description: Complete historical CRDT state
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "401": {$ref: '#/components/responses/Error'}
+        "403": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+  /mindmaps/{id}/checkpoints:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [mindmaps]
+      operationId: checkpointSpecification
+      summary: Name an exact saved specification version
+      description: |
+        Requires write and project access. Await your CRDT durability acknowledgement, read the history head,
+        then supply it as expected_version. A different saved head returns 409. Checkpoints cannot be
+        renamed, deleted, or moved; each version permits at most 16 names. Exact retries at the same head are idempotent. A legacy map with head
+        zero establishes its available baseline. This request neither flushes nor includes unsaved edits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, expected_version]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 200, description: Nonblank name; at most 200 UTF-8 bytes}
+                expected_version: {type: integer, minimum: 0}
+      responses:
+        "201":
+          description: The saved version with its named checkpoints
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SpecificationVersion'}
+        "401": {$ref: '#/components/responses/Error'}
+        "403": {$ref: '#/components/responses/Error'}
+        "404": {$ref: '#/components/responses/Error'}
+        "409": {$ref: '#/components/responses/Error'}
+        "422": {$ref: '#/components/responses/Error'}
+
   /mindmaps/{id}/trace:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -6777,6 +6892,11 @@ components:
       schema: { type: string }
 
   responses:
+    Error:
+      description: Request rejected; inspect code and remedy
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
     NotFound:
       description: Unknown id
       content:
@@ -6794,6 +6914,24 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    SpecificationVersion:
+      type: object
+      required: [version, kind, recorded_at, recorded_by, checkpoints]
+      properties:
+        version: {type: integer, minimum: 1, description: Monotonically increasing within this specification}
+        kind: {type: string, enum: [baseline, save]}
+        recorded_at: {type: string, format: date-time}
+        recorded_by: {type: [string, "null"], description: Flusher identity; not attribution of every merged edit}
+        checkpoints:
+          type: array
+          items:
+            type: object
+            required: [name, actor, user, created_at]
+            properties:
+              name: {type: string}
+              actor: {type: string}
+              user: {type: [string, "null"]}
+              created_at: {type: string, format: date-time}
     TestDefinition:
       type: object
       required: [id, project, definition_revision, specification_revision, definition, specification]
@@ -8899,6 +9037,9 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  not_found.specification_version: "No saved version with that number exists in this specification. Read its version list."
+  validation.specification_history: "Invalid checkpoint or history query. Correct the named field and retry."
+  conflict.specification_history: "The saved version changed, no saved content exists, or the checkpoint name belongs to another version. Refresh history and review the head."
   notfound.test_run: "No such test run. Check the run ID and project before retrying."
   validation.test_run: "Invalid execution request. Correct the named field and retry."
   conflict.test_run: "The attempt state, executor, immutable result or idempotency key conflicts with this request."

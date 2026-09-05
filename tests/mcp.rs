@@ -3685,3 +3685,54 @@ async fn mcp_executes_pinned_test_runs_and_enforces_human_review() {
         .await;
     assert_eq!(retry["retry_of"], id);
 }
+
+#[tokio::test]
+async fn mcp_reads_and_names_saved_specification_versions() {
+    let app = TestApp::spawn().await;
+    let (_, made) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Versioned specification"}),
+        )
+        .await;
+    let map = made["mindmap"]["id"].as_str().unwrap();
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes"),
+        json!({"text":"An agreement", "notes":"Remember this wording"}),
+    )
+    .await;
+    let history = app
+        .tool_ok(
+            &app.worker,
+            "takomo_specification_history",
+            json!({"mindmap":map}),
+        )
+        .await;
+    let version = history["head"].clone();
+    let saved = app
+        .tool_ok(
+            &app.worker,
+            "takomo_specification_version",
+            json!({"mindmap":map,"version":version}),
+        )
+        .await;
+    assert_eq!(saved["nodes"][0]["notes"], "Remember this wording");
+    let named = app
+        .tool_ok(
+            &app.worker,
+            "takomo_specification_checkpoint",
+            json!({"mindmap":map,"expected_version":version,"name":"First agreement"}),
+        )
+        .await;
+    assert_eq!(named["checkpoints"][0]["name"], "First agreement");
+    let page = app
+        .tool_ok(
+            &app.worker,
+            "takomo_specification_history",
+            json!({"mindmap":map,"checkpoints":true,"limit":1}),
+        )
+        .await;
+    assert_eq!(page["total"], 1);
+}

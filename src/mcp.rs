@@ -92,6 +92,8 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// A name that is not listed counts as a write, so a tool added later is
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
+    "takomo_specification_history",
+    "takomo_specification_version",
     "takomo_test_definitions",
     "takomo_test_runs",
     "takomo_test_run",
@@ -4444,8 +4446,108 @@ struct TestRunRetryArgs {
     id: String,
     idempotency_key: String,
 }
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SpecHistoryArgs {
+    mindmap: String,
+    before: Option<i64>,
+    limit: Option<i64>,
+    checkpoints: Option<bool>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SpecVersionArgs {
+    mindmap: String,
+    version: i64,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SpecCheckpointArgs {
+    mindmap: String,
+    expected_version: i64,
+    name: String,
+}
 #[tool_router(router = test_run_router)]
 impl TakomoMcp {
+    #[tool(
+        description = "List saved specification versions, newest first. Follow next_cursor as before. History starts at the available baseline; recorded_by is the flusher, not every author. Document and Map share these versions."
+    )]
+    async fn takomo_specification_history(
+        &self,
+        Parameters(a): Parameters<SpecHistoryArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            let map = self
+                .state
+                .store
+                .get_mindmap(&a.mindmap)?
+                .ok_or_else(|| ApiError::not_found("mindmap", &a.mindmap))?;
+            auth.require_project(&map.project)?;
+            self.state.store.specification_history(
+                &a.mindmap,
+                a.before,
+                a.limit.unwrap_or(30).clamp(1, 100),
+                a.checkpoints.unwrap_or(false),
+            )
+        })())
+    }
+    #[tool(
+        description = "Read an immutable saved specification version, including full section text, rich prose XML and relationships. Does not modify the live CRDT. Compare stable node IDs across versions."
+    )]
+    async fn takomo_specification_version(
+        &self,
+        Parameters(a): Parameters<SpecVersionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        let state = self.state.clone();
+        respond(
+            tokio::task::spawn_blocking(move || {
+                auth.require_scope("read")?;
+                let map = state
+                    .store
+                    .get_mindmap(&a.mindmap)?
+                    .ok_or_else(|| ApiError::not_found("mindmap", &a.mindmap))?;
+                auth.require_project(&map.project)?;
+                state.store.specification_version(&a.mindmap, a.version)
+            })
+            .await
+            .unwrap_or_else(|e| Err(ApiError::internal(e.to_string()))),
+        )
+    }
+    #[tool(
+        description = "Name the exact current saved specification version. Await CRDT durability, read history head and pass expected_version. A changed head returns conflict; review before retrying. Names cannot be moved to another version. Does not include unsaved work."
+    )]
+    async fn takomo_specification_checkpoint(
+        &self,
+        Parameters(a): Parameters<SpecCheckpointArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        let state = self.state.clone();
+        respond(
+            tokio::task::spawn_blocking(move || {
+                auth.require_scope("write")?;
+                let map = state
+                    .store
+                    .get_mindmap(&a.mindmap)?
+                    .ok_or_else(|| ApiError::not_found("mindmap", &a.mindmap))?;
+                auth.require_project(&map.project)?;
+                let result = state.store.checkpoint_specification(
+                    &a.mindmap,
+                    a.expected_version,
+                    &a.name,
+                    &auth.actor,
+                    auth.user.as_deref(),
+                )?;
+                state.wake();
+                Ok(result)
+            })
+            .await
+            .unwrap_or_else(|e| Err(ApiError::internal(e.to_string()))),
+        )
+    }
+
     #[tool(
         description = "Read editable test definitions with current revision fingerprints and revision-aware execution summaries. Page using next_offset. Await your CRDT durability acknowledgment before selecting revisions. Legacy verdicts do not prove the current revision."
     )]

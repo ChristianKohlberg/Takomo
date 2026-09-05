@@ -511,6 +511,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::mindmaps::proposals).post(crate::api::mindmaps::propose),
         )
         // What happened to the plan, and who did it.
+        .route("/v1/mindmaps/{id}/versions", get(crate::api::spec_history::list))
+        .route("/v1/mindmaps/{id}/versions/{version}", get(crate::api::spec_history::get))
+        .route("/v1/mindmaps/{id}/versions/{version}/state", get(crate::api::spec_history::download))
+        .route("/v1/mindmaps/{id}/checkpoints", post(crate::api::spec_history::checkpoint))
         .route(
             "/v1/mindmaps/{id}/trace",
             get(crate::api::mindmaps::trace).post(crate::api::mindmaps::add_trace),

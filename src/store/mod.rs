@@ -27,6 +27,7 @@ mod ready_sql;
 mod roadmap;
 mod schedules;
 mod shares;
+pub mod spec_history;
 mod tags;
 pub mod testruns;
 mod tickets;
@@ -2151,6 +2152,35 @@ CREATE TABLE IF NOT EXISTS crdt_updates (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_crdt_updates_object ON crdt_updates(object_id, seq);
+
+-- Immutable specification history; deliberately separate from the compactable live log.
+CREATE TABLE IF NOT EXISTS specification_history_heads (
+  mindmap TEXT PRIMARY KEY REFERENCES mindmaps(id) ON DELETE CASCADE,
+  insertions BLOB NOT NULL,
+  deletions BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS specification_versions (
+  mindmap TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  blob BLOB NOT NULL,
+  state BLOB,
+  kind TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  recorded_by TEXT,
+  PRIMARY KEY(mindmap,version)
+);
+CREATE TABLE IF NOT EXISTS specification_checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mindmap TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  user TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE(mindmap,name),
+  FOREIGN KEY(mindmap,version) REFERENCES specification_versions(mindmap,version) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_specification_checkpoints_version ON specification_checkpoints(mindmap,version);
 
 -- A short-lived credential for ONE document's sync session.
 --
