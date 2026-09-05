@@ -15,6 +15,7 @@ import {
   checkpoint,
   compareVersions,
   historyPage,
+  mergeHistoryPage,
   savedVersion,
   type VersionDetail,
   type VersionPage,
@@ -33,7 +34,9 @@ const words = {
     empty: 'No saved versions yet. History begins with the next saved edit.',
     baseline: 'History starts here',
     saved: 'Saved version',
-    checkpoint: 'Name this agreement',
+    checkpoint: 'Name the latest saved version',
+    reviewLatest: 'Review latest version',
+    newer: 'Review the latest saved version before naming an agreement.',
     name: 'Checkpoint name',
     create: 'Save checkpoint',
     waiting: 'Wait until your changes are saved to create a checkpoint.',
@@ -73,7 +76,10 @@ const words = {
       'Noch keine gespeicherten Versionen. Der Verlauf beginnt mit der nächsten gespeicherten Änderung.',
     baseline: 'Hier beginnt der Verlauf',
     saved: 'Gespeicherte Version',
-    checkpoint: 'Vereinbarung benennen',
+    checkpoint: 'Letzten Speicherstand benennen',
+    reviewLatest: 'Letzte Version ansehen',
+    newer:
+      'Sieh dir den letzten Speicherstand an, bevor du die Vereinbarung benennst.',
     name: 'Name des Meilensteins',
     create: 'Meilenstein speichern',
     waiting: 'Warte, bis deine Änderungen gespeichert sind.',
@@ -137,20 +143,7 @@ export default function History() {
     try {
       const result = await historyPage(token, mapId, null, named)
       if (request === epoch.current) {
-        setPage((current) => {
-          const older =
-            current?.items.filter(
-              (item) =>
-                item.version < (result.items.at(-1)?.version ?? Infinity),
-            ) ?? []
-          return older.length
-            ? {
-                ...result,
-                items: [...result.items, ...older],
-                next_cursor: current!.next_cursor,
-              }
-            : result
-        })
+        setPage((current) => mergeHistoryPage(current, result))
         setAutomaticVersion(
           (current) => current || result.items[0]?.version || 0,
         )
@@ -258,6 +251,10 @@ export default function History() {
     if (value === null || value === undefined || value === '') return '—'
     return typeof value === 'object' ? JSON.stringify(value) : String(value)
   }
+  const reviewingLatest =
+    page?.head === 0 || (detail !== null && detail.version === page?.head)
+  const canCheckpoint =
+    page !== null && reviewingLatest && !loading && saveState === 'saved'
   const changes =
     detail && comparison ? compareVersions(comparison, detail) : null
   return (
@@ -381,7 +378,7 @@ export default function History() {
                   className="space-y-2 rounded-lg border bg-muted/30 p-4"
                   onSubmit={(event) => {
                     event.preventDefault()
-                    if (!page || busy || saveState !== 'saved') return
+                    if (!page || busy || !canCheckpoint) return
                     setBusy(true)
                     void checkpoint(token, map.id, page.head, name)
                       .then(async (value) => {
@@ -414,13 +411,24 @@ export default function History() {
                     />
                     <Button
                       type="submit"
-                      disabled={
-                        !name.trim() || busy || !page || saveState !== 'saved'
-                      }
+                      disabled={!name.trim() || busy || !canCheckpoint}
                     >
                       {w.create}
                     </Button>
                   </div>
+                  {page && page.head > 0 && !reviewingLatest && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">{w.newer}</p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => change({ version: String(page.head) })}
+                      >
+                        {w.reviewLatest} · v{page.head}
+                      </Button>
+                    </div>
+                  )}
                   {saveState !== 'saved' && (
                     <p className="text-xs text-muted-foreground">{w.waiting}</p>
                   )}

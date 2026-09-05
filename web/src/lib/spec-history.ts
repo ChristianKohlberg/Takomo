@@ -105,3 +105,28 @@ export function compareVersions(before: VersionDetail, after: VersionDetail) {
       : []
   })
 }
+
+/** Preserve loaded older pages only while the refreshed page overlaps them.
+ * Otherwise reset the cursor: retaining them would hide the intervening gap. */
+export function mergeHistoryPage(
+  current: VersionPage | null,
+  next: VersionPage,
+): VersionPage {
+  if (
+    !current ||
+    !next.items.some((item) =>
+      current.items.some((old) => old.version === item.version),
+    )
+  )
+    return next
+  const older = current.items.filter(
+    (item) => item.version < (next.items.at(-1)?.version ?? Infinity),
+  )
+  return older.length
+    ? {
+        ...next,
+        items: [...next.items, ...older],
+        next_cursor: current.next_cursor,
+      }
+    : next
+}
