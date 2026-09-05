@@ -605,7 +605,7 @@ fn validate_initiative(conn: &Connection, project: &str, initiative: &str) -> Ap
     }
 }
 
-fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
+pub(super) fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
     let metadata_raw: String = row.get("metadata")?;
     Ok(Check {
         id: row.get("id")?,
@@ -667,7 +667,7 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
     })
 }
 
-const CHECK_COLS: &str =
+pub(super) const CHECK_COLS: &str =
     "id, project, epic, initiative, node, title, body, precondition, layer, severity, \
     verification, expiry_days, expiry_releases, cost_agent_minutes, cost_human_minutes, \
     metadata, version, created_by, created_at, updated_at, archived_at";
@@ -930,7 +930,7 @@ fn load_orphan_globs(conn: &Connection, project: &str, check: &str) -> ApiResult
 type PolicyRow = (Option<String>, Option<i64>, Option<i64>);
 
 /// Resolve verification + expiry down project → epic → check.
-fn resolve_policy(conn: &Connection, check: &Check) -> ApiResult<ResolvedPolicy> {
+pub(super) fn resolve_policy(conn: &Connection, check: &Check) -> ApiResult<ResolvedPolicy> {
     let load = |epic: &str| -> ApiResult<Option<PolicyRow>> {
         let mut s = conn.prepare(
             "SELECT verification, expiry_days, expiry_releases FROM checklist_policies
@@ -2254,11 +2254,13 @@ impl Store {
             // The permanent record of who, for either kind: an agent token can
             // belong to somebody's own automation, and "whose agent" is worth
             // keeping even where it is not a human sign-off.
+            let history_id = verdict_id();
             tx.execute(
                 "INSERT INTO case_verdicts (id, case_id, actor_kind, actor, \"user\", verdict, note, release, environment, at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![verdict_id(), case, actor_kind, actor, user, verdict, note, release, target, now],
+                params![history_id, case, actor_kind, actor, user, verdict, note, release, target, now],
             )?;
+            super::testruns::import_legacy(tx, Some(&history_id))?;
             emit_event(
                 tx,
                 None,

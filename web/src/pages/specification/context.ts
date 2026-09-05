@@ -16,6 +16,7 @@ export interface SpecificationState {
   voice: boolean
   map: Mindmap | null
   session: MindmapSession | null
+  saveState?: import('@/lib/save-status').SaveState
   connection: SyncConnection | null
   nodes: PlanNode[]
   checks: Check[]

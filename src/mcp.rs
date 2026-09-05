@@ -92,6 +92,9 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// A name that is not listed counts as a write, so a tool added later is
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
+    "takomo_test_definitions",
+    "takomo_test_runs",
+    "takomo_test_run",
     "takomo_check",
     "takomo_checks",
     "takomo_claim_status",
@@ -1080,7 +1083,10 @@ impl TakomoMcp {
         // `#[tool_router]` block because they are a genuinely separate
         // surface — no claims, no fences, no workflow — and keeping them
         // out of the work-loop block keeps each block readable.
-        let tool_router = Self::tool_router() + Self::initiative_router() + Self::schedule_router();
+        let tool_router = Self::tool_router()
+            + Self::initiative_router()
+            + Self::schedule_router()
+            + Self::test_run_router();
         let tools = Arc::new(slim_tools(tool_router.list_all()));
         Self {
             state,
@@ -1698,7 +1704,7 @@ impl TakomoMcp {
     }
 
     #[tool(
-        description = "Record your verdict on a case: pass, fail, blocked or unreachable. A fail \
+        description = "Legacy verdict API; prefer takomo_test_run_create and takomo_test_result for revision-pinned evidence. Record your verdict on a case: pass, fail, blocked or unreachable. A fail \
         needs a note. This records the AGENT verdict; only a human-scoped token can assert that a \
         person approved a case, so a policy of agent_then_human needs both facts and you cannot \
         supply the second one."
@@ -4400,4 +4406,184 @@ fn plan_markdown(doc: &yrs::Doc, map_id: &str, node: Option<&str>) -> ApiResult<
         }
     }
     Ok(out.trim_end().to_string())
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestDefinitionsArgs {
+    project: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunsArgs {
+    project: String,
+    cursor: Option<String>,
+    limit: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunIdArgs {
+    id: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunCreateArgs {
+    project: String,
+    request: crate::store::testruns::RunCreate,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunTransitionArgs {
+    id: String,
+    action: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunResultArgs {
+    id: String,
+    request: crate::store::testruns::ResultCreate,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct TestRunRetryArgs {
+    id: String,
+    idempotency_key: String,
+}
+#[tool_router(router = test_run_router)]
+impl TakomoMcp {
+    #[tool(
+        description = "Read editable test definitions with current revision fingerprints and revision-aware execution summaries. Page using next_offset. Await your CRDT durability acknowledgment before selecting revisions. Legacy verdicts do not prove the current revision."
+    )]
+    async fn takomo_test_definitions(
+        &self,
+        Parameters(a): Parameters<TestDefinitionsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            self.state.store.list_test_definitions(
+                &a.project,
+                a.offset.unwrap_or(0),
+                a.limit.unwrap_or(50),
+            )
+        })())
+    }
+    #[tool(
+        description = "List execution attempts and legacy evidence, newest first. Follow next_cursor. Results belong to a run; definition edits never rewrite history."
+    )]
+    async fn takomo_test_runs(
+        &self,
+        Parameters(a): Parameters<TestRunsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            self.state
+                .store
+                .list_test_runs(&a.project, a.cursor.as_deref(), a.limit.unwrap_or(30))
+        })())
+    }
+    #[tool(
+        description = "Read one execution attempt, its pinned definition and specification snapshots, case parameters, outcomes and human reviews."
+    )]
+    async fn takomo_test_run(
+        &self,
+        Parameters(a): Parameters<TestRunIdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            let run = self.state.store.get_test_run(&a.id)?;
+            auth.require_project(run["project"].as_str().unwrap())?;
+            Ok(run)
+        })())
+    }
+    #[tool(
+        description = "Create a queued run over selected revision fingerprints from takomo_test_definitions, an environment and an immutable code reference. A stale selection returns conflict.definition_changed; reread and reconsider. Reuse the same idempotency key when retrying a lost response. Takomo stores the run; you execute it."
+    )]
+    async fn takomo_test_run_create(
+        &self,
+        Parameters(a): Parameters<TestRunCreateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            auth.require_project(&a.project)?;
+            let run = self
+                .state
+                .store
+                .create_test_run(&a.project, &a.request, &auth.actor)?;
+            self.state.wake();
+            Ok(run)
+        })())
+    }
+    #[tool(
+        description = "Start, complete or cancel a run. Start atomically claims execution for your actor. Only that executor can record agent results and complete; completion requires an outcome for every case. Human approval is separate."
+    )]
+    async fn takomo_test_run_transition(
+        &self,
+        Parameters(a): Parameters<TestRunTransitionArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let run = self.state.store.get_test_run(&a.id)?;
+            auth.require_project(run["project"].as_str().unwrap())?;
+            let run = self
+                .state
+                .store
+                .transition_test_run(&a.id, &a.action, &auth.actor)?;
+            self.state.wake();
+            Ok(run)
+        })())
+    }
+    #[tool(
+        description = "Append an immutable result to a run case with evidence references. Agent results require the active executor; actor_kind human requires human scope. For agent_then_human, review requires a passing agent result in this same attempt. Non-pass outcomes need a note. Retry the run for a new observation."
+    )]
+    async fn takomo_test_result(
+        &self,
+        Parameters(a): Parameters<TestRunResultArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let run = self.state.store.get_test_run(&a.id)?;
+            auth.require_project(run["project"].as_str().unwrap())?;
+            if a.request.actor_kind == "human" {
+                auth.require_scope("human")?;
+            }
+            let run = self.state.store.record_test_result(
+                &a.id,
+                &a.request,
+                &auth.actor,
+                auth.user.as_deref(),
+            )?;
+            self.state.wake();
+            Ok(run)
+        })())
+    }
+    #[tool(
+        description = "Retry a completed or cancelled execution with exactly its original revisions, environment and code reference. Creates a fresh queued attempt with no inherited outcomes or approvals. To test changed code or definitions, create a new run instead."
+    )]
+    async fn takomo_test_run_retry(
+        &self,
+        Parameters(a): Parameters<TestRunRetryArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let run = self.state.store.get_test_run(&a.id)?;
+            auth.require_project(run["project"].as_str().unwrap())?;
+            let run = self
+                .state
+                .store
+                .retry_test_run(&a.id, &a.idempotency_key, &auth.actor)?;
+            self.state.wake();
+            Ok(run)
+        })())
+    }
 }

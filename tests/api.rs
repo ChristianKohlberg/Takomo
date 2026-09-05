@@ -15369,12 +15369,12 @@ async fn the_verification_surfaces_are_served_and_carry_their_clients() {
         assert_app_shell(path, &resp.text().await.unwrap());
     }
 
-    let bundle = app.eager_bundle().await;
+    let bundle = app.complete_bundle().await;
     for fragment in [
-        "/checklist/worklist",
-        "/checklist/gate",
+        "/test-definitions",
+        "/test-runs",
         "/environments",
-        "/verdict",
+        "/results",
     ] {
         assert!(
             bundle.contains(fragment),

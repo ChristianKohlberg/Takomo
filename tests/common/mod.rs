@@ -200,6 +200,15 @@ impl TestApp {
     /// Dynamic imports are deliberately NOT followed: a lazy route's chunk is
     /// precisely what must not count as first load.
     pub async fn eager_bundle(&self) -> String {
+        self.bundle(false).await
+    }
+
+    /// All reachable route clients, including lazy imports, served over HTTP.
+    pub async fn complete_bundle(&self) -> String {
+        self.bundle(true).await
+    }
+
+    async fn bundle(&self, include_lazy: bool) -> String {
         let mut seen = std::collections::BTreeSet::new();
         let mut queue = vec!["app.js".to_string()];
         let mut out = String::new();
@@ -208,14 +217,21 @@ impl TestApp {
                 continue;
             }
             let src = self.asset(&name).await;
-            // The two shapes a static import takes once minified: `from"./x.js"`
-            // and a side-effect-only `import"./x.js"`. A dynamic one is
-            // `import("./x.js")` and matches neither, which is the point.
-            for pat in ["from\"./", "import\"./"] {
+            // Static imports are first-load dependencies. Lazy routes also use
+            // template literals in Vite 8, so follow the matching delimiter.
+            let mut patterns = vec![("from\"./", '"'), ("import\"./", '"')];
+            if include_lazy {
+                patterns.extend([
+                    ("import(\"./", '"'),
+                    ("import(`./", '`'),
+                    ("import('./", '\''),
+                ]);
+            }
+            for (pat, delimiter) in patterns {
                 let mut rest = src.as_str();
                 while let Some(at) = rest.find(pat) {
                     rest = &rest[at + pat.len()..];
-                    if let Some(end) = rest.find('"') {
+                    if let Some(end) = rest.find(delimiter) {
                         queue.push(rest[..end].to_string());
                     }
                 }
