@@ -187,13 +187,15 @@ export function App() {
     fetchAll().catch(handleErr)
   }, [token, fetchAll, handleErr])
 
-  // The link is spent once it has been read: clearing the filter must not be
-  // undone by a reload, and the address bar should say where you are.
+  // Consume only the initial plan filter. Keep the editor deep link and let
+  // the router observe the replacement so browser history stays consistent.
   useEffect(() => {
-    if (window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    const hash = new URLSearchParams(window.location.hash.slice(1))
+    if (hash.has('n')) {
+      hash.delete('n')
+      navigate({ hash: hash.toString() }, { replace: true })
     }
-  }, [])
+  }, [navigate])
 
   useProjectUpdates(token, project, async () => {
     try {
