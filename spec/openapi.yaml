@@ -5514,6 +5514,49 @@ paths:
                   note: { type: string }
         "404": { description: 'No document with that id (`notfound.document`).' }
 
+  /checks/{id}/session:
+    post:
+      tags: [checks]
+      summary: Mint a scoped collaboration ticket for check definition text
+      description: Requires read scope and project access. The nodes map contains a definition map with title, body and precondition Y.Text fields. Verdicts remain separate validated actions.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Shared collaboration session.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CollaborationSession' }
+        "404": { description: Object not found. }
+  /projects/{id}/session:
+    post:
+      tags: [projects]
+      summary: Mint a scoped ticket for project change notifications
+      description: Requires read scope and project access. Connect a plain WebSocket to url/room with the ticket query parameter. Receives a JSON refresh notification on connection and after committed changes; re-read project resources through the authenticated API. Notifications can be coalesced and carry no record payload.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Project notification session; room is project followed by a colon and the project id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CollaborationSession' }
+        "404": { description: Project not found. }
+  /sync/{id}:
+    get:
+      tags: [documents, mindmaps, checks]
+      summary: Shared collaboration WebSocket authenticated by an object-scoped ticket
+      description: Standard binary Yjs sync and awareness for documents, mindmaps and check definitions. Project rooms instead emit JSON refresh notifications. Structured content commits its CRDT and SQL projection before broadcast. Document content uses the existing debounced persistence. Revoked or expired sessions are disconnected; the ticket must match this room exactly. The older /docsync route remains compatible.
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: ticket, in: query, required: true, schema: { type: string } }
+      responses:
+        "101": { description: WebSocket upgraded. }
+        "401": { description: Missing or invalid ticket. }
+        "403": { description: Ticket belongs to a different object. }
+        "410": { description: Ticket revoked or expired. }
+
   /docsync/{id}:
     get:
       tags: [documents]
@@ -6557,6 +6600,21 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    CollaborationSession:
+      type: object
+      required: [object, kind, session, token, can_write, display, expires_at, url, room]
+      properties:
+        object: { type: string }
+        document: { type: string, description: Legacy alias for object. }
+        kind: { type: string, enum: [document, mindmap, check, project] }
+        session: { type: string }
+        token: { type: string, description: Short-lived tkd_ ticket; stored hashed. }
+        can_write: { type: boolean }
+        display: { type: string }
+        expires_at: { type: string, format: date-time }
+        url: { type: string, description: WebSocket base path without the room. }
+        room: { type: string }
+
     Project:
       type: object
       properties:
@@ -8537,6 +8595,45 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+
+  check.session_expired: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  check.session_invalid: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  check.session_missing: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  check.session_wrong_check: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  check.too_many_peers: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  conflict.check_archived: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  conflict.project_archived: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  project.session_expired: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  project.session_invalid: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  project.session_missing: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  project.session_wrong_project: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  project.too_many_peers: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.check_too_large: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.check_update_empty: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.check_update_too_large: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.collab_state: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.project_too_large: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.project_update_empty: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
+  validation.project_update_too_large: "The shared object or sync ticket cannot accept this request. Check object ownership, ticket expiry, and the update size and structure before retrying."
+
   # -- schedules: recurrence rules that materialize ordinary tickets --
   validation.schedule.cadence: "the recurrence rule is unusable. The message names every problem at once, and a cron-shaped string is answered with its declarative equivalent rather than parsed."
   validation.schedule.template: "the ticket template a schedule stamps out is unusable. parent and blocked_by are refused on purpose — an occurrence that inherited a dependency would stop being independent of its siblings."

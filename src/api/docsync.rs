@@ -408,6 +408,7 @@ impl Rooms {
         // CPU burn on a runtime thread, on a path any joiner can trigger. Doing
         // both in one hop is also one fewer thread handoff than doing them in
         // two.
+        let mut check_changes = Some(state.store.check_updates.subscribe());
         let store_id = id.to_string();
         let store = state.clone();
         let (doc, rows, seen_seq) = super::blocking_read(move || {
@@ -418,20 +419,11 @@ impl Rooms {
             {
                 let mut txn = doc.transact_mut();
                 for blob in &updates {
-                    // A blob that will not decode is skipped rather than failing
-                    // the open. Refusing to serve a document because one
-                    // historical row is unreadable would turn a recoverable
-                    // problem into a lost document; the rest of the log still
-                    // rebuilds most of it, and the next compaction quietly drops
-                    // the bad row.
-                    match Update::decode_v1(blob) {
-                        Ok(u) => {
-                            if let Err(e) = txn.apply_update(u) {
-                                eprintln!("{store_id}: skipping unapplicable update: {e}");
-                            }
-                        }
-                        Err(e) => eprintln!("{store_id}: skipping undecodable update: {e}"),
-                    }
+                    let update = Update::decode_v1(blob).map_err(|e| {
+                        ApiError::internal(format!("Invalid stored CRDT for {store_id}: {e}"))
+                    })?;
+                    txn.apply_update(update)
+                        .map_err(|e| ApiError::internal(e.to_string()))?;
                 }
             }
             Ok((doc, rows, seen_seq))
@@ -512,6 +504,13 @@ impl Rooms {
                     room.frozen.store(frozen_now, Ordering::SeqCst);
                     rooms.insert(id.to_string(), room.clone());
                     spawn_flusher(state.clone(), room.clone());
+                    if kind_of(id) == CollabKind::Check {
+                        spawn_check_changes(
+                            state.clone(),
+                            room.clone(),
+                            check_changes.take().expect("new room"),
+                        );
+                    }
                     room
                 }
             };
@@ -948,6 +947,21 @@ pub async fn create_mindmap_session(
     mint(state, ctx, id, CollabKind::Mindmap).await
 }
 
+pub async fn create_check_session(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    mint(state, ctx, id, CollabKind::Check).await
+}
+pub async fn create_project_session(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    mint(state, ctx, format!("project:{id}"), CollabKind::Project).await
+}
+
 /// Mint a ticket for one collaborative object, whichever kind it is.
 ///
 /// `expect` is checked against the id rather than assumed from the route, so a
@@ -965,6 +979,8 @@ async fn mint(
         return Err(match expect {
             CollabKind::Document => ApiError::not_found("document", &id),
             CollabKind::Mindmap => ApiError::not_found("mindmap", &id),
+            CollabKind::Check => ApiError::not_found("check", &id),
+            CollabKind::Project => ApiError::not_found("project", &id),
         });
     }
     ctx.require_project(&object.project)?;
@@ -1068,6 +1084,9 @@ pub async fn sync(
         Err(e) => return e.into_response(),
     };
 
+    if session.kind == CollabKind::Project {
+        return ws.on_upgrade(move |socket| project_loop(socket, state, session));
+    }
     let room = match Rooms::join(&state, &id).await {
         Ok(room) => room,
         Err(e) => return e.into_response(),
@@ -1170,12 +1189,11 @@ async fn session_loop(
                         }
                     }
                     // Lagged: this peer fell behind the broadcast buffer. Yjs
-                    // recovers from a gap by design — resend our state vector and
-                    // let it ask for whatever it missed. This is exactly why the
-                    // protocol has a step 1.
+                    // recovers from a gap by merging a complete update. Sending only
+                    // our vector asks the peer for data; it does not repair theirs.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if sink
-                            .send(Message::Binary(sync_message(SYNC_STEP1, &room.state_vector()).into()))
+                            .send(Message::Binary(sync_message(SYNC_STEP2, &room.diff(&StateVector::default())).into()))
                             .await
                             .is_err()
                         {
@@ -1197,6 +1215,20 @@ async fn session_loop(
                     _ => continue,
                 };
 
+                if session.kind == CollabKind::Check {
+                    let mut dec = Cursor::new(bytes.as_ref());
+                    if dec.read_var::<u64>().ok() == Some(MSG_SYNC) && matches!(dec.read_var::<u64>().ok(), Some(SYNC_STEP2 | SYNC_UPDATE)) {
+                        if !session.can_write { continue; }
+                        let Ok(update) = dec.read_buf().map(|b| b.to_vec()) else { continue; };
+                        let store = state.clone(); let id=room.id.clone(); let actor=session.actor.clone(); let sid=session.id.clone();
+                        let result=tokio::task::spawn_blocking(move || {
+                            if !store.store.collab_session_is_live(&sid)? { return Err(ApiError::validation("validation.collab_state", "This session is no longer live.")); }
+                            store.store.apply_check_update(&id,&update,&actor)
+                        }).await;
+                        if !matches!(result, Ok(Ok(()))) { let _=sink.send(Message::Close(None)).await; break; }
+                        continue;
+                    }
+                }
                 if let Some(reply) = handle_frame(&room, &session, me, &bytes) {
                     if sink.send(Message::Binary(reply.into())).await.is_err() {
                         break;
@@ -1287,5 +1319,59 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
             None
         }
         _ => None,
+    }
+}
+
+fn spawn_check_changes(
+    state: Arc<AppState>,
+    room: Arc<Room>,
+    mut changes: tokio::sync::broadcast::Receiver<(String, Vec<u8>)>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+             result=changes.recv()=>match result {
+              Ok((id,blob)) if id==room.id => { if room.apply(&blob).is_ok() { let _=room.tx.send((0,Arc::new(sync_message(SYNC_UPDATE,&blob)))); } }
+              Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{
+               let store=state.clone();let id=room.id.clone();
+               if let Ok(Ok(blobs))=tokio::task::spawn_blocking(move||store.store.load_collab_updates(&id)).await {
+                for blob in blobs { if room.apply(&blob).is_ok() { let _=room.tx.send((0,Arc::new(sync_message(SYNC_UPDATE,&blob)))); } }
+               }
+              }
+              Err(tokio::sync::broadcast::error::RecvError::Closed)=>break,
+              _=>{}
+             },
+             _=tokio::time::sleep(FLUSH_INTERVAL)=>{
+              if !state.rooms.map.lock().expect("rooms mutex").get(&room.id).is_some_and(|r|Arc::ptr_eq(r,&room)) {break;}
+             }
+            }
+        }
+    });
+}
+async fn project_loop(socket: WebSocket, state: Arc<AppState>, session: CollabSession) {
+    let mut changes = state.store.changes.subscribe();
+    let (mut sink, mut stream) = socket.split();
+    let mut validity = tokio::time::interval(SESSION_RECHECK_INTERVAL);
+    if sink
+        .send(Message::Text("{\"type\":\"refresh\"}".into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        tokio::select! {
+         changed=changes.changed()=>{
+          if changed.is_err(){break;}
+          tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+          changes.borrow_and_update();
+          if sink.send(Message::Text("{\"type\":\"refresh\"}".into())).await.is_err(){break;}
+         },
+         _=validity.tick()=>{
+          let state=state.clone();let id=session.id.clone();
+          if matches!(tokio::task::spawn_blocking(move||state.store.collab_session_is_live(&id)).await,Ok(Ok(false))){break;}
+         },
+         incoming=stream.next()=>{if !matches!(incoming,Some(Ok(Message::Ping(_)))|Some(Ok(Message::Pong(_)))){break;}}
+        }
     }
 }

@@ -21895,3 +21895,325 @@ async fn a_check_names_the_section_of_the_plan_it_verifies() {
         "a refusal must say how to find a real one: {bad}"
     );
 }
+
+// Structured CRDTs must converge through the actual socket and remain visible
+// through the legacy JSON API used by agents.
+#[tokio::test]
+async fn shared_collaboration_merges_text_and_projects_mindmaps_and_checks() {
+    use docsync_support::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use yrs::updates::decoder::Decode;
+    use yrs::{GetString, Map, Out, ReadTxn, Text, Transact};
+
+    let app = TestApp::spawn().await;
+    let check_id = check(
+        &app,
+        json!({"title":"Hello 🌍","layer":"api","precondition":"ready"}),
+    )
+    .await;
+    for (kind, id, key) in [("checks", check_id.as_str(), "definition")] {
+        let (status, session) = app
+            .post(&app.worker, &format!("/v1/{kind}/{id}/session"), json!({}))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{session}");
+        assert_eq!(session["room"], id);
+        let url = format!(
+            "{}/v1/sync/{id}?ticket={}",
+            app.base.replace("http://", "ws://"),
+            session["token"].as_str().unwrap()
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let empty = yrs::updates::encoder::Encode::encode_v1(&yrs::StateVector::default());
+        socket
+            .send(Message::Binary(sync_message(SYNC_STEP1, &empty).into()))
+            .await
+            .unwrap();
+        let initial = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() {
+                    if let Some((SYNC_STEP2, payload)) = read_sync(&bytes) {
+                        break payload;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let a = yrs::Doc::new();
+        let b = yrs::Doc::new();
+        for doc in [&a, &b] {
+            doc.transact_mut()
+                .apply_update(yrs::Update::decode_v1(&initial).unwrap())
+                .unwrap();
+        }
+        let title = |doc: &yrs::Doc| {
+            let root = doc.get_or_insert_map("nodes");
+            let txn = doc.transact();
+            let Some(Out::YMap(entry)) = root.get(&txn, key) else {
+                panic!("missing entry")
+            };
+            let Some(Out::YText(text)) = entry.get(&txn, "title") else {
+                panic!("title must be Y.Text")
+            };
+            text
+        };
+        let ta = title(&a);
+        let tb = title(&b);
+        assert_eq!(ta.get_string(&a.transact()), "Hello 🌍");
+        let ua = {
+            let mut tx = a.transact_mut();
+            ta.insert(&mut tx, 0, "Alice ");
+            tx.encode_update_v1()
+        };
+        let ub = {
+            let mut tx = b.transact_mut();
+            tb.insert(&mut tx, 0, "Bob ");
+            tx.encode_update_v1()
+        };
+        // Both edits were authored against the same baseline, then delivered in
+        // the opposite order. Duplicate delivery is safe too.
+        for update in [&ub, &ua, &ub] {
+            socket
+                .send(Message::Binary(sync_message(SYNC_UPDATE, update).into()))
+                .await
+                .unwrap();
+        }
+        a.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&ub).unwrap())
+            .unwrap();
+        let expected = ta.get_string(&a.transact());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (_, value) = app.get(&app.worker, &format!("/v1/{kind}/{id}")).await;
+                let actual = if kind == "mindmaps" {
+                    &value["nodes"][0]["text"]
+                } else {
+                    &value["title"]
+                };
+                if actual == &json!(expected) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("both concurrent edits reach the JSON projection");
+        let restored = yrs::Doc::new();
+        for blob in app.open_store().load_collab_updates(id).unwrap() {
+            restored
+                .transact_mut()
+                .apply_update(yrs::Update::decode_v1(&blob).unwrap())
+                .unwrap();
+        }
+        assert_eq!(title(&restored).get_string(&restored.transact()), expected);
+        // A new connection receives the same state (no client-side broadcast channel).
+        let (mut peer, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        peer.send(Message::Binary(sync_message(SYNC_STEP1, &empty).into()))
+            .await
+            .unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() {
+                    if let Some((SYNC_STEP2, update)) = read_sync(&bytes) {
+                        break update;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let replica = yrs::Doc::new();
+        replica
+            .transact_mut()
+            .apply_update(yrs::Update::decode_v1(&received).unwrap())
+            .unwrap();
+        assert_eq!(title(&replica).get_string(&replica.transact()), expected);
+        assert_eq!(
+            replica.transact().state_vector(),
+            restored.transact().state_vector()
+        );
+        let server_title = format!("Server {expected}");
+        let path = if kind == "mindmaps" {
+            format!("/v1/mindmaps/{id}/nodes/{key}")
+        } else {
+            format!("/v1/checks/{id}")
+        };
+        let body = if kind == "mindmaps" {
+            json!({"text":server_title})
+        } else {
+            json!({"title":server_title})
+        };
+        let (status, result) = app.patch(&app.worker, &path, body).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() {
+                    if let Some((SYNC_UPDATE | SYNC_STEP2, update)) = read_sync(&bytes) {
+                        replica
+                            .transact_mut()
+                            .apply_update(yrs::Update::decode_v1(&update).unwrap())
+                            .unwrap();
+                        if title(&replica).get_string(&replica.transact()) == server_title {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("REST/agent mutation must reach an already connected browser");
+        let (_, token) = app
+            .post(
+                &app.admin,
+                "/v1/tokens",
+                json!({"actor":"reader","scopes":["read"]}),
+            )
+            .await;
+        let (_, read_session) = app
+            .post(
+                token["token"].as_str().unwrap(),
+                &format!("/v1/{kind}/{id}/session"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(read_session["can_write"], false);
+        let read_url = format!(
+            "{}/v1/sync/{id}?ticket={}",
+            app.base.replace("http://", "ws://"),
+            read_session["token"].as_str().unwrap()
+        );
+        let (mut reader, _) = tokio_tungstenite::connect_async(read_url).await.unwrap();
+        let forbidden = {
+            let text = title(&replica);
+            let mut tx = replica.transact_mut();
+            text.insert(&mut tx, 0, "SMUGGLED ");
+            tx.encode_update_v1()
+        };
+        reader
+            .send(Message::Binary(
+                sync_message(SYNC_UPDATE, &forbidden).into(),
+            ))
+            .await
+            .unwrap();
+        reader
+            .send(Message::Binary(sync_message(SYNC_STEP1, &empty).into()))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Message::Binary(bytes) = reader.next().await.unwrap().unwrap() {
+                    if let Some((SYNC_STEP2, update)) = read_sync(&bytes) {
+                        break update;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let safe = yrs::Doc::new();
+        safe.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&response).unwrap())
+            .unwrap();
+        assert_eq!(
+            title(&safe).get_string(&safe.transact()),
+            server_title,
+            "read-only updates must be ignored"
+        );
+        // One ticket cannot open a different object kind.
+        let wrong = url.replace(&format!("/sync/{id}?"), "/sync/project:tp?");
+        assert!(tokio_tungstenite::connect_async(wrong).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn shared_collaboration_project_socket_announces_committed_changes() {
+    use futures::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let app = TestApp::spawn().await;
+    let (status, session) = app
+        .post(&app.worker, "/v1/projects/tp/session", json!({}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let url = format!(
+        "{}/v1/sync/project:tp?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    assert!(matches!(socket.next().await, Some(Ok(Message::Text(_)))));
+    app.post(
+        &app.worker,
+        "/v1/mindmaps",
+        json!({"project":"tp","title":"Appears live"}),
+    )
+    .await;
+    let message = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(message, Message::Text(text) if text.contains("refresh")));
+}
+
+#[tokio::test]
+async fn shared_check_migration_seeds_once_and_cleans_deleted_history() {
+    use yrs::updates::decoder::Decode;
+    use yrs::{GetString, Map, Out, Text, Transact};
+    let app = TestApp::spawn().await;
+    let id = check(
+        &app,
+        json!({"title":"Legacy 🌍", "layer":"api", "body":"Keep this definition"}),
+    )
+    .await;
+    let copy = app.tmp.path().join("legacy-check.db");
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+        .unwrap();
+    drop(conn);
+    let conn = rusqlite::Connection::open(&copy).unwrap();
+    conn.execute("DELETE FROM crdt_updates WHERE object_id=?1", [&id])
+        .unwrap();
+    drop(conn);
+    let store = takomo::store::Store::open(&copy).unwrap();
+    let doc = yrs::Doc::new();
+    for blob in store.load_collab_updates(&id).unwrap() {
+        doc.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&blob).unwrap())
+            .unwrap();
+    }
+    let root = doc.get_or_insert_map("nodes");
+    let Some(Out::YMap(definition)) = root.get(&doc.transact(), "definition") else {
+        panic!("definition missing")
+    };
+    let Some(Out::YText(title)) = definition.get(&doc.transact(), "title") else {
+        panic!("title not shared")
+    };
+    assert_eq!(title.get_string(&doc.transact()), "Legacy 🌍");
+    let update = {
+        let mut tx = doc.transact_mut();
+        title.insert(&mut tx, 0, "Edited ");
+        tx.encode_update_v1()
+    };
+    store.apply_check_update(&id, &update, "test").unwrap();
+    let saved = store.load_collab_updates(&id).unwrap();
+    drop(store);
+    let reopened = takomo::store::Store::open(&copy).unwrap();
+    assert_eq!(
+        reopened.load_collab_updates(&id).unwrap(),
+        saved,
+        "restart must preserve clocks and edits"
+    );
+    drop(reopened);
+    let conn = rusqlite::Connection::open(copy).unwrap();
+    conn.execute("DELETE FROM checks WHERE id=?1", [&id])
+        .unwrap();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "deletion must remove shared history");
+}

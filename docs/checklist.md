@@ -377,3 +377,22 @@ existing verdict or none. Stable identity ships now so those remain answerable.
   page is not built.
 - **Subsumption and next-best-check ranking.** The data is there (globs, costs,
   counts); the analysis is not.
+
+## Collaborative definition editing
+
+Click a check title in Tests to edit its title, precondition and traversal with
+other participants. `/verification#c=<id>` links to the editor; an existing `n=`
+section filter stays intact. The three fields are Y.Text values in the canonical
+`crdt_updates` log, and every accepted edit commits the SQL projection and CRDT
+state together. REST/MCP definition changes update the same shared text.
+Existing check definitions are seeded once when the store opens; restarting
+preserves their client clocks and history. Deleting a check removes that history.
+
+Verdicts, approvals and configuration remain validated server transactions.
+A scoped project WebSocket signals committed changes so open test lists, reports
+and cases refresh without periodic polling. Notifications are coalesced and
+carry no record payload; data is read through the authenticated API.
+
+Tickets renew before expiry without replacing the editor replica. During a
+network outage keep the editor open: its replica resynchronizes after reconnect.
+There is no offline persistence across reloads or leaving the editor.

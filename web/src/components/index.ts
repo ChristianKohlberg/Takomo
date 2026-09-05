@@ -244,3 +244,6 @@ export { cn } from '../lib/utils'
 
 // All four surfaces are ported; every composed component they use is exported
 // above. A new component belongs here the moment a second surface could use it.
+
+export { SharedText } from './SharedText'
+export { CheckEditor } from './verification/CheckEditor'

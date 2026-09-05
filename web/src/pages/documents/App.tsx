@@ -1,3 +1,4 @@
+import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // /documents — the project's plan, written out.
 //
 // A project has ONE plan. The map and this page are two renderings of it, not
@@ -177,6 +178,10 @@ export function App() {
     setStanding(detail.standing ?? {})
     setEntries(page.items)
   }, [token, mapId])
+
+  useProjectUpdates(token, project, async () => {
+    try { await findMap(); await refreshHistory() } catch (error) { handleErr(error) }
+  })
 
   useEffect(() => {
     if (!token || !mapId) return
@@ -425,6 +430,7 @@ export function App() {
           <Plan
             key={session.session}
             session={session}
+            onError={handleErr}
             standing={standing}
             trace={trace}
             onConnection={onConnection}

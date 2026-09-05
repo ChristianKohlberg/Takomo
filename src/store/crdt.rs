@@ -71,6 +71,8 @@ const SESSION_GRACE_MS: i64 = 24 * 3600 * 1000;
 pub enum CollabKind {
     Document,
     Mindmap,
+    Check,
+    Project,
 }
 
 impl CollabKind {
@@ -80,6 +82,10 @@ impl CollabKind {
             Some(CollabKind::Document)
         } else if id.starts_with("mm-") {
             Some(CollabKind::Mindmap)
+        } else if id.starts_with("check-") || id.starts_with("lane-") {
+            Some(CollabKind::Check)
+        } else if id.starts_with("project:") {
+            Some(CollabKind::Project)
         } else {
             None
         }
@@ -90,6 +96,8 @@ impl CollabKind {
         match self {
             CollabKind::Document => "document",
             CollabKind::Mindmap => "mindmap",
+            CollabKind::Check => "check",
+            CollabKind::Project => "project",
         }
     }
 
@@ -98,6 +106,8 @@ impl CollabKind {
         match self {
             CollabKind::Document => "POST /v1/documents/{id}/session",
             CollabKind::Mindmap => "POST /v1/mindmaps/{id}/session",
+            CollabKind::Check => "POST /v1/checks/{id}/session",
+            CollabKind::Project => "POST /v1/projects/{id}/session",
         }
     }
 }
@@ -160,6 +170,41 @@ pub(crate) fn resolve(conn: &Connection, id: &str) -> ApiResult<CollabObject> {
                 archived: false,
             })
         }
+        CollabKind::Check => {
+            // Match REST check patching: archiving hides a check from active
+            // lists but does not freeze its definition. Project archiving does.
+            let project: Option<String> = conn
+                .query_row(
+                    "SELECT project FROM checks WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let project = project.ok_or_else(|| ApiError::not_found("check", id))?;
+            Ok(CollabObject {
+                kind,
+                id: id.to_string(),
+                project,
+                archived: false,
+            })
+        }
+        CollabKind::Project => {
+            let project = id.strip_prefix("project:").unwrap_or(id);
+            let found: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
+                [project],
+                |r| r.get(0),
+            )?;
+            if !found {
+                return Err(ApiError::not_found("project", project));
+            }
+            Ok(CollabObject {
+                kind,
+                id: id.into(),
+                project: project.into(),
+                archived: false,
+            })
+        }
     }
 }
 
@@ -181,6 +226,22 @@ fn archived_error(object: &CollabObject) -> ApiError {
             "conflict.mindmap_archived",
             format!(
                 "Mindmap '{}' is archived; it cannot be written to.",
+                object.id
+            ),
+        )
+        .remedy("Restore it, then try again.".to_string()),
+        CollabKind::Check => ApiError::conflict(
+            "conflict.check_archived",
+            format!(
+                "Check '{}' is archived; it cannot be written to.",
+                object.id
+            ),
+        )
+        .remedy("Restore it, then try again.".to_string()),
+        CollabKind::Project => ApiError::conflict(
+            "conflict.project_archived",
+            format!(
+                "Project '{}' is archived; it cannot be written to.",
                 object.id
             ),
         )
@@ -546,6 +607,18 @@ fn touch(tx: &Connection, object: &CollabObject, now: i64) -> ApiResult<()> {
                 params![object.id, now],
             )?;
         }
+        CollabKind::Check => {
+            tx.execute(
+                "UPDATE checks SET updated_at = ?2 WHERE id = ?1",
+                params![object.id, now],
+            )?;
+        }
+        CollabKind::Project => {
+            tx.execute(
+                "UPDATE projects SET updated_at = ?2 WHERE id = ?1",
+                params![object.id, now],
+            )?;
+        }
     }
     Ok(())
 }
@@ -698,6 +771,10 @@ impl Store {
                             id: r.get(0)?,
                             kind: if kind == "mindmap" {
                                 CollabKind::Mindmap
+                            } else if kind == "check" {
+                                CollabKind::Check
+                            } else if kind == "project" {
+                                CollabKind::Project
                             } else {
                                 CollabKind::Document
                             },
@@ -754,6 +831,14 @@ fn update_empty(kind: CollabKind) -> ApiError {
             "validation.mindmap_update_empty",
             "An update carries no bytes. Nothing changed, so there is nothing to store.",
         ),
+        CollabKind::Check => ApiError::validation(
+            "validation.check_update_empty",
+            "An update carries no bytes. Nothing changed, so there is nothing to store.",
+        ),
+        CollabKind::Project => ApiError::validation(
+            "validation.project_update_empty",
+            "An update carries no bytes. Nothing changed, so there is nothing to store.",
+        ),
     }
 }
 
@@ -765,6 +850,8 @@ fn update_too_large(kind: CollabKind, len: usize) -> ApiError {
     match kind {
         CollabKind::Document => ApiError::validation("validation.doc_update_too_large", message),
         CollabKind::Mindmap => ApiError::validation("validation.mindmap_update_too_large", message),
+        CollabKind::Check => ApiError::validation("validation.check_update_too_large", message),
+        CollabKind::Project => ApiError::validation("validation.project_update_too_large", message),
     }
 }
 
@@ -778,6 +865,14 @@ fn object_too_large(kind: CollabKind, id: &str, held: i64) -> ApiError {
         CollabKind::Mindmap => ApiError::validation(
             "validation.mindmap_too_large",
             format!("Mindmap '{id}' already holds {held} bytes of history and the cap is {MAX_OBJECT_BYTES}. Every reader replays the whole log to open it, so it cannot grow without bound."),
+        ),
+        CollabKind::Check => ApiError::validation(
+            "validation.check_too_large",
+            format!("Check '{id}' already holds {held} bytes of history and the cap is {MAX_OBJECT_BYTES}. Every reader replays the whole log to open it, so it cannot grow without bound."),
+        ),
+        CollabKind::Project => ApiError::validation(
+            "validation.project_too_large",
+            format!("Project '{id}' already holds {held} bytes of history and the cap is {MAX_OBJECT_BYTES}. Every reader replays the whole log to open it, so it cannot grow without bound."),
         ),
     }
 }
@@ -795,6 +890,18 @@ pub fn too_many_peers(kind: CollabKind, id: &str) -> ApiError {
             StatusCode::SERVICE_UNAVAILABLE,
             "mindmap.too_many_peers",
             format!("Mindmap '{id}' already has the maximum number of live editors."),
+        )
+        .remedy("Wait for somebody to close the map, then reconnect.".to_string()),
+        CollabKind::Check => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "check.too_many_peers",
+            format!("Check '{id}' already has the maximum number of live editors."),
+        )
+        .remedy("Wait for somebody to close the map, then reconnect.".to_string()),
+        CollabKind::Project => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "project.too_many_peers",
+            format!("Project '{id}' already has the maximum number of live editors."),
         )
         .remedy("Wait for somebody to close the map, then reconnect.".to_string()),
     }
@@ -817,7 +924,23 @@ pub fn session_missing(kind: CollabKind) -> ApiError {
                 "This socket needs a sync ticket; the handshake carried none.".to_string(),
             )
             .remedy(format!("Mint one with {route} and pass it as ?ticket=… — a browser WebSocket cannot send an Authorization header, which is why the credential rides the query string."))
-        }
+        },
+        CollabKind::Check => {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "check.session_missing",
+                "This socket needs a sync ticket; the handshake carried none.".to_string(),
+            )
+            .remedy(format!("Mint one with {route} and pass it as ?ticket=… — a browser WebSocket cannot send an Authorization header, which is why the credential rides the query string."))
+        },
+        CollabKind::Project => {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "project.session_missing",
+                "This socket needs a sync ticket; the handshake carried none.".to_string(),
+            )
+            .remedy(format!("Mint one with {route} and pass it as ?ticket=… — a browser WebSocket cannot send an Authorization header, which is why the credential rides the query string."))
+        },
     }
 }
 
@@ -836,6 +959,18 @@ pub fn session_invalid(kind: CollabKind) -> ApiError {
             "That sync ticket is not one this server issued.".to_string(),
         )
         .remedy("Mint a fresh one with POST /v1/mindmaps/{id}/session.".to_string()),
+        CollabKind::Check => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "check.session_invalid",
+            "That sync ticket is not one this server issued.".to_string(),
+        )
+        .remedy("Mint a fresh one with POST /v1/checks/{id}/session.".to_string()),
+        CollabKind::Project => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "project.session_invalid",
+            "That sync ticket is not one this server issued.".to_string(),
+        )
+        .remedy("Mint a fresh one with POST /v1/projects/{id}/session.".to_string()),
     }
 }
 
@@ -854,6 +989,18 @@ pub fn session_expired(kind: CollabKind) -> ApiError {
             "That sync ticket has expired or been revoked.".to_string(),
         )
         .remedy("Mint a fresh one with POST /v1/mindmaps/{id}/session.".to_string()),
+        CollabKind::Check => ApiError::new(
+            StatusCode::GONE,
+            "check.session_expired",
+            "That sync ticket has expired or been revoked.".to_string(),
+        )
+        .remedy("Mint a fresh one with POST /v1/checks/{id}/session.".to_string()),
+        CollabKind::Project => ApiError::new(
+            StatusCode::GONE,
+            "project.session_expired",
+            "That sync ticket has expired or been revoked.".to_string(),
+        )
+        .remedy("Mint a fresh one with POST /v1/projects/{id}/session.".to_string()),
     }
 }
 
@@ -873,6 +1020,18 @@ pub fn session_wrong_object(kind: CollabKind, wanted: &str, holds: &str) -> ApiE
             StatusCode::FORBIDDEN,
             "mindmap.session_wrong_mindmap",
             format!("That sync ticket is for mindmap '{holds}', not '{wanted}'."),
+        )
+        .remedy("Mint a ticket for the map you are opening.".to_string()),
+        CollabKind::Check => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "check.session_wrong_check",
+            format!("That sync ticket is for check '{holds}', not '{wanted}'."),
+        )
+        .remedy("Mint a ticket for the map you are opening.".to_string()),
+        CollabKind::Project => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "project.session_wrong_project",
+            format!("That sync ticket is for project '{holds}', not '{wanted}'."),
         )
         .remedy("Mint a ticket for the map you are opening.".to_string()),
     }

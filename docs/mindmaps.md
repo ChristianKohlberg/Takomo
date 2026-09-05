@@ -358,3 +358,17 @@ minute.
 **Off unless `TAKOMO_ASSEMBLYAI_API_KEY` is set.** `/v1/whoami` reports `features.voice`, so the map
 leaves the button out rather than offering one that answers `503 speech.not_configured` — the same
 rule `/documents` follows for its prompt bar.
+
+### Collaboration lifecycle and navigation
+
+The map and document view allocate their shared replica and socket after a
+committed React render, so StrictMode replay cannot destroy the active editor.
+Cross-tab broadcast-channel sync is disabled: each tab uses its scoped WebSocket
+and server authorization. Expiring tickets renew without replacing the replica.
+A peer that misses the broadcast buffer receives a full CRDT update to recover;
+corrupt stored updates fail opening rather than being silently discarded.
+
+The view switcher remembers URLs per project and keeps native link behavior.
+Map selection follows browser history. Its compact controls have accessible
+names on phones. Project change notifications refresh metadata and lists while
+content continues to arrive through the existing CRDT connection.

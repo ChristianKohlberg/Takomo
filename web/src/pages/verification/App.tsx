@@ -1,3 +1,5 @@
+import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { CheckEditor } from '@/components/verification/CheckEditor'
 // /verification — whether the tests a feature was agreed on still pass.
 //
 // Grouped by INITIATIVE, because that is where the agreement was made and where
@@ -10,8 +12,8 @@
 // between agent and human work is the product, not a formatting choice: a
 // hundred cases cost an agent minutes and cost a person most of a day.
 import { ViewSwitcher } from '@/components'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
@@ -60,6 +62,8 @@ const UNASSIGNED = '__unassigned__'
 
 export function App() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const editing = new URLSearchParams(location.hash.slice(1)).get('c')
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
@@ -116,7 +120,10 @@ export function App() {
     [toast, t],
   )
 
+  const listEpoch = useRef(0)
+  useEffect(() => { const epoch = listEpoch; return () => { epoch.current++ } }, [token, project])
   const fetchAll = useCallback(async () => {
+    const epoch = ++listEpoch.current
     if (!project) {
       setChecks([])
       setWorklist(null)
@@ -138,6 +145,7 @@ export function App() {
       // name no section.
       listPlanNodes(token, project).catch(() => ({ items: [] as PlanNode[] })),
     ])
+    if (epoch !== listEpoch.current) return
     setChecks(c.items)
     setWorklist(w)
     setGate(g)
@@ -146,7 +154,6 @@ export function App() {
     setInitiativeTitles(titles)
     setEnvironments(envs.items.filter((e) => !e.archived_at))
     setPlanNodes(plan.items)
-    setCases({})
   }, [token, project])
 
   useEffect(() => {
@@ -180,13 +187,31 @@ export function App() {
     fetchAll().catch(handleErr)
   }, [token, fetchAll, handleErr])
 
-  // The link is spent once it has been read: clearing the filter must not be
-  // undone by a reload, and the address bar should say where you are.
+  // Consume only the initial plan filter. Keep the editor deep link and let
+  // the router observe the replacement so browser history stays consistent.
   useEffect(() => {
-    if (window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search)
+    const hash = new URLSearchParams(window.location.hash.slice(1))
+    if (hash.has('n')) {
+      hash.delete('n')
+      navigate({ hash: hash.toString() }, { replace: true })
     }
-  }, [])
+  }, [navigate])
+
+  useProjectUpdates(token, project, async () => {
+    try {
+      const epoch = listEpoch.current + 1
+      await fetchAll()
+      if (epoch !== listEpoch.current) return
+      const entries = await Promise.all(Object.keys(cases).map(async id => [id, (await listCases(token, id)).items] as const))
+      if (epoch !== listEpoch.current) return
+      setCases(current => {
+        const next = { ...current }
+        for (const [id, items] of entries) if (current[id] !== undefined) next[id] = items
+        return next
+      })
+    } catch (error) { handleErr(error) }
+  })
+  useEffect(() => { setCases({}) }, [project, token])
 
   const toggleCases = useCallback(
     async (check: string) => {
@@ -498,6 +523,8 @@ export function App() {
                   <CheckCard
                     key={c.id}
                     check={c}
+                    editLabel={t.liveEdit}
+                    onEdit={() => { const hash = new URLSearchParams(location.hash.slice(1)); hash.set('c', c.id); navigate({ hash: hash.toString() }) }}
                     nodeTitle={c.node ? nodeTitles.get(c.node)?.title : undefined}
                     onOpenNode={
                       c.node && nodeTitles.get(c.node)
@@ -527,6 +554,8 @@ export function App() {
         </div>
       </main>
 
+      {editing && <CheckEditor key={editing} token={token} id={editing} labels={t} onError={handleErr}
+        onClose={() => { const hash = new URLSearchParams(location.hash.slice(1)); hash.delete('c'); navigate({ hash: hash.toString() }) }} />}
       <CheckDialog
         open={creating}
         onOpenChange={setCreating}

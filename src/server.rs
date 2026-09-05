@@ -512,6 +512,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // The sync ticket, minted exactly as a document's is — a browser
         // WebSocket cannot carry an Authorization header, so the credential has
         // to ride the handshake.
+        .route("/v1/checks/{id}/session", post(crate::api::docsync::create_check_session))
+        .route("/v1/projects/{id}/session", post(crate::api::docsync::create_project_session))
         .route(
             "/v1/mindmaps/{id}/session",
             post(crate::api::docsync::create_mindmap_session),
@@ -635,6 +637,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // the room — or a base that already carries a query string — comes out
         // mangled. `/v1/documents/{id}/sync` did exactly that.
         .route("/v1/docsync/{id}", get(crate::api::docsync::sync))
+        .route("/v1/sync/{id}", get(crate::api::docsync::sync))
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/documents", get(crate::api::documents_page))

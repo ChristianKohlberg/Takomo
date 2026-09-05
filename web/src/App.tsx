@@ -23,7 +23,7 @@ import { App as InboxApp } from './pages/inbox/App'
 import { App as InitiativesApp } from './pages/initiatives/App'
 import { App as EnvironmentsApp } from './pages/environments/App'
 import { App as SchedulesApp } from './pages/schedules/App'
-import { App as VerificationApp } from './pages/verification/App'
+const VerificationApp = lazy(() => import('./pages/verification/App').then(m => ({ default: m.App })))
 import { App as SettingsApp } from './pages/settings/App'
 
 /** The two lazy surfaces — see the note at the top of this file. */
@@ -58,7 +58,7 @@ function Root() {
   useEffect(() => {
     document.title = TITLES[pathname] ?? 'takomo'
   }, [pathname])
-  return <Outlet />
+  return <Suspense fallback={<div role="status" className="p-6 text-muted-foreground">Loading…</div>}><Outlet /></Suspense>
 }
 
 const router = createBrowserRouter([
