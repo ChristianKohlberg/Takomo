@@ -383,6 +383,9 @@ impl Store {
                 return Err(object_too_large(object.kind, id, held));
             }
 
+            if kind == CollabKind::Mindmap {
+                super::spec_history::record(tx, id, blob, actor, now)?;
+            }
             tx.execute(
                 "INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -458,9 +461,9 @@ impl Store {
                 return Err(archived_error(&object));
             }
             // Compaction rewrites the LOG and nothing else. The plan trace is
-            // not part of the log — it is the separate record of who changed
-            // what, and it is the only place the earlier wording of a section
-            // survives compaction at all. Deleting it here would make ordinary
+            // not part of the log — it records sparse authored/reviewed acts.
+            // The immutable specification archive also survives independently.
+            // Deleting either here would make ordinary
             // editing erase the history, which is the opposite of its purpose.
             // How many rows have appeared since this replica loaded, against how
             // many it wrote itself. Anything else is a row it never replayed.
@@ -517,6 +520,9 @@ impl Store {
                     "Nothing to do — the next flush compacts from a replica that has seen it."
                         .to_string(),
                 ));
+            }
+            if kind == CollabKind::Mindmap {
+                super::spec_history::baseline(tx, id)?;
             }
             tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
             tx.execute(

@@ -17,6 +17,7 @@ pub mod projects;
 pub mod questions;
 pub mod schedules;
 pub mod shares;
+pub mod spec_history;
 pub mod speech;
 pub mod tags;
 pub mod testruns;
