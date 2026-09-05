@@ -5,6 +5,8 @@ import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { useSpecification } from '../specification/context'
 import { Button } from '@/components/ui/button'
 import { CheckDialog } from '@/components/verification/CheckDialog'
+import { CodeReferences } from '@/components/verification/CodeReferences'
+import { CaseDetails } from '@/components/verification/CaseDetails'
 import { api } from '@/lib/api'
 import { pick } from '@/lib/i18n'
 import { listInitiatives } from '@/lib/initiatives'
@@ -21,7 +23,7 @@ const states: Record<string, [string, string]> = {
   mixed_versions: ['Different code versions', 'Verschiedene Codeversionen'],
 }
 export function TestsView({ compact = false }: { compact?: boolean }) {
-  const { token, lang, project, scopes, nodes, editCheck, refreshChecks, onError } = useSpecification()
+  const { token, lang, project, scopes, nodes, checks, editCheck, refreshChecks, onError } = useSpecification()
   const de = lang === 'de'
   const t = pick(STR, lang)
   const [params, setParams] = useSearchParams()
@@ -91,7 +93,8 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
               <span className={`rounded-md px-2 py-1 text-xs ${d.execution.state === 'verified' ? 'bg-ok-bg text-ok' : d.execution.state === 'failed' ? 'bg-nfbg text-nf' : 'bg-muted text-muted-foreground'}`}>{states[d.execution.state]?.[de ? 1 : 0] ?? d.execution.state}</span></div>
             {d.definition.precondition && <p className="mt-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{d.definition.precondition}</p>}
             {!d.definition.cases.length && <p className="mt-3 text-sm text-muted-foreground">{de ? 'Noch keine Fälle definiert. Bitte deinen Agenten, Fälle für diese Definition zu erstellen.' : 'No cases defined yet. Ask your agent to generate cases for this definition.'}</p>}
-            <details className="mt-3 text-sm"><summary className="cursor-pointer">{de ? 'Fälle und Parameter' : 'Cases and parameters'}</summary><ul className="mt-2 grid gap-2">{d.definition.cases.map(c => <li key={c.id} className="min-w-0 rounded-md bg-muted px-3 py-2"><p className="break-words">{c.label || c.key}</p><pre className="max-w-full overflow-x-auto text-xs text-muted-foreground">{JSON.stringify(c.assignment)}</pre></li>)}</ul></details>
+            <details className="mt-3 text-sm"><summary className="cursor-pointer">{de ? 'Testfälle' : 'Test cases'}</summary><ul className="mt-2 grid gap-2">{d.definition.cases.map(c => <li key={c.id} className="min-w-0 rounded-md bg-muted px-3 py-2"><p className="break-words font-medium">{c.label || c.key}</p><CaseDetails assignment={c.assignment} lang={lang} /></li>)}</ul></details>
+            <CodeReferences metadata={checks.find(check => check.id === d.id)?.metadata} lang={lang} />
             <div className="mt-4 flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => editCheck(d.id)}>{de ? 'Definition öffnen' : 'Open definition'}</Button>
               {scopes.includes('write') && <Button size="sm" disabled={!d.definition.cases.length} onClick={() => setCompose(d.id)}>{de ? 'Testlauf erstellen' : 'Create run'}</Button>}
               {d.execution.environments.filter(e => e.run).map(e => <Button key={e.run} variant="ghost" size="sm" onClick={() => navigateTab('runs', e.run)}>{environments.find(env => env.id === e.environment)?.name ?? (de ? 'Letzter Lauf' : 'Latest run')} · {states[e.state]?.[de ? 1 : 0] ?? e.state}</Button>)}

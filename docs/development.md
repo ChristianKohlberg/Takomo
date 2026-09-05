@@ -70,3 +70,8 @@ token.
 - The spec must stay a *valid* OpenAPI 3.1 document, not merely parseable YAML. CI runs `redocly lint` against [`spec/redocly.yaml`](../spec/redocly.yaml). Two traps, both invisible to a human reader: a comma inside an unquoted description in a flow mapping silently truncates the sentence and turns its tail into a junk key, and `nullable: true` is 3.0 syntax that 3.1 tooling ignores (write `type: [string, "null"]`).
 - Errors are part of the contract: reject with a stable `code`, a `message` written for an LLM reader, and (for transitions) `allowed_transitions` + a `remedy`. Never fail silently.
 - Keep the CLI shellcheck-clean and the MCP typecheck green.
+
+The Vite `/v1` proxy forwards WebSocket upgrades as well as HTTP requests, so
+specification collaboration and project updates work against `TAKOMO_DEV_API`
+during local development. A connected preview should show the normal save state
+and collaborators rather than appear offline merely because it uses Vite.

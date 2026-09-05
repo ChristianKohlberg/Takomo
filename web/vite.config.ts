@@ -192,7 +192,7 @@ export default defineConfig({
     // `vite dev` talks to a real backlot instance, so the dev loop never pays a
     // Rust rebuild. Point TAKOMO_DEV_API at whatever `backlot up` printed.
     proxy: {
-      '/v1': { target: process.env.TAKOMO_DEV_API ?? 'http://127.0.0.1:8080', changeOrigin: true },
+      '/v1': { target: process.env.TAKOMO_DEV_API ?? 'http://127.0.0.1:8080', changeOrigin: true, ws: true },
       '/mcp': { target: process.env.TAKOMO_DEV_API ?? 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },

@@ -19,3 +19,10 @@ their own CRDT sessions. A shared project notification socket refreshes server-o
 metadata and verdicts for the workspace and its visible views.
 
 The project picker and Inbox controls remain in the common page header.
+
+Test definitions keep the readable example separate from its technical details.
+Cases with `steps` and `expected` in their assignment show a numbered procedure
+and expected result; other parameters remain available in a collapsed section.
+Existing `metadata.specification.bindings` appear under **Code references** with
+the file, selector, intended coverage and limitations. References describe a
+mapping, not a test result; execution evidence remains in Runs.
