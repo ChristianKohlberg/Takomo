@@ -349,7 +349,10 @@ function ConnectedPlan({
     [sections, setSelected],
   )
 
+  const scrolledSelection = useRef<string | null>(null)
   useEffect(() => {
+    if (selected === scrolledSelection.current) return
+    scrolledSelection.current = selected
     if (!selected) return
     const el = elements.current.get(selected)
     if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' })

@@ -13,7 +13,7 @@ import { useSpecification } from '../specification/context'
 // this ship", the worklist answers "who has to do something" — and the split
 // between agent and human work is the product, not a formatting choice: a
 // hundred cases cost an agent minutes and cost a person most of a day.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Hint } from '@/components/Hint'
 import { useToast } from '@/components/Toaster'
@@ -119,18 +119,15 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     setEnvironments(envs.items.filter((e) => !e.archived_at))
   }, [refreshChecks, project, token, setChecks])
 
-  useEffect(() => {
-    if (!token) return
-    fetchAll().catch(handleErr)
-  }, [token, fetchAll, handleErr])
-
-  useProjectUpdates(token, project, async () => {
+  const openCases = useRef(cases)
+  useLayoutEffect(() => { openCases.current = cases }, [cases])
+  const refreshView = useCallback(async () => {
     try {
       const epoch = listEpoch.current + 1
       await fetchAll()
       if (epoch !== listEpoch.current) return
       const entries = await Promise.all(
-        Object.keys(cases).map(async (id) => [id, (await listCases(token, id)).items] as const),
+        Object.keys(openCases.current).map(async (id) => [id, (await listCases(token, id)).items] as const),
       )
       if (epoch !== listEpoch.current) return
       setCases((current) => {
@@ -141,10 +138,11 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     } catch (error) {
       handleErr(error)
     }
-  })
+  }, [fetchAll, token, handleErr])
   useEffect(() => {
-    setCases({})
-  }, [project, token])
+    if (token) void refreshView()
+  }, [token, refreshView])
+  useProjectUpdates(token, project, refreshView)
 
   const toggleCases = useCallback(
     async (check: string) => {
