@@ -2,11 +2,8 @@ import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // /mindmaps — brainstorming, before any of it is an idea, with everyone in the
 // room at once.
 //
-// THE CANVAS IS THE PAGE. There is no rail and no side panel: a project holds
-// exactly one brainstorm, so a list of maps was a list of one, and a list of
-// projects was navigation competing with the thing being navigated. What is left
-// in the header is what a SHARED DOCUMENT needs and nothing else — its title,
-// whether this browser is connected, and who else is looking at it.
+// Each project has one plan. The shared navigation rail owns project switching;
+// the canvas header shows the plan title, connection, and collaborators.
 //
 // Everything else is ⌘K, scoped to the selected node or to the map. That is not
 // a shortcut for the toolbar: it is where the toolbar went. A canvas has one
@@ -108,8 +105,7 @@ export function App() {
   const [peers, setPeers] = useState<string[]>([])
 
   // ⌘K, for the one case `Live` cannot cover: a project with no brainstorm has
-  // no document, so nothing below this component is mounted to host the palette
-  // — and with the rail gone that would leave no way out of the project at all.
+  // no document, so nothing below this component is mounted to host the palette.
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteStage, setPaletteStage] = useState<'commands' | 'project'>('commands')
   const [paletteQuery, setPaletteQuery] = useState('')
@@ -118,7 +114,7 @@ export function App() {
   const t = useMemo(() => pick(STR, lang), [lang])
   const canWrite = scopes.includes('write')
   const open = maps.find((m) => m.id === openId) ?? null
-  const selectedProject = project || open?.project || projects[0]?.id || ''
+  const selectedProject = open?.project || project || projects[0]?.id || ''
 
   const handleErr = useCallback(
     (e: unknown) => {
@@ -175,19 +171,22 @@ export function App() {
 
   useEffect(() => {
     if (!token) return
+    let cancelled = false
     refreshList()
       .then((items) => {
-        // The deep-linked map, else this project's, else the newest-touched one:
-        // a page that opens on nothing makes you pick before you can look.
+        if (cancelled) return
+        // Honor a deep link, otherwise stay within the selected project even
+        // when it has no plan. Only an unscoped visit may choose another map.
         setOpenId(
           (current) =>
             current ??
             items.find((m) => m.project === (project || ''))?.id ??
-            items[0]?.id ??
+            (project ? null : items[0]?.id) ??
             null,
         )
       })
-      .catch(handleErr)
+      .catch((error) => { if (!cancelled) handleErr(error) })
+    return () => { cancelled = true }
   }, [token, refreshList, handleErr, project, setOpenId])
 
   // What the map draws over each section: how many tests it carries and how
@@ -357,8 +356,8 @@ export function App() {
   const chooseProject = useCallback((id: string) => {
     setProject(id)
     saveProject(id)
-    setOpenId(null)
-  }, [setOpenId])
+    setOpenId(maps.find((map) => map.project === id)?.id ?? null)
+  }, [maps, setOpenId])
 
   // The empty-state palette. `Live` owns the shortcut whenever a map is open, so
   // this listener stands down rather than competing with it.
@@ -433,9 +432,14 @@ export function App() {
           schedules: t.schedules,
           environments: t.environments,
         },
-        // No project picker here, deliberately: on this surface the project is a
-        // ⌘K command rather than permanent chrome, because a canvas has room for
-        // exactly one thing and it is the map.
+        projects,
+        project: selectedProject,
+        onProject: chooseProject,
+        projectLabels: {
+          project: t.project,
+          search: t.projectSearch,
+          noMatch: t.projectNoMatch,
+        },
         labels: {
           expand: t.navExpand,
           collapse: t.navCollapse,
