@@ -536,7 +536,7 @@ function ConnectedPlan({
           rather than a choice made once in the layout. */}
       <aside
         className={[
-          'border-b-border-soft flex flex-none flex-col border-b md:border-r md:border-b-0',
+          'border-b-border-soft flex flex-none flex-col border-b bg-white md:border-r md:border-b-0 dark:bg-card',
           outlineOpen
             ? 'max-h-[38vh] overflow-y-auto px-2 py-3 md:max-h-none md:w-full md:max-w-80'
             : 'px-2 py-2 md:w-auto',
@@ -577,7 +577,7 @@ function ConnectedPlan({
           rather than becoming a glaring white rectangle. */}
       <div
         ref={columnRef}
-        className="min-w-0 flex-1 overflow-y-auto bg-white px-4 py-2 md:px-6 dark:bg-[color:var(--card)]"
+        className="min-w-0 flex-1 overflow-y-auto bg-white px-4 py-2 md:px-6 dark:bg-card"
       >
         {!canWrite && (
           <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
