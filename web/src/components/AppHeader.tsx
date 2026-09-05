@@ -35,38 +35,27 @@ export function AppHeader({
   children,
   views,
 }: AppHeaderProps) {
-  return (
-    <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
-      <h1 className="text-foreground min-w-0 truncate text-base font-[750] tracking-[-0.02em]">
-        {title}
-      </h1>
+  const languages = <div className="text-muted-foreground inline-flex gap-0.5 text-[11.5px] font-bold">
+    {(['de', 'en'] as const).map((l) => <button key={l} type="button" aria-pressed={lang === l}
+      onClick={() => onLang(l)}
+      className={cn('cursor-pointer rounded-md px-2 py-1.5', lang === l && 'bg-secondary text-secondary-foreground')}>
+      {l.toUpperCase()}
+    </button>)}
+  </div>
+  if (views) return <header className="bg-card border-b-border-soft flex flex-none flex-col gap-2 border-b px-3 py-3 sm:px-5">
+    <div className="flex min-w-0 items-center gap-3">
+      <h1 className="text-foreground min-w-0 flex-1 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
+      {languages}
+    </div>
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       {views}
-
-      <span className="grow" />
-      {children}
-
-      <div className="text-muted-foreground inline-flex gap-0.5 text-[11.5px] font-bold">
-        {(['de', 'en'] as const).map((l) => (
-          <span
-            key={l}
-            role="button"
-            tabIndex={0}
-            onClick={() => onLang(l)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onLang(l)
-              }
-            }}
-            className={cn(
-              'cursor-pointer rounded-md px-1.5 py-1',
-              lang === l && 'bg-secondary text-secondary-foreground',
-            )}
-          >
-            {l.toUpperCase()}
-          </span>
-        ))}
-      </div>
-    </header>
-  )
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">{children}</div>
+    </div>
+  </header>
+  return <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
+    <h1 className="text-foreground min-w-0 truncate text-base font-[750] tracking-[-0.02em]">{title}</h1>
+    <span className="grow" />
+    {children}
+    {languages}
+  </header>
 }

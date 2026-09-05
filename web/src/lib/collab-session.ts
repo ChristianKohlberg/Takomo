@@ -1,4 +1,6 @@
 export interface SyncSession {
+  actor?: string
+  durability_ack?: boolean
  object: string; kind: string; session: string; token: string; can_write: boolean
  display: string; expires_at: string; url: string; room: string
 }

@@ -1,3 +1,8 @@
+import { retryConnection } from '@/lib/retry-connection'
+import { SaveStatus } from '@/components/SaveStatus'
+import type { SaveState } from '@/lib/save-status'
+import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
+import { useWorkspaceProject, useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // /mindmaps — brainstorming, before any of it is an idea, with everyone in the
 // room at once.
@@ -18,7 +23,7 @@ import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // metadata; `Live` owns the document.
 import { ViewSwitcher } from '@/components'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { useLocation } from 'react-router'
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
@@ -28,7 +33,7 @@ import { TokenGate } from '@/components/TokenGate'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useToast } from '@/components/Toaster'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
-import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadToken, saveProject, saveToken } from '@/lib/session'
 import { listProjects, whoami, type Project } from '@/lib/initiatives'
 import { listChecks, worstState } from '@/lib/verification'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
@@ -49,13 +54,17 @@ import { STR } from './strings'
 const LS_LANG = 'takomo.lang'
 
 export function App() {
-  const navigate = useNavigate()
+  const [project, setProject] = useWorkspaceProject()
+  return <Workspace key={project} project={project} setProject={setProject} />
+}
+
+function Workspace({ project, setProject }: { project: string; setProject: (id: string) => void }) {
+  const navigate = useWorkspaceNavigate()
   const location = useLocation()
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
   const [actor, setActor] = useState('')
@@ -87,21 +96,13 @@ export function App() {
     const next = typeof value === 'function' ? value(current) : value
     if (next === current) return
     if (next) params.set('m', next); else params.delete('m')
-    params.delete('n')
+    if (current) params.delete('n')
     navigate({ hash: params.toString() }, { replace: !current })
   }, [location.hash, navigate])
-  /**
-   * `#n=<node>`, the section `/documents` asked to be shown.
-   *
-   * Read once, at mount: it is a hand-off, not a piece of state the two views
-   * keep in step. It is cleared the moment the canvas honours it, so panning
-   * away and reloading does not drag the reader back.
-   */
-  const [focusNode, setFocusNode] = useState<string | null>(
-    () => new URLSearchParams(window.location.hash.slice(1)).get('n'),
-  )
+  const [focusNode, selectSection] = useWorkspaceSection()
   const [session, setSession] = useState<MindmapSession | null>(null)
-  const [connection, setConnection] = useState<ConnectionState>('connecting')
+  const [, setConnection] = useState<ConnectionState>('connecting')
+  const [saveState, setSaveState] = useState<SaveState>('connecting')
   const [peers, setPeers] = useState<string[]>([])
 
   // ⌘K, for the one case `Live` cannot cover: a project with no brainstorm has
@@ -115,6 +116,14 @@ export function App() {
   const canWrite = scopes.includes('write')
   const open = maps.find((m) => m.id === openId) ?? null
   const selectedProject = open?.project || project || projects[0]?.id || ''
+
+  useEffect(() => {
+    if (open && open.project !== project) {
+      const search = new URLSearchParams(location.search)
+      search.set('project', open.project)
+      navigate({ search: search.toString(), hash: location.hash }, { replace: true })
+    }
+  }, [open, project, location.search, location.hash, navigate])
 
   const handleErr = useCallback(
     (e: unknown) => {
@@ -234,10 +243,11 @@ export function App() {
       return
     }
     let cancelled = false
+    const abort = new AbortController()
     setSession(null)
     setConnection('connecting')
     setPeers([])
-    mintMindmapSession(token, openId)
+    retryConnection(() => mintMindmapSession(token, openId), abort.signal)
       .then((s) => {
         if (!cancelled) setSession(s)
       })
@@ -246,13 +256,13 @@ export function App() {
       })
     return () => {
       cancelled = true
+      abort.abort()
     }
     // `focusNode` is deliberately not a dependency: it changes exactly once,
     // when the canvas honours it, and re-minting the socket ticket for that
     // would drop the connection under somebody's cursor.
   }, [token, openId, handleErr])
 
-  const clearFocusNode = useCallback(() => setFocusNode(null), [])
   const onConnection = useCallback((s: ConnectionState) => setConnection(s), [])
   const onPeers = useCallback((names: string[]) => setPeers(names), [])
   const onLiveError = useCallback((message: string) => toast(message, 'err'), [toast])
@@ -333,7 +343,6 @@ export function App() {
   const openPlan = useCallback(
     (node: string | null) => {
       if (open) {
-        setProject(open.project)
         saveProject(open.project)
       }
       navigate(planLink(node))
@@ -345,7 +354,6 @@ export function App() {
   const openTests = useCallback(
     (node: string | null) => {
       if (open) {
-        setProject(open.project)
         saveProject(open.project)
       }
       navigate(testsLink(node))
@@ -353,11 +361,7 @@ export function App() {
     [open, navigate],
   )
 
-  const chooseProject = useCallback((id: string) => {
-    setProject(id)
-    saveProject(id)
-    setOpenId(maps.find((map) => map.project === id)?.id ?? null)
-  }, [maps, setOpenId])
+  const chooseProject = setProject
 
   // The empty-state palette. `Live` owns the shortcut whenever a map is open, so
   // this listener stands down rather than competing with it.
@@ -412,12 +416,7 @@ export function App() {
     )
   }
 
-  const connectionLabel =
-    connection === 'connected'
-      ? t.connected
-      : connection === 'connecting'
-        ? t.connecting
-        : t.disconnected
+
 
   return (
     <AppShell
@@ -476,19 +475,8 @@ export function App() {
       >
         {open && (
           <>
-            {/* No save button and no dirty state: the honest status on a shared
-                document is whether this browser is connected. */}
-            <span
-              className={
-                'text-[11.5px] font-bold ' +
-                (connection === 'connected'
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-muted-foreground')
-              }
-            >
-              ● {connectionLabel}
-            </span>
-            <span className="text-muted-foreground text-[11.5px]">
+            <SaveStatus state={saveState} lang={lang} />
+            <span className={`text-muted-foreground text-[11.5px] ${peers.length ? '' : 'hidden sm:inline'}`}>
               {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
             </span>
           </>
@@ -503,6 +491,7 @@ export function App() {
               session={session}
               title={open.title}
               onConnection={onConnection}
+            onSave={setSaveState}
               onPeers={onPeers}
               onError={onLiveError}
               projects={projects.map((p) => ({ id: p.id, name: p.name || p.id }))}
@@ -524,7 +513,7 @@ export function App() {
               }}
               onRenameMap={renameMap}
               focusNode={focusNode}
-              onFocusedNode={clearFocusNode}
+              onSelection={selectSection}
               onDeleteMap={removeMap}
               onPromote={promote}
               labels={{

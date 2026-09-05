@@ -1,3 +1,5 @@
+import { retryConnection } from '@/lib/retry-connection'
+import { trackSave, type SaveState } from '@/lib/save-status'
 import { renewSession } from '@/lib/renew-session'
 import { useEffect, useEffectEvent, useState } from 'react'
 import * as Y from 'yjs'
@@ -17,6 +19,7 @@ export function useCollaboration(token: string, path: string | null, onError: (e
   const reportError = useEffectEvent(onError)
   const [client, setClient] = useState<Collaboration | null>(null)
   const [state, setState] = useState<SyncState>('connecting')
+  const [saveState, setSaveState] = useState<SaveState>('connecting')
   const [ready, setReady] = useState(false)
   const [peers, setPeers] = useState<{ name: string; node?: string; color: string }[]>([])
   useEffect(() => {
@@ -28,7 +31,7 @@ export function useCollaboration(token: string, path: string | null, onError: (e
     let disposed = false
     let cleanup: (() => void) | undefined
     const abort = new AbortController()
-    void api<SyncSession>(token, path, { method: 'POST', signal: abort.signal }).then(session => {
+    void retryConnection(() => api<SyncSession>(token, path, { method: 'POST', signal: abort.signal }), abort.signal).then(session => {
       if (disposed) return
       const doc = new Y.Doc()
       const provider = new WebsocketProvider(syncBase(session), session.room, doc, {
@@ -51,11 +54,16 @@ export function useCollaboration(token: string, path: string | null, onError: (e
       provider.on('sync', sync)
       provider.awareness.on('change', awareness)
       provider.awareness.setLocalStateField('user', { name: session.display, color: '#1f4e78' })
-      setClient({ doc, provider, session })
-      provider.connect()
+      const tracker = trackSave(doc, provider, session, setSaveState)
+      void tracker.ready.then(() => {
+        if (disposed) return
+        setClient({ doc, provider, session })
+        provider.connect()
+      })
       const stopRenewal = renewSession(token, path, session, provider, error => reportError(error))
       cleanup = () => {
         stopRenewal()
+        tracker.destroy()
         provider.off('status', status)
         provider.off('sync', sync)
         provider.awareness.off('change', awareness)
@@ -65,5 +73,5 @@ export function useCollaboration(token: string, path: string | null, onError: (e
     }).catch(error => { if (!disposed) reportError(error) })
     return () => { disposed = true; abort.abort(); cleanup?.() }
   }, [token, path])
-  return { client, state, ready, peers }
+  return { client, state, ready, peers, saveState }
 }

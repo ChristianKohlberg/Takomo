@@ -70,6 +70,9 @@ use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
 const MSG_SYNC: u64 = 0;
 const MSG_AWARENESS: u64 = 1;
+// Optional durability barrier. Request: [4, sequence]; reply: [4, sequence, saved].
+// WebSocket ordering makes the barrier cover this peer's preceding updates.
+const MSG_DURABILITY: u64 = 4;
 const SYNC_STEP1: u64 = 0;
 const SYNC_STEP2: u64 = 1;
 const SYNC_UPDATE: u64 = 2;
@@ -630,6 +633,7 @@ pub(crate) async fn flush(state: &Arc<AppState>, room: &Arc<Room>, actor: &str) 
         Ok(m) => m,
         Err(e) => {
             eprintln!("{}: cannot merge pending updates: {e}", room.id);
+            requeue_all(room, &batch);
             return;
         }
     };
@@ -1016,6 +1020,8 @@ async fn mint(
         "token": token,
         "can_write": can_write,
         "display": display,
+        "actor": ctx.actor,
+        "durability_ack": object.kind != CollabKind::Project,
         // The STORED expiry, which the clamp against the minting token may have
         // brought forward — telling the client the value we asked for rather
         // than the one we kept would have it trust a ticket past its life.
@@ -1215,6 +1221,26 @@ async fn session_loop(
                     _ => continue,
                 };
 
+                let mut barrier = Cursor::new(bytes.as_ref());
+                if barrier.read_var::<u64>().ok() == Some(MSG_DURABILITY) {
+                    let Ok(sequence) = barrier.read_var::<u64>() else { continue; };
+                    let store = state.clone();
+                    let sid = session.id.clone();
+                    let live = matches!(tokio::task::spawn_blocking(move || store.store.collab_session_is_live(&sid)).await, Ok(Ok(true)));
+                    if !live { let _ = sink.send(Message::Close(None)).await; break; }
+                    flush(&state, &room, &session.actor).await;
+                    let _writing = room.flushing.lock().await;
+                    let saved = !room.frozen.load(Ordering::SeqCst)
+                        && !room.overloaded.load(Ordering::SeqCst)
+                        && room.pending.lock().expect("pending mutex").is_empty();
+                    drop(_writing);
+                    let mut reply = Vec::new();
+                    reply.write_var(MSG_DURABILITY);
+                    reply.write_var(sequence);
+                    reply.write_var(u64::from(saved));
+                    if sink.send(Message::Binary(reply.into())).await.is_err() { break; }
+                    continue;
+                }
                 if session.kind == CollabKind::Check {
                     let mut dec = Cursor::new(bytes.as_ref());
                     if dec.read_var::<u64>().ok() == Some(MSG_SYNC) && matches!(dec.read_var::<u64>().ok(), Some(SYNC_STEP2 | SYNC_UPDATE)) {

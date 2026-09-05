@@ -1,3 +1,8 @@
+import { retryConnection } from '@/lib/retry-connection'
+import { SaveStatus } from '@/components/SaveStatus'
+import type { SaveState } from '@/lib/save-status'
+import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
+import { useWorkspaceProject, useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // /documents — the project's plan, written out.
 //
@@ -19,7 +24,7 @@ import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // around them. `Plan` owns the document.
 import { ViewSwitcher } from '@/components'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+
 
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
@@ -28,7 +33,7 @@ import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Hint } from '@/components/Hint'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
-import { isAuthError, loadProject, loadToken, saveProject, saveToken } from '@/lib/session'
+import { isAuthError, loadToken, saveProject, saveToken } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project } from '@/lib/initiatives'
 import {
@@ -43,7 +48,7 @@ import {
   type TraceEntry,
 } from '@/lib/mindmaps'
 import { traceByNode } from '@/lib/plan-trace'
-import { mapLink, readPlanFocus } from '@/lib/plan-url'
+import { mapLink } from '@/lib/plan-url'
 import { STR } from './strings'
 import type { ConnectionState } from './Plan'
 
@@ -59,12 +64,16 @@ const LS_LANG = 'takomo.lang'
 const TRACE_LIMIT = 500
 
 export function App() {
-  const navigate = useNavigate()
+  const [project, setProject] = useWorkspaceProject()
+  return <Workspace key={project} project={project} setProject={setProject} />
+}
+
+function Workspace({ project, setProject }: { project: string; setProject: (id: string) => void }) {
+  const navigate = useWorkspaceNavigate()
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [project, setProject] = useState(() => loadProject())
   const [gateError, setGateError] = useState('')
 
   const [actor, setActor] = useState('')
@@ -75,18 +84,10 @@ export function App() {
   const [map, setMap] = useState<Mindmap | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [session, setSession] = useState<MindmapSession | null>(null)
-  const [connection, setConnection] = useState<ConnectionState>('connecting')
+  const [, setConnection] = useState<ConnectionState>('connecting')
+  const [saveState, setSaveState] = useState<SaveState>('connecting')
   const [peers, setPeers] = useState<string[]>([])
-  /**
-   * `#n=<node>`, the section the map asked to be shown.
-   *
-   * Read once, at mount, and cleared the moment the plan honours it: it is a
-   * hand-off rather than state the two views keep in step, exactly as `#n=` is
-   * in the other direction.
-   */
-  const [focusSection, setFocusSection] = useState<string | null>(() =>
-    readPlanFocus(window.location.hash),
-  )
+  const [focusSection, selectSection] = useWorkspaceSection()
   const [standing, setStanding] = useState<PlanStanding>({})
   const [entries, setEntries] = useState<TraceEntry[]>([])
 
@@ -139,8 +140,13 @@ export function App() {
     }
   }, [token, handleErr, t])
 
+  const mapEpoch = useRef(0)
+  const historyEpoch = useRef(0)
+  useEffect(() => () => { mapEpoch.current++; historyEpoch.current++ }, [])
+
   // A project holds exactly one plan, so this is a lookup rather than a list.
   const findMap = useCallback(async () => {
+    const epoch = ++mapEpoch.current
     if (!project) {
       setMap(null)
       setLoaded(true)
@@ -148,6 +154,7 @@ export function App() {
     }
     const page = await listMindmaps(token, { project, limit: 1 })
     const found = page.items[0] ?? null
+    if (epoch !== mapEpoch.current) return null
     setMap(found)
     setLoaded(true)
     return found
@@ -171,10 +178,12 @@ export function App() {
   const mapId = map?.id ?? null
   const refreshHistory = useCallback(async () => {
     if (!mapId) return
+    const epoch = ++historyEpoch.current
     const [detail, page] = await Promise.all([
       getMindmap(token, mapId),
       getTrace(token, mapId, { limit: TRACE_LIMIT }),
     ])
+    if (epoch !== historyEpoch.current) return
     setStanding(detail.standing ?? {})
     setEntries(page.items)
   }, [token, mapId])
@@ -196,10 +205,11 @@ export function App() {
       return
     }
     let cancelled = false
+    const abort = new AbortController()
     setSession(null)
     setConnection('connecting')
     setPeers([])
-    mintMindmapSession(token, mapId)
+    retryConnection(() => mintMindmapSession(token, mapId), abort.signal)
       .then((s) => {
         if (!cancelled) setSession(s)
       })
@@ -208,6 +218,7 @@ export function App() {
       })
     return () => {
       cancelled = true
+      abort.abort()
     }
   }, [token, mapId, handleErr])
 
@@ -267,7 +278,6 @@ export function App() {
     [navigate, mapId],
   )
 
-  const onFocusedSection = useCallback(() => setFocusSection(null), [])
 
   /**
    * A decision on an agent's proposal, filed as an act on the section.
@@ -316,12 +326,7 @@ export function App() {
     )
   }
 
-  const connectionLabel =
-    connection === 'connected'
-      ? t.connected
-      : connection === 'connecting'
-        ? t.connecting
-        : t.disconnected
+
 
   return (
     <AppShell
@@ -351,7 +356,6 @@ export function App() {
           project: t.project,
           search: t.projectSearch,
           noMatch: t.projectNoMatch,
-          all: t.allProjects,
         },
         labels: {
           expand: t.navExpand,
@@ -384,17 +388,8 @@ export function App() {
       >
         {session && (
           <>
-            <span
-              className={
-                'text-[11.5px] font-bold ' +
-                (connection === 'connected'
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-muted-foreground')
-              }
-            >
-              ● {connectionLabel}
-            </span>
-            <span className="text-muted-foreground text-[11.5px]">
+            <SaveStatus state={saveState} lang={lang} />
+            <span className={`text-muted-foreground text-[11.5px] ${peers.length ? '' : 'hidden sm:inline'}`}>
               {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
             </span>
           </>
@@ -434,6 +429,7 @@ export function App() {
             standing={standing}
             trace={trace}
             onConnection={onConnection}
+            onSave={setSaveState}
             onPeers={onPeers}
             onReview={onReview}
             onEdited={onEdited}
@@ -441,7 +437,7 @@ export function App() {
             onDecided={onDecided}
             onSkipped={onSkipped}
             focusSection={focusSection}
-            onFocusedSection={onFocusedSection}
+            onSelection={selectSection}
             labels={{
               readOnly: t.readOnlyBanner,
               empty: t.empty,

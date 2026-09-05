@@ -93,6 +93,7 @@ export interface SectionPanelProps {
   proposals?: ReactNode
   canWrite: boolean
   /** Highlighted because the rail points at it. */
+  onActivate?: () => void
   active?: boolean
   /** How many entries to show before saying there are more. */
   historyLimit?: number
@@ -140,6 +141,7 @@ export function SectionPanel({
   proposals,
   canWrite,
   active = false,
+  onActivate,
   historyLimit = 6,
   sectionRef,
   labels,
@@ -158,6 +160,8 @@ export function SectionPanel({
   return (
     <section
       ref={sectionRef}
+      onFocusCapture={onActivate}
+      onPointerDown={onActivate}
       className={cn(
         'border-border-soft border-t py-5 first:border-t-0',
         active ? 'bg-accent/30' : '',

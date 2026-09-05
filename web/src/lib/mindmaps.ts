@@ -322,6 +322,8 @@ export function promoteNode(
  * in every access log on the path.
  */
 export interface MindmapSession {
+  actor?: string
+  durability_ack?: boolean
   object: string
   kind: 'mindmap'
   mindmap: string
