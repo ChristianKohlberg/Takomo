@@ -1,5 +1,5 @@
-import type { SaveState } from '@/lib/save-status'
-import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
+import { usePersonalSelection } from '@/hooks/usePersonalSelection'
+import { type SyncConnection } from '@/hooks/useSyncConnection'
 // The live map: one Y.Doc, one socket, and everybody's edits arriving as they
 // happen.
 //
@@ -37,39 +37,33 @@ import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnectio
 // from a button in a toolbar. React attaches its handlers at the root container,
 // so a synthetic stopPropagation there also stops the native event before it
 // reaches the window. Capturing runs first and cannot be stopped from inside.
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Canvas, type CanvasLabels, type CanvasMode, type CanvasPeer } from '@/components/mindmap/Canvas'
+import {
+  AttachmentsDialog,
+  type AttachmentsDialogLabels,
+} from '@/components/mindmap/AttachmentsDialog'
+import {
+  Canvas,
+  type CanvasLabels,
+  type CanvasMode,
+  type CanvasPeer,
+} from '@/components/mindmap/Canvas'
 import {
   CommandPalette,
   type CommandPaletteLabels,
   type PaletteItem,
 } from '@/components/mindmap/CommandPalette'
+import { DetachDialog, type DetachDialogLabels } from '@/components/mindmap/DetachDialog'
 import type { NodeCardLabels } from '@/components/mindmap/NodeCard'
-import type { NameThen } from '@/components/mindmap/NodeNameInput'
 import { NodeDialog, type NodeDialogLabels } from '@/components/mindmap/NodeDialog'
-import {
-  AttachmentsDialog,
-  type AttachmentsDialogLabels,
-} from '@/components/mindmap/AttachmentsDialog'
 import type { MenuItem } from '@/components/mindmap/NodeMenu'
+import type { NameThen } from '@/components/mindmap/NodeNameInput'
 import type { PillVerb } from '@/components/mindmap/NodePill'
 import { Outline, type OutlineLabels } from '@/components/mindmap/Outline'
-import { VoiceButton, type VoiceButtonLabels } from '@/components/mindmap/VoiceButton'
 import { PruneDialog, type PruneDialogLabels } from '@/components/mindmap/PruneDialog'
-import { DetachDialog, type DetachDialogLabels } from '@/components/mindmap/DetachDialog'
-import {
-  MAX_ATTACHMENTS,
-  MAX_NODES,
-  MAX_RELATIONSHIPS,
-  ancestorsOf,
-  descendantCounts as allDescendantCounts,
-  descendantsOf,
-  visibleNodes,
-  type MapNode,
-  type NodeFields,
-  type Relationship,
-} from '@/lib/mindmap-doc'
+import { VoiceButton, type VoiceButtonLabels } from '@/components/mindmap/VoiceButton'
+import { draftsForDrop, type DropPayload } from '@/lib/mindmap-attach'
 import {
   commandsFor,
   fuzzyRank,
@@ -78,18 +72,15 @@ import {
   pillVerbsFor,
   type CommandId,
 } from '@/lib/mindmap-commands'
-import { cutTarget, foldSummary } from '@/lib/mindmap-lens'
-import { resolveName } from '@/lib/mindmap-naming'
-import { draftsForDrop, type DropPayload } from '@/lib/mindmap-attach'
 import {
   addAttachment,
   answerQuestion,
   createNode,
   createQuestion,
-  detach,
   createRelationship,
   deleteRelationship,
   deleteSubtree,
+  detach,
   nodesMap,
   place,
   readNodes,
@@ -103,7 +94,21 @@ import {
   tidyAll,
   updateAttachment,
 } from '@/lib/mindmap-crdt'
+import {
+  MAX_ATTACHMENTS,
+  MAX_NODES,
+  MAX_RELATIONSHIPS,
+  descendantCounts as allDescendantCounts,
+  ancestorsOf,
+  descendantsOf,
+  visibleNodes,
+  type MapNode,
+  type NodeFields,
+  type Relationship,
+} from '@/lib/mindmap-doc'
 import type { Point } from '@/lib/mindmap-layout'
+import { cutTarget, foldSummary } from '@/lib/mindmap-lens'
+import { resolveName } from '@/lib/mindmap-naming'
 import { recordTrace, type MindmapSession } from '@/lib/mindmaps'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable —
@@ -182,9 +187,7 @@ export interface LiveProps {
   session: MindmapSession
   /** The map's title. The root box is the map, not a node. */
   title: string
-  onSave?: (state: SaveState) => void
-  onConnection: (state: ConnectionState) => void
-  onPeers: (names: string[]) => void
+  connection: SyncConnection
   onError: (message: string) => void
   /** Projects this token can reach — ⌘K is the only way to switch, now. */
   projects: { id: string; name: string }[]
@@ -251,16 +254,13 @@ export interface LiveProps {
 type Stage = 'commands' | 'goto' | 'project'
 
 export default function Live(props: LiveProps) {
-  const connection = useSyncConnection(props.session, error => props.onError(error instanceof Error ? error.message : String(error)), props.onSave)
-  return connection ? <ConnectedLive {...props} connection={connection} /> : null
+  return <ConnectedLive {...props} />
 }
 
 function ConnectedLive({
   connection,
   session,
   title,
-  onConnection,
-  onPeers,
   onError,
   projects,
   currentProject,
@@ -293,14 +293,7 @@ function ConnectedLive({
 
   const [nodes, setNodes] = useState<MapNode[]>([])
   const [relationships, setRelationships] = useState<Relationship[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const selectionChanged = useEffectEvent((node: string | null) => onSelection?.(node))
-  const didSelect = useRef(false)
-  useEffect(() => {
-    if (!selected && !didSelect.current) return
-    didSelect.current = true
-    selectionChanged(selected)
-  }, [selected])
+  const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
 
   const [peers, setPeers] = useState<CanvasPeer[]>([])
@@ -372,18 +365,6 @@ function ConnectedLive({
   }, [ydoc])
 
   useEffect(() => {
-    const onStatus = ({ status }: { status: string }) => {
-      onConnection(
-        status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : 'disconnected',
-      )
-    }
-    const onSynced = (isSynced: boolean) => {
-      if (isSynced) onConnection('connected')
-    }
-    // Seed from what the provider already is: it connected during the `useMemo`
-    // above, so a `status` event can have landed before this subscription did.
-    if (provider.wsconnected) onConnection('connected')
-
     const onAwareness = () => {
       const seen: CanvasPeer[] = []
       provider.awareness.getStates().forEach((state, clientId) => {
@@ -397,29 +378,14 @@ function ConnectedLive({
         })
       })
       setPeers(seen)
-      onPeers(seen.map((p) => p.name))
     }
 
-    provider.on('status', onStatus)
-    provider.on('sync', onSynced)
+    onAwareness()
     provider.awareness.on('change', onAwareness)
-    provider.awareness.setLocalStateField('user', {
-      name: session.display,
-      color: colorFor(session.display),
-    })
-    provider.connect()
-
     return () => {
-      provider.off('status', onStatus)
-      provider.off('sync', onSynced)
       provider.awareness.off('change', onAwareness)
     }
-  }, [provider, ydoc, session.display, onConnection, onPeers])
-
-  // Which node this viewer is on, so a collaborator's ring follows them.
-  useEffect(() => {
-    provider.awareness.setLocalStateField('mm', { selected })
-  }, [provider, selected])
+  }, [provider])
 
   useEffect(() => {
     localStorage.setItem(foldKey(session.mindmap), JSON.stringify([...collapsed]))
@@ -453,10 +419,7 @@ function ConnectedLive({
     for (const id of collapsed) out.set(id, foldSummary(nodes, id))
     return out
   }, [nodes, collapsed])
-  const foldSummaryOf = useCallback(
-    (id: string) => foldSummaries.get(id) ?? null,
-    [foldSummaries],
-  )
+  const foldSummaryOf = useCallback((id: string) => foldSummaries.get(id) ?? null, [foldSummaries])
 
   const guard = useCallback((): boolean => {
     if (canWrite) return true
@@ -489,7 +452,7 @@ function ConnectedLive({
       // for the ten minutes a brainstorm is for.
       setNaming({ id, fresh: true, previous: '', from: after ?? parent })
     },
-    [guard, ydoc, labels.newThought, labels.capNodes, session.display, onError],
+    [guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
   )
 
   /**
@@ -532,7 +495,7 @@ function ConnectedLive({
       // caret would put a text cursor in the way of the next sentence.
       setSelected(id)
     },
-    [guard, ydoc, session.display, onError, labels.capNodes],
+    [guard, ydoc, session.display, setSelected, onError, labels.capNodes],
   )
 
   const onSibling = useCallback(
@@ -579,11 +542,12 @@ function ConnectedLive({
       if (then === 'child') onChild(id)
       else setFocusRequest(Date.now())
     },
-    [naming, guard, ydoc, onChild],
+    [naming, guard, ydoc, onChild, setSelected],
   )
 
   const onNameCommit = useCallback(
-    (id: string, text: string, then: NameThen) => finishNaming(id, { text, cancelled: false }, then),
+    (id: string, text: string, then: NameThen) =>
+      finishNaming(id, { text, cancelled: false }, then),
     [finishNaming],
   )
   const onNameCancel = useCallback(
@@ -599,7 +563,7 @@ function ConnectedLive({
       setSelected(id)
       setNaming({ id, fresh: false, previous: node.title, from: id })
     },
-    [guard, nodes],
+    [guard, nodes, setSelected],
   )
 
   const onReparent = useCallback(
@@ -695,7 +659,7 @@ function ConnectedLive({
       if (refused > 0) onError(labels.attachmentsFull.replace('{max}', String(MAX_ATTACHMENTS)))
       if (add.length > 0) setSelected(id)
     },
-    [guard, nodes, ydoc, labels.droppedFileGist, labels.attachmentsFull, onError],
+    [guard, nodes, labels.droppedFileGist, labels.attachmentsFull, onError, setSelected, ydoc],
   )
 
   /**
@@ -726,7 +690,7 @@ function ConnectedLive({
       setSelected(id)
       setNaming({ id, fresh: true, previous: '', from: null })
     },
-    [guard, ydoc, session.display, onError, labels.capNodes, labels.newThought],
+    [guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
   )
 
   /** Pose a question about the selected thought, and open its title to type it. */
@@ -741,7 +705,7 @@ function ConnectedLive({
       setSelected(id)
       setNaming({ id, fresh: true, previous: '', from: about })
     },
-    [guard, ydoc, session.display, onError, labels.capNodes, labels.newQuestion],
+    [guard, ydoc, labels.newQuestion, labels.capNodes, session.display, setSelected, onError],
   )
 
   /**
@@ -760,7 +724,7 @@ function ConnectedLive({
       setViewing(null)
       if (landed) setSelected(landed)
     },
-    [guard, ydoc],
+    [guard, setSelected, ydoc],
   )
 
   const onToggleCollapse = useCallback((id: string) => {
@@ -915,18 +879,22 @@ function ConnectedLive({
       setSelected(id)
       setCentreNode(id)
     },
-    [nodes],
+    [nodes, setSelected],
   )
 
   // A section handed over from the document view. Waits for the node to exist:
   // the ask arrives with the URL, and the document is still syncing.
   useEffect(() => {
-    if (!focusNode) { focused.current = null; return }
+    if (!focusNode) {
+      focused.current = null
+      setSelected(null)
+      return
+    }
     if (focused.current === focusNode) return
     if (!nodes.some((n) => n.id === focusNode)) return
     goTo(focusNode)
     focused.current = focusNode
-  }, [focusNode, nodes, goTo])
+  }, [focusNode, nodes, goTo, setSelected])
 
   const run = useCallback(
     (id: string, target?: string) => {

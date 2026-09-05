@@ -30,12 +30,12 @@
 // beside the prose rather than in a panel somewhere else.
 import type { ReactNode } from 'react'
 
+import { EditableText } from '@/components/EditableText'
+import { Hint } from '@/components/Hint'
+import { fmtAge } from '@/lib/format'
 import type { TraceEntry, TraceKind } from '@/lib/mindmaps'
 import type { Standing } from '@/lib/plan-trace'
 import { traceActor } from '@/lib/plan-trace'
-import { fmtAge } from '@/lib/format'
-import { EditableText } from '@/components/EditableText'
-import { Hint } from '@/components/Hint'
 import { cn } from '@/lib/utils'
 
 export interface SectionPanelLabels {
@@ -93,6 +93,9 @@ export interface SectionPanelProps {
   proposals?: ReactNode
   canWrite: boolean
   /** Highlighted because the rail points at it. */
+  onShowTests?: () => void
+  testsLabel?: string
+  failingTests?: boolean
   onActivate?: () => void
   active?: boolean
   /** How many entries to show before saying there are more. */
@@ -117,8 +120,7 @@ const headingClass = (depth: number): string =>
         : 'text-[13.5px] font-[600] text-muted-foreground'
 
 const STANDING_CLASS: Record<Standing, string> = {
-  confirmed:
-    'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
+  confirmed: 'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
   changed: 'border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-300',
   unseen: 'border-border-soft text-muted-foreground',
 }
@@ -142,6 +144,9 @@ export function SectionPanel({
   canWrite,
   active = false,
   onActivate,
+  onShowTests,
+  testsLabel,
+  failingTests,
   historyLimit = 6,
   sectionRef,
   labels,
@@ -178,7 +183,9 @@ export function SectionPanel({
           <EditableText
             value={title}
             editable
-            onCommit={async (next) => { await onTitle(next) }}
+            onCommit={async (next) => {
+              await onTitle(next)
+            }}
             placeholder={labels.untitled}
             aria-label={labels.renameSection}
             as="h1"
@@ -222,6 +229,15 @@ export function SectionPanel({
         >
           ⌖ {labels.showOnMap}
         </button>
+        {onShowTests && (
+          <button
+            type="button"
+            onClick={onShowTests}
+            className={`cursor-pointer text-xs hover:underline ${failingTests ? 'text-destructive' : 'text-muted-foreground'}`}
+          >
+            {testsLabel}
+          </button>
+        )}
         {proposalCount > 0 && onToggleProposals && (
           <button
             type="button"
@@ -250,13 +266,17 @@ export function SectionPanel({
           {shown.length === 0 && <li>{labels.historyEmpty}</li>}
           {shown.map((entry) => (
             <li key={entry.id} className="flex flex-wrap gap-x-2">
-              <span className="text-foreground font-medium">{labels.kinds[entry.kind] ?? entry.kind}</span>
+              <span className="text-foreground font-medium">
+                {labels.kinds[entry.kind] ?? entry.kind}
+              </span>
               <span>{traceActor(entry)}</span>
               <span className="opacity-70">{fmtAge(entry.at)}</span>
               {entry.note && <span className="opacity-80">— {entry.note}</span>}
             </li>
           ))}
-          {more > 0 && <li className="opacity-70">{labels.historyMore.replace('{n}', String(more))}</li>}
+          {more > 0 && (
+            <li className="opacity-70">{labels.historyMore.replace('{n}', String(more))}</li>
+          )}
         </ul>
       )}
 

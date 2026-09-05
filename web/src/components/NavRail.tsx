@@ -105,7 +105,7 @@ export interface NavRailProps {
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   inbox: '/inbox',
-  specification: '/mindmaps',
+  specification: '/specification',
   initiatives: '/initiatives',
   schedules: '/schedules',
   environments: '/environments',

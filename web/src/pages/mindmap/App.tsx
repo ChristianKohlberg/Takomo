@@ -1,9 +1,6 @@
-import { retryConnection } from '@/lib/retry-connection'
-import { SaveStatus } from '@/components/SaveStatus'
-import type { SaveState } from '@/lib/save-status'
+import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
-import { useWorkspaceProject, useWorkspaceNavigate } from '@/hooks/useWorkspace'
-import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { useSpecification } from '../specification/context'
 // /mindmaps — brainstorming, before any of it is an idea, with everyone in the
 // room at once.
 //
@@ -19,254 +16,52 @@ import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 // by a refetch, and the page carried an optimistic tree so typing did not wait on
 // a round trip. It is now a CRDT — one replica shared by every browser and every
 // agent — so there is no optimistic copy to keep, no refetch, no save button and
-// no dirty state. The page mints the socket ticket and owns the map's row
-// metadata; `Live` owns the document.
-import { ViewSwitcher } from '@/components'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+// no duplicate tree to reconcile. The specification workspace owns the shared
+// replica; this view owns the canvas commands.
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { AppHeader } from '@/components/AppHeader'
-import { AppShell } from '@/components/AppShell'
-import { Button } from '@/components/ui/button'
 import { CommandPalette } from '@/components/mindmap/CommandPalette'
-import { TokenGate } from '@/components/TokenGate'
-import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useToast } from '@/components/Toaster'
-import { detectLocale, pick, type Locale } from '@/lib/i18n'
-import { isAuthError, loadToken, saveProject, saveToken } from '@/lib/session'
-import { listProjects, whoami, type Project } from '@/lib/initiatives'
-import { listChecks, worstState } from '@/lib/verification'
+import { Button } from '@/components/ui/button'
+import { pick } from '@/lib/i18n'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
-import { planLink, testsLink } from '@/lib/plan-url'
-import {
-  createMindmap,
-  deleteMindmap,
-  listMindmaps,
-  mintMindmapSession,
-  patchMindmap,
-  promoteNode,
-  type Mindmap,
-  type MindmapSession,
-} from '@/lib/mindmaps'
-import Live, { type ConnectionState } from './Live'
+import { createMindmap, deleteMindmap, patchMindmap, promoteNode } from '@/lib/mindmaps'
+import { planLink } from '@/lib/plan-url'
+import { saveProject } from '@/lib/session'
+import Live from './Live'
 import { STR } from './strings'
 
-const LS_LANG = 'takomo.lang'
-
-export function App() {
-  const [project, setProject] = useWorkspaceProject()
-  return <Workspace key={project} project={project} setProject={setProject} />
-}
-
-function Workspace({ project, setProject }: { project: string; setProject: (id: string) => void }) {
+export function MapView() {
+  const {
+    token,
+    lang,
+    project,
+    projects,
+    scopes,
+    voice,
+    map: open,
+    session,
+    connection,
+    refreshMap,
+    selectProject: setProject,
+    onError: handleErr,
+    openTests,
+    testsFor,
+  } = useSpecification()
   const navigate = useWorkspaceNavigate()
-  const location = useLocation()
   const { toast } = useToast()
-
-  const [token, setToken] = useState(() => loadToken())
-  const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const [gateError, setGateError] = useState('')
-
-  const [actor, setActor] = useState('')
-  /**
-   * How many tests each section of the plan carries, and how many are failing.
-   *
-   * Read once per map rather than subscribed: a check changes when somebody
-   * records a verdict on the other screen, which is not something the canvas has
-   * to follow live. A project with no tests, or a token that cannot read them,
-   * simply draws none.
-   */
-  const [testCounts, setTestCounts] = useState<Map<string, { total: number; failing: number }>>(
-    new Map(),
-  )
-  /** Whether this SERVER has dictation configured — not whether this credential
-   *  may use it. A button that 503'd would be worse than no button. */
-  const [voice, setVoice] = useState(false)
-  const [scopes, setScopes] = useState<string[]>([])
-  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
-  const [projects, setProjects] = useState<Project[]>([])
-
-  const [maps, setMaps] = useState<Mindmap[]>([])
-  // `#m=<id>` so a map is a link somebody can send, the same way `/board#t=`
-  // and `/inbox#q=` already are.
-  const openId = new URLSearchParams(location.hash.slice(1)).get('m')
-  const setOpenId = useCallback((value: string | null | ((current: string | null) => string | null)) => {
-    const params = new URLSearchParams(location.hash.slice(1))
-    const current = params.get('m')
-    const next = typeof value === 'function' ? value(current) : value
-    if (next === current) return
-    if (next) params.set('m', next); else params.delete('m')
-    if (current) params.delete('n')
-    navigate({ hash: params.toString() }, { replace: !current })
-  }, [location.hash, navigate])
   const [focusNode, selectSection] = useWorkspaceSection()
-  const [session, setSession] = useState<MindmapSession | null>(null)
-  const [, setConnection] = useState<ConnectionState>('connecting')
-  const [saveState, setSaveState] = useState<SaveState>('connecting')
-  const [peers, setPeers] = useState<string[]>([])
-
-  // ⌘K, for the one case `Live` cannot cover: a project with no brainstorm has
-  // no document, so nothing below this component is mounted to host the palette.
+  const openId = open?.id ?? null
+  const selectedProject = project
+  const refreshList = refreshMap
+  const canWrite = scopes.includes('write')
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteStage, setPaletteStage] = useState<'commands' | 'project'>('commands')
   const [paletteQuery, setPaletteQuery] = useState('')
   const [paletteActive, setPaletteActive] = useState<string | null>(null)
 
   const t = useMemo(() => pick(STR, lang), [lang])
-  const canWrite = scopes.includes('write')
-  const open = maps.find((m) => m.id === openId) ?? null
-  const selectedProject = open?.project || project || projects[0]?.id || ''
-
-  useEffect(() => {
-    if (open && open.project !== project) {
-      const search = new URLSearchParams(location.search)
-      search.set('project', open.project)
-      navigate({ search: search.toString(), hash: location.hash }, { replace: true })
-    }
-  }, [open, project, location.search, location.hash, navigate])
-
-  const handleErr = useCallback(
-    (e: unknown) => {
-      const err = e as { message?: string }
-      if (isAuthError(e)) {
-        saveToken('')
-        setToken('')
-        setGateError('')
-        return
-      }
-      toast(err?.message || t.requestFailed, 'err')
-    },
-    [toast, t],
-  )
-
-  // Not filtered by project: ⌘K's "switch project…" needs to know which projects
-  // HAVE a brainstorm, and one map per project keeps that list the size of the
-  // project list rather than the size of the fleet's thinking.
-  const listEpoch = useRef(0)
-  useEffect(() => { const epoch = listEpoch; return () => { epoch.current++ } }, [token])
-  const refreshList = useCallback(async () => {
-    const epoch = ++listEpoch.current
-    const page = await listMindmaps(token, { limit: 100 })
-    if (epoch === listEpoch.current) setMaps(page.items)
-    return page.items
-  }, [token])
-
-  useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const who = await whoami(token)
-        if (cancelled) return
-        const sc = who.scopes ?? []
-        if (!sc.includes('read')) {
-          saveToken('')
-          setToken('')
-          setGateError(t.gateNoRead)
-          return
-        }
-        setActor(who.actor ?? '')
-        setVoice(who.features?.voice === true)
-        setScopes(sc)
-        setProjects(await listProjects(token).catch(() => []))
-      } catch (e) {
-        if (!cancelled) handleErr(e)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [token, handleErr, t])
-
-  useEffect(() => {
-    if (!token) return
-    let cancelled = false
-    refreshList()
-      .then((items) => {
-        if (cancelled) return
-        // Honor a deep link, otherwise stay within the selected project even
-        // when it has no plan. Only an unscoped visit may choose another map.
-        setOpenId(
-          (current) =>
-            current ??
-            items.find((m) => m.project === (project || ''))?.id ??
-            (project ? null : items[0]?.id) ??
-            null,
-        )
-      })
-      .catch((error) => { if (!cancelled) handleErr(error) })
-    return () => { cancelled = true }
-  }, [token, refreshList, handleErr, project, setOpenId])
-
-  // What the map draws over each section: how many tests it carries and how
-  // many are failing. A soft failure draws nothing rather than taking the map
-  // down — the canvas is the page, and tests are an annotation on it.
-  useEffect(() => {
-    const p = open?.project
-    if (!token || !p) {
-      setTestCounts(new Map())
-      return
-    }
-    let cancelled = false
-    listChecks(token, p)
-      .then((page) => {
-        if (cancelled) return
-        const counts = new Map<string, { total: number; failing: number }>()
-        for (const c of page.items) {
-          if (!c.node || c.archived_at) continue
-          const at = counts.get(c.node) ?? { total: 0, failing: 0 }
-          at.total += 1
-          // Only an outright failure counts as failing here. Stale and
-          // never-run are work outstanding, and colouring them red on the map
-          // would make the mark mean "unfinished", which every new section is.
-          if (worstState(c.cases) === 'failed') at.failing += 1
-          counts.set(c.node, at)
-        }
-        setTestCounts(counts)
-      })
-      .catch(() => setTestCounts(new Map()))
-    return () => {
-      cancelled = true
-    }
-  }, [token, open?.project])
-
-  const testsFor = useCallback((node: string) => testCounts.get(node) ?? null, [testCounts])
-
-  useProjectUpdates(token, project, () => refreshList().catch(handleErr))
-
-  // Opening a map means minting a ticket for its socket. Done here rather than
-  // inside the canvas so the canvas never has to know about tokens — it receives
-  // a session and connects.
-  useEffect(() => {
-    if (!token || !openId) {
-      setSession(null)
-      return
-    }
-    let cancelled = false
-    const abort = new AbortController()
-    setSession(null)
-    setConnection('connecting')
-    setPeers([])
-    retryConnection(() => mintMindmapSession(token, openId), abort.signal)
-      .then((s) => {
-        if (!cancelled) setSession(s)
-      })
-      .catch((e) => {
-        if (!cancelled) handleErr(e)
-      })
-    return () => {
-      cancelled = true
-      abort.abort()
-    }
-    // `focusNode` is deliberately not a dependency: it changes exactly once,
-    // when the canvas honours it, and re-minting the socket ticket for that
-    // would drop the connection under somebody's cursor.
-  }, [token, openId, handleErr])
-
-  const onConnection = useCallback((s: ConnectionState) => setConnection(s), [])
-  const onPeers = useCallback((names: string[]) => setPeers(names), [])
   const onLiveError = useCallback((message: string) => toast(message, 'err'), [toast])
-
   const promote = useCallback(
     (node: string, target: 'epic' | 'initiative') => {
       if (!openId) return
@@ -300,14 +95,13 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
       const title = window.prompt(t.newMapPrompt)
       if (!title?.trim()) return
       try {
-        const { mindmap } = await createMindmap(token, { project: target, title: title.trim() })
+        await createMindmap(token, { project: target, title: title.trim() })
         await refreshList()
-        setOpenId(mindmap.id)
       } catch (e) {
         handleErr(e)
       }
     },
-    [canWrite, toast, t, selectedProject, token, refreshList, handleErr, setOpenId],
+    [canWrite, toast, t, selectedProject, token, refreshList, handleErr],
   )
 
   const renameMap = useCallback(() => {
@@ -325,11 +119,10 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
     deleteMindmap(token, open.id)
       .then(() => refreshList())
       .then(() => {
-        setOpenId(null)
         toast(t.mapDeleted, 'success')
       })
       .catch(handleErr)
-  }, [open, t, token, refreshList, toast, handleErr, setOpenId])
+  }, [open, t, token, refreshList, toast, handleErr])
 
   /**
    * The way to the other rendering of this plan.
@@ -351,16 +144,6 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
   )
 
   /** The tests for the selected thought, on the same terms as the plan link. */
-  const openTests = useCallback(
-    (node: string | null) => {
-      if (open) {
-        saveProject(open.project)
-      }
-      navigate(testsLink(node))
-    },
-    [open, navigate],
-  )
-
   const chooseProject = setProject
 
   // The empty-state palette. `Live` owns the shortcut whenever a map is open, so
@@ -398,101 +181,16 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
     return fuzzyRank(rows, (r) => r.label, paletteQuery, 12)
   }, [paletteStage, projects, paletteQuery, selectedProject, t, canWrite])
 
-  if (!token) {
-    return (
-      <TokenGate
-        title="takomo · mindmaps"
-        subtitle={t.gateTokenSub}
-        tokenLabel={t.gateLabel}
-        openLabel={t.gateOpen}
-        emptyMessage={t.tokenNeeded}
-        error={gateError}
-        onSubmit={(tk) => {
-          saveToken(tk)
-          setGateError('')
-          setToken(tk)
-        }}
-      />
-    )
-  }
-
-
-
   return (
-    <AppShell
-      rail={{
-        onNavigate: navigate,
-        current: 'specification',
-        nav: {
-          board: t.board,
-          inbox: t.inbox,
-          specification: t.specification,
-          initiatives: t.initiatives,
-          schedules: t.schedules,
-          environments: t.environments,
-        },
-        projects,
-        project: selectedProject,
-        onProject: chooseProject,
-        projectLabels: {
-          project: t.project,
-          search: t.projectSearch,
-          noMatch: t.projectNoMatch,
-        },
-        labels: {
-          expand: t.navExpand,
-          collapse: t.navCollapse,
-          signOut: t.signOut,
-          account: t.navAccount,
-          settings: t.settings,
-        },
-        collapsed: navCollapsed,
-        onCollapsed: setNavCollapsed,
-        actor,
-        scopes,
-        onSignOut: () => {
-          saveToken('')
-          setToken('')
-        },
-      }}
-    >
-      {/* The header of a shared document says three things and no more: what it
-          is, whether this browser is connected, and who else is in it. */}
-      <AppHeader
-        title={open ? open.title : t.mindmaps}
-        views={
-          <ViewSwitcher
-            current="map"
-            onNavigate={navigate}
-            labels={{ map: t.viewMap, document: t.viewDocument, tests: t.viewTests }}
-          />
-        }
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
-      >
-        {open && (
-          <>
-            <SaveStatus state={saveState} lang={lang} />
-            <span className={`text-muted-foreground text-[11.5px] ${peers.length ? '' : 'hidden sm:inline'}`}>
-              {peers.length ? `${t.alsoHere}: ${peers.join(', ')}` : t.justYou}
-            </span>
-          </>
-        )}
-      </AppHeader>
-
+    <>
       <main className="flex min-h-0 flex-1 flex-col">
         {open ? (
           session ? (
             <Live
               key={session.session}
               session={session}
+              connection={connection!}
               title={open.title}
-              onConnection={onConnection}
-            onSave={setSaveState}
-              onPeers={onPeers}
               onError={onLiveError}
               projects={projects.map((p) => ({ id: p.id, name: p.name || p.id }))}
               currentProject={open.project}
@@ -779,13 +477,12 @@ function Workspace({ project, setProject }: { project: string; setProject: (id: 
           labels={{
             scopeNode: t.paletteScopeNode,
             scopeMap: t.paletteScopeMap,
-            placeholder:
-              paletteStage === 'project' ? t.projectPlaceholder : t.palettePlaceholder,
+            placeholder: paletteStage === 'project' ? t.projectPlaceholder : t.palettePlaceholder,
             noMatch: t.paletteNoMatch,
             keys: t.paletteKeys,
           }}
         />
       )}
-    </AppShell>
+    </>
   )
 }

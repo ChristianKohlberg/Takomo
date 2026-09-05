@@ -1,7 +1,8 @@
 # Documents: prose humans and agents write at the same time
 
 > **The browser surface this page describes is gone.** `/documents` now renders
-> the PLAN — the mindmap's own nodes as prose — and the standalone document
+> the project specification workspace (see [Specification](specification.md)),
+> whose Document view renders the mindmap's own nodes as prose. The standalone document
 > editor, its list and its ⌘K menu were removed with it. What survives, and what
 > the rest of this page is still accurate about, is the model underneath: the
 > `documents` table, `/v1/documents/*`, the `tkd_` sync socket, the Yjs

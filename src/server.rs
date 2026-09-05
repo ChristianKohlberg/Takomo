@@ -641,6 +641,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/board", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/documents", get(crate::api::documents_page))
+        .route("/specification", get(crate::api::documents_page))
+        .route("/projects/{project}/specification", get(crate::api::documents_page))
         .route("/initiatives", get(crate::api::initiatives_page))
         .route("/mindmaps", get(crate::api::mindmaps_page))
         .route("/schedules", get(crate::api::schedules_page))

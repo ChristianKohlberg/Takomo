@@ -1,3 +1,4 @@
+import { specificationLink, specificationProject } from '@/lib/specification-url'
 import { useLocation } from 'react-router'
 // The three views of one specification.
 //
@@ -10,7 +11,7 @@ import { useLocation } from 'react-router'
 // survives a reload, a bookmark and a share, which is what `#n=` handover between
 // the map and the plan already relies on. A button that navigated by script would
 // break all three.
-import { NetworkIcon, FileTextIcon, ShieldCheckIcon } from 'lucide-react'
+import { FileTextIcon, NetworkIcon, ShieldCheckIcon } from 'lucide-react'
 
 export type SpecView = 'map' | 'document' | 'tests'
 
@@ -35,17 +36,20 @@ const VIEWS: { id: SpecView; href: string; Icon: typeof NetworkIcon }[] = [
 
 export function ViewSwitcher({ current, labels, onNavigate }: ViewSwitcherProps) {
   const location = useLocation()
-  const project = new URLSearchParams(location.search).get('project') ?? localStorage.getItem('takomo.project') ?? ''
-  const section = new URLSearchParams(location.hash.slice(1)).get('n')
+  const project =
+    specificationProject(location.pathname) ??
+    new URLSearchParams(location.search).get('project') ??
+    localStorage.getItem('takomo.project') ??
+    ''
+  const section = new URLSearchParams(location.search).get('section')
   return (
     <nav
       aria-label={[labels.document, labels.map, labels.tests].join(', ')}
       className="border-border-soft bg-muted/40 flex flex-none items-center gap-0.5 rounded-lg border p-0.5"
     >
-      {VIEWS.map(({ id, href, Icon }) => {
+      {VIEWS.map(({ id, Icon }) => {
         const active = id === current
-        const hash = active ? location.hash : section ? `#${new URLSearchParams({ n: section })}` : ''
-        const target = `${href}?${new URLSearchParams({ project })}${hash}`
+        const target = specificationLink(project, id, section)
         return (
           <a
             key={id}

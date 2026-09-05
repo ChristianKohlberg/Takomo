@@ -1,5 +1,5 @@
-import type { SaveState } from '@/lib/save-status'
-import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnection'
+import { usePersonalSelection } from '@/hooks/usePersonalSelection'
+import { type SyncConnection } from '@/hooks/useSyncConnection'
 // The plan, written out: the map's tree read as reading order.
 //
 // This is `/mindmaps`' Live.tsx pointed at the same document from the other
@@ -35,28 +35,15 @@ import { useSyncConnection, type SyncConnection } from '@/hooks/useSyncConnectio
 // "show it on the map" instead: the title caret lives on the canvas, and two
 // carets on one Y.Text in two layouts is a fight rather than a feature.
 import { ChevronDownIcon } from 'lucide-react'
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
 
 import { OutlineRail, type OutlineRailLabels } from '@/components/documents/OutlineRail'
-import {
-  ProposalPanel,
-  type ProposalPanelLabels,
-} from '@/components/documents/ProposalPanel'
+import { ProposalPanel, type ProposalPanelLabels } from '@/components/documents/ProposalPanel'
 import { SectionPanel, type SectionPanelLabels } from '@/components/documents/SectionPanel'
 import { applyOps, blockText, type Proposal } from '@/lib/doc-ops'
-import {
-  decideProposal,
-  highlightKeyFor,
-  pendingByNode,
-  proposalsByNode,
-  readProposals,
-  PROPOSALS_KEY,
-} from '@/lib/plan-proposals'
-import type { TraceEntry } from '@/lib/mindmaps'
-import { type MindmapSession } from '@/lib/mindmaps'
 import {
   nodesMap,
   proseOf,
@@ -65,6 +52,16 @@ import {
   readProseOf,
   setTitle,
 } from '@/lib/mindmap-crdt'
+import type { PlanStanding, TraceEntry } from '@/lib/mindmaps'
+import { type MindmapSession } from '@/lib/mindmaps'
+import {
+  decideProposal,
+  highlightKeyFor,
+  pendingByNode,
+  PROPOSALS_KEY,
+  proposalsByNode,
+  readProposals,
+} from '@/lib/plan-proposals'
 import {
   ancestorKeys,
   flattenSections,
@@ -74,7 +71,6 @@ import {
   type PlanNode,
 } from '@/lib/plan-sections'
 import { standingOf, type Standing } from '@/lib/plan-trace'
-import type { PlanStanding } from '@/lib/mindmaps'
 import SectionEditor from './SectionEditor'
 
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable —
@@ -118,14 +114,16 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  testsFor: (node: string) => { total: number; failing: number }
+  onShowTests: (node: string) => void
+  testsLabel: string
+  failedLabel: string
   onError: (error: unknown) => void
   session: MindmapSession
   standing: PlanStanding
   /** The plan's history, newest first, already split by section. */
   trace: ReadonlyMap<string, TraceEntry[]>
-  onSave?: (state: SaveState) => void
-  onConnection: (state: ConnectionState) => void
-  onPeers: (names: string[]) => void
+  connection: SyncConnection
   /** Somebody says they have read this section. */
   onReview: (node: string) => void
   /** A local edit settled. Debounced in the editor — see `SectionEditor`. */
@@ -146,17 +144,18 @@ export interface PlanProps {
 }
 
 export default function Plan(props: PlanProps) {
-  const connection = useSyncConnection(props.session, props.onError, props.onSave)
-  return connection ? <ConnectedPlan {...props} connection={connection} /> : null
+  return <ConnectedPlan {...props} />
 }
 
 function ConnectedPlan({
   connection,
+  testsFor,
+  onShowTests,
+  testsLabel,
+  failedLabel,
   session,
   standing,
   trace,
-  onConnection,
-  onPeers,
   onReview,
   onEdited,
   onShowOnMap,
@@ -173,14 +172,7 @@ function ConnectedPlan({
 
   const [tree, setTree] = useState<PlanNode[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
-  const [selected, setSelected] = useState<string | null>(null)
-  const selectionChanged = useEffectEvent((node: string | null) => onSelection?.(node))
-  const didSelect = useRef(false)
-  useEffect(() => {
-    if (!selected && !didSelect.current) return
-    didSelect.current = true
-    selectionChanged(selected)
-  }, [selected])
+  const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
 
   const [openHistory, setOpenHistory] = useState<Set<string>>(() => new Set())
@@ -216,45 +208,6 @@ function ConnectedPlan({
     proposalMap.observe(read)
     return () => proposalMap.unobserve(read)
   }, [proposalMap])
-
-  useEffect(() => {
-    const onStatus = ({ status }: { status: string }) => {
-      onConnection(
-        status === 'connected'
-          ? 'connected'
-          : status === 'connecting'
-            ? 'connecting'
-            : 'disconnected',
-      )
-    }
-    const onSynced = (isSynced: boolean) => {
-      if (isSynced) onConnection('connected')
-    }
-    // Seed from what the provider already IS: it connected during the `useMemo`
-    // above, so a `status` event can land before this subscription does — which
-    // is what once left a header reading "Connecting…" over a live document.
-    if (provider.wsconnected) onConnection('connected')
-    const onAwareness = () => {
-      const names: string[] = []
-      provider.awareness.getStates().forEach((state, clientId) => {
-        if (clientId === provider.awareness.clientID) return
-        const user = (state as { user?: { name?: string } }).user
-        if (user?.name) names.push(user.name)
-      })
-      onPeers(names)
-    }
-    provider.on('status', onStatus)
-    provider.on('sync', onSynced)
-    provider.awareness.on('change', onAwareness)
-    provider.awareness.setLocalStateField('user', { name: session.display, color })
-    provider.connect()
-
-    return () => {
-      provider.off('status', onStatus)
-      provider.off('sync', onSynced)
-      provider.awareness.off('change', onAwareness)
-    }
-  }, [provider, ydoc, session.display, color, onConnection, onPeers])
 
   const sections = useMemo(() => planSections(tree), [tree])
   const rows = useMemo(() => flattenSections(sections), [sections])
@@ -393,10 +346,13 @@ function ConnectedPlan({
       })
       setSelected(key)
     },
-    [sections],
+    [sections, setSelected],
   )
 
+  const scrolledSelection = useRef<string | null>(null)
   useEffect(() => {
+    if (selected === scrolledSelection.current) return
+    scrolledSelection.current = selected
     if (!selected) return
     const el = elements.current.get(selected)
     if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
@@ -405,12 +361,16 @@ function ConnectedPlan({
   // A section handed over by link. Waits for the section to exist: the ask
   // arrives with the URL and the document is still syncing.
   useEffect(() => {
-    if (!focusSection) { focused.current = null; return }
+    if (!focusSection) {
+      focused.current = null
+      setSelected(null)
+      return
+    }
     if (focused.current === focusSection) return
     if (!rows.some((row) => row.key === focusSection)) return
     onSelect(focusSection)
     focused.current = focusSection
-  }, [focusSection, rows, onSelect])
+  }, [focusSection, rows, onSelect, setSelected])
 
   const onToggleHistory = useCallback((key: string) => {
     setOpenHistory((current) => {
@@ -589,22 +549,25 @@ function ConnectedPlan({
           className="text-muted-foreground hover:text-foreground mb-1 flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[12px] font-[650]"
         >
           <ChevronDownIcon
-            className={['size-3.5 flex-none transition-transform', outlineOpen ? '' : '-rotate-90'].join(' ')}
+            className={[
+              'size-3.5 flex-none transition-transform',
+              outlineOpen ? '' : '-rotate-90',
+            ].join(' ')}
             aria-hidden="true"
           />
           <span>{railLabels.outline}</span>
         </button>
         {outlineOpen && (
-        <OutlineRail
-          sections={sections}
-          selected={selected}
-          onSelect={onSelect}
-          collapsed={collapsed}
-          onToggle={onToggleFold}
-          standing={standings}
-          pending={pending}
-          labels={railLabels}
-        />
+          <OutlineRail
+            sections={sections}
+            selected={selected}
+            onSelect={onSelect}
+            collapsed={collapsed}
+            onToggle={onToggleFold}
+            standing={standings}
+            pending={pending}
+            labels={railLabels}
+          />
         )}
       </aside>
 
@@ -651,6 +614,9 @@ function ConnectedPlan({
                   onToggleHistory={() => onToggleHistory(row.key)}
                   onReview={() => onReview(row.key)}
                   onShowOnMap={() => onShowOnMap(row.key)}
+                  onShowTests={() => onShowTests(row.key)}
+                  testsLabel={`${testsLabel} (${testsFor(row.key).total})${testsFor(row.key).failing ? ` · ${testsFor(row.key).failing} ${failedLabel}` : ''}`}
+                  failingTests={testsFor(row.key).failing > 0}
                   pending={pending[row.key] ?? 0}
                   proposalCount={offered.length}
                   proposalsOpen={openProposals.has(row.key)}

@@ -332,6 +332,8 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
 /// distinguishes them by content is asserting something that no longer exists.
 /// What each route still owes the caller is the shell contract below.
 const PAGE_ROUTES: &[&str] = &[
+    "/specification",
+    "/projects/demo/specification?view=map&section=mn-example",
     "/board",
     "/documents",
     "/verification",
