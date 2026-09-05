@@ -27,19 +27,18 @@ caches:
 # build is declared here as well as on the service: a service `build:` runs
 # AFTER the datastore step and would be too late to seed with.
 upkeep:
+  # Generate assets once; subsequent Rust steps reuse them without rebuilding JS.
   - when: glob(web/**)
     run: ./scripts/build.sh
-  - when: scripts/build.sh
-    run: ./scripts/build.sh
   - when: glob(src/**)
-    run: ./scripts/build.sh
+    run: cargo build --release
   - when: Cargo.lock
-    run: ./scripts/build.sh
+    run: cargo build --release
   # workflows/factory-default.yaml is include_str!'d by src/workflow.rs, so it
   # is a build input living outside src/. Without this rule a change to the
   # built-in state machine would leave a stale binary behind.
   - when: glob(workflows/**)
-    run: ./scripts/build.sh
+    run: cargo build --release
   # Content-derived template identity. The baked SQLite template is keyed on the
   # hash of these files, so a branch that changes the schema or the seed content
   # gets its own template instead of silently restoring a stale one.
@@ -64,7 +63,7 @@ services:
   server:
     # Gated on this service's own build fingerprint; a no-op when the upkeep
     # rule above already built this tree.
-    build: ./scripts/build.sh
+    build: cargo build --release
     # {{datastores.main.url}} is the SQLite file path (for sqlite the namespace
     # IS the file); {{ports.http}} is the engine-allocated port.
     run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}
