@@ -171,8 +171,9 @@ export interface Whoami {
    * `doc_agent` says whether a language model is configured, which decides
    * whether /documents shows its prompt bar or explains why there is none. A
    * page that offered the bar and then 503'd would be the worse failure.
+   * `voice` says the same about dictation on the map.
    */
-  features?: { doc_agent?: boolean }
+  features?: { doc_agent?: boolean; voice?: boolean }
 }
 
 const json = { 'Content-Type': 'application/json' }

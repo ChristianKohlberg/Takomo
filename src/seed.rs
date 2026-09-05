@@ -960,6 +960,22 @@ fn checks(store: &Store, initiative: &str) -> ApiResult<()> {
 /// what make the page read as more than a note-taker: a map is a picture of what
 /// the thinking turned into, and that only shows once something has.
 fn mindmap(store: &Store) -> ApiResult<()> {
+    // The seeded plan is written BY somebody. Without it `created_by_user` is
+    // null everywhere and the history reads as a machine talking to itself,
+    // which makes two features look broken rather than unused.
+    let ada = store
+        .get_user("ada")
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+        .unwrap_or_default();
+    let sam = store
+        .get_user("sam")
+        .ok()
+        .flatten()
+        .map(|u| u.id)
+        .unwrap_or_default();
+
     let map = store.create_mindmap(
         PROJECT,
         &crate::store::MindmapCreate {
@@ -970,49 +986,194 @@ fn mindmap(store: &Store) -> ApiResult<()> {
         SEEDER,
     )?;
 
-    let grow =
-        |parent: Option<&str>, texts: &[&str]| -> ApiResult<Vec<crate::store::MindmapNode>> {
-            store.grow_mindmap(
-                &map.id,
-                &texts
-                    .iter()
-                    .map(|text| crate::store::NodeAdd {
-                        parent: parent.map(str::to_string),
-                        text: (*text).to_string(),
-                        position: None,
-                    })
-                    .collect::<Vec<_>>(),
-                SEEDER,
-            )
-        };
+    // The seeder is alone with the database, so it edits the map's document
+    // directly rather than joining a room nobody else is in.
+    //
+    // Each entry is (title, notes, origin) — because a map where every node is a
+    // bare label demonstrates nothing. Notes are what make a node convert into a
+    // document rather than a bullet, and `origin` is what the trust lens reads,
+    // so a seeded map has to carry both or two features look broken.
+    let grow = |parent: Option<&str>, nodes: &[(&str, &str, &str)]| -> ApiResult<Vec<String>> {
+        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = nodes
+            .iter()
+            .map(|(title, notes, origin)| crate::store::mindmapdoc::NodeAdd {
+                parent: parent.map(str::to_string),
+                // An agent-written thought belongs to the person whose agent
+                // wrote it; "whose agent" is worth knowing.
+                by_user: Some(if *origin == "agent" {
+                    sam.clone()
+                } else {
+                    ada.clone()
+                }),
+                title: (*title).to_string(),
+                notes: (!notes.is_empty()).then(|| (*notes).to_string()),
+                origin: Some((*origin).to_string()),
+                ..Default::default()
+            })
+            .collect();
+        let created = store.edit_mindmap_document(&map.id, |doc| {
+            crate::store::mindmapdoc::add_nodes(doc, &adds, SEEDER)
+        })?;
+        let ids: Vec<String> = created.into_iter().map(|(id, _)| id).collect();
+        // Every thought was written by somebody at some point, and a plan whose
+        // history is empty tells you nothing about itself.
+        for (id, (_, _, origin)) in ids.iter().zip(nodes.iter()) {
+            store.record_trace(&crate::store::trace::Record {
+                project: PROJECT,
+                mindmap: &map.id,
+                node: Some(id),
+                kind: "authored",
+                actor: if *origin == "agent" {
+                    "agent:seed"
+                } else {
+                    SEEDER
+                },
+                user: Some(if *origin == "agent" { &sam } else { &ada }),
+                note: None,
+                text: None,
+            })?;
+        }
+        Ok(ids)
+    };
 
-    let branches = grow(None, &["API", "integrations", "workflows", "ideas"])?;
-    // Leaves under some of them: a map where every branch is bare reads as an
-    // empty gesture, and one where every branch is full reads as a document.
-    grow(
-        Some(&branches[0].id),
+    let branches = grow(
+        None,
         &[
-            "versioning: v1 forever, or dated?",
-            "idempotent retries on capture",
+            (
+                "API",
+                "The surface every integration hangs off. Getting this wrong is the expensive mistake, so it gets decided first.",
+                "human",
+            ),
+            (
+                "integrations",
+                "Whose money moves, and through whom. One provider at a time, in the order they cost us.",
+                "human",
+            ),
+            ("workflows", "", "human"),
+            ("ideas", "", "human"),
+        ],
+    )?;
+
+    // A branch that converts into a document with two bullets under it, and one
+    // that converts into a document with a child document — both shapes, so the
+    // conversion has something to show.
+    grow(
+        Some(&branches[0]),
+        &[
+            (
+                "versioning: v1 forever, or dated?",
+                "Dated versions are honest and nobody reads them. v1-forever is a lie that keeps working. Leaning to v1-forever with additive-only changes.",
+                "human",
+            ),
+            ("idempotent retries on capture", "", "human"),
+            ("rate limits per merchant", "", "human"),
         ],
     )?;
     grow(
-        Some(&branches[1].id),
+        Some(&branches[1]),
         &[
-            "Stripe first, then the bank file",
-            "one webhook per provider?",
+            (
+                "Stripe first, then the bank file",
+                "Stripe covers the cases we already have. The bank file is a quarter of the volume and most of the pain, so it goes second on purpose.",
+                "human",
+            ),
+            ("one webhook per provider?", "", "human"),
         ],
     )?;
     grow(
-        Some(&branches[3].id),
-        &["let a customer split one invoice themselves"],
+        Some(&branches[3]),
+        &[
+            ("let a customer split one invoice themselves", "", "human"),
+            (
+                "dunning that reads like a person wrote it",
+                "Suggested while summarising the support backlog — nobody has checked whether it is worth doing.",
+                "agent",
+            ),
+        ],
     )?;
+
+    // An open question, hanging off the branch it questions. A brainstorm that
+    // has no unanswered question in it is one nobody was honest in.
+    let question = grow(
+        None,
+        &[(
+            "Do we charge for the API, or is it table stakes?",
+            "",
+            "human",
+        )],
+    )?;
+    store.edit_mindmap_document(&map.id, |doc| {
+        crate::store::mindmapdoc::patch_node(
+            doc,
+            &question[0],
+            &crate::store::mindmapdoc::NodePatch {
+                kind: Some("question".to_string()),
+                ..Default::default()
+            },
+            SEEDER,
+        )?;
+        crate::store::mindmapdoc::add_relationship(doc, &question[0], &branches[0], "questions")?;
+        Ok(())
+    })?;
+
+    // Somebody has read some of it and not the rest, which is the only state a
+    // trust view is interesting in.
+    for node in [&branches[0], &branches[1]] {
+        store.record_trace(&crate::store::trace::Record {
+            project: PROJECT,
+            mindmap: &map.id,
+            node: Some(node),
+            kind: "reviewed",
+            actor: "human:sam",
+            user: Some(&sam),
+            note: None,
+            text: None,
+        })?;
+    }
 
     // One branch became work, one became a direction, two are still thoughts —
     // which is what a real brainstorm looks like halfway through.
-    store.promote_mindmap_node(&map.id, &branches[0].id, "epic", SEEDER)?;
-    store.promote_mindmap_node(&map.id, &branches[1].id, "initiative", SEEDER)?;
+    promote_seeded(store, &map.id, &branches[0], "epic")?;
+    promote_seeded(store, &map.id, &branches[1], "initiative")?;
     Ok(())
+}
+
+/// Graduate one seeded branch, reading the branch out of the map's document.
+fn promote_seeded(store: &Store, map_id: &str, node_id: &str, target: &str) -> ApiResult<()> {
+    store.edit_mindmap_document(map_id, |doc| {
+        let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, map_id);
+        let ordered = crate::store::mindmapdoc::tree_order(&nodes);
+        let branch = ordered
+            .iter()
+            .find(|n| n.id == node_id)
+            .ok_or_else(|| crate::error::ApiError::not_found("mindmap_node", node_id))?;
+        let title = branch.title.clone();
+        let branch_outline = crate::store::mindmapdoc::outline(&nodes, node_id);
+        let children: Vec<(String, String)> = ordered
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(node_id))
+            .map(|child| {
+                (
+                    child.title.clone(),
+                    crate::store::mindmapdoc::outline(&nodes, &child.id),
+                )
+            })
+            .collect();
+        let created = store.promote_branch(
+            &crate::store::BranchPromotion {
+                map_id,
+                node_id,
+                target,
+                title: &title,
+                branch_outline: &branch_outline,
+                children: &children,
+            },
+            SEEDER,
+        )?;
+        let kind = created["kind"].as_str().unwrap_or_default();
+        let created_id = created["id"].as_str().unwrap_or_default();
+        crate::store::mindmapdoc::set_promoted(doc, node_id, kind, created_id)
+    })
 }
 
 fn seeded_tickets(store: &Store) -> ApiResult<Vec<crate::store::Ticket>> {

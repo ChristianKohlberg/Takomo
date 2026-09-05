@@ -199,8 +199,12 @@ WebSocket, so there is no Node sidecar and the one-binary property survives; the
 out rather than taken from `yrs-axum`, which pins `yrs ^0.18` against a current 0.27. The
 load-bearing rule is that **broadcast is memory and persistence is batched**: a per-keystroke insert
 would put every claim, transition and heartbeat behind somebody's typing, because they all share the
-one write mutex. Compaction needs no snapshot table — a Yjs document's whole state *is* an ordinary
-update. `/documents` is the only code-split route, and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
+one write mutex. Batching makes a refused write somebody's lost work, so a flush the store will not
+take puts the batch BACK, in order, and the next tick retries it — it used to be dropped with one
+line on stderr, and nothing looked wrong until the room was evicted
+(`typing_survives_a_flush_the_store_refuses`). Compaction needs no snapshot table — a Yjs document's
+whole state *is* an ordinary update. `/documents` and `/mindmaps` are the code-split routes — both are collaborative and pull the CRDT runtime,
+and the editor pulls Tiptap on top — and `EDITOR_ONLY_PACKAGES` in `web/vite.config.ts`
 is what keeps the split real: a blanket vendor chunk sweeps Tiptap back onto the critical path while
 the build output still looks split.
 
@@ -216,7 +220,7 @@ editor has it. Scope is enforced server-side rather than prompted, dropped ops c
 a ProseMirror **decoration**, never a mark — a mark would be content, which would break the very rule
 it illustrates. See `docs/documents.md`.
 
-**`POST /v1/documents/{id}/run` is the ONE route that calls a language model** (`src/docagent.rs`) —
+**`POST /v1/documents/{id}/run` and `POST /v1/mindmaps/{id}/run` are the ONLY routes that call a language model** (`src/docagent.rs`) —
 a deliberate exception to "Takomo stores, the agent computes", made because a prompt bar that only
 filed a request nobody would answer is not a feature. **Off unless `TAKOMO_TENSORX_API_KEY` is set**;
 `/v1/whoami` reports `features.doc_agent` so the page explains the absence instead of offering a bar
@@ -238,11 +242,15 @@ reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
 - `tks_` share → `share_auth_middleware` → **only** `/v1/shares/self*`, read-only.
 - `tka_` answer grant → `answer_auth_middleware` → **only** `/v1/answer/self`: read and answer
   exactly one question, then it's spent. This is what an outside expert gets.
-- `tkd_` document session → validated in `api::docsync` → **only** one document's sync socket. It
+- `tkd_` collab session → validated in `api::docsync` → **only** one object's sync socket, where
+  that object is a document *or* a mindmap. It
   exists because a browser `WebSocket` cannot set an `Authorization` header — the same limitation
   that keeps `/board` polling `/v1/events` rather than using SSE — so the credential must ride the
   query string, and a real `tk_` token there would land in every access log. Scoped to one document,
-  expiring, revocable, and never more permissive than the token that minted it.
+  expiring, revocable, and never more permissive than the token that minted it — which is why it
+  carries `minted_by`: revoking that `tk_` revokes these too, and an open socket re-asks every 30s
+  so revocation reaches a connection that is already up. Before that link existed a revoked token's
+  ticket went on writing for hours, which is precisely "more permissive than the token".
 
 **OAuth adds a *route group*, deliberately not a credential type of its own.** `/oauth/*` and the
 two `.well-known` documents sit OUTSIDE every middleware — they are what a client reads *in order to*
@@ -277,6 +285,18 @@ in the directory is right everywhere at once. `takomo person` is retired for the
 two people-shaped commands where one did not add a person is a trap, so it is `takomo user` for the
 directory and `takomo tag` for the reference.
 
+**One update log for every collaborative object** (`src/store/crdt.rs`). `crdt_updates` and
+`crdt_sessions` are keyed by *(kind, id)* and serve both documents and mindmaps; the id prefix
+(`doc-`, `mm-`) carries the kind, which is a requirement rather than a convenience — `y-websocket`
+composes its URL as `serverUrl + "/" + room`, so the room must survive as ONE path segment and a
+`kind:id` room comes back mangled (`/v1/documents/{id}/sync` did exactly that and was reverted).
+Neither table carries a foreign key to its owner, because the owner is one of two tables; the
+cascade is `Store::purge_collab`, called from each kind's delete path. Widening those two tables was
+a **pre-schema** migration (`widen_doc_log_to_collab_objects`) for the reason
+`rename_lanes_to_checks` is: run it after the `CREATE TABLE IF NOT EXISTS` batch and an empty
+`crdt_updates` already stands beside the populated `doc_updates`, the copy declines, and every
+document comes back blank — a failure that looks exactly like success.
+
 **Concurrency is the load-bearing design.** `Store::with_tx` runs every mutation as one SQLite
 `IMMEDIATE` transaction behind a process-wide `Mutex<Connection>`; that single-writer
 serialization *is* the exactly-one-claimant guarantee for the ready queue. Layered on top:
@@ -302,6 +322,21 @@ nothing about it. If you add a mutating store call, add the guard —
 `project_archive_refuses_every_write_and_allows_every_read` in `tests/api.rs` is
 what notices when you don't.
 
+**The sync socket needs its own half of that promise.** A `tkd_` session decides
+`can_write` once, when the ticket is minted, and a ticket lives for hours — so
+archiving refused every REST write and refused to mint a NEW ticket while
+somebody who already had the page open kept typing into a socket whose answer
+predated the freeze, and the server persisted it. So each `Room` carries a
+`frozen` flag and `Rooms::resync_frozen` re-asks the store — the same
+`ensure_collab_writable` the REST handlers ask, so there is one predicate rather
+than a second copy of the archive rules — after anything archives, restores or
+deletes. It runs there rather than per frame because archiving is rare and
+keystrokes are not. A room also asks that question as it OPENS, because a ticket
+minted before the freeze stays valid after it and can open the first room for an
+object with nobody there for `resync_frozen` to have found. Two tests pin the two
+orders, and both assert on CONTENT: an earlier version counted rows in the update
+log and passed with the fix removed.
+
 **State changes only through transitions** (`src/store/transition.rs`) against the per-project
 state machine (`src/workflow.rs`, format in `spec/workflow-format.md`). A transition's `requires`
 entries are `claim`, `scope:<s>`, or `guard:<id>` — guards being `no_open_children`,
@@ -315,15 +350,77 @@ answering resumes it through the workflow's human-gated edge — but only once *
 blocking question on the ticket is answered (a barrier). An `advisory` question records a routed
 decision and never touches ticket state.
 
-**Mindmaps** (`src/store/mindmaps.rs`) are what comes *before* an initiative: a tree grown at
-conversation speed, six words a node, whose branches graduate into epics and initiatives. Two rules
-shape it and both are load-bearing. **Deleting one is ordinary** — an initiative is nurtured, a
-mindmap is scratch, and that is what makes it safe to start one early. **A node caps at 280 chars**,
-which is the method rather than a limitation: past that it wants to be an initiative, and the refusal
-says so. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id` link, so a map that
-produced work becomes a picture of that work. The whole map comes back in one read because a canvas
-cannot draw half a tree, which is affordable precisely because of the 500-node cap; `POST .../nodes`
-takes a **batch** because that is what an agent adding a branch sends. See `docs/mindmaps.md`.
+**A cap on a node is a rule the writing surface keeps, not a server-side guarantee.** `MAX_NODES`
+(500) and the 280-character node cap are enforced in `add_nodes` — the REST and MCP path an agent
+uses — and the canvas keeps them client-side. They are NOT enforced on the sync socket, and cannot
+be: a CRDT update applies whole or not at all, so refusing one because it carries the 501st node
+would desynchronise that peer rather than teach it anything. Measured, not assumed — a socket peer
+wrote 713 nodes and a 5,000-character title straight past both. Treat them as the brainstorm
+discipline they are documented to be; what bounds the socket as a *resource* is `MAX_SYNC_MESSAGE`.
+
+**Mindmaps** (`src/store/mindmaps.rs`, `src/store/mindmapdoc.rs`, `docs/mindmaps.md`) are what
+comes *before* an initiative: a tree grown at conversation speed, six words a node, whose branches
+graduate into epics and initiatives. Two rules shape it and both are load-bearing. **Deleting one is
+ordinary** — an initiative is nurtured, a mindmap is scratch, and that is what makes it safe to start
+one early. **A node's TITLE caps at 280 chars**, which is the method rather than a limitation: the
+line you scan has to stay scannable. That cap was relocated rather than retired when `notes` was
+added — notes do not render in the outline, so detail has somewhere to go without the branch
+stopping being readable. Promotion never moves a node — it keeps a `promoted_kind`/`promoted_id`
+link, so a map that produced work becomes a picture of that work.
+
+**A project holds ONE map** (`MAX_MINDMAPS_PER_PROJECT`), enforced at creation so REST, MCP and the CLI all inherit it, and the refusal names the existing map because that is the one the caller wanted. The schema is deliberately unchanged — still keyed by project, still paged — so this is a cap to delete rather than a shape to migrate, and a project that already holds several keeps them.
+
+**A map is a CRDT, not rows** — one Yjs document per map over the same in-process `yrs` machinery
+`/documents` runs, because a brainstorm is a conversation and rows where the last writer wins throw
+one participant away silently. Three consequences. A node carries a **parent pointer**, so a move is
+one field write that merges (a nested tree would make it delete-plus-insert, which loses a subtree
+when two people drag at once) — the price is that two peers can each make a legal move that together
+form a **cycle**, so the tree is repaired deterministically ON READ, lowest id in the loop returning
+to the root, and an orphan returns to the root rather than vanishing. Sibling order is a
+**fractional index** (`src/fracdex.rs`, twinned with `web/src/lib/fracdex.ts` and bound by
+`tests/fixtures/fracdex-vectors.json` — the browser mints keys at typing speed and the API mints
+them in batches, so both implementations must agree byte for byte); the wire still reports
+`position` as a plain sibling rank, so the contract survived the storage change. And the caps hold
+on REST/MCP/CLI writes but not on individual keystrokes over the socket, which is the trust model
+`/documents` already ran. `mindmaps.nodes` is denormalised for exactly one reason: an honest count
+means replaying the document, affordable for one map and not for a list of two hundred.
+
+**The map and the document are ONE PLAN, rendered twice** (`spec/one-model-two-views.md`). A node
+IS a section: its title is the heading, its depth the heading level, tree order the reading order,
+and **its prose lives inside the node** as a nested `XmlFragment`. `/documents` binds an editor per
+section to that fragment — `Collaboration.configure({ document, fragment })`, which is the whole
+reason this shape works — so both views write one CRDT and cannot drift. There is no conversion and
+no document row behind plan content; `notes` on the wire is that prose as plain text, which is what
+a canvas card shows. The earlier map→documents conversion was deleted before it ever shipped.
+
+**Authorship names a PERSON, never a capability.** A node carries `created_by_user` (a `users.id`)
+beside the free-form `created_by`, and so does every trace entry — the rule `AuthCtx.user`,
+`cases.human_user` and `a_user_scope_string_cannot_forge_assignee_identity` already set, because a
+scope is free-form and a `user:…` scope would be a forgeable identity.
+
+**`plan_trace` is the plan's history** — authored, renamed, edited, moved, pruned, reviewed,
+proposed, accepted, rejected — in SQL rather than in the document because it references `users(id)`,
+because "everything Ada reviewed this week" is a query, and because it must survive compaction,
+which rewrites the update log by design. **Sparse**: an act somebody would name, never a keystroke.
+The server records what it PERFORMS, so a caller may report only the four it cannot observe
+(`edited`, `reviewed`, `accepted`, `rejected` — prose moves over the socket, agreement is somebody
+saying so, and a decision is the browser applying ops). Each act that changed prose keeps what it
+then said, which is what makes a diff possible; `GET /v1/mindmaps/{id}` returns `standing` per
+section — a READING, since a section confirmed before its last edit is not confirmed any more.
+
+**An agent proposes to a section; a person accepts** — the document rule, only re-aimed.
+`takomo_plan_read` returns a section annotated with block ids, `takomo_plan_propose` takes
+operations against them, `POST /v1/mindmaps/{id}/run` is the one route that calls a model and lands
+its answer as a proposal like any other.
+
+**Relationships** are the edge that is *not* the hierarchy — `{from, to, label}`, so a question
+hanging off what it questions and a screen navigating to another are one mechanism instead of three
+special cases. A dangling one is dropped on read, never repaired. **Attachments are pointers, never
+bytes**: a file in a CRDT log is replayed by every peer that joins, so one PDF makes the map slower
+to open for everybody forever. The whole map comes back in one read because a canvas cannot draw
+half a tree, affordable precisely because of the 500-node cap; `POST .../nodes` takes a **batch**
+because that is what an agent adding a branch sends. See `docs/mindmaps.md` and
+`spec/mindmap-crdt.md`.
 
 **Initiatives** (`src/store/initiatives.rs`) are the one thing here that is *not* work: an idea
 being nurtured — a product direction, the residue of a good conversation — fed by appending
@@ -334,8 +431,10 @@ SPA that writes (a browser cannot call an MCP tool). `takomo initiative new|appe
 third caller of those routes, minus pane writing — prose through shell flags is what the pane editor
 exists to avoid, so the CLI carries what a shell is better at instead (`--text-file`, `--attach`).
 Entries stay append-only on every surface.
-Entries are the only place in the store that holds binary blobs, which is why they are the only
-thing with byte caps — an unbounded upload would hold the write mutex every claim waits on.
+Entries hold binary blobs, which is why they carry byte caps — an unbounded upload would hold the
+write mutex every claim waits on. They are no longer the *only* such place: `crdt_updates` stores
+Yjs updates as blobs too, and for the same reason the sync socket caps a single message
+(`MAX_SYNC_MESSAGE`) rather than taking the library's 64 MiB default.
 
 **Event log + long polling:** `emit_event` writes inside the same transaction as its mutation, so
 the log cannot drift from state. `AppState::notify` is woken after every commit and long-pollers

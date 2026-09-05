@@ -30,7 +30,7 @@
 //!
 //! So the split is: **broadcast is memory, persistence is batched.** A room
 //! accumulates updates and flushes them as one merged blob on a timer or on the
-//! last peer leaving. [`Store::append_doc_update`] is the only write, and it is
+//! last peer leaving. [`Store::append_collab_update`] is the only write, and it is
 //! two statements.
 //!
 //! ## Compaction needs no second table
@@ -54,28 +54,6 @@ pub const MAX_DOCUMENTS_PER_PROJECT: i64 = 2_000;
 
 /// Default and maximum page size when listing documents.
 pub const MAX_DOCUMENTS_PAGE: i64 = 200;
-
-/// Cap on ONE flush, on the decoded bytes.
-///
-/// A flush is a merge of a few seconds of typing, which is kilobytes. A megabyte
-/// is far past any honest one and small enough that holding the write mutex for
-/// it is not felt. A paste of a large document arrives as several flushes.
-pub const MAX_DOC_UPDATE_BYTES: usize = 1024 * 1024;
-
-/// Cap on a document's whole update log, post-compaction.
-///
-/// 32 MiB of CRDT state is an enormous document — Yjs keeps deleted content as
-/// tombstones, so this is generous for the prose it represents. The cap exists
-/// because the log is replayed into memory on every room open, and an unbounded
-/// one would be an unbounded allocation triggered by a `GET`.
-pub const MAX_DOC_BYTES: i64 = 32 * 1024 * 1024;
-
-/// Compact once the log passes this many rows.
-///
-/// Chosen against replay cost rather than storage: rebuilding a room applies
-/// every row, so the number that matters is how long that takes on open. A few
-/// hundred small updates is milliseconds.
-pub const COMPACT_AFTER_UPDATES: i64 = 256;
 
 const MAX_DOC_TITLE: usize = 200;
 const MAX_DOC_PATH: usize = 400;
@@ -270,7 +248,7 @@ fn row_to_document(row: &Row) -> rusqlite::Result<Document> {
 ///
 /// Separate from `row_to_document` and deliberately not a correlated subquery in
 /// the main SELECT: a list of 200 documents would otherwise run 200 aggregate
-/// scans of `doc_updates`. Here it is one grouped scan for the whole page.
+/// scans of `crdt_updates`. Here it is one grouped scan for the whole page.
 fn attach_log_stats(conn: &Connection, docs: &mut [Document]) -> ApiResult<()> {
     if docs.is_empty() {
         return Ok(());
@@ -279,8 +257,8 @@ fn attach_log_stats(conn: &Connection, docs: &mut [Document]) -> ApiResult<()> {
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT document, COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b
-           FROM doc_updates WHERE document IN ({placeholders}) GROUP BY document"
+        "SELECT object_id, COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b
+           FROM crdt_updates WHERE object_id IN ({placeholders}) GROUP BY object_id"
     );
     let ids: Vec<&dyn rusqlite::ToSql> =
         docs.iter().map(|d| &d.id as &dyn rusqlite::ToSql).collect();
@@ -288,7 +266,7 @@ fn attach_log_stats(conn: &Connection, docs: &mut [Document]) -> ApiResult<()> {
     let mut rows = stmt.query(ids.as_slice())?;
     let mut stats: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
     while let Some(row) = rows.next()? {
-        stats.insert(row.get("document")?, (row.get("n")?, row.get("b")?));
+        stats.insert(row.get("object_id")?, (row.get("n")?, row.get("b")?));
     }
     for doc in docs.iter_mut() {
         if let Some((n, b)) = stats.get(&doc.id) {
@@ -562,167 +540,6 @@ impl Store {
             get_document_row(tx, id)
         })
     }
-
-    /// Refuse a write to a document that cannot take one.
-    ///
-    /// Two gates, and the second is the one worth naming: the project's archive
-    /// flag (which every other project-scoped mutation checks) **and** the
-    /// document's own. An archived document is reversible and still readable —
-    /// but accepting an agent's proposal into one would be work filed against
-    /// something somebody deliberately set aside, and it would only be noticed
-    /// when the document came back.
-    pub fn ensure_document_writable(&self, id: &str) -> ApiResult<()> {
-        self.with_conn(|conn| {
-            let doc = get_document_row(conn, id)?;
-            ensure_project_writable(conn, &doc.project)?;
-            if doc.archived_at.is_some() {
-                return Err(ApiError::conflict(
-                    "conflict.document_archived",
-                    format!("Document '{id}' is archived; it cannot be written to."),
-                )
-                .remedy(
-                    "Restore it with POST /v1/documents/{id}/unarchive if this work still \
-                     belongs to it."
-                        .to_string(),
-                ));
-            }
-            Ok(())
-        })
-    }
-
-    /// Every update blob for a document, in `seq` order.
-    ///
-    /// Replayed into a fresh Yjs doc when a room opens. Reads go through a READER
-    /// connection, so opening a large document cannot stall a claim.
-    pub fn load_doc_updates(&self, id: &str) -> ApiResult<Vec<Vec<u8>>> {
-        self.with_conn(|conn| {
-            // Prove the document exists first, so an unknown id is a 404 rather
-            // than an empty document a caller would happily start typing into.
-            get_document_row(conn, id)?;
-            let mut stmt =
-                conn.prepare("SELECT blob FROM doc_updates WHERE document = ?1 ORDER BY seq ASC")?;
-            let blobs = stmt
-                .query_map(params![id], |r| r.get::<_, Vec<u8>>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(blobs)
-        })
-    }
-
-    /// Append one flushed, merged update.
-    ///
-    /// The ONLY write on the hot path, and deliberately two statements: an
-    /// INSERT and a timestamp touch. It runs inside the same single-writer
-    /// transaction as every claim in the process, which is exactly why the caller
-    /// must have debounced — see this module's header.
-    ///
-    /// Returns the log's row count afterwards, so the caller can decide to
-    /// compact without a second query.
-    pub fn append_doc_update(&self, id: &str, blob: &[u8], actor: &str) -> ApiResult<i64> {
-        if blob.is_empty() {
-            return Err(ApiError::validation(
-                "validation.doc_update_empty",
-                "An update must carry bytes; an empty one records nothing.".to_string(),
-            )
-            .remedy("Skip the flush when there is nothing to persist.".to_string()));
-        }
-        if blob.len() > MAX_DOC_UPDATE_BYTES {
-            return Err(ApiError::validation(
-                "validation.doc_update_too_large",
-                format!(
-                    "This update is {} bytes; the maximum for one flush is \
-                     {MAX_DOC_UPDATE_BYTES}.",
-                    blob.len()
-                ),
-            )
-            .remedy(
-                "Flush more often. One update is meant to be a few seconds of typing, and \
-                 the whole write path in this process is serialized behind it."
-                    .to_string(),
-            ));
-        }
-        let now = now_ms();
-        let bytes = blob.len() as i64;
-
-        self.with_tx(|tx| {
-            let doc = get_document_row(tx, id)?;
-            ensure_project_writable(tx, &doc.project)?;
-
-            let held: i64 = tx.query_row(
-                "SELECT COALESCE(SUM(bytes), 0) FROM doc_updates WHERE document = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            if held + bytes > MAX_DOC_BYTES {
-                return Err(ApiError::validation(
-                    "validation.document_too_large",
-                    format!(
-                        "Document '{id}' holds {held} bytes of history and this update would \
-                         take it past the {MAX_DOC_BYTES}-byte maximum."
-                    ),
-                )
-                .remedy(
-                    "Split the document — the whole log is replayed into memory when the \
-                     document is opened, so the cap bounds that allocation."
-                        .to_string(),
-                ));
-            }
-
-            tx.execute(
-                "INSERT INTO doc_updates (document, blob, bytes, created_by, created_at)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![id, blob, bytes, actor, now],
-            )?;
-            tx.execute(
-                "UPDATE documents SET updated_at = ?2 WHERE id = ?1",
-                params![id, now],
-            )?;
-            // Deliberately NO event per flush. The event log is read by
-            // long-pollers and by `/v1/events`; a row per few seconds of typing
-            // per document would drown every other event in the project, and
-            // nothing downstream wants keystroke granularity. Collaborators learn
-            // about edits through the CRDT itself, which is faster and finer than
-            // an event could be.
-            let rows: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM doc_updates WHERE document = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            Ok(rows)
-        })
-    }
-
-    /// Replace a document's whole update log with one merged blob.
-    ///
-    /// The caller does the merging, because merging is a Yjs operation and this
-    /// module does not parse blobs. It passes the serialized state of the doc it
-    /// already holds in memory — which is, by construction, every update in the
-    /// log plus anything newer, so the delete-then-insert cannot lose an edit
-    /// that arrived mid-compaction.
-    pub fn compact_doc(&self, id: &str, state: &[u8], actor: &str) -> ApiResult<()> {
-        if state.is_empty() {
-            return Err(ApiError::validation(
-                "validation.doc_update_empty",
-                "A compaction must carry the document's serialized state.".to_string(),
-            )
-            .remedy("Skip compaction for an empty document.".to_string()));
-        }
-        let now = now_ms();
-        let bytes = state.len() as i64;
-
-        self.with_tx(|tx| {
-            let doc = get_document_row(tx, id)?;
-            ensure_project_writable(tx, &doc.project)?;
-            // One transaction, so a reader either sees the old log or the new
-            // single row — never an empty document between the two.
-            tx.execute("DELETE FROM doc_updates WHERE document = ?1", params![id])?;
-            tx.execute(
-                "INSERT INTO doc_updates (document, blob, bytes, created_by, created_at)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![id, state, bytes, actor, now],
-            )?;
-            Ok(())
-        })
-    }
 }
 
 /// Shallow key merge, the same shape `metadata_merge` has elsewhere: an explicit
@@ -744,132 +561,4 @@ fn merge_metadata(current: &Value, merge: &Value) -> Value {
     Value::Object(base)
 }
 
-/// A live sync session's resolved identity.
-///
-/// Returned by [`Store::lookup_doc_session_by_hash`] regardless of expiry or
-/// revocation — the same split the answer-grant path uses, so the caller can
-/// tell an unknown ticket from a dead one and say which.
-#[derive(Debug, Clone)]
-pub struct DocSession {
-    pub id: String,
-    pub document: String,
-    pub project: String,
-    pub actor: String,
-    pub user: Option<String>,
-    /// The name collaborators see next to a caret.
-    pub display: String,
-    pub can_write: bool,
-    pub expires_at: i64,
-    pub revoked_at: Option<i64>,
-}
-
-/// How long a sync ticket lives.
-///
-/// Long enough to cover a working session including the reconnects a flaky
-/// network produces — `y-websocket` retries with the URL it was given, so a
-/// ticket that died in ninety seconds would drop a writer mid-paragraph. Short
-/// enough that a ticket recovered from an access log is worth little by the time
-/// anyone reads it.
-pub const DOC_SESSION_TTL_SECONDS: i64 = 12 * 3600;
-
-impl Store {
-    /// Mint a sync ticket for one document.
-    ///
-    /// `can_write` is decided by the caller from the MINTING token's scopes, not
-    /// re-derived here: a `read`-only reader joins as a read-only peer, and the
-    /// ticket cannot grant more than the credential that asked for it.
-    pub fn create_doc_session(
-        &self,
-        document: &str,
-        actor: &str,
-        display: &str,
-        user: Option<&str>,
-        can_write: bool,
-        expires_at: i64,
-    ) -> ApiResult<(DocSession, String)> {
-        let plaintext = crate::ids::doc_session_token_plaintext();
-        let hash = crate::ids::token_hash(&plaintext);
-        let id = crate::ids::doc_session_id();
-        let now = now_ms();
-        let document = document.to_string();
-
-        let session = self.with_tx(|tx| {
-            let doc = get_document_row(tx, &document)?;
-            // Refused on an archived project for the reason an answer link is:
-            // a session that could only ever fail to save is worse than none,
-            // because the failure surfaces after the typing.
-            ensure_project_writable(tx, &doc.project)?;
-            tx.execute(
-                "INSERT INTO doc_sessions (id, token_hash, document, project, actor, \"user\",
-                    display, can_write, expires_at, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![
-                    id,
-                    hash,
-                    document,
-                    doc.project,
-                    actor,
-                    user,
-                    display,
-                    i64::from(can_write),
-                    expires_at,
-                    now
-                ],
-            )?;
-            Ok(DocSession {
-                id: id.clone(),
-                document: document.clone(),
-                project: doc.project,
-                actor: actor.to_string(),
-                user: user.map(str::to_string),
-                display: display.to_string(),
-                can_write,
-                expires_at,
-                revoked_at: None,
-            })
-        })?;
-        Ok((session, plaintext))
-    }
-
-    pub fn lookup_doc_session_by_hash(&self, hash: &str) -> ApiResult<Option<DocSession>> {
-        self.with_conn(|conn| {
-            let row = conn
-                .query_row(
-                    "SELECT id, document, project, actor, \"user\", display, can_write,
-                        expires_at, revoked_at FROM doc_sessions WHERE token_hash = ?1",
-                    params![hash],
-                    |r| {
-                        Ok(DocSession {
-                            id: r.get(0)?,
-                            document: r.get(1)?,
-                            project: r.get(2)?,
-                            actor: r.get(3)?,
-                            user: r.get(4)?,
-                            display: r.get(5)?,
-                            can_write: r.get::<_, i64>(6)? != 0,
-                            expires_at: r.get(7)?,
-                            revoked_at: r.get(8)?,
-                        })
-                    },
-                )
-                .optional()?;
-            Ok(row)
-        })
-    }
-
-    /// Drop sessions long past expiry. Called from the background sweeper.
-    ///
-    /// Deliberately keeps them for a grace period past `expires_at` rather than
-    /// deleting on the tick they die: a client reconnecting with a just-expired
-    /// ticket should be told it expired, which needs the row to still be there.
-    pub fn sweep_expired_doc_sessions(&self) -> ApiResult<usize> {
-        let cutoff = now_ms() - 24 * 3600 * 1000;
-        self.with_tx(|tx| {
-            let n = tx.execute(
-                "DELETE FROM doc_sessions WHERE expires_at < ?1",
-                params![cutoff],
-            )?;
-            Ok(n)
-        })
-    }
-}
+impl Store {}

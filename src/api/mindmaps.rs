@@ -9,17 +9,25 @@
 //! brainstorming with them sends, and that is the shape the surface is built
 //! around rather than a special case bolted on.
 //!
+//! The nodes are not rows. Each map is one Yjs document (`store::mindmapdoc`),
+//! so a person dragging a node, a second person typing into another, and an
+//! agent adding a whole branch are all writing to ONE replica — and each of them
+//! sees the others without reloading. Every write below therefore goes through
+//! `open_room` + `mutate`, exactly as `/documents` does, rather than through SQL.
+//!
 //! See `src/store/mindmaps.rs` for what a mindmap deliberately is not.
 
 use super::{
     body_object, first, get_f64, get_i64, get_str, paged, parse_i64_param, query_pairs,
     reject_unknown, require_str, ApiJson,
 };
+use crate::api::docsync::open_room;
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::server::AppState;
+use crate::store::mindmapdoc::{self, NodeAdd, NodePatch};
 use crate::store::{
-    MindmapCreate, MindmapListFilter, MindmapPatch, NodeAdd, NodePatch, MAX_MINDMAPS_PAGE,
+    BranchPromotion, MindmapCreate, MindmapListFilter, MindmapPatch, MAX_MINDMAPS_PAGE,
 };
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -27,11 +35,34 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use yrs::Transact;
 
 const CREATE_FIELDS: [&str; 4] = ["project", "title", "summary", "metadata"];
 const PATCH_FIELDS: [&str; 4] = ["title", "summary", "status", "metadata_merge"];
-const NODE_FIELDS: [&str; 3] = ["parent", "text", "position"];
-const NODE_PATCH_FIELDS: [&str; 4] = ["text", "parent", "position", "at"];
+const NODE_FIELDS: [&str; 7] = [
+    "parent",
+    "text",
+    "title",
+    "notes",
+    "position",
+    "kind",
+    "edge_label",
+];
+const NODE_PATCH_FIELDS: [&str; 11] = [
+    "text",
+    "title",
+    "notes",
+    "parent",
+    "position",
+    "at",
+    "kind",
+    "edge_label",
+    "color",
+    "shape",
+    "icons",
+];
+const RELATIONSHIP_FIELDS: [&str; 3] = ["from", "to", "label"];
+const ATTACHMENT_FIELDS: [&str; 4] = ["kind", "name", "gist", "ref"];
 
 const DEFAULT_LIMIT: i64 = 50;
 
@@ -98,48 +129,6 @@ pub async fn create(
     ))
 }
 
-/// GET /v1/mindmaps/{id} (read) — the map and every node on it, in one request.
-pub async fn get_one(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<AuthCtx>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Value>> {
-    ctx.require_scope("read")?;
-    let (map, nodes) = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
-    Ok(Json(json!({
-        "mindmap": map.to_json(),
-        "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
-        // The whole tree is here by construction — a map is capped well below any
-        // page size — so this listing carries no cursor and needs none.
-        "total": nodes.len(),
-    })))
-}
-
-/// GET /v1/mindmaps/{id}/outline (read) — the tree as indented text.
-///
-/// Its own route because it is the shape a *model* reads and writes cheapest, and
-/// the one a person pastes into a document. `?node=` narrows it to one branch.
-pub async fn outline(
-    State(state): State<Arc<AppState>>,
-    Extension(ctx): Extension<AuthCtx>,
-    Path(id): Path<String>,
-    RawQuery(raw): RawQuery,
-) -> ApiResult<Json<Value>> {
-    ctx.require_scope("read")?;
-    let (map, _) = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
-    let pairs = query_pairs(raw.as_deref());
-    let text = state.store.mindmap_outline(&id, first(&pairs, "node"))?;
-    Ok(Json(json!({ "mindmap": id, "outline": text })))
-}
-
 /// PATCH /v1/mindmaps/{id} (write) — title, summary, status, metadata.
 pub async fn patch(
     State(state): State<Arc<AppState>>,
@@ -150,7 +139,7 @@ pub async fn patch(
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &PATCH_FIELDS)?;
-    let (existing, _) = state
+    let existing = state
         .store
         .get_mindmap(&id)?
         .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
@@ -178,21 +167,268 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let (existing, _) = state
+    let existing = state
         .store
         .get_mindmap(&id)?
         .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
     ctx.require_project(&existing.project)?;
     let nodes = state.store.delete_mindmap(&id, &ctx.actor)?;
+    // A socket held open on something that no longer exists must not go on
+    // writing into it; `resync_frozen` reads "I cannot resolve this" as
+    // "do not write".
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(json!({ "ok": true, "removed_nodes": nodes })))
 }
 
-/// POST /v1/mindmaps/{id}/nodes (write) — add thoughts, one or many.
+/// What a section says right now, for the acts that changed it.
 ///
-/// Accepts `{"nodes":[…]}` for a batch and a bare `{"text":…}` for one, because
-/// the one-node case is what a person's keystroke sends and making them wrap it in
-/// an array is friction on the fastest path in the whole feature.
+/// Read from the replica rather than taken from the caller: a history somebody
+/// can write is not a history. `None` for an act that did not touch the prose,
+/// which is most of them.
+fn section_text(room: &crate::api::docsync::RoomGuard, node: &str) -> Option<String> {
+    room.read(|doc| {
+        // The NON-creating read, and that matters more here than it looks. A
+        // mutation made inside `room.read` never reaches `room.mutate`, so it is
+        // not queued for the flush and not broadcast: the server's replica would
+        // quietly hold a fragment no peer knows about and nothing persists.
+        // Reading what a section says must not be able to do that, and a section
+        // with no fragment has no prose to record.
+        mindmapdoc::read_section_prose(doc, node).map(|frag| {
+            let txn = doc.transact();
+            crate::store::prose::plain_text(&txn, &frag)
+        })
+    })
+}
+
+/// Write the replica's pending edits to the log before answering.
+///
+/// **An API call that returns 201 has to have happened.** The debounced flusher
+/// exists for somebody typing in a browser, where two seconds of batching is the
+/// difference between a smooth canvas and every keystroke queued behind the
+/// process-wide write mutex. A request is not typing: it makes one change and
+/// then says it did.
+///
+/// Without this the room can be torn down — the last peer leaves when this
+/// handler's guard drops — while its edits are still only in memory, and the
+/// next request rebuilds the replica from a log that never received them. The
+/// change is not lost for long, but it is missing from the read that follows,
+/// which is the shape of bug that looks like a flaky test until somebody loses
+/// a node.
+async fn persist(state: &Arc<AppState>, room: &crate::api::docsync::RoomGuard, ctx: &AuthCtx) {
+    crate::api::docsync::flush(state, room, &ctx.actor).await;
+}
+
+/// Fetch the map for its project check, then join its live document.
+///
+/// The row is read first and the room second, so an unknown map or a project the
+/// caller cannot reach is a 404 or a 403 rather than an empty canvas.
+async fn join(
+    state: &Arc<AppState>,
+    ctx: &AuthCtx,
+    id: &str,
+) -> ApiResult<(crate::store::Mindmap, crate::api::docsync::RoomGuard)> {
+    let map = state
+        .store
+        .get_mindmap(id)?
+        .ok_or_else(|| ApiError::not_found("mindmap", id))?;
+    ctx.require_project(&map.project)?;
+    let room = open_room(state, id).await?;
+    // A map written before sections had prose is moved into it here, once, on
+    // the first open. Cheap, idempotent, and it broadcasts only if it changed
+    // something.
+    //
+    // Only for a caller that may WRITE. This is a mutation — it creates a
+    // fragment per node and drops the legacy field — so running it for a `read`
+    // token meant a read changed the shared document, broadcast that change to
+    // every open canvas, and persisted it. Measured: a read-only GET added a row
+    // to `crdt_updates`. A reader loses nothing by skipping it, because the read
+    // paths fall back to the legacy field.
+    if ctx.require_scope("write").is_ok() {
+        room.mutate(|doc| Ok(mindmapdoc::ensure_prose(doc)))?;
+    }
+    Ok((map, room))
+}
+
+/// GET /v1/mindmaps/{id} (read) — the map and everything on it.
+///
+/// One request, because a canvas cannot draw half a tree — affordable precisely
+/// because a map is capped, which is a better contract than paging a shape.
+///
+/// Read from the LIVE replica, not from the log, so what comes back includes the
+/// edits somebody is making right now.
+pub async fn get_one(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (mut map, room) = join(&state, &ctx, &id).await?;
+    let (nodes, relationships, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
+    // Counted from the live replica, so this response is always exact. It is
+    // NOT written back to the row: this is a `read`-scope route, and taking the
+    // process-wide write mutex — the one that makes the ready queue's
+    // exactly-one-claimant guarantee work — to refresh a cached number would be
+    // a write nobody asked for. The flusher keeps the row current instead.
+    map.nodes = nodes.len() as i64;
+    let total = nodes.len();
+    // Where each section stands, in one grouped query rather than one per node,
+    // because a map is drawn all at once. It is a reading and not a stored flag:
+    // a section confirmed BEFORE its last edit is not confirmed any more.
+    let standing = state.store.plan_standing(&id)?;
+    Ok(Json(json!({
+        "mindmap": map.to_json(),
+        "nodes": nodes,
+        "relationships": relationships,
+        "standing": standing,
+        "total": total,
+    })))
+}
+
+/// Every section of a project's plan, flat, id and title and where it sits.
+///
+/// A project holds at most one plan, which is what makes a bare node id
+/// resolvable at all — and this is the read that resolves it. `/verification`
+/// needs it twice: to say which section a check verifies rather than printing an
+/// opaque id, and to offer the list when somebody files a check against one.
+///
+/// Bounded by the map's own 500-node cap, so it is one call rather than a page.
+pub async fn project_node_index(
+    state: &Arc<AppState>,
+    project: &str,
+) -> ApiResult<Vec<(String, crate::store::mindmapdoc::DocNode)>> {
+    let (maps, _) = state
+        .store
+        .list_mindmaps(&crate::store::MindmapListFilter {
+            project: Some(project.to_string()),
+            allowed_projects: None,
+            status: None,
+            q: None,
+            limit: 50,
+            offset: 0,
+        })?;
+    let mut out = Vec::new();
+    for map in &maps {
+        let room = crate::api::docsync::open_room(state, &map.id).await?;
+        // The third element is the typed node list; the first two are the JSON
+        // the read routes serve.
+        let nodes = room.read(|doc| mindmapdoc::snapshot(doc, &map.id).2);
+        for node in nodes {
+            out.push((map.id.clone(), node));
+        }
+    }
+    Ok(out)
+}
+
+/// GET /v1/projects/{project}/nodes (read) — the plan's sections, flat.
+pub async fn project_nodes(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    let index = project_node_index(&state, &project).await?;
+    let total = index.len() as i64;
+    let items: Vec<Value> = index
+        .into_iter()
+        .map(|(map, n)| {
+            json!({
+                "id": n.id,
+                "mindmap": map,
+                "title": n.title,
+                "parent": n.parent,
+            })
+        })
+        .collect();
+    Ok(Json(crate::api::paged(
+        items,
+        total,
+        total,
+        "A plan caps at 500 sections, so this is never a page.",
+    )))
+}
+
+/// GET /v1/mindmaps/{id}/outline?node= (read) — the map as indented text.
+///
+/// The cheapest shape for a model to reason about, and the one to read before
+/// adding to a map you did not build.
+pub async fn outline(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (map, room) = join(&state, &ctx, &id).await?;
+    let pairs = query_pairs(raw.as_deref());
+    let node = first(&pairs, "node").map(str::to_string);
+    let text = room.read(|doc| {
+        let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
+        match node.as_deref() {
+            // An unknown node reads as empty rather than 404. It has always
+            // behaved this way, and a reader asking for a branch that has just
+            // been pruned wants "nothing there", not an error.
+            Some(node) => mindmapdoc::outline(&nodes, node),
+            None => mindmapdoc::full_outline(&nodes, &map.title),
+        }
+    });
+    Ok(Json(json!({ "mindmap": id, "outline": text })))
+}
+
+/// Read one node's JSON back out of the document after a write.
+fn node_json(room: &crate::api::docsync::RoomGuard, map_id: &str, node_id: &str) -> Option<Value> {
+    let (nodes, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, map_id));
+    nodes
+        .into_iter()
+        .find(|n| n["id"].as_str() == Some(node_id))
+}
+
+/// Who is writing, as far as the credential is concerned.
+///
+/// **Derived, never accepted from the body.** `origin` exists so a map can
+/// eventually show which thoughts a person actually had, and a field a caller
+/// can simply claim would say nothing. The `human` scope is what a person's
+/// token carries; everything else is something automated, which is the same
+/// distinction `case_verdicts.actor_kind` already draws.
+fn origin_of(ctx: &AuthCtx) -> String {
+    if ctx.require_scope("human").is_ok() {
+        "human".to_string()
+    } else {
+        "agent".to_string()
+    }
+}
+
+fn parse_node_add(
+    obj: &serde_json::Map<String, Value>,
+    origin: &str,
+    by_user: Option<&str>,
+) -> ApiResult<NodeAdd> {
+    reject_unknown(obj, &NODE_FIELDS)?;
+    // `title` is the field's name now; `text` is what every existing caller
+    // sends. Both are accepted and mean the same thing — renaming a field is not
+    // a good enough reason to break somebody's script.
+    let title = match get_str(obj, "title")? {
+        Some(title) => title,
+        None => require_str(obj, "text")?,
+    };
+    Ok(NodeAdd {
+        parent: get_str(obj, "parent")?,
+        by_user: by_user.map(str::to_string),
+        title,
+        notes: get_str(obj, "notes")?,
+        position: get_i64(obj, "position")?.map(|p| p.max(0) as usize),
+        kind: get_str(obj, "kind")?,
+        origin: Some(origin.to_string()),
+        edge_label: get_str(obj, "edge_label")?,
+    })
+}
+
+/// POST /v1/mindmaps/{id}/nodes (write) — add a batch.
+///
+/// A batch, because that is what an agent adding a branch sends while somebody
+/// is still talking. It lands whole or not at all: half a branch would leave a
+/// map nobody asked for and no way to tell which half.
 pub async fn add_nodes(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -201,32 +437,22 @@ pub async fn add_nodes(
 ) -> ApiResult<impl IntoResponse> {
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
-    let (map, _) = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
+    let origin = origin_of(&ctx);
 
     let adds: Vec<NodeAdd> = match obj.get("nodes") {
         Some(Value::Array(items)) => {
             reject_unknown(obj, &["nodes"])?;
-            items
-                .iter()
-                .map(|item| {
-                    let node = item.as_object().ok_or_else(|| {
-                        ApiError::validation(
-                            "validation.mindmap_nodes",
-                            "Every entry in 'nodes' must be an object like {\"text\":\"…\",\"parent\":\"mn-…\"}.",
-                        )
-                    })?;
-                    reject_unknown(node, &NODE_FIELDS)?;
-                    Ok(NodeAdd {
-                        parent: get_str(node, "parent")?,
-                        text: require_str(node, "text")?,
-                        position: get_i64(node, "position")?,
-                    })
-                })
-                .collect::<ApiResult<Vec<_>>>()?
+            let mut adds = Vec::with_capacity(items.len());
+            for item in items {
+                let entry = item.as_object().ok_or_else(|| {
+                    ApiError::validation(
+                        "validation.mindmap_nodes",
+                        "Every entry in 'nodes' must be an object like {\"text\":\"…\",\"parent\":\"mn-…\"}.",
+                    )
+                })?;
+                adds.push(parse_node_add(entry, &origin, ctx.user.as_deref())?);
+            }
+            adds
         }
         Some(_) => {
             return Err(ApiError::validation(
@@ -234,30 +460,56 @@ pub async fn add_nodes(
                 "Field 'nodes' must be an array of {text, parent?, position?} objects.",
             ))
         }
-        None => {
-            reject_unknown(obj, &NODE_FIELDS)?;
-            vec![NodeAdd {
-                parent: get_str(obj, "parent")?,
-                text: require_str(obj, "text")?,
-                position: get_i64(obj, "position")?,
-            }]
-        }
+        None => vec![parse_node_add(obj, &origin, ctx.user.as_deref())?],
     };
 
-    let nodes = state.store.grow_mindmap(&id, &adds, &ctx.actor)?;
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let actor = ctx.actor.clone();
+    let created = room.mutate(|doc| mindmapdoc::add_nodes(doc, &adds, &actor))?;
+    persist(&state, &room, &ctx).await;
+
+    let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
+    let nodes: Vec<Value> = created
+        .iter()
+        .filter_map(|(node_id, _)| {
+            all.iter()
+                .find(|n| n["id"].as_str() == Some(node_id.as_str()))
+                .cloned()
+        })
+        .collect();
+
+    state.store.note_mindmap_size(&id, all.len() as i64)?;
+    // One trace entry PER node, unlike the event log's one per batch: the event
+    // log answers "what is happening in this project", where ten nodes from one
+    // agent turn are one act; the trace answers "what happened to this section",
+    // and a section was either written or it was not.
+    for (node_id, _) in &created {
+        state.store.record_trace(&crate::store::trace::Record {
+            project: &map.project,
+            mindmap: &id,
+            node: Some(node_id),
+            kind: "authored",
+            actor: &ctx.actor,
+            user: ctx.user.as_deref(),
+            note: None,
+            text: section_text(&room, node_id).as_deref(),
+        })?;
+    }
+    // One event for the batch, not one per node: ten nodes from an agent turn
+    // are one act of brainstorming.
+    state.store.note_mindmap_event(
+        &id,
+        crate::store::MindmapChange::Grown,
+        json!({ "mindmap": id, "nodes": nodes.len() }),
+        &ctx.actor,
+    )?;
     state.wake();
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>() })),
-    ))
+    Ok((StatusCode::CREATED, Json(json!({ "nodes": nodes }))))
 }
 
-/// PATCH /v1/mindmaps/{id}/nodes/{node} (write) — retype it, move it, place it.
-///
-/// `parent: null` lifts a node to the first ring and `at: null` returns it to the
-/// layout; absent leaves either alone. Absent and null differ here for the same
-/// reason they do on a checklist policy — one means "not my business", the other
-/// is an instruction.
+/// PATCH /v1/mindmaps/{id}/nodes/{node} (write).
 pub async fn patch_node(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -267,11 +519,6 @@ pub async fn patch_node(
     ctx.require_scope("write")?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &NODE_PATCH_FIELDS)?;
-    let (map, _) = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
 
     let parent = match obj.get("parent") {
         None => None,
@@ -284,6 +531,7 @@ pub async fn patch_node(
             ))
         }
     };
+
     let at = match obj.get("at") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -292,8 +540,6 @@ pub async fn patch_node(
             let y = get_f64(point, "y")?;
             match (x, y) {
                 (Some(x), Some(y)) => Some(Some((x, y))),
-                // Half a coordinate places nothing, so it is refused rather than
-                // guessed at from the node's current position.
                 _ => {
                     return Err(ApiError::validation(
                         "validation.mindmap_at",
@@ -310,42 +556,124 @@ pub async fn patch_node(
         }
     };
 
-    let patch = NodePatch {
-        text: get_str(obj, "text")?,
-        parent,
-        position: get_i64(obj, "position")?,
-        at,
+    let icons = match obj.get("icons") {
+        None => None,
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_string))
+                .collect::<Vec<String>>(),
+        ),
+        Some(_) => {
+            return Err(ApiError::validation(
+                "validation.mindmap_icons",
+                "Field 'icons' must be an array of strings.",
+            ))
+        }
     };
-    let node = state
-        .store
-        .patch_mindmap_node(&id, &node, &patch, &ctx.actor)?;
+
+    let patch = NodePatch {
+        title: match get_str(obj, "title")? {
+            Some(title) => Some(title),
+            None => get_str(obj, "text")?,
+        },
+        notes: get_str(obj, "notes")?,
+        parent,
+        position: get_i64(obj, "position")?.map(|p| p.max(0) as usize),
+        at,
+        kind: get_str(obj, "kind")?,
+        edge_label: get_str(obj, "edge_label")?,
+        color: get_str(obj, "color")?,
+        shape: get_str(obj, "shape")?,
+        icons,
+        reviewed: obj.get("reviewed").and_then(Value::as_bool),
+    };
+
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let moved = patch.parent.is_some();
+    let renamed = patch.title.is_some();
+    let edited = patch.notes.is_some();
+    let actor = ctx.actor.clone();
+    room.mutate(|doc| mindmapdoc::patch_node(doc, &node, &patch, &actor))?;
+    persist(&state, &room, &ctx).await;
+
+    for (happened, kind) in [(renamed, "renamed"), (edited, "edited"), (moved, "moved")] {
+        if happened {
+            state.store.record_trace(&crate::store::trace::Record {
+                project: &map.project,
+                mindmap: &id,
+                node: Some(&node),
+                kind,
+                actor: &ctx.actor,
+                user: ctx.user.as_deref(),
+                note: None,
+                // Only the acts that changed the prose carry what it now says.
+                text: (kind != "moved")
+                    .then(|| section_text(&room, &node))
+                    .flatten()
+                    .as_deref(),
+            })?;
+        }
+    }
+
+    if moved {
+        // A reparent is the only node edit that reaches the event log. Text and
+        // placement change constantly while somebody is thinking.
+        state.store.note_mindmap_event(
+            &id,
+            crate::store::MindmapChange::Moved,
+            json!({ "mindmap": id, "node": node }),
+            &ctx.actor,
+        )?;
+    }
     state.wake();
-    Ok(Json(json!({ "node": node.to_json() })))
+    let json =
+        node_json(&room, &id, &node).ok_or_else(|| ApiError::not_found("mindmap_node", &node))?;
+    Ok(Json(json!({ "node": json })))
 }
 
-/// DELETE /v1/mindmaps/{id}/nodes/{node} (write) — the node and its subtree.
+/// DELETE /v1/mindmaps/{id}/nodes/{node} (write) — prune a branch.
 pub async fn delete_node(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path((id, node)): Path<(String, String)>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("write")?;
-    let (map, _) = state
-        .store
-        .get_mindmap(&id)?
-        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
-    ctx.require_project(&map.project)?;
-    let removed = state.store.delete_mindmap_node(&id, &node, &ctx.actor)?;
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let removed = room.mutate(|doc| mindmapdoc::delete_node(doc, &node))?;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "pruned",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: None,
+        text: None,
+    })?;
+    persist(&state, &room, &ctx).await;
+    let (all, _, _) = room.read(|doc| mindmapdoc::snapshot(doc, &id));
+    state.store.note_mindmap_size(&id, all.len() as i64)?;
+    state.store.note_mindmap_event(
+        &id,
+        crate::store::MindmapChange::Pruned,
+        json!({ "mindmap": id, "node": node, "removed": removed }),
+        &ctx.actor,
+    )?;
     state.wake();
     Ok(Json(json!({ "ok": true, "removed": removed })))
 }
 
 /// POST /v1/mindmaps/{id}/nodes/{node}/promote (write) — graduate a branch.
 ///
-/// `{"target":"epic"}` makes an epic with its direct children as tickets;
-/// `{"target":"initiative"}` makes an initiative seeded with the subtree. The node
-/// stays either way and keeps a link to what it became — which is what lets a map
-/// go on being useful once the brainstorming is over.
+/// The node STAYS and keeps a link to what it became. Promotion is not a move:
+/// the map is the record of how the thinking got there, and a branch that
+/// vanished the moment it mattered would make the map worthless as the thing you
+/// read afterwards.
 pub async fn promote(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -356,17 +684,616 @@ pub async fn promote(
     let obj = body_object(&body)?;
     reject_unknown(obj, &["target"])?;
     let target = require_str(obj, "target")?;
-    let (map, _) = state
+    // Before anything is read: a caller who named a target that does not exist
+    // got the verb wrong, and telling them the branch is already promoted would
+    // send them to fix the wrong thing.
+    crate::store::validate_promotion_target(&target)?;
+
+    let (_, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let store = state.clone();
+    let actor = ctx.actor.clone();
+    let node_id = node.clone();
+    let map_id = id.clone();
+
+    // All of it inside ONE mutation, and in this order: read the branch, make
+    // the work, then write the link. A link written first would point at nothing
+    // if the work behind it failed, and no link at all would let the same
+    // thought become a second, indistinguishable epic on the next attempt.
+    let created = room.mutate(move |doc| {
+        let (_, _, nodes) = mindmapdoc::snapshot(doc, &map_id);
+        let ordered = mindmapdoc::tree_order(&nodes);
+        let branch = ordered
+            .iter()
+            .find(|n| n.id == node_id)
+            .ok_or_else(|| ApiError::not_found("mindmap_node", &node_id))?;
+
+        if let (Some(kind), Some(existing)) = (&branch.promoted_kind, &branch.promoted_id) {
+            return Err(ApiError::conflict(
+                "mindmap.already_promoted",
+                format!(
+                    "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same thought, indistinguishable from the first."
+                ),
+            ));
+        }
+
+        let title = branch.title.clone();
+        let branch_outline = mindmapdoc::outline(&nodes, &node_id);
+        let children: Vec<(String, String)> = ordered
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(node_id.as_str()))
+            .map(|child| (child.title.clone(), mindmapdoc::outline(&nodes, &child.id)))
+            .collect();
+
+        let created = store.store.promote_branch(
+            &BranchPromotion {
+                map_id: &map_id,
+                node_id: &node_id,
+                target: &target,
+                title: &title,
+                branch_outline: &branch_outline,
+                children: &children,
+            },
+            &actor,
+        )?;
+
+        let kind = created["kind"].as_str().unwrap_or_default();
+        let created_id = created["id"].as_str().unwrap_or_default();
+        mindmapdoc::set_promoted(doc, &node_id, kind, created_id)?;
+        Ok(created)
+    })?;
+
+    state.wake();
+    // The epic is in SQL and committed; the back-link saying which branch became
+    // it is in the CRDT. Losing the second leaves a map that has forgotten what
+    // it produced while the epic still exists — and the "promoting it again
+    // would make a second one" refusal above reads that back-link, so the next
+    // caller would get the duplicate this route exists to prevent.
+    persist(&state, &room, &ctx).await;
+    let json =
+        node_json(&room, &id, &node).ok_or_else(|| ApiError::not_found("mindmap_node", &node))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "node": json, "created": created })),
+    ))
+}
+
+/// POST /v1/mindmaps/{id}/relationships (write) — link two nodes.
+///
+/// An edge that is NOT part of the hierarchy. The tree answers "what is this
+/// part of"; this answers everything else — a question hanging off the thing it
+/// questions, a screen that navigates to another, a plain "see also".
+pub async fn add_relationship(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &RELATIONSHIP_FIELDS)?;
+    let from = require_str(obj, "from")?;
+    let to = require_str(obj, "to")?;
+    let label = get_str(obj, "label")?.unwrap_or_default();
+
+    let (_, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let created = room.mutate(|doc| mindmapdoc::add_relationship(doc, &from, &to, &label))?;
+    persist(&state, &room, &ctx).await;
+    state.wake();
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "relationship": {
+                "id": created.id,
+                "from": created.from,
+                "to": created.to,
+                "label": created.label,
+            }
+        })),
+    ))
+}
+
+/// DELETE /v1/mindmaps/{id}/relationships/{relationship} (write).
+pub async fn delete_relationship(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, relationship)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+    room.mutate(|doc| mindmapdoc::delete_relationship(doc, &relationship))?;
+    persist(&state, &room, &ctx).await;
+    state.wake();
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /v1/mindmaps/{id}/nodes/{node}/attachments (write) — point at something.
+///
+/// A POINTER, never the bytes. Files in a CRDT log are replayed by every peer
+/// that joins, so a map with a PDF inside it would get slower to open for
+/// everybody, forever.
+pub async fn add_attachment(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, node)): Path<(String, String)>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &ATTACHMENT_FIELDS)?;
+    let kind = require_str(obj, "kind")?;
+    let name = require_str(obj, "name")?;
+    let gist = get_str(obj, "gist")?.unwrap_or_default();
+    let reference = get_str(obj, "ref")?.unwrap_or_default();
+
+    let (_, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let created =
+        room.mutate(|doc| mindmapdoc::add_attachment(doc, &node, &kind, &name, &gist, &reference))?;
+    state.wake();
+    persist(&state, &room, &ctx).await;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "attachment": {
+                "id": created.id,
+                "kind": created.kind,
+                "name": created.name,
+                "gist": created.gist,
+                "ref": created.reference,
+            }
+        })),
+    ))
+}
+
+/// DELETE /v1/mindmaps/{id}/nodes/{node}/attachments/{attachment} (write).
+pub async fn delete_attachment(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((id, node, attachment)): Path<(String, String, String)>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+    room.mutate(|doc| mindmapdoc::delete_attachment(doc, &node, &attachment))?;
+    persist(&state, &room, &ctx).await;
+    state.wake();
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// GET /v1/mindmaps/{id}/trace?node=&limit= (read) — the plan's history.
+///
+/// What happened to the plan, newest first, or to one section of it. This is
+/// NOT the CRDT update log: that is the mechanism that rebuilds the text, is
+/// written per flush, and is rewritten by compaction. This is the record of
+/// acts somebody would name, each carrying the person behind the credential.
+pub async fn trace(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let map = state
         .store
         .get_mindmap(&id)?
         .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
     ctx.require_project(&map.project)?;
-    let (node, created) = state
-        .store
-        .promote_mindmap_node(&id, &node, &target, &ctx.actor)?;
+
+    let pairs = query_pairs(raw.as_deref());
+    let limit = parse_i64_param(&pairs, "limit")?
+        .unwrap_or(crate::store::MAX_TRACE_PAGE)
+        .clamp(1, crate::store::MAX_TRACE_PAGE);
+    let node = first(&pairs, "node");
+    let (entries, total) = state.store.plan_trace(&id, node, limit)?;
+
+    Ok(Json(paged(
+        entries.iter().map(|e| e.to_json()).collect(),
+        total,
+        limit,
+        "Raise 'limit' (max 500) or narrow with 'node'; the newest act is first.",
+    )))
+}
+
+/// POST /v1/mindmaps/{id}/trace (write) — record an act the server cannot see.
+///
+/// Prose is edited over the sync socket, which never reaches the server as a
+/// request, and a review is somebody saying so. Those two are the only kinds a
+/// caller may write: everything else is recorded by the path that performs it,
+/// so nobody can claim to have moved a node they did not move.
+pub async fn add_trace(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["node", "kind", "note"])?;
+    let kind = require_str(obj, "kind")?;
+    if !crate::store::CLIENT_TRACE_KINDS.contains(&kind.as_str()) {
+        return Err(ApiError::validation(
+            "validation.trace_kind",
+            format!(
+                "'{kind}' is not a kind a caller may record. Use one of: {}. The rest are written by the paths that perform them, so nobody can claim to have done something they did not.",
+                crate::store::CLIENT_TRACE_KINDS.join(", ")
+            ),
+        ));
+    }
+    let node = get_str(obj, "node")?;
+    let note = get_str(obj, "note")?;
+
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    // Read what the section says from the REPLICA, not from the caller: an
+    // `edited` entry is only worth having if the text on it is the text that is
+    // actually there, and a history somebody can write is not a history.
+    let text = match (&node, kind.as_str()) {
+        (Some(node), "edited" | "accepted") => section_text(&room, node),
+        _ => None,
+    };
+
+    // A review recorded here also sets the node's own flag, because the two
+    // views must not hold different answers to the same question.
+    //
+    // They did. The canvas draws its trust lens from the CRDT `reviewed`
+    // boolean; the plan reads `plan_standing`, built from this table. Nothing
+    // wrote both, so confirming a section in `/documents` left the map still
+    // drawing it unverified — measured, on a running server: standing said
+    // `confirmed: true` while the node said `reviewed: false`. That is the one
+    // property this whole branch exists to establish, so it is fixed at the
+    // point both surfaces already go through rather than in one of them.
+    if kind == "reviewed" {
+        if let Some(node) = node.as_deref() {
+            let target = node.to_string();
+            let actor = ctx.actor.clone();
+            room.mutate(|doc| {
+                mindmapdoc::patch_node(
+                    doc,
+                    &target,
+                    &mindmapdoc::NodePatch {
+                        reviewed: Some(true),
+                        ..Default::default()
+                    },
+                    &actor,
+                )
+            })?;
+            persist(&state, &room, &ctx).await;
+        }
+    }
+
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: node.as_deref(),
+        kind: &kind,
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: note.as_deref(),
+        text: text.as_deref(),
+    })?;
     state.wake();
+    Ok((StatusCode::CREATED, Json(json!({ "ok": true }))))
+}
+
+/// GET /v1/mindmaps/{id}/prose?node= (read) — the plan as an agent reads it.
+///
+/// Annotated with block ids, because that is what makes a reply addressable: an
+/// agent answers with operations against block ids, never with a document. One
+/// section with `node`, or the whole plan — headings from the tree, each
+/// section's blocks beneath its own.
+pub async fn prose(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    let pairs = query_pairs(raw.as_deref());
+    let node = first(&pairs, "node").map(str::to_string);
+
+    let markdown = room.read(|doc| {
+        let (_, _, nodes) = mindmapdoc::snapshot(doc, &id);
+        match node.as_deref() {
+            Some(node) => ApiResult::Ok(match mindmapdoc::read_section_prose(doc, node) {
+                Some(frag) => {
+                    let txn = doc.transact();
+                    let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                    crate::api::docprops::annotate(&blocks)
+                }
+                // No fragment yet: the honest answer is that this section has no
+                // prose, not a fragment conjured by the act of asking.
+                None => String::new(),
+            }),
+            None => {
+                let ordered = mindmapdoc::tree_order(&nodes);
+                let mut out = String::new();
+                for section in ordered {
+                    let level = mindmapdoc::depth_of(&nodes, &section.id).min(6);
+                    out.push_str(&format!("{} {}\n\n", "#".repeat(level), section.title));
+                    if let Some(frag) = mindmapdoc::read_section_prose(doc, &section.id) {
+                        let txn = doc.transact();
+                        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                        let body = crate::api::docprops::annotate(&blocks);
+                        if !body.trim().is_empty() {
+                            out.push_str(&body);
+                            out.push_str("\n\n");
+                        }
+                    }
+                }
+                Ok(out.trim_end().to_string())
+            }
+        }
+    })?;
+
+    Ok(Json(
+        json!({ "mindmap": id, "node": node, "markdown": markdown }),
+    ))
+}
+
+/// POST /v1/mindmaps/{id}/proposals (write) — an agent proposes to a section.
+///
+/// The rule is unchanged and is the whole point: an agent returns OPERATIONS
+/// against block ids and never a document, so a person's concurrent typing
+/// survives, and nothing is live until somebody accepts it.
+pub async fn propose(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<impl IntoResponse> {
+    ctx.require_scope("write")?;
+    let obj = body_object(&body)?;
+    reject_unknown(
+        obj,
+        &["node", "operations", "instruction", "summary", "scope"],
+    )?;
+    let node = require_str(obj, "node")?;
+    let operations = obj
+        .get("operations")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
+    let instruction = get_str(obj, "instruction")?.unwrap_or_default();
+    let summary = get_str(obj, "summary")?.unwrap_or_default();
+    let scope = match obj.get("scope") {
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_string))
+                .collect::<Vec<String>>(),
+        ),
+        _ => None,
+    };
+
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let actor = ctx.actor.clone();
+    let now = crate::ids::now_ms();
+    let target = node.clone();
+    let why = summary.clone();
+    let (proposal, applied, skipped) = room.mutate(move |doc| {
+        let frag = mindmapdoc::section_prose(doc, &target)?;
+        let txn = doc.transact();
+        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+        drop(txn);
+        let validated = crate::api::docprops::validate_ops(
+            &operations,
+            &blocks,
+            scope.as_deref(),
+            "takomo_plan_read",
+        )?;
+        let pid = crate::api::docprops::write_proposal(
+            doc,
+            Some(&target),
+            &actor,
+            &instruction,
+            &why,
+            &validated.ops,
+            &validated.skipped,
+            now,
+        )?;
+        Ok((pid, validated.ops.len(), validated.skipped))
+    })?;
+
+    persist(&state, &room, &ctx).await;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "proposed",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: (!summary.is_empty()).then_some(summary.as_str()),
+        // A proposal changes nothing yet, so the section still says what it did.
+        text: None,
+    })?;
+    state.wake();
+
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "node": node.to_json(), "created": created })),
+        Json(json!({
+            "proposal": proposal,
+            "mindmap": id,
+            "node": node,
+            "status": "pending",
+            "operations": applied,
+            "skipped": skipped,
+            "note": "Offered, not applied. A person accepts or rejects it in the document view.",
+        })),
     ))
+}
+
+/// GET /v1/mindmaps/{id}/proposals?node=&status= (read).
+pub async fn proposals(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let (_, room) = join(&state, &ctx, &id).await?;
+    let pairs = query_pairs(raw.as_deref());
+    let node = first(&pairs, "node");
+    let status = first(&pairs, "status");
+
+    let mut items = room.read(crate::api::docprops::read_proposals);
+    if let Some(node) = node {
+        items.retain(|p| p.get("node").and_then(Value::as_str) == Some(node));
+    }
+    if let Some(status) = status {
+        items.retain(|p| p.get("status").and_then(Value::as_str) == Some(status));
+    }
+    let total = items.len() as i64;
+    Ok(Json(json!({ "items": items, "total": total })))
+}
+
+/// POST /v1/mindmaps/{id}/run (write) — ask for a change to one section.
+///
+/// The ONE route in this codebase that calls a language model, now pointed at a
+/// section of the plan rather than a standalone document. It is a deliberate
+/// exception to "Takomo stores, the agent computes", made for the same reason it
+/// was made before: a prompt bar that only filed a request nobody would answer
+/// is not a feature.
+///
+/// What the exception does not change: the model is schema-constrained to
+/// operations against block ids, its answer goes through the same `validate_ops`
+/// a fleet agent's does, and it lands as a proposal a person accepts. Nothing
+/// here writes live text.
+///
+/// Off unless the model key is configured; `/v1/whoami` reports
+/// `features.doc_agent` so a page can explain the absence rather than offering a
+/// bar that fails.
+pub async fn run_agent(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("write")?;
+    let (map, room) = join(&state, &ctx, &id).await?;
+    state.store.ensure_collab_writable(&id)?;
+
+    let cfg = state
+        .doc_agent
+        .as_ref()
+        .ok_or_else(crate::docagent::not_configured)?;
+
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["node", "instruction", "scope", "model"])?;
+    let node = require_str(obj, "node")?;
+    let instruction = require_str(obj, "instruction")?;
+    let trimmed = instruction.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() > crate::docagent::MAX_INSTRUCTION {
+        return Err(ApiError::validation(
+            "validation.document_instruction",
+            format!(
+                "An instruction must be 1..={} characters; got {}.",
+                crate::docagent::MAX_INSTRUCTION,
+                trimmed.len()
+            ),
+        )
+        .remedy("Say what you want changed in a sentence.".to_string()));
+    }
+    let scope: Option<Vec<String>> = match obj.get("scope") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        ),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "validation.field_type",
+                "Field 'scope' must be an array of block ids or null.".to_string(),
+            ))
+        }
+    };
+    let model = get_str(obj, "model")?;
+
+    // Read the LIVE replica rather than the log: the log is up to a flush
+    // behind, and block ids the reader has already moved past would make every
+    // op the model wrote get dropped as stale.
+    let annotated = {
+        let target = node.clone();
+        room.read(move |doc| {
+            let frag = mindmapdoc::section_prose(doc, &target)?;
+            let txn = doc.transact();
+            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+            Ok::<String, ApiError>(crate::api::docprops::annotate(&blocks))
+        })?
+    };
+
+    let plan = crate::docagent::run(
+        cfg,
+        &trimmed,
+        &annotated,
+        scope.as_deref(),
+        model.as_deref(),
+    )
+    .await?;
+
+    let actor = format!("{} (prompt)", ctx.actor);
+    let now = crate::ids::now_ms();
+    let summary = plan.summary.clone();
+    let target = node.clone();
+    let instruction_for_record = trimmed.clone();
+    let summary_for_record = summary.clone();
+    let (proposal, applied, skipped) = room.mutate(move |doc| {
+        // Re-read INSIDE the mutation and validate against that: the section may
+        // have moved while the model was thinking, which is the failure this
+        // whole surface exists to remove.
+        let frag = mindmapdoc::section_prose(doc, &target)?;
+        let txn = doc.transact();
+        let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+        drop(txn);
+        let validated = crate::api::docprops::validate_ops(
+            &plan.ops,
+            &blocks,
+            scope.as_deref(),
+            "takomo_plan_read",
+        )?;
+        let pid = crate::api::docprops::write_proposal(
+            doc,
+            Some(&target),
+            &actor,
+            &instruction_for_record,
+            &summary_for_record,
+            &validated.ops,
+            &validated.skipped,
+            now,
+        )?;
+        Ok((pid, validated.ops.len(), validated.skipped))
+    })?;
+
+    persist(&state, &room, &ctx).await;
+    state.store.record_trace(&crate::store::trace::Record {
+        project: &map.project,
+        mindmap: &id,
+        node: Some(&node),
+        kind: "proposed",
+        actor: &ctx.actor,
+        user: ctx.user.as_deref(),
+        note: (!summary.is_empty()).then_some(summary.as_str()),
+        text: None,
+    })?;
+    state.wake();
+
+    Ok(Json(json!({
+        "proposal": proposal,
+        "mindmap": id,
+        "node": node,
+        "status": "pending",
+        "operations": applied,
+        "skipped": skipped,
+        "summary": summary,
+        "note": "Offered, not applied. Accept it in the document view.",
+    })))
 }

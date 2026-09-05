@@ -20,10 +20,21 @@ export interface Op {
   op: OpKind
   id: string
   markdown?: string
+  /** Why this one op, in the agent's words. Optional: the server stores it when
+   *  an agent sends it, and a proposal is readable without it. */
+  rationale?: string
 }
 
 export interface Proposal {
   id: string
+  /**
+   * The section this is about, when the document is a PLAN.
+   *
+   * A standalone document has no sections, so it is null there — which is why
+   * this is read rather than required: one `proposals` map serves both, and the
+   * plan view filters by it (`lib/plan-proposals.ts`).
+   */
+  node?: string | null
   status: 'pending' | 'accepted' | 'rejected'
   author: string
   instruction: string
@@ -155,6 +166,17 @@ export function applyOps(
 ): { applied: number; skipped: string[] } {
   const skipped: string[] = []
   let applied = 0
+  // How many top-level nodes sitting after each anchor belong to it: the extra
+  // nodes a `replace` produced, plus everything earlier ops inserted after it.
+  //
+  // Counted in NODES, not bytes. Two `insert_after` ops naming one block both
+  // landed immediately after it, so the second went in above the first. The
+  // first fix for that held a byte offset — which a later `replace` in the same
+  // batch invalidates, because the anchor's size changes underneath it. That
+  // inserted at a position which was no longer a block boundary and PROSEMIRROR
+  // SPLIT A PARAGRAPH IN HALF, silently, reporting every op applied. A count of
+  // nodes survives anything that changes their sizes.
+  const trailing = new Map<string, number>()
 
   for (const op of ops) {
     // Re-find against the CURRENT doc each time: earlier ops in this batch have
@@ -168,15 +190,45 @@ export function applyOps(
 
     if (op.op === 'delete') {
       tr.delete(pos, pos + node.nodeSize)
+      // Forget what trailed it. `trailing` is keyed by id and `findBlock` takes
+      // the FIRST match, so with two blocks sharing an id — which `block-id.ts`
+      // calls the ordinary result of a concurrent split — a stale count is
+      // applied to whatever the id resolves to next, and the following insert
+      // walks past an unrelated block.
+      trailing.delete(op.id)
       applied++
       continue
     }
 
     const nodes = markdownToNodes(schema, op.markdown ?? '')
+    const carried = trailing.get(op.id) ?? 0
     if (op.op === 'replace') {
-      tr.replaceWith(pos, pos + node.nodeSize, nodes)
+      // Carry the block id onto the replacement, so the block a later op in the
+      // same batch names still exists. Without it a `replace` followed by an
+      // `insert_after` on the same block dropped the insert and reported "that
+      // block is no longer in the document" — blaming a peer for a removal this
+      // very accept had just performed.
+      const kept = nodes.map((n, i) =>
+        i === 0 && n.type.spec.attrs && 'id' in n.type.spec.attrs
+          ? n.type.create({ ...n.attrs, id: op.id }, n.content, n.marks)
+          : n,
+      )
+      tr.replaceWith(pos, pos + node.nodeSize, kept)
+      // Only the first replacement node keeps the id; the rest become blocks
+      // that follow it and belong to it, ahead of anything already trailing.
+      trailing.set(op.id, carried + kept.length - 1)
     } else {
-      tr.insert(pos + node.nodeSize, nodes)
+      // Walk past what already belongs to this anchor, so a later insert lands
+      // after the earlier one — and after the whole of a multi-node replacement
+      // rather than inside it.
+      let at = pos + node.nodeSize
+      for (let i = 0; i < carried; i++) {
+        const next = tr.doc.nodeAt(at)
+        if (!next) break
+        at += next.nodeSize
+      }
+      tr.insert(at, nodes)
+      trailing.set(op.id, carried + nodes.length)
     }
     applied++
   }

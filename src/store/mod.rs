@@ -6,6 +6,7 @@
 mod answer_grants;
 mod checklist;
 mod claims;
+pub mod crdt;
 mod docs;
 mod environments;
 mod events;
@@ -13,11 +14,13 @@ mod helpers;
 mod impact;
 mod initiatives;
 mod metrics;
+pub mod mindmapdoc;
 mod mindmaps;
 mod model;
 mod moves;
 mod oauth;
 mod projects;
+pub mod prose;
 mod questions;
 mod ready_sql;
 mod roadmap;
@@ -26,6 +29,7 @@ mod shares;
 mod tags;
 mod tickets;
 mod tokens;
+pub mod trace;
 mod transition;
 mod users;
 mod workflows;
@@ -39,10 +43,12 @@ pub use checklist::{
 pub use claims::{
     ClaimMovement, ClaimStatus, ForcedRelease, ReadyFilter, DEFAULT_TTL_SECONDS, MAX_TTL_SECONDS,
 };
+pub use crdt::{
+    CollabKind, CollabObject, CollabSession, COMPACT_AFTER_UPDATES, MAX_OBJECT_BYTES,
+    MAX_UPDATE_BYTES, SESSION_TTL_SECONDS,
+};
 pub use docs::{
-    DocSession, DocumentCreate, DocumentFilter, DocumentPatch, COMPACT_AFTER_UPDATES,
-    DOC_SESSION_TTL_SECONDS, MAX_DOCUMENTS_PAGE, MAX_DOCUMENTS_PER_PROJECT, MAX_DOC_BYTES,
-    MAX_DOC_UPDATE_BYTES,
+    DocumentCreate, DocumentFilter, DocumentPatch, MAX_DOCUMENTS_PAGE, MAX_DOCUMENTS_PER_PROJECT,
 };
 pub use environments::{
     EnvironmentCreate, EnvironmentFilter, EnvironmentPatch, MAX_ENVIRONMENTS_PAGE,
@@ -55,8 +61,8 @@ pub use initiatives::{
     MAX_INITIATIVE_BYTES, MAX_INITIATIVE_ENTRIES,
 };
 pub use mindmaps::{
-    MindmapCreate, MindmapListFilter, MindmapPatch, NodeAdd, NodePatch, MAX_GROW,
-    MAX_MINDMAPS_PAGE, MAX_NODES, MAX_NODE_TEXT, MINDMAP_STATUSES, PROMOTION_TARGETS,
+    validate_promotion_target, BranchPromotion, MindmapChange, MindmapCreate, MindmapListFilter,
+    MindmapPatch, MAX_MINDMAPS_PAGE, MAX_MINDMAPS_PER_PROJECT, MINDMAP_STATUSES, PROMOTION_TARGETS,
 };
 pub use model::*;
 pub use moves::{MoveOutcome, MoveRequest, MovedTicket, MAX_MOVE_TICKETS};
@@ -81,6 +87,7 @@ pub use tags::{normalize_tag_ref, validate_tag_kind, TagCreate, TagListFilter, T
 pub use tickets::{
     merge_patch, ArchivedFilter, DepDirection, TicketCreate, TicketListFilter, TicketPatch,
 };
+pub use trace::{TraceEntry, CLIENT_TRACE_KINDS, MAX_TRACE_PAGE, TRACE_KINDS};
 pub use users::{validate_user_handle, UserCreate, UserListFilter, UserPatch, MAX_USERS_PAGE};
 
 use crate::error::{ApiError, ApiResult};
@@ -142,8 +149,17 @@ impl Store {
         // with every row in the one nothing reads. This is the only migration
         // step that has to precede the schema batch.
         rename_lanes_to_checks(&conn)?;
+        widen_doc_log_to_collab_objects(&conn)?;
+        // Also before the batch: the batch indexes the column it adds.
+        add_collab_session_minted_by(&conn)?;
+        // Same reason: the batch indexes the column this adds. It must run after
+        // `rename_lanes_to_checks`, because before that the table is `lanes`.
+        add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        // After the schema and the additive migrations, because it writes into
+        // `crdt_updates` and reads the `nodes` column both of those provide.
+        mindmaps::adopt_legacy_nodes(&conn)?;
         // After the schema and the migrations, before any reader opens: the
         // shipped workflows must be in the library for the same reason the
         // schema must exist, and a reader that saw the table without them would
@@ -433,6 +449,133 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> ApiResult<bool> {
 /// are deliberately NOT rewritten: an existing row keeps its `lane-…` primary
 /// key, because an id is opaque and rewriting primary keys to make a prefix
 /// pretty is the one part of this rename that could lose data.
+/// Widen the document update log and sync tickets to any collaborative object.
+///
+/// `/documents` shipped first, so both tables were written in terms of
+/// documents, with a hard `REFERENCES documents(id)` on the owning column.
+/// Mindmaps need the same log, and SQLite cannot drop a foreign key without
+/// rebuilding the table — so this rebuilds them once, here, rather than leaving
+/// two parallel logs to drift.
+///
+/// **It runs BEFORE the `CREATE TABLE IF NOT EXISTS` batch, and that ordering is
+/// half the correctness argument** — the same one `rename_lanes_to_checks`
+/// below makes. Run it after, and `CREATE TABLE IF NOT EXISTS crdt_updates`
+/// would already have made an empty table beside the populated `doc_updates`;
+/// this function would then see its target present, decline to copy, and every
+/// existing document would come back blank.
+///
+/// **The other half is that it is ONE transaction, and that is not decoration.**
+/// `execute_batch` prepares and steps each statement in turn with no implicit
+/// `BEGIN`, so an unwrapped version autocommits the `CREATE` and then copies
+/// hundreds of megabytes of prose in a second statement. Lose the process in
+/// that window — an OOM kill, a full disk, a container eviction — and the
+/// database is left with both tables present, which the guard reads as "already
+/// done". The next start serves every document blank, having said nothing, with
+/// the real bytes still sitting in a table nothing reads. That failure is
+/// indistinguishable from success from the outside, which is exactly what makes
+/// it worth a transaction.
+///
+/// Copy order is preserved; the `seq` values themselves are not. Replay reads
+/// `ORDER BY seq`, so what matters is the sequence, and letting the new table
+/// allocate its own keys avoids any chance of colliding with a row written by
+/// another kind.
+///
+/// **This is one-way.** Once the old tables are gone, an older binary starting
+/// against this database will create them empty and serve every document blank.
+/// There is no downgrade path; roll back by restoring the database, not the
+/// binary.
+fn widen_doc_log_to_collab_objects(conn: &Connection) -> ApiResult<()> {
+    if !has_table(conn, "doc_updates")? && !has_table(conn, "doc_sessions")? {
+        return Ok(());
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let outcome = widen_inside_transaction(conn);
+    match outcome {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            // Best-effort: if the rollback itself fails there is nothing left to
+            // try, and the original error is the one worth reporting.
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// The body of [`widen_doc_log_to_collab_objects`], with the transaction held by
+/// the caller so that any error unwinds the whole move.
+fn widen_inside_transaction(conn: &Connection) -> ApiResult<()> {
+    if has_table(conn, "doc_updates")? {
+        if !has_table(conn, "crdt_updates")? {
+            conn.execute_batch(
+                "CREATE TABLE crdt_updates (
+                   seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                   object_kind TEXT NOT NULL,
+                   object_id   TEXT NOT NULL,
+                   blob        BLOB NOT NULL,
+                   bytes       INTEGER NOT NULL,
+                   created_by  TEXT NOT NULL,
+                   created_at  INTEGER NOT NULL
+                 )",
+            )?;
+        }
+        // A database that already holds document rows here, while the old table
+        // still exists, is a state this function cannot produce. Refuse rather
+        // than guess: skipping would strand the prose, and copying might double
+        // it.
+        let already: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM crdt_updates WHERE object_kind = 'document'",
+            [],
+            |r| r.get(0),
+        )?;
+        if already > 0 {
+            return Err(ApiError::internal(
+                "cannot widen the document log: crdt_updates already holds document rows while doc_updates still exists. Restore this database from a backup rather than starting against it.",
+            ));
+        }
+        conn.execute_batch(
+            "INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at)
+               SELECT 'document', document, blob, bytes, created_by, created_at
+               FROM doc_updates ORDER BY seq;
+             DROP TABLE doc_updates;",
+        )?;
+    }
+
+    if has_table(conn, "doc_sessions")? {
+        if !has_table(conn, "crdt_sessions")? {
+            conn.execute_batch(
+                "CREATE TABLE crdt_sessions (
+                   id          TEXT PRIMARY KEY,
+                   token_hash  TEXT NOT NULL UNIQUE,
+                   object_kind TEXT NOT NULL,
+                   object_id   TEXT NOT NULL,
+                   project     TEXT NOT NULL,
+                   actor       TEXT NOT NULL,
+                   \"user\"      TEXT REFERENCES users(id),
+                   display     TEXT NOT NULL,
+                   can_write   INTEGER NOT NULL,
+                   expires_at  INTEGER NOT NULL,
+                   created_at  INTEGER NOT NULL,
+                   revoked_at  INTEGER
+                 )",
+            )?;
+        }
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO crdt_sessions (id, token_hash, object_kind, object_id, project, actor,
+                                        \"user\", display, can_write, expires_at, created_at, revoked_at)
+               SELECT id, token_hash, 'document', document, project, actor,
+                      \"user\", display, can_write, expires_at, created_at, revoked_at
+               FROM doc_sessions;
+             DROP TABLE doc_sessions;",
+        )?;
+    }
+
+    Ok(())
+}
+
 fn rename_lanes_to_checks(conn: &Connection) -> ApiResult<()> {
     if has_table(conn, "lanes")? && !has_table(conn, "checks")? {
         // SQLite updates the REFERENCES clauses in other tables for us, so
@@ -471,11 +614,96 @@ fn rename_lanes_to_checks(conn: &Connection) -> ApiResult<()> {
 ///
 /// The one step that does not fit that description is `rename_lanes_to_checks`,
 /// which is why it lives in its own function and runs before the schema.
+/// Add `crdt_sessions.minted_by` to a database that predates it.
+///
+/// BEFORE the schema batch, not in `migrate` with the other additive columns,
+/// because the batch also creates an INDEX on this column: on an older database
+/// `CREATE TABLE IF NOT EXISTS crdt_sessions` correctly does nothing, and the
+/// index then refers to a column that is not there yet and the open fails. The
+/// same ordering trap `rename_lanes_to_checks` carries a note about.
+fn add_collab_session_minted_by(conn: &Connection) -> ApiResult<()> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(crdt_sessions)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    // Empty means the table does not exist yet — a fresh database, where the
+    // schema batch is about to create it with the column already on it.
+    if !columns.is_empty() && !columns.iter().any(|c| c == "minted_by") {
+        conn.execute("ALTER TABLE crdt_sessions ADD COLUMN minted_by TEXT", [])?;
+        // Every ticket outstanding at the moment of the upgrade has no answer to
+        // "which token minted this", so `revoke_collab_sessions_of_token` can
+        // never match it: revoking a leaked credential would leave its ticket
+        // working for the rest of its 12 hours, which is the exact case the
+        // cascade was added for. They are revoked here instead. The cost is that
+        // an upgrade asks open browsers for a new ticket, which they do anyway
+        // on reconnect.
+        conn.execute(
+            "UPDATE crdt_sessions SET revoked_at = ?1 WHERE revoked_at IS NULL",
+            [crate::ids::now_ms()],
+        )?;
+    }
+    Ok(())
+}
+
+/// Add `checks.node` to a database that predates it.
+///
+/// BEFORE the schema batch, for the reason `add_collab_session_minted_by` gives
+/// and I got wrong here first: the batch creates an INDEX on this column, and on
+/// an existing `checks` table `CREATE TABLE IF NOT EXISTS` correctly does
+/// nothing — so the index would name a column that is not there yet and the open
+/// would fail. Caught by the test that opens a pre-rename database.
+fn add_check_node(conn: &Connection) -> ApiResult<()> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(checks)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    if !columns.is_empty() && !columns.iter().any(|c| c == "node") {
+        conn.execute("ALTER TABLE checks ADD COLUMN node TEXT", [])?;
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> ApiResult<()> {
     // archived_at (nullable) separates archived tickets from active ones. Older
     // databases predate the column; add it only when PRAGMA table_info shows it
     // absent. `CREATE TABLE IF NOT EXISTS` above already carries it for a fresh
     // DB, so on those this ALTER is skipped.
+    let trace_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(plan_trace)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    if !trace_columns.is_empty() && !trace_columns.iter().any(|c| c == "text") {
+        conn.execute("ALTER TABLE plan_trace ADD COLUMN text TEXT", [])?;
+    }
+
+    let mindmap_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(mindmaps)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    if !mindmap_columns.iter().any(|c| c == "nodes") {
+        conn.execute(
+            "ALTER TABLE mindmaps ADD COLUMN nodes INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
+    // Sweep plan history whose project or map is already gone.
+    //
+    // Deleting a project or a map used to leave `plan_trace` behind, and that
+    // table carries `text` — what each section SAID — so the prose outlived the
+    // delete that was supposed to remove it. The delete paths take it now; this
+    // clears what earlier ones left. Unreachable rows either way: the routes
+    // that read them resolve the map first.
+    conn.execute(
+        "DELETE FROM plan_trace WHERE project NOT IN (SELECT id FROM projects) \
+         OR mindmap NOT IN (SELECT id FROM mindmaps)",
+        [],
+    )?;
+
     let columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(tickets)")?;
         let cols = stmt
@@ -1273,13 +1501,70 @@ CREATE TABLE IF NOT EXISTS mindmaps (
   created_by TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  version    INTEGER NOT NULL DEFAULT 1
+  version    INTEGER NOT NULL DEFAULT 1,
+  -- How many nodes the map's document holds, denormalised.
+  --
+  -- The nodes live in a CRDT, not in rows, so an honest count means replaying
+  -- the document — affordable for one map, not for a list of two hundred. This
+  -- column is written by whoever last had the replica open: the flusher every
+  -- couple of seconds, and each API write immediately. So a list is at worst one
+  -- flush behind, and the single-map read counts the live replica instead of
+  -- reading this at all.
+  nodes      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_mindmaps_project ON mindmaps(project, status);
 
 -- One thought. Capped short on purpose (see MAX_NODE_TEXT): a sentence or two IS
 -- the method, and a node that outgrows it has stopped being a brainstorm node and
 -- wants to be an initiative.
+-- What happened to a section of the plan, who did it, and when.
+--
+-- The plan is one thing the map and the document render two ways, and this is
+-- its history. Not the CRDT update log — that is the mechanism which rebuilds
+-- the text, is written per flush, and is REWRITTEN by compaction. This is the
+-- record of acts somebody would name: a thought written, renamed, moved,
+-- reviewed, a proposal accepted.
+--
+-- In SQL rather than in the document for three reasons: it references a real
+-- person and wants a real foreign key; "everything Ada reviewed this week" is a
+-- query and not a document walk; and it has to survive compaction.
+--
+-- SPARSE by construction. Keystrokes reach nothing, the same rule the event log
+-- follows — an entry per keystroke-batch buries every entry worth reading. The
+-- document view posts one when an edit settles, not while somebody types.
+CREATE TABLE IF NOT EXISTS plan_trace (
+  id       TEXT PRIMARY KEY,
+  project  TEXT NOT NULL,
+  mindmap  TEXT NOT NULL,
+  -- The section. NULL for something that happened to the plan as a whole.
+  node     TEXT,
+  kind     TEXT NOT NULL,
+  -- The free-form actor string the credential carried.
+  actor    TEXT NOT NULL,
+  -- WHICH PERSON, when the credential was bound to one (`users.id`). This is
+  -- the column an audit reads: two `human:alice` tokens are indistinguishable,
+  -- and an actor string does not survive somebody leaving. Kept for an agent's
+  -- entry too — an agent token can belong to somebody's own automation, and
+  -- whose agent is worth knowing.
+  "user"   TEXT REFERENCES users(id),
+  note     TEXT,
+  -- What the section SAID at that moment, as plain text.
+  --
+  -- This is what makes a diff possible at all. The CRDT log cannot answer it:
+  -- compaction rewrites it into one blob, so "what did 2.1 say last Tuesday" has
+  -- no answer there by design. Keeping the text on the acts that changed it is
+  -- cheap precisely because the trace is sparse — an entry per keystroke would
+  -- make this ruinous, which is the same reason the trace is sparse anyway.
+  --
+  -- Null for an act that did not change the prose, and for anything past the
+  -- cap: a diff is worth having, an unbounded copy of every revision is not.
+  text     TEXT,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plan_trace_map ON plan_trace(mindmap, at);
+CREATE INDEX IF NOT EXISTS idx_plan_trace_node ON plan_trace(node, at) WHERE node IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_plan_trace_user ON plan_trace("user", at) WHERE "user" IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS mindmap_nodes (
   id            TEXT PRIMARY KEY,
   mindmap       TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
@@ -1525,6 +1810,20 @@ CREATE TABLE IF NOT EXISTS checks (
   -- failure, and a dangling reference stays readable rather than blocking the
   -- row.
   initiative TEXT,
+  -- The mindmap node this check verifies.
+  --
+  -- The same shape as `epic` and `initiative` above, and for the same reason: a
+  -- check is agreed while somebody is looking at a part of the plan, and the
+  -- plan's parts are nodes. Without this the tests view can say what a check is
+  -- FOR only in prose, and "which parts of this plan are actually verified" has
+  -- no answer the software can give.
+  --
+  -- No REFERENCES clause, matching the two above: validity is checked in Rust so
+  -- a wrong id is a teaching 422 rather than an opaque FOREIGN KEY failure, and
+  -- a node deleted from a brainstorm leaves the check readable rather than
+  -- taking it with it. Deleting a map is ordinary; losing its verification
+  -- record is not.
+  node TEXT,
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
   precondition TEXT NOT NULL DEFAULT '',
@@ -1544,6 +1843,7 @@ CREATE TABLE IF NOT EXISTS checks (
 );
 CREATE INDEX IF NOT EXISTS idx_checks_project ON checks(project);
 CREATE INDEX IF NOT EXISTS idx_checks_epic ON checks(epic) WHERE epic IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_checks_node ON checks(node) WHERE node IS NOT NULL;
 -- The index on `initiative` is created in `migrate()`, NOT here. This batch runs
 -- before the ALTER that adds the column to a pre-rename database, so indexing it
 -- here fails on exactly the databases the migration exists for.
@@ -1760,15 +2060,25 @@ CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);
 -- ready queue — so a per-keystroke insert would put every claim, transition and
 -- heartbeat behind someone's typing. Live collaboration is served from memory;
 -- see `src/store/docs.rs`.
-CREATE TABLE IF NOT EXISTS doc_updates (
-  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-  document   TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  blob       BLOB NOT NULL,
-  bytes      INTEGER NOT NULL,
-  created_by TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS crdt_updates (
+  seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- 'document' or 'mindmap'. Carried as a column even though the id prefix
+  -- already says it, because a log nobody can read without knowing the id
+  -- scheme is a log that outlives its reader.
+  object_kind TEXT NOT NULL,
+  -- No REFERENCES clause, and it cannot have one: this points at whichever of
+  -- two tables the kind names. Validity is enforced in Rust — the same call
+  -- `checks.epic` and `documents.initiative` already make, for the same reason
+  -- (a teaching 422 rather than an opaque FOREIGN KEY failure). The cascade the
+  -- FK used to provide is `Store::purge_collab`, called from each kind's own
+  -- delete path.
+  object_id   TEXT NOT NULL,
+  blob        BLOB NOT NULL,
+  bytes       INTEGER NOT NULL,
+  created_by  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_doc_updates_document ON doc_updates(document, seq);
+CREATE INDEX IF NOT EXISTS idx_crdt_updates_object ON crdt_updates(object_id, seq);
 
 -- A short-lived credential for ONE document's sync session.
 --
@@ -1781,10 +2091,11 @@ CREATE INDEX IF NOT EXISTS idx_doc_updates_document ON doc_updates(document, seq
 --
 -- It authenticates and nothing more. `can_write` is copied from the minting
 -- token's scopes at mint time, so a `read`-only reader joins as a read-only peer.
-CREATE TABLE IF NOT EXISTS doc_sessions (
+CREATE TABLE IF NOT EXISTS crdt_sessions (
   id          TEXT PRIMARY KEY,
   token_hash  TEXT NOT NULL UNIQUE,
-  document    TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  object_kind TEXT NOT NULL,
+  object_id   TEXT NOT NULL,
   project     TEXT NOT NULL,
   actor       TEXT NOT NULL,
   -- The directory person this session belongs to, when the minting token was
@@ -1794,9 +2105,25 @@ CREATE TABLE IF NOT EXISTS doc_sessions (
   can_write   INTEGER NOT NULL,
   expires_at  INTEGER NOT NULL,
   created_at  INTEGER NOT NULL,
-  revoked_at  INTEGER
+  revoked_at  INTEGER,
+  -- The `tk_` token this session was derived from.
+  --
+  -- Without it, revoking a leaked token could not reach the sessions minted
+  -- from it: a `tkd_` ticket kept opening a socket and writing for its whole
+  -- life, which made it MORE permissive than the token it came from — the one
+  -- thing it is not allowed to be.
+  -- ON DELETE CASCADE, and both halves matter. Without any action the OAuth
+  -- sweep's `DELETE FROM tokens` hits this constraint and rolls back its WHOLE
+  -- transaction, so expired tokens, spent codes and retired refresh rows all
+  -- stop being reaped for as long as one session references a swept token —
+  -- which is reachable, because token retention (24h) is shorter than a
+  -- session's life (12h TTL plus its sweep grace). Cascading is also the right
+  -- semantic: the credential this was derived from no longer exists, so neither
+  -- should this.
+  minted_by   TEXT REFERENCES tokens(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_doc_sessions_document ON doc_sessions(document);
+CREATE INDEX IF NOT EXISTS idx_crdt_sessions_object ON crdt_sessions(object_id);
+CREATE INDEX IF NOT EXISTS idx_crdt_sessions_minted_by ON crdt_sessions(minted_by);
 
 -- Named workflows that can be applied to any project.
 --

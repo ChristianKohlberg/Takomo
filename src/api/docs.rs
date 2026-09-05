@@ -169,6 +169,9 @@ pub async fn archive(
     let existing = state.store.get_document(&id)?;
     ctx.require_project(&existing.project)?;
     let doc = state.store.archive_document(&id, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(doc.to_json()))
 }
@@ -183,6 +186,9 @@ pub async fn unarchive(
     let existing = state.store.get_document(&id)?;
     ctx.require_project(&existing.project)?;
     let doc = state.store.unarchive_document(&id, &ctx.actor)?;
+    // A socket opened before this call still has `can_write` from when its
+    // ticket was minted, so the freeze has to reach the live rooms too.
+    crate::api::docsync::Rooms::resync_frozen(&state);
     state.wake();
     Ok(Json(doc.to_json()))
 }
@@ -203,7 +209,7 @@ pub async fn run_agent(
     ctx.require_scope("write")?;
     let doc = state.store.get_document(&id)?;
     ctx.require_project(&doc.project)?;
-    state.store.ensure_document_writable(&id)?;
+    state.store.ensure_collab_writable(&id)?;
 
     let cfg = state
         .doc_agent
@@ -267,9 +273,15 @@ pub async fn run_agent(
         let blocks = crate::api::docprops::read_blocks(&txn, &frag);
         drop(txn);
 
-        let validated = crate::api::docprops::validate_ops(&plan.ops, &blocks, scope.as_deref())?;
+        let validated = crate::api::docprops::validate_ops(
+            &plan.ops,
+            &blocks,
+            scope.as_deref(),
+            "takomo_document_read",
+        )?;
         let pid = crate::api::docprops::write_proposal(
             d,
+            None,
             &actor,
             trimmed,
             &summary,

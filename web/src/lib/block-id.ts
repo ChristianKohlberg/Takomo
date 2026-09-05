@@ -45,8 +45,14 @@ export function blockId(): string {
  * an agent op then addresses two places at once. The first occurrence keeps the
  * id; later ones are reissued.
  */
-export const BlockId = Extension.create({
+export const BlockId = Extension.create<{ canWrite: boolean }>({
   name: 'blockId',
+
+  addOptions() {
+    // Default false: minting is the exception, and a caller that forgets to say
+    // so gets the safe behaviour rather than the writing one.
+    return { canWrite: false }
+  },
 
   addGlobalAttributes() {
     return [
@@ -69,6 +75,18 @@ export const BlockId = Extension.create({
       new Plugin({
         key: new PluginKey('blockId'),
         appendTransaction: (_transactions, _oldState, newState) => {
+          // A reader does not mint ids.
+          //
+          // `editable: false` does not stop an `appendTransaction`, so a
+          // read-only viewer opening a section with an unnumbered block — or two
+          // blocks sharing an id, which is the ORDINARY result of a concurrent
+          // split — wrote to the shared document just by looking at it. Measured:
+          // one Y.Doc update per mount. The server drops a read-only peer's
+          // writes, so nothing persisted; what it left behind was worse in its
+          // way — that reader's replica disagreeing with everyone else's about
+          // block ids, so their highlights and diffs addressed blocks nobody
+          // else had.
+          if (!this.options.canWrite) return null
           const seen = new Set<string>()
           const fixes: { pos: number; id: string }[] = []
 

@@ -7,8 +7,13 @@
 // which is the failure mode worth spending tests on.
 import { describe, expect, it } from 'vitest'
 import {
+  AFFORDANCE_WIDTH,
+  centreOn,
   childrenOf,
   edgePath,
+  radialLayout,
+  ringAngle,
+  ringRadius,
   fit,
   isDescendant,
   layout,
@@ -210,6 +215,23 @@ describe('hit testing', () => {
     expect(nodeAt(nodes, { x: api.x - 40, y: api.y })).toBeNull()
   })
 
+  it('reaches past the right edge for the affordances drawn there, but only on request', () => {
+    // The `+` that adds a child sits just outside the box. Hover tested against
+    // the box alone unmounts it as the pointer moves onto it, so the button is
+    // unusable on any node that is not already selected — a defect no test in
+    // jsdom would see, because jsdom has no pointer.
+    const placed = layout(TREE).nodes
+    const api = placed.find((p) => p.node.id === 'api')!
+    const justOutside = { x: api.x + NODE_WIDTH + 12, y: api.y + 10 }
+
+    expect(nodeAt(placed, justOutside), 'strict hit testing must not widen').toBe(null)
+    expect(nodeAt(placed, justOutside, AFFORDANCE_WIDTH)?.node.id).toBe('api')
+    expect(
+      nodeAt(placed, { x: api.x + NODE_WIDTH + AFFORDANCE_WIDTH + 4, y: api.y + 10 }, AFFORDANCE_WIDTH),
+      'and it stops where the affordance stops',
+    ).toBe(null)
+  })
+
   it('counts the edges of a node as inside it', () => {
     const { nodes } = layout(TREE)
     const api = nodes.find((p) => p.node.id === 'api')!
@@ -307,5 +329,141 @@ describe('edgePath', () => {
     expect(path.startsWith(`M ${NODE_WIDTH} ${NODE_HEIGHT / 2}`)).toBe(true)
     expect(path).toContain(`300 ${100 + NODE_HEIGHT / 2}`)
     expect(path).toContain('C')
+  })
+})
+
+describe('radialLayout', () => {
+  // The tidy tree's own header argues against a radial burst, and it is right
+  // about the thing it names: dividing the circle by the sibling count re-angles
+  // the whole ring on every insert, so the map jumps under the cursor. These are
+  // the tests that the radial variant does not do that.
+
+  const ring = (n: number) =>
+    Array.from({ length: n }, (_, i) => node({ id: `b${i}`, position: (i + 1) * 1000 }))
+
+  it('gives a first-ring index an angle that never depends on the count', () => {
+    // The van der Corput sequence: every index has a permanent address on the
+    // circle, and every prefix of it is spread evenly.
+    expect(ringAngle(0)).toBeCloseTo(0)
+    expect(ringAngle(1)).toBeCloseTo(Math.PI)
+    expect(ringAngle(2)).toBeCloseTo(Math.PI / 2)
+    expect(ringAngle(3)).toBeCloseTo((3 * Math.PI) / 2)
+  })
+
+  it('leaves every existing branch exactly where it was when one is appended', () => {
+    // The property the tidy layout was chosen for, kept while going radial.
+    const before = radialLayout(ring(3))
+    const after = radialLayout(ring(4))
+    for (const id of ['b0', 'b1', 'b2']) {
+      const a = before.nodes.find((p) => p.node.id === id)!
+      const b = after.nodes.find((p) => p.node.id === id)!
+      expect([b.x, b.y]).toEqual([a.x, a.y])
+    }
+  })
+
+  it('holds that property across a whole ring filling up', () => {
+    let previous = radialLayout(ring(1))
+    for (let n = 2; n <= 8; n += 1) {
+      const next = radialLayout(ring(n))
+      for (const placed of previous.nodes) {
+        const moved = next.nodes.find((p) => p.node.id === placed.node.id)!
+        expect([moved.x, moved.y]).toEqual([placed.x, placed.y])
+      }
+      previous = next
+    }
+  })
+
+  it('steps the radius rather than sliding it, so growth is rare and visible', () => {
+    expect(ringRadius(4)).toBe(ringRadius(8))
+    expect(ringRadius(9)).toBeLessThanOrEqual(ringRadius(33))
+  })
+
+  it('puts the whole first ring on one circle around the root', () => {
+    const { nodes, root } = radialLayout(ring(6))
+    const radii = nodes
+      .filter((p) => p.depth === 1)
+      .map((p) => Math.hypot(p.x - root.x, p.y - root.y))
+    for (const r of radii) expect(r).toBeCloseTo(radii[0]!)
+  })
+
+  it('keeps deeper rings as tidy sub-trees, growing away from the centre', () => {
+    const nodes = [
+      node({ id: 'right', position: 1000 }),
+      node({ id: 'left', position: 2000 }),
+      node({ id: 'r-kid', parent: 'right', position: 1000 }),
+      node({ id: 'l-kid', parent: 'left', position: 1000 }),
+    ]
+    const placed = radialLayout(nodes)
+    const at = (id: string) => placed.nodes.find((p) => p.node.id === id)!
+    // Index 0 sits at angle 0 (to the right), index 1 half a turn away.
+    expect(at('r-kid').x).toBeGreaterThan(at('right').x)
+    expect(at('l-kid').x).toBeLessThan(at('left').x)
+    expect(at('r-kid').depth).toBe(2)
+  })
+
+  it('centres a branch’s subtree against the branch', () => {
+    const nodes = [
+      node({ id: 'b', position: 1000 }),
+      node({ id: 'k1', parent: 'b', position: 1000 }),
+      node({ id: 'k2', parent: 'b', position: 2000 }),
+    ]
+    const placed = radialLayout(nodes)
+    const at = (id: string) => placed.nodes.find((p) => p.node.id === id)!
+    expect(at('b').y).toBeCloseTo((at('k1').y + at('k2').y) / 2)
+  })
+
+  it('honours a pinned branch without re-angling the others', () => {
+    const plain = radialLayout(ring(4))
+    const withPin = radialLayout(
+      ring(4).map((n) => (n.id === 'b1' ? { ...n, at: { x: 900, y: -400 } } : n)),
+    )
+    const pinned = withPin.nodes.find((p) => p.node.id === 'b1')!
+    expect([pinned.x, pinned.y, pinned.pinned]).toEqual([900, -400, true])
+    for (const id of ['b0', 'b2', 'b3']) {
+      const a = plain.nodes.find((p) => p.node.id === id)!
+      const b = withPin.nodes.find((p) => p.node.id === id)!
+      expect([b.x, b.y]).toEqual([a.x, a.y])
+    }
+  })
+
+  it('survives an empty map', () => {
+    const { nodes, bounds } = radialLayout([])
+    expect(nodes).toEqual([])
+    expect(bounds.maxX).toBeGreaterThan(bounds.minX)
+  })
+})
+
+describe('edgePath direction', () => {
+  it('still leaves the right edge by default, as the tidy tree needs', () => {
+    expect(edgePath({ x: 0, y: 0 }, { x: 300, y: 0 })).toBe(
+      edgePath({ x: 0, y: 0 }, { x: 300, y: 0 }, 'right'),
+    )
+  })
+
+  it('turns around for a branch that grows leftward', () => {
+    // A radial ring runs both ways; an edge that insists on leaving the right
+    // edge loops back across its own node.
+    const path = edgePath({ x: 0, y: 0 }, { x: -400, y: 0 }, 'auto')
+    expect(path.startsWith(`M 0 ${NODE_HEIGHT / 2}`)).toBe(true)
+    expect(path).toContain(`${-400 + NODE_WIDTH} ${NODE_HEIGHT / 2}`)
+  })
+
+  it('leaves a rightward branch alone in auto mode', () => {
+    expect(edgePath({ x: 0, y: 0 }, { x: 400, y: 0 }, 'auto')).toBe(
+      edgePath({ x: 0, y: 0 }, { x: 400, y: 0 }),
+    )
+  })
+})
+
+describe('centreOn', () => {
+  it('puts the point in the middle of the viewport', () => {
+    const v = centreOn({ x: 0, y: 0, zoom: 1 }, { x: 300, y: 200 }, 800, 600)
+    expect(toScreen({ x: 300, y: 200 }, v)).toEqual({ x: 400, y: 300 })
+  })
+
+  it('keeps the zoom the reader chose', () => {
+    const v = centreOn({ x: -50, y: 90, zoom: 0.5 }, { x: 300, y: 200 }, 800, 600)
+    expect(v.zoom).toBe(0.5)
+    expect(toScreen({ x: 300, y: 200 }, v)).toEqual({ x: 400, y: 300 })
   })
 })

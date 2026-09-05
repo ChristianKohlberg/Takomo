@@ -166,6 +166,73 @@ impl TestApp {
     /// ships X are gone, and correctly so: there is one document now, and a
     /// test claiming `/inbox` carries something `/board` does not would be
     /// asserting a distinction that no longer exists.
+    /// One emitted asset, by name.
+    ///
+    /// A lazily-loaded route's code is not in `app.js` — that is the point of
+    /// splitting it — so a test about what a route ships has to ask for that
+    /// route's chunk.
+    pub async fn asset(&self, name: &str) -> String {
+        let resp = self
+            .request(Method::GET, &format!("/assets/{name}"))
+            .send()
+            .await
+            .expect("the asset should be served");
+        assert!(
+            resp.status().is_success(),
+            "GET /assets/{name} returned {} — the build emits it, so the binary \
+             should embed and serve it",
+            resp.status()
+        );
+        resp.text().await.unwrap()
+    }
+
+    /// Everything the browser downloads before it can paint: `app.js` plus the
+    /// transitive closure of its STATIC imports.
+    ///
+    /// Chunk names are emergent. The bundler hoists shared modules into chunks of
+    /// its own choosing and renames them as the import graph shifts, so a chunk
+    /// called `initiatives.js` can appear in one build and be folded into
+    /// `app.js` in the next with no source change at all — which is exactly what
+    /// happened once, and cost a test that had encoded the name as if it were a
+    /// contract. What is stable is whether a module is reachable eagerly, and
+    /// that is the only thing worth asserting.
+    ///
+    /// Dynamic imports are deliberately NOT followed: a lazy route's chunk is
+    /// precisely what must not count as first load.
+    pub async fn eager_bundle(&self) -> String {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec!["app.js".to_string()];
+        let mut out = String::new();
+        while let Some(name) = queue.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let src = self.asset(&name).await;
+            // The two shapes a static import takes once minified: `from"./x.js"`
+            // and a side-effect-only `import"./x.js"`. A dynamic one is
+            // `import("./x.js")` and matches neither, which is the point.
+            for pat in ["from\"./", "import\"./"] {
+                let mut rest = src.as_str();
+                while let Some(at) = rest.find(pat) {
+                    rest = &rest[at + pat.len()..];
+                    if let Some(end) = rest.find('"') {
+                        queue.push(rest[..end].to_string());
+                    }
+                }
+            }
+            out.push_str(&src);
+        }
+        out
+    }
+
+    /// `assets/app.js` alone.
+    ///
+    /// Kept because a few checks are genuinely about that ONE file — that the
+    /// page shell's script is served at all, and that something is NOT on the
+    /// critical path. Every "the app ships X" assertion uses `eager_bundle`
+    /// instead: which shared chunk the bundler puts a module in is its business
+    /// and changes without a source change, which is how one of these tests
+    /// started failing with nothing edited.
     pub async fn app_bundle(&self) -> String {
         let resp = self
             .request(Method::GET, "/assets/app.js")

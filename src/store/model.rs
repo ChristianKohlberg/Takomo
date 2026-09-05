@@ -1488,6 +1488,8 @@ pub struct Check {
     /// Direct, not derived through the epic: the agreement usually predates any
     /// epic, so deriving it would make the link unstateable when it is made.
     pub initiative: Option<String>,
+    /// The mindmap node this check verifies — the part of the plan it is about.
+    pub node: Option<String>,
     pub title: String,
     pub body: String,
     pub precondition: String,
@@ -1525,6 +1527,7 @@ impl Check {
             "project": self.project,
             "epic": self.epic,
             "initiative": self.initiative,
+            "node": self.node,
             "title": self.title,
             "body": self.body,
             "precondition": self.precondition,
@@ -2013,7 +2016,7 @@ impl WorkflowEntry {
 ///
 /// This row is the document's *identity and filing* — title, folder, status.
 /// The prose itself is not here and deliberately not in any column: it lives in a
-/// Yjs CRDT whose update log is `doc_updates`, because the whole point of this
+/// Yjs CRDT whose update log is `crdt_updates`, because the whole point of this
 /// surface is that two people typing at the same time both keep their words.
 /// A `TEXT` column would mean last-write-wins, which is the failure this exists
 /// to remove.

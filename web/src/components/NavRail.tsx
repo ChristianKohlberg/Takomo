@@ -22,7 +22,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
-  FileTextIcon,
   InboxIcon,
   LayoutGridIcon,
   LightbulbIcon,
@@ -32,7 +31,6 @@ import {
   PanelLeftOpenIcon,
   ServerIcon,
   SettingsIcon,
-  ShieldCheckIcon,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
@@ -43,11 +41,9 @@ import { Hint } from '@/components/Hint'
 export interface NavLabels {
   board: string
   inbox: string
-  documents: string
+  specification: string
   initiatives: string
-  mindmaps: string
   schedules: string
-  verification: string
   environments: string
 }
 
@@ -107,40 +103,38 @@ export interface NavRailProps {
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   inbox: '/inbox',
-  documents: '/documents',
+  specification: '/mindmaps',
   initiatives: '/initiatives',
-  mindmaps: '/mindmaps',
   schedules: '/schedules',
-  verification: '/verification',
   environments: '/environments',
 }
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   board: LayoutGridIcon,
   inbox: InboxIcon,
-  documents: FileTextIcon,
+  specification: NetworkIcon,
   initiatives: LightbulbIcon,
-  mindmaps: NetworkIcon,
   schedules: CalendarClockIcon,
-  verification: ShieldCheckIcon,
   environments: ServerIcon,
 }
 
-// Verification sits after the work surfaces and before Environments, which is
-// its configuration: you read what needs verifying far more often than you edit
-// where it runs.
-// Mindmaps sits before Initiatives because that is the order the thinking runs
-// in: a brainstorm becomes a direction becomes work. Documents sits between
-// them, which is the same argument one step further: a branch of the map is
-// written up before it is a direction anybody is nurturing.
+// Specification is FIRST, and it is one entry rather than three.
+//
+// The map, the written plan and the tests are three renderings of one thing —
+// the same nodes drawn, composed as prose, and checked — so they are one place
+// you go and a switch you flip, not three destinations to choose between. The
+// rail's job is to say what parts of the product exist; picking a view of one
+// part is the surface's own business, and it lives in that surface's header.
+//
+// Everything after it is ordered as before: the work surfaces, then the idea
+// being nurtured, then scheduling, then Environments, which is configuration —
+// you read what needs verifying far more often than you edit where it runs.
 const NAV_ORDER: (keyof NavLabels)[] = [
+  'specification',
   'board',
   'inbox',
-  'mindmaps',
-  'documents',
   'initiatives',
   'schedules',
-  'verification',
   'environments',
 ]
 

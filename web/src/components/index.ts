@@ -93,6 +93,8 @@ export {
 export { Logo } from './Logo'
 export { AppHeader } from './AppHeader'
 export type { AppHeaderProps } from './AppHeader'
+export { ViewSwitcher } from './ViewSwitcher'
+export type { ViewSwitcherProps, ViewSwitcherLabels, SpecView } from './ViewSwitcher'
 export { NavRail } from './NavRail'
 export type { NavRailProps, NavRailLabels, NavLabels } from './NavRail'
 export { AppShell } from './AppShell'
@@ -187,10 +189,47 @@ export type { UndoSnackbarProps } from './inbox/UndoSnackbar'
 export { AnswerLinkDialog } from './inbox/AnswerLinkDialog'
 export type { AnswerLinkDialogProps } from './inbox/AnswerLinkDialog'
 
+// ---- documents ----
+export { OutlineRail } from './documents/OutlineRail'
+export type { OutlineRailProps, OutlineRailLabels } from './documents/OutlineRail'
+export { ProposalPanel } from './documents/ProposalPanel'
+export type { ProposalPanelProps, ProposalPanelLabels } from './documents/ProposalPanel'
+export { SectionPanel } from './documents/SectionPanel'
+export type { SectionPanelProps, SectionPanelLabels } from './documents/SectionPanel'
+
+// ---- mindmaps ----
 export { Canvas } from './mindmap/Canvas'
-export type { CanvasProps, CanvasLabels } from './mindmap/Canvas'
+export type { CanvasProps, CanvasLabels, CanvasMode, CanvasPeer } from './mindmap/Canvas'
+export { VoiceButton } from './mindmap/VoiceButton'
+export type { VoiceButtonProps, VoiceButtonLabels } from './mindmap/VoiceButton'
 export { Outline } from './mindmap/Outline'
 export type { OutlineProps, OutlineLabels } from './mindmap/Outline'
+export { NodeCard } from './mindmap/NodeCard'
+export type { NodeCardProps, NodeCardLabels, NodeNaming } from './mindmap/NodeCard'
+export { NodeNameInput } from './mindmap/NodeNameInput'
+export type {
+  NodeNameInputProps,
+  NodeNameInputLabels,
+  NameThen,
+} from './mindmap/NodeNameInput'
+export { NodeDialog, NODE_COLORS, NODE_SHAPES } from './mindmap/NodeDialog'
+export type { NodeDialogProps, NodeDialogLabels, NodeShape } from './mindmap/NodeDialog'
+export { CommandPalette } from './mindmap/CommandPalette'
+export type { CommandPaletteProps, CommandPaletteLabels, PaletteItem } from './mindmap/CommandPalette'
+export { PruneDialog } from './mindmap/PruneDialog'
+export type { PruneDialogProps, PruneDialogLabels } from './mindmap/PruneDialog'
+export { DetachDialog } from './mindmap/DetachDialog'
+export type { DetachDialogProps, DetachDialogLabels } from './mindmap/DetachDialog'
+export { AttachmentsDialog } from './mindmap/AttachmentsDialog'
+export type {
+  AttachmentsDialogProps,
+  AttachmentsDialogLabels,
+  AttachmentDraftValue,
+} from './mindmap/AttachmentsDialog'
+export { NodeMenu } from './mindmap/NodeMenu'
+export type { NodeMenuProps, MenuItem } from './mindmap/NodeMenu'
+export { NodePill } from './mindmap/NodePill'
+export type { NodePillProps, PillVerb } from './mindmap/NodePill'
 
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'

@@ -99,6 +99,8 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_deps",
     "takomo_document_proposals",
     "takomo_document_read",
+    "takomo_plan_read",
+    "takomo_plan_proposals",
     "takomo_documents",
     "takomo_environments",
     "takomo_gate",
@@ -817,6 +819,45 @@ pub struct DocumentProposeArgs {
     /// Restrict the run to these block ids. Enforced server-side: an op outside
     /// the list is dropped and reported back to you, not silently applied.
     pub scope: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PlanReadArgs {
+    /// Mindmap id (`mm-…`) — a project has one, and it IS the plan.
+    pub id: String,
+    /// One section (`mn-…`). Omit for the whole plan.
+    pub node: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PlanProposeArgs {
+    /// Mindmap id (`mm-…`).
+    pub id: String,
+    /// The section (`mn-…`) this is about. Read it first: an operation names a
+    /// block id, and the ids come from `takomo_plan_read`.
+    pub node: String,
+    /// The operations, as an array. Each is
+    /// `{"op":"replace"|"insert_after"|"delete","id":"blk_…","markdown":"…"}`.
+    /// `markdown` is omitted for `delete`.
+    pub ops: serde_json::Value,
+    /// What you were asked to do, in one line. Shown to the person deciding.
+    pub instruction: Option<String>,
+    /// What you changed and why, in one or two sentences. This is what a
+    /// reviewer reads before the diff, so it should say the REASON.
+    pub summary: Option<String>,
+    /// Restrict to these block ids. Enforced server-side: an op outside the list
+    /// is dropped and reported back, not silently applied.
+    pub scope: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PlanProposalsArgs {
+    /// Mindmap id (`mm-…`).
+    pub id: String,
+    /// Only this section's.
+    pub node: Option<String>,
+    /// Only proposals in this state: `pending`, `accepted` or `rejected`.
+    pub status: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1739,7 +1780,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapGrowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_grow(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_grow(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -1752,7 +1793,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapShowArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_show(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_show(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -1779,7 +1820,7 @@ impl TakomoMcp {
         Parameters(a): Parameters<MindmapPromoteArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        respond(self.do_mindmap_promote(&require_auth(&ctx)?, a))
+        respond(self.do_mindmap_promote(&require_auth(&ctx)?, a).await)
     }
 
     #[tool(
@@ -2153,6 +2194,49 @@ impl TakomoMcp {
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_document_proposals(&require_auth(&ctx)?, a).await)
     }
+
+    #[tool(
+        description = "Read the PLAN — a project's one living document, which is the same thing \
+        the mindmap draws. Sections come back as markdown annotated with block ids, because that \
+        is what makes a reply addressable: you answer with operations against ids, never with a \
+        document. Pass `node` for one section, or omit it to read the whole plan with its \
+        headings. Read before you propose."
+    )]
+    async fn takomo_plan_read(
+        &self,
+        Parameters(a): Parameters<PlanReadArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_plan_read(&require_auth(&ctx)?, a).await)
+    }
+
+    #[tool(
+        description = "Propose a change to one section of the plan. NOTHING GOES LIVE: your \
+        operations are checked against the section as it stands and left for a person to accept \
+        or reject. Address block ids — replace, insert_after, delete — and never send a whole \
+        document, which is what keeps somebody's concurrent typing. An op naming a block that is \
+        gone comes back in `skipped` rather than being silently applied, so read that."
+    )]
+    async fn takomo_plan_propose(
+        &self,
+        Parameters(a): Parameters<PlanProposeArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_plan_propose(&require_auth(&ctx)?, a).await)
+    }
+
+    #[tool(
+        description = "List the plan's proposals and what became of them: `pending` waits on a \
+        person, `accepted` was applied, `rejected` was turned down. A rejected proposal is a \
+        signal about the plan you were wrong about, not a reason to send the same thing again."
+    )]
+    async fn takomo_plan_proposals(
+        &self,
+        Parameters(a): Parameters<PlanProposalsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.do_plan_proposals(&require_auth(&ctx)?, a).await)
+    }
 }
 
 // ---- tool implementations (call the internal store directly) ----------------
@@ -2220,7 +2304,7 @@ impl TakomoMcp {
         auth.require_project(&doc.project)?;
         // A proposal is a write against the document, so an archived project
         // refuses it like every other write beneath one.
-        self.state.store.ensure_document_writable(&a.id)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
 
         let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
         let instruction = a.instruction.clone().unwrap_or_default();
@@ -2236,10 +2320,15 @@ impl TakomoMcp {
             let blocks = crate::api::docprops::read_blocks(&txn, &frag);
             drop(txn);
 
-            let validated =
-                crate::api::docprops::validate_ops(&ops_raw, &blocks, scope.as_deref())?;
+            let validated = crate::api::docprops::validate_ops(
+                &ops_raw,
+                &blocks,
+                scope.as_deref(),
+                "takomo_document_read",
+            )?;
             let id = crate::api::docprops::write_proposal(
                 d,
+                None,
                 &actor,
                 &instruction,
                 &summary,
@@ -2301,50 +2390,235 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_mindmap_grow(&self, auth: &AuthCtx, a: MindmapGrowArgs) -> ApiResult<Value> {
-        auth.require_scope("write")?;
-        // Scope is checked against the map's own project: an id alone never grants
-        // access, the same rule initiative_append follows.
-        let (map, _) = self
+    async fn do_plan_read(&self, auth: &AuthCtx, a: PlanReadArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let adds: Vec<crate::store::NodeAdd> = a
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        // Only for a caller that may WRITE — the same gate the REST twin
+        // carries. `ensure_prose` creates a fragment per node and drops the
+        // legacy field, so running it here made a `read` tool alter the shared
+        // replica, broadcast that to every open canvas, and persist it. Worse
+        // here than on REST: both these tools are in `READ_TOOLS`, so the write
+        // was not even debited against the token's budget.
+        if auth.require_scope("write").is_ok() {
+            room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        }
+
+        let node = a.node.clone();
+        let markdown = room.read(|doc| plan_markdown(doc, &a.id, node.as_deref()))?;
+        Ok(json!({
+            "ok": true,
+            "mindmap": a.id,
+            "node": a.node,
+            "markdown": markdown,
+            "note": "Answer with takomo_plan_propose against the block ids above. Nothing you \
+                     send goes live until a person accepts it.",
+        }))
+    }
+
+    async fn do_plan_propose(&self, auth: &AuthCtx, a: PlanProposeArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        let map = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+
+        let instruction = a.instruction.clone().unwrap_or_default();
+        let summary = a.summary.clone().unwrap_or_default();
+        let why = summary.clone();
+        let scope = a.scope.clone();
+        let actor = auth.actor.clone();
+        let ops_raw = a.ops.clone();
+        let node = a.node.clone();
+        let now = now_ms();
+
+        let (proposal, applied, skipped) = room.mutate(move |doc| {
+            let frag = crate::store::mindmapdoc::section_prose(doc, &node)?;
+            let txn = yrs::Transact::transact(doc);
+            let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+            drop(txn);
+            let validated = crate::api::docprops::validate_ops(
+                &ops_raw,
+                &blocks,
+                scope.as_deref(),
+                "takomo_plan_read",
+            )?;
+            let id = crate::api::docprops::write_proposal(
+                doc,
+                Some(&node),
+                &actor,
+                &instruction,
+                &why,
+                &validated.ops,
+                &validated.skipped,
+                now,
+            )?;
+            Ok((id, validated.ops.len(), validated.skipped))
+        })?;
+
+        crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
+        self.state
+            .store
+            .record_trace(&crate::store::trace::Record {
+                project: &map.project,
+                mindmap: &a.id,
+                node: Some(&a.node),
+                kind: "proposed",
+                actor: &auth.actor,
+                user: auth.user.as_deref(),
+                note: (!summary.is_empty()).then_some(summary.as_str()),
+                // A proposal changes nothing yet.
+                text: None,
+            })?;
+        self.state.wake();
+
+        Ok(json!({
+            "ok": true,
+            "proposal": proposal,
+            "mindmap": a.id,
+            "node": a.node,
+            "status": "pending",
+            "operations": applied,
+            "skipped": skipped,
+            "note": "Offered, not applied. Poll takomo_plan_proposals to see what a person \
+                     decided.",
+        }))
+    }
+
+    async fn do_plan_proposals(&self, auth: &AuthCtx, a: PlanProposalsArgs) -> ApiResult<Value> {
+        auth.require_scope("read")?;
+        let map = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let mut items = room.read(crate::api::docprops::read_proposals);
+        if let Some(node) = &a.node {
+            items.retain(|p| p.get("node").and_then(Value::as_str) == Some(node.as_str()));
+        }
+        if let Some(status) = &a.status {
+            items.retain(|p| p.get("status").and_then(Value::as_str) == Some(status.as_str()));
+        }
+        Ok(json!({ "ok": true, "items": items, "total": items.len() }))
+    }
+
+    async fn do_mindmap_grow(&self, auth: &AuthCtx, a: MindmapGrowArgs) -> ApiResult<Value> {
+        auth.require_scope("write")?;
+        // Scope is checked against the map's own project: an id alone never grants
+        // access, the same rule initiative_append follows.
+        let map = self
+            .state
+            .store
+            .get_mindmap(&a.id)?
+            .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
+        auth.require_project(&map.project)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
+
+        let adds: Vec<crate::store::mindmapdoc::NodeAdd> = a
             .nodes
             .into_iter()
-            .map(|n| crate::store::NodeAdd {
+            .map(|n| crate::store::mindmapdoc::NodeAdd {
                 parent: n.parent,
-                text: n.text,
-                position: None,
+                by_user: auth.user.clone(),
+                title: n.text,
+                // An agent's branch is marked as an agent's. Nothing renders it
+                // yet, but a map that cannot say which thoughts a person had is
+                // a map that can never grow a trust view.
+                origin: Some("agent".to_string()),
+                ..Default::default()
             })
             .collect();
-        let nodes = self.state.store.grow_mindmap(&a.id, &adds, &auth.actor)?;
+
+        // The SAME replica the browsers are on, so a branch added while somebody
+        // is looking at the map appears as it is written rather than on reload.
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        let actor = auth.actor.clone();
+        let created = room.mutate(|doc| crate::store::mindmapdoc::add_nodes(doc, &adds, &actor))?;
+        // The same rule the REST writes follow: a tool call that answers "done"
+        // has to have persisted, rather than trusting a debounce meant for
+        // somebody typing.
+        crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
+
+        let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));
+        let nodes: Vec<Value> = created
+            .iter()
+            .filter_map(|(id, _)| {
+                all.iter()
+                    .find(|n| n["id"].as_str() == Some(id.as_str()))
+                    .cloned()
+            })
+            .collect();
+
+        self.state
+            .store
+            .note_mindmap_size(&a.id, all.len() as i64)?;
+        self.state.store.note_mindmap_event(
+            &a.id,
+            crate::store::MindmapChange::Grown,
+            json!({ "mindmap": a.id, "nodes": nodes.len() }),
+            &auth.actor,
+        )?;
         self.state.wake();
         Ok(json!({
             "ok": true,
-            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+            "nodes": nodes,
             "note": "Hang the next round under these by passing their ids as `parent`.",
         }))
     }
 
-    fn do_mindmap_show(&self, auth: &AuthCtx, a: MindmapShowArgs) -> ApiResult<Value> {
+    async fn do_mindmap_show(&self, auth: &AuthCtx, a: MindmapShowArgs) -> ApiResult<Value> {
         auth.require_scope("read")?;
-        let (map, nodes) = self
+        let mut map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let outline = self.state.store.mindmap_outline(&a.id, a.node.as_deref())?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        // Only for a caller that may WRITE — the same gate the REST twin
+        // carries. `ensure_prose` creates a fragment per node and drops the
+        // legacy field, so running it here made a `read` tool alter the shared
+        // replica, broadcast that to every open canvas, and persist it. Worse
+        // here than on REST: both these tools are in `READ_TOOLS`, so the write
+        // was not even debited against the token's budget.
+        if auth.require_scope("write").is_ok() {
+            room.mutate(|doc| Ok(crate::store::mindmapdoc::ensure_prose(doc)))?;
+        }
+        let (nodes, relationships, outline) = room.read(|doc| {
+            let (nodes, relationships, raw) = crate::store::mindmapdoc::snapshot(doc, &a.id);
+            let text = match a.node.as_deref() {
+                Some(node) => crate::store::mindmapdoc::outline(&raw, node),
+                None => crate::store::mindmapdoc::full_outline(&raw, &map.title),
+            };
+            (nodes, relationships, text)
+        });
+        map.nodes = nodes.len() as i64;
+
         Ok(json!({
             "ok": true,
             "mindmap": map.to_json(),
             "outline": outline,
             // The ids alongside the text, because reading a map is usually the step
             // before adding to it and every add needs a parent id.
-            "nodes": nodes.iter().map(|n| n.to_json()).collect::<Vec<_>>(),
+            "nodes": nodes,
+            "relationships": relationships,
         }))
     }
 
@@ -2374,22 +2648,84 @@ impl TakomoMcp {
         }))
     }
 
-    fn do_mindmap_promote(&self, auth: &AuthCtx, a: MindmapPromoteArgs) -> ApiResult<Value> {
+    async fn do_mindmap_promote(&self, auth: &AuthCtx, a: MindmapPromoteArgs) -> ApiResult<Value> {
         auth.require_scope("write")?;
-        let (map, _) = self
+        let map = self
             .state
             .store
             .get_mindmap(&a.id)?
             .ok_or_else(|| ApiError::not_found("mindmap", &a.id))?;
         auth.require_project(&map.project)?;
-        let (node, created) =
-            self.state
-                .store
-                .promote_mindmap_node(&a.id, &a.node, &a.target, &auth.actor)?;
+        crate::store::validate_promotion_target(&a.target)?;
+        self.state.store.ensure_collab_writable(&a.id)?;
+
+        let room = crate::api::docsync::open_room(&self.state, &a.id).await?;
+        let state = self.state.clone();
+        let actor = auth.actor.clone();
+        let map_id = a.id.clone();
+        let node_id = a.node.clone();
+        let target = a.target.clone();
+
+        let created = room.mutate(move |doc| {
+            let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, &map_id);
+            let ordered = crate::store::mindmapdoc::tree_order(&nodes);
+            let branch = ordered
+                .iter()
+                .find(|n| n.id == node_id)
+                .ok_or_else(|| ApiError::not_found("mindmap_node", &node_id))?;
+            if let (Some(kind), Some(existing)) = (&branch.promoted_kind, &branch.promoted_id) {
+                return Err(ApiError::conflict(
+                    "mindmap.already_promoted",
+                    format!(
+                        "That branch already became {kind} '{existing}'. Promoting it again would make a second one from the same thought, indistinguishable from the first."
+                    ),
+                ));
+            }
+            let title = branch.title.clone();
+            let branch_outline = crate::store::mindmapdoc::outline(&nodes, &node_id);
+            let children: Vec<(String, String)> = ordered
+                .iter()
+                .filter(|n| n.parent.as_deref() == Some(node_id.as_str()))
+                .map(|child| {
+                    (
+                        child.title.clone(),
+                        crate::store::mindmapdoc::outline(&nodes, &child.id),
+                    )
+                })
+                .collect();
+
+            let created = state.store.promote_branch(
+                &crate::store::BranchPromotion {
+                    map_id: &map_id,
+                    node_id: &node_id,
+                    target: &target,
+                    title: &title,
+                    branch_outline: &branch_outline,
+                    children: &children,
+                },
+                &actor,
+            )?;
+            let kind = created["kind"].as_str().unwrap_or_default();
+            let created_id = created["id"].as_str().unwrap_or_default();
+            crate::store::mindmapdoc::set_promoted(doc, &node_id, kind, created_id)?;
+            Ok(created)
+        })?;
+
+        // The work is committed; without this the link back into the map is not
+        // durable, and a promoted branch could come back looking unpromoted and
+        // graduate a second time.
+        crate::api::docsync::flush(&self.state, &room, &auth.actor).await;
+
+        let (all, _, _) = room.read(|doc| crate::store::mindmapdoc::snapshot(doc, &a.id));
+        let node = all
+            .into_iter()
+            .find(|n| n["id"].as_str() == Some(a.node.as_str()))
+            .ok_or_else(|| ApiError::not_found("mindmap_node", &a.node))?;
+
         self.state.wake();
         Ok(json!({
             "ok": true,
-            "node": node.to_json(),
+            "node": node,
             "created": created,
             "note": "The node stays on the map, carrying what it became — the map is the record of how the thinking got there.",
         }))
@@ -3556,6 +3892,7 @@ impl TakomoMcp {
             other => other.map(str::to_string),
         };
         let filter = crate::store::CheckFilter {
+            node: None,
             project: a.project.clone(),
             epic,
             initiative,
@@ -3613,6 +3950,7 @@ impl TakomoMcp {
         auth.require_scope("write")?;
         auth.require_project(&a.project)?;
         let req = crate::store::CheckCreate {
+            node: None,
             project: a.project.clone(),
             epic: a.epic,
             initiative: a.initiative,
@@ -4013,4 +4351,53 @@ fn brief(t: &Ticket) -> Value {
         "blocked_by": if t.blocked_by.is_empty() { Value::Null } else { json!(t.blocked_by) },
         "claimed_by": t.active_claim(now_ms()).map(|(h, _)| h),
     })
+}
+
+/// The plan as an agent reads it: headings from the tree, each section's blocks
+/// annotated with their ids beneath its own.
+fn plan_markdown(doc: &yrs::Doc, map_id: &str, node: Option<&str>) -> ApiResult<String> {
+    use yrs::Transact;
+    let (_, _, nodes) = crate::store::mindmapdoc::snapshot(doc, map_id);
+    if let Some(node) = node {
+        // The NON-creating read: this is called inside `room.read`, where a
+        // mutation is never queued for the flush nor broadcast, so creating a
+        // fragment here would leave the server holding one no peer knows about.
+        // A section with no fragment yet reads as its legacy notes, which is what
+        // `read_nodes` does — otherwise a read-only agent sees blank sections on
+        // a map that simply has not been converted yet.
+        return Ok(
+            match crate::store::mindmapdoc::read_section_prose(doc, node) {
+                Some(frag) => {
+                    let txn = doc.transact();
+                    let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                    crate::api::docprops::annotate(&blocks)
+                }
+                None => nodes
+                    .iter()
+                    .find(|n| n.id == node)
+                    .map(|n| n.notes.clone())
+                    .unwrap_or_default(),
+            },
+        );
+    }
+    let mut out = String::new();
+    for section in crate::store::mindmapdoc::tree_order(&nodes) {
+        let level = crate::store::mindmapdoc::depth_of(&nodes, &section.id).min(6);
+        out.push_str(&format!("{} {}\n\n", "#".repeat(level), section.title));
+        let body = match crate::store::mindmapdoc::read_section_prose(doc, &section.id) {
+            Some(frag) => {
+                let txn = doc.transact();
+                let blocks = crate::api::docprops::read_blocks(&txn, &frag);
+                crate::api::docprops::annotate(&blocks)
+            }
+            None => section.notes.clone(),
+        };
+        {
+            if !body.trim().is_empty() {
+                out.push_str(&body);
+                out.push_str("\n\n");
+            }
+        }
+    }
+    Ok(out.trim_end().to_string())
 }

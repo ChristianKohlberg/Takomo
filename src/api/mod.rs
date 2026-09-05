@@ -17,6 +17,7 @@ pub mod projects;
 pub mod questions;
 pub mod schedules;
 pub mod shares;
+pub mod speech;
 pub mod tags;
 pub mod tickets;
 pub mod tokens;

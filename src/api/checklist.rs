@@ -27,9 +27,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 const RELEASE_FIELDS: [&str; 4] = ["ref", "note", "touched_paths", "orphan_globs"];
-const CHECK_CREATE_FIELDS: [&str; 15] = [
+const CHECK_CREATE_FIELDS: [&str; 16] = [
     "epic",
     "initiative",
+    "node",
     "environments",
     "title",
     "body",
@@ -44,9 +45,10 @@ const CHECK_CREATE_FIELDS: [&str; 15] = [
     "globs",
     "metadata",
 ];
-const CHECK_PATCH_FIELDS: [&str; 15] = [
+const CHECK_PATCH_FIELDS: [&str; 16] = [
     "epic",
     "initiative",
+    "node",
     "environments",
     "title",
     "body",
@@ -160,6 +162,35 @@ pub async fn list_releases(
 // ---------------------------------------------------------------------------
 
 /// POST /v1/projects/{project}/checks (write) — declare a check.
+/// The node must be a section of this project's plan.
+///
+/// Checked HERE rather than in the store, and that is the whole point: nodes
+/// live in the CRDT document, not in a table. A store-side check queried
+/// `mindmap_nodes`, which is the legacy table `adopt_legacy_nodes` emptied — so
+/// it could never find a node created today and refused every real id. Only this
+/// layer can open the room.
+///
+/// A project holds at most one plan, which is what makes a bare node id
+/// resolvable at all.
+async fn validate_check_node(state: &Arc<AppState>, project: &str, node: &str) -> ApiResult<()> {
+    let index = crate::api::mindmaps::project_node_index(state, project).await?;
+    if index.iter().any(|(_, n)| n.id == node) {
+        return Ok(());
+    }
+    Err(ApiError::validation(
+        "validation.check_node",
+        format!(
+            "No node '{node}' in this project's plan. A check names the part of the plan it \
+             verifies, so the id has to be one."
+        ),
+    )
+    .remedy(
+        "Read the plan with takomo_plan_read or GET /v1/mindmaps/{id} — every section carries \
+         its node id — or leave `node` out to file a check about no part in particular."
+            .to_string(),
+    ))
+}
+
 pub async fn create_check(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
@@ -170,10 +201,14 @@ pub async fn create_check(
     ctx.require_project(&project)?;
     let obj = body_object(&body)?;
     reject_unknown(obj, &CHECK_CREATE_FIELDS)?;
+    if let Some(n) = get_str(obj, "node")? {
+        validate_check_node(&state, &project, &n).await?;
+    }
     let req = CheckCreate {
         project: project.clone(),
         epic: get_str(obj, "epic")?,
         initiative: get_str(obj, "initiative")?,
+        node: get_str(obj, "node")?,
         environments: get_string_array(obj, "environments")?.unwrap_or_default(),
         title: require_str(obj, "title")?,
         body: get_str(obj, "body")?.unwrap_or_default(),
@@ -215,10 +250,17 @@ pub async fn list_checks(
         Some("none") => Some(String::new()),
         other => other.map(str::to_string),
     };
+    // `?node=none` asks the opposite question, and it is the useful one: which
+    // checks are about no part of the plan in particular.
+    let node = match first(&pairs, "node") {
+        Some("none") => Some(String::new()),
+        other => other.map(str::to_string),
+    };
     let filter = CheckFilter {
         project: project.clone(),
         epic,
         initiative,
+        node,
         severity: first(&pairs, "severity").map(str::to_string),
         layer: first(&pairs, "layer").map(str::to_string),
         include_archived: first(&pairs, "archived") == Some("include"),
@@ -278,6 +320,7 @@ pub async fn patch_check(
         metadata_merge: obj.get("metadata_merge").cloned(),
         epic: override_str(obj, "epic")?,
         initiative: override_str(obj, "initiative")?,
+        node: override_str(obj, "node")?,
         environments: get_string_array(obj, "environments")?,
     };
     let check = state.store.patch_check(&id, &patch, &ctx.actor)?;

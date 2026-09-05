@@ -53,7 +53,7 @@ use yrs::types::xml::XmlOut;
 use yrs::{Any, GetString, Map, ReadTxn, Transact, Xml, XmlFragment};
 
 /// The Y.Doc key the editor binds its prose to. Must match the `field` given to
-/// Tiptap's `Collaboration` extension in `web/src/pages/documents/Editor.tsx` —
+/// Tiptap's `Collaboration` extension in `web/src/pages/documents/SectionEditor.tsx` —
 /// they are the same string on two sides of a wire.
 pub const PROSE_FIELD: &str = "prose";
 
@@ -252,10 +252,18 @@ pub struct Validated {
 /// an error: a human may legitimately have deleted that paragraph while the
 /// model was thinking, and failing the whole run over it would make every
 /// concurrent edit a lost agent run.
+///
+/// `read_tool` is the MCP tool that re-reads THIS surface. It is a parameter
+/// rather than a constant because two surfaces share this function: a plan
+/// section is read with `takomo_plan_read`, and telling its agent to call
+/// `takomo_document_read` sends it to a tool that cannot see the section it is
+/// being asked to look at again. A remedy that names the wrong tool is worse
+/// than none, because the agent will follow it.
 pub fn validate_ops(
     raw: &Value,
     blocks: &[Block],
     scope: Option<&[String]>,
+    read_tool: &str,
 ) -> ApiResult<Validated> {
     let list = raw.as_array().ok_or_else(|| {
         ApiError::validation(
@@ -410,11 +418,10 @@ pub fn validate_ops(
                 }
             ),
         )
-        .remedy(
-            "Re-read the document with takomo_document_read — the block ids may have \
-             moved on — and address only the blocks it lists."
-                .to_string(),
-        ));
+        .remedy(format!(
+            "Re-read it with {read_tool} — the block ids may have moved on — and \
+             address only the blocks it lists."
+        )));
     }
 
     Ok(Validated { ops, skipped })
@@ -438,8 +445,13 @@ fn record_json(value: &Out) -> Option<Value> {
 /// nested Yjs structure: nothing merges *within* a proposal — it is written once
 /// and then only its status changes — so the structure would buy concurrency
 /// nobody needs and cost a schema both sides must agree on.
+#[allow(clippy::too_many_arguments)]
 pub fn write_proposal(
     doc: &yrs::Doc,
+    // The section this is about, when the document is a PLAN rather than a
+    // standalone document. `None` for a document, whose proposals are about the
+    // whole of it.
+    node: Option<&str>,
     author: &str,
     instruction: &str,
     summary: &str,
@@ -481,6 +493,9 @@ pub fn write_proposal(
 
     let record = json!({
         "id": id,
+        // Which section, when the document is a plan. A standalone document has
+        // no sections, so this is null there.
+        "node": node,
         "status": "pending",
         "author": author,
         "instruction": instruction,

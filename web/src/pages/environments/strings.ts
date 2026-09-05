@@ -4,6 +4,7 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    specification: 'Specification',
     board: 'Board',
     inbox: 'Inbox',
     documents: 'Documents',
@@ -90,6 +91,7 @@ export const STR = defineStrings({
     dsUnknown: 'unknown',
   },
   de: {
+    specification: 'Spezifikation',
     board: 'Board',
     inbox: 'Inbox',
     documents: 'Dokumente',

@@ -952,11 +952,9 @@ export function App() {
         nav: {
           board: t.board,
           inbox: t.inbox,
-          documents: t.documents,
+          specification: t.specification,
           initiatives: t.initiatives,
-          mindmaps: t.mindmaps,
           schedules: t.schedules,
-          verification: t.verification,
           environments: t.environments,
         },
         // Free here — the page already knows, having counted the documents it is

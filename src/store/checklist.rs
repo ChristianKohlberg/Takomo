@@ -134,6 +134,8 @@ pub struct CheckCreate {
     pub epic: Option<String>,
     /// The initiative that agreed this check should exist.
     pub initiative: Option<String>,
+    /// The mindmap node this check verifies.
+    pub node: Option<String>,
     /// Environments this check must be verified in, by id or slug. Empty leaves
     /// it environment-agnostic.
     pub environments: Vec<String>,
@@ -170,6 +172,8 @@ pub struct CheckPatch {
     pub metadata_merge: Option<Value>,
     pub epic: Option<Option<String>>,
     pub initiative: Option<Option<String>>,
+    /// `Some(None)` unlinks it from the plan; `None` leaves the link alone.
+    pub node: Option<Option<String>>,
     /// Replaces the declared set. An empty vec clears it, which returns the
     /// check to the environment-agnostic reading.
     pub environments: Option<Vec<String>>,
@@ -244,6 +248,8 @@ pub struct CheckFilter {
     /// Narrow to one initiative's checks; the literal "none" narrows to checks
     /// no initiative claims.
     pub initiative: Option<String>,
+    /// The node a check is about. `Some("")` means "attached to no part".
+    pub node: Option<String>,
     pub severity: Option<String>,
     pub layer: Option<String>,
     pub include_archived: bool,
@@ -606,6 +612,7 @@ fn row_to_check(row: &Row) -> rusqlite::Result<Check> {
         project: row.get("project")?,
         epic: row.get("epic")?,
         initiative: row.get("initiative")?,
+        node: row.get("node")?,
         title: row.get("title")?,
         body: row.get("body")?,
         precondition: row.get("precondition")?,
@@ -661,7 +668,7 @@ fn row_to_case(row: &Row) -> rusqlite::Result<Case> {
 }
 
 const CHECK_COLS: &str =
-    "id, project, epic, initiative, title, body, precondition, layer, severity, \
+    "id, project, epic, initiative, node, title, body, precondition, layer, severity, \
     verification, expiry_days, expiry_releases, cost_agent_minutes, cost_human_minutes, \
     metadata, version, created_by, created_at, updated_at, archived_at";
 
@@ -1414,6 +1421,7 @@ impl Store {
         let project = req.project.clone();
         let epic = req.epic.clone();
         let initiative = req.initiative.clone();
+        let node = req.node.clone();
 
         self.with_tx(|tx| {
             project_exists(tx, &project)?;
@@ -1433,11 +1441,11 @@ impl Store {
                 }
             }
             tx.execute(
-                "INSERT INTO checks (id, project, epic, initiative, title, body, precondition,
+                "INSERT INTO checks (id, project, epic, initiative, node, title, body, precondition,
                     layer, severity, verification, expiry_days, expiry_releases,
                     cost_agent_minutes, cost_human_minutes, metadata, version, created_by,
                     created_at, updated_at)
-                 VALUES (?1,?2,?3,?17,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16,?16)",
+                 VALUES (?1,?2,?3,?17,?18,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16,?16)",
                 params![
                     id,
                     project,
@@ -1456,6 +1464,7 @@ impl Store {
                     actor,
                     now,
                     initiative,
+                    node,
                 ],
             )?;
             for g in &globs {
@@ -1548,6 +1557,15 @@ impl Store {
                             l.initiative.is_none()
                         } else {
                             l.initiative.as_deref() == Some(i)
+                        }
+                    })
+                    && filter.node.as_deref().is_none_or(|n| {
+                        // Same `none` convention: the checks about no part of
+                        // the plan in particular.
+                        if n.is_empty() {
+                            l.node.is_none()
+                        } else {
+                            l.node.as_deref() == Some(n)
                         }
                     })
             });
@@ -1679,6 +1697,7 @@ impl Store {
             set_override!(cost_human_minutes, "cost_human_minutes");
             set_override!(epic, "epic");
             set_override!(initiative, "initiative");
+            set_override!(node, "node");
 
             if let Some(merge) = &patch.metadata_merge {
                 let mut merged = existing.metadata.clone();

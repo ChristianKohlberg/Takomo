@@ -1,0 +1,163 @@
+{
+  "_": [
+    "Shared test vectors for fractional order keys.",
+    "",
+    "Checked by BOTH src/fracdex.rs and web/src/lib/fracdex.test.ts. The browser",
+    "assigns order keys at typing speed and the API assigns them in batches, so",
+    "the two implementations must agree byte for byte — this file is the only",
+    "thing that makes a drift fail loudly instead of quietly reordering somebody",
+    "else's mindmap.",
+    "",
+    "null means unbounded: {a: null, b: null} is the first key in an empty ring.",
+    "",
+    "The `between` cases below now include neighbours a peer could send but this",
+    "module would never mint. They are the inputs that used to panic the Rust side",
+    "(byte slicing, an empty key) or return junk from the TypeScript side; both now",
+    "ignore such a neighbour, which is what makes the two agree on hostile input."
+  ],
+  "between": [
+    {
+      "a": null,
+      "b": null,
+      "want": "V",
+      "why": "the first key in an empty ring"
+    },
+    {
+      "a": null,
+      "b": "V",
+      "want": "F",
+      "why": "prepend"
+    },
+    {
+      "a": "V",
+      "b": null,
+      "want": "k",
+      "why": "append"
+    },
+    {
+      "a": "V",
+      "b": "k",
+      "want": "c",
+      "why": "a wide gap takes the middle digit"
+    },
+    {
+      "a": "A",
+      "b": "B",
+      "want": "AV",
+      "why": "adjacent digits grow a digit"
+    },
+    {
+      "a": "AV",
+      "b": "B",
+      "want": "Ak",
+      "why": "and keep growing on the low side"
+    },
+    {
+      "a": "A",
+      "b": "AV",
+      "want": "AF",
+      "why": "a shared prefix is copied, not decided"
+    },
+    {
+      "a": null,
+      "b": "A",
+      "want": "5"
+    },
+    {
+      "a": null,
+      "b": "1",
+      "want": "0V",
+      "why": "below the second digit means a leading zero"
+    },
+    {
+      "a": null,
+      "b": "0V",
+      "want": "0F",
+      "why": "a LEADING lowest digit is ordinary"
+    },
+    {
+      "a": "0V",
+      "b": "0W",
+      "want": "0VV"
+    },
+    {
+      "a": "0V",
+      "b": null,
+      "want": "V"
+    },
+    {
+      "a": "y",
+      "b": "z",
+      "want": "yV"
+    },
+    {
+      "a": "z",
+      "b": null,
+      "want": "zV",
+      "why": "the top digit has no room above it"
+    },
+    {
+      "a": "zz",
+      "b": null,
+      "want": "zzV"
+    },
+    {
+      "a": null,
+      "b": "",
+      "want": "V",
+      "why": "an empty key is not a key; treated as no neighbour"
+    },
+    {
+      "a": "",
+      "b": "V",
+      "want": "F",
+      "why": "same, on the other side"
+    },
+    {
+      "a": "V0",
+      "b": null,
+      "want": "V",
+      "why": "a trailing lowest digit is refused, not sliced"
+    },
+    {
+      "a": "V",
+      "b": "",
+      "want": "k"
+    },
+    {
+      "a": "Aé",
+      "b": "Aê",
+      "want": "V",
+      "why": "multi-byte input used to panic the byte slicing"
+    },
+    {
+      "a": "z ",
+      "b": null,
+      "want": "V",
+      "why": "a space is not a digit"
+    }
+  ],
+  "valid": [
+    "V",
+    "F",
+    "k",
+    "AV",
+    "0V",
+    "zzV",
+    "0VV",
+    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  ],
+  "invalid": [
+    "",
+    "0",
+    "V0",
+    "AV0",
+    "V!",
+    "V-",
+    "Ü",
+    " V",
+    "V ",
+    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+  ],
+  "maxKeyLen": 256
+}

@@ -20,6 +20,12 @@ export interface AppHeaderProps {
   onLang: (l: Locale) => void
   /** Right-hand actions (a primary button, icon buttons). */
   children?: ReactNode
+  /**
+   * Views of THIS surface, beside its name — the specification's map, plan and
+   * tests. Beside the title rather than out with the actions on the right,
+   * because it names what you are looking at rather than doing something to it.
+   */
+  views?: ReactNode
 }
 
 export function AppHeader({
@@ -27,12 +33,14 @@ export function AppHeader({
   lang,
   onLang,
   children,
+  views,
 }: AppHeaderProps) {
   return (
     <header className="bg-card border-b-border-soft flex min-h-[58px] flex-none flex-wrap items-center gap-3 border-b px-5 py-2.5">
       <h1 className="text-foreground min-w-0 truncate text-base font-[750] tracking-[-0.02em]">
         {title}
       </h1>
+      {views}
 
       <span className="grow" />
       {children}

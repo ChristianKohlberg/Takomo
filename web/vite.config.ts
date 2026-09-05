@@ -43,18 +43,35 @@ import { relative, resolve } from 'node:path'
 const REQUIRED = ['index.html']
 
 /**
+ * The CRDT runtime, shared by the two lazily-loaded collaborative routes.
+ *
+ * This used to sit inside EDITOR_ONLY, back when `/documents` was the only thing
+ * that synchronised anything. `/mindmaps` is now a second consumer, so leaving it
+ * there would either duplicate Yjs into both lazy chunks or drag the editor's
+ * ~150 kB of Tiptap and ProseMirror along behind a mindmap.
+ *
+ * It gets its OWN named chunk rather than going to vendor, and the distinction is
+ * the whole point: vendor is preloaded by index.html, so anything in it is paid
+ * on first paint by every surface. A named chunk reachable only through dynamic
+ * imports is fetched when — and only when — one of those two routes opens.
+ *
+ * `lib0` is Yjs's own runtime and `isomorphic.js` is lib0's; neither is a
+ * collaboration-shaped name, and leaving either out silently put it back on the
+ * critical path while the build output still looked split.
+ */
+const COLLAB_PACKAGES = ['yjs', 'y-websocket', 'y-protocols', 'lib0', 'isomorphic\\.js']
+
+/**
  * Packages reachable ONLY from the lazily-loaded `/documents` editor.
  *
- * Kept out of the shared vendor chunk — see `manualChunks` below for why that
- * matters more than it looks.
+ * Kept out of BOTH shared chunks — see `manualChunks` below for why that matters
+ * more than it looks.
  *
- * This is the exact set the editor install added to the lockfile, which is what
- * makes it trustworthy rather than a guess: nothing here existed before Tiptap
- * did, so nothing else can need it. The transitive names matter as much as the
- * obvious ones — `linkifyjs` (via the Link extension) and `lib0` (Yjs's own
- * runtime) are not editor-shaped names, and leaving them out silently put them
- * back on the critical path while the build output still showed a neat little
- * Editor.js.
+ * This is the exact set the editor install added to the lockfile, minus the CRDT
+ * runtime above, which is what makes it trustworthy rather than a guess: nothing
+ * here existed before Tiptap did, so nothing else can need it. The transitive
+ * names matter as much as the obvious ones — `linkifyjs` arrives via the Link
+ * extension and `orderedmap` via ProseMirror's schema.
  *
  * A stray entry costs a slightly larger editor chunk. A missing one costs every
  * other surface, which is what `npm run size` is there to catch.
@@ -62,12 +79,7 @@ const REQUIRED = ['index.html']
 const EDITOR_ONLY_PACKAGES = [
   '@tiptap',
   'prosemirror-[^/]+',
-  'yjs',
   'y-prosemirror',
-  'y-websocket',
-  'y-protocols',
-  'lib0',
-  'isomorphic\\.js',
   'linkifyjs',
   'fast-equals',
   'use-sync-external-store',
@@ -77,6 +89,7 @@ const EDITOR_ONLY_PACKAGES = [
   'crelt',
 ]
 
+const COLLAB = new RegExp(`node_modules/(${COLLAB_PACKAGES.join('|')})/`)
 const EDITOR_ONLY = new RegExp(`node_modules/(${EDITOR_ONLY_PACKAGES.join('|')})/`)
 
 /**
@@ -154,18 +167,22 @@ export default defineConfig({
         // of the earlier change: React was previously inlined into four
         // documents.
         //
-        // EDITOR_ONLY is excluded from it, and that exclusion is the difference
-        // between the editor being split and merely appearing to be. Tiptap,
-        // ProseMirror and Yjs are ~150 kB gz and reachable only from the lazy
-        // `/documents` route — but a blanket "everything in node_modules goes to
-        // vendor" would sweep them into the chunk index.html loads eagerly, so
-        // every other surface would pay for them on first paint while the build
-        // output still showed a neat little Editor.js. Returning undefined lets
-        // the bundler attach them to the dynamic chunk that actually imports
-        // them.
+        // EDITOR_ONLY and COLLAB are both excluded from it, and that exclusion
+        // is the difference between a route being split and merely appearing to
+        // be. Tiptap and ProseMirror are ~100 kB gz and reachable only from the
+        // lazy `/documents` route; Yjs and its socket are ~50 kB and reachable
+        // only from `/documents` and `/mindmaps` — but a blanket "everything in
+        // node_modules goes to vendor" would sweep them into the chunk
+        // index.html loads eagerly, so every other surface would pay for them on
+        // first paint while the build output still showed a neat little
+        // Editor.js. Returning undefined lets the bundler attach the editor's
+        // packages to the dynamic chunk that imports them; `collab` is named
+        // instead because TWO dynamic chunks import it, and an unnamed shared
+        // dependency would be duplicated into both.
         manualChunks: (id) => {
           if (!id.includes('node_modules')) return undefined
           if (EDITOR_ONLY.test(id)) return undefined
+          if (COLLAB.test(id)) return 'collab'
           return 'vendor'
         },
       },

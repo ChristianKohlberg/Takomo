@@ -48,6 +48,9 @@ export interface CheckDialogLabels {
   fGlobs: string
   fGlobsPh: string
   fGlobsHint: string
+  fNode: string
+  fNodeHint: string
+  fNodeNone: string
   create: string
   cancel: string
 }
@@ -61,6 +64,10 @@ export interface CheckDialogProps {
   environments: { id: string; slug: string }[]
   /** Preselected initiative, when the dialog was opened from a group header. */
   defaultInitiative?: string
+  /** Sections of the plan this check may be filed against, as `[id, title]`. */
+  nodes: { id: string; title: string }[]
+  /** Preselected section, when the screen is already filtered to one. */
+  defaultNode?: string
   labels: CheckDialogLabels
   onSubmit: (fields: CheckFields) => Promise<unknown>
 }
@@ -71,11 +78,14 @@ export function CheckDialog({
   initiatives,
   environments,
   defaultInitiative,
+  nodes,
+  defaultNode,
   labels,
   onSubmit,
 }: CheckDialogProps) {
   const [title, setTitle] = useState('')
   const [initiative, setInitiative] = useState('')
+  const [node, setNode] = useState('')
   const [layer, setLayer] = useState<Layer>('ui')
   const [severity, setSeverity] = useState<Severity>('advisory')
   const [precondition, setPrecondition] = useState('')
@@ -89,6 +99,7 @@ export function CheckDialog({
     if (!open) return
     setTitle('')
     setInitiative(defaultInitiative ?? '')
+    setNode(defaultNode ?? '')
     setLayer('ui')
     setSeverity('advisory')
     setPrecondition('')
@@ -96,13 +107,14 @@ export function CheckDialog({
     setGlobs('')
     setEnvs([])
     setError('')
-  }, [open, defaultInitiative])
+  }, [open, defaultInitiative, defaultNode])
 
   async function submit() {
     setSaving(true)
     try {
       const fields: CheckFields = { title: title.trim(), layer, severity }
       if (initiative) fields.initiative = initiative
+      if (node) fields.node = node
       if (precondition.trim()) fields.precondition = precondition.trim()
       if (body.trim()) fields.body = body.trim()
       const list = globs
@@ -154,6 +166,26 @@ export function CheckDialog({
               />
             )}
           </Field>
+
+          {/* The part of the plan this check is about. A check filed under no
+              section is legitimate — a check about no part in particular — so
+              this offers "none" rather than insisting. */}
+          {nodes.length > 0 && (
+            <Field label={labels.fNode} hint={labels.fNodeHint}>
+              {(id) => (
+                <Picker
+                  id={id}
+                  value={node}
+                  onValueChange={(v) => setNode(v)}
+                  className="border-border bg-card h-9 rounded-md border px-2 text-[13px]"
+                  options={[
+                    { value: '', label: labels.fNodeNone },
+                    ...nodes.map((n) => ({ value: n.id, label: n.title })),
+                  ]}
+                />
+              )}
+            </Field>
+          )}
 
           <div className="flex flex-col gap-3 md:flex-row md:[&>*]:flex-[1_1_170px]">
             <Field label={labels.fLayer}>

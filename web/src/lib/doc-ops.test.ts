@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Schema } from '@tiptap/pm/model'
+import { Schema, type Node as PMNode } from '@tiptap/pm/model'
 import { EditorState } from '@tiptap/pm/state'
 
 import { applyOps, markdownToNodes, parseProposal, touchedBlocks, type Proposal } from './doc-ops'
@@ -31,6 +31,13 @@ const schema = new Schema({
 
 const para = (id: string, text: string) =>
   schema.nodes.paragraph!.create({ id }, schema.text(text))
+
+/** The text of each top-level block, in order. */
+function texts(doc: PMNode): string[] {
+  const out: string[] = []
+  doc.forEach((n) => out.push(n.textContent))
+  return out
+}
 
 function stateWith(...nodes: ReturnType<typeof para>[]) {
   return EditorState.create({ schema, doc: schema.nodes.doc!.create(null, nodes) })
@@ -150,5 +157,107 @@ describe('touchedBlocks', () => {
     })
     const ids = touchedBlocks([p('p1', 'pending', 'blk_a'), p('p2', 'accepted', 'blk_b')])
     expect([...ids]).toEqual(['blk_a'])
+  })
+})
+
+describe('a batch of ops lands the way it was written', () => {
+  it('keeps two insertions after one block in their order', () => {
+    const tr = stateWith(para('blk_one', 'Original.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_one', markdown: 'First addition.' },
+      { op: 'insert_after', id: 'blk_one', markdown: 'Second addition.' },
+    ])
+    expect(applied).toBe(2)
+    expect(skipped).toEqual([])
+    // Both re-found the same anchor, so the second used to land ABOVE the
+    // first: a reviewer accepted an ordered list and got it backwards, with
+    // nothing skipped to hint at it.
+    expect(texts(tr.doc)).toEqual(['Original.', 'First addition.', 'Second addition.'])
+  })
+
+  it('lets a later op still address a block an earlier op replaced', () => {
+    const tr = stateWith(para('blk_one', 'Original.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_one', markdown: 'Rewritten.' },
+      { op: 'insert_after', id: 'blk_one', markdown: 'Added after.' },
+    ])
+    // The replacement carries the id forward. Without that the insert was
+    // dropped and reported as "that block is no longer in the document" —
+    // blaming a peer for a removal this very accept had just performed.
+    expect(skipped).toEqual([])
+    expect(applied).toBe(2)
+    expect(texts(tr.doc)).toEqual(['Rewritten.', 'Added after.'])
+  })
+})
+
+describe('a batch whose ops change the shape under each other', () => {
+  it('keeps the order when a replace changes the anchor size mid-batch', () => {
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_a', markdown: 'X' },
+      { op: 'replace', id: 'blk_a', markdown: 'PP\n\nQQ' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Y' },
+    ])
+    // Named for what it actually pins. The byte-offset version fails this on
+    // ORDER (`PP QQ Y X`), not by splitting anything — a reviewer checked, and
+    // the first version of this test claimed the split in its name and comment
+    // while proving something else. The split has its own case below.
+    expect(applied).toBe(3)
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['PP', 'QQ', 'X', 'Y', 'Tail.'])
+  })
+
+  it('inserts after the WHOLE of a multi-node replacement, not inside it', () => {
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    const { skipped } = applyOps(tr, schema, [
+      { op: 'replace', id: 'blk_a', markdown: 'First half.\n\nSecond half.' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Added after.' },
+    ])
+    // Only the first replacement node carries the id, so the anchor's own size
+    // no longer covers what the block became.
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['First half.', 'Second half.', 'Added after.', 'Tail.'])
+  })
+
+  it('forgets what trailed an id when that block is deleted', () => {
+    // TWO blocks sharing an id, which `block-id.ts` calls the ordinary result of
+    // a concurrent split. `findBlock` takes the first, so a count left over from
+    // the deleted one is applied to the survivor and the insert walks past an
+    // unrelated block.
+    const tr = stateWith(
+      para('blk_dup', 'one'),
+      para('blk_dup', 'two'),
+      para('blk_other', 'three'),
+    ).tr
+    applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_dup', markdown: 'X' },
+      { op: 'delete', id: 'blk_dup' },
+      { op: 'insert_after', id: 'blk_dup', markdown: 'Y' },
+    ])
+    expect(texts(tr.doc)).toEqual(['X', 'two', 'Y', 'three'])
+  })
+})
+
+describe('the split the byte offset caused', () => {
+  it('never cuts a block in half, whatever an earlier op did to sizes', () => {
+    // THE corruption, on an input that actually produces it. Under the
+    // byte-offset version this yields ["PP","QQQQQ","Y","Q","XXXX","Tail."] —
+    // `QQQQQQ` cut in two — with `applied: 3` and `skipped: []`.
+    //
+    // Four earlier attempts in this file claimed to pin this and did not. Each
+    // used a shape where the stale offset landed at the END of a block, where
+    // ProseMirror's split leaves nothing behind, so no block came out empty and
+    // the assertion never discriminated. This input puts it in the middle. The
+    // input came from a reviewer, not from me — I had already convinced myself
+    // three times.
+    const tr = stateWith(para('blk_a', 'AAAA'), para('blk_t', 'Tail.')).tr
+    const { applied, skipped } = applyOps(tr, schema, [
+      { op: 'insert_after', id: 'blk_a', markdown: 'XXXX' },
+      { op: 'replace', id: 'blk_a', markdown: 'PP\n\nQQQQQQ' },
+      { op: 'insert_after', id: 'blk_a', markdown: 'Y' },
+    ])
+    expect(applied).toBe(3)
+    expect(skipped).toEqual([])
+    expect(texts(tr.doc)).toEqual(['PP', 'QQQQQQ', 'XXXX', 'Y', 'Tail.'])
   })
 })

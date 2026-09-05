@@ -43,6 +43,9 @@ pub struct AppState {
     /// `/documents` prompt bar off; everything else on that surface works
     /// without it, because an agent over MCP proposes through the same path.
     pub doc_agent: Option<crate::docagent::DocAgentConfig>,
+    /// Dictation, from `TAKOMO_ASSEMBLYAI_API_KEY`. `None` leaves the map's mic
+    /// button out rather than offering one that cannot work.
+    pub speech: Option<crate::speech::SpeechConfig>,
     /// The OAuth authorization server's identity, from `TAKOMO_PUBLIC_URL`.
     /// `None` disables the OAuth endpoints and the `WWW-Authenticate` challenge
     /// on `/mcp` — a server that cannot state its own issuer identity cannot run
@@ -61,12 +64,14 @@ impl AppState {
         store: Store,
         oauth: Option<crate::api::oauth::OauthConfig>,
         doc_agent: Option<crate::docagent::DocAgentConfig>,
+        speech: Option<crate::speech::SpeechConfig>,
     ) -> Arc<Self> {
         let state = AppState::new_with_oauth(store, oauth);
         // `new_with_oauth` hands back an Arc that nothing else holds yet, so
         // this is the one moment the field can still be set.
         let mut state = Arc::try_unwrap(state).map_err(|_| ()).expect("sole owner");
         state.doc_agent = doc_agent;
+        state.speech = speech;
         Arc::new(state)
     }
 
@@ -86,6 +91,7 @@ impl AppState {
             oauth_register_rate: Mutex::new(HashMap::new()),
             rooms: crate::api::docsync::Rooms::default(),
             doc_agent: None,
+            speech: None,
             oauth,
         })
     }
@@ -248,7 +254,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // the socket then uses.
         .route(
             "/v1/documents/{id}/session",
-            post(crate::api::docsync::create_session),
+            post(crate::api::docsync::create_document_session),
         )
         // The prompt bar. The ONE route in this server that calls a language
         // model — see the header of src/docagent.rs for why that exception
@@ -473,6 +479,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(axum::routing::delete(crate::api::mindmaps::delete)),
         )
         .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
+        // The plan's sections, flat: what resolves a check's `node` to a title.
+        .route(
+            "/v1/projects/{project}/nodes",
+            get(crate::api::mindmaps::project_nodes),
+        )
         .route("/v1/mindmaps/{id}/nodes", post(crate::api::mindmaps::add_nodes))
         .route(
             "/v1/mindmaps/{id}/nodes/{node}",
@@ -482,6 +493,46 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/mindmaps/{id}/nodes/{node}/promote",
             post(crate::api::mindmaps::promote),
+        )
+        // Ask a model for a change to one section. The one route that calls one.
+        .route("/v1/mindmaps/{id}/run", post(crate::api::mindmaps::run_agent))
+        // Dictation's only route: a short-lived token, never the account key.
+        .route("/v1/speech/token", post(crate::api::speech::mint_token))
+        // The plan as an agent reads it, and what it may offer back.
+        .route("/v1/mindmaps/{id}/prose", get(crate::api::mindmaps::prose))
+        .route(
+            "/v1/mindmaps/{id}/proposals",
+            get(crate::api::mindmaps::proposals).post(crate::api::mindmaps::propose),
+        )
+        // What happened to the plan, and who did it.
+        .route(
+            "/v1/mindmaps/{id}/trace",
+            get(crate::api::mindmaps::trace).post(crate::api::mindmaps::add_trace),
+        )
+        // The sync ticket, minted exactly as a document's is — a browser
+        // WebSocket cannot carry an Authorization header, so the credential has
+        // to ride the handshake.
+        .route(
+            "/v1/mindmaps/{id}/session",
+            post(crate::api::docsync::create_mindmap_session),
+        )
+        // An edge that is not part of the hierarchy.
+        .route(
+            "/v1/mindmaps/{id}/relationships",
+            post(crate::api::mindmaps::add_relationship),
+        )
+        .route(
+            "/v1/mindmaps/{id}/relationships/{relationship}",
+            axum::routing::delete(crate::api::mindmaps::delete_relationship),
+        )
+        // A pointer to something a node refers to. Never the bytes.
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}/attachments",
+            post(crate::api::mindmaps::add_attachment),
+        )
+        .route(
+            "/v1/mindmaps/{id}/nodes/{node}/attachments/{attachment}",
+            axum::routing::delete(crate::api::mindmaps::delete_attachment),
         )
         .route("/v1/events", get(crate::api::events::list))
         .route("/v1/events/stream", get(crate::api::events::stream))
@@ -647,7 +698,7 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
             }
             // Long-dead document sync tickets. Also deliberately does not set
             // `woke`, for the same reason: nothing long-polls on them.
-            if let Err(e) = state.store.sweep_expired_doc_sessions() {
+            if let Err(e) = state.store.sweep_expired_collab_sessions() {
                 eprintln!("doc session sweep failed: {}", e.body.message);
             }
             if woke {
@@ -737,7 +788,12 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         std::env::var("TAKOMO_DOC_MODEL").ok(),
     );
     let store = Store::open(db_path).map_err(|e| e.into_message())?;
-    let state = AppState::new_with_agent(store, oauth, doc_agent);
+    let state = AppState::new_with_agent(
+        store,
+        oauth,
+        doc_agent,
+        crate::speech::SpeechConfig::from_env(std::env::var("TAKOMO_ASSEMBLYAI_API_KEY").ok()),
+    );
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)

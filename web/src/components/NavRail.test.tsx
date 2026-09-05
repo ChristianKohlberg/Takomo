@@ -18,11 +18,9 @@ const LABELS = {
 const NAV = {
   board: 'Board',
   inbox: 'Inbox',
-  documents: 'Documents',
+  specification: 'Specification',
   initiatives: 'Initiatives',
-  mindmaps: 'Mindmaps',
   schedules: 'Schedules',
-  verification: 'Verification',
   environments: 'Environments',
 }
 
@@ -67,7 +65,7 @@ describe('NavRail', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Inbox', 'Initiatives', 'Schedules', 'Verification', 'Environments']) {
+    for (const name of ['Specification', 'Inbox', 'Initiatives', 'Schedules', 'Environments']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })

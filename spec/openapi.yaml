@@ -3819,6 +3819,13 @@ paths:
         `{"project":"tp","title":"Payments rebuild"}`. The title is the root —
         a map starts from one thing and everything hangs off it — so there is no
         separate root node to create.
+
+        A project holds ONE mindmap. The question "which map?" is not one anybody
+        wanted to answer, and a rail of half-started maps is how a surface stops
+        being used; a branch that turns out to be its own subject promotes into an
+        initiative or an epic instead. The data model is unchanged — `mindmaps` is
+        still keyed by project and every read still pages — so this is a cap that
+        can be lifted, not a shape that has to be migrated.
       requestBody:
         required: true
         content:
@@ -3843,7 +3850,7 @@ paths:
                   nodes: { type: array, items: { $ref: "#/components/schemas/MindmapNode" } }
                   note: { type: string }
         "403": { description: Token lacks the write scope or the project }
-        "409": { description: "The project is archived, so brainstorming under it is frozen too" }
+        "409": { description: "The project already has a mindmap (`mindmap.project_has_one` — a project holds one brainstorm, and the refusal names the map it has), or the project is archived, so brainstorming under it is frozen too (`project.archived`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
   /mindmaps/{id}:
@@ -3854,14 +3861,25 @@ paths:
       summary: One mindmap and every node on it (read scope)
       description: |
         One request, because a canvas cannot draw half a tree — and it is
-        affordable precisely because a map is capped at 500 nodes. Nodes come
-        ordered by position, so a caller can build the tree in one pass.
+        affordable precisely because a map is capped at 500 nodes. Nodes come in
+        tree order, parents before their children, so a caller can build the tree
+        in one pass; `position` is each node's rank among its own siblings.
 
         There is no cursor here and none is needed: the cap is well below any page
         size, so `total` is always the whole map.
+
+        Read from the **live replica**, not from the update log, so what comes back
+        includes the edits somebody is making right now. Two repairs happen here
+        rather than being stored, because a CRDT admits states no synchronous
+        validator could have refused: a node whose ancestry loops is re-parented to
+        the root (the member with the lowest id moves, so every peer computes the
+        same tree), and a node whose parent no longer exists is re-parented to the
+        root rather than dropped — losing a subtree because somebody deleted its
+        parent concurrently is worse than showing it. A relationship whose end no
+        longer resolves is dropped.
       responses:
         "200":
-          description: The map and its nodes.
+          description: The map, its nodes, and its cross-links.
           content:
             application/json:
               schema:
@@ -3869,7 +3887,25 @@ paths:
                 properties:
                   mindmap: { $ref: "#/components/schemas/Mindmap" }
                   nodes: { type: array, items: { $ref: "#/components/schemas/MindmapNode" } }
-                  total: { type: integer }
+                  standing:
+                    type: object
+                    description: |
+                      Where each section stands, keyed by node id: when it last
+                      changed, when it was last confirmed, and whether the
+                      confirmation is still good. A READING and not a stored
+                      flag — a section confirmed BEFORE its last edit is not
+                      confirmed any more, which no boolean can express.
+                    additionalProperties:
+                      type: object
+                      properties:
+                        changed_at: { type: [string, "null"], format: date-time }
+                        reviewed_at: { type: [string, "null"], format: date-time }
+                        confirmed: { type: boolean }
+                  relationships:
+                    type: array
+                    items: { $ref: "#/components/schemas/MindmapRelationship" }
+                    description: 'Edges outside the hierarchy. Dangling ones are already filtered out.'
+                  total: { type: integer, description: 'the node count — relationships do not count against the node cap' }
         "404": { $ref: "#/components/responses/NotFound" }
     patch:
       tags: [mindmaps]
@@ -4017,9 +4053,17 @@ paths:
             schema:
               type: object
               properties:
-                text: { type: string, maxLength: 280 }
+                title: { type: string, maxLength: 280, description: 'the field''s real name' }
+                text: { type: string, maxLength: 280, description: 'accepted alias for `title`' }
+                notes: { type: string, maxLength: 8000, description: 'the long form; does not render in the outline' }
                 parent: { type: [string, "null"] }
-                position: { type: integer }
+                position: { type: integer, minimum: 0, description: 'the index among the node''s siblings to move it to, 0 first. An index, NOT the gapped 1000/2000 ordering this field used to carry — a value past the end of the ring is refused with `validation.mindmap_position` rather than silently appending.' }
+                kind: { type: string, enum: [thought, question, decision, screen, component] }
+                edge_label: { type: string, maxLength: 80, description: 'labels the edge to this node''s parent' }
+                color: { type: string }
+                shape: { type: string }
+                icons: { type: array, maxItems: 8, items: { type: string } }
+                reviewed: { type: boolean, description: 'mark an agent-written node as looked at' }
                 at:
                   description: 'hand placement, or null to let the layout place it'
                   oneOf:
@@ -4111,6 +4155,476 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { description: "Already promoted (`mindmap.already_promoted`)" }
         "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/run:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [mindmaps]
+      summary: Ask a model for a change to one section (write scope)
+      description: |
+        The ONE route in this codebase that calls a language model, pointed at a
+        section of the plan. A deliberate exception to "Takomo stores, the agent
+        computes", made because a prompt bar that only filed a request nobody
+        would answer is not a feature.
+
+        What the exception does NOT change: the model is schema-constrained to
+        operations against block ids, its answer goes through the same
+        validation a fleet agent's does, and it lands as a **proposal a person
+        accepts**. Nothing here writes live text.
+
+        The section is re-read inside the write and the operations validated
+        against THAT, because it may have moved while the model was thinking —
+        which is the failure this whole surface exists to remove.
+
+        Off unless the model key is configured; `/v1/whoami` reports
+        `features.doc_agent` so a page can explain the absence rather than
+        offering a bar that fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node, instruction]
+              properties:
+                node: { type: string, description: 'the section to change' }
+                instruction: { type: string, description: 'what you want changed, in a sentence' }
+                scope: { type: [array, "null"], items: { type: string }, description: 'restrict to these block ids' }
+                model: { type: string }
+      responses:
+        "200":
+          description: Offered, not applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { type: string }
+                  mindmap: { type: string }
+                  node: { type: string }
+                  status: { type: string }
+                  operations: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+                  summary: { type: string }
+                  note: { type: string }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "503": { description: "No model is configured (`doc_agent.not_configured`); `/v1/whoami` reports this as `features.doc_agent: false`" }
+
+  /speech/token:
+    post:
+      tags: [mindmaps]
+      summary: A short-lived token for dictation (write scope)
+      description: |
+        Dictation on `/mindmaps`: you talk, and each finished sentence lands as a
+        thought. This is the whole server side of it.
+
+        The audio never reaches this server — the browser streams it straight to
+        the speech provider, which keeps a recording out of the request log and
+        off this disk. What the browser must not hold is the account key (a key
+        in a page is a key on every machine that loads it), so this exchanges it
+        for a token that is good for ten minutes and nothing else.
+
+        `write`, not `read`: dictation exists to change a map, and it costs the
+        operator money per minute. Off unless `TAKOMO_ASSEMBLYAI_API_KEY` is set;
+        `/v1/whoami` reports `features.voice`, so a page leaves the button out
+        rather than offering one that fails.
+      responses:
+        "200":
+          description: A token to open the provider's socket with.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_in: { type: integer, description: 'seconds' }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502": { description: "The speech provider could not be reached or refused the key (`speech.upstream`)" }
+        "503": { description: "Dictation is not configured (`speech.not_configured`); `/v1/whoami` reports this as `features.voice: false`" }
+
+  /mindmaps/{id}/prose:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: The plan as an agent reads it (read scope)
+      description: |
+        Annotated with block ids, which is what makes a reply addressable: an
+        agent answers with OPERATIONS against block ids, never with a document.
+        One section with `node`, or the whole plan — headings from the tree,
+        each section's blocks beneath its own.
+      parameters:
+        - { name: node, in: query, schema: { type: string }, description: 'one section' }
+      responses:
+        "200":
+          description: The plan, or one section of it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mindmap: { type: string }
+                  node: { type: [string, "null"] }
+                  markdown: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /mindmaps/{id}/proposals:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: What has been proposed, and what became of it (read scope)
+      parameters:
+        - { name: node, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, accepted, rejected] } }
+      responses:
+        "200":
+          description: Proposals against this plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { type: object } }
+                  total: { type: integer }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [mindmaps]
+      summary: Propose a change to one section (write scope)
+      description: |
+        **An agent proposes; a person accepts.** Nothing here goes live: the
+        operations are validated against the section as it stands and stored as
+        a proposal for somebody to decide on.
+
+        Operations address BLOCK IDS — `replace`, `insert_after`, `delete` — and
+        never carry a document, which is what keeps a person's concurrent typing.
+        An op naming a block that is gone, or outside `scope`, is dropped and
+        reported in `skipped` rather than silently applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node, operations]
+              properties:
+                node: { type: string, description: 'the section' }
+                operations: { type: array, items: { type: object } }
+                instruction: { type: string, description: 'what you were asked to do, in one line' }
+                summary: { type: string, description: 'what you changed and WHY — the reason, not a restatement of the edit' }
+                scope: { type: array, items: { type: string }, description: 'restrict to these block ids; enforced server-side' }
+      responses:
+        "201":
+          description: Offered, not applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal: { type: string }
+                  mindmap: { type: string }
+                  node: { type: string }
+                  status: { type: string }
+                  operations: { type: integer }
+                  skipped: { type: array, items: { type: string } }
+                  note: { type: string }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/trace:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [mindmaps]
+      summary: What happened to the plan, and who did it (read scope)
+      description: |
+        The plan's history, newest first — or one section's, with `node`.
+
+        **This is not the CRDT update log.** That is the mechanism which rebuilds
+        the text: written on every flush, merged, and rewritten wholesale by
+        compaction. Asking it "who changed 2.1, and has anybody agreed with it
+        since?" is asking a storage format a question about people. This answers
+        that one.
+
+        Sparse by construction: an act somebody would name — a thought written,
+        renamed, moved, pruned, reviewed, a proposal accepted — never a
+        keystroke. Every entry carries the free-form actor string AND the person
+        behind the credential (`users.id`) where it was bound to one, because a
+        scope is not an identity and an actor string does not survive somebody
+        leaving.
+      parameters:
+        - { name: node, in: query, schema: { type: string }, description: 'one section' }
+        - { name: limit, in: query, schema: { type: integer, default: 500, maximum: 500 } }
+      responses:
+        "200":
+          description: A bounded envelope of acts, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        node: { type: [string, "null"], description: 'the section, or null for the plan as a whole' }
+                        kind: { type: string, enum: [authored, renamed, edited, moved, pruned, reviewed, proposed, accepted, rejected] }
+                        actor: { type: string, description: 'the free-form actor string the credential carried' }
+                        user: { type: [string, "null"], description: 'WHICH PERSON, when the credential was bound to one' }
+                        note: { type: [string, "null"] }
+                        text:
+                          type: [string, "null"]
+                          description: |
+                            What the section SAID at that moment, as plain text —
+                            which is what makes a diff possible. The CRDT log
+                            cannot answer it: compaction rewrites it into one
+                            blob, so "what did 2.1 say last Tuesday" has no
+                            answer there by design. Null for an act that did not
+                            change the prose, and read from the replica rather
+                            than taken from the caller, because a history
+                            somebody can write is not a history.
+                        at: { type: string, format: date-time }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  note: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [mindmaps]
+      summary: Record an act the server cannot see (write scope)
+      description: |
+        Only the four acts the server cannot OBSERVE. It performs a move, a
+        rename, a prune and a proposal, so it records those itself and a caller
+        cannot claim to have done them. It cannot see prose edited over the sync
+        socket, a review (somebody saying they agree), or a proposal accepted or
+        rejected — which the browser does by applying ops to the replica. Those
+        four are reported, and reporting is all anybody could do.
+
+        Post one when an edit SETTLES, not while somebody types: a history with
+        an entry per keystroke buries every entry worth reading.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [edited, reviewed, accepted, rejected] }
+                node: { type: string, description: 'the section; omit for the plan as a whole' }
+                note: { type: string }
+      responses:
+        "201":
+          description: Recorded.
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        "403":
+          description: Token lacks the scope this route needs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/session:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [mindmaps]
+      summary: Mint a ticket for the map's sync socket (read scope)
+      description: |
+        The same `tkd_` ticket `POST /v1/documents/{id}/session` mints, for a map.
+        A mindmap is stored as one Yjs document, exactly as a document is, so two
+        people and an agent grow one branch at a time on ONE replica rather than
+        on copies that have to be reconciled afterwards.
+
+        The reason the credential exists is unchanged and narrow: a browser
+        `WebSocket` cannot set an `Authorization` header, and putting the caller's
+        real `tk_` token in a query string would scatter it through every access
+        log on the path. This ticket reaches **one map**, expires, is revocable,
+        and carries no more than the token that asked for it — `can_write` is
+        copied from the caller's scopes, so a `read`-only reader joins as a
+        read-only peer whose edits are never applied.
+
+        It is not a sixth credential kind. `tkd_` was widened from "document
+        session" to "collab session"; a new prefix would imply a new auth path,
+        and there is not one.
+
+        The kind is checked against the id rather than assumed from the route, so
+        a `doc-…` id presented here is a `notfound.mindmap` rather than a ticket
+        for something the caller did not ask for.
+      responses:
+        "200":
+          description: The ticket and where to use it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, description: 'The object the ticket reaches — the field to read. `mindmap` below is the same value, under the kind-specific key.' }
+                  kind: { type: string, enum: [document, mindmap], description: 'Always `mindmap` here.' }
+                  mindmap: { type: string }
+                  session: { type: string, description: 'ds-xxxxxxxx, the revocable handle.' }
+                  token: { type: string, description: '`tkd_…`. Shown once; stored hashed.' }
+                  can_write: { type: boolean, description: 'Copied from the minting token scopes.' }
+                  display: { type: string, description: 'The name collaborators see next to a caret — the person''s handle when the credential is bound to one, else the token''s actor. Never the token or its id.' }
+                  expires_at: { type: string, format: date-time }
+                  url: { type: string, description: 'The socket BASE, without the room — y-websocket appends the room and params itself.' }
+                  room: { type: string, description: 'The room to append: the mindmap id.' }
+                  note: { type: string }
+        "403": { description: Token lacks the project }
+        "404": { description: 'No mindmap with that id (`notfound.mindmap`), including a document id presented here.' }
+
+  /mindmaps/{id}/relationships:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [mindmaps]
+      summary: Link two nodes without making one the parent of the other (write scope)
+      description: |
+        The hierarchy answers "what is this part of". A **relationship** answers
+        everything else — a question hanging off the thing it questions, a screen
+        that navigates to another, a plain "see also". One mechanism instead of
+        three special cases, which is why it is a separate collection rather than
+        more fields on a node.
+
+        A relationship does not affect the tree, does not participate in cycle
+        detection, and does not count against the node cap. It has its own cap of
+        1,000 per map.
+
+        Both ends must exist, and they must differ: an edge from a node to itself
+        says nothing. A relationship whose end no longer resolves is **dropped on
+        read** rather than repaired — a dangling edge is not a node and there is
+        nothing to keep — so deleting a node takes its cross-links with it.
+
+        **No event is emitted.** One created in the browser would emit nothing
+        while one created here emitted something, and an event that fires half the
+        time is worse than no event at all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string, description: 'a node id on this map' }
+                to: { type: string, description: 'a different node id on this map' }
+                label: { type: string, maxLength: 80, description: 'drawn along the edge, so a couple of words' }
+      responses:
+        "201":
+          description: The relationship.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  relationship: { $ref: "#/components/schemas/MindmapRelationship" }
+        "404": { description: 'No such map, or one of the two ends is not a node on it (`notfound.mindmap`, `notfound.mindmap_node`).' }
+        "409": { description: "The map is at its relationship cap (`mindmap.relationships_full`)" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/relationships/{relationship}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: relationship, in: path, required: true, schema: { type: string }, description: 'e.g. mr-9f3ka2xz' }
+    delete:
+      tags: [mindmaps]
+      summary: Remove a cross-link (write scope)
+      description: |
+        Only the edge goes. Both nodes stay where they are — a relationship is a
+        remark about two thoughts, not a container for either of them.
+      responses:
+        "200":
+          description: Gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "404": { description: 'No such map, or no relationship with that id on it (`notfound.mindmap`, `notfound.mindmap_relationship`).' }
+
+  /mindmaps/{id}/nodes/{node}/attachments:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: node, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [mindmaps]
+      summary: Point a node at something that lives elsewhere (write scope)
+      description: |
+        A **pointer, never the bytes**. Initiative entries are the only place in
+        this store that hold binary blobs, and they carry byte caps because an
+        unbounded upload holds the write mutex every claim waits on. Here the
+        argument is stronger still: bytes in a CRDT log are replayed by every peer
+        that joins, so a map with a PDF inside it would get slower to open for
+        everybody, forever.
+
+        So `ref` is where the thing is — a URL or a path — and `gist` is one line
+        of what it says, which is what a reader weighs before deciding to follow
+        it. At most 20 per node: a node carrying more than that has become a
+        folder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MindmapAttachmentAdd" }
+      responses:
+        "201":
+          description: The attachment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachment: { $ref: "#/components/schemas/MindmapAttachment" }
+        "404": { description: 'No such map, or no such node on it (`notfound.mindmap`, `notfound.mindmap_node`).' }
+        "409": { description: "The node is at its attachment cap (`mindmap.attachments_full`)" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /mindmaps/{id}/nodes/{node}/attachments/{attachment}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: node, in: path, required: true, schema: { type: string } }
+      - { name: attachment, in: path, required: true, schema: { type: string }, description: 'e.g. ma-9f3ka2xz' }
+    delete:
+      tags: [mindmaps]
+      summary: Drop a pointer off a node (write scope)
+      description: |
+        The node and whatever the pointer named are both untouched — nothing was
+        ever stored here but the address.
+
+        The node and the attachment are the address together: an attachment id
+        from another node is not reachable here.
+      responses:
+        "200":
+          description: Gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "404": { description: 'No such map, node, or attachment on that node (`notfound.mindmap`, `notfound.mindmap_node`, `notfound.mindmap_attachment`).' }
 
   /initiatives:
     get:
@@ -4970,6 +5484,13 @@ paths:
         and carrying no more than the token that asked for it — `can_write` is
         copied from the caller's scopes, so a `read`-only reader joins as a
         read-only peer whose edits are never applied.
+
+        The same ticket now serves mindmaps (`POST /v1/mindmaps/{id}/session`),
+        so the reply names the object generically in `object` and `kind` as well
+        as under its kind-specific key. The kind is checked against the id rather
+        than assumed from the route: an `mm-…` id presented here is a
+        `notfound.document`, not a ticket for something the caller did not ask
+        for.
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -4980,6 +5501,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  object: { type: string, description: 'The object the ticket reaches — the field to read. `document` below is the same value, kept because a client written against this route already reads it.' }
+                  kind: { type: string, enum: [document, mindmap], description: 'Always `document` here.' }
                   document: { type: string }
                   session: { type: string, description: 'ds-xxxxxxxx, the revocable handle.' }
                   token: { type: string, description: '`tkd_…`. Shown once; stored hashed.' }
@@ -5029,15 +5552,22 @@ paths:
         flush, never per keystroke — every write in this process is serialized
         behind one mutex, and that serialization is the exactly-one-claimant
         guarantee for the ready queue.
+
+        This one route serves BOTH kinds of collaborative object. The room id
+        carries its own kind — `doc-…` is a document, `mm-…` is a mindmap — so a
+        map's canvas connects here exactly as the editor does, and the error a
+        refusal carries is phrased for whichever kind the id names. An id whose
+        prefix is neither reaches nothing (`notfound.object`).
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: ticket, in: query, required: true, schema: { type: string }, description: 'A `tkd_` sync ticket.' }
       responses:
         "101": { description: 'Switching protocols — the sync session begins.' }
-        "401": { description: 'Missing or unrecognized ticket (`document.session_missing`, `document.session_invalid`).' }
-        "403": { description: 'The ticket is for another document (`document.session_wrong_document`).' }
-        "410": { description: 'The ticket expired or was revoked (`document.session_expired`).' }
-        "503": { description: 'The document is at its live-editor ceiling (`document.too_many_peers`).' }
+        "401": { description: 'Missing or unrecognized ticket (`document.session_missing`, `document.session_invalid`; `mindmap.session_missing`, `mindmap.session_invalid`).' }
+        "403": { description: 'The ticket is for another object (`document.session_wrong_document`, `mindmap.session_wrong_mindmap`) — including a ticket minted for the other kind.' }
+        "404": { description: 'The id names no collaborative object (`notfound.object`, `notfound.document`, `notfound.mindmap`).' }
+        "410": { description: 'The ticket expired or was revoked (`document.session_expired`, `mindmap.session_expired`).' }
+        "503": { description: 'The object is at its live-editor ceiling (`document.too_many_peers`, `mindmap.too_many_peers`).' }
 
   /projects/{project}/environments:
     get:
@@ -5276,6 +5806,39 @@ paths:
         "409": { description: "That ref is already recorded for this project" }
         "422": { $ref: "#/components/responses/ValidationError" }
 
+  /projects/{project}/nodes:
+    get:
+      tags: [mindmaps]
+      summary: The project plan's sections, flat (read scope)
+      description: |
+        Every section of the project's plan as `{id, mindmap, title, parent}`.
+
+        What resolves a check's `node` into the name of the thing it verifies,
+        and what fills the picker when somebody files a check against a section.
+        A plan caps at 500 sections, so this is one call rather than a page.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      responses:
+        "200":
+          description: The sections, in tree order per plan.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        mindmap: { type: string }
+                        title: { type: string }
+                        parent: { type: [string, "null"] }
+                  total: { type: integer }
+                  limit: { type: integer }
+        "403": { description: Token lacks the read scope or the project }
+
   /projects/{project}/checks:
     get:
       tags: [checklist]
@@ -5287,6 +5850,7 @@ paths:
         - { $ref: "#/components/parameters/project" }
         - { name: epic, in: query, schema: { type: string }, description: 'an epic ticket id; the literal "none" narrows to ungrouped checks' }
         - { name: initiative, in: query, schema: { type: string }, description: 'an initiative id; the literal "none" narrows to checks no initiative claims — the gap between what was agreed and what got written down' }
+        - { name: node, in: query, schema: { type: string }, description: 'a plan section node id; the literal "none" narrows to checks attached to no part of the plan' }
         - { name: severity, in: query, schema: { type: string, enum: [blocking, advisory, low] } }
         - { name: layer, in: query, schema: { type: string, enum: [ui, api, other] } }
         - { name: archived, in: query, schema: { type: string, enum: [include] }, description: 'include archived checks' }
@@ -6683,9 +7247,16 @@ components:
         nodes:
           type: integer
           description: |
-            How many thoughts hang off it. Derived on read and never stored, for the
-            same reason an initiative's rollup is: a cached count drifts from the
-            rows it describes and nothing notices.
+            How many thoughts hang off it — a denormalised count, written by
+            whichever call last read the map's document.
+
+            The nodes are no longer rows to count: they live in a Yjs document,
+            and a count would mean opening and replaying that document for every
+            row of a list. So on `GET /v1/mindmaps/{id}` this is **exact** — that
+            read has the whole map in hand and stores the number it found — while
+            in a list it is as fresh as the last writer left it, and may lag a
+            live editing session by one flush interval. Read the map itself when
+            the number has to be exact.
         created_by: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -6693,19 +7264,83 @@ components:
 
     MindmapNode:
       type: object
-      description: One thought. Capped at 280 characters — see `validation.mindmap_node_text`.
+      description: |
+        One thought. The `title` is capped at 280 characters — see
+        `validation.mindmap_node_text` — and `notes` is the escape hatch that
+        keeps that cap honest.
+
+        The brevity is the method rather than a limitation: the title is what the
+        outline and the canvas render, and a branch you cannot read at a glance
+        has stopped being a brainstorm. Detail no longer has to be truncated or
+        promoted away — it goes in `notes`, which appear only on a node somebody
+        opened.
       properties:
         id: { type: string, description: 'e.g. "mn-9f3ka2xz"' }
         mindmap: { type: string }
         parent:
           type: [string, "null"]
           description: 'null = a first-ring branch off the root'
-        text: { type: string, maxLength: 280 }
+        title: { type: string, maxLength: 280, description: 'The field''s real name. A sentence or two — what the outline and the canvas render.' }
+        text:
+          type: string
+          maxLength: 280
+          description: |
+            The same value as `title`, under the name it had before `notes`
+            existed. Still returned, and still accepted on write, because renaming
+            a field is not a good enough reason to break somebody's script.
+        notes:
+          type: string
+          maxLength: 8000
+          description: |
+            The long form of one thought. Does not appear in the outline; you open
+            a node to read it. Past this length the branch wants to be an
+            initiative, and the refusal (`validation.mindmap_notes`) says so.
         position:
           type: integer
           description: |
-            Order among siblings, gapped (1000, 2000, …) so inserting between two
-            nodes is one write rather than a renumber of the whole ring.
+            **Rank among this node's SIBLINGS** — 0, 1, 2, … within one ring, not
+            a gapped global integer and not unique across the map.
+
+            It used to be a gapped column (1000, 2000, …). Order is now a
+            fractional index, because gapped integers cannot survive concurrency:
+            two peers inserting between the same pair both pick 1500. The index
+            key itself is deliberately not on the wire — it is an opaque string
+            that has to stay free to change shape — so what a reader gets is the
+            rank the old integer always meant to them.
+        edge_label:
+          type: string
+          maxLength: 80
+          description: |
+            Labels the hierarchy edge **to this node's parent**. Unambiguous
+            because a node has exactly one parent; `MindmapRelationship.label`
+            describes every other kind of edge.
+        kind:
+          type: string
+          enum: [thought, question, decision, screen, component]
+          description: |
+            `thought` is the default and the overwhelming majority. The rest exist
+            because a map of a system wants to say what a box *is*.
+        origin:
+          type: string
+          enum: [human, agent]
+          description: |
+            Who put it there. Stored from the start even though nothing renders it
+            yet, because adding a field to a shared document later means converting
+            everybody's map a second time.
+        reviewed:
+          type: boolean
+          description: 'An agent-written node a person has looked at. Settable on the node PATCH; nothing renders it yet.'
+        icons:
+          type: array
+          maxItems: 8
+          items: { type: string }
+          description: 'Short tokens. Anything longer belongs in the title or the notes.'
+        color: { type: string, description: 'Explicit field, deliberately NOT part of a style blob: a blob merges as a whole, so two people changing different things about one node would clobber each other.' }
+        shape: { type: string, description: 'As `color` — its own field so it merges on its own.' }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/MindmapAttachment" }
+          description: 'Pointers to things that live elsewhere. Sorted by name, then id, because a map has no order of its own.'
         at:
           description: |
             Hand placement, or `null` to let the layout place it. Null by default,
@@ -6736,11 +7371,62 @@ components:
 
     MindmapNodeAdd:
       type: object
-      required: [text]
+      description: |
+        One thought to add. `title` is the field's name and `text` is the name it
+        had before `notes` existed; send either, and exactly one is required.
       properties:
         parent: { type: string, description: 'omitted = a first-ring branch off the root' }
-        text: { type: string, maxLength: 280 }
-        position: { type: integer, description: 'omitted appends to the end of the ring' }
+        title: { type: string, maxLength: 280, description: 'a sentence or two' }
+        text: { type: string, maxLength: 280, description: 'accepted alias for `title`' }
+        notes: { type: string, maxLength: 8000, description: 'the long form, which does not render in the outline' }
+        position:
+          type: integer
+          description: |
+            The **index among the new node's siblings** to place it at — 0 puts it
+            first in its ring. Omitted appends to the end, which is what typing
+            does; a value is what splitting one thought into two needs.
+        kind: { type: string, enum: [thought, question, decision, screen, component], description: 'defaults to `thought`' }
+        edge_label: { type: string, maxLength: 80, description: 'labels the edge to `parent`' }
+      anyOf:
+        - { required: [title] }
+        - { required: [text] }
+
+    MindmapRelationship:
+      type: object
+      description: |
+        An edge that is **not** part of the hierarchy — a question hanging off the
+        thing it questions, a screen that navigates to another, a "see also".
+
+        One whose `from` or `to` no longer resolves is dropped when the map is
+        read, not repaired: a dangling edge is not a node and there is nothing to
+        keep.
+      properties:
+        id: { type: string, description: 'e.g. "mr-9f3ka2xz"' }
+        from: { type: string, description: 'a node id on this map' }
+        to: { type: string, description: 'a different node id on this map' }
+        label: { type: string, maxLength: 80 }
+
+    MindmapAttachment:
+      type: object
+      description: |
+        A **pointer**, never the bytes. Bytes in a CRDT log are replayed by every
+        peer that joins, so a map holding a file would get slower to open for
+        everybody, forever.
+      properties:
+        id: { type: string, description: 'e.g. "ma-9f3ka2xz"' }
+        kind: { type: string, enum: [pdf, code, table, diagram, audio, link] }
+        name: { type: string, maxLength: 200, description: 'what somebody reads before deciding to follow it' }
+        gist: { type: string, maxLength: 500, description: 'one line of what it says' }
+        ref: { type: string, maxLength: 2000, description: 'where it is — a URL or a path' }
+
+    MindmapAttachmentAdd:
+      type: object
+      required: [kind, name]
+      properties:
+        kind: { type: string, enum: [pdf, code, table, diagram, audio, link] }
+        name: { type: string, maxLength: 200 }
+        gist: { type: string, maxLength: 500 }
+        ref: { type: string, maxLength: 2000 }
 
     Initiative:
       type: object
@@ -7454,6 +8140,7 @@ components:
         project: { type: string }
         epic: { type: [string, "null"], description: 'a ticket of type epic this check groups under' }
         initiative: { type: [string, "null"], description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
+        node: { type: [string, "null"], description: 'the section of the project plan this check verifies — a mindmap node id. Resolved rather than copied, so a section renamed on the map is renamed here at once; null is a legitimate steady state, meaning a check about no part in particular' }
         title: { type: string }
         body: { type: string, description: 'the traversal to follow' }
         precondition: { type: string, description: 'the data state and permissions needed to start' }
@@ -7510,6 +8197,7 @@ components:
         epic: { type: string }
         environments: { type: array, items: { type: string }, description: 'environments this check must be verified in, by id or slug. Each case is then tracked per environment, so "passes on staging, never run on production" is expressible instead of collapsing into one verdict. Empty leaves the check environment-agnostic, which is the original behaviour and still the right one for a check whose result does not depend on where it runs' }
         initiative: { type: string, description: 'the initiative whose conversation agreed this check should exist. Direct rather than derived through the epic tag: the agreement usually predates any epic, so deriving it would make the link unstateable exactly when it is made' }
+        node: { type: string, description: 'the section of the project plan this check verifies. Validated against the plan, because a node id that names nothing is a link nobody can follow' }
         body: { type: string }
         precondition: { type: string }
         layer: { type: string, enum: [ui, api, other], default: api }
@@ -8079,6 +8767,29 @@ x-error-codes:
   mindmap.too_deep: "that would nest past the depth cap, where nobody can read the shape anyway. Promote the branch instead."
   mindmap.cycle: "that would hang a node off itself or off one of its own children, cutting the branch off the map. The drag that makes this easy to try is exactly why it is refused."
   mindmap.already_promoted: "that branch already became an epic or an initiative. Promoting again would make a second one from the same thought, indistinguishable from the first."
+  notfound.mindmap_relationship: "no relationship with that id on that map. Relationships come back on GET /v1/mindmaps/{id} as `relationships`; one whose endpoints no longer exist is dropped on read rather than repaired, so a stale id from an older canvas is expected to miss."
+  notfound.mindmap_attachment: "no attachment with that id on that node. The node and the attachment are the address together — an attachment id from another node is not reachable here. GET /v1/mindmaps/{id} lists each node's `attachments`."
+  validation.mindmap_notes: "the node's `notes` are over the 8,000-character cap. Notes are the long form of one thought, not a document: at that length the branch wants to be an initiative, so promote it instead of stretching the node."
+  validation.mindmap_node_kind: "`kind` is not one of thought | question | decision | screen | component. An enum rather than free text, so a map of a system can say what a box IS without a project inventing five spellings of the same word."
+  validation.mindmap_node_origin: "`origin` is not `human` or `agent`. It records who put the node there so a trust lens over an agent-grown branch stays buildable; it is stored, never guessed."
+  validation.mindmap_edge_label: "the label on the edge to this node's parent is over its length bound. It names one hierarchy edge in passing — the explanation belongs in the node's notes."
+  validation.mindmap_rel_label: "the relationship's label is over its length bound. It is drawn along an edge on a canvas, so it has to stay a couple of words."
+  validation.mindmap_relationship: "the relationship's two ends are the same node. An edge from a node to itself says nothing, and drawing one would only make the canvas harder to read — link two different nodes, or say it in the node's own text."
+  validation.mindmap_icons: "`icons` must be an array of strings — short tokens, at most eight. Anything longer than a token belongs in the node's title or notes, which is what a reader actually reads."
+  validation.mindmap_attachment: "the attachment is unusable: its `kind` is not one of pdf | code | table | diagram | audio | link, its `name` is empty, or `name`, `gist` or `ref` is over its cap. An attachment is a POINTER, never the bytes — the name is what somebody reads before deciding to follow it."
+  mindmap.relationships_full: "the map is at its cap of 1,000 relationships. Past that the canvas is a graph nobody can read — split the map, or delete the cross-links that have stopped earning their place."
+  mindmap.project_has_one: "that project already has a mindmap. A project holds ONE brainstorm, the way it holds one board — the refusal names the existing map, because the caller almost always wanted that one. Grow it, promote the branch that turned out to be its own subject, or delete the map first; deleting one is ordinary. The data model still allows several per project, so lifting this is a decision rather than a migration."
+  mindmap.attachments_full: "the node is at its cap of 20 attachments. A node carrying more than that has become a folder; split it into two nodes, or promote the branch."
+  validation.check_node: "the `node` on a check names no section of this project's plan. A check says which part of the plan it verifies, so the id has to be one of them \u2014 read the plan and use a section's node id, or leave `node` out for a check about no part in particular."
+  conflict.collab_busy: "the project's archive state changed while this document was being opened, so the answer to \"may this be written\" could not be settled. Nothing is wrong with the document: open it again. Rare by construction \u2014 it takes three archive or unarchive commits during one open."
+  conflict.collab_compaction_size: "compaction would not free anything, or would write a single row over the cap for one object. The document's content is simply that large \u2014 there is nothing to retry, and the flusher stops attempting it until an append succeeds or a minute passes. Never returned to an HTTP caller; compaction runs on the flusher, and this is a named contract rather than a silent skip."
+  conflict.collab_compaction: "compaction was built from a log that has since grown, so replacing it would drop whatever was appended meanwhile. Nothing to do: the next flush compacts from a replica that has seen the new row. Never returned to an HTTP caller \u2014 compaction runs on the flusher, and this code exists so the refusal is a named contract rather than a silent skip."
+  conflict.mindmap_archived: "the map is archived and cannot be written to. Not reachable today — a mindmap has no archive state, because throwing one away is ordinary and there is nothing between 'here' and 'gone' to freeze — but the code is published so adding that gate later stays a schema change and not a new error vocabulary."
+  mindmap.too_many_peers: "that map already has the maximum number of live editors on its sync socket. Wait for somebody to close the map, then reconnect."
+  mindmap.session_missing: "the map's sync socket was opened without a ticket. Mint one with POST /v1/mindmaps/{id}/session and pass it as `?ticket=`. A browser WebSocket cannot set an Authorization header, which is why the credential rides the query string — and why it is a short-lived, single-map ticket rather than your real token."
+  mindmap.session_invalid: "that sync ticket is not recognized. It may be mistyped, or minted against a different server."
+  mindmap.session_expired: "that sync ticket has expired or been revoked. Mint a new one; tickets are deliberately short-lived so a leaked one is worth little."
+  mindmap.session_wrong_mindmap: "that sync ticket was minted for a different map. A ticket reaches exactly one object, which is the point of scoping it — and a ticket minted for a document does not open a map either."
 
   validation.initiative_title: "an initiative needs a title, and it may not be cleared by an update — it is the quick name the idea goes by."
   validation.initiative_status: "the status is not one of open | parked | distilled. It is a lifecycle label an owner sets, not a workflow state, so nothing gates the order."
@@ -8117,9 +8828,22 @@ x-error-codes:
   validation.document_initiative: "the `initiative` given belongs to another project. A document may record the initiative it was distilled from, and that reference is validated where it is made so the migration question — which initiatives have moved across — stays answerable."
   validation.document_metadata: "serialized document `metadata` is over its cap. Long prose belongs in the document."
   validation.document_count: "the project already holds the maximum number of live documents. Archive one with DELETE /v1/documents/{id}."
-  validation.doc_update_empty: "a CRDT update carried no bytes. An empty flush records nothing — skip it instead."
-  validation.doc_update_too_large: "one CRDT flush is over its byte cap. A flush is meant to be a few seconds of typing; every write in this process is serialized behind the same mutex, so an oversized one stalls every claim, transition and heartbeat. Flush more often."
-  validation.document_too_large: "the document's update log is at its byte cap. The whole log is replayed into memory when the document is opened, so the cap bounds that allocation — split the document."
+
+  # -- the shared CRDT log: a document and a mindmap are both collaborative objects
+  # Both are stored the same way — one Yjs document each, one update log, one
+  # sync ticket — so these codes are named for the log rather than for either
+  # kind. They replace `validation.doc_update_empty`,
+  # `validation.doc_update_too_large` and `validation.document_too_large`, which
+  # said "document" about a path a mindmap now takes too.
+  validation.doc_update_empty: "a document flush carried no bytes. An empty flush records nothing, and a compaction of nothing would empty the document — so it is refused rather than written. Skip the flush instead."
+  validation.doc_update_too_large: "one document flush is over its byte cap. A flush is meant to be a few seconds of typing; every write in this process is serialized behind the same mutex, so an oversized one stalls every claim, transition and heartbeat. Flush more often."
+  validation.document_too_large: "this document's update log is at its byte cap. Every reader replays the whole log to open it, so the cap is what bounds that allocation. Split the document into linked ones."
+  validation.mindmap_update_empty: "a mindmap flush carried no bytes. The mindmap counterpart of `validation.doc_update_empty`; the two are separate codes because a client written against one surface should never have to parse the other's vocabulary."
+  validation.mindmap_update_too_large: "one mindmap flush is over its byte cap. See `validation.doc_update_too_large` for why a flush is bounded at all."
+  validation.mindmap_too_large: "this mindmap's update log is at its byte cap. Every peer replays the whole log to open the map, so the cap is what bounds that allocation. Promote its branches and start a second map."
+  validation.trace_kind: "that is not a kind of act the plan's history records, or not one a caller may record itself. The rest — authored, renamed, moved, pruned, accepted — are written by the paths that perform them, so nobody can claim to have done something they did not; a caller may record only `edited` (prose changes over the sync socket, which the server never sees as a request) and `reviewed` (somebody saying they agree)."
+  validation.mindmap_position: "`position` is out of range for that ring. It is an INDEX among a node's siblings now (0 is first, and the ring's length appends), not the gapped 1000/2000 ordering it used to be — a stale gapped value is refused rather than silently appending the node in the wrong place."
+  notfound.object: "that id names no collaborative object. A room id carries its own kind — `doc-…` is a document, `mm-…` is a mindmap — and a prefix that is neither reaches nothing, so it reads as absent rather than as a malformed id."
 
   # -- document proposals: what an agent may offer -----------------------------
   validation.document_ops: "`ops` is not a usable list of operations, or none of them could be applied. An agent addresses BLOCKS BY ID — `[{\"op\":\"replace\",\"id\":\"blk_…\",\"markdown\":\"…\"}]` — and never sends a whole document, because a document would overwrite whatever somebody typed while the model was thinking. Re-read with takomo_document_read: the block ids move as people edit."
@@ -8127,6 +8851,8 @@ x-error-codes:
   conflict.document_archived: "the document is archived and cannot be written to. Restore it first if the work still belongs to it."
 
   # -- the prompt bar: the one route that calls a model -------------------------
+  speech.not_configured: "dictation is off on this server, so no token can be minted. Set TAKOMO_ASSEMBLYAI_API_KEY and restart. /v1/whoami reports features.voice, so a page can leave the button out rather than offering one that cannot work."
+  speech.upstream: "the speech provider could not be reached, or refused the key. Its own message is passed through, because it is the only thing that distinguishes a bad key from a rate limit."
   document.agent_not_configured: "this server has no document agent configured, so the prompt bar cannot run. Set TAKOMO_TENSORX_API_KEY (optionally TAKOMO_TENSORX_BASE_URL and TAKOMO_DOC_MODEL) and restart. Everything else on /documents works without it — an agent connected over MCP proposes through the same path."
   document.agent_failed: "the model provider could not be reached, refused the request, or answered with something that was not a usable plan. Nothing was written to the document. The provider's own message is passed through, because it is the only thing that distinguishes a bad key from an unknown model from a rate limit."
   validation.document_unchanged: "every proposed change was the text the document already has. A model asked for something the document already satisfies should say so, not offer a replacement that changes nothing — a no-op a reviewer accepts costs them a decision and gives them nothing."
