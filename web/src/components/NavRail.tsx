@@ -26,6 +26,7 @@ import {
   ListChecksIcon,
   LanguagesIcon,
   LayersIcon,
+  Rows3Icon,
   InboxIcon,
   LayoutGridIcon,
   LightbulbIcon,
@@ -45,6 +46,7 @@ import { useIsPhone } from '@/hooks/useIsPhone'
 import { Hint } from '@/components/Hint'
 
 export interface NavLabels {
+  lanes?: string
   epics: string
   board: string
   inbox: string
@@ -116,6 +118,7 @@ export interface NavRailProps {
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
   epics: '/epics',
+  lanes: '/lanes',
   inbox: '/inbox',
   specification: '/specification',
   initiatives: '/initiatives',
@@ -127,6 +130,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   board: LayoutGridIcon,
   epics: LayersIcon,
+  lanes: Rows3Icon,
   inbox: InboxIcon,
   specification: NetworkIcon,
   initiatives: LightbulbIcon,
@@ -149,6 +153,7 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
 const NAV_ORDER: (keyof NavLabels)[] = [
   'specification',
   'board',
+  'lanes',
   'epics',
   'inbox',
   'initiatives',
@@ -370,7 +375,7 @@ export function NavRail({
 
         <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
           {NAV_ORDER.filter((key) => !navigationInHeader || key !== 'inbox').map((key) => {
-            const label = nav[key] ?? (lang === 'de' ? 'Agenten-Queue' : 'Agent queue')
+            const label = nav[key] ?? (key === 'lanes' ? 'Lanes' : lang === 'de' ? 'Agenten-Queue' : 'Agent queue')
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0
             const isCurrent = key === current

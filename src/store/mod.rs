@@ -24,6 +24,7 @@ mod model;
 mod moves;
 mod oauth;
 mod projects;
+mod work_lanes;
 mod writing_instructions;
 pub use writing_instructions::{WritingInstruction, WritingInstructions};
 pub mod prose;
@@ -167,6 +168,7 @@ impl Store {
         add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
+        conn.execute_batch(include_str!("work_lanes.sql"))?;
         migrate(&conn)?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into

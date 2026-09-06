@@ -25,12 +25,14 @@ import { App as InitiativesApp } from './pages/initiatives/App'
 import { App as SchedulesApp } from './pages/schedules/App'
 import { App as SettingsApp } from './pages/settings/App'
 import { LegacySpecificationRedirect } from './pages/specification/LegacyRedirect'
+const LanesApp = lazy(() => import('./pages/lanes/App'))
 const AgentQueuesApp = lazy(() => import('./pages/agent-queues/App'))
 const SpecificationApp = lazy(() => import('./pages/specification/App'))
 
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
   '/board': 'takomo · board',
+  '/lanes': 'takomo · lanes',
   '/epics': 'takomo · epics',
   '/inbox': 'takomo · inbox',
   '/documents': 'takomo · documents',
@@ -76,6 +78,7 @@ const router = createBrowserRouter([
     element: <Root />,
     children: [
       { path: '/board', element: <BoardApp key="board" /> },
+      { path: '/lanes', element: <LanesApp /> },
       { path: '/epics', element: <BoardApp key="epics" surface="epics" /> },
       { path: '/inbox', element: <InboxApp /> },
       { path: '/documents', element: <LegacySpecificationRedirect /> },

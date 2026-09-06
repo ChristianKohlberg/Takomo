@@ -338,6 +338,7 @@ const PAGE_ROUTES: &[&str] = &[
     "/projects/demo/specification?view=map&section=mn-example",
     "/board",
     "/epics",
+    "/lanes",
     "/documents",
     "/verification",
     "/environments",
@@ -10008,7 +10009,7 @@ async fn questions_list_is_paginated_with_limit_and_cursor() {
 #[tokio::test]
 async fn html_apps_send_security_headers() {
     let app = TestApp::spawn().await;
-    for path in ["/board", "/epics", "/inbox"] {
+    for path in ["/board", "/epics", "/lanes", "/inbox"] {
         let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path}");
         let h = resp.headers();

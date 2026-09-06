@@ -3842,3 +3842,36 @@ async fn document_table_read_preserves_browser_structure() {
         "proposals must not mutate the live table"
     );
 }
+
+#[tokio::test]
+async fn lane_tools_prepare_work_without_dispatching_it() {
+    let app = TestApp::spawn().await;
+    let ticket = app.create_typed("Related work", "task", None).await;
+    let (lane, error) = app
+        .tool(
+            &app.worker,
+            "takomo_lane_create",
+            json!({"project":"tp","title":"Collaboration","context":"Keep prior decisions"}),
+        )
+        .await;
+    assert!(!error, "{lane}");
+    let id = lane["id"].as_str().unwrap();
+    let (attached, error) = app
+        .tool(
+            &app.worker,
+            "takomo_lane_ticket",
+            json!({"lane":id,"ticket":ticket}),
+        )
+        .await;
+    assert!(!error, "{attached}");
+    let (draft, error) = app.tool(&app.worker, "takomo_lane_handoff", json!({"lane":id,"kind":"implementation","provider":"codex","instructions":"Implement the selected work","ticket_ids":[ticket]})).await;
+    assert!(!error, "{draft}");
+    assert_eq!(draft["status"], "draft");
+    let (history, error) = app
+        .tool(&app.worker, "takomo_lane_handoffs", json!({"lane":id}))
+        .await;
+    assert!(!error, "{history}");
+    assert_eq!(history["total"], 1);
+    let (bad, error) = app.tool(&app.worker, "takomo_lane_handoff", json!({"lane":id,"kind":"surprise","provider":"codex","instructions":"Invalid kind","ticket_ids":[]})).await;
+    assert!(error, "{bad}");
+}

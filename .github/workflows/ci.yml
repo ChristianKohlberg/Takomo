@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test services/agent/test/*.test.mjs
+      - run: node --test services/agent/test/*.test.mjs services/lanes/test/*.test.mjs clients/cli/test/*.test.mjs
 
   rust:
     needs: [web, scope]
@@ -289,7 +289,7 @@ jobs:
           curl -fsS http://127.0.0.1:8080/healthz >/dev/null || {
             echo "::error::container never became healthy"; docker logs takomo-ci; exit 1;
           }
-          for page in board epics inbox initiatives schedules verification environments; do
+          for page in board epics lanes inbox initiatives schedules verification environments; do
             if ! curl -fsS "http://127.0.0.1:8080/$page" | grep -q 'id="root"'; then
               echo "::error::/$page did not serve the web build (no React mount point)"
               exit 1
