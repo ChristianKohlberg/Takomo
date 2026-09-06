@@ -3210,6 +3210,8 @@ fn emitted_event_kinds() -> std::collections::BTreeSet<String> {
         }
     }
     for k in [
+        // agent_chat::finish_agent_job derives this from its validated terminal status.
+        "agent_job.completed",
         "question_followup_requested",
         "question_replied",
         "schedule_proposed",
