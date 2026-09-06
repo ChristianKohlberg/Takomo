@@ -24,6 +24,10 @@
 // editors at all.
 import { useEffect, useRef } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
+import { TableKit } from '@tiptap/extension-table'
+import { TableToolbar } from './TableToolbar'
+import { STR } from './strings'
+import type { Locale } from '@/lib/i18n'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
@@ -77,6 +81,7 @@ export interface SectionEditorProps {
    */
   onEditor?: (editor: Editor | null) => void
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  locale?: Locale
   label: string
 }
 
@@ -92,6 +97,7 @@ export default function SectionEditor({
   onEditor,
   label,
   onInsertSection,
+  locale = 'en',
 }: SectionEditorProps) {
   const insertSection = useRef(onInsertSection)
   insertSection.current = onInsertSection
@@ -113,6 +119,7 @@ export default function SectionEditor({
         // somebody else's sentence.
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
         MermaidCodeBlock,
+        TableKit.configure({ table: { resizable: true } }),
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
         // Only a writer mints block ids — an `appendTransaction` runs regardless
@@ -210,5 +217,8 @@ export default function SectionEditor({
   }, [editor])
 
   if (!editor) return null
-  return <EditorContent editor={editor} />
+  return <>
+    {canWrite && <TableToolbar editor={editor} labels={STR[locale]} disabled={false} />}
+    <EditorContent editor={editor} />
+  </>
 }

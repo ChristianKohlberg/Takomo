@@ -668,6 +668,7 @@ function ConnectedPlan({
                 >
                   {fragment ? (
                     <SectionEditor
+                      locale={locale}
                       ydoc={ydoc}
                       fragment={fragment}
                       provider={provider}

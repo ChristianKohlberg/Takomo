@@ -132,3 +132,32 @@ describe('SectionEditor', () => {
     expect(two.toString()).not.toContain('And more')
   })
 })
+
+it('edits a table in its own section and shows it to a read-only replica without writes', () => {
+  const doc = new Y.Doc()
+  const fragment = section(doc, 'mn-table', 'Table section')
+  const other = section(doc, 'mn-other', 'Untouched section')
+  const awareness = new Awareness(doc)
+  const view = render(<SectionEditor ydoc={doc} fragment={fragment}
+    provider={{ awareness } as unknown as WebsocketProvider}
+    display="Ada" color="#2563eb" canWrite onSettled={() => {}} label="Table section" />)
+  fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
+  expect(fragment.toString()).toContain('<table')
+  expect(fragment.toString()).toContain('<tableheader')
+  expect(other.toString()).toContain('Untouched section')
+  expect(other.toString()).not.toContain('<table')
+  const replica = new Y.Doc()
+  Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc))
+  const remoteFragment = replica.getMap<Y.Map<unknown>>('nodes').get('mn-table')!.get('prose') as Y.XmlFragment
+  const remoteAwareness = new Awareness(replica)
+  const changes = vi.fn()
+  replica.on('update', changes)
+  view.unmount()
+  const reader = render(<SectionEditor ydoc={replica} fragment={remoteFragment}
+    provider={{ awareness: remoteAwareness } as unknown as WebsocketProvider}
+    display="Reader" color="#2563eb" canWrite={false} onSettled={() => {}} label="Read table" />)
+  expect(reader.getByRole('table')).toBeTruthy()
+  expect(reader.queryByRole('button', { name: 'Insert table' })).toBeNull()
+  expect(changes).not.toHaveBeenCalled()
+  reader.unmount(); awareness.destroy(); remoteAwareness.destroy(); doc.destroy(); replica.destroy()
+})

@@ -135,6 +135,7 @@ Return a set of ops that reference those ids. Rules:
 
 - Touch only the blocks that need to change. Every block you do not name is left byte-for-byte alone, which is what keeps a concurrent human editor's work safe. A whole-document rewrite is never the right answer.
 - "markdown" is the full new content for the op's target, written as ordinary markdown. Do not include the id comment in it.
+- Tables are one block. Use HTML tables to preserve header cells, rowspan, colspan, colwidth, and rich cell content. Simple rectangular tables may use Markdown pipe syntax. Preserve existing table structure and formatting unless asked to change it.
 - Use "replace" to rewrite a block, "insert_after" to add a block after it, and "delete" to remove one.
 - Never invent facts, figures, names, dates, or quotations. You are editing someone's document, not writing a plausible-sounding one: a fabricated number that reads well is worse than a vague sentence that is true. If the request can only be satisfied with information the document does not contain, do the part you can, and say what is missing in the summary.
 - Each block stands alone. Do not pull content from a neighbouring block into the one you are rewriting — the reader still has the other block.

@@ -168,3 +168,13 @@
   border-top: 1px solid var(--border);
   margin: 1.5em 0;
 }
+
+/* Table geometry belongs to ProseMirror; the wrapper contains wide tables on phones. */
+.ProseMirror .tableWrapper { overflow-x: auto; max-width: 100%; margin: 1em 0; }
+.ProseMirror table { border-collapse: collapse; table-layout: fixed; width: 100%; margin: 0; }
+.ProseMirror td, .ProseMirror th { position: relative; vertical-align: top; min-width: 60px; border: 1px solid var(--border); padding: 0.5em 0.65em; overflow-wrap: anywhere; }
+.ProseMirror th { background: var(--muted); font-weight: 600; text-align: left; }
+.ProseMirror td > * + *, .ProseMirror th > * + * { margin-top: 0.5em; }
+.ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--primary) 15%, transparent); pointer-events: none; }
+.ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: -2px; width: 4px; background: var(--primary); pointer-events: none; }
+.ProseMirror.resize-cursor { cursor: col-resize; }

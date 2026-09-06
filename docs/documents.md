@@ -252,3 +252,22 @@ reviewer reads, accepts, and gets nothing from — with a summary that told them
 - **No run history.** The prototype feeds the last ten runs back into the prompt, which is what lets
   a follow-up like "the table looks good, but x is missing" resolve to a block id instead of a guess.
 - **Commitments (Zusagen) and the icicle map.** Each needs this stage underneath it.
+
+
+## Tables
+
+The document editor offers **Insert table** (three rows and columns, with a header row).
+Inside a table, the controls add or remove rows and columns, toggle header rows or columns,
+merge selected cells, split a merged cell, or delete the table. Drag across cells to select a
+rectangle for merging; drag a column border to resize. Tab moves between cells. Cells accept
+the editor's rich content, including paragraphs, lists, links, and formatted text. Read-only
+viewers see tables but cannot change them. These edits use the same Yjs document and undo
+history as prose; no separate table persistence exists.
+
+A table is one top-level block with a stable `blk_…` id. Agent reads serialize tables as HTML
+inside the annotated Markdown, retaining header cells, `rowspan`, `colspan`, `colwidth`, and
+rich cell content. A proposal's `markdown` can contain this HTML table, including blank lines,
+or a rectangular Markdown pipe table with a header separator (`---`). Use HTML for merged
+cells and rich content; pipe cell text is plain text. Replacing a table remains a whole-block
+proposal and requires acceptance, just like replacing a paragraph. Cell-level proposal diffs
+and spreadsheet formulas are not provided.
