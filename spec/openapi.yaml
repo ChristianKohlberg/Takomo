@@ -120,17 +120,15 @@ paths:
         '409':
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
-      parameters: &laneRoute001
-      - &laneRoute002
-        name: limit
+      parameters:
+      - name: limit
         in: query
         schema:
           type: integer
           minimum: 1
           maximum: 200
           default: 100
-      - &laneRoute003
-        name: offset
+      - name: offset
         in: query
         schema:
           type: integer
@@ -312,7 +310,20 @@ paths:
         '409':
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
-      parameters: *laneRoute001
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
     post:
       tags:
       - lanes
@@ -374,8 +385,19 @@ paths:
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
       parameters:
-      - *laneRoute002
-      - *laneRoute003
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
       - name: status
         in: query
         schema:
@@ -7807,14 +7829,14 @@ components:
       type: object
       additionalProperties: false
       properties:
-        title: &id001
+        title:
           type: string
           minLength: 1
           maxLength: 200
-        purpose: &id002
+        purpose:
           type: string
           maxLength: 8000
-        context: &id003
+        context:
           type: string
           maxLength: 64000
       required:
@@ -7823,41 +7845,62 @@ components:
       type: object
       additionalProperties: false
       properties:
-        title: *id001
-        purpose: *id002
-        context: *id003
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        purpose:
+          type: string
+          maxLength: 8000
+        context:
+          type: string
+          maxLength: 64000
         archived:
           type: boolean
     WorkLane:
       type: object
       additionalProperties: false
       properties:
-        title: *id001
-        purpose: *id002
-        context: *id003
-        id: &id004
+        title:
           type: string
-        project: *id004
-        conversation_ref: &id010
+          minLength: 1
+          maxLength: 200
+        purpose:
+          type: string
+          maxLength: 8000
+        context:
+          type: string
+          maxLength: 64000
+        id:
+          type: string
+        project:
+          type: string
+        conversation_ref:
           type:
           - string
           - 'null'
         archived:
           type: boolean
-        created_at: &id005
+        created_at:
           type: string
           format: date-time
-        updated_at: *id005
+        updated_at:
+          type: string
+          format: date-time
         tickets:
           type: array
-          items: &id011
+          items:
             type: object
             additionalProperties: false
             properties:
-              id: *id004
-              title: *id004
-              state: *id004
-              body: *id004
+              id:
+                type: string
+              title:
+                type: string
+              state:
+                type: string
+              body:
+                type: string
               links: {}
               metadata: {}
             required:
@@ -7880,26 +7923,27 @@ components:
       type: object
       additionalProperties: false
       properties:
-        kind: &id006
+        kind:
           type: string
           enum:
           - preparation
           - implementation
           - review
-        provider: &id007
+        provider:
           type: string
           enum:
           - codex
           - claude
-        instructions: &id008
+        instructions:
           type: string
           minLength: 1
           maxLength: 32000
-        ticket_ids: &id009
+        ticket_ids:
           type: array
           maxItems: 200
           uniqueItems: true
-          items: *id004
+          items:
+            type: string
           description: Nonempty except preparation; each ticket must belong to the lane.
         target_revision:
           type: string
@@ -7951,15 +7995,42 @@ components:
       type: object
       additionalProperties: false
       properties:
-        kind: *id006
-        provider: *id007
-        instructions: *id008
-        ticket_ids: *id009
-        target_revision: *id010
-        parent_handoff: *id010
-        id: *id004
-        project: *id004
-        lane: *id004
+        kind:
+          type: string
+          enum:
+          - preparation
+          - implementation
+          - review
+        provider:
+          type: string
+          enum:
+          - codex
+          - claude
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 32000
+        ticket_ids:
+          type: array
+          maxItems: 200
+          uniqueItems: true
+          items:
+            type: string
+          description: Nonempty except preparation; each ticket must belong to the lane.
+        target_revision:
+          type:
+          - string
+          - 'null'
+        parent_handoff:
+          type:
+          - string
+          - 'null'
+        id:
+          type: string
+        project:
+          type: string
+        lane:
+          type: string
         status:
           type: string
           enum:
@@ -7978,7 +8049,25 @@ components:
               additionalProperties: true
             tickets:
               type: array
-              items: *id011
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  title:
+                    type: string
+                  state:
+                    type: string
+                  body:
+                    type: string
+                  links: {}
+                  metadata: {}
+                required:
+                - id
+                - title
+                - state
+                - body
           required:
           - lane
           - tickets
@@ -7989,13 +8078,26 @@ components:
           - string
           - 'null'
           format: date-time
-        result: *id010
-        revision: *id010
-        conversation_ref: *id010
+        result:
+          type:
+          - string
+          - 'null'
+        revision:
+          type:
+          - string
+          - 'null'
+        conversation_ref:
+          type:
+          - string
+          - 'null'
         context_applied:
           type: boolean
-        created_at: *id005
-        updated_at: *id005
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
       required:
       - id
       - project
@@ -8021,7 +8123,8 @@ components:
           type: integer
         limit:
           type: integer
-        note: *id004
+        note:
+          type: string
       required:
       - items
       - total
@@ -8038,7 +8141,8 @@ components:
           type: integer
         limit:
           type: integer
-        note: *id004
+        note:
+          type: string
       required:
       - items
       - total
