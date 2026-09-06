@@ -7,11 +7,11 @@
 // markdown→nodes step lives here, next to the schema it targets.
 //
 // The parser is deliberately small and closed. It accepts exactly the blocks
-// StarterKit gives an id to, and anything it does not recognise becomes a
+// the editor gives an id to, and anything it does not recognise becomes a
 // paragraph rather than being dropped: a proposal that silently loses a line is
 // worse than one that renders a line plainly, because only the second is visible
 // to the person deciding.
-import type { Node as PMNode, Schema } from '@tiptap/pm/model'
+import { DOMParser, type Node as PMNode, type Schema } from '@tiptap/pm/model'
 import type { Transaction } from '@tiptap/pm/state'
 
 export type OpKind = 'replace' | 'insert_after' | 'delete'
@@ -66,30 +66,21 @@ export function parseProposal(raw: unknown): Proposal | null {
  */
 export function markdownToNodes(schema: Schema, markdown: string): PMNode[] {
   const out: PMNode[] = []
-  const chunks: string[] = []
-  let lines: string[] = []
-  let fenced = false
-  const flush = () => { if (lines.length) chunks.push(lines.join('\n')); lines = [] }
-  for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
-    if (!fenced && /^```/.test(line.trim())) {
-      flush()
-      fenced = true
-      lines.push(line)
-    } else if (fenced && /^```\s*$/.test(line.trim())) {
-      lines.push(line)
-      fenced = false
-      flush()
-    } else if (!fenced && !line.trim()) {
-      flush()
-    } else {
-      lines.push(line)
-    }
-  }
-  flush()
+  const chunks = proposalChunks(markdown)
 
   for (const chunk of chunks) {
     const block = chunk.trim()
     if (!block) continue
+
+    if (/^<table[\s>]/i.test(block) && schema.nodes.table) {
+      const html = new window.DOMParser().parseFromString(block, 'text/html')
+      const parsed = DOMParser.fromSchema(schema).parse(html.body)
+      parsed.forEach((node) => out.push(node))
+      continue
+    }
+
+    const table = pipeTable(schema, block)
+    if (table) { out.push(table); continue }
 
     // Fenced code first: its contents must not be read as any other block.
     const fence = block.match(/^```([^\n]*)\n([\s\S]*?)\n?```$/)
@@ -150,6 +141,45 @@ export function markdownToNodes(schema: Schema, markdown: string): PMNode[] {
   // `replace` would silently delete the block it was meant to rewrite.
   if (!out.length) out.push(paragraph(schema, ''))
   return out
+}
+
+/** Blank lines inside HTML tables and code fences are content, not block boundaries. */
+function proposalChunks(markdown: string): string[] {
+  const chunks: string[] = []
+  let lines: string[] = [], tableDepth = 0, fenced = false
+  const flush = () => { if (lines.length) chunks.push(lines.join('\n')); lines = [] }
+  for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+    if (!tableDepth && !fenced && /^```/.test(line.trim())) {
+      flush(); fenced = true; lines.push(line); continue
+    }
+    if (fenced && /^```\s*$/.test(line.trim())) {
+      lines.push(line); fenced = false; flush(); continue
+    }
+    if (!fenced) {
+      for (const tag of line.matchAll(/<(\/?)table(?:\s[^>]*|)>/gi)) tableDepth += tag[1] ? -1 : 1
+      tableDepth = Math.max(0, tableDepth)
+    }
+    if (!line.trim() && !fenced && !tableDepth) flush()
+    else lines.push(line)
+  }
+  flush()
+  return chunks
+}
+
+function pipeTable(schema: Schema, block: string): PMNode | null {
+  if (!schema.nodes.table || !schema.nodes.tableRow || !schema.nodes.tableCell || !schema.nodes.tableHeader) return null
+  const lines = block.split('\n')
+  const cells = (line: string) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((s) => s.trim().replace(/\\\|/g, '|'))
+  if (lines.length < 2 || !lines[0]!.includes('|')) return null
+  const headers = cells(lines[0]!), separators = cells(lines[1]!)
+  if (headers.length !== separators.length || !separators.every((s) => /^:?-{3,}:?$/.test(s))) return null
+  const rows = [headers, ...lines.slice(2).map(cells)]
+  if (rows.some((r) => r.length !== headers.length)) return null
+  return schema.nodes.table.create(null, rows.map((row, i) => schema.nodes.tableRow!.create(null,
+    row.map((text, col) => (i === 0 ? schema.nodes.tableHeader! : schema.nodes.tableCell!).create({
+      align: separators[col]!.startsWith(':') ? (separators[col]!.endsWith(':') ? 'center' : 'left') : separators[col]!.endsWith(':') ? 'right' : null,
+    }, paragraph(schema, text))),
+  )))
 }
 
 function paragraph(schema: Schema, text: string): PMNode {

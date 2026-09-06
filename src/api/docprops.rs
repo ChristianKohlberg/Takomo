@@ -50,7 +50,7 @@
 use crate::error::{ApiError, ApiResult};
 use serde_json::{json, Value};
 use yrs::types::xml::XmlOut;
-use yrs::{Any, GetString, Map, ReadTxn, Transact, Xml, XmlFragment};
+use yrs::{Any, GetString, Map, ReadTxn, Text, Transact, Xml, XmlFragment};
 
 /// The Y.Doc key the editor binds its prose to. Must match the `field` given to
 /// Tiptap's `Collaboration` extension in `web/src/pages/documents/SectionEditor.tsx` —
@@ -87,6 +87,8 @@ pub struct Block {
     /// from two items, and an agent asked to add one would have nothing to
     /// append to.
     pub items: Vec<String>,
+    /// Tables use HTML to retain cell boundaries, spans and rich content.
+    pub html: Option<String>,
 }
 
 /// Read the document as markdown annotated with block ids.
@@ -122,6 +124,7 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, frag: &yrs::XmlFragmentRef) -> Vec<Block
             },
             text: element_text(txn, &el),
             items,
+            html: (el.tag().as_ref() == "table").then(|| element_html(txn, &el)),
         });
     }
     out
@@ -142,6 +145,111 @@ fn element_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
         }
     }
     out
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Emit only schema-supported tags/attributes, never arbitrary CRDT names as HTML.
+fn element_html<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
+    let tag = match el.tag().as_ref() {
+        "table" => "table",
+        "tableRow" => "tr",
+        "tableCell" => "td",
+        "tableHeader" => "th",
+        "paragraph" => "p",
+        "bulletList" => "ul",
+        "orderedList" => "ol",
+        "listItem" => "li",
+        "blockquote" => "blockquote",
+        "codeBlock" => "pre",
+        "hardBreak" => "br",
+        "horizontalRule" => "hr",
+        "heading" => match attr_int(txn, el, "level").unwrap_or(1) {
+            2 => "h2",
+            3 => "h3",
+            4 => "h4",
+            5 => "h5",
+            6 => "h6",
+            _ => "h1",
+        },
+        _ => "div",
+    };
+    let mut attrs = String::new();
+    if tag == "td" || tag == "th" {
+        for key in ["colspan", "rowspan"] {
+            if let Some(n) = attr_int(txn, el, key).filter(|n| *n > 0) {
+                attrs.push_str(&format!(" {key}=\"{n}\""));
+            }
+        }
+        if let Some(Out::Any(Any::Array(widths))) = el.get_attribute(txn, "colwidth") {
+            let widths: Vec<String> = widths
+                .iter()
+                .filter_map(|n| match n {
+                    Any::Number(n) if *n >= 0.0 => Some((*n as u64).to_string()),
+                    _ => None,
+                })
+                .collect();
+            if !widths.is_empty() {
+                attrs.push_str(&format!(" colwidth=\"{}\"", widths.join(",")));
+            }
+        }
+        if let Some(align) = attr_string(txn, el, "align")
+            .filter(|s| ["left", "center", "right"].contains(&s.as_str()))
+        {
+            attrs.push_str(&format!(" align=\"{align}\""));
+        }
+    }
+    if tag == "ol" {
+        if let Some(n) = attr_int(txn, el, "start") {
+            attrs.push_str(&format!(" start=\"{n}\""));
+        }
+    }
+    let mut body = String::new();
+    for child in el.children(txn) {
+        match child {
+            XmlOut::Element(child) => body.push_str(&element_html(txn, &child)),
+            XmlOut::Text(text) => {
+                for diff in text.diff(txn, yrs::types::text::YChange::identity) {
+                    let mut part = escape_html(&diff.insert.to_string(txn));
+                    if let Some(marks) = diff.attributes {
+                        for (key, tag) in [
+                            ("bold", "strong"),
+                            ("italic", "em"),
+                            ("strike", "s"),
+                            ("underline", "u"),
+                            ("code", "code"),
+                        ] {
+                            if marks
+                                .get(key)
+                                .is_some_and(|v| !matches!(v, Any::Null | Any::Bool(false)))
+                            {
+                                part = format!("<{tag}>{part}</{tag}>");
+                            }
+                        }
+                        if let Some(Any::Map(link)) = marks.get("link") {
+                            if let Some(Any::String(href)) = link.get("href") {
+                                part = format!("<a href=\"{}\">{part}</a>", escape_html(href));
+                            }
+                        }
+                    }
+                    body.push_str(&part);
+                }
+            }
+            XmlOut::Fragment(_) => {}
+        }
+    }
+    if tag == "br" || tag == "hr" {
+        format!("<{tag}>")
+    } else if tag == "pre" {
+        format!("<pre><code>{body}</code></pre>")
+    } else {
+        format!("<{tag}{attrs}>{body}</{tag}>")
+    }
 }
 
 fn attr_string<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef, key: &str) -> Option<String> {
@@ -185,6 +293,7 @@ pub fn annotate(blocks: &[Block]) -> String {
 
 fn markdown_for(b: &Block) -> String {
     match b.kind.as_str() {
+        "table" => b.html.clone().unwrap_or_default(),
         "heading" => {
             let level = b.level.unwrap_or(1).clamp(1, 6) as usize;
             format!("{} {}", "#".repeat(level), b.text)

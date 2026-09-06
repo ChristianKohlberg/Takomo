@@ -3775,3 +3775,70 @@ async fn writing_instructions_are_visible_to_mcp_agents() {
         .await;
     assert_eq!(grown["default_writing_instruction"], selected);
 }
+
+/// Real y-prosemirror bytes must retain the table geometry in the agent's read.
+#[tokio::test]
+async fn document_table_read_preserves_browser_structure() {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use yrs::encoding::write::Write as _;
+    let app = TestApp::spawn().await;
+    app.ok_call(&app.admin, "initialize", init_params()).await;
+    let id = a_document(&app, "Table").await;
+    let (_, session) = app
+        .post(
+            &app.admin,
+            &format!("/v1/documents/{id}/session"),
+            json!({}),
+        )
+        .await;
+    let url = format!(
+        "{}/v1/docsync/{id}?ticket={}",
+        app.base.replacen("http://", "ws://", 1),
+        session["token"].as_str().unwrap()
+    );
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let mut frame = Vec::new();
+    frame.write_var(0u64);
+    frame.write_var(2u64);
+    frame.write_buf(include_bytes!("fixtures/document-table.yjs"));
+    socket.send(WsMessage::Binary(frame.into())).await.unwrap();
+    let mut markdown = String::new();
+    for _ in 0..50 {
+        let (read, err) = app
+            .tool(&app.worker, "takomo_document_read", json!({"id": id}))
+            .await;
+        assert!(!err, "{read}");
+        markdown = read["markdown"].as_str().unwrap().to_string();
+        if markdown.contains("blk_table") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(markdown.contains("<!-- blk_table -->"), "{markdown}");
+    assert!(
+        markdown.contains("<th colspan=\"2\" rowspan=\"1\" colwidth=\"140,180\">"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("rowspan=\"2\""), "{markdown}");
+    assert!(
+        markdown.contains("<strong>Plan &amp; cost</strong>"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("<ul><li><p><strong>Alice</strong></p></li></ul>"),
+        "{markdown}"
+    );
+    let (proposal, err) = app.tool(&app.worker, "takomo_document_propose", json!({
+        "id": id, "instruction": "Add a column", "summary": "Extra column",
+        "ops": [{"op":"replace","id":"blk_table","markdown":"<table><tr><th><p>New</p></th></tr></table>"}]
+    })).await;
+    assert!(!err, "{proposal}");
+    let (read, _) = app
+        .tool(&app.worker, "takomo_document_read", json!({"id":id}))
+        .await;
+    assert_eq!(
+        read["markdown"], markdown,
+        "proposals must not mutate the live table"
+    );
+}

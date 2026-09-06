@@ -14,6 +14,7 @@
 // CRDT and merges like everything else. Two peers splitting the same paragraph
 // concurrently can therefore both mint an id — see [`ensureBlockIds`], which
 // resolves that by keeping the first occurrence.
+import { DOMSerializer } from '@tiptap/pm/model'
 import { Extension } from '@tiptap/react'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { Node as PMNode } from '@tiptap/pm/model'
@@ -27,6 +28,7 @@ const ID_TYPES = [
   'bulletList',
   'orderedList',
   'horizontalRule',
+  'table',
 ]
 
 export function blockId(): string {
@@ -149,6 +151,12 @@ export function annotatedMarkdown(doc: PMNode): string {
 
 function nodeToMarkdown(node: PMNode): string {
   switch (node.type.name) {
+    case 'table': {
+      const container = document.createElement('div')
+      container.appendChild(DOMSerializer.fromSchema(node.type.schema).serializeNode(node))
+      container.querySelectorAll('[data-id]').forEach((el) => el.removeAttribute('data-id'))
+      return container.innerHTML
+    }
     case 'heading': {
       const level = Math.max(1, Math.min(Number(node.attrs.level) || 1, 6))
       return `${'#'.repeat(level)} ${node.textContent}`
