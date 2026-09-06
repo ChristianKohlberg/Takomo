@@ -359,38 +359,6 @@ minute.
 leaves the button out rather than offering one that answers `503 speech.not_configured` — the same
 rule `/documents` follows for its prompt bar.
 
-### Document writing tools
-
-Document section actions appear on hover or keyboard focus; a compact actions
-button exposes them on touch screens. Status and pending-review indicators stay
-visible while reading.
-
-In an empty prose paragraph, type `/h1`, `/h2`, or `/h3` and choose a heading
-with Enter or a pointer. Escape leaves the typed text untouched. The menu also
-shows the platform's heading shortcuts (Ctrl/Command + Alt + 1, 2, or 3).
-Completing a final heading with Enter creates the corresponding shared section;
-formatting an existing paragraph does not split or discard surrounding prose.
-
-Focus mode hides the project rail and outline while retaining the current
-editor, selection, save status, and view switcher. It is personal to the current
-visit and can be exited from the header.
-
-Each outline section offers Move: choose before, after, or inside another
-section and preview the resulting level. Moving carries the whole subtree,
-prose, and links; self/descendant destinations are rejected. The moved section
-stays selected. The document toolbar has separate controls for undo/redo of the
-current section's prose and of section moves. Move history survives switching
-between Doc and Map during this visit; neither history is a persistent audit
-log. Undo preserves collaborators' prose edits and refuses a stale structural
-restore that would overwrite a conflicting move. A successful move also offers
-Undo in a six-second confirmation.
-
-Find searches section titles and prose, including collapsed and unmounted
-sections. Matches are literal and case-insensitive; Enter and Shift+Enter visit
-the next and previous result. Opening a result temporarily expands its outline
-ancestors; closing Find restores the saved folds. Search works for read-only
-viewers, makes no document edits, and leaves the browser's find shortcut alone.
-
 ### Collaboration lifecycle and navigation
 
 The map and document view allocate their shared replica and socket after a

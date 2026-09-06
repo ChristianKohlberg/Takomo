@@ -280,9 +280,36 @@ leaving the typed text intact. Headings, lists, quotes, code, tables and Mermaid
 use the editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or
 Escape returns to the command menu. Mermaid starts with its editable source visible.
 Ordinary slashes in prose or code keep their normal meaning. The existing `#`/`##` heading
-shortcuts and heading-to-section behavior continue to work.
+shortcuts and heading-to-section behavior continue to work: typing `/h1`, `/h2` or `/h3` picks a
+heading directly, the heading rows show the platform shortcut (Ctrl/Cmd + Alt + 1, 2 or 3), and
+a final heading completed with Enter still becomes a shared section. Formatting an existing
+paragraph never splits or discards the prose around it.
 
 The menu state is local to the editor. Typed `/query` remains document text until a choice
 replaces it, and insertion uses the current section's normal collaboration and undo path.
 If the trigger is removed or the caret leaves it, the menu closes. A stale choice cannot
 replace text changed by another collaborator. Read-only viewers have no insertion menu.
+
+## Section controls, focus mode, Move and Find
+
+Section actions appear on hover or keyboard focus; a compact actions button exposes them on
+touch screens. The standing and pending-review indicators stay visible while reading.
+
+**Focus mode** hides the project rail and the outline while keeping the current editor,
+selection, save status and view switcher. It is personal to the current visit and toggled from
+the header.
+
+**Move**, offered on each outline section, places it before, after or inside another section
+and previews the resulting level. The whole subtree, its prose and its links travel with it;
+a self or descendant destination is refused; the moved section stays selected. The toolbar
+carries separate undo/redo controls for the current section's prose and for section moves.
+Move history survives switching between Doc and Map during the visit but not a reload, and
+neither history is an audit log — that is the trace. Undo preserves collaborators' prose edits
+and refuses a stale structural restore that would overwrite a conflicting move; a successful
+move also offers Undo in a six-second confirmation.
+
+**Find** searches section titles and prose, including collapsed and unmounted sections.
+Matches are literal and case-insensitive; Enter and Shift+Enter visit the next and previous
+result. Opening a result temporarily expands its outline ancestors, and closing Find restores
+the saved folds. Search works for read-only viewers, edits nothing, and leaves the browser's
+own find shortcut alone.
