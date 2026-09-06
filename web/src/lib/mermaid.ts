@@ -1,3 +1,15 @@
+import { defineStrings, detectLocale } from './i18n'
+
+const strings = defineStrings({
+  en: { title: 'Mermaid diagram', loading: 'Rendering diagram…', large: 'Diagram is too large to render. Select Code to view the source.', error: 'Unable to render Mermaid diagram. Select Code to check the source.' },
+  de: { title: 'Mermaid-Diagramm', loading: 'Diagramm wird gerendert…', large: 'Das Diagramm ist zu groß. Wähle Code, um den Quelltext zu sehen.', error: 'Das Mermaid-Diagramm konnte nicht gerendert werden. Prüfe den Quelltext unter Code.' },
+})
+function labels() {
+  let locale: string | null = null
+  try { locale = localStorage.getItem('takomo.lang') } catch { /* Browser locale is the fallback. */ }
+  return strings[detectLocale(locale)]
+}
+
 /** Lazy renderer shared by Markdown and the collaborative code-block view. */
 let nextId = 0
 let renderer: Promise<typeof import('mermaid')['default']> | undefined
@@ -22,7 +34,7 @@ async function renderImage(source: string): Promise<HTMLImageElement> {
   // SVG remains an image document: scripts, links and foreign content cannot
   // execute in the application's DOM. The existing CSP permits data images.
   const image = document.createElement('img')
-  image.alt = 'Mermaid diagram'
+  image.alt = labels().title
   // Mermaid emits width=100%; an image needs intrinsic dimensions to avoid
   // enlarging a small diagram to the width of the whole document column.
   const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement
@@ -44,16 +56,16 @@ export function mountMermaid(host: HTMLElement, source: string): () => void {
   let cancelled = false
   host.replaceChildren()
   host.setAttribute('role', 'status')
-  host.textContent = 'Rendering diagram…'
+  host.textContent = labels().loading
   if (source.length > 50_000) {
-    host.textContent = 'Diagram is too large to render. The source is available below.'
+    host.textContent = labels().large
     return () => { cancelled = true }
   }
   const timer = setTimeout(() => {
     void renderImage(source).then((image) => {
       if (!cancelled) host.replaceChildren(image)
     }).catch(() => {
-      if (!cancelled) host.textContent = 'Unable to render Mermaid diagram. Check the source below.'
+      if (!cancelled) host.textContent = labels().error
     })
   }, 250)
   return () => { cancelled = true; clearTimeout(timer) }

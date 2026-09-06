@@ -1,0 +1,20 @@
+/* Shared imperative Markdown and ProseMirror diagram view. */
+.mermaid-block { min-width: 0; max-width: 100%; margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.mermaid-controls { min-width: 0; }
+.mermaid-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; padding: 8px; background: var(--col-bg); color: var(--text); font: 12px var(--sans, sans-serif); }
+.mermaid-toolbar button, .mermaid-toolbar select { min-height: 32px; max-width: 100%; padding: 4px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; }
+.mermaid-toolbar button:hover, .mermaid-toolbar button[aria-pressed=true] { background: var(--hover); color: var(--accent-ink); }
+.mermaid-toolbar :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mermaid-block [hidden] { display: none !important; }
+.mermaid-preview { padding: 12px; display: flex; justify-content: center; min-width: 0; color: var(--muted); font-size: 13px; }
+.mermaid-preview img { display: block; object-fit: contain; max-width: 100%; min-width: 0; }
+.mermaid-block[data-mermaid-size=compact] .mermaid-preview img { max-height: 320px; }
+.mermaid-block[data-mermaid-size=comfortable] .mermaid-preview img { max-height: 520px; }
+.mermaid-block pre { margin: 0; max-width: 100%; overflow: auto; }
+.mermaid-dialog { position: fixed; inset: 0; width: min(1200px, calc(100vw - 32px)); height: calc(100dvh - 32px); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); }
+.mermaid-dialog[open] { display: flex; flex-direction: column; }
+.mermaid-dialog::backdrop { background: var(--overlay); }
+.mermaid-dialog-canvas { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 16px; }
+.mermaid-dialog-canvas[data-fit=true] { display: flex; align-items: center; justify-content: center; }
+.mermaid-dialog-canvas[data-fit=true] img { object-fit: contain; max-width: 100%; max-height: 100%; min-width: 0; }
+.mermaid-dialog-canvas[data-fit=false] img { display: block; }
