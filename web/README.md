@@ -518,22 +518,32 @@ a Node build stage and copies its assets into the Rust stage. Render and Backlot
 use the same build script. The final server binary still embeds all assets and
 does not need Node or a separate frontend server at runtime.
 
-Mermaid diagrams render in document code blocks whose language is `mermaid`,
-including proposals, and in Markdown previews with fenced `mermaid` blocks.
-In the document editor, type three backticks followed by `mermaid` and press
-Enter to start one; empty writer blocks open Code immediately for typing.
-Existing diagrams default to Diagram, with a top-right Diagram / Code switch.
-Code stays editable for writers and readable for readers. Switching views never
-changes the shared source, block identity, or undo history. Invalid diagrams
-show an error directing the reader to Code.
+Diagram code blocks support `mermaid`, `plantuml` (`puml` and `salt` aliases),
+and `d2`, including proposals and fenced Markdown previews. All engines render
+through the authenticated `POST /v1/diagrams/render` endpoint and private Kroki
+service. The request includes the source object's project; the service must be
+configured by the operator (see `docs/hosting.md`). No browser Mermaid runtime
+or public rendering service is used.
+
+Use `/mermaid`, `/plantuml`, `/d2`, or `/wireframe` in a document to insert a
+block. Wireframe inserts a PlantUML Salt template. Fenced code also works: type
+three backticks followed by the language and press Enter. Empty writer blocks
+open Code immediately. Existing diagrams default to View, with a View / Code
+switch. Code stays editable for writers and readable for readers. Switching
+views never changes shared source, block identity, or undo history.
+
+Rendering waits 250 ms after switching to View or a visible source edit and
+shares a pool of two requests across blocks. Superseded queued and active
+requests are cancelled. Errors retain the last successful image with an explicit
+outdated label and a Retry action; the original source is always available.
+Fresh previews require connectivity. Responses are isolated SVG images, never
+inline markup, so diagram scripts and click actions cannot run in the app DOM.
 
 Inline sizes are Compact (320 px high), Comfortable (520 px high), and Original
 (intrinsic size, fitted to available width). Each preserves the entire diagram.
 Expand opens a modal preview with Fit, 100%, and zoom controls; zoomed content
 scrolls inside the overlay. Escape or Close returns focus to Expand. View and
-size preferences are stored for this browser device under
+size preferences retain the existing browser storage key
 `takomo.mermaid.preferences.v1`, separately from the collaborative document;
-controls also work when browser storage is blocked. Preferences apply to newly
-mounted diagrams, while each open diagram can be adjusted independently.
-The renderer loads only when a diagram is shown; diagrams use strict mode and
-isolated SVG images, so Mermaid click actions are intentionally unavailable.
+controls work when storage is blocked. Preferences apply to newly mounted
+diagrams, while each open diagram can be adjusted independently.

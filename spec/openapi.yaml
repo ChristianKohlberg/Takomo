@@ -44,6 +44,51 @@ tags:
   - { name: schedules }
 
 paths:
+  /diagrams/render:
+    post:
+      tags: [documents]
+      summary: Render a diagram through the private Kroki service
+      description: |
+        Requires read scope and access to the named project, including cached results.
+        Supports Mermaid, PlantUML (including Salt wireframes), and D2. Rendering is
+        disabled unless the operator sets TAKOMO_KROKI_URL. Source is not persisted.
+        Successful SVG previews are cached in bounded server memory by source,
+        engine, and TAKOMO_KROKI_VERSION. Clients must display SVG as an isolated
+        image, never inject it into the application DOM.
+        D2 imports and all at-signs (@) are rejected.
+        Limits: 50 KB UTF-8 source, 2 MiB SVG, 10 seconds, four concurrent renders.
+      operationId: renderDiagram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [project, engine, source]
+              properties:
+                project: { type: string }
+                engine: { type: string, enum: [mermaid, plantuml, d2] }
+                source:
+                  type: string
+                  description: Nonblank diagram source, at most 50000 UTF-8 bytes.
+      responses:
+        '200':
+          description: Rendered SVG preview
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [svg]
+                properties:
+                  svg: { type: string }
+        '401': { description: Authentication required }
+        '403': { description: Read scope or project access denied }
+        '404': { description: Project does not exist }
+        '422': { description: "Invalid engine, source, syntax, or excessive rendered size" }
+        '502': { description: Renderer unavailable or invalid output }
+        '503': { description: Rendering is not configured or all rendering slots are busy }
+        '504': { description: Rendering exceeded the timeout }
   /mindmaps/{id}/nodes/{node}/conversation:
     parameters:
     - name: id
@@ -9794,6 +9839,16 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  diagram.busy: "all four rendering slots are occupied; retry shortly."
+  diagram.not_configured: "the operator has not configured TAKOMO_KROKI_URL; diagram source remains available."
+  diagram.timeout: "the rendering service exceeded the ten-second deadline; simplify the diagram or retry."
+  diagram.unavailable: "the configured renderer failed, redirected, or returned an invalid SVG; retry after checking service health."
+  validation.diagram: "provide project, engine and source strings with no unknown fields."
+  validation.diagram_assets: "D2 external image or icon assets are unsupported; use a self-contained diagram."
+  validation.diagram_engine: "the engine must be mermaid, plantuml or d2."
+  validation.diagram_output: "the generated SVG exceeds 2 MiB; simplify the diagram."
+  validation.diagram_source: "source must contain text and be at most 50,000 bytes; D2 imports and all at-signs are unsupported."
+  validation.diagram_syntax: "the renderer rejected the source; check the diagram language and syntax."
   project.document_appearance: "Invalid document appearance: template must be balanced or strong, overrides may only name the documented typography fields, and each override must be a finite number inside its documented range (heading_weight in steps of 100). Omit a field or send null to inherit it from the template."
   project.writing_instructions: "Invalid project writing instructions: use at most 20 templates with unique 1–80 character ASCII ids, nonblank names up to 80 characters, and nonblank instructions up to 4000 characters. default_id must name an included template or be null."
   validation.agent_chat: "The request is malformed or exceeds a documented size bound."

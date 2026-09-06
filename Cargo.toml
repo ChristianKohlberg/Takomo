@@ -56,6 +56,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "tokio1", "hostname"] }
 yrs = "0.27"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+quick-xml = { version = "0.38", default-features = false }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }

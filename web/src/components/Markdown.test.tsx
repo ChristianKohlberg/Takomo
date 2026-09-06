@@ -3,17 +3,25 @@ import { render, cleanup } from '@testing-library/react'
 import { Markdown } from './Markdown'
 
 const { preview } = vi.hoisted(() => ({ preview: vi.fn(() => vi.fn()) }))
-vi.mock('../lib/mermaid', () => ({ mountMermaid: preview }))
+vi.mock('../lib/diagram', async (original) => ({ ...await original<typeof import('../lib/diagram')>(), mountDiagram: preview }))
 
 describe('<Markdown>', () => {
   it('renders Mermaid fences with source retained and cancels replaced previews', () => {
     const { container, rerender, unmount } = render(<Markdown text={'```mermaid\nflowchart TD\nA --> B\n```'} />)
     expect(container.querySelector('code[data-lang="mermaid"]')?.textContent).toBe('flowchart TD\nA --> B')
-    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'flowchart TD\nA --> B')
+    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'flowchart TD\nA --> B', 'mermaid', null)
     const cancel = preview.mock.results.at(-1)!.value
     rerender(<Markdown text="No diagram" />)
     expect(cancel).toHaveBeenCalled()
     expect(container.querySelector('code')).toBeNull()
+    unmount()
+  })
+
+  it.each(['plantuml', 'puml', 'salt', 'd2'])('renders %s fences using the object project', (language) => {
+    localStorage.clear()
+    const access = { token: 'reader', project: 'object-project' }
+    const { unmount } = render(<Markdown text={'```' + language + '\nsource\n```'} diagramAccess={access} />)
+    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'source', language === 'd2' ? 'd2' : 'plantuml', access)
     unmount()
   })
 

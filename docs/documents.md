@@ -276,9 +276,11 @@ and spreadsheet formulas are not provided.
 
 In an empty paragraph in a section, type `/` to open the block menu and keep typing to
 filter it. Arrow keys select a result; Enter inserts it; Escape closes the menu while
-leaving the typed text intact. Lists, quotes, code, tables and Mermaid diagrams use the
+leaving the typed text intact. Lists, quotes, code, tables and diagrams use the
 editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or Escape
-returns to the command menu. Mermaid starts with its editable source visible.
+returns to the command menu. Mermaid, PlantUML, D2 and Wireframe insertions start with
+editable source. Their shared Code / View controls render through the configured private
+Kroki service; see [diagrams and wireframes](diagrams.md) for setup, limits and offline behavior.
 
 `/h1`, `/h2` and `/h3` ask for a section title and create a real shared section at the
 current section boundary. H1 creates a top-level section; H2 and H3 nest under the appropriate

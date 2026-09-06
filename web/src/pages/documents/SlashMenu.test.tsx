@@ -163,6 +163,16 @@ describe('slash insertion in a collaborative section', () => {
     expect(editor.view.dom.querySelector('pre')!.hidden).toBe(false)
     expect(screen.queryByRole('option', { name: /wireframe/i })).toBeNull()
   })
+  it.each([
+    ['plantuml', 'plantuml', '@startuml'],
+    ['wireframe', 'plantuml', '@startsalt'],
+    ['d2', 'd2', 'User -> Takomo'],
+  ])('inserts a usable %s template', (command, language, source) => {
+    const { editor } = mount()
+    type(editor, `/${command}`); key(editor, 'Enter')
+    expect(editor.state.doc.firstChild!.attrs.language).toBe(language)
+    expect(editor.state.doc.firstChild!.textContent).toContain(source)
+  })
   it('rejects a stale insertion range after another peer changes the trigger', () => {
     const { editor, doc } = mount()
     type(editor, '/table')

@@ -1,3 +1,5 @@
+import { useContext } from 'react'
+import { DiagramContext } from '@/lib/diagram'
 // One section's prose, bound to that section's own fragment.
 //
 // The whole trick is one line:
@@ -41,7 +43,7 @@ import type { Editor } from '@tiptap/react'
 
 const EDITOR_ATTRIBUTES = { class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1' }
 
-import { MermaidCodeBlock } from '@/lib/mermaid-code-block'
+import { DiagramCodeBlock } from '@/lib/diagram-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
@@ -110,6 +112,10 @@ export default function SectionEditor({
   searchActiveFrom,
   locale = 'en',
 }: SectionEditorProps) {
+  const diagramAccess = useContext(DiagramContext)
+  const [diagramAccessEvents] = useState(() => new EventTarget())
+  const accessRef = useRef(diagramAccess)
+  accessRef.current = diagramAccess
   const [slash, setSlash] = useState<SlashMatch | null>(null)
   const slashKeys = useRef<((event: KeyboardEvent) => boolean) | null>(null)
   const slashId = useId()
@@ -132,7 +138,7 @@ export default function SectionEditor({
         // go: an undo stack that does not know about remote edits would undo
         // somebody else's sentence.
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
-        MermaidCodeBlock,
+        DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
         TableKit.configure({ table: { resizable: true } }),
         Collaboration.configure({ document: ydoc, fragment }),
@@ -186,6 +192,12 @@ export default function SectionEditor({
   // against a stale one would apply ops to a document nobody is looking at.
   const register = useRef(onEditor)
   register.current = onEditor
+  // Credentials are view state: refresh requests without touching shared source
+  // or rebuilding the editor and its local selection/undo state.
+  useEffect(() => {
+    diagramAccessEvents.dispatchEvent(new Event('change'))
+  }, [diagramAccessEvents, diagramAccess?.token, diagramAccess?.project])
+
   useEffect(() => {
     register.current?.(editor ?? null)
     return () => register.current?.(null)

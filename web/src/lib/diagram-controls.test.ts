@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createMermaidControls } from './mermaid-controls'
+import { createDiagramControls } from './diagram-controls'
 const { mount, cancel } = vi.hoisted(() => ({ mount: vi.fn(), cancel: vi.fn() }))
-vi.mock('./mermaid', () => ({ mountMermaid: mount }))
+vi.mock('./diagram', async (original) => ({ ...await original<typeof import('./diagram')>(), mountDiagram: mount }))
 const key = 'takomo.mermaid.preferences.v1'
 function fixture(source = 'flowchart TD\nA --> B', empty = false) {
   const root = document.createElement('div')
@@ -9,7 +9,7 @@ function fixture(source = 'flowchart TD\nA --> B', empty = false) {
   pre.textContent = source
   root.append(pre)
   document.body.append(root)
-  return { root, pre, controls: createMermaidControls(root, pre, source, empty) }
+  return { root, pre, controls: createDiagramControls(root, pre, source, empty) }
 }
 function click(root: ParentNode, label: string) {
   const button = Array.from(root.querySelectorAll('button')).find(node => node.textContent === label)!
@@ -38,7 +38,7 @@ describe('personal Mermaid controls', () => {
     click(root, 'Code')
     expect(pre.hidden).toBe(false)
     expect(root.querySelector('.mermaid-preview')?.hasAttribute('hidden')).toBe(true)
-    click(root, 'Diagram')
+    click(root, 'View')
     const select = root.querySelector('select')!
     select.value = 'comfortable'
     select.dispatchEvent(new Event('change'))
@@ -59,7 +59,7 @@ describe('personal Mermaid controls', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
     const { root, pre, controls } = fixture('', true)
     expect(pre.hidden).toBe(false)
-    click(root, 'Diagram')
+    click(root, 'View')
     expect(pre.hidden).toBe(true)
     controls.destroy()
   })
