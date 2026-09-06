@@ -1,0 +1,22 @@
+# Shell scripts and other POSIX text must keep LF in the working tree.
+#
+# Without this, a clone on Windows (core.autocrlf=true, the git-for-windows
+# default) rewrites deploy/docker-entrypoint.sh with CRLF. The Dockerfile COPYs
+# it verbatim, so the container's shebang becomes "#!/bin/sh\r" and every start
+# fails with:
+#
+#   exec /usr/local/bin/docker-entrypoint.sh: no such file or directory
+#
+# which names the interpreter, not the script, and so reads as a missing file.
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff  binary
+*.woff2 binary
