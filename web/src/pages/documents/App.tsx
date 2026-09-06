@@ -1,3 +1,4 @@
+import { DiagramContext } from '@/lib/diagram'
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
@@ -188,6 +189,7 @@ export function DocumentView() {
 
   if (!session || !connection) return null
   return (
+    <DiagramContext value={{ token, project: map?.project ?? project }}>
     <Plan
       key={session.session}
       conversationFor={(node) => (
@@ -279,5 +281,6 @@ export function DocumentView() {
         readOnly: t.proposalReadOnly,
       }}
     />
+    </DiagramContext>
   )
 }

@@ -1,9 +1,9 @@
 import { defineStrings, detectLocale } from './i18n'
-import { mountMermaid } from './mermaid'
+import { mountDiagram, type DiagramEngine, type DiagramAccess } from './diagram'
 
 const strings = defineStrings({
-  en: { diagram: 'Diagram', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Mermaid diagram' },
-  de: { diagram: 'Diagramm', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Mermaid-Diagramm' },
+  en: { diagram: 'View', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Diagram' },
+  de: { diagram: 'Ansicht', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Diagramm' },
 })
 type View = 'diagram' | 'code'
 type Size = 'compact' | 'comfortable' | 'original'
@@ -14,7 +14,7 @@ function read(key: string): string | null {
 }
 
 /** View state is device-local; source remains owned by Markdown/ProseMirror. */
-export function createMermaidControls(root: HTMLElement, pre: HTMLElement, source: string, startInCode = false) {
+export function createDiagramControls(root: HTMLElement, pre: HTMLElement, source: string, startInCode = false, engine: DiagramEngine = 'mermaid', access: DiagramAccess | null = null) {
   const t = strings[detectLocale(read('takomo.lang'))]
   let view: View = 'diagram'
   let size: Size = 'compact'
@@ -27,7 +27,7 @@ export function createMermaidControls(root: HTMLElement, pre: HTMLElement, sourc
   } catch { /* Ignore malformed or unavailable browser storage. */ }
   if (startInCode) view = 'code'
   const controls = document.createElement('div')
-  controls.className = 'mermaid-controls'
+  controls.className = 'diagram-controls'
   controls.contentEditable = 'false'
   const preview = document.createElement('div')
   preview.className = 'mermaid-preview'
@@ -57,7 +57,7 @@ export function createMermaidControls(root: HTMLElement, pre: HTMLElement, sourc
     if (view === 'diagram' && renderingSource !== source) {
       cancel?.()
       renderingSource = source
-      cancel = mountMermaid(preview, source)
+      cancel = mountDiagram(preview, source, engine, access)
     }
   }
   const show = (next: View, remember = true) => {
@@ -91,6 +91,7 @@ export function createMermaidControls(root: HTMLElement, pre: HTMLElement, sourc
     zoomLabel.setAttribute('aria-live', 'polite')
     const update = () => {
       canvas.replaceChildren(...Array.from(preview.childNodes, node => node.cloneNode(true)))
+      canvas.querySelector('button')?.addEventListener('click', () => preview.querySelector('button')?.click())
       const image = canvas.querySelector('img')
       zoomLabel.textContent = zoom === undefined ? t.fit : `${Math.round(zoom * 100)}%`
       canvas.dataset.fit = String(zoom === undefined)
@@ -135,7 +136,7 @@ export function createMermaidControls(root: HTMLElement, pre: HTMLElement, sourc
   return {
     controls,
     showCode: () => show('code', false),
-    update(next: string) { source = next; paint() },
+    update(next: string) { if (source !== next) { cancel?.(); cancel = undefined; renderingSource = undefined }; source = next; paint() },
     destroy() {
       cancel?.()
       closeOverlay?.()

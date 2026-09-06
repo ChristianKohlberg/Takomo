@@ -1,3 +1,4 @@
+import { DiagramContext, diagramEngine, type DiagramAccess } from '../lib/diagram'
 // Renders agent- and human-written markdown.
 //
 // The renderer stays imperative and this component is the only bridge to it:
@@ -5,12 +6,13 @@
 // it is the security boundary — there is no `dangerouslySetInnerHTML` here or
 // anywhere else (eslint.config.js makes that a hard error), so markup in a
 // ticket body can never become markup in the page.
-import { useEffect, useRef } from 'react'
-import { createMermaidControls } from '../lib/mermaid-controls'
+import { useContext, useEffect, useRef } from 'react'
+import { createDiagramControls } from '../lib/diagram-controls'
 import { renderMarkdown } from '../lib/markdown'
 
 export interface MarkdownProps {
   /** Markdown source. Anything non-string renders as empty. */
+  diagramAccess?: DiagramAccess
   text: string | null | undefined
   /** Extra class on the wrapper, alongside `md`. */
   variant?: string
@@ -18,7 +20,10 @@ export interface MarkdownProps {
   className?: string
 }
 
-export function Markdown({ text, variant, className }: MarkdownProps) {
+export function Markdown({ text, variant, className, diagramAccess }: MarkdownProps) {
+  const inherited = useContext(DiagramContext)
+  const token = (diagramAccess ?? inherited)?.token
+  const project = (diagramAccess ?? inherited)?.project
   const host = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -26,18 +31,19 @@ export function Markdown({ text, variant, className }: MarkdownProps) {
     if (!node) return
     node.replaceChildren(renderMarkdown(text, variant))
     const cancel = Array.from(node.querySelectorAll('code[data-lang]')).flatMap((code) => {
-      if (code.getAttribute('data-lang')?.toLowerCase() !== 'mermaid') return []
+      const engine = diagramEngine(code.getAttribute('data-lang'))
+      if (!engine) return []
       const pre = code.parentElement
       if (!pre) return []
       const block = document.createElement('div')
       pre.before(block)
       block.append(pre)
-      const controls = createMermaidControls(block, pre, code.textContent ?? '')
+      const controls = createDiagramControls(block, pre, code.textContent ?? '', false, engine, token && project ? { token, project } : null)
       return [() => controls.destroy()]
     })
     // Leave the host empty on unmount so a detached tree cannot be retained.
     return () => { cancel.forEach((stop) => stop()); node.replaceChildren() }
-  }, [text, variant])
+  }, [text, variant, token, project])
 
   return <div ref={host} className={className} />
 }
