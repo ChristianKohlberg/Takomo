@@ -5,6 +5,7 @@
 
 pub mod agent_chat;
 mod answer_grants;
+pub mod bugs;
 mod checkcollab;
 mod checklist;
 mod claims;
@@ -169,6 +170,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
+        bugs::migrate(&conn)?;
         migrate(&conn)?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into

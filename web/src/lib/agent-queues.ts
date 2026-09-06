@@ -1,12 +1,15 @@
 import { api } from './api'
 
-export const JOB_STATUSES = ['queued', 'running', 'completed', 'failed'] as const
+export const JOB_STATUSES = ['queued', 'running', 'completed', 'failed', 'cancelled'] as const
 export type AgentJobStatus = typeof JOB_STATUSES[number]
 export interface AgentJob {
   id: string
   conversation_id: string
   project: string
-  mindmap: string
+  kind?: 'section_chat' | 'bug_research'
+  ticket_id?: string
+  repository_revision?: string | null
+  mindmap: string | null
   node: string
   section_title: string
   status: AgentJobStatus

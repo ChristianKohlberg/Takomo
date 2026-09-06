@@ -443,6 +443,80 @@ PY
 
 # --- commands ----------------------------------------------------------------
 
+# Bug commands return the server JSON unchanged so CLI and MCP agents can share IDs.
+cmd_bug() {
+  local plan
+  plan=$(python3 - "$@" <<'PYBUG'
+import argparse, json, os, sys, uuid
+from urllib.parse import quote, urlencode
+p = argparse.ArgumentParser(prog="takomo bug", description="Ticket-backed bugs and explicitly requested research; JSON output.")
+subs = p.add_subparsers(dest="action", required=True)
+def project(c): c.add_argument("--project", default=os.environ.get("TAKOMO_PROJECT"))
+def key(c): c.add_argument("--request-id", help="Reuse this ID when retrying an unconfirmed request.")
+new = subs.add_parser("new"); new.add_argument("title"); project(new); key(new)
+body = new.add_mutually_exclusive_group(required=True); body.add_argument("--body"); body.add_argument("--body-file")
+new.add_argument("--priority", choices=["critical", "high", "normal", "low"], default="normal")
+ls = subs.add_parser("ls", aliases=["list"]); project(ls)
+for flag in ["triage", "severity", "state", "q", "assignee", "research-status"]: ls.add_argument("--" + flag)
+ls.add_argument("--limit", type=int, default=50); ls.add_argument("--offset", type=int, default=0); ls.add_argument("--all", action="store_true")
+for name in ["show", "runs", "run", "cancel"]: subs.add_parser(name).add_argument("id")
+edit = subs.add_parser("set"); edit.add_argument("id")
+for flag in ["triage", "severity", "duplicate-of", "note"]: edit.add_argument("--" + flag)
+for name in ["research", "retry", "steer"]:
+    c = subs.add_parser(name); c.add_argument("id"); key(c); c.add_argument("--message", required=name == "steer")
+config = subs.add_parser("config"); project(config)
+config.add_argument("--repository"); config.add_argument("--revision")
+config.add_argument("--enabled", choices=["true", "false"])
+a = p.parse_args()
+q = lambda s: quote(s, safe="")
+method, path, data, header = "GET", "", None, ""
+if hasattr(a, "project") and not a.project: p.error("--project is required when TAKOMO_PROJECT is unset")
+if a.action in ["new", "research", "retry", "steer"]:
+    rid = a.request_id or str(uuid.uuid4())
+    if not rid.strip() or any(ord(c) < 32 for c in rid): p.error("--request-id must be nonempty with no control characters")
+    print("request_id=" + rid + " (reuse for an unconfirmed retry)", file=sys.stderr)
+if a.action == "new":
+    text = a.body
+    if a.body_file == "-": p.error("--body-file requires a file path")
+    if a.body_file: text = open(a.body_file).read()
+    if not a.title.strip() or not text.strip(): p.error("title and bug description must not be blank")
+    method, path = "POST", "/v1/tickets"
+    data = dict(project=a.project, title=a.title, body=text, type="bug", priority=a.priority)
+    header = "Idempotency-Key: " + rid
+elif a.action in ["ls", "list"]:
+    if not 1 <= a.limit <= 100 or a.offset < 0: p.error("limit must be 1..100 and offset nonnegative")
+    params = dict(project=a.project, limit=a.limit, offset=a.offset)
+    for k in ["triage", "severity", "state", "q", "assignee", "research_status"]:
+        if getattr(a,k): params[k] = getattr(a,k)
+    if a.all: params["all"] = "true"
+    path = "/v1/bugs?" + urlencode(params)
+elif a.action in ["show", "set", "runs", "research", "retry"]:
+    path = "/v1/bugs/" + q(a.id)
+    if a.action == "set":
+        method = "PATCH"; data = {k:getattr(a,k) for k in ["triage", "severity", "duplicate_of", "note"] if getattr(a,k) is not None}
+        if not data: p.error("set needs a field to change")
+    elif a.action in ["runs", "research", "retry"]:
+        path += "/research"
+        if a.action != "runs": method, data = "POST", dict(request_id=rid, message=a.message)
+elif a.action in ["run", "steer", "cancel"]:
+    path = "/v1/agent-jobs/" + q(a.id)
+    if a.action != "run":
+        path += "/" + a.action; method = "POST"
+        data = dict(message=a.message, request_id=rid) if a.action == "steer" else {}
+elif a.action == "config":
+    path = "/v1/projects/" + q(a.project) + "/bug-research-config"
+    if a.repository is not None or a.enabled is not None or a.revision is not None:
+        if not a.repository: p.error("config writes require --repository (worker allowlist key)")
+        method, data = "PUT", dict(repository=a.repository, revision=a.revision or "HEAD", enabled=a.enabled != "false")
+print(method); print(path); print(json.dumps(data) if data is not None else ""); print(header)
+PYBUG
+  ) || return $?
+  local -a parts=()
+  mapfile -t parts <<< "$plan"
+  api "${parts[0]}" "${parts[1]}" "${parts[2]:-}" "${parts[3]:-}" >/dev/null
+  cat "$REQ_OUT"
+}
+
 cmd_new() {
   local project="" type="" priority="" parent="" body=""
   local -a labels=()
@@ -4337,6 +4411,19 @@ Project administration (admin scope):
          advisory — it is the lifetime of a credential handed outside the org.
          With no value, prints the current setting; --clear falls back to 7 days.
 
+Bugs (JSON output; research is never automatic):
+  takomo bug new TITLE --body TEXT|--body-file FILE [--project P] [--request-id ID]
+  takomo bug ls [--project P] [--triage S] [--severity S] [--state S] [--q TEXT] [--all]
+                [--assignee ACTOR|none] [--research-status S]
+                [--limit N] [--offset N]
+  takomo bug show TICKET | set TICKET --severity S|--triage S [--note TEXT] [--duplicate-of TICKET]
+  takomo bug research TICKET [--message TEXT] [--request-id ID]
+  takomo bug runs TICKET | run JOB | steer JOB --message TEXT [--request-id ID]
+  takomo bug cancel JOB | retry TICKET [--message TEXT] [--request-id ID]
+  takomo bug config [--project P] [--repository KEY --revision REF --enabled true|false]
+         Configuration writes require admin. A retry uses a NEW request ID;
+         transport retries reuse the SAME ID. Bug reports use ordinary tickets.
+
 Finding & creating work:
   takomo new [--project P] [--type task|bug|epic|spike] [--priority critical|high|normal|low]
          [--parent ID] [--label L]... [--body TEXT] TITLE
@@ -4597,6 +4684,7 @@ main() {
     whoami)  cmd_whoami "$@" ;;
     token)   cmd_token "$@" ;;
     project) cmd_project "$@" ;;
+    bug|bugs) cmd_bug "$@" ;;
     new)     cmd_new "$@" ;;
     ls|list) cmd_ls "$@" ;;
     ready)   cmd_ready "$@" ;;

@@ -2,6 +2,7 @@
 //! malformed input gets teaching errors, not bare 400s.
 
 pub mod agent_chat;
+pub mod bugs;
 pub mod checklist;
 pub mod claims;
 pub mod diagrams;

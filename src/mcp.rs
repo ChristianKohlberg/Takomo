@@ -95,6 +95,10 @@ pub const READ_TOOLS: &[&str] = &[
     "takomo_lanes",
     "takomo_lane_show",
     "takomo_lane_handoffs",
+    "takomo_bugs",
+    "takomo_bug",
+    "takomo_bug_runs",
+    "takomo_bug_run",
     "takomo_specification_history",
     "takomo_specification_version",
     "takomo_test_definitions",
@@ -1143,7 +1147,8 @@ impl TakomoMcp {
         let tool_router = Self::tool_router()
             + Self::initiative_router()
             + Self::schedule_router()
-            + Self::test_run_router();
+            + Self::test_run_router()
+            + Self::bug_router();
         let tools = Arc::new(slim_tools(tool_router.list_all()));
         Self {
             state,
@@ -4911,5 +4916,216 @@ impl TakomoMcp {
             self.state.wake();
             Ok(run)
         })())
+    }
+}
+
+// Bug operations share store authorization and durability with the REST surface.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BugListArgs {
+    pub project: Option<String>,
+    pub triage: Option<String>,
+    pub severity: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub state: Option<String>,
+    pub q: Option<String>,
+    pub all: Option<bool>,
+    pub view: Option<String>,
+    pub assignee: Option<String>,
+    pub research_status: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BugUpdateArgs {
+    pub id: String,
+    pub triage: Option<String>,
+    pub severity: Option<String>,
+    pub duplicate_of: Option<String>,
+    pub note: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BugResearchArgs {
+    pub id: String,
+    /// Reuse after transport failure; new ID for an explicit new run or retry.
+    pub request_id: String,
+    pub message: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BugSteerArgs {
+    pub id: String,
+    pub request_id: String,
+    pub message: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BugConfigArgs {
+    pub project: String,
+    pub repository: Option<String>,
+    pub revision: Option<String>,
+    pub enabled: Option<bool>,
+}
+#[tool_router(router = bug_router)]
+impl TakomoMcp {
+    #[tool(
+        description = "List ticket-backed bugs with triage and research status. Reading never starts research; report using takomo_new with type bug."
+    )]
+    async fn takomo_bugs(
+        &self,
+        Parameters(a): Parameters<BugListArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.state.store.list_bugs_advanced(
+            &require_auth(&ctx)?,
+            a.project.as_deref(),
+            a.triage.as_deref(),
+            a.severity.as_deref(),
+            a.limit.unwrap_or(50),
+            a.offset.unwrap_or(0),
+            if a.all.unwrap_or(false) {
+                "all"
+            } else {
+                a.view.as_deref().unwrap_or("open")
+            },
+            a.q.as_deref(),
+            a.state.as_deref(),
+            a.assignee.as_deref(),
+            a.research_status.as_deref(),
+        ))
+    }
+    #[tool(description = "Read a bug ticket and its triage metadata without changing it.")]
+    async fn takomo_bug(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.state.store.get_bug(&require_auth(&ctx)?, &a.id))
+    }
+    #[tool(
+        description = "Explicitly record a triage decision, severity and rationale. Does not change workflow, start implementation, or launch research."
+    )]
+    async fn takomo_bug_update(
+        &self,
+        Parameters(a): Parameters<BugUpdateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self.state.store.patch_bug(
+            &require_auth(&ctx)?,
+            &a.id,
+            &crate::store::bugs::BugPatch {
+                triage: a.triage,
+                severity: a.severity,
+                duplicate_of: a.duplicate_of,
+                note: a.note,
+            },
+        );
+        self.state.wake();
+        respond(out)
+    }
+    #[tool(
+        description = "Explicitly queue read-only Codex codebase research. Never call automatically on report intake. One active run per ticket; reuse request_id after transport failure, new request_id for an explicit retry."
+    )]
+    async fn takomo_bug_research(
+        &self,
+        Parameters(a): Parameters<BugResearchArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self.state.store.start_bug_research(
+            &require_auth(&ctx)?,
+            &a.id,
+            &crate::store::bugs::ResearchStart {
+                request_id: a.request_id,
+                message: a.message,
+            },
+        );
+        self.state.wake();
+        respond(out)
+    }
+    #[tool(description = "Read retained bug research history and inputs without executing it.")]
+    async fn takomo_bug_runs(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        respond(self.state.store.bug_research(&require_auth(&ctx)?, &a.id))
+    }
+    #[tool(description = "Inspect a research job, evidence and conversation by job ID.")]
+    async fn takomo_bug_run(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond(
+            auth.require_scope("read")
+                .and_then(|()| self.state.store.inspect_agent_job(&auth, &a.id)),
+        )
+    }
+    #[tool(
+        description = "Add explicit steering to an active bug research job; does not create a new run."
+    )]
+    async fn takomo_bug_steer(
+        &self,
+        Parameters(a): Parameters<BugSteerArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self.state.store.steer_agent_job(
+            &require_auth(&ctx)?,
+            &a.id,
+            &crate::store::bugs::Steering {
+                request_id: a.request_id,
+                message: a.message,
+            },
+        );
+        self.state.wake();
+        respond(out)
+    }
+    #[tool(
+        description = "Explicitly cancel bug research, retaining the ticket and recorded evidence."
+    )]
+    async fn takomo_bug_cancel(
+        &self,
+        Parameters(a): Parameters<IdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let out = self
+            .state
+            .store
+            .cancel_agent_job(&require_auth(&ctx)?, &a.id);
+        self.state.wake();
+        respond(out)
+    }
+    #[tool(
+        description = "Read project research configuration, or replace it with admin scope. repository is a worker allowlist key; omit all write fields to read."
+    )]
+    async fn takomo_bug_research_config(
+        &self,
+        Parameters(a): Parameters<BugConfigArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        let out = if a.repository.is_none() && a.revision.is_none() && a.enabled.is_none() {
+            self.state.store.bug_research_config(&auth, &a.project)
+        } else {
+            match a.repository {
+                Some(repository) => self.state.store.set_bug_research_config(
+                    &auth,
+                    &a.project,
+                    &crate::store::bugs::ResearchConfig {
+                        repository,
+                        revision: a.revision.unwrap_or_else(|| "HEAD".into()),
+                        enabled: a.enabled.unwrap_or(true),
+                    },
+                ),
+                None => Err(ApiError::validation(
+                    "validation.bug",
+                    "Configuration writes require repository (a worker allowlist key).",
+                )),
+            }
+        };
+        self.state.wake();
+        respond(out)
     }
 }

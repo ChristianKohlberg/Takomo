@@ -61,3 +61,58 @@ node --test services/agent/test/*.test.mjs
 The fake JSON-RPC process tests thread start/resume, early IDs, final-answer filtering/deduplication, provider failure, process death, unsupported approvals, timeouts, result retry without model reexecution, lease-loss handling, and rejection of inherited tool configurations. To check the real integration, authenticate the dedicated home, queue a section grill in Takomo, run `--once`, then submit a follow-up and run it again. Reload Takomo to verify persisted messages. Stop a running service to verify lease expiry displays a failed job.
 
 Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server), [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference). For a CLI upgrade, regenerate its schema with `codex app-server generate-json-schema --out /tmp/codex-schema` and rerun these checks.
+
+## Explicit bug research
+
+The same queue and local service handle `bug_research` jobs. Creating a bug does
+not start a job: a human or agent explicitly requests research through Takomo.
+Every bug remains a normal ticket. Research produces evidence for review; it does
+not change the ticket's workflow, implement fixes, or claim runtime reproduction.
+
+Configure the repositories this worker may inspect before starting it:
+
+```sh
+export TAKOMO_AGENT_REPOSITORIES='{"takomo":"/absolute/path/to/Takomo"}'
+node services/agent/service.mjs
+```
+
+Keys correspond to the job's `repository_ref.repository` (the project's configured
+repository key). Paths belong to worker configuration, never ticket or steering
+input. A missing key fails the job visibly. `repository_ref.revision` defaults to
+`HEAD` and resolves once, on the worker, to an exact commit before inspection.
+Uncommitted files are excluded. The worker heartbeats the resolved commit before starting the Codex session and
+includes partial inspection evidence in subsequent heartbeats, preserving progress
+if the process dies. Evidence is capped at 48 KB with an explicit truncation flag.
+Results persist that commit, the original ticket
+snapshot, and inspected file/line references; the server retains every attempt.
+A deliberate retry is a new run and may resolve a newer HEAD.
+
+Research uses **one lead, zero helpers**, with a **15-minute turn deadline**, a
+100-call tool budget, and the existing 64 KB answer limit. It exposes three Codex
+App Server dynamic tools: `repository_files`, `repository_search`, and
+`repository_read`. They perform bounded Git object reads at the pinned revision:
+file lists cap at 200, literal search matches at 100, file reads at 200 lines / 24 KB,
+and files at 1 MB. Totals/truncation are explicit. Symlinks and submodules cannot
+be followed. Git subprocesses have a 10-second timeout and 2 MB output limit.
+No checkout is created and no repository scripts, tests, shell commands, network
+requests, or modifications can be requested by the model. Repository content is
+research material, including any instruction files. Section conversation jobs keep
+their original text-only restrictions and five-minute limit.
+
+Steering received through job heartbeats uses `turn/steer` against the active turn;
+cumulative steering IDs are delivered once per worker attempt. Cancellation uses
+`turn/interrupt` and closes the owned process; lease loss also closes it. Failure,
+timeout, and cancellation never automatically reexecute the model. Transport-only
+result delivery retries reuse the same payload. A supervisor restart claims new
+work; expired active attempts remain failed and need an explicit retry.
+
+The integration launches the installed `codex app-server --stdio` locally; it
+requires no listener or assumed port and does not attach to or interrupt another
+application's session. Continue using the dedicated authenticated Codex home above.
+Dynamic tools require experimental protocol capability negotiation, which this
+worker enables only for research jobs. Configuration or protocol incompatibility
+fails visibly. See the [official App Server protocol](https://learn.chatgpt.com/docs/app-server).
+
+Focused fake-server tests also cover committed code evidence, dirty-file exclusion,
+repository allowlists, symlink rejection, live steering, cancellation, timeouts and
+unchanged section behavior. They do not call a paid model or require credentials.

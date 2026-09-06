@@ -12,11 +12,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-
 pub const LEASE_SECONDS: i64 = 60;
 const MAX_RUN_MS: i64 = 15 * 60 * 1000;
 const MAX_TURNS: i64 = 100;
-
 pub fn bounded(value: &str, max: usize, name: &str) -> ApiResult<()> {
     if value.trim().is_empty() || value.len() > max {
         return Err(ApiError::validation(
@@ -49,6 +47,8 @@ pub struct Claim {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Heartbeat {
+    pub repository_revision: Option<String>,
+    pub evidence: Option<Value>,
     pub service_id: String,
     pub attempt_id: String,
     pub thread_id: Option<String>,
@@ -57,6 +57,9 @@ pub struct Heartbeat {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultInput {
+    pub cancelled: Option<bool>,
+    pub repository_revision: Option<String>,
+    pub evidence: Option<Value>,
     pub service_id: String,
     pub attempt_id: String,
     pub status: String,
@@ -67,32 +70,46 @@ pub struct ResultInput {
 }
 
 fn view(conn: &Connection, map: &str, node: &str) -> ApiResult<Value> {
-    let conversation = conn.query_row(
-        "SELECT id, created_at FROM agent_conversations WHERE mindmap=?1 AND node=?2",
-        params![map,node], |r| Ok(json!({"id":r.get::<_,String>(0)?,"mindmap":map,"node":node,"created_at":r.get::<_,i64>(1)?})),
-    ).optional()?;
+    let conversation = conn
+        .query_row("SELECT id, created_at FROM agent_conversations WHERE mindmap=?1 AND node=?2", params![map, node], |r| {
+            Ok(json!({"id":r.get::<_,String>(0)?,"mindmap":map,"node":node,"created_at":r.get::<_,i64>(1)?}))
+        })
+        .optional()?;
     let Some(conversation) = conversation else {
         return Ok(json!({"conversation":null,"messages":[],"jobs":[]}));
     };
     let cid = conversation["id"].as_str().unwrap();
     let mut stmt = conn.prepare("SELECT id,job_id,role,body,created_at FROM agent_messages WHERE conversation_id=?1 ORDER BY rowid LIMIT 200")?;
-    let messages = stmt.query_map([cid], |r| Ok(json!({"id":r.get::<_,String>(0)?,"job_id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"body":r.get::<_,String>(3)?,"created_at":r.get::<_,i64>(4)?})))?.collect::<Result<Vec<_>,_>>()?;
+    let messages = stmt
+        .query_map([cid], |r| {
+            Ok(json!({"id":r.get::<_,String>(0)?,"job_id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"body":r.get::<_,String>(3)?,"created_at":r.get::<_,i64>(4)?}))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     let mut stmt = conn.prepare("SELECT id,status,error,created_at,source_revision,finished_at FROM agent_jobs WHERE conversation_id=?1 ORDER BY rowid LIMIT 100")?;
     let jobs = stmt.query_map([cid], |r| Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?,"created_at":r.get::<_,i64>(3)?,"source_revision":r.get::<_,String>(4)?,"finished_at":r.get::<_,Option<i64>>(5)?})))?.collect::<Result<Vec<_>,_>>()?;
     Ok(json!({"conversation":conversation,"messages":messages,"jobs":jobs,"turn_limit":MAX_TURNS}))
 }
 
 /// Expiry never retries a turn: Codex may have completed it before a disconnect.
-fn expire(conn: &Connection) -> ApiResult<usize> {
+pub(super) fn expire(conn: &Connection) -> ApiResult<usize> {
     let now = now_ms();
-    let mut stmt = conn.prepare("SELECT j.id,c.project FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id JOIN projects p ON p.id=c.project WHERE (j.status='running' AND (j.lease_expires_at<=?1 OR j.deadline<=?1)) OR (j.status IN ('queued','running') AND p.archived_at IS NOT NULL)")?;
+    let mut stmt = conn.prepare(
+        "SELECT j.id,c.project FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id JOIN
+                projects p ON p.id=c.project WHERE (j.status='running' AND (j.lease_expires_at<=?1 OR j.deadline<=?1)) OR
+                (j.status IN ('queued','running') AND (p.archived_at IS NOT NULL OR (c.ticket IS NOT NULL AND (SELECT
+                archived_at FROM tickets WHERE id=c.ticket) IS NOT NULL)))",
+    )?;
     let expired = stmt
         .query_map([now], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     for (job, project) in &expired {
-        conn.execute("UPDATE agent_jobs SET status='failed',error='The agent run was interrupted or the project was archived. No response was saved. Send a new message to continue.',finished_at=?2 WHERE id=?1", params![job,now])?;
+        conn.execute(
+            "UPDATE agent_jobs SET status='failed',error='The agent run was interrupted or the project was archived.
+                No response was saved. Send a new message to continue.',finished_at=?2 WHERE id=?1",
+            params![job, now],
+        )?;
         emit_event(
             conn,
             None,
@@ -120,7 +137,30 @@ struct ActiveJob {
     result: Option<String>,
 }
 fn job(conn: &Connection, id: &str, ctx: &AuthCtx) -> ApiResult<ActiveJob> {
-    let job = conn.query_row("SELECT j.conversation_id,c.project,j.status,j.attempt_id,j.service_id,j.token_id,j.lease_expires_at,j.deadline,j.thread_id,j.turn_id,j.result_json FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1",[id],|r| Ok(ActiveJob{conversation:r.get(0)?,project:r.get(1)?,status:r.get(2)?,attempt:r.get(3)?,service:r.get(4)?,token:r.get(5)?,lease:r.get(6)?,deadline:r.get(7)?,thread:r.get(8)?,turn:r.get(9)?,result:r.get(10)?})).optional()?.ok_or_else(||ApiError::not_found("agent_job",id))?;
+    let job = conn
+        .query_row(
+            "SELECT
+                j.conversation_id,c.project,j.status,j.attempt_id,j.service_id,j.token_id,j.lease_expires_at,j.deadline,j.thread_id,j.turn_id,j.result_json
+                FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1",
+            [id],
+            |r| {
+                Ok(ActiveJob {
+                    conversation: r.get(0)?,
+                    project: r.get(1)?,
+                    status: r.get(2)?,
+                    attempt: r.get(3)?,
+                    service: r.get(4)?,
+                    token: r.get(5)?,
+                    lease: r.get(6)?,
+                    deadline: r.get(7)?,
+                    thread: r.get(8)?,
+                    turn: r.get(9)?,
+                    result: r.get(10)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("agent_job", id))?;
     ctx.require_project(&job.project)?;
     Ok(job)
 }
@@ -182,7 +222,10 @@ fn session(
             params![job.conversation, thread],
         )?;
     }
-    conn.execute("UPDATE agent_jobs SET thread_id=COALESCE(thread_id,?2),turn_id=COALESCE(turn_id,?3) WHERE id=?1",params![id,thread,turn])?;
+    conn.execute(
+        "UPDATE agent_jobs SET thread_id=COALESCE(thread_id,?2),turn_id=COALESCE(turn_id,?3) WHERE id=?1",
+        params![id, thread, turn],
+    )?;
     Ok(())
 }
 
@@ -196,7 +239,7 @@ const INSPECT_COLUMNS: &str = "
 fn inspect_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({
         "id":r.get::<_,String>(0)?, "conversation_id":r.get::<_,String>(1)?,
-        "project":r.get::<_,String>(2)?, "mindmap":r.get::<_,String>(3)?,
+        "project":r.get::<_,String>(2)?, "mindmap":r.get::<_,Option<String>>(3)?,
         "node":r.get::<_,String>(4)?, "section_title":r.get::<_,String>(5)?,
         "status":r.get::<_,String>(6)?, "requested_by":r.get::<_,String>(7)?,
         "source_revision":r.get::<_,String>(8)?, "created_at":r.get::<_,i64>(9)?,
@@ -206,6 +249,129 @@ fn inspect_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "thread_id":r.get::<_,Option<String>>(16)?, "turn_id":r.get::<_,Option<String>>(17)?,
         "error":r.get::<_,Option<String>>(18)?
     }))
+}
+
+pub(super) fn inspect_one(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
+    let mut value = conn
+        .query_row(
+            &format!("SELECT {INSPECT_COLUMNS} FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1"),
+            [id],
+            inspect_row,
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("agent_job", id))?;
+    ctx.require_project(value["project"].as_str().unwrap())?;
+    let (prompt, snapshot, response): (String, String, Option<String>) = conn.query_row(
+        "SELECT j.prompt,j.snapshot,(SELECT body FROM agent_messages WHERE job_id=j.id AND role='assistant') FROM
+                agent_jobs j WHERE j.id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    value["prompt"] = json!(prompt);
+    value["snapshot"] = json!(snapshot);
+    value["response"] = json!(response);
+    let bug: Option<(String, String, bool)> = conn
+        .query_row(
+            "SELECT ticket,repository_ref,cancelled FROM bug_research_jobs WHERE job=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    value["kind"] = json!(if bug.is_some() {
+        "bug_research"
+    } else {
+        "section_chat"
+    });
+    if let Some((ticket, reference, cancelled)) = bug {
+        value["ticket_id"] = json!(ticket);
+        value["section_title"] = serde_json::from_str::<Value>(&snapshot)
+            .ok()
+            .and_then(|t| t.get("title").cloned())
+            .unwrap_or(json!(ticket));
+        value["repository_ref"] = serde_json::from_str(&reference).unwrap_or(Value::Null);
+        value["cancelled"] = json!(cancelled);
+        if cancelled {
+            value["status"] = json!("cancelled");
+        }
+        let raw: Option<String> = conn.query_row(
+            "SELECT result_json FROM agent_jobs WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        let result: Value = raw
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+        let (revision, evidence): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT repository_revision,evidence FROM bug_research_jobs WHERE job=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        value["repository_revision"] = result
+            .get("repository_revision")
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or(json!(revision));
+        value["evidence"] = result
+            .get("evidence")
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or_else(|| {
+                evidence
+                    .and_then(|v| serde_json::from_str(&v).ok())
+                    .unwrap_or(Value::Null)
+            });
+        value["steering"] = steering(conn, id)?;
+    }
+    Ok(value)
+}
+fn steering(conn: &Connection, id: &str) -> ApiResult<Value> {
+    let mut stmt =
+        conn.prepare("SELECT id,message FROM agent_steering WHERE job=?1 ORDER BY id LIMIT 50")?;
+    let rows = stmt
+        .query_map([id], |r| {
+            Ok(json!({"id":r.get::<_,i64>(0)?,"message":r.get::<_,String>(1)?}))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!(rows))
+}
+
+fn save_evidence(
+    conn: &Connection,
+    id: &str,
+    revision: Option<&str>,
+    evidence: Option<&Value>,
+) -> ApiResult<()> {
+    if let Some(revision) = revision {
+        bounded(revision, 200, "repository_revision")?;
+    }
+    if evidence.is_some_and(|e| e.to_string().len() > 64000) {
+        return Err(ApiError::validation(
+            "validation.agent_chat",
+            "Evidence exceeds 64000 bytes.",
+        ));
+    }
+    let previous: Option<String> = conn
+        .query_row(
+            "SELECT repository_revision FROM bug_research_jobs WHERE job=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if previous
+        .as_deref()
+        .zip(revision)
+        .is_some_and(|(a, b)| a != b)
+    {
+        return Err(conflict(
+            "The resolved repository revision cannot change during an attempt.",
+        ));
+    }
+    conn.execute(
+        "UPDATE bug_research_jobs SET repository_revision=COALESCE(repository_revision,?2),evidence=COALESCE(?3,evidence) WHERE job=?1",
+        params![id, revision, evidence.map(Value::to_string)],
+    )?;
+    Ok(())
 }
 
 impl Store {
@@ -226,42 +392,60 @@ impl Store {
                 "limit must be between 1 and 100.",
             ));
         }
-        if status.is_some_and(|s| !matches!(s, "queued" | "running" | "completed" | "failed")) {
+        if status.is_some_and(|s| {
+            !matches!(
+                s,
+                "queued" | "running" | "completed" | "failed" | "cancelled"
+            )
+        }) {
             return Err(ApiError::validation(
                 "validation.agent_chat",
-                "status must be queued, running, completed, or failed.",
+                "status must be queued, running, completed, failed, or cancelled.",
             ));
         }
         self.with_conn(|conn| {
             let allowed = ctx.allowed_projects_vec().map(|p| serde_json::to_string(&p).unwrap());
-            let scope = " FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE (?1 IS NULL OR c.project=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2)))";
+            let scope = " FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE (?1 IS NULL OR
+                c.project=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2)))";
+            let projected_status="CASE WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id AND b.cancelled=1) THEN 'cancelled' ELSE j.status END";
             let mut counts = json!({"queued":0,"running":0,"completed":0,"failed":0});
-            let mut stmt = conn.prepare(&format!("SELECT j.status,COUNT(*){scope} GROUP BY j.status"))?;
-            for row in stmt.query_map(params![project,allowed], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))? {
-                let (status,count) = row?;
+            let mut stmt = conn.prepare(&format!("SELECT {projected_status},COUNT(*){scope} GROUP BY {projected_status}"))?;
+            for row in stmt.query_map(params![project, allowed], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+                let (status, count) = row?;
                 counts[status] = json!(count);
             }
             let total = match status {
-                Some(status) => counts[status].as_i64().unwrap(),
-                None => counts.as_object().unwrap().values().map(|v|v.as_i64().unwrap()).sum(),
+                Some(status) => counts[status].as_i64().unwrap_or(0),
+                None => counts.as_object().unwrap().values().map(|v| v.as_i64().unwrap()).sum(),
             };
-            let mut stmt = conn.prepare(&format!("SELECT {INSPECT_COLUMNS}{scope} AND (?3 IS NULL OR j.status=?3) ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?4"))?;
-            let items = stmt.query_map(params![project,allowed,status,limit], inspect_row)?.collect::<Result<Vec<_>,_>>()?;
-            let mut result = crate::api::paged(items,total,limit,"Only the newest matching jobs are returned. Narrow project/status or raise limit to at most 100; inspect older jobs by ID.");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {INSPECT_COLUMNS}{scope} AND (?3 IS NULL OR ({projected_status})=?3) ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?4"
+            ))?;
+            let mut items = stmt.query_map(params![project, allowed, status, limit], inspect_row)?.collect::<Result<Vec<_>, _>>()?;
+            for item in &mut items {
+                if item["mindmap"].is_null() {
+                    *item = inspect_one(conn, ctx, item["id"].as_str().unwrap())?;
+                }
+            }
+            let mut result = crate::api::paged(
+                items,
+                total,
+                limit,
+                "Only the newest matching jobs are returned. Narrow project/status or raise limit to at most 100; inspect older jobs by ID.",
+            );
             result["counts"] = counts;
             Ok(result)
         })
     }
     pub fn inspect_agent_job(&self, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
         self.with_conn(|conn| {
-            let mut value = conn.query_row(&format!("SELECT {INSPECT_COLUMNS} FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1"),[id],inspect_row).optional()?.ok_or_else(||ApiError::not_found("agent_job",id))?;
-            ctx.require_project(value["project"].as_str().unwrap())?;
-            let (prompt,snapshot,response): (String,String,Option<String>) = conn.query_row("SELECT j.prompt,j.snapshot,(SELECT body FROM agent_messages WHERE job_id=j.id AND role='assistant') FROM agent_jobs j WHERE j.id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-            value["prompt"] = json!(prompt);
-            value["snapshot"] = json!(snapshot);
-            value["response"] = json!(response);
+            let value = inspect_one(conn, ctx, id)?;
             let mut stmt = conn.prepare("SELECT id,job_id,role,body,created_at FROM agent_messages WHERE conversation_id=?1 ORDER BY rowid LIMIT 200")?;
-            let messages = stmt.query_map([value["conversation_id"].as_str().unwrap()], |r| Ok(json!({"id":r.get::<_,String>(0)?,"job_id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"body":r.get::<_,String>(3)?,"created_at":r.get::<_,i64>(4)?})))?.collect::<Result<Vec<_>,_>>()?;
+            let messages = stmt
+                .query_map([value["conversation_id"].as_str().unwrap()], |r| {
+                    Ok(json!({"id":r.get::<_,String>(0)?,"job_id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"body":r.get::<_,String>(3)?,"created_at":r.get::<_,i64>(4)?}))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(json!({"job":value,"messages":messages}))
         })
     }
@@ -281,26 +465,51 @@ impl Store {
         bounded(&req.request_id, 120, "request_id")?;
         bounded(snapshot, 100_000, "section snapshot")?;
         self.with_tx(|tx| {
-            ensure_project_writable(tx,project)?;
+            ensure_project_writable(tx, project)?;
             expire(tx)?;
-            let now=now_ms();
-            tx.execute("INSERT INTO agent_conversations(id,mindmap,node,project,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(mindmap,node) DO NOTHING",params![id("ac"),map,node,project,now])?;
-            let cid:String=tx.query_row("SELECT id FROM agent_conversations WHERE mindmap=?1 AND node=?2",params![map,node],|r|r.get(0))?;
-            let previous:Option<String>=tx.query_row("SELECT prompt FROM agent_jobs WHERE conversation_id=?1 AND requested_by=?2 AND request_id=?3",params![cid,ctx.actor,req.request_id],|r|r.get(0)).optional()?;
-            if let Some(previous)=previous {
-                if previous!=req.message { return Err(conflict("request_id was already used for another message. Use a new request_id.")); }
-                return view(tx,map,node);
+            let now = now_ms();
+            tx.execute(
+                "INSERT INTO agent_conversations(id,mindmap,node,project,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(mindmap,node) DO NOTHING",
+                params![id("ac"), map, node, project, now],
+            )?;
+            let cid: String = tx.query_row("SELECT id FROM agent_conversations WHERE mindmap=?1 AND node=?2", params![map, node], |r| r.get(0))?;
+            let previous: Option<String> = tx
+                .query_row(
+                    "SELECT prompt FROM agent_jobs WHERE conversation_id=?1 AND requested_by=?2 AND request_id=?3",
+                    params![cid, ctx.actor, req.request_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(previous) = previous {
+                if previous != req.message {
+                    return Err(conflict("request_id was already used for another message. Use a new request_id."));
+                }
+                return view(tx, map, node);
             }
-            let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_jobs WHERE conversation_id=?1 AND status IN ('queued','running'))",[&cid],|r|r.get(0))?;
-            if active { return Err(conflict("This section already has a queued or running turn. Wait for its response before sending another message.")); }
-            let turns:i64=tx.query_row("SELECT COUNT(*) FROM agent_jobs WHERE conversation_id=?1",[&cid],|r|r.get(0))?;
-            if turns>=MAX_TURNS { return Err(conflict("This conversation reached the MVP limit of 100 turns. Its complete history remains readable.")); }
-            let jid=id("aj");
-            let revision=format!("{:x}",Sha256::digest(snapshot.as_bytes()));
-            tx.execute("INSERT INTO agent_jobs(id,conversation_id,requested_by,request_id,prompt,snapshot,source_revision,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',?8)",params![jid,cid,ctx.actor,req.request_id,req.message,snapshot,revision,now])?;
-            tx.execute("INSERT INTO agent_messages(id,conversation_id,job_id,role,body,created_at) VALUES(?1,?2,?3,'user',?4,?5)",params![id("am"),cid,jid,req.message,now])?;
-            emit_event(tx,None,Some(project),&ctx.actor,"agent_job.queued",json!({"job_id":jid,"conversation_id":cid}),now)?;
-            view(tx,map,node)
+            let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_jobs WHERE conversation_id=?1 AND status IN ('queued','running'))", [&cid], |r| {
+                r.get(0)
+            })?;
+            if active {
+                return Err(conflict("This section already has a queued or running turn. Wait for its response before sending another message."));
+            }
+            let turns: i64 = tx.query_row("SELECT COUNT(*) FROM agent_jobs WHERE conversation_id=?1", [&cid], |r| r.get(0))?;
+            if turns >= MAX_TURNS {
+                return Err(conflict("This conversation reached the MVP limit of 100 turns. Its complete history remains readable."));
+            }
+            let jid = id("aj");
+            let revision = format!("{:x}", Sha256::digest(snapshot.as_bytes()));
+            tx.execute(
+                "INSERT INTO
+                agent_jobs(id,conversation_id,requested_by,request_id,prompt,snapshot,source_revision,status,created_at)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',?8)",
+                params![jid, cid, ctx.actor, req.request_id, req.message, snapshot, revision, now],
+            )?;
+            tx.execute(
+                "INSERT INTO agent_messages(id,conversation_id,job_id,role,body,created_at) VALUES(?1,?2,?3,'user',?4,?5)",
+                params![id("am"), cid, jid, req.message, now],
+            )?;
+            emit_event(tx, None, Some(project), &ctx.actor, "agent_job.queued", json!({"job_id":jid,"conversation_id":cid}), now)?;
+            view(tx, map, node)
         })
     }
     pub fn claim_agent_job(&self, ctx: &AuthCtx, service: &str) -> ApiResult<Option<Value>> {
@@ -310,15 +519,32 @@ impl Store {
             // MVP: at most one active job per connected service, even if it has
             // accidentally been started twice. Conversations stay on that service.
             let busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_jobs WHERE service_id=?1 AND status='running')",[service],|r|r.get(0))?;
-            if busy { return Ok(None); }
+            if busy { return Ok(None);
+ }
             let allowed=ctx.allowed_projects_vec().map(|p|serde_json::to_string(&p).unwrap());
-            let candidate:Option<(String,String,Option<String>)>=tx.query_row("SELECT j.id,c.id,c.thread_id FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id JOIN projects p ON p.id=c.project WHERE j.status='queued' AND p.archived_at IS NULL AND (c.service_id IS NULL OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) ORDER BY j.created_at,j.rowid LIMIT 1",params![service,allowed],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-            let Some((jid,cid,thread))=candidate else { return Ok(None); };
-            let now=now_ms(); let attempt=id("attempt");
-            tx.execute("UPDATE agent_jobs SET status='running',attempt_id=?2,service_id=?3,token_id=?4,thread_id=?5,lease_expires_at=?6,deadline=?7 WHERE id=?1",params![jid,attempt,service,ctx.token_id,thread,now+LEASE_SECONDS*1000,now+MAX_RUN_MS])?;
+            let candidate:Option<(String,String,Option<String>)>=tx.query_row("SELECT j.id,c.id,c.thread_id FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id JOIN
+                projects p ON p.id=c.project WHERE j.status='queued' AND p.archived_at IS NULL AND (c.ticket IS NULL OR
+                (SELECT archived_at FROM tickets WHERE id=c.ticket) IS NULL) AND (c.ticket IS NULL OR (SELECT COUNT(*)
+                FROM agent_jobs running JOIN agent_conversations rc ON rc.id=running.conversation_id WHERE
+                rc.project=c.project AND rc.ticket IS NOT NULL AND running.status='running')<2) AND (c.service_id IS NULL
+                OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) ORDER BY
+                j.created_at,j.rowid LIMIT 1",params![service,allowed],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+            let Some((jid,cid,thread))=candidate else { return Ok(None);
+ };
+            let now=now_ms();
+ let attempt=id("attempt");
+            tx.execute("UPDATE agent_jobs SET
+                status='running',attempt_id=?2,service_id=?3,token_id=?4,thread_id=?5,lease_expires_at=?6,deadline=?7
+                WHERE id=?1",params![jid,attempt,service,ctx.token_id,thread,now+LEASE_SECONDS*1000,now+MAX_RUN_MS])?;
             tx.execute("UPDATE agent_conversations SET service_id=?2 WHERE id=?1",params![cid,service])?;
-            let value=tx.query_row("SELECT prompt,snapshot,source_revision FROM agent_jobs WHERE id=?1",[&jid],|r|Ok(json!({"id":jid,"attempt_id":attempt,"conversation_id":cid,"prompt":r.get::<_,String>(0)?,"snapshot":r.get::<_,String>(1)?,"source_revision":r.get::<_,String>(2)?,"thread_id":thread,"lease_seconds":LEASE_SECONDS})))?;
+            let mut value=tx.query_row("SELECT prompt,snapshot,source_revision FROM agent_jobs WHERE id=?1",[&jid],|r|Ok(json!({"id":jid,"attempt_id":attempt,"conversation_id":cid,"prompt":r.get::<_,String>(0)?,"snapshot":r.get::<_,String>(1)?,"source_revision":r.get::<_,String>(2)?,"thread_id":thread,"lease_seconds":LEASE_SECONDS})))?;
             let project:String=tx.query_row("SELECT project FROM agent_conversations WHERE id=?1",[&cid],|r|r.get(0))?;
+            let bug:Option<(String,String)>=tx.query_row("SELECT ticket,repository_ref FROM bug_research_jobs WHERE job=?1",[&jid],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            value["kind"]=json!(if bug.is_some(){"bug_research"}else{"section_chat"});
+            value["project"]=json!(project);
+            if let Some((ticket,reference))=bug {value["ticket_id"]=json!(ticket);
+value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
+}
             emit_event(tx,None,Some(&project),&ctx.actor,"agent_job.running",json!({"job_id":jid}),now)?;
             Ok(Some(value))
         })
@@ -332,21 +558,17 @@ impl Store {
         self.with_tx(|tx| {
             let job = job(tx, id, ctx)?;
             owner(&job, ctx, &req.service_id, &req.attempt_id)?;
+            let cancelled: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bug_research_jobs WHERE job=?1 AND cancelled=1)", [id], |r| r.get(0))?;
+            if cancelled {
+                return Ok(json!({"cancel_requested":true,"steering":[]}));
+            }
             live(&job)?;
             ensure_project_writable(tx, &job.project)?;
-            session(
-                tx,
-                &job,
-                id,
-                req.thread_id.as_deref(),
-                req.turn_id.as_deref(),
-            )?;
+            session(tx, &job, id, req.thread_id.as_deref(), req.turn_id.as_deref())?;
+            save_evidence(tx, id, req.repository_revision.as_deref(), req.evidence.as_ref())?;
             let lease = (now_ms() + LEASE_SECONDS * 1000).min(job.deadline.unwrap());
-            tx.execute(
-                "UPDATE agent_jobs SET lease_expires_at=?2 WHERE id=?1",
-                params![id, lease],
-            )?;
-            Ok(json!({"lease_expires_at":lease}))
+            tx.execute("UPDATE agent_jobs SET lease_expires_at=?2 WHERE id=?1", params![id, lease])?;
+            Ok(json!({"lease_expires_at":lease,"cancel_requested":false,"steering":steering(tx,id)?}))
         })
     }
     pub fn finish_agent_job(
@@ -380,22 +602,76 @@ impl Store {
                 ));
             }
         }
+        if let Some(revision) = &req.repository_revision {
+            bounded(revision, 200, "repository_revision")?;
+        }
+        if req
+            .evidence
+            .as_ref()
+            .is_some_and(|v| v.to_string().len() > 64_000)
+        {
+            return Err(ApiError::validation(
+                "validation.agent_chat",
+                "Evidence exceeds 64000 bytes.",
+            ));
+        }
         let canonical =
             serde_json::to_string(req).map_err(|e| ApiError::internal(e.to_string()))?;
         self.with_tx(|tx| {
-            let job=job(tx,jid,ctx)?; owner(&job,ctx,&req.service_id,&req.attempt_id)?;
-            if let Some(previous)=&job.result {
-                if previous==&canonical { return Ok(json!({"ok":true,"status":job.status})); }
+            let job = job(tx, jid, ctx)?;
+            owner(&job, ctx, &req.service_id, &req.attempt_id)?;
+            if let Some(previous) = &job.result {
+                if previous == &canonical {
+                    return Ok(json!({"ok":true,"status":job.status}));
+                }
                 return Err(conflict("A different result is already recorded for this attempt."));
             }
-            live(&job)?; ensure_project_writable(tx,&job.project)?;
-            session(tx,&job,jid,req.thread_id.as_deref(),req.turn_id.as_deref())?;
-            let now=now_ms();
-            if let Some(body)=&req.message {
-                tx.execute("INSERT INTO agent_messages(id,conversation_id,job_id,role,body,created_at) VALUES(?1,?2,?3,'assistant',?4,?5)",params![id("am"),job.conversation,jid,body,now])?;
+            let cancelled: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM bug_research_jobs WHERE job=?1 AND cancelled=1)", [jid], |r| r.get(0))?;
+            if cancelled && req.cancelled == Some(true) && req.status == "failed" {
+                ensure_project_writable(tx, &job.project)?;
+                save_evidence(tx, jid, req.repository_revision.as_deref(), req.evidence.as_ref())?;
+                tx.execute("UPDATE agent_jobs SET result_json=?2 WHERE id=?1", params![jid, canonical])?;
+                return Ok(json!({"ok":true,"status":"cancelled"}));
             }
-            tx.execute("UPDATE agent_jobs SET status=?2,error=?3,result_json=?4,finished_at=?5 WHERE id=?1",params![jid,req.status,req.error,canonical,now])?;
-            emit_event(tx,None,Some(&job.project),&ctx.actor,&format!("agent_job.{}",req.status),json!({"job_id":jid}),now)?;
+            live(&job)?;
+            ensure_project_writable(tx, &job.project)?;
+            if req.cancelled == Some(true) {
+                return Err(conflict("Only explicitly cancelled jobs can report cancelled evidence."));
+            }
+            save_evidence(tx, jid, req.repository_revision.as_deref(), req.evidence.as_ref())?;
+            let bug: Option<String> = tx.query_row("SELECT ticket FROM bug_research_jobs WHERE job=?1", [jid], |r| r.get(0)).optional()?;
+            if let Some(ticket) = &bug {
+                let t = super::helpers::get_ticket_required(tx, ticket)?;
+                if t.archived_at.is_some() {
+                    return Err(conflict("This ticket is archived. Stop this attempt."));
+                }
+                if req.status == "completed" {
+                    bounded(req.repository_revision.as_deref().unwrap_or(""), 200, "repository_revision")?;
+                }
+            }
+            session(tx, &job, jid, req.thread_id.as_deref(), req.turn_id.as_deref())?;
+            let now = now_ms();
+            if let Some(body) = &req.message {
+                tx.execute(
+                    "INSERT INTO agent_messages(id,conversation_id,job_id,role,body,created_at) VALUES(?1,?2,?3,'assistant',?4,?5)",
+                    params![id("am"), job.conversation, jid, body, now],
+                )?;
+            }
+            tx.execute(
+                "UPDATE agent_jobs SET status=?2,error=?3,result_json=?4,finished_at=?5 WHERE id=?1",
+                params![jid, req.status, req.error, canonical, now],
+            )?;
+            if let Some(ticket) = &bug {
+                if req.status == "completed" {
+                    tx.execute(
+                        "INSERT INTO bug_triage(ticket,triage,updated_by,updated_at) VALUES(?1,'ready_for_review',?2,?3) ON
+                CONFLICT(ticket) DO UPDATE SET
+                triage='ready_for_review',updated_by=excluded.updated_by,updated_at=excluded.updated_at",
+                        params![ticket, ctx.actor, now],
+                    )?;
+                }
+            }
+            emit_event(tx, None, Some(&job.project), &ctx.actor, &format!("agent_job.{}", req.status), json!({"job_id":jid}), now)?;
             Ok(json!({"ok":true,"status":req.status}))
         })
     }

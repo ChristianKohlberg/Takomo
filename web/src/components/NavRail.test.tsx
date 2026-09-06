@@ -56,12 +56,13 @@ describe('NavRail', () => {
     expect(screen.getByText('Board')).toBeTruthy()
   })
 
-  it('keeps Epics beside the work destinations', () => {
+  it('makes Bugs, Lanes and Epics dedicated destinations beside Board', () => {
     const { onNavigate } = mount({ current: 'inbox' })
     const epic = screen.getByRole('link', { name: 'Epics' })
     expect(epic).toHaveProperty('pathname', '/epics')
     expect(epic.previousElementSibling).toHaveProperty('pathname', '/lanes')
-    expect(screen.getByRole('link', { name: 'Lanes' }).previousElementSibling).toHaveProperty('pathname', '/board')
+    expect(screen.getByRole('link', { name: 'Lanes' }).previousElementSibling).toHaveProperty('pathname', '/bugs')
+    expect(screen.getByRole('link', { name: 'Bugs' }).previousElementSibling).toHaveProperty('pathname', '/board')
     fireEvent.click(epic)
     expect(onNavigate).toHaveBeenCalledWith('/epics')
   })

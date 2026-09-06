@@ -144,6 +144,45 @@ async function advanceToCategory(id: string, category: string, fenceOverride?: n
 
 const server = new McpServer({ name: "takomo-mcp", version: "0.1.0" });
 
+// Bug research is explicit on every surface; use the same REST operations.
+const bugId = { id: z.string().describe("Bug ticket ID (job ID for run/steer/cancel).") };
+const requestId = z.string().min(1).describe("Reuse after transport failure; use a new ID for a new run/message.");
+server.registerTool("takomo_bugs", {
+  description: "List ticket-backed bugs; defaults to open, nonarchived tickets. Reading never starts research.",
+  inputSchema: { project: z.string(), triage: z.string().optional(), severity: z.string().optional(), state: z.string().optional(), q: z.string().optional(), assignee: z.string().optional(), research_status: z.string().optional(), all: z.boolean().optional(), limit: z.number().int().min(1).max(100).optional(), offset: z.number().int().nonnegative().optional() },
+}, tool(async (a) => ok(await client.request({ path: "/bugs", query: { ...a, all: a.all === undefined ? undefined : String(a.all) } }))));
+server.registerTool("takomo_bug", {
+  description: "Read a bug and triage metadata. Report with takomo_new type bug; ticket creation starts no research.", inputSchema: bugId,
+}, tool(async (a) => ok(await client.request({ path: `/bugs/${encodeURIComponent(a.id)}` }))));
+server.registerTool("takomo_bug_update", {
+  description: "Record a deliberate triage/severity decision and rationale without changing ticket workflow or launching research.",
+  inputSchema: { ...bugId, triage: z.string().optional(), severity: z.string().optional(), duplicate_of: z.string().optional(), note: z.string().optional() },
+}, tool(async ({ id, ...body }) => ok(await client.request({ method: "PATCH", path: `/bugs/${encodeURIComponent(id)}`, body }))));
+server.registerTool("takomo_bug_research", {
+  description: "Explicitly start read-only Codex research for a bug; one active run per ticket. A new request_id explicitly retries. Never call automatically on intake.",
+  inputSchema: { ...bugId, request_id: requestId, message: z.string().optional() },
+}, tool(async ({ id, ...body }) => ok(await client.request({ method: "POST", path: `/bugs/${encodeURIComponent(id)}/research`, body }))));
+server.registerTool("takomo_bug_runs", {
+  description: "Read research history, retaining earlier findings and inputs.", inputSchema: bugId,
+}, tool(async (a) => ok(await client.request({ path: `/bugs/${encodeURIComponent(a.id)}/research` }))));
+server.registerTool("takomo_bug_run", {
+  description: "Inspect a research job, messages, evidence and status without changing it.", inputSchema: bugId,
+}, tool(async (a) => ok(await client.request({ path: `/agent-jobs/${encodeURIComponent(a.id)}` }))));
+server.registerTool("takomo_bug_steer", {
+  description: "Add steering to an active bug research run without starting another run.",
+  inputSchema: { ...bugId, request_id: requestId, message: z.string().min(1) },
+}, tool(async ({ id, ...body }) => ok(await client.request({ method: "POST", path: `/agent-jobs/${encodeURIComponent(id)}/steer`, body }))));
+server.registerTool("takomo_bug_cancel", {
+  description: "Cancel bug research, retaining its ticket and recorded evidence.", inputSchema: bugId,
+}, tool(async (a) => ok(await client.request({ method: "POST", path: `/agent-jobs/${encodeURIComponent(a.id)}/cancel`, body: {} }))));
+server.registerTool("takomo_bug_research_config", {
+  description: "Read project research configuration, or replace with admin scope. repository is a worker allowlist key, not a filesystem path.",
+  inputSchema: { project: z.string(), repository: z.string().optional(), revision: z.string().optional(), enabled: z.boolean().optional() },
+}, tool(async ({ project, ...body }) => {
+  const write = Object.keys(body).length > 0;
+  return ok(await client.request({ method: write ? "PUT" : "GET", path: `/projects/${encodeURIComponent(project)}/bug-research-config`, ...(write ? { body: { revision: "HEAD", enabled: true, ...body } } : {}) }));
+}));
+
 server.registerTool(
   "takomo_new",
   {
