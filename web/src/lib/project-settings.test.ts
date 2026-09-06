@@ -1,14 +1,20 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   STYLE_MAX,
+  saveProjectSettings,
   saveBlockReason,
   settingsFrom,
   type ProjectSettings,
 } from './project-settings'
 
+vi.mock('./api', () => ({ api: vi.fn().mockResolvedValue({}) }))
+import { api } from './api'
+beforeEach(() => vi.clearAllMocks())
+
 const W = { readOnly: 'read only', over: 'too long' }
 
 const base: ProjectSettings = {
+  documentAppearance: { template: 'balanced', overrides: {} },
   language: '',
   style: '',
   ttl: '',
@@ -34,6 +40,7 @@ describe('settingsFrom', () => {
       max_claim_ttl_seconds: 3600,
     })
     expect(s).toEqual({
+      documentAppearance: { template: 'balanced', overrides: {} },
       language: 'de',
       style: 'Terse.',
       ttl: '604800',
@@ -72,5 +79,32 @@ describe('saveBlockReason', () => {
 
   it('permits an unchanged, empty form', () => {
     expect(saveBlockReason(base, false, W)).toBe('')
+  })
+})
+
+
+describe('document appearance settings persistence', () => {
+  it('saves only changed appearance and retains explicit overrides', async () => {
+    const documentAppearance = { template: 'strong' as const, overrides: { h1_size: 36 } }
+    expect(await saveProjectSettings('token', 'demo', { ...base, documentAppearance }, base)).toBe(1)
+    expect(api).toHaveBeenCalledWith('token', '/projects/demo/document-appearance', expect.objectContaining({
+      method: 'PUT', body: JSON.stringify(documentAppearance),
+    }))
+  })
+  it('does not save default appearance on older projects or unchanged settings', async () => {
+    expect(await saveProjectSettings('token', 'demo', base, { ...base, documentAppearance: undefined })).toBe(0)
+    expect(api).not.toHaveBeenCalled()
+  })
+  it('removes an override on the wire when reset', async () => {
+    await saveProjectSettings('token', 'demo', base, { ...base, documentAppearance: { template: 'balanced', overrides: { h1_size: 36 } } })
+    expect(api).toHaveBeenCalledWith('token', '/projects/demo/document-appearance', expect.objectContaining({
+      body: JSON.stringify(base.documentAppearance),
+    }))
+  })
+  it('blocks invalid appearance before making any settings writes', async () => {
+    const next = { ...base, language: 'de', documentAppearance: { template: 'balanced' as const, overrides: { h1_size: 100 } } }
+    await expect(saveProjectSettings('token', 'demo', next, base)).rejects.toThrow('Invalid document appearance')
+    expect(api).not.toHaveBeenCalled()
+    expect(saveBlockReason(next, false, { ...W, appearanceInvalid: 'invalid' })).toBe('invalid')
   })
 })

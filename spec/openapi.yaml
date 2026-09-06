@@ -1547,6 +1547,29 @@ paths:
         "409": { description: Project is archived }
         "422": { description: "Invalid lengths, duplicate ids, or default_id outside templates" }
 
+  /projects/{project}/document-appearance:
+    put:
+      tags: [workflow]
+      summary: Select a global document template and override its values for this project (admin scope)
+      description: Replaces the saved selection and overrides. Omitted or null override values inherit from the selected template. No document content or mindmap structure is changed. Archived projects reject this write.
+      parameters: [ { $ref: "#/components/parameters/project" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentAppearance" }
+      responses:
+        "200":
+          description: Updated project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "400": { description: Invalid template, field type, missing required field, or unknown field. }
+        "403": { description: Admin scope required and project must be allowed. }
+        "404": { description: Project does not exist. }
+        "409": { description: Project is archived. }
+        "422": { description: Override value is outside its supported range. }
+
   /projects/{project}/style:
     put:
       tags: [workflow]
@@ -7770,9 +7793,30 @@ components:
           type: [string, "null"]
           description: An id in templates, or null to apply no named instruction.
 
+    DocumentAppearance:
+      type: object
+      additionalProperties: false
+      required: [template, overrides]
+      description: Defaults to balanced with empty overrides for both existing and new projects.
+      properties:
+        template: { type: string, enum: [balanced, strong] }
+        overrides:
+          type: object
+          additionalProperties: false
+          description: Sizes and spacing in pixels; line_height is a unitless multiplier. Omit a value or send null to inherit. Null values are omitted from responses.
+          properties:
+            h1_size: { type: [number, "null"], minimum: 12, maximum: 64 }
+            h2_size: { type: [number, "null"], minimum: 12, maximum: 64 }
+            h3_size: { type: [number, "null"], minimum: 12, maximum: 64 }
+            body_size: { type: [number, "null"], minimum: 12, maximum: 24 }
+            heading_weight: { type: [number, "null"], minimum: 400, maximum: 800, multipleOf: 100 }
+            line_height: { type: [number, "null"], minimum: 1, maximum: 2.5 }
+            heading_spacing: { type: [number, "null"], minimum: 0, maximum: 48 }
+
     Project:
       type: object
       properties:
+        document_appearance: { $ref: "#/components/schemas/DocumentAppearance" }
         id: { type: string, description: 'short slug, also the ticket id prefix' }
         name: { type: string }
         workflow: { type: string, description: workflow name in effect }

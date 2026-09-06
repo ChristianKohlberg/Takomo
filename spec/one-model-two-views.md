@@ -189,3 +189,20 @@ What survives untouched: the CRDT foundation, the shared log, the fractional
 index, the tree repair, relationships, attachments, the outline model, the
 canvas. What is thrown away is the conversion — about a day, mine — and that is
 the right trade rather than a sunk cost to defend.
+
+
+## Document appearance
+
+Project settings offers two global typography templates: **Balanced** (H1/H2/H3
+28/22/18px) and **Strong** (32/24/20px). Both start with 16px body text.
+Select a template, override the values needed for that project, and save. Reset
+beside an overridden field restores the selected template value. Switching
+presets keeps explicit overrides and updates inherited values in the preview.
+
+The project stores `document_appearance` as a template identifier and sparse
+numeric overrides. `PUT /v1/projects/{project}/document-appearance` requires
+project access and admin scope; archived projects cannot change it. Projects
+without saved settings use Balanced automatically. Changes refresh open
+specifications through the existing project updates channel. They affect only
+presentation: section IDs, hierarchy, text, mindmap nodes and test links stay
+attached. This does not add template editors, publishing, or version management.

@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 /// forgotten in the other.
 const PROJECT_COLS: &str =
     "id, name, workflow_json, question_language, style_guide, answer_link_ttl_seconds, \
-     claim_ttl_seconds, max_claim_ttl_seconds, archived_at, created_at";
+     claim_ttl_seconds, max_claim_ttl_seconds, archived_at, created_at, document_appearance_json";
 
 /// Cap on a project's style guide. It is attached to work-loop responses an
 /// agent reads constantly, so it has to stay a glanceable convention rather
@@ -184,6 +184,7 @@ type ProjectRow = (
     Option<i64>,
     Option<i64>,
     i64,
+    Option<String>,
 );
 
 fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
@@ -198,6 +199,7 @@ fn project_row(r: &rusqlite::Row) -> rusqlite::Result<ProjectRow> {
         r.get(7)?,
         r.get(8)?,
         r.get(9)?,
+        r.get(10)?,
     ))
 }
 
@@ -213,10 +215,17 @@ fn hydrate_project(row: ProjectRow) -> ApiResult<Project> {
         max_claim_ttl_seconds,
         archived_at,
         created_at,
+        appearance_raw,
     ) = row;
     let workflow = serde_json::from_str(&wf_raw)
         .map_err(|e| ApiError::internal(format!("stored workflow for '{id}' is corrupt: {e}")))?;
+    let document_appearance = appearance_raw
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()
+        .map_err(|e| ApiError::internal(format!("stored document appearance is corrupt: {e}")))?
+        .unwrap_or_default();
     Ok(Project {
+        document_appearance,
         id,
         name,
         workflow,
@@ -342,6 +351,7 @@ impl Store {
                 now,
             )?;
             Ok(Project {
+                document_appearance: Default::default(),
                 id: id.to_string(),
                 name: name.to_string(),
                 workflow: wf,
@@ -440,6 +450,7 @@ impl Store {
                 )?;
             }
             Ok(Project {
+                document_appearance: Default::default(),
                 id: id.to_string(),
                 name: name.to_string(),
                 workflow: wf,

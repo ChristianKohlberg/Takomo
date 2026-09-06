@@ -88,7 +88,7 @@ import {
   type CreatedToken,
   type TokenRow,
 } from '@/lib/admin'
-import { STR } from './strings'
+import { STR, DOCUMENT_APPEARANCE_STRINGS } from './strings'
 import { Hint } from '@/components/Hint'
 
 const LS_LANG = 'takomo.lang'
@@ -780,6 +780,8 @@ export function App() {
                     else setArchiving(selected)
                   }}
                   labels={{
+                    appearance: DOCUMENT_APPEARANCE_STRINGS[lang],
+                    appearanceInvalid: t.projAppearanceInvalid,
                     back: t.projBack,
                     workflowLabel: t.projWorkflowLabel,
                     langLabel: t.projLangLabel,

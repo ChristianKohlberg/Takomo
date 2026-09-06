@@ -539,3 +539,26 @@ pub async fn put_writing_instructions(
     state.wake();
     Ok(Json(settings))
 }
+
+/// Replace the selected global typography preset and this project's overrides.
+pub async fn put_document_appearance(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let appearance =
+        serde_json::from_value::<crate::store::DocumentAppearance>(body).map_err(|e| {
+            ApiError::bad_request(
+                "project.document_appearance",
+                format!("Invalid document appearance: {e}"),
+            )
+        })?;
+    let stored = state
+        .store
+        .set_document_appearance(&project, appearance, &ctx.actor)?;
+    state.wake();
+    Ok(Json(stored.to_json()))
+}

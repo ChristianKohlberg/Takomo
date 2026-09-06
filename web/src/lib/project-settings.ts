@@ -1,12 +1,13 @@
 // The per-project conventions a board admin can set.
 //
-// Four endpoints, each a PUT of one concern. They are separate routes because
+// Five endpoints, each a PUT of one concern. They are separate routes because
 // they are separately authorized and separately validated — but the claim-lease
 // pair is ONE call even when only one half changed, because the endpoint
 // validates them together and sending half of an invalid pair would 422 naming a
 // number the admin never touched.
 import { api } from './api'
 import { charCount } from './format'
+import { DEFAULT_DOCUMENT_APPEARANCE, sameDocumentAppearance, validDocumentAppearance, type DocumentAppearance } from './document-appearance'
 
 export interface ProjectSettings {
   /** Human-facing language for ask-a-human questions. */
@@ -17,6 +18,7 @@ export interface ProjectSettings {
   ttl: string
   claimTtl: string
   maxClaimTtl: string
+  documentAppearance?: DocumentAppearance
 }
 
 export const STYLE_MAX = 2000
@@ -62,6 +64,12 @@ export async function saveProjectSettings(
     ])
   }
 
+  if (!sameDocumentAppearance(next.documentAppearance, orig.documentAppearance)) {
+    const appearance = next.documentAppearance ?? DEFAULT_DOCUMENT_APPEARANCE
+    if (!validDocumentAppearance(appearance)) throw new Error('Invalid document appearance values.')
+    calls.push([`${base}/document-appearance`, appearance])
+  }
+
   for (const [path, body] of calls) await put(token, path, body)
   return calls.length
 }
@@ -74,10 +82,12 @@ export interface ProjectMeta {
   answer_link_ttl_seconds?: number | null
   claim_ttl_seconds?: number | null
   max_claim_ttl_seconds?: number | null
+  document_appearance?: DocumentAppearance
 }
 
 export function settingsFrom(p: ProjectMeta | undefined): ProjectSettings {
   return {
+    documentAppearance: { template: p?.document_appearance?.template ?? 'balanced', overrides: { ...p?.document_appearance?.overrides } },
     language: p?.question_language ?? '',
     style: p?.style_guide ?? '',
     ttl: p?.answer_link_ttl_seconds != null ? String(p.answer_link_ttl_seconds) : '',
@@ -90,9 +100,10 @@ export function settingsFrom(p: ProjectMeta | undefined): ProjectSettings {
 export function saveBlockReason(
   s: ProjectSettings,
   readOnly: boolean,
-  words: { readOnly: string; over: string },
+  words: { readOnly: string; over: string; appearanceInvalid?: string },
 ): string {
   if (readOnly) return words.readOnly
+  if (s.documentAppearance && !validDocumentAppearance(s.documentAppearance)) return words.appearanceInvalid ?? 'Invalid document appearance values.'
   if (charCount(s.style.trim()) > STYLE_MAX) return words.over
   return ''
 }

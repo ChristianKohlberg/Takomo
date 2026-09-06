@@ -181,6 +181,7 @@ export const STR = defineStrings({
     projLangHelp:
       'The human-facing language agents should phrase ask-a-human questions in (e.g. “German”). Leave empty for no preference.',
     projLangPh: 'e.g. German',
+    projAppearanceInvalid: 'Check the document appearance values: one or more values are outside the allowed range.',
     projStyleLabel: 'Style guide',
     projStyleHelp:
       'The house style for text agents write — ticket titles and bodies, comments, and questions. Agents get it on every work-loop call, before they write.',
@@ -476,6 +477,7 @@ export const STR = defineStrings({
     projLangHelp:
       'Die menschlich sichtbare Sprache, in der Agenten Fragen an Menschen stellen sollen (z. B. „German“). Leer lassen für keine Vorgabe.',
     projLangPh: 'z. B. German',
+    projAppearanceInvalid: 'Bitte die Dokumentdarstellung prüfen: Mindestens ein Wert liegt außerhalb des erlaubten Bereichs.',
     projStyleLabel: 'Stil-Leitfaden',
     projStyleHelp:
       'Der Hausstil für Texte, die Agenten schreiben — Ticket-Titel und -Beschreibungen, Kommentare und Fragen. Agenten erhalten ihn bei jedem Arbeitsschritt, bevor sie schreiben.',
@@ -593,3 +595,25 @@ export const STR = defineStrings({
     requestFailed: 'Anfrage fehlgeschlagen.',
   },
 })
+
+// Appearance has nested field labels, separate from the flat page strings.
+export const DOCUMENT_APPEARANCE_STRINGS = {
+  en: {
+      title: 'Document appearance',
+      help: 'Select a global template, then adjust values for this project. Reset restores the template value.',
+      template: 'Template', balanced: 'Balanced', strong: 'Strong', reset: 'Reset', preview: 'Live preview',
+      h1: 'Project specification', h2: 'Document structure', h3: 'Clear headings',
+      body: 'Headings make the document easier to scan. Each section stays connected to its mindmap node.',
+      fields: { h1_size: 'H1 size (px)', h2_size: 'H2 size (px)', h3_size: 'H3 size (px)', body_size: 'Body size (px)',
+        heading_weight: 'Heading weight', line_height: 'Body line height', heading_spacing: 'Space before headings (px)' },
+    },
+  de: {
+      title: 'Dokumentdarstellung',
+      help: 'Globale Vorlage wählen und Werte für dieses Projekt anpassen. Zurücksetzen stellt den Vorlagenwert wieder her.',
+      template: 'Vorlage', balanced: 'Ausgewogen', strong: 'Deutlich', reset: 'Zurücksetzen', preview: 'Live-Vorschau',
+      h1: 'Projektspezifikation', h2: 'Dokumentstruktur', h3: 'Klare Überschriften',
+      body: 'Überschriften machen das Dokument übersichtlicher. Jeder Abschnitt bleibt mit seinem Mindmap-Knoten verbunden.',
+      fields: { h1_size: 'H1-Größe (px)', h2_size: 'H2-Größe (px)', h3_size: 'H3-Größe (px)', body_size: 'Textgröße (px)',
+        heading_weight: 'Schriftstärke der Überschriften', line_height: 'Zeilenhöhe des Texts', heading_spacing: 'Abstand vor Überschriften (px)' },
+    },
+}

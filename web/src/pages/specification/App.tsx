@@ -133,14 +133,24 @@ function SpecificationWorkspace({
     },
     [toast],
   )
-  const epochs = useRef({ map: 0, checks: 0 })
+  const epochs = useRef({ map: 0, checks: 0, projects: 0 })
   useEffect(() => {
     const ref = epochs
     return () => {
       ref.current.map++
       ref.current.checks++
+      ref.current.projects++
     }
   }, [])
+  useEffect(() => {
+    const ref = epochs
+    return () => { ref.current.projects++ }
+  }, [token, project])
+  const refreshProjects = useCallback(async () => {
+    const epoch = ++epochs.current.projects
+    const items = await listProjects(token)
+    if (epochs.current.projects === epoch) setProjects(items)
+  }, [token])
   const refreshMap = useCallback(async () => {
     const epoch = ++epochs.current.map
     const result = project
@@ -261,7 +271,7 @@ function SpecificationWorkspace({
     [project],
   )
   useProjectUpdates(token, project, async () => {
-    await Promise.allSettled([refreshMap(), refreshChecks()])
+    await Promise.allSettled([refreshMap(), refreshChecks(), refreshProjects()])
     await Promise.allSettled([...listeners.current].map((callback) => callback()))
   })
   const changeQuery = useCallback(
