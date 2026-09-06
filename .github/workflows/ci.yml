@@ -143,6 +143,8 @@ jobs:
       # is covered by existing, rather than by remembering.
       - name: ShellCheck
         run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
+      - name: Bug CLI transport behavior
+        run: python3 clients/cli/test-bugs.py
 
       - name: CI scope behavior
         run: python3 scripts/test-ci-full-required.py

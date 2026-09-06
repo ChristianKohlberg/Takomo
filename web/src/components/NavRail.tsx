@@ -22,6 +22,7 @@
 // a visual one, which is why it uses `useIsPhone` rather than a `md:` prefix.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
+  BugIcon,
   CalendarClockIcon,
   ListChecksIcon,
   LanguagesIcon,
@@ -54,6 +55,7 @@ export interface NavLabels {
   initiatives: string
   schedules: string
   environments: string
+  bugs?: string
   agentQueues?: string
 }
 
@@ -116,6 +118,7 @@ export interface NavRailProps {
 }
 
 const NAV_HREF: Record<keyof NavLabels, string> = {
+  bugs: '/bugs',
   board: '/board',
   epics: '/epics',
   lanes: '/lanes',
@@ -128,6 +131,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
 }
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
+  bugs: BugIcon,
   board: LayoutGridIcon,
   epics: LayersIcon,
   lanes: Rows3Icon,
@@ -153,6 +157,7 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
 const NAV_ORDER: (keyof NavLabels)[] = [
   'specification',
   'board',
+  'bugs',
   'lanes',
   'epics',
   'inbox',
@@ -375,7 +380,7 @@ export function NavRail({
 
         <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
           {NAV_ORDER.filter((key) => !navigationInHeader || key !== 'inbox').map((key) => {
-            const label = nav[key] ?? (key === 'lanes' ? 'Lanes' : lang === 'de' ? 'Agenten-Queue' : 'Agent queue')
+            const label = nav[key] ?? (key === 'lanes' ? 'Lanes' : key === 'bugs' ? (lang === 'de' ? 'Fehler' : 'Bugs') : (lang === 'de' ? 'Agenten-Queue' : 'Agent queue'))
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0
             const isCurrent = key === current

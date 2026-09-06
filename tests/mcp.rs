@@ -3875,3 +3875,81 @@ async fn lane_tools_prepare_work_without_dispatching_it() {
     let (bad, error) = app.tool(&app.worker, "takomo_lane_handoff", json!({"lane":id,"kind":"surprise","provider":"codex","instructions":"Invalid kind","ticket_ids":[]})).await;
     assert!(error, "{bad}");
 }
+
+#[tokio::test]
+async fn bug_research_mcp_is_explicit_deduplicated_and_preserves_ticket_workflow() {
+    let app = TestApp::spawn().await;
+    let created = app.tool_ok(&app.worker,"takomo_new",json!({"project":"tp","title":"Unexpected total","body":"Expected 12, observed 13","type":"bug","idempotency_key":"bug-report"})).await;
+    let id = created["ticket"]["id"].as_str().unwrap();
+    let state = created["ticket"]["state"].clone();
+    let bug = app
+        .tool_ok(&app.worker, "takomo_bug", json!({"id":id}))
+        .await;
+    assert_eq!(bug["triage"], "needs_triage");
+    assert_eq!(bug["severity"], "unknown");
+    assert!(bug["latest_job"].is_null());
+    let list = app
+        .tool_ok(
+            &app.worker,
+            "takomo_bugs",
+            json!({"project":"tp","q":"Unexpected"}),
+        )
+        .await;
+    assert_eq!(list["total"], 1);
+    let (_, denied) = app
+        .tool(
+            &app.worker,
+            "takomo_bug_research_config",
+            json!({"project":"tp","repository":"tp","enabled":true}),
+        )
+        .await;
+    assert!(
+        denied,
+        "agents cannot choose filesystem access through project config"
+    );
+    app.tool_ok(
+        &app.admin,
+        "takomo_bug_research_config",
+        json!({"project":"tp","repository":"tp","revision":"HEAD","enabled":true}),
+    )
+    .await;
+    let run = app
+        .tool_ok(
+            &app.worker,
+            "takomo_bug_research",
+            json!({"id":id,"request_id":"research-1"}),
+        )
+        .await;
+    let replay = app
+        .tool_ok(
+            &app.worker,
+            "takomo_bug_research",
+            json!({"id":id,"request_id":"research-1"}),
+        )
+        .await;
+    assert_eq!(run["jobs"][0]["id"], replay["jobs"][0]["id"]);
+    assert_eq!(replay["total"], 1);
+    let jid = run["jobs"][0]["id"].as_str().unwrap();
+    app.tool_ok(
+        &app.worker,
+        "takomo_bug_steer",
+        json!({"id":jid,"request_id":"steer-1","message":"Check rounding"}),
+    )
+    .await;
+    app.tool_ok(&app.worker, "takomo_bug_cancel", json!({"id":jid}))
+        .await;
+    let detail = app
+        .tool_ok(&app.worker, "takomo_bug_run", json!({"id":jid}))
+        .await;
+    assert_eq!(detail["job"]["status"], "cancelled");
+    let after = app
+        .tool_ok(&app.worker, "takomo_bug", json!({"id":id}))
+        .await;
+    assert_eq!(after["ticket"]["state"], state);
+    app.tool_ok(&app.worker,"takomo_bug_update",json!({"id":id,"triage":"confirmed","severity":"high","note":"Confirmed the incorrect total"})).await;
+    let triaged = app
+        .tool_ok(&app.worker, "takomo_bug", json!({"id":id}))
+        .await;
+    assert_eq!(triaged["triage"], "confirmed");
+    assert_eq!(triaged["ticket"]["state"], state);
+}

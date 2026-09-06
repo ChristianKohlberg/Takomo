@@ -1,8 +1,9 @@
--- On-demand agent conversations are deliberately independent of tickets.
+-- On-demand conversations anchor to either a specification section or a bug ticket.
 CREATE TABLE IF NOT EXISTS agent_conversations (
   id TEXT PRIMARY KEY,
-  mindmap TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+  mindmap TEXT REFERENCES mindmaps(id) ON DELETE CASCADE,
   node TEXT NOT NULL,
+  ticket TEXT UNIQUE REFERENCES tickets(id) ON DELETE CASCADE,
   project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   service_id TEXT,
   thread_id TEXT,

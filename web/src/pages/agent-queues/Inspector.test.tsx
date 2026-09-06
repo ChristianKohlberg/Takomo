@@ -10,7 +10,7 @@ const job: AgentJob = {
   created_at: 1788624000000, finished_at: null, lease_expires_at: 1788624060000, deadline: 1788624900000,
   service_id: 'worker-one', conversation_service_id: 'worker-one', attempt_id: 'attempt-one', thread_id: 'thread-one', turn_id: 'turn-one', error: null,
 }
-const list = (items: AgentJob[] = [job]): AgentJobList => ({ items, total: items.length, limit: 100, counts: { queued: 0, running: 1, completed: 0, failed: 0 } })
+const list = (items: AgentJob[] = [job]): AgentJobList => ({ items, total: items.length, limit: 100, counts: { queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 } })
 const detail = (j = job): AgentJobDetail => ({ job: { ...j, prompt: 'Grill the timing rule', snapshot: '# Payment reminders\nWithin 30 minutes.', response: '**Clarify** the timezone.' }, messages: [] })
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -24,6 +24,19 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Agent queue inspector', () => {
+  it('filters cancelled bug research and opens its ticket instead of a document', async () => {
+    const cancelled: AgentJob = {...job, kind: 'bug_research', ticket_id: 'demo-bug', mindmap: null, status: 'cancelled'}
+    vi.mocked(listAgentJobs).mockResolvedValue({...list([cancelled]), counts: {queued: 0, running: 0, completed: 0, failed: 0, cancelled: 1}})
+    vi.mocked(getAgentJob).mockResolvedValue(detail(cancelled))
+    render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
+    fireEvent.change(screen.getByRole('combobox', {name: 'Status'}), {target: {value: 'cancelled'}})
+    fireEvent.click(await screen.findByRole('button', {name: /demo-bug/}))
+    const pane = await screen.findByRole('region', {name: 'Request details'})
+    const link = await within(pane).findByRole('link', {name: 'Open bug ticket'})
+    expect(link.getAttribute('href')).toBe('/board#t=demo-bug')
+    expect(listAgentJobs).toHaveBeenLastCalledWith('reader', 'demo', 'cancelled', expect.any(AbortSignal))
+    expect(within(pane).queryByRole('link', {name: 'Open section'})).toBeNull()
+  })
   it('shows saved request context and execution identifiers without mutation controls', async () => {
     render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: /Payment reminders/ }))

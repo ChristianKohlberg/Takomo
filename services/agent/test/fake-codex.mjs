@@ -1,14 +1,26 @@
-import { restrictions } from '../codex.mjs';
 import { createInterface } from 'node:readline';
+function effectiveConfig() {
+  const config = {};
+  const argv = process.argv;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '-c') continue;
+    const [path, raw] = argv[++i].split(/=(.*)/s);
+    let target = config;
+    const keys = path.split('.');
+    for (const key of keys.slice(0, -1)) target = target[key] ??= {};
+    target[keys.at(-1)] = JSON.parse(raw);
+  }
+  return config;
+}
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
   if (!request.method || request.id === undefined) return;
   const reply = result => send({ id: request.id, result });
   if (request.method === 'initialize') return reply({});
-  if (request.method === 'config/read') return reply({ config: restrictions });
+  if (request.method === 'config/read') return reply({ config: effectiveConfig() });
   if (request.method.startsWith('thread/')) {
-    if (request.params.sandbox !== 'read-only' || request.params.config.features.shell_tool !== false) process.exit(2);
+    if (request.params.sandbox !== 'read-only' || request.params.config.features.shell_tool !== false || request.params.config.features.code_mode_host !== false || request.params.dynamicTools) process.exit(2);
     return reply({ thread: { id: request.params.threadId || 'thread-new' } });
   }
   if (request.method === 'turn/start') {

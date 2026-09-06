@@ -21,33 +21,49 @@ export function apiClient(url, token, signal) {
   };
 }
 export async function executeJob(job, { api, serviceId, createCodex, signal, heartbeatMs = 15_000 }) {
+  if (signal.aborted) return;
   const identity = { service_id: serviceId, attempt_id: job.attempt_id };
   const prefix = `/v1/agent-jobs/${encodeURIComponent(job.id)}`;
-  const codex = createCodex();
+  let codex;
+  let cancelled = false;
+  const steered = new Set();
   let session = {};
   let lost = false;
   let heartbeatChain = Promise.resolve();
   const heartbeat = () => {
     heartbeatChain = heartbeatChain.then(async () => {
       if (lost) throw new Error('Agent job lease was lost.');
-      try { await api(`${prefix}/heartbeat`, { ...identity, ...session }); }
-      catch (error) { lost = true; codex.close(); throw error; }
+      let control;
+      try { control = await api(`${prefix}/heartbeat`, { ...identity, ...session, ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}) }); }
+      catch (error) { lost = true; codex?.close(); throw error; }
+      try {
+        if (job.kind === 'bug_research' && control?.cancel_requested) {
+          cancelled = true;
+          await codex?.cancel();
+        } else if (job.kind === 'bug_research' && session.turn_id) {
+          for (const item of control?.steering ?? []) {
+            if (!steered.has(item.id) && await codex.steer(item.message)) steered.add(item.id);
+          }
+        }
+      }
+      catch (error) { codex?.close(); throw error; }
     });
     return heartbeatChain;
   };
-  const stop = () => { lost = true; codex.close(); };
+  const stop = () => { lost = true; codex?.close(); };
   signal.addEventListener('abort', stop, { once: true });
   if (signal.aborted) stop();
   const interval = setInterval(() => heartbeat().catch(() => {}), heartbeatMs);
   let result;
   try {
+    codex = createCodex(job);
     result = { status: 'completed', ...await codex.run(job, async ids => {
       session = { ...session, ...ids };
       await heartbeat();
     }) };
   } catch (error) {
-    result = { status: 'failed', error: error.message.slice(0, 2000), ...session };
-  } finally { codex.close(); }
+    result = { status: 'failed', ...(cancelled ? { cancelled: true } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}), error: error.message.slice(0, 2000), ...session };
+  } finally { codex?.close(); }
   try {
     if (lost || signal.aborted) return;
     // Only delivery is retried; a Codex turn is never reexecuted automatically.
@@ -94,6 +110,8 @@ export async function main() {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   const { signal } = controller;
+  const repositories = JSON.parse(env.TAKOMO_AGENT_REPOSITORIES || '{}');
+  if (!repositories || Array.isArray(repositories) || typeof repositories !== 'object') throw new Error('TAKOMO_AGENT_REPOSITORIES must be a JSON object mapping repository keys to absolute paths.');
   const api = apiClient(url.href, env.TAKOMO_AGENT_TOKEN, signal);
   let backoff = 500;
   console.log(`Agent service ${serviceId} starting for ${url.origin}.`);
@@ -105,7 +123,7 @@ export async function main() {
           console.log(`Running job ${job.id}.`);
           await executeJob(job, {
             api, serviceId, signal,
-            createCodex: () => new Codex({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home }),
+            createCodex: claimed => new Codex({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home, repositories, kind: claimed.kind }),
           });
         }
         if (process.argv.includes('--once')) return;
