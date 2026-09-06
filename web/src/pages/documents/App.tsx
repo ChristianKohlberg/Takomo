@@ -50,6 +50,7 @@ export function DocumentView() {
     scopes,
     lang,
     project,
+    projects,
     map,
     session,
     connection,
@@ -191,6 +192,7 @@ export function DocumentView() {
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
           canAsk={scopes.includes('human') && scopes.includes('write')} onError={handleErr} />
       )}
+      appearance={projects.find((item) => item.id === project)?.document_appearance}
       locale={lang}
       session={session}
       connection={connection}

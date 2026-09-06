@@ -178,3 +178,34 @@
 .ProseMirror .selectedCell::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--primary) 15%, transparent); pointer-events: none; }
 .ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: -2px; width: 4px; background: var(--primary); pointer-events: none; }
 .ProseMirror.resize-cursor { cursor: col-resize; }
+
+/* Shared project appearance: section titles and prose use the same scale. */
+.document-section {
+  padding-top: var(--doc-heading-spacing, 24px);
+  padding-bottom: 16px;
+}
+.document-heading {
+  font-family: var(--font-heading);
+  font-weight: var(--doc-heading-weight, 600);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.document-heading-1 { font-size: var(--doc-h1-size, 28px); letter-spacing: -0.02em; }
+.document-heading-2 { font-size: var(--doc-h2-size, 22px); letter-spacing: -0.01em; }
+.document-heading-3 { font-size: var(--doc-h3-size, 18px); }
+.document-heading-4, .document-heading-5, .document-heading-6 { font-size: var(--doc-body-size, 16px); }
+.document-appearance .ProseMirror, .document-appearance .document-prose {
+  font-size: var(--doc-body-size, 16px);
+  line-height: var(--doc-line-height, 1.6);
+  overflow-wrap: anywhere;
+}
+.document-appearance .ProseMirror :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-heading);
+  font-weight: var(--doc-heading-weight, 600);
+  margin-top: var(--doc-heading-spacing, 24px);
+}
+.document-appearance .ProseMirror h1 { font-size: var(--doc-h1-size, 28px); }
+.document-appearance .ProseMirror h2 { font-size: var(--doc-h2-size, 22px); }
+.document-appearance .ProseMirror h3 { font-size: var(--doc-h3-size, 18px); }
+.document-appearance .ProseMirror :is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }

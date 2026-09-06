@@ -1,3 +1,4 @@
+import { documentAppearanceStyle, type DocumentAppearance } from '@/lib/document-appearance'
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
 import { type SyncConnection } from '@/hooks/useSyncConnection'
 // The plan, written out: the map's tree read as reading order.
@@ -115,6 +116,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  appearance?: DocumentAppearance
   conversationFor?: (node: string) => ReactNode
   locale?: Locale
   testsFor: (node: string) => { total: number; failing: number }
@@ -151,6 +153,7 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  appearance,
   conversationFor,
   locale = 'en',
   connection,
@@ -619,7 +622,8 @@ function ConnectedPlan({
           // window is unreadable, and `max-w-*` cannot overflow a phone.
           // `mx-auto` centres that measure in whatever column is left once the
           // outline has taken its share.
-          <div className="mx-auto min-w-0 max-w-[720px]">
+          <div className="document-appearance mx-auto min-w-0 max-w-[720px]"
+            style={documentAppearanceStyle(appearance)}>
             {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
             {visible.map((row) => {
               const mounted = near === null || near.has(row.key)
@@ -685,7 +689,7 @@ function ConnectedPlan({
                     // Not a spinner: this is the section's own text, which is
                     // also what holds its height, so mounting an editor behind
                     // you does not move the page under your eyes.
-                    <p className="text-muted-foreground min-h-[2.5rem] px-1 py-1 text-[13.5px] whitespace-pre-line">
+                    <p className="document-prose text-muted-foreground min-h-[2.5rem] px-1 py-1 whitespace-pre-line">
                       {preview || labels.proseEmpty}
                     </p>
                   )}

@@ -10,6 +10,8 @@ mod checklist;
 mod claims;
 pub mod crdt;
 mod docs;
+mod document_appearance;
+pub use document_appearance::{DocumentAppearance, DocumentAppearanceOverrides, DocumentTemplate};
 mod environments;
 mod events;
 mod helpers;
@@ -830,6 +832,12 @@ fn migrate(conn: &Connection) -> ApiResult<()> {
     // preference). Additive; older project tables predate it.
     if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "style_guide") {
         conn.execute("ALTER TABLE projects ADD COLUMN style_guide TEXT", [])?;
+    }
+    if !project_cols.is_empty() && !project_cols.iter().any(|c| c == "document_appearance_json") {
+        conn.execute(
+            "ALTER TABLE projects ADD COLUMN document_appearance_json TEXT",
+            [],
+        )?;
     }
     // projects.workflow_layout_json: where the editor's nodes sit for THIS
     // project's workflow. Nullable = never opened in the editor, so the client

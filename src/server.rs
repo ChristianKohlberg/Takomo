@@ -324,6 +324,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::api::checklist::record_verdict),
         )
         .route(
+            "/v1/projects/{project}/document-appearance",
+            put(crate::api::projects::put_document_appearance),
+        )
+        .route(
             "/v1/projects/{project}/schedule-approval",
             put(crate::api::schedules::put_approval),
         )

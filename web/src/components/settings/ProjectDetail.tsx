@@ -22,6 +22,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { charCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Hint } from '@/components/Hint'
+import { DocumentAppearanceFields, type DocumentAppearanceLabels } from './DocumentAppearanceFields'
 import {
   STYLE_MAX,
   saveBlockReason,
@@ -29,6 +30,8 @@ import {
 } from '@/lib/project-settings'
 
 export interface ProjectDetailLabels {
+  appearance?: DocumentAppearanceLabels
+  appearanceInvalid?: string
   back: string
   workflowLabel: string
   langLabel: string
@@ -111,6 +114,7 @@ export function ProjectDetail({
   const reason = saveBlockReason(s, readOnly, {
     readOnly: labels.readOnlyMsg,
     over: labels.over,
+    appearanceInvalid: labels.appearanceInvalid,
   })
   const used = charCount(s.style.trim())
 
@@ -140,6 +144,10 @@ export function ProjectDetail({
           {labels.archivedBanner}
         </div>
       )}
+
+      {labels.appearance && <DocumentAppearanceFields value={s.documentAppearance}
+        onChange={(documentAppearance) => onChange({ documentAppearance })}
+        disabled={readOnly || saving} labels={labels.appearance} />}
 
       {writingSlot}
 

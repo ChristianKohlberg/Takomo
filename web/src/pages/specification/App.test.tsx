@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { App } from './App'
 import { useSpecification } from './context'
+import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 
 const api = vi.hoisted(() => ({
   whoami: vi.fn(),
@@ -58,9 +59,10 @@ vi.mock('../mindmap/App', () => ({ MapView: () => <View name="Map" /> }))
 vi.mock('../verification/App', () => ({ TestsView: () => <View name="Tests" /> }))
 
 function View({ name }: { name: string }) {
-  const { map, session, nodes } = useSpecification()
+  const { map, session, nodes, projects, project } = useSpecification()
   return (
-    <main aria-label={`${name} editor`} data-map={map?.id} data-session={session?.mindmap}>
+    <main aria-label={`${name} editor`} data-map={map?.id} data-session={session?.mindmap}
+      data-appearance={JSON.stringify(projects.find((item) => item.id === project)?.document_appearance)}>
       {nodes.length} sections
     </main>
   )
@@ -122,6 +124,17 @@ afterEach(() => {
 })
 
 describe('opening a project specification', () => {
+  it('refreshes saved document appearance for an already open collaborator', async () => {
+    mount()
+    const document = await screen.findByRole('main', { name: 'Document editor' })
+    const appearance = { template: 'strong', overrides: { h2_size: 26 } }
+    api.listProjects.mockResolvedValue([{ id: 'vetbill', name: 'VetBill', document_appearance: appearance }])
+    const refresh = vi.mocked(useProjectUpdates).mock.calls.find((call) => call[1] === 'vetbill')![2]
+    await act(async () => { await refresh() })
+    expect(document.getAttribute('data-appearance')).toBe(JSON.stringify(appearance))
+    expect(document.getAttribute('data-map')).toBe(map.id)
+  })
+
   it('automatically opens an empty document and the same map without a create dialog', async () => {
     mount()
     const document = await screen.findByRole('main', { name: 'Document editor' })

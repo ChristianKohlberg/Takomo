@@ -1,3 +1,4 @@
+import type { DocumentAppearance } from './document-appearance'
 // The /v1/initiatives surface, typed.
 //
 // Initiatives are the one thing in Takomo that is NOT work: an idea being
@@ -125,6 +126,7 @@ export interface Page<T> {
 }
 
 export interface Project {
+  document_appearance?: DocumentAppearance
   id: string
   name?: string
   workflow?: string

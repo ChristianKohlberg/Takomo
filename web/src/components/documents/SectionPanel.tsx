@@ -112,13 +112,11 @@ export interface SectionPanelProps {
 const HEADINGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const
 
 const headingClass = (depth: number): string =>
-  depth === 0
-    ? 'text-[19px] font-[750] tracking-[-0.02em]'
-    : depth === 1
-      ? 'text-[16px] font-[700] tracking-[-0.01em]'
-      : depth === 2
-        ? 'text-[14.5px] font-[650]'
-        : 'text-[13.5px] font-[600] text-muted-foreground'
+  `document-heading document-heading-${Math.min(depth + 1, 6)}`
+
+/** H1–H3 share the page's left edge; H4–H6 step in so nesting stays visible
+ *  once the type scale has stopped stepping down. */
+export const sectionInset = (depth: number): number => Math.max(0, Math.min(depth, 5) - 2) * 12
 
 const STANDING_CLASS: Record<Standing, string> = {
   confirmed: 'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
@@ -170,14 +168,11 @@ export function SectionPanel({
       onFocusCapture={onActivate}
       onPointerDown={onActivate}
       className={cn(
-        'border-border-soft border-t py-5 first:border-t-0',
+        'document-section border-border-soft border-t first:border-t-0',
         active ? 'bg-accent/30' : '',
         className,
       )}
-      // Indentation is data: a depth-4 section needs a depth-4 inset, and
-      // Tailwind cannot spell an arbitrary one without a class per level. Phones
-      // get a third of it — the measure matters more there than the level does.
-      style={{ paddingLeft: `${Math.min(depth, 4) * 6}px` }}
+      style={{ paddingLeft: `${sectionInset(depth)}px` }}
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>

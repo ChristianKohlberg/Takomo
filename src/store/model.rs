@@ -393,6 +393,7 @@ impl Lease {
 
 #[derive(Debug, Clone)]
 pub struct Project {
+    pub document_appearance: super::DocumentAppearance,
     pub id: String,
     pub name: String,
     pub workflow: crate::workflow::Workflow,
@@ -440,6 +441,7 @@ impl Project {
             "id": self.id,
             "name": self.name,
             "workflow": self.workflow.name,
+            "document_appearance": self.document_appearance,
             "question_language": self.question_language,
             "style_guide": self.style_guide,
             "answer_link_ttl_seconds": self.answer_link_ttl_seconds,
