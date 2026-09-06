@@ -1,5 +1,17 @@
-import { restrictions } from '../codex.mjs';
 import { createInterface } from 'node:readline';
+function effectiveConfig() {
+  const config = {};
+  const argv = process.argv;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '-c') continue;
+    const [path, raw] = argv[++i].split(/=(.*)/s);
+    let target = config;
+    const keys = path.split('.');
+    for (const key of keys.slice(0, -1)) target = target[key] ??= {};
+    target[keys.at(-1)] = JSON.parse(raw);
+  }
+  return config;
+}
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 let mode;
 const finish = (text, status = 'completed') => send({ method: 'turn/completed', params: { threadId: 'research-thread', turn: { id: 'research-turn', status, items: [{ id: 'answer', type: 'agentMessage', phase: 'final_answer', text }] } } });
@@ -13,9 +25,10 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (!request.method || request.id === undefined) return;
   if (request.method === 'initialize') { if (!request.params.capabilities?.experimentalApi) process.exit(2); return reply({}); }
-  if (request.method === 'config/read') return reply({ config: restrictions });
+  if (request.method === 'config/read') return reply({ config: effectiveConfig() });
   if (request.method === 'thread/start') {
-    if (request.params.config.features.shell_tool !== false || request.params.dynamicTools.length < 2) process.exit(2);
+    const features = request.params.config.features;
+    if (features.shell_tool !== false || features.code_mode !== false || features.code_mode_host !== true || request.params.dynamicTools.length < 2) process.exit(2);
     return reply({ thread: { id: 'research-thread' } });
   }
   if (request.method === 'turn/start') {

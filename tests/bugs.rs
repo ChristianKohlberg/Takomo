@@ -253,6 +253,20 @@ async fn bug_list_filters_duplicate_validation_and_archival() {
         app.get(&app.worker, "/v1/bugs?q=Receipt").await.1["total"],
         1
     );
+    assert_eq!(
+        app.get(&app.worker, "/v1/bugs?assignee=none").await.1["total"],
+        2
+    );
+    app.to_ready(&second).await;
+    app.claim(&second).await;
+    let (s, v) = app.get(&app.worker, "/v1/bugs?assignee=none").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["items"][0]["ticket"]["id"], first);
+    let (s, v) = app.get(&app.worker, "/v1/bugs?claimed_by=agent:w1").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["items"][0]["ticket"]["id"], second);
     configure(&app).await;
     start(&app, &first, "before-archive").await;
     assert_eq!(

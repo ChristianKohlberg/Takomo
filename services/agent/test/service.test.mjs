@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { Codex, validateConfig, restrictions } from '../codex.mjs';
+import { Codex, configArgs, validateConfig, restrictions } from '../codex.mjs';
 import { executeJob, ApiError } from '../service.mjs';
-const createCodex = () => new Codex({ executable: process.execPath, args: [fileURLToPath(new URL('./fake-codex.mjs', import.meta.url))], cwd: '/tmp', home: '/tmp', timeoutMs: 2000 });
+const createCodex = () => new Codex({ executable: process.execPath, args: [fileURLToPath(new URL('./fake-codex.mjs', import.meta.url)), 'app-server', '--stdio', ...configArgs(restrictions)], cwd: '/tmp', home: '/tmp', timeoutMs: 2000 });
 const job = { id: 'job-1', attempt_id: 'attempt-1', prompt: 'Grill', snapshot: 'Invoices expire soon.' };
 
 test('starts and resumes threads, persists IDs early, extracts final text once', async () => {
@@ -60,4 +60,5 @@ test('effective configuration rejects inherited MCP, plugins, and enabled tools'
   assert.throws(() => validateConfig({ ...restrictions, plugins: { hidden: { enabled: true } } }));
   assert.throws(() => validateConfig({ ...restrictions, features: { ...restrictions.features, shell_tool: true } }));
   assert.throws(() => validateConfig({ ...restrictions, web_search: 'live' }));
+  assert.throws(() => validateConfig({ ...restrictions, features: { ...restrictions.features, code_mode_host: true } }), /disable code_mode_host/);
 });

@@ -56,7 +56,7 @@ export async function executeJob(job, { api, serviceId, createCodex, signal, hea
   const interval = setInterval(() => heartbeat().catch(() => {}), heartbeatMs);
   let result;
   try {
-    codex = createCodex();
+    codex = createCodex(job);
     result = { status: 'completed', ...await codex.run(job, async ids => {
       session = { ...session, ...ids };
       await heartbeat();
@@ -123,7 +123,7 @@ export async function main() {
           console.log(`Running job ${job.id}.`);
           await executeJob(job, {
             api, serviceId, signal,
-            createCodex: () => new Codex({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home, repositories }),
+            createCodex: claimed => new Codex({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home, repositories, kind: claimed.kind }),
           });
         }
         if (process.argv.includes('--once')) return;

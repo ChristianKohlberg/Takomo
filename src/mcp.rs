@@ -4932,6 +4932,7 @@ pub struct BugListArgs {
     pub q: Option<String>,
     pub all: Option<bool>,
     pub view: Option<String>,
+    /// Active claim holder, or "none" for bugs nobody currently holds.
     pub assignee: Option<String>,
     pub research_status: Option<String>,
 }

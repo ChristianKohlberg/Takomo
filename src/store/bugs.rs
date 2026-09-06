@@ -222,9 +222,11 @@ impl Store {
             let scope = " FROM tickets t LEFT JOIN bug_triage b ON b.ticket=t.id JOIN workflow_states ws ON ws.project=t.project
                 AND ws.state=t.state WHERE t.type='bug' AND (?7='all' OR (t.archived_at IS NULL AND ws.terminal=0)) AND
                 (?7!='in_progress' OR ws.category='active') AND (?8 IS NULL OR instr(lower(t.title||' '||t.id||'
-                '||t.body),lower(?8))>0) AND (?9 IS NULL OR t.state=?9 OR ws.category=?9) AND (?10 IS NULL OR
-                (t.claim_holder=?10 AND (t.claim_expires_at IS NULL OR t.claim_expires_at>CAST(strftime('%s','now') AS
-                INTEGER)*1000))) AND (?11 IS NULL OR COALESCE((SELECT CASE WHEN br.cancelled=1 THEN 'cancelled' ELSE
+                '||t.body),lower(?8))>0) AND (?9 IS NULL OR t.state=?9 OR ws.category=?9) AND (?10 IS NULL OR CASE WHEN
+                ?10='none' THEN NOT (t.claim_holder IS NOT NULL AND (t.claim_expires_at IS NULL OR
+                t.claim_expires_at>CAST(strftime('%s','now') AS INTEGER)*1000)) ELSE t.claim_holder=?10 AND
+                (t.claim_expires_at IS NULL OR t.claim_expires_at>CAST(strftime('%s','now') AS INTEGER)*1000) END)
+                AND (?11 IS NULL OR COALESCE((SELECT CASE WHEN br.cancelled=1 THEN 'cancelled' ELSE
                 aj.status END FROM bug_research_jobs br JOIN agent_jobs aj ON aj.id=br.job WHERE br.ticket=t.id ORDER BY
                 aj.rowid DESC LIMIT 1),'none')=?11) AND (?1 IS NULL OR t.project=?1) AND (?2 IS NULL OR t.project IN
                 (SELECT value FROM json_each(?2))) AND (?3 IS NULL OR COALESCE(b.triage,'needs_triage')=?3) AND (?4 IS

@@ -46,7 +46,7 @@ The service's persisted ID and Codex state belong together. Run only one service
 - Jobs are claimed sequentially with 25-second long polling. Idle/transient connection failures use bounded backoff. Invalid worker credentials stop the process.
 - Session/thread and turn IDs are sent to Takomo as soon as they exist, before the answer. Follow-ups resume the saved thread. Only final user-facing assistant text is returned; commentary and reasoning are excluded.
 - A heartbeat renews the job lease every 15 seconds. Losing a heartbeat stops Codex, preventing the worker from continuing after losing ownership. Takomo marks expired jobs failed. Turns are never automatically rerun; result delivery alone may be retried, using the same attempt ID and payload.
-- Codex starts in an empty workspace with a dedicated HOME/CODEX_HOME and a small environment allowlist. The Takomo token and parent process secrets are not passed to Codex. Read-only sandbox policy and disabled network access apply to each turn. Shell execution, apps, plugins, hooks, browser/computer tools, images, multi-agent tools, and web search are disabled. Before starting a thread, effective configuration is checked: inherited MCP servers/plugins, enabled restricted features, relaxed permissions, and custom instruction files/notify hooks fail closed. Unsupported tool/approval requests fail the turn.
+- Codex starts in an empty workspace with a dedicated HOME/CODEX_HOME and a small environment allowlist. The Takomo token and parent process secrets are not passed to Codex. Read-only sandbox policy and disabled network access apply to each turn. Shell execution, apps, plugins, hooks, browser/computer tools, images, multi-agent tools, code mode, and web search are disabled. The process is started for one job kind: a research process additionally enables Codex's dynamic-tool host (`features.code_mode_host`), which is what lets the declared repository tools execute at all, while a section process keeps it disabled and is refused a research job. Before starting a thread, effective configuration is checked against that kind's profile: inherited MCP servers/plugins, a feature that differs from the profile, relaxed permissions, and custom instruction files/notify hooks fail closed. Unsupported tool/approval requests fail the turn.
 - No document API, edit tool, or test creation tool is exposed. Section text is supplied as review material. The worker has a five-minute turn timeout and a 64,000-byte response limit, and SIGINT/SIGTERM stop the active Codex process. An interrupted job is resolved by lease expiry.
 - This MVP returns the response after completion; it does not stream text, expose approval dialogs, migrate sessions, retry failed turns, or generate code.
 
@@ -114,5 +114,9 @@ worker enables only for research jobs. Configuration or protocol incompatibility
 fails visibly. See the [official App Server protocol](https://learn.chatgpt.com/docs/app-server).
 
 Focused fake-server tests also cover committed code evidence, dirty-file exclusion,
-repository allowlists, symlink rejection, live steering, cancellation, timeouts and
-unchanged section behavior. They do not call a paid model or require credentials.
+repository allowlists, symlink rejection, live steering, cancellation, timeouts,
+the research-versus-section configuration profiles and unchanged section behavior.
+They do not call a paid model or require credentials. An opt-in smoke
+(`TAKOMO_AGENT_LIVE_SMOKE=1 node --test services/agent/test/live-smoke.test.mjs`)
+runs the installed, authenticated Codex against a disposable committed fixture and
+fails unless source was actually retrieved through the repository tools.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import type { Ticket } from '@/lib/board'
 import { bugPath, json, type Bug, type BugJob, type ResearchConfig } from '@/lib/bugs'
 import { pick, type Locale } from '@/lib/i18n'
 import { isAuthError } from '@/lib/session'
@@ -7,6 +8,28 @@ import { Button } from '@/components/ui/button'
 import { Markdown } from '@/components/Markdown'
 import { fieldClass } from './Report'
 import { STR } from './strings'
+export function parseSnapshot(raw: string): Ticket | null {
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const ticket = value as Record<string, unknown>
+    return typeof ticket.id === 'string' && typeof ticket.title === 'string' ? (value as Ticket) : null
+  } catch { return null }
+}
+function Snapshot({ raw, lang, t }: { raw: string; lang: Locale; t: Record<'bugTitle' | 'status' | 'priority' | 'ticketVersion' | 'reportedBy' | 'reportedAt', string> }) {
+  const ticket = parseSnapshot(raw)
+  if (!ticket) return <pre className="whitespace-pre-wrap break-words text-xs [overflow-wrap:anywhere]">{raw}</pre>
+  const version = (ticket as Ticket & { version?: number }).version
+  const facts = [
+    [t.status, ticket.state], [t.priority, ticket.priority], [t.ticketVersion, version === undefined ? undefined : String(version)],
+    [t.reportedBy, (ticket as Ticket & { created_by?: string | null }).created_by ?? undefined], [t.reportedAt, ticket.created_at ? new Date(ticket.created_at).toLocaleString(lang) : undefined],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+  return <div className="min-w-0 space-y-2 text-sm" data-testid="snapshot">
+    <p className="break-words"><span className="text-xs text-muted-foreground">{ticket.id}</span><strong className="block">{t.bugTitle}: {ticket.title}</strong></p>
+    <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">{facts.map(([name, value]) => <span key={name}>{name}: {value}</span>)}</p>
+    {ticket.body && <Markdown text={ticket.body} />}
+  </div>
+}
 export function Detail({ bug, token, lang, canWrite, canReview, canConfigure, refresh, onAuthError }: { bug: Bug; token: string; lang: Locale; canWrite: boolean; canReview: boolean; canConfigure: boolean; refresh: () => void; onAuthError: () => void }) {
   const t = pick(STR, lang)
   const label = (key: string) => t[key as keyof typeof t] ?? key
@@ -61,6 +84,6 @@ export function Detail({ bug, token, lang, canWrite, canReview, canConfigure, re
       {canWrite && <><label className="block text-sm">{t.guidance}<textarea className={fieldClass} value={guidance} onChange={e => setGuidance(e.target.value)} disabled={busy} /></label><div className="flex flex-wrap gap-2">{activeJob ? <><Button disabled={busy || !guidance.trim()} onClick={() => void mutate(`/agent-jobs/${encodeURIComponent(activeJob.id)}/steer`, { message: guidance }, 'POST', `steer:${activeJob.id}:${guidance}`)}>{t.steer}</Button><Button variant="outline" disabled={busy} onClick={() => void mutate(`/agent-jobs/${encodeURIComponent(activeJob.id)}/cancel`, {})}>{t.cancel}</Button></> : <Button disabled={busy || !config?.enabled || !config.repository} onClick={() => void mutate(`${bugPath(bug.ticket.id)}/research`, { message: guidance || undefined }, 'POST', `research:${guidance}`)}>{jobs.length ? t.retry : t.research}</Button>}</div></>}
     </div>
     {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
-    <section className="space-y-2 border-t pt-3"><h3 className="font-medium">{t.history}</h3>{!jobs.length && <p className="text-sm text-muted-foreground">{t.noRuns}</p>}{jobs.map(job => <details key={job.id} className="min-w-0 rounded-lg border p-3"><summary className="cursor-pointer break-words text-sm">{label(job.status)} · {new Date(job.created_at).toLocaleString(lang)} · {job.id}</summary>{job.repository_revision && <p className="my-2 break-all text-xs">{t.revision}: {job.repository_revision}</p>}{(job.prompt || job.snapshot) && <details className="mt-3 min-w-0"><summary className="cursor-pointer text-sm font-medium">{t.researchInput}</summary>{job.prompt && <><h4 className="mt-2 text-xs font-medium">{t.originalRequest}</h4><pre className="whitespace-pre-wrap break-words text-xs [overflow-wrap:anywhere]">{job.prompt}</pre></>}{job.snapshot && <><h4 className="mt-2 text-xs font-medium">{t.reportSnapshot}</h4><pre className="whitespace-pre-wrap break-words text-xs [overflow-wrap:anywhere]">{job.snapshot}</pre></>}</details>}{job.evidence && <div className="mt-2 space-y-1 text-xs"><h4 className="font-medium">{t.evidence}</h4>{job.evidence.runtime_reproduced === false && <p className="text-muted-foreground">{t.inspectionOnly}</p>}{job.evidence.inspected?.map((entry, index) => <p key={index} className="break-all font-mono">{entry.path}:{entry.start_line}–{entry.end_line} · {entry.revision}</p>)}</div>}{job.steering?.map(entry => <p key={entry.id} className="mt-2 whitespace-pre-wrap break-words text-sm">{t.guidance}: {entry.message}</p>)}{job.error && <p className="text-sm text-destructive">{job.error}</p>}{job.response && <div className="mt-3 min-w-0"><h4 className="text-sm font-medium">{t.result}</h4><Markdown text={job.response} /></div>}</details>)}</section>
+    <section className="space-y-2 border-t pt-3"><h3 className="font-medium">{t.history}</h3>{!jobs.length && <p className="text-sm text-muted-foreground">{t.noRuns}</p>}{jobs.map(job => <details key={job.id} className="min-w-0 rounded-lg border p-3"><summary className="cursor-pointer break-words text-sm">{label(job.status)} · {new Date(job.created_at).toLocaleString(lang)} · {job.id}</summary>{job.repository_revision && <p className="my-2 break-all text-xs">{t.revision}: {job.repository_revision}</p>}{(job.prompt || job.snapshot) && <details className="mt-3 min-w-0"><summary className="cursor-pointer text-sm font-medium">{t.researchInput}</summary>{job.prompt && <><h4 className="mt-2 text-xs font-medium">{t.originalRequest}</h4><pre className="whitespace-pre-wrap break-words text-xs [overflow-wrap:anywhere]">{job.prompt}</pre></>}{job.snapshot && <><h4 className="mt-2 text-xs font-medium">{t.reportSnapshot}</h4><Snapshot raw={job.snapshot} lang={lang} t={t} /></>}</details>}{job.evidence && <div className="mt-2 space-y-1 text-xs"><h4 className="font-medium">{t.evidence}</h4>{job.evidence.runtime_reproduced === false && <p className="text-muted-foreground">{t.inspectionOnly}</p>}{job.evidence.inspected?.map((entry, index) => <p key={index} className="break-all font-mono">{entry.path}:{entry.start_line}–{entry.end_line} · {entry.revision}</p>)}</div>}{job.steering?.map(entry => <p key={entry.id} className="mt-2 whitespace-pre-wrap break-words text-sm">{t.guidance}: {entry.message}</p>)}{job.error && <p className="text-sm text-destructive">{job.error}</p>}{job.response && <div className="mt-3 min-w-0"><h4 className="text-sm font-medium">{t.result}</h4><Markdown text={job.response} /></div>}</details>)}</section>
   </section>
 }
