@@ -14,6 +14,7 @@ describe('Mermaid rendering', () => {
     await tick()
     expect(host.querySelector('svg, script')).toBeNull()
     expect(host.querySelector('img')?.src).toMatch(/^data:image\/svg\+xml/)
+    expect(host.querySelector('img')?.style.backgroundColor).toBe('white')
     expect(host.querySelector('img')?.width).toBe(204)
     expect(host.querySelector('img')?.height).toBe(263)
     expect(initialize).toHaveBeenCalledWith(expect.objectContaining({

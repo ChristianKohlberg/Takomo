@@ -32,6 +32,8 @@ async function renderImage(source: string): Promise<HTMLImageElement> {
     image.height = Math.ceil(viewBox[3]!)
   }
   image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  // Mermaid's default light palette needs a light canvas in dark app themes.
+  image.style.backgroundColor = 'white'
   image.style.maxWidth = '100%'
   image.style.height = 'auto'
   return image
