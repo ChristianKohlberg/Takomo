@@ -5439,6 +5439,19 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /epics:
+    servers: [{ url: / }]
+    get:
+      tags: [admin]
+      summary: Epics page with compact filters and progress list
+      description: |
+        Client-routed page served at `/epics`. Unauthenticated HTML; data requests
+        carry the viewer's bearer token. Reads the selected project's roadmap
+        and workflow, opens ticket details, and permits epic creation for writers.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /inbox:
     servers: [{ url: / }]
     get:
