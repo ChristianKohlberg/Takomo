@@ -50,8 +50,10 @@ export function EditableText({
     const node = ref.current
     if (node && node.textContent !== value) node.textContent = value
     // Intentionally only on mount / when the record changes: see the note above
-    // about staying uncontrolled while the user types.
-  }, [value])
+    // about staying uncontrolled while the user types. `as` is in the list
+    // because changing the tag (a section moved to another depth renders its
+    // heading as h1 -> h2) mounts a fresh, empty element that must be filled.
+  }, [value, as])
 
   const Tag = as
 
