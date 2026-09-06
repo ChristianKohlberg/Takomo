@@ -1564,7 +1564,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Project" }
-        "400": { description: Invalid template, field type, missing required field, or unknown field. }
+        "400": { description: "Invalid template, field type, missing required field, or unknown field." }
         "403": { description: Admin scope required and project must be allowed. }
         "404": { description: Project does not exist. }
         "409": { description: Project is archived. }
