@@ -44,6 +44,13 @@ function stateWith(...nodes: ReturnType<typeof para>[]) {
 }
 
 describe('markdownToNodes', () => {
+  it('preserves Mermaid fences with blank lines between adjacent prose blocks', () => {
+    const nodes = markdownToNodes(schema, 'Before.\n```mermaid\nflowchart TD\n\n  A --> B\n```\nAfter.')
+    expect(nodes.map((node) => node.type.name)).toEqual(['paragraph', 'codeBlock', 'paragraph'])
+    expect(nodes[1]?.attrs.language).toBe('mermaid')
+    expect(nodes[1]?.textContent).toBe('flowchart TD\n\n  A --> B')
+  })
+
   it('reads a heading at the level its hashes say', () => {
     const [n] = markdownToNodes(schema, '### Pricing')
     expect(n!.type.name).toBe('heading')
