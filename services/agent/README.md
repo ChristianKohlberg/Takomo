@@ -1,6 +1,6 @@
 # Takomo agent service
 
-A standalone, single-job worker for read-only section conversations. It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
+A standalone, single-job worker for read-only section conversations and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
 
 ## Start
 

@@ -14,11 +14,12 @@ built there is one that reached into page state instead of taking props.
 
 ## Status: complete — every surface is built from here
 
-Nine routes now: `/board`, `/inbox`, `/documents`, `/initiatives`, `/mindmaps`, `/schedules`, `/verification`
-and `/environments`. Most are one bundle behind a router, so moving between them
+Nine routes now: `/board`, `/bugs`, `/inbox`, `/documents`, `/initiatives`, `/mindmaps`, `/schedules`,
+`/verification` and `/environments`. Most are one bundle behind a router, so moving between them
 costs nothing. `/documents` and `/mindmaps` are code-split, because both pull the
 CRDT runtime and the editor pulls Tiptap on top — the size budget measures FIRST
-LOAD for that reason, and separately caps the heaviest lazy chunk.
+LOAD for that reason, and separately caps the heaviest lazy chunk. `/bugs` is
+`lazy()`-loaded too, so a page most sessions never open stays off the first load.
 
 `src/api/mod.rs` serves every page from `web/dist/`. Every hand-written page is
 gone, and with them `src/spa-common.js`, `scripts/lint-spa.sh`,

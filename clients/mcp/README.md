@@ -78,6 +78,10 @@ Two refusals worth knowing before you hit them:
 - `credentials_hint` is a **pointer** to where a credential lives, never the
   credential — every token with `read` can see it.
 
+The bug tools (`takomo_bugs`, `takomo_bug`, `takomo_bug_update`, `takomo_bug_research`,
+`takomo_bug_runs`, `takomo_bug_run`, `takomo_bug_steer`, `takomo_bug_cancel`,
+`takomo_bug_research_config`) are described in [docs/bugs.md](../../docs/bugs.md).
+
 ## Install & build
 
 Requires Node.js >= 18.

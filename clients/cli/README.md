@@ -156,4 +156,6 @@ need PyYAML (`pip install pyyaml`) to read the Markdown frontmatter.
 Run `takomo help` for the full list. Onboarding & identity: `init`, `whoami`,
 `token create|ls|revoke`. Work verbs: `new`, `ls`, `ready`, `show`, `claim`,
 `next`, `start`, `done`, `block`, `cancel`, `move`, `comment`, `link`, `dep`,
-`release`. Portability & observability: `export`, `import`, `watch`, `metrics`.
+`release`. Bugs: `bug new|ls|show|set|research|runs|run|steer|cancel|retry|config`
+(see [docs/bugs.md](../../docs/bugs.md)). Portability & observability: `export`,
+`import`, `watch`, `metrics`.
