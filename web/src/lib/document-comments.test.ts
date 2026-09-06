@@ -27,6 +27,43 @@ describe('selection comments', () => {
     expect(anchor.quote).toBe('selected words')
     editor.destroy(); doc.destroy()
   })
+  it('stays attached when text is typed at either exact boundary, locally, remotely and through undo', () => {
+    const { doc, editor } = setup()
+    const anchor = captureCommentAnchor(editor)!
+    editor.commands.insertContentAt(8, 'big ')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 12, to: 26 })
+    editor.commands.insertContentAt(26, ' indeed')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 12, to: 26 })
+    editor.commands.undo()
+    editor.commands.undo()
+    expect(editor.state.doc.textContent).toBe('Before selected words after selected words.')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 8, to: 22 })
+    const peer = new Y.Doc()
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(doc))
+    const text = (peer.getXmlFragment('prose').get(0) as Y.XmlElement).get(0) as Y.XmlText
+    text.insert(21, ' truly')
+    text.insert(7, 'very ')
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer))
+    expect(editor.state.doc.textContent).toBe('Before very selected words truly after selected words.')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 13, to: 27 })
+    editor.destroy(); doc.destroy(); peer.destroy()
+  })
+  it('keeps a quote at the start of the first paragraph attached when text is typed in front of it', () => {
+    const { doc, editor } = setup()
+    editor.commands.setTextSelection({ from: 1, to: 7 })
+    const anchor = captureCommentAnchor(editor)!
+    expect(anchor.quote).toBe('Before')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 1, to: 7 })
+    editor.commands.insertContentAt(1, 'Well ')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 6, to: 12 })
+    editor.commands.insertContentAt(12, '!')
+    expect(resolveCommentAnchor(editor, anchor)).toEqual({ from: 6, to: 12 })
+    editor.commands.deleteRange({ from: 6, to: 12 })
+    editor.commands.insertContentAt(6, 'Before')
+    expect(editor.state.doc.textContent).toBe('Well Before! selected words after selected words.')
+    expect(resolveCommentAnchor(editor, anchor)).toBeNull()
+    editor.destroy(); doc.destroy()
+  })
   it('does not attach to replacement text even when a matching passage remains', () => {
     const { doc, editor } = setup()
     const anchor = captureCommentAnchor(editor)!

@@ -33,6 +33,18 @@ describe('comment highlight timing', () => {
     expect(highlighted(editor)).toEqual(['world'])
     editor.destroy(); ydoc.destroy()
   })
+  it('keeps the highlight when typing directly in front of and behind the quote', async () => {
+    const { ydoc, editor } = setup()
+    editor.commands.insertContentAt(7, 'big ')
+    expect(highlighted(editor)).toEqual(['world'])
+    await settle()
+    expect(highlighted(editor)).toEqual(['world'])
+    editor.commands.insertContentAt(16, 'wide')
+    await settle()
+    expect(highlighted(editor)).toEqual(['world'])
+    expect(editor.state.doc.textContent).toBe('Hello big worldwide again.')
+    editor.destroy(); ydoc.destroy()
+  })
   it('detaches on deletion, stays detached from a retyped duplicate, and follows a remote edit', async () => {
     const { ydoc, editor } = setup()
     const peer = new Y.Doc()

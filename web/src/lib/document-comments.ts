@@ -16,17 +16,29 @@ export function captureCommentAnchor(editor: Editor): CommentAnchor | null {
   if (from === to || !sync?.binding) return null
   const quote = editor.state.doc.textBetween(from, to, '\n')
   if (!quote.trim() || quote.length > MAX_COMMENT_LENGTH) return null
-  const start = absolutePositionToRelativePosition(from, sync.type, sync.binding.mapping)
+  const left = absolutePositionToRelativePosition(from, sync.type, sync.binding.mapping)
+  const at = Y.createAbsolutePositionFromRelativePosition(left, sync.doc)
+  const start = at && at.type instanceof Y.XmlText ? Y.createRelativePositionFromTypeIndex(at.type, at.index, 0) : left
   const end = absolutePositionToRelativePosition(to, sync.type, sync.binding.mapping)
   return { quote, start: Y.relativePositionToJSON(start), end: Y.relativePositionToJSON(end) }
+}
+
+type SyncState = { doc: Y.Doc; type: Y.XmlFragment; binding: { mapping: Parameters<typeof relativePositionToAbsolutePosition>[3] } }
+function absolute(sync: SyncState, json: Record<string, unknown>): number | null {
+  const rel = Y.createRelativePositionFromJSON(json)
+  const pos = relativePositionToAbsolutePosition(sync.doc, sync.type, rel, sync.binding.mapping)
+  if (pos !== null || rel.assoc < 0) return pos
+  const at = Y.createAbsolutePositionFromRelativePosition(rel, sync.doc)
+  if (!at || !(at.type instanceof Y.XmlText)) return null
+  return relativePositionToAbsolutePosition(sync.doc, sync.type, Y.createRelativePositionFromTypeIndex(at.type, at.index, -1), sync.binding.mapping)
 }
 
 export function resolveCommentAnchor(editor: Editor, anchor: CommentAnchor, doc: ProseMirrorNode = editor.state.doc): { from: number; to: number } | null {
   const sync = ySyncPluginKey.getState(editor.state)
   if (!sync?.binding) return null
   try {
-    const from = relativePositionToAbsolutePosition(sync.doc, sync.type, Y.createRelativePositionFromJSON(anchor.start), sync.binding.mapping)
-    const to = relativePositionToAbsolutePosition(sync.doc, sync.type, Y.createRelativePositionFromJSON(anchor.end), sync.binding.mapping)
+    const from = absolute(sync, anchor.start)
+    const to = absolute(sync, anchor.end)
     if (from === null || to === null || from >= to || to > doc.content.size) return null
     // A replaced passage must not quietly adopt an old discussion. Edits outside
     // the range keep its CRDT anchors and highlight; changed quotes stay visible
