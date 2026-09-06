@@ -624,7 +624,7 @@ paths:
         - {name: project, in: query, schema: {type: string}}
         - {name: view, in: query, schema: {type: string, enum: [open, all, in_progress, needs_triage, ready_for_review], default: open}}
         - {name: all, in: query, schema: {type: boolean}, description: Alias for view=all.}
-        - {name: triage, in: query, schema: {$ref: '#/components/schemas/BugTriage'}}
+        - {name: triage, in: query, schema: {$ref: '#/components/schemas/BugTriage'}, description: "Refused with validation.bug when it contradicts a view that already selects a triage (needs_triage, ready_for_review)."}
         - {name: severity, in: query, schema: {$ref: '#/components/schemas/BugSeverity'}}
         - {name: state, in: query, schema: {type: string}, description: Workflow state or category.}
         - {name: assignee, in: query, schema: {type: string}, description: "Active claim holder, or `none` for bugs nobody currently holds; claimed_by is an alias."}
@@ -668,7 +668,7 @@ paths:
                 triage: {$ref: '#/components/schemas/BugTriage'}
                 severity: {$ref: '#/components/schemas/BugSeverity'}
                 duplicate_of: {type: [string, 'null']}
-                note: {type: [string, 'null'], maxLength: 8000}
+                note: {type: [string, 'null'], maxLength: 8000, description: "Omit or send null to keep the note; an empty string clears it."}
       responses:
         '200': {description: Updated bug., content: {application/json: {schema: {$ref: '#/components/schemas/Bug'}}}}
   /bugs/{id}/research:
@@ -8308,6 +8308,7 @@ components:
         duplicate_of: {type: [string, 'null']}
         note: {type: [string, 'null']}
         latest_job:
+          description: "Newest research job. Full inspection (prompt, snapshot, response) on GET /v1/bugs/{id}; the list carries the summary only."
           oneOf:
             - {$ref: '#/components/schemas/AgentJobInspection'}
             - {type: 'null'}

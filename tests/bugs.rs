@@ -95,7 +95,7 @@ async fn bugs_are_tickets_research_is_explicit_and_review_preserves_workflow() {
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(
-        app.post(&runner, &format!("{endpoint}/result"), result)
+        app.post(&runner, &format!("{endpoint}/result"), result.clone())
             .await
             .0,
         StatusCode::OK
@@ -104,6 +104,46 @@ async fn bugs_are_tickets_research_is_explicit_and_review_preserves_workflow() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["triage"], "ready_for_review");
     assert_eq!(v["latest_job"]["repository_revision"], "abcdef123");
+    assert!(v["latest_job"]["snapshot"].is_string(), "{v}");
+    assert_eq!(v["latest_job"]["response"], result["message"]);
+    let (s, listed) = app.get(&app.worker, "/v1/bugs").await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    let light = &listed["items"][0]["latest_job"];
+    assert_eq!(light["id"], run["id"]);
+    assert_eq!(light["kind"], "bug_research");
+    assert_eq!(light["evidence"]["inspected"][0]["path"], "src/main.rs");
+    assert!(
+        light.get("prompt").is_none()
+            && light.get("snapshot").is_none()
+            && light.get("response").is_none(),
+        "{light}"
+    );
+    let (s, jobs) = app.get(&app.worker, "/v1/agent-jobs?project=tp").await;
+    assert_eq!(s, StatusCode::OK, "{jobs}");
+    let item = &jobs["items"][0];
+    assert_eq!(item["id"], run["id"]);
+    assert_eq!(item["ticket_id"], id);
+    assert_eq!(item["section_title"], before["title"]);
+    assert_eq!(item["repository_revision"], "abcdef123");
+    assert_eq!(
+        item["steering"][0]["message"],
+        "Inspect the validation branch"
+    );
+    assert!(
+        item.get("prompt").is_none()
+            && item.get("snapshot").is_none()
+            && item.get("response").is_none(),
+        "{item}"
+    );
+    let (s, one) = app.get(&app.worker, &endpoint).await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    assert_eq!(one["job"]["response"], result["message"]);
+    assert_eq!(one["job"]["section_title"], before["title"]);
+    assert_eq!(one["job"]["snapshot"], claimed["snapshot"]);
+    let (s, history) = app.get(&app.worker, &format!("{path}/research")).await;
+    assert_eq!(s, StatusCode::OK, "{history}");
+    assert_eq!(history["jobs"][0]["response"], result["message"]);
+    assert_eq!(history["jobs"][0]["snapshot"], claimed["snapshot"]);
     assert_eq!(v["ticket"]["state"], before["state"]);
     assert_eq!(v["ticket"]["priority"], before["priority"]);
     assert_eq!(v["ticket"]["claim"], before["claim"]);
@@ -117,6 +157,25 @@ async fn bugs_are_tickets_research_is_explicit_and_review_preserves_workflow() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["severity"], "high");
     assert_eq!(v["ticket"]["version"], before["version"]);
+    let (s, v) = app
+        .patch(&app.human, &path, json!({"severity":"medium"}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["note"], "Reviewed evidence");
+    let (s, v) = app.patch(&app.human, &path, json!({"note":null})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["note"], "Reviewed evidence");
+    let (s, v) = app.patch(&app.human, &path, json!({"note":"  "})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["note"].is_null(), "{v}");
+    assert_eq!(v["triage"], "confirmed");
+    let (s, v) = app.get(&app.worker, &path).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["note"].is_null(), "{v}");
+    let (s, v) = app
+        .patch(&app.human, &path, json!({"note":"x".repeat(8001)}))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
 }
 #[tokio::test]
 async fn bug_research_authorization_cancellation_expiry_and_project_capacity() {
@@ -253,6 +312,29 @@ async fn bug_list_filters_duplicate_validation_and_archival() {
         app.get(&app.worker, "/v1/bugs?q=Receipt").await.1["total"],
         1
     );
+    let (s, v) = app
+        .get(
+            &app.worker,
+            "/v1/bugs?view=ready_for_review&triage=confirmed",
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(v["code"], "validation.bug", "{v}");
+    assert_eq!(
+        app.get(
+            &app.worker,
+            "/v1/bugs?view=needs_triage&triage=needs_triage"
+        )
+        .await
+        .1["total"],
+        1
+    );
+    let (s, v) = app
+        .get(&app.worker, "/v1/bugs?view=all&triage=duplicate")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["items"][0]["ticket"]["id"], first);
     assert_eq!(
         app.get(&app.worker, "/v1/bugs?assignee=none").await.1["total"],
         2

@@ -115,6 +115,9 @@ fn ticket(conn: &Connection, ctx: &AuthCtx, id: &str, write: bool) -> ApiResult<
     Ok(t)
 }
 fn detail(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
+    describe(conn, ctx, id, true)
+}
+fn describe(conn: &Connection, ctx: &AuthCtx, id: &str, full: bool) -> ApiResult<Value> {
     let t = ticket(conn, ctx, id, false)?;
     let mut v=conn.query_row("SELECT triage,severity,duplicate_of,note,updated_by,updated_at FROM bug_triage WHERE ticket=?1",[id],|r|Ok(json!({"triage":r.get::<_,String>(0)?,"severity":r.get::<_,String>(1)?,"duplicate_of":r.get::<_,Option<String>>(2)?,"note":r.get::<_,Option<String>>(3)?,"updated_by":r.get::<_,Option<String>>(4)?,"updated_at":r.get::<_,Option<i64>>(5)?}))).optional()?.unwrap_or(json!({"triage":"needs_triage","severity":"unknown","duplicate_of":null,"note":null}));
     v["ticket"] = t.to_json(now_ms());
@@ -126,7 +129,8 @@ fn detail(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
         )
         .optional()?;
     v["latest_job"] = match jid {
-        Some(j) => super::agent_chat::inspect_one(conn, ctx, &j)?,
+        Some(j) if full => super::agent_chat::inspect_one(conn, ctx, &j)?,
+        Some(j) => super::agent_chat::inspect_summary(conn, ctx, &j)?,
         None => Value::Null,
     };
     Ok(v)
@@ -202,10 +206,22 @@ impl Store {
         ) {
             return Err(ApiError::validation("validation.bug", "Unknown bug view."));
         }
-        let triage = match view {
+        let implied = match view {
             "needs_triage" => Some("needs_triage"),
             "ready_for_review" => Some("ready_for_review"),
-            _ => triage,
+            _ => None,
+        };
+        let triage = match (implied, triage) {
+            (Some(view_triage), Some(requested)) if view_triage != requested => {
+                return Err(ApiError::validation(
+                    "validation.bug",
+                    format!(
+                        "view={view} already selects triage={view_triage}; drop triage or use view=open or view=all with triage={requested}."
+                    ),
+                ));
+            }
+            (Some(view_triage), _) => Some(view_triage),
+            (None, requested) => requested,
         };
         ctx.require_scope("read")?;
         if let Some(p) = project {
@@ -246,7 +262,7 @@ impl Store {
                     r.get::<_, String>(0)
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            let items = ids.iter().map(|id| detail(c, ctx, id)).collect::<ApiResult<Vec<_>>>()?;
+            let items = ids.iter().map(|id| describe(c, ctx, id, false)).collect::<ApiResult<Vec<_>>>()?;
             let mut v = crate::api::paged(items, total, limit, "Use offset to inspect further bug tickets.");
             v["offset"] = json!(offset);
             Ok(v)
@@ -280,8 +296,12 @@ impl Store {
         {
             return Err(ApiError::validation("validation.bug", "Unknown severity."));
         }
-        if let Some(s) = &r.note {
-            bounded(s, 8000, "note")?;
+        let note = r.note.as_deref().map(str::trim);
+        if note.is_some_and(|s| s.len() > 8000) {
+            return Err(ApiError::validation(
+                "validation.bug",
+                "note must contain at most 8000 bytes; send an empty note to clear it.",
+            ));
         }
         self.with_tx(|c|{let t=ticket(c,ctx,id,true)?;
 if let Some(d)=&r.duplicate_of{let other=ticket(c,ctx,d,false)?;
@@ -291,8 +311,8 @@ let triage=r.triage.as_deref().unwrap_or(prior["triage"].as_str().unwrap());
 let duplicate=if triage=="duplicate"{r.duplicate_of.as_deref().or(prior["duplicate_of"].as_str())}else{None};
 if triage=="duplicate"&&duplicate.is_none(){return Err(conflict("A duplicate disposition requires duplicate_of."));
 }c.execute("INSERT INTO bug_triage(ticket,triage,severity,duplicate_of,note,updated_by,updated_at)
-                VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(ticket) DO UPDATE SET
-                triage=excluded.triage,severity=excluded.severity,duplicate_of=excluded.duplicate_of,note=COALESCE(excluded.note,bug_triage.note),updated_by=excluded.updated_by,updated_at=excluded.updated_at",params![id,triage,r.severity.as_deref().unwrap_or(prior["severity"].as_str().unwrap()),duplicate,r.note,ctx.actor,now_ms()])?;
+                VALUES(?1,?2,?3,?4,NULLIF(?5,''),?6,?7) ON CONFLICT(ticket) DO UPDATE SET
+                triage=excluded.triage,severity=excluded.severity,duplicate_of=excluded.duplicate_of,note=CASE WHEN ?5 IS NULL THEN bug_triage.note ELSE excluded.note END,updated_by=excluded.updated_by,updated_at=excluded.updated_at",params![id,triage,r.severity.as_deref().unwrap_or(prior["severity"].as_str().unwrap()),duplicate,note,ctx.actor,now_ms()])?;
 emit_event(c,Some(id),Some(&t.project),&ctx.actor,"bug.triaged",json!({"triage":triage}),now_ms())?;
 detail(c,ctx,id)})
     }

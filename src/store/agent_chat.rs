@@ -252,15 +252,7 @@ fn inspect_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 }
 
 pub(super) fn inspect_one(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
-    let mut value = conn
-        .query_row(
-            &format!("SELECT {INSPECT_COLUMNS} FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1"),
-            [id],
-            inspect_row,
-        )
-        .optional()?
-        .ok_or_else(|| ApiError::not_found("agent_job", id))?;
-    ctx.require_project(value["project"].as_str().unwrap())?;
+    let mut value = inspect_summary(conn, ctx, id)?;
     let (prompt, snapshot, response): (String, String, Option<String>) = conn.query_row(
         "SELECT j.prompt,j.snapshot,(SELECT body FROM agent_messages WHERE job_id=j.id AND role='assistant') FROM
                 agent_jobs j WHERE j.id=?1",
@@ -270,6 +262,19 @@ pub(super) fn inspect_one(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResu
     value["prompt"] = json!(prompt);
     value["snapshot"] = json!(snapshot);
     value["response"] = json!(response);
+    Ok(value)
+}
+
+pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
+    let mut value = conn
+        .query_row(
+            &format!("SELECT {INSPECT_COLUMNS} FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1"),
+            [id],
+            inspect_row,
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("agent_job", id))?;
+    ctx.require_project(value["project"].as_str().unwrap())?;
     let bug: Option<(String, String, bool)> = conn
         .query_row(
             "SELECT ticket,repository_ref,cancelled FROM bug_research_jobs WHERE job=?1",
@@ -284,10 +289,12 @@ pub(super) fn inspect_one(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResu
     });
     if let Some((ticket, reference, cancelled)) = bug {
         value["ticket_id"] = json!(ticket);
-        value["section_title"] = serde_json::from_str::<Value>(&snapshot)
-            .ok()
-            .and_then(|t| t.get("title").cloned())
-            .unwrap_or(json!(ticket));
+        let title: Option<String> = conn.query_row(
+            "SELECT CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.title') END FROM agent_jobs WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        value["section_title"] = json!(title.unwrap_or(ticket));
         value["repository_ref"] = serde_json::from_str(&reference).unwrap_or(Value::Null);
         value["cancelled"] = json!(cancelled);
         if cancelled {
@@ -424,7 +431,7 @@ impl Store {
             let mut items = stmt.query_map(params![project, allowed, status, limit], inspect_row)?.collect::<Result<Vec<_>, _>>()?;
             for item in &mut items {
                 if item["mindmap"].is_null() {
-                    *item = inspect_one(conn, ctx, item["id"].as_str().unwrap())?;
+                    *item = inspect_summary(conn, ctx, item["id"].as_str().unwrap())?;
                 }
             }
             let mut result = crate::api::paged(

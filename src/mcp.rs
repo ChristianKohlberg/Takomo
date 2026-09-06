@@ -4943,6 +4943,7 @@ pub struct BugUpdateArgs {
     pub triage: Option<String>,
     pub severity: Option<String>,
     pub duplicate_of: Option<String>,
+    /// Omit to keep the current note; an empty string clears it.
     pub note: Option<String>,
 }
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

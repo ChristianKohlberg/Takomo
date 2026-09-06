@@ -53,6 +53,16 @@ describe('explicit bug research', () => {
   })
 })
 
+describe('review note', () => {
+  it('an emptied note is sent as an empty string so the server clears it', async () => {
+    render(<Detail bug={{...bug, note: 'Reviewed evidence'}} token="tk" lang="en" canWrite canReview canConfigure={false} refresh={vi.fn()} onAuthError={vi.fn()} />)
+    await screen.findByText('Repository: takomo · Revision: main')
+    expect(screen.getByLabelText('Review note')).toHaveProperty('value', 'Reviewed evidence')
+    fireEvent.change(screen.getByLabelText('Review note'), {target:{value:''}})
+    fireEvent.click(screen.getByRole('button', {name:'Save'}))
+    await waitFor(() => expect(vi.mocked(api).mock.calls.some(([,path,opts]) => path === '/bugs/demo-1' && opts?.method === 'PATCH' && JSON.parse(opts.body as string).note === '')).toBe(true))
+  })
+})
 describe('research input snapshot', () => {
   it('renders the ticket snapshot as a readable report, not serialized JSON', async () => {
     const snapshot = JSON.stringify({id:'demo-1', project:'demo', type:'bug', title:'Receipt crashes', body:'Crashes on **empty** receipts.\n\n## Steps to reproduce\nImport an empty file.', state:'todo', priority:'high', version:3, created_by:'ada', created_at:'2026-09-01T10:00:00Z', claim:null, metadata:{internal:true}, occurrence:null})
