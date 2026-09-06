@@ -276,9 +276,12 @@ and spreadsheet formulas are not provided.
 
 In an empty paragraph in a section, type `/` to open the block menu and keep typing to
 filter it. Arrow keys select a result; Enter inserts it; Escape closes the menu while
-leaving the typed text intact. Headings, lists, quotes, code, tables and Mermaid diagrams
+leaving the typed text intact. Headings, lists, quotes, code, tables and diagrams
 use the editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or
-Escape returns to the command menu. Mermaid starts with its editable source visible.
+Escape returns to the command menu. Mermaid, PlantUML, D2 and Wireframe insertions
+start with editable source. Their shared Code / View controls render through the
+configured private Kroki service; see [diagrams and wireframes](diagrams.md) for
+setup, limits and offline behavior.
 Ordinary slashes in prose or code keep their normal meaning. The existing `#`/`##` heading
 shortcuts and heading-to-section behavior continue to work: typing `/h1`, `/h2` or `/h3` picks a
 heading directly, the heading rows show the platform shortcut (Ctrl/Cmd + Alt + 1, 2 or 3), and
