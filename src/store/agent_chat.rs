@@ -186,7 +186,85 @@ fn session(
     Ok(())
 }
 
+// Explicit projection: inspection must never serialize token ownership or the
+// canonical result-delivery payload. Titles describe the submitted snapshot.
+const INSPECT_COLUMNS: &str = "
+    j.id,j.conversation_id,c.project,c.mindmap,c.node,
+    substr(j.snapshot,3,instr(j.snapshot,char(10))-3),j.status,j.requested_by,
+    j.source_revision,j.created_at,j.finished_at,j.lease_expires_at,j.deadline,
+    j.service_id,c.service_id,j.attempt_id,j.thread_id,j.turn_id,j.error";
+fn inspect_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({
+        "id":r.get::<_,String>(0)?, "conversation_id":r.get::<_,String>(1)?,
+        "project":r.get::<_,String>(2)?, "mindmap":r.get::<_,String>(3)?,
+        "node":r.get::<_,String>(4)?, "section_title":r.get::<_,String>(5)?,
+        "status":r.get::<_,String>(6)?, "requested_by":r.get::<_,String>(7)?,
+        "source_revision":r.get::<_,String>(8)?, "created_at":r.get::<_,i64>(9)?,
+        "finished_at":r.get::<_,Option<i64>>(10)?, "lease_expires_at":r.get::<_,Option<i64>>(11)?,
+        "deadline":r.get::<_,Option<i64>>(12)?, "service_id":r.get::<_,Option<String>>(13)?,
+        "conversation_service_id":r.get::<_,Option<String>>(14)?, "attempt_id":r.get::<_,Option<String>>(15)?,
+        "thread_id":r.get::<_,Option<String>>(16)?, "turn_id":r.get::<_,Option<String>>(17)?,
+        "error":r.get::<_,Option<String>>(18)?
+    }))
+}
+
 impl Store {
+    /// Bounded, project-authorized inspection. Reading does not claim or expire jobs.
+    pub fn inspect_agent_jobs(
+        &self,
+        ctx: &AuthCtx,
+        project: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+    ) -> ApiResult<Value> {
+        if let Some(project) = project {
+            ctx.require_project(project)?;
+        }
+        if !(1..=100).contains(&limit) {
+            return Err(ApiError::validation(
+                "validation.agent_chat",
+                "limit must be between 1 and 100.",
+            ));
+        }
+        if status.is_some_and(|s| !matches!(s, "queued" | "running" | "completed" | "failed")) {
+            return Err(ApiError::validation(
+                "validation.agent_chat",
+                "status must be queued, running, completed, or failed.",
+            ));
+        }
+        self.with_conn(|conn| {
+            let allowed = ctx.allowed_projects_vec().map(|p| serde_json::to_string(&p).unwrap());
+            let scope = " FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE (?1 IS NULL OR c.project=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2)))";
+            let mut counts = json!({"queued":0,"running":0,"completed":0,"failed":0});
+            let mut stmt = conn.prepare(&format!("SELECT j.status,COUNT(*){scope} GROUP BY j.status"))?;
+            for row in stmt.query_map(params![project,allowed], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))? {
+                let (status,count) = row?;
+                counts[status] = json!(count);
+            }
+            let total = match status {
+                Some(status) => counts[status].as_i64().unwrap(),
+                None => counts.as_object().unwrap().values().map(|v|v.as_i64().unwrap()).sum(),
+            };
+            let mut stmt = conn.prepare(&format!("SELECT {INSPECT_COLUMNS}{scope} AND (?3 IS NULL OR j.status=?3) ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?4"))?;
+            let items = stmt.query_map(params![project,allowed,status,limit], inspect_row)?.collect::<Result<Vec<_>,_>>()?;
+            let mut result = crate::api::paged(items,total,limit,"Only the newest matching jobs are returned. Narrow project/status or raise limit to at most 100; inspect older jobs by ID.");
+            result["counts"] = counts;
+            Ok(result)
+        })
+    }
+    pub fn inspect_agent_job(&self, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
+        self.with_conn(|conn| {
+            let mut value = conn.query_row(&format!("SELECT {INSPECT_COLUMNS} FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=?1"),[id],inspect_row).optional()?.ok_or_else(||ApiError::not_found("agent_job",id))?;
+            ctx.require_project(value["project"].as_str().unwrap())?;
+            let (prompt,snapshot,response): (String,String,Option<String>) = conn.query_row("SELECT j.prompt,j.snapshot,(SELECT body FROM agent_messages WHERE job_id=j.id AND role='assistant') FROM agent_jobs j WHERE j.id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            value["prompt"] = json!(prompt);
+            value["snapshot"] = json!(snapshot);
+            value["response"] = json!(response);
+            let mut stmt = conn.prepare("SELECT id,job_id,role,body,created_at FROM agent_messages WHERE conversation_id=?1 ORDER BY rowid LIMIT 200")?;
+            let messages = stmt.query_map([value["conversation_id"].as_str().unwrap()], |r| Ok(json!({"id":r.get::<_,String>(0)?,"job_id":r.get::<_,String>(1)?,"role":r.get::<_,String>(2)?,"body":r.get::<_,String>(3)?,"created_at":r.get::<_,i64>(4)?})))?.collect::<Result<Vec<_>,_>>()?;
+            Ok(json!({"job":value,"messages":messages}))
+        })
+    }
     pub fn agent_conversation(&self, map: &str, node: &str) -> ApiResult<Value> {
         self.with_conn(|conn| view(conn, map, node))
     }

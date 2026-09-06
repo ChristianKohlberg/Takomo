@@ -112,6 +112,72 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/AgentSend'
+  /agent-jobs:
+    get:
+      tags:
+      - agent conversations
+      operationId: agentJobsInspect
+      summary: Inspect the on-demand agent queue
+      description: Requires read scope. Returns only authorized projects, newest first (created_at then
+        insertion order). Optional project must be authorized. Optional status filters items and total;
+        counts ignore status. This read never claims, retries, or expires jobs. At most 100 recent jobs;
+        note explains truncation. Ownership credentials and canonical result payloads are excluded.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJobInspectionList'
+        default:
+          $ref: '#/components/responses/Error'
+      parameters:
+      - name: project
+        in: query
+        schema:
+          type: string
+        description: Optional project slug.
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+  /agent-jobs/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Agent job id.
+    get:
+      tags:
+      - agent conversations
+      operationId: agentJobInspect
+      summary: Inspect one agent job and its conversation
+      description: Requires read scope and access to the job project. Returns the original submitted prompt
+        and section snapshot, saved reply, lifecycle metadata, and shared conversation history. Does not
+        mutate the job or document. Tokens, token IDs, request IDs, and canonical result payloads are excluded.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJobInspectionView'
+        default:
+          $ref: '#/components/responses/Error'
   /agent-jobs/claim:
     post:
       tags:
@@ -5672,6 +5738,20 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /agent-queues:
+    servers: [{ url: / }]
+    get:
+      operationId: agentQueuesPage
+      tags: [agent conversations]
+      summary: Agent queue inspection page (the app shell)
+      description: |
+        Unauthenticated HTML shell. Data requests to `/v1/agent-jobs` and
+        `/v1/agent-jobs/{id}` require the viewer's project-scoped read credential.
+        Displays recent requests and their saved input, results, and execution metadata.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /assets/{file}:
     servers: [{ url: / }]
     get:
@@ -7167,6 +7247,169 @@ components:
       - role
       - body
       - created_at
+    AgentJobInspection:
+      type: object
+      properties:
+        id:
+          type: string
+        conversation_id:
+          type: string
+        project:
+          type: string
+        mindmap:
+          type: string
+        node:
+          type: string
+        section_title:
+          type: string
+          description: Section title from the submitted snapshot, not the current document.
+        requested_by:
+          type: string
+        source_revision:
+          type: string
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+        created_at:
+          type: integer
+          description: Epoch milliseconds.
+        finished_at:
+          type:
+          - integer
+          - 'null'
+          description: Epoch milliseconds, or null if not recorded.
+        lease_expires_at:
+          type:
+          - integer
+          - 'null'
+          description: Epoch milliseconds, or null if not recorded.
+        deadline:
+          type:
+          - integer
+          - 'null'
+          description: Epoch milliseconds, or null if not recorded.
+        service_id:
+          type:
+          - string
+          - 'null'
+        conversation_service_id:
+          type:
+          - string
+          - 'null'
+          description: Worker bound to the conversation; queued follow-ups can only be claimed by this service.
+        attempt_id:
+          type:
+          - string
+          - 'null'
+        thread_id:
+          type:
+          - string
+          - 'null'
+        turn_id:
+          type:
+          - string
+          - 'null'
+        error:
+          type:
+          - string
+          - 'null'
+      required:
+      - id
+      - conversation_id
+      - project
+      - mindmap
+      - node
+      - section_title
+      - requested_by
+      - source_revision
+      - status
+      - created_at
+      - finished_at
+      - lease_expires_at
+      - deadline
+      - service_id
+      - conversation_service_id
+      - attempt_id
+      - thread_id
+      - turn_id
+      - error
+    AgentJobInspectionDetail:
+      allOf:
+      - $ref: '#/components/schemas/AgentJobInspection'
+      - type: object
+        properties:
+          prompt:
+            type: string
+          snapshot:
+            type: string
+          response:
+            type:
+            - string
+            - 'null'
+        required:
+        - prompt
+        - snapshot
+        - response
+    AgentJobInspectionList:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AgentJobInspection'
+        total:
+          type: integer
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        note:
+          type: string
+        counts:
+          type: object
+          description: Counts across authorized selected projects, independent of status and limit.
+          properties:
+            queued:
+              type: integer
+              minimum: 0
+            running:
+              type: integer
+              minimum: 0
+            completed:
+              type: integer
+              minimum: 0
+            failed:
+              type: integer
+              minimum: 0
+          required:
+          - queued
+          - running
+          - completed
+          - failed
+      required:
+      - items
+      - total
+      - limit
+      - counts
+    AgentJobInspectionView:
+      type: object
+      properties:
+        job:
+          $ref: '#/components/schemas/AgentJobInspectionDetail'
+        messages:
+          type: array
+          maxItems: 200
+          description: The complete bounded conversation history, including turns after this job.
+          items:
+            $ref: '#/components/schemas/AgentMessage'
+      required:
+      - job
+      - messages
     AgentJobStatus:
       type: object
       properties:

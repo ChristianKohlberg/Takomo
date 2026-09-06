@@ -272,6 +272,11 @@ pub async fn environments_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }
 
+/// `GET /agent-queues` — read-only inspection of on-demand agent jobs.
+pub async fn agent_queues_page() -> impl axum::response::IntoResponse {
+    secure_html(INDEX_HTML)
+}
+
 pub async fn settings_page() -> impl axum::response::IntoResponse {
     secure_html(INDEX_HTML)
 }

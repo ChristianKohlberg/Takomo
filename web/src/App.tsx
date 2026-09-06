@@ -25,6 +25,7 @@ import { App as InitiativesApp } from './pages/initiatives/App'
 import { App as SchedulesApp } from './pages/schedules/App'
 import { App as SettingsApp } from './pages/settings/App'
 import { LegacySpecificationRedirect } from './pages/specification/LegacyRedirect'
+const AgentQueuesApp = lazy(() => import('./pages/agent-queues/App'))
 const SpecificationApp = lazy(() => import('./pages/specification/App'))
 
 /** The document title each surface used to carry in its own `<head>`. */
@@ -38,6 +39,7 @@ const TITLES: Record<string, string> = {
   '/verification': 'takomo · verification',
   '/environments': 'takomo · environments',
   '/settings': 'takomo · settings',
+  '/agent-queues': 'takomo · agent queue',
 }
 
 /**
@@ -83,6 +85,7 @@ const router = createBrowserRouter([
       { path: '/verification', element: <LegacySpecificationRedirect /> },
       { path: '/environments', element: <EnvironmentsApp /> },
       { path: '/settings', element: <SettingsApp /> },
+      { path: '/agent-queues', element: <AgentQueuesApp /> },
       // Anything else the server handed this document for. The server serves it
       // only on the five routes, so this is a safety net rather than a real path.
       { path: '*', element: <Navigate to="/board" replace /> },

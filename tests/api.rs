@@ -332,6 +332,7 @@ async fn board_tag_value_filter_reuses_the_ticket_typeahead() {
 /// distinguishes them by content is asserting something that no longer exists.
 /// What each route still owes the caller is the shell contract below.
 const PAGE_ROUTES: &[&str] = &[
+    "/agent-queues",
     "/specification",
     "/projects/demo/specification?view=map&section=mn-example",
     "/board",
@@ -15331,6 +15332,7 @@ async fn every_spa_links_to_the_schedules_page() {
     // Every surface mounts that same rail, which is what makes the five read as
     // one product instead of five apps sharing a palette.
     for href in [
+        "/agent-queues",
         "/board",
         "/documents",
         "/inbox",
