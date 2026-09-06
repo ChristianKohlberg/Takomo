@@ -76,6 +76,8 @@ pub struct Block {
     /// The ProseMirror node name: `paragraph`, `heading`, `bulletList`, …
     pub kind: String,
     pub level: Option<i64>,
+    /// The code fence language, including `mermaid` for diagrams.
+    pub language: Option<String>,
     /// The block's text, with nested structure flattened.
     pub text: String,
     /// One entry per direct child element — the list items of a list.
@@ -114,6 +116,10 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, frag: &yrs::XmlFragmentRef) -> Vec<Block
             id: attr_string(txn, &el, "id").unwrap_or_default(),
             kind: el.tag().to_string(),
             level: attr_int(txn, &el, "level"),
+            language: match el.get_attribute(txn, "language") {
+                Some(Out::Any(Any::String(language))) => Some(language.to_string()),
+                _ => None,
+            },
             text: element_text(txn, &el),
             items,
         });
@@ -183,7 +189,11 @@ fn markdown_for(b: &Block) -> String {
             let level = b.level.unwrap_or(1).clamp(1, 6) as usize;
             format!("{} {}", "#".repeat(level), b.text)
         }
-        "codeBlock" => format!("```\n{}\n```", b.text),
+        "codeBlock" => format!(
+            "```{}\n{}\n```",
+            b.language.as_deref().unwrap_or(""),
+            b.text
+        ),
         "blockquote" => b
             .text
             .lines()
@@ -527,4 +537,61 @@ pub fn read_proposals(doc: &yrs::Doc) -> Vec<Value> {
         std::cmp::Reverse(p.get("created_at").and_then(Value::as_i64).unwrap_or(0))
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yrs::updates::decoder::Decode;
+    use yrs::{Update, XmlElementPrelim, XmlTextPrelim};
+
+    #[test]
+    fn code_languages_survive_yjs_updates_and_agent_reads() {
+        let doc = yrs::Doc::new();
+        let frag = doc.get_or_insert_xml_fragment(PROSE_FIELD);
+        let update = {
+            let mut txn = doc.transact_mut();
+            for (id, language, source) in [
+                ("diagram", Some(Any::from("mermaid")), "graph TD\n  A --> B"),
+                ("rust", Some(Any::from("rust")), "fn main() {}"),
+                ("plain", Some(Any::Null), "plain code"),
+                ("missing", None, "untyped code"),
+            ] {
+                let el = frag.push_back(&mut txn, XmlElementPrelim::empty("codeBlock"));
+                el.insert_attribute(&mut txn, "id", id);
+                if let Some(language) = language {
+                    el.insert_attribute(&mut txn, "language", language);
+                }
+                el.push_back(&mut txn, XmlTextPrelim::new(source));
+            }
+            txn.encode_update_v1()
+        };
+        let peer = yrs::Doc::new();
+        let frag = peer.get_or_insert_xml_fragment(PROSE_FIELD);
+        peer.transact_mut()
+            .apply_update(Update::decode_v1(&update).unwrap())
+            .unwrap();
+        let blocks = read_blocks(&peer.transact(), &frag);
+        assert_eq!(
+            annotate(&blocks),
+            "<!-- diagram -->\n```mermaid\ngraph TD\n  A --> B\n```\n\n\
+             <!-- rust -->\n```rust\nfn main() {}\n```\n\n\
+             <!-- plain -->\n```\nplain code\n```\n\n\
+             <!-- missing -->\n```\nuntyped code\n```"
+        );
+        let unchanged = validate_ops(
+            &json!([{"op": "replace", "id": "diagram", "markdown": "```mermaid\ngraph TD\n  A --> B\n```"}]),
+            &blocks,
+            None,
+            "takomo_document_read",
+        );
+        assert_eq!(
+            unchanged
+                .err()
+                .expect("an unchanged Mermaid fence is a no-op")
+                .body
+                .code,
+            "validation.document_unchanged"
+        );
+    }
 }

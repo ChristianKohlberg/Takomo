@@ -66,7 +66,26 @@ export function parseProposal(raw: unknown): Proposal | null {
  */
 export function markdownToNodes(schema: Schema, markdown: string): PMNode[] {
   const out: PMNode[] = []
-  const chunks = markdown.replace(/\r\n/g, '\n').split(/\n{2,}/)
+  const chunks: string[] = []
+  let lines: string[] = []
+  let fenced = false
+  const flush = () => { if (lines.length) chunks.push(lines.join('\n')); lines = [] }
+  for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+    if (!fenced && /^```/.test(line.trim())) {
+      flush()
+      fenced = true
+      lines.push(line)
+    } else if (fenced && /^```\s*$/.test(line.trim())) {
+      lines.push(line)
+      fenced = false
+      flush()
+    } else if (!fenced && !line.trim()) {
+      flush()
+    } else {
+      lines.push(line)
+    }
+  }
+  flush()
 
   for (const chunk of chunks) {
     const block = chunk.trim()

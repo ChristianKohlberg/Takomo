@@ -89,6 +89,10 @@ const EDITOR_ONLY_PACKAGES = [
   'crelt',
 ]
 
+// Mermaid and its rendering dependencies must stay behind its dynamic import.
+// Include transitive packages: assigning even one to vendor eagerly downloads it.
+const MERMAID_ONLY = /node_modules\/(mermaid|@mermaid-js|@braintree|@chevrotain|@iconify|@upsetjs|d3(?:-[^/]+)?|cytoscape(?:-[^/]+)?|dagre-d3-es|dayjs|delaunator|dompurify|es-toolkit|fastdom|hachure-fill|internmap|katex|khroma|layout-base|cose-base|lodash-es|marked|path-data-parser|points-on-curve|points-on-path|robust-predicates|roughjs|strictdom|stylis|ts-dedent|uuid)\//
+
 const COLLAB = new RegExp(`node_modules/(${COLLAB_PACKAGES.join('|')})/`)
 const EDITOR_ONLY = new RegExp(`node_modules/(${EDITOR_ONLY_PACKAGES.join('|')})/`)
 
@@ -181,7 +185,7 @@ export default defineConfig({
         // dependency would be duplicated into both.
         manualChunks: (id) => {
           if (!id.includes('node_modules')) return undefined
-          if (EDITOR_ONLY.test(id)) return undefined
+          if (EDITOR_ONLY.test(id) || MERMAID_ONLY.test(id)) return undefined
           if (COLLAB.test(id)) return 'collab'
           return 'vendor'
         },

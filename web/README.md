@@ -503,3 +503,11 @@ CI builds the frontend once and passes its artifact to the Rust job. Docker uses
 a Node build stage and copies its assets into the Rust stage. Render and Backlot
 use the same build script. The final server binary still embeds all assets and
 does not need Node or a separate frontend server at runtime.
+
+Mermaid diagrams render in document code blocks whose language is `mermaid`,
+including proposals, and in Markdown previews with fenced `mermaid` blocks.
+In the document editor, type three backticks followed by `mermaid` and press
+Enter to start one. The diagram appears above its editable source and updates
+when typing pauses. Invalid diagrams keep their source and show an error.
+The renderer loads only when a diagram is shown; diagrams use strict mode and
+isolated SVG images, so Mermaid click actions are intentionally unavailable.
