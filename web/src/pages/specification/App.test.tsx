@@ -43,7 +43,7 @@ vi.mock('@/hooks/useSyncConnection', () => ({
 }))
 vi.mock('@/components/Toaster', () => ({ useToast: () => ({ toast: api.toast }) }))
 vi.mock('@/components/AppShell', () => ({
-  AppShell: ({ children }: { children: ReactNode }) => <>{children}</>,
+  AppShell: ({ children, hideRail }: { children: ReactNode; hideRail?: boolean }) => <><aside hidden={hideRail}>Navigation</aside>{children}</>,
 }))
 vi.mock('@/components/AppHeader', () => ({
   AppHeader: ({ children, views }: { children: ReactNode; views: ReactNode }) => (
@@ -59,9 +59,9 @@ vi.mock('../mindmap/App', () => ({ MapView: () => <View name="Map" /> }))
 vi.mock('../verification/App', () => ({ TestsView: () => <View name="Tests" /> }))
 
 function View({ name }: { name: string }) {
-  const { map, session, nodes, projects, project } = useSpecification()
+  const { map, session, nodes, projects, project, focusMode } = useSpecification()
   return (
-    <main aria-label={`${name} editor`} data-map={map?.id} data-session={session?.mindmap}
+    <main aria-label={`${name} editor`} data-focus={String(focusMode)} data-map={map?.id} data-session={session?.mindmap}
       data-appearance={JSON.stringify(projects.find((item) => item.id === project)?.document_appearance)}>
       {nodes.length} sections
     </main>
@@ -124,6 +124,18 @@ afterEach(() => {
 })
 
 describe('opening a project specification', () => {
+  it('hides navigation in personal focus mode without replacing the document view', async () => {
+    mount()
+    const document = await screen.findByRole('main', { name: 'Document editor' })
+    fireEvent.click(screen.getByRole('button', { name: 'Focus mode' }))
+    expect(document.getAttribute('data-focus')).toBe('true')
+    expect(screen.queryByRole('complementary')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Exit focus mode' }))
+    expect(screen.getByRole('main', { name: 'Document editor' })).toBe(document)
+    expect(document.getAttribute('data-focus')).toBe('false')
+    expect(screen.getByRole('complementary')).toBeTruthy()
+  })
+
   it('refreshes saved document appearance for an already open collaborator', async () => {
     mount()
     const document = await screen.findByRole('main', { name: 'Document editor' })

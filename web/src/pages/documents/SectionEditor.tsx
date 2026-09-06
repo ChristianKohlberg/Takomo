@@ -22,7 +22,7 @@
 // yields nothing. So a remote caret is drawn in the section that person is
 // actually typing in, and nowhere else, with no coordination between the mounted
 // editors at all.
-import { useEffect, useRef, useState, useId } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { TableKit } from '@tiptap/extension-table'
 import { SlashInsert, type SlashMatch } from '@/lib/slash-insert'
@@ -39,9 +39,12 @@ import type * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
 
+const EDITOR_ATTRIBUTES = { class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1' }
+
 import { MermaidCodeBlock } from '@/lib/mermaid-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
+import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
 
 /** How long a person stops typing before the edit counts as settled. */
 const SETTLE_MS = 2500
@@ -83,6 +86,8 @@ export interface SectionEditorProps {
    */
   onEditor?: (editor: Editor | null) => void
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  searchQuery?: string
+  searchActiveFrom?: number
   locale?: Locale
   label: string
 }
@@ -99,6 +104,8 @@ export default function SectionEditor({
   onEditor,
   label,
   onInsertSection,
+  searchQuery = '',
+  searchActiveFrom,
   locale = 'en',
 }: SectionEditorProps) {
   const [slash, setSlash] = useState<SlashMatch | null>(null)
@@ -136,6 +143,7 @@ export default function SectionEditor({
         // shared document and synced to everybody, which would break the very
         // rule the highlight illustrates. See `lib/block-highlight.ts`.
         HighlightBlocks,
+        DocumentSearchHighlight,
       ],
       editorProps: {
         handleKeyDown: (view, event) => {
@@ -162,10 +170,7 @@ export default function SectionEditor({
           view.dispatch(tr)
           return true
         },
-        attributes: {
-          class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1',
-          'aria-label': label,
-        },
+        attributes: { ...EDITOR_ATTRIBUTES, 'aria-label': label },
       },
       // The app is client-only, so this is simply the correct answer; Tiptap
       // warns without it when an editor mounts during an SSR-shaped render.
@@ -184,10 +189,21 @@ export default function SectionEditor({
     return () => register.current?.(null)
   }, [editor])
 
+  // Moving a section changes its outline number without remounting its editor.
+  // Refresh the accessible name while retaining this fragment's undo history.
+  useEffect(() => {
+    if (!editor) return
+    editor.setOptions({ editorProps: { ...editor.options.editorProps, attributes: { ...EDITOR_ATTRIBUTES, 'aria-label': label } } })
+  }, [editor, label])
+
   useEffect(() => {
     if (!editor) return
     setHighlightedBlocks(editor.view, new Set(highlight ? highlight.split(' ') : []))
   }, [editor, highlight])
+
+  useEffect(() => {
+    if (editor) setDocumentSearchHighlight(editor.view, { query: searchQuery, activeFrom: searchActiveFrom })
+  }, [editor, searchQuery, searchActiveFrom])
 
   useEffect(() => {
     if (!editor) return

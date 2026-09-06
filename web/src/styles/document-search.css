@@ -1,0 +1,4 @@
+.document-search-match { background: #fef08a; color: #14202a; }
+.document-search-active { background: #fdba74; color: #14202a; outline: 2px solid #9a3412; }
+::highlight(document-search) { background-color: #fef08a; color: #14202a; }
+::highlight(document-search-active) { background-color: #fdba74; color: #14202a; text-decoration: underline; }

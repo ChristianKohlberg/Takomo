@@ -1,3 +1,9 @@
+import { DocumentActions } from '@/components/documents/DocumentActions'
+import { DocumentSearchToolbar } from '@/components/documents/DocumentSearchToolbar'
+import { useDocumentSearch } from '@/hooks/useDocumentSearch'
+import { highlightDocumentHeadings } from '@/lib/document-search-headings'
+import { createStructureHistory, type SectionPlacement } from '@/lib/plan-structure'
+import { MoveSectionDialog } from '@/components/documents/MoveSectionDialog'
 import { documentAppearanceStyle, type DocumentAppearance } from '@/lib/document-appearance'
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
 import { type SyncConnection } from '@/hooks/useSyncConnection'
@@ -116,6 +122,8 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  focusMode?: boolean
+  structureHistory?: ReturnType<typeof createStructureHistory> | null
   appearance?: DocumentAppearance
   conversationFor?: (node: string) => ReactNode
   locale?: Locale
@@ -133,6 +141,7 @@ export interface PlanProps {
   onReview: (node: string) => void
   /** A local edit settled. Debounced in the editor — see `SectionEditor`. */
   onEdited: (node: string) => void
+  onMoved?: (node: string) => void
   onShowOnMap: (node: string) => void
   /** A decision on a proposal, for the plan's history. */
   onDecided: (node: string, kind: 'accepted' | 'rejected') => void
@@ -153,6 +162,8 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  focusMode = false,
+  structureHistory,
   appearance,
   conversationFor,
   locale = 'en',
@@ -166,6 +177,7 @@ function ConnectedPlan({
   trace,
   onReview,
   onEdited,
+  onMoved,
   onShowOnMap,
   onDecided,
   onSkipped,
@@ -182,6 +194,22 @@ function ConnectedPlan({
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [moving, setMoving] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ text: string; undo?: boolean } | null>(null)
+  const [history, setHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
+  const [, refreshMoveTools] = useState(0)
+  useEffect(() => {
+    const next = structureHistory ?? createStructureHistory(ydoc)
+    setHistory(next)
+    const unsubscribe = next.subscribe(() => refreshMoveTools(value => value + 1))
+    return () => { unsubscribe(); if (!structureHistory) next.destroy() }
+  }, [ydoc, structureHistory])
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   const [openHistory, setOpenHistory] = useState<Set<string>>(() => new Set())
   const [openProposals, setOpenProposals] = useState<Set<string>>(() => new Set())
@@ -219,6 +247,17 @@ function ConnectedPlan({
 
   const sections = useMemo(() => planSections(tree), [tree])
   const rows = useMemo(() => flattenSections(sections), [sections])
+  const searchNodes = useMemo(() => rows.map(row => ({ id: row.key, title: row.title })), [rows])
+  const search = useDocumentSearch(ydoc, searchNodes)
+  const activeMatch = search.activeMatch
+  const activeSearchSection = activeMatch?.sectionId
+  const activeSearchKey = activeMatch?.key
+  const activeSearchKind = activeMatch?.kind
+  const effectiveCollapsed = useMemo(() => {
+    if (!activeSearchSection) return collapsed
+    const revealed = new Set(ancestorKeys(sections, activeSearchSection))
+    return new Set([...collapsed].filter(key => !revealed.has(key)))
+  }, [collapsed, sections, activeSearchSection])
 
   const standings = useMemo(() => {
     const out: Record<string, Standing> = {}
@@ -370,15 +409,18 @@ function ConnectedPlan({
   // arrives with the URL and the document is still syncing.
   useEffect(() => {
     if (!focusSection) {
-      focused.current = null
-      setSelected(null)
+      // A missing URL selection is not a new instruction on every tree edit.
+      if (focused.current !== null) {
+        focused.current = null
+        setSelected(null)
+      }
       return
     }
     if (focused.current === focusSection) return
     if (!rows.some((row) => row.key === focusSection)) return
-    onSelect(focusSection)
+    if (activeMatch?.sectionId !== focusSection) onSelect(focusSection)
     focused.current = focusSection
-  }, [focusSection, rows, onSelect, setSelected])
+  }, [focusSection, rows, onSelect, setSelected, activeMatch?.sectionId])
 
   const onToggleHistory = useCallback((key: string) => {
     setOpenHistory((current) => {
@@ -396,7 +438,7 @@ function ConnectedPlan({
     })
   }, [])
 
-  const visible = useMemo(() => visibleSections(sections, collapsed), [sections, collapsed])
+  const visible = useMemo(() => visibleSections(sections, effectiveCollapsed), [sections, effectiveCollapsed])
 
   // ---- deciding on a proposal ---------------------------------------------
 
@@ -425,22 +467,48 @@ function ConnectedPlan({
 
   const editors = useRef(new Map<string, Editor>())
   const editorRefs = useRef(new Map<string, (editor: Editor | null) => void>())
+  const editorUnsubscribes = useRef(new Map<string, () => void>())
+  useEffect(() => {
+    const subscriptions = editorUnsubscribes.current
+    return () => { for (const unsubscribe of subscriptions.values()) unsubscribe() }
+  }, [])
+
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const [textTools, setTextTools] = useState({ undo: false, redo: false })
+  const syncTextTools = useCallback(() => {
+    const editor = selectedRef.current ? editors.current.get(selectedRef.current) : undefined
+    const undo = editor?.can().undo() ?? false
+    const redo = editor?.can().redo() ?? false
+    setTextTools(current => (current.undo === undo && current.redo === redo ? current : { undo, redo }))
+  }, [])
+  useEffect(() => { syncTextTools() }, [selected, syncTextTools])
   const editorRefFor = useCallback((key: string) => {
     const existing = editorRefs.current.get(key)
     if (existing) return existing
     const fn = (editor: Editor | null) => {
+      editorUnsubscribes.current.get(key)?.()
+      editorUnsubscribes.current.delete(key)
       if (editor) {
         editors.current.set(key, editor)
+        const update = () => { if (selectedRef.current === key) syncTextTools() }
+        editor.on('transaction', update)
+        editor.on('focus', update)
+        editorUnsubscribes.current.set(key, () => { editor.off('transaction', update); editor.off('focus', update) })
+        update()
         if (pendingEditorFocus.current === key) {
           pendingEditorFocus.current = null
           editor.commands.focus('start')
         }
       }
-      else editors.current.delete(key)
+      else {
+        editors.current.delete(key)
+        if (selectedRef.current === key) syncTextTools()
+      }
     }
     editorRefs.current.set(key, fn)
     return fn
-  }, [])
+  }, [syncTextTools])
 
   /** The current text of a block, for the before-side of a diff. */
   const textForIn = useCallback(
@@ -539,7 +607,7 @@ function ConnectedPlan({
   useEffect(() => {
     const made = new Map<string, Y.XmlFragment>()
     for (const row of visible) {
-      if (near !== null && !near.has(row.key)) continue
+      if (near !== null && !near.has(row.key) && row.key !== selected && row.key !== activeMatch?.sectionId) continue
       if (known.current.has(row.key)) continue
       const frag = canWrite ? proseOf(ydoc, row.key) : readProseOf(ydoc, row.key)
       if (frag) made.set(row.key, frag)
@@ -549,10 +617,74 @@ function ConnectedPlan({
     for (const [key, frag] of made) next.set(key, frag)
     known.current = next
     setFragments(next)
-  }, [visible, near, canWrite, ydoc])
+  }, [visible, near, canWrite, ydoc, selected, activeMatch?.sectionId])
 
+  useEffect(() => {
+    if (!activeSearchSection) return
+    setSelected(activeSearchSection)
+  }, [activeSearchSection, setSelected])
+  useEffect(() => {
+    const targets = [...elements.current.entries()].flatMap(([key, element]) => {
+      const heading = element.querySelector<HTMLElement>('.document-heading')
+      return heading ? [{ element: heading, activeFrom: activeMatch?.kind === 'heading' && activeMatch.sectionId === key ? activeMatch.from : undefined }] : []
+    })
+    return highlightDocumentHeadings(targets, search.query)
+  }, [search.query, activeMatch, visible])
+  const activeSearchFragment = activeSearchSection ? fragments.get(activeSearchSection) : undefined
+  useEffect(() => {
+    if (!activeSearchSection || !activeSearchKey) return
+    const frame = requestAnimationFrame(() => {
+      const section = elements.current.get(activeSearchSection)
+      const match = activeSearchKind === 'prose' ? section?.querySelector('[data-document-search-active="true"]') : section?.querySelector('.document-heading')
+      ;(match ?? section)?.scrollIntoView({ block: 'center' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeSearchSection, activeSearchKind, activeSearchKey, activeSearchFragment])
+  const closeFind = () => { setFindOpen(false); search.clear() }
+  const moveSection = (id: string, target: string, placement: SectionPlacement) => {
+    if (!canWrite || !history) return { ok: false as const, error: 'changed' as const }
+    const result = history.move(id, target, placement)
+    if (result.ok) {
+      const freshSections = planSections(readPlanTree(ydoc))
+      setCollapsed(current => new Set([...current].filter(key => !ancestorKeys(freshSections, id).includes(key))))
+      setSelected(id)
+      setNotice({ text: locale === 'de' ? 'Abschnitt verschoben' : 'Section moved', undo: true })
+      onMoved?.(id)
+    }
+    return result
+  }
+  const moveHistory = (direction: 'undo' | 'redo') => {
+    if (!canWrite || !history) return
+    const key = direction === 'undo' ? history.undoSection : history.redoSection
+    const result = history[direction]()
+    if (result.ok && key) {
+      const ancestors = ancestorKeys(planSections(readPlanTree(ydoc)), key)
+      setCollapsed(current => new Set([...current].filter(id => !ancestors.includes(id))))
+      setSelected(key)
+      onMoved?.(key)
+      setNotice({ text: locale === 'de' ? 'Verschiebung aktualisiert' : 'Section move updated' })
+    } else setNotice({ text: locale === 'de' ? 'Die Abschnittsstruktur wurde inzwischen geändert. Diese Aktion ist nicht mehr verfügbar.' : 'The section structure has changed. This action is no longer available.' })
+  }
+  const textHistory = (direction: 'undo' | 'redo') => {
+    const editor = selected ? editors.current.get(selected) : undefined
+    if (!canWrite || !editor) return
+    editor.commands[direction]()
+    editor.commands.focus()
+  }
   return (
-    <main className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+    <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <DocumentActions locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
+        canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
+        moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
+        onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
+        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} />
+      {findOpen && <DocumentSearchToolbar query={search.query} onQuery={search.setQuery} count={search.matches.length}
+        activeIndex={search.activeIndex} onNext={search.next} onPrevious={search.previous} onClose={closeFind} locale={locale} />}
+      {notice && <div role="status" className="flex flex-none items-center gap-3 bg-muted px-4 py-2 text-sm">
+        <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
+      </div>}
+      {moving && canWrite && <MoveSectionDialog sections={sections} sectionKey={moving} lang={locale} onClose={() => setMoving(null)} onMove={moveSection} />}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
       {/* One breakpoint, `md`, meaning phone or not: the outline stacks above
           the plan on a phone and sits beside it everywhere else. */}
       {/* Collapsible, and the state is remembered.
@@ -561,6 +693,7 @@ function ConnectedPlan({
           true at different moments, so it folds to a strip you can open again
           rather than a choice made once in the layout. */}
       <aside
+        style={{ display: focusMode ? 'none' : undefined }}
         className={[
           'border-b-border-soft flex flex-none flex-col border-b bg-white md:border-r md:border-b-0 dark:bg-card',
           outlineOpen
@@ -588,11 +721,12 @@ function ConnectedPlan({
             sections={sections}
             selected={selected}
             onSelect={onSelect}
-            collapsed={collapsed}
+            collapsed={effectiveCollapsed}
             onToggle={onToggleFold}
             standing={standings}
             pending={pending}
-            labels={railLabels}
+            labels={{ ...railLabels, move: locale === 'de' ? 'Abschnitt verschieben' : 'Move section' }}
+            onMove={canWrite ? setMoving : undefined}
           />
         )}
       </aside>
@@ -626,7 +760,7 @@ function ConnectedPlan({
             style={documentAppearanceStyle(appearance)}>
             {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
             {visible.map((row) => {
-              const mounted = near === null || near.has(row.key)
+              const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null
               const preview = previews.get(row.key) ?? ''
               const offered = proposalsFor.get(row.key) ?? []
@@ -682,6 +816,8 @@ function ConnectedPlan({
                       onInsertSection={(level, title) => insertSection(row.key, level, title)}
                       onSettled={() => onEdited(row.key)}
                       highlight={highlights[row.key] ?? ''}
+                      searchQuery={search.query}
+                      searchActiveFrom={activeMatch?.kind === 'prose' && activeMatch.sectionId === row.key ? activeMatch.from : undefined}
                       onEditor={editorRefFor(row.key)}
                       label={labels.proseLabel.replace('{n}', row.number)}
                     />
@@ -700,6 +836,7 @@ function ConnectedPlan({
             })}
           </div>
         )}
+      </div>
       </div>
     </main>
   )

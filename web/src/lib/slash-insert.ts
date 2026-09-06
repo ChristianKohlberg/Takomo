@@ -1,4 +1,8 @@
 import { Extension, type Editor } from '@tiptap/react'
+// Include the command augmentations when this helper is emitted alone in the
+// component library, without importing the page's editor at runtime.
+import type {} from '@tiptap/starter-kit'
+import type {} from '@tiptap/extension-table'
 import { Plugin, PluginKey, type EditorState } from '@tiptap/pm/state'
 
 export interface SlashMatch { from: number; to: number; query: string }
@@ -50,7 +54,7 @@ export const SlashInsert = Extension.create<{
           return true
         },
         handleKeyDown(view, event) {
-          return !!slashMatch(view.state) && !view.composing && options.onKey(event)
+          return view.editable && !!slashMatch(view.state) && !view.composing && !event.isComposing && options.onKey(event)
         },
         attributes(state): Record<string, string> {
           return slashMatch(state) ? {

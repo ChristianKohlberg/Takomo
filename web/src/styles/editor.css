@@ -209,3 +209,18 @@
 .document-appearance .ProseMirror h2 { font-size: var(--doc-h2-size, 22px); }
 .document-appearance .ProseMirror h3 { font-size: var(--doc-h3-size, 18px); }
 .document-appearance .ProseMirror :is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }
+
+/* Reserve the action row on pointer devices so revealing it never reflows prose. */
+.document-section { position: relative; }
+.section-actions { opacity: 0; pointer-events: none; }
+.document-section:hover > .section-actions,
+.document-section:focus-within > .section-actions,
+.section-actions[data-open="true"] { opacity: 1; pointer-events: auto; }
+@media (hover: none), (pointer: coarse) {
+  .document-section > .section-actions { display: none; }
+  .document-section > .section-actions[data-open="true"] {
+    display: flex; position: absolute; top: 3rem; right: 0; z-index: 40;
+    max-width: min(22rem, 100%); padding: 12px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--panel); box-shadow: 0 4px 16px #0002;
+  }
+}

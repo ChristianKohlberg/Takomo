@@ -51,6 +51,8 @@ export function DocumentView() {
     lang,
     project,
     projects,
+    focusMode,
+    structureHistory,
     map,
     session,
     connection,
@@ -192,6 +194,8 @@ export function DocumentView() {
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
           canAsk={scopes.includes('human') && scopes.includes('write')} onError={handleErr} />
       )}
+      focusMode={focusMode}
+      structureHistory={structureHistory}
       appearance={projects.find((item) => item.id === project)?.document_appearance}
       locale={lang}
       session={session}
@@ -205,6 +209,7 @@ export function DocumentView() {
       trace={trace}
       onReview={onReview}
       onEdited={onEdited}
+      onMoved={scheduleRefresh}
       onShowOnMap={onShowOnMap}
       onDecided={onDecided}
       onSkipped={onSkipped}
@@ -229,6 +234,7 @@ export function DocumentView() {
         pending: t.railPending,
       }}
       sectionLabels={{
+        actions: lang === 'de' ? 'Abschnittsaktionen' : 'Section actions',
         renameSection: t.renameSection,
         untitled: t.untitled,
         standingConfirmed: t.standingConfirmed,

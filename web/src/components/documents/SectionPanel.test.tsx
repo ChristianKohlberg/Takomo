@@ -72,6 +72,41 @@ function panel(over: Partial<Parameters<typeof SectionPanel>[0]> = {}) {
 }
 
 describe('SectionPanel', () => {
+  it('keeps pending work visible while its compact action menu opens and closes', () => {
+    panel({ pending: 2 })
+    const menu = screen.getByRole('button', { name: 'Section actions' })
+    const pending = screen.getByText('◆ 2 waiting')
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(menu)
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.pointerDown(screen.getByText('⌖ Show it on the map'))
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.keyDown(screen.getByText('⌖ Show it on the map'), { key: 'Escape' })
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(menu)
+    expect(pending.isConnected).toBe(true)
+    fireEvent.click(menu)
+    fireEvent.pointerDown(document.body)
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes the open menu on Escape typed elsewhere without pulling focus away from there', () => {
+    panel()
+    const input = document.createElement('input')
+    document.body.append(input)
+    try {
+      const menu = screen.getByRole('button', { name: 'Section actions' })
+      fireEvent.click(menu)
+      expect(menu.getAttribute('aria-expanded')).toBe('true')
+      input.focus()
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(menu.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(input)
+    } finally {
+      input.remove()
+    }
+  })
+
   it('heads the section with its address and its title, at its level', () => {
     panel()
     expect(screen.getByText('2.1')).toBeTruthy()
@@ -238,5 +273,49 @@ describe('SectionPanel depth', () => {
   it('still marks a deep section with its semantic heading level', () => {
     panel({ depth: 4 })
     expect(screen.getByRole('heading', { level: 5 }).textContent).toBe('Versioning')
+  })
+})
+
+describe('SectionPanel after a move', () => {
+  // Moving a section from the outline changes its depth without remounting the
+  // panel, so the heading element changes level in place. The title must come
+  // with it: the outline kept reading "integrations" while the panel showed the
+  // untitled placeholder until the page was reloaded.
+  const element = (depth: number) => (
+    <SectionPanel
+      number={depth === 0 ? '2' : '1.3'}
+      depth={depth}
+      title="integrations"
+      standing="unseen"
+      entries={[]}
+      historyOpen={false}
+      onToggleHistory={() => {}}
+      onReview={() => {}}
+      onShowOnMap={() => {}}
+      onTitle={async () => {}}
+      canWrite
+      labels={labels}
+    >
+      <p>prose</p>
+    </SectionPanel>
+  )
+
+  it('keeps the title in the editable heading when its depth changes', () => {
+    const { rerender } = render(element(0))
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('integrations')
+    rerender(element(1))
+    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('integrations')
+  })
+
+  it('keeps the title for a reader too, whose heading is not editable', () => {
+    const readerElement = (depth: number) => (
+      <SectionPanel number="2" depth={depth} title="integrations" standing="unseen" entries={[]} historyOpen={false}
+        onToggleHistory={() => {}} onReview={() => {}} onShowOnMap={() => {}} canWrite={false} labels={labels}>
+        <p>prose</p>
+      </SectionPanel>
+    )
+    const { rerender } = render(readerElement(0))
+    rerender(readerElement(1))
+    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('integrations')
   })
 })

@@ -1,3 +1,4 @@
+import { createStructureHistory } from '@/lib/plan-structure'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 import { AppShell } from '@/components/AppShell'
@@ -96,6 +97,7 @@ function SpecificationWorkspace({
   const navigate = useNavigate()
   const location = useLocation()
   const view = specificationView(location.search)
+  const [focusMode, setFocusMode] = useState(false)
   const query = new URLSearchParams(location.search)
   const [section] = useWorkspaceSection()
   const panel = query.get('panel') === 'tests' && view !== 'tests'
@@ -224,6 +226,13 @@ function SpecificationWorkspace({
     }
   }, [token, mapId, onError])
   const connection = useSyncConnection(session, onError, setSaveState)
+  const [structureHistory, setStructureHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
+  useEffect(() => {
+    if (!connection) { setStructureHistory(null); return }
+    const history = createStructureHistory(connection.ydoc)
+    setStructureHistory(history)
+    return () => history.destroy()
+  }, [connection])
   useEffect(() => {
     if (!connection || !session) {
       setNodes([])
@@ -306,6 +315,8 @@ function SpecificationWorkspace({
   const selected = nodes.find((node) => node.id === section)
   const context = useMemo(
     () => ({
+      focusMode: focusMode && view === 'document',
+      structureHistory,
       token,
       lang,
       project,
@@ -329,6 +340,7 @@ function SpecificationWorkspace({
       nodes,
     }),
     [
+      focusMode, view, structureHistory,
       token,
       lang,
       project,
@@ -383,6 +395,7 @@ function SpecificationWorkspace({
     <SpecificationContext value={context}>
       <ProjectUpdatesContext value={updates}>
         <AppShell
+          hideRail={focusMode && view === 'document'}
           lang={lang}
           onLang={(value) => {
             setLang(value)
@@ -436,6 +449,12 @@ function SpecificationWorkspace({
               />
             }
           >
+            {view === 'document' && <button type="button" aria-pressed={focusMode}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setFocusMode((value) => !value)}
+              className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted">
+              {focusMode ? (lang === 'de' ? 'Fokusmodus verlassen' : 'Exit focus mode') : (lang === 'de' ? 'Fokusmodus' : 'Focus mode')}
+            </button>}
             {session && <SaveStatus state={saveState} lang={lang} />}
             {map && <Suspense fallback={null}><History /></Suspense>}
             {peers.length > 0 && (
