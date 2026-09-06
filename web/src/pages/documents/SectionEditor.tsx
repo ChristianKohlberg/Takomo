@@ -22,9 +22,11 @@
 // yields nothing. So a remote caret is drawn in the section that person is
 // actually typing in, and nowhere else, with no coordination between the mounted
 // editors at all.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useId } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { TableKit } from '@tiptap/extension-table'
+import { SlashInsert, type SlashMatch } from '@/lib/slash-insert'
+import { SlashMenu } from './SlashMenu'
 import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
 import type { Locale } from '@/lib/i18n'
@@ -99,6 +101,9 @@ export default function SectionEditor({
   onInsertSection,
   locale = 'en',
 }: SectionEditorProps) {
+  const [slash, setSlash] = useState<SlashMatch | null>(null)
+  const slashKeys = useRef<((event: KeyboardEvent) => boolean) | null>(null)
+  const slashId = useId()
   const insertSection = useRef(onInsertSection)
   insertSection.current = onInsertSection
   const dirty = useRef(false)
@@ -119,6 +124,7 @@ export default function SectionEditor({
         // somebody else's sentence.
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
         MermaidCodeBlock,
+        SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
         TableKit.configure({ table: { resizable: true } }),
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
@@ -220,5 +226,6 @@ export default function SectionEditor({
   return <>
     {canWrite && <TableToolbar editor={editor} labels={STR[locale]} disabled={false} />}
     <EditorContent editor={editor} />
+    {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} />}
   </>
 }

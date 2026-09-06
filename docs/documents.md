@@ -271,3 +271,18 @@ or a rectangular Markdown pipe table with a header separator (`---`). Use HTML f
 cells and rich content; pipe cell text is plain text. Replacing a table remains a whole-block
 proposal and requires acceptance, just like replacing a paragraph. Cell-level proposal diffs
 and spreadsheet formulas are not provided.
+
+## Insert blocks while writing
+
+In an empty paragraph in a section, type `/` to open the block menu and keep typing to
+filter it. Arrow keys select a result; Enter inserts it; Escape closes the menu while
+leaving the typed text intact. Headings, lists, quotes, code, tables and Mermaid diagrams
+use the editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or
+Escape returns to the command menu. Mermaid starts with its editable source visible.
+Ordinary slashes in prose or code keep their normal meaning. The existing `#`/`##` heading
+shortcuts and heading-to-section behavior continue to work.
+
+The menu state is local to the editor. Typed `/query` remains document text until a choice
+replaces it, and insertion uses the current section's normal collaboration and undo path.
+If the trigger is removed or the caret leaves it, the menu closes. A stale choice cannot
+replace text changed by another collaborator. Read-only viewers have no insertion menu.
