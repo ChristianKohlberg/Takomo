@@ -2294,6 +2294,7 @@ impl TakomoMcp {
 
         Ok(json!({
             "document": doc.to_json(),
+            "default_writing_instruction": self.state.store.default_writing_instruction(&doc.project)?,
             "markdown": markdown,
             "blocks": blocks,
             "pending_proposals": pending,
@@ -2391,6 +2392,7 @@ impl TakomoMcp {
         Ok(json!({
             "ok": true,
             "mindmap": map.to_json(),
+            "default_writing_instruction": self.state.store.default_writing_instruction(&map.project)?,
             "note": format!(
                 "Grow it with takomo_mindmap_grow {{ id: \"{}\", nodes: [{{ text: \"…\" }}, …] }} — a whole branch per call while the conversation is still going. Keep each node to a sentence or two; when a branch turns out to matter, takomo_mindmap_promote it to an epic or an initiative.",
                 map.id
@@ -2425,6 +2427,7 @@ impl TakomoMcp {
             "mindmap": a.id,
             "node": a.node,
             "markdown": markdown,
+            "default_writing_instruction": self.state.store.default_writing_instruction(&map.project)?,
             "note": "Answer with takomo_plan_propose against the block ids above. Nothing you \
                      send goes live until a person accepts it.",
         }))
@@ -2586,6 +2589,7 @@ impl TakomoMcp {
         Ok(json!({
             "ok": true,
             "nodes": nodes,
+            "default_writing_instruction": self.state.store.default_writing_instruction(&map.project)?,
             "note": "Hang the next round under these by passing their ids as `parent`.",
         }))
     }
@@ -2623,6 +2627,7 @@ impl TakomoMcp {
             "ok": true,
             "mindmap": map.to_json(),
             "outline": outline,
+            "default_writing_instruction": self.state.store.default_writing_instruction(&map.project)?,
             // The ids alongside the text, because reading a map is usually the step
             // before adding to it and every add needs a parent id.
             "nodes": nodes,
@@ -4106,6 +4111,7 @@ impl TakomoMcp {
             "workflow": wf,
             "question_language": lang,
             "style_guide": style,
+            "default_writing_instruction": self.state.store.default_writing_instruction(project)?,
             "answer_link_ttl_seconds": link_ttl,
             "claim_ttl_seconds": claim_ttl,
             "max_claim_ttl_seconds": max_claim_ttl,

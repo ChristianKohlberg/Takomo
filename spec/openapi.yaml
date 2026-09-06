@@ -1258,6 +1258,45 @@ paths:
         "403": { description: Token lacks the admin scope or the named project }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /projects/{project}/writing-instructions:
+    parameters: [ { $ref: "#/components/parameters/project" } ]
+    get:
+      tags: [workflow]
+      summary: Read the project's named writing instructions (read scope)
+      responses:
+        "200":
+          description: Project-owned instructions and optional default; initially empty.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WritingInstructions" }
+        "403": { description: Missing read scope or project access }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [workflow]
+      summary: Replace the project's named writing instructions and default (admin scope)
+      description: |
+        Instructions are advisory text, never predefined outlines. An explicit user
+        request takes precedence. No named instruction is applied when default_id
+        is null. The existing style_guide remains independent. Names and bodies
+        are trimmed before counting Unicode characters. Removing a selected
+        instruction requires changing or clearing default_id in the same request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WritingInstructions" }
+      responses:
+        "200":
+          description: Saved instructions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WritingInstructions" }
+        "400": { description: "Missing or unknown fields, or incorrect types" }
+        "403": { description: Missing admin scope or project access }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: Project is archived }
+        "422": { description: "Invalid lengths, duplicate ids, or default_id outside templates" }
+
   /projects/{project}/style:
     put:
       tags: [workflow]
@@ -7056,6 +7095,27 @@ components:
         expires_at: { type: string, format: date-time }
         url: { type: string, description: WebSocket base path without the room. }
         room: { type: string }
+
+    WritingInstruction:
+      type: object
+      additionalProperties: false
+      required: [id, name, instruction]
+      properties:
+        id: { type: string, minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9_-]+$' }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        instruction: { type: string, minLength: 1, maxLength: 4000 }
+    WritingInstructions:
+      type: object
+      additionalProperties: false
+      required: [templates, default_id]
+      properties:
+        templates:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/WritingInstruction" }
+        default_id:
+          type: [string, "null"]
+          description: An id in templates, or null to apply no named instruction.
 
     Project:
       type: object

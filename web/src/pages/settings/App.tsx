@@ -43,6 +43,7 @@ import {
 import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
+import { WritingInstructions } from '@/components/settings/WritingInstructions'
 import { PromptDialog } from '@/components/settings/PromptDialog'
 import { WorkflowEditor } from '@/components/settings/workflow/WorkflowEditor'
 import { TokenList } from '@/components/settings/TokenList'
@@ -697,6 +698,8 @@ export function App() {
               ) : selected ? (
                 <ProjectDetail
                   project={selected}
+                  writingSlot={<WritingInstructions token={token} project={selected.id}
+                    readOnly={!isAdmin || selected.archived === true} lang={lang} />}
                   workflowSlot={
                     projectWorkflow && (
                       <WorkflowEditor

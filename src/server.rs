@@ -202,6 +202,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(axum::routing::delete(crate::api::tags::delete)),
         )
         .route(
+            "/v1/projects/{project}/writing-instructions",
+            get(crate::api::projects::get_writing_instructions)
+                .put(crate::api::projects::put_writing_instructions),
+        )
+        .route(
             "/v1/projects/{project}/style",
             put(crate::api::projects::put_style),
         )

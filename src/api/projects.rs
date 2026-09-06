@@ -503,3 +503,39 @@ fn parse_workflow(raw: &Value) -> ApiResult<Workflow> {
         )
     })
 }
+
+/// Project-owned named instructions; replacing the collection also sets its default.
+pub async fn get_writing_instructions(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+) -> ApiResult<Json<crate::store::WritingInstructions>> {
+    ctx.require_scope("read")?;
+    ctx.require_project(&project)?;
+    Ok(Json(state.store.writing_instructions(&project)?))
+}
+
+pub async fn put_writing_instructions(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(project): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<crate::store::WritingInstructions>> {
+    ctx.require_scope("admin")?;
+    ctx.require_project(&project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["templates", "default_id"])?;
+    if !obj.contains_key("templates") || !obj.contains_key("default_id") {
+        return Err(ApiError::bad_request(
+            "validation.field_required",
+            "templates and default_id are required; use null for no default.",
+        ));
+    }
+    let settings = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("validation.field_type", e.to_string()))?;
+    let settings = state
+        .store
+        .put_writing_instructions(&project, settings, &ctx.actor)?;
+    state.wake();
+    Ok(Json(settings))
+}
