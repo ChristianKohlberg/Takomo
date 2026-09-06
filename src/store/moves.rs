@@ -385,10 +385,6 @@ impl Store {
                     "UPDATE agent_conversations SET project = ?2 WHERE ticket = ?1",
                     params![id, req.to_project],
                 )?;
-                tx.execute(
-                    "UPDATE bug_triage SET duplicate_of = NULL, triage = CASE WHEN triage = 'duplicate' THEN 'needs_triage'                      ELSE triage END WHERE (ticket = ?1 OR duplicate_of = ?1) AND duplicate_of IS NOT NULL AND                      (SELECT project FROM tickets WHERE id = bug_triage.ticket) !=                      (SELECT project FROM tickets WHERE id = bug_triage.duplicate_of)",
-                    params![id],
-                )?;
                 // An answer grant is a credential scoped to one question, and its
                 // `project` is what the grant reports and is filtered by; it has
                 // to follow the question it belongs to.
@@ -453,6 +449,9 @@ impl Store {
                 });
             }
 
+            for id in moving.iter() {
+                super::bugs::detach_cross_project_duplicates(tx, id)?;
+            }
             // Children left behind by a moving parent. With `descendants: true`
             // there are none — the subtree came along — so this is the
             // `descendants: false` case: the epic goes, its children stay and

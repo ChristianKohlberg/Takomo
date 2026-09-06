@@ -1050,6 +1050,7 @@ impl Store {
             // `mindmaps.project` has no ON DELETE CASCADE, so with foreign keys
             // on, a project holding a map would otherwise abort the whole delete.
             tx.execute("DELETE FROM mindmaps WHERE project = ?1", params![id])?;
+            super::bugs::detach_duplicates_targeting_project(tx, id)?;
             tx.execute("DELETE FROM tickets WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM tags WHERE project = ?1", params![id])?;
             tx.execute("DELETE FROM workflow_states WHERE project = ?1", params![id])?;

@@ -15,8 +15,11 @@ not-a-bug decisions record a reviewer and rationale without closing the ticket.
 
 The CLI returns server JSON for bug commands. Stable request IDs let callers retry
 an unconfirmed submission without duplicating a report, run or steering message.
-A **new** ID means a deliberate new request. Research is never a side effect of
-intake, reads, triage updates or process recovery.
+A **new** ID means a deliberate new request. A research request sent while a run
+is already active joins that run, and its ID is remembered, so replaying it after
+the run finishes returns the same history rather than starting another run.
+Research is never a side effect of intake, reads, triage updates or process
+recovery.
 
 ```sh
 takomo bug new 'Incorrect receipt total' --project retail \

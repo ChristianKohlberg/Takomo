@@ -682,7 +682,7 @@ paths:
     post:
       operationId: startBugResearch
       summary: Explicitly request research or retry with a new request ID
-      description: Write scope. Requires enabled project configuration. Captures authoritative ticket snapshot and repository reference. Duplicate active requests reuse the active attempt. Queues up to 100 pending/running jobs per project; at most two run at once, with a 15 minute deadline. No automatic retries or code changes. Completion marks only triage ready_for_review.
+      description: Write scope. Requires enabled project configuration. Captures authoritative ticket snapshot and repository reference. A request made while research is active joins the active run and its request_id is remembered, so a replay after completion returns that run instead of starting another; only a new request_id starts new research. Queues up to 100 pending/running jobs per project; at most two run at once, with a 15 minute deadline. No automatic retries or code changes. Completion marks only triage ready_for_review.
       requestBody:
         required: true
         content:

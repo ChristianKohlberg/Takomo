@@ -528,6 +528,37 @@ async fn moving_a_bug_across_projects_keeps_research_and_triage_consistent() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["triage"], "needs_triage");
     assert!(v["duplicate_of"].is_null(), "{v}");
+    let pair_a = bug(&app, "Pair A").await;
+    let pair_b = bug(&app, "Pair B").await;
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{pair_a}"),
+            json!({"triage":"duplicate","duplicate_of":pair_b}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({"tickets":[pair_a,pair_b],"to_project":"beta"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = app.get(&beta_reader, &format!("/v1/bugs/{pair_a}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["triage"], "duplicate");
+    assert_eq!(v["duplicate_of"], pair_b);
+    let (s, v) = app
+        .patch(
+            &beta_reader,
+            &format!("/v1/bugs/{pair_a}"),
+            json!({"severity":"low"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["duplicate_of"], pair_b);
     let tp_runner = app.mint("agent:tp", &["agent:run"], Some(&["tp"]));
     assert!(claim(&app, &tp_runner, "tp-worker").await.is_null());
     let beta_runner = app.mint("agent:beta", &["agent:run"], Some(&["beta"]));
@@ -539,12 +570,114 @@ async fn moving_a_bug_across_projects_keeps_research_and_triage_consistent() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["total"], 1);
     assert_eq!(v["counts"]["cancelled"], 0);
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{stays}"),
+            json!({"triage":"duplicate","duplicate_of":pair_a}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let late = bug(&app, "Late duplicate").await;
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute(
+        "INSERT INTO bug_triage(ticket,triage,severity,duplicate_of) VALUES(?1,'duplicate','unknown',?2)",
+        [&late, &pair_a],
+    )
+    .unwrap();
+    drop(conn);
     let (s, v) = app.delete(&app.admin, "/v1/projects/beta?force=true").await;
     assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
     let (s, v) = app.get(&app.worker, "/v1/bugs").await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 2);
+    let (s, v) = app.get(&app.worker, &format!("/v1/bugs/{late}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["triage"], "needs_triage");
+    assert!(v["duplicate_of"].is_null(), "{v}");
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{late}"),
+            json!({"severity":"high"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["severity"], "high");
+}
+#[tokio::test]
+async fn coalesced_request_ids_replay_to_the_run_they_joined() {
+    let app = TestApp::spawn_without_sweeper().await;
+    configure(&app).await;
+    let id = bug(&app, "Coalesced").await;
+    let first = start(&app, &id, "r1").await;
+    let joined = app
+        .post(
+            &app.worker,
+            &format!("/v1/bugs/{id}/research"),
+            json!({"request_id":"r2"}),
+        )
+        .await;
+    assert_eq!(joined.0, StatusCode::OK, "{}", joined.1);
+    assert_eq!(joined.1["total"], 1);
+    assert_eq!(joined.1["jobs"][0]["id"], first["id"]);
+    let runner = app.mint("agent:research", &["agent:run"], Some(&["tp"]));
+    let claimed = claim(&app, &runner, "local").await;
+    assert_eq!(claimed["id"], first["id"]);
+    let endpoint = format!("/v1/agent-jobs/{}", first["id"].as_str().unwrap());
+    let (s, v) = app
+        .post(
+            &runner,
+            &format!("{endpoint}/result"),
+            json!({"service_id":"local","attempt_id":claimed["attempt_id"],"thread_id":"thread","turn_id":"turn","status":"completed","message":"Done.","repository_revision":"abc","evidence":{"runtime_reproduced":false,"inspected":[]}}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let replay = app
+        .post(
+            &app.worker,
+            &format!("/v1/bugs/{id}/research"),
+            json!({"request_id":"r2"}),
+        )
+        .await;
+    assert_eq!(replay.0, StatusCode::OK, "{}", replay.1);
+    assert_eq!(replay.1["total"], 1);
+    assert_eq!(replay.1["jobs"][0]["id"], first["id"]);
+    assert_eq!(replay.1["jobs"][0]["status"], "completed");
+    let (s, v) = app
+        .post(
+            &app.worker,
+            &format!("/v1/bugs/{id}/research"),
+            json!({"request_id":"r2","message":"Something else"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, v) = app
+        .post(
+            &app.worker,
+            &format!("/v1/bugs/{id}/research"),
+            json!({"request_id":"r1"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["total"], 1);
-    assert_eq!(v["items"][0]["ticket"]["id"], stays);
+    let fresh = start(&app, &id, "r3").await;
+    assert_ne!(fresh["id"], first["id"]);
+    assert_eq!(fresh["status"], "queued");
+    let (s, v) = app
+        .get(&app.worker, &format!("/v1/bugs/{id}/research"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 2);
+    let (s, v) = app
+        .post(
+            &app.worker,
+            &format!("/v1/bugs/{id}/research"),
+            json!({"request_id":"r2"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 2);
 }
 #[tokio::test]
 async fn deleting_a_duplicate_target_project_clears_the_pointer_after_schema_rebuild() {
@@ -583,6 +716,17 @@ async fn deleting_a_duplicate_target_project_clears_the_pointer_after_schema_reb
     let (s, v) = app.get(&app.worker, &format!("/v1/bugs/{pointer}")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["duplicate_of"].is_null(), "{v}");
+    assert_eq!(v["triage"], "needs_triage");
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{pointer}"),
+            json!({"severity":"high"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["severity"], "high");
+    assert_eq!(v["triage"], "needs_triage");
     assert_eq!(
         app.get(&app.worker, &format!("/v1/bugs/{target}")).await.0,
         StatusCode::NOT_FOUND

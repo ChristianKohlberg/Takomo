@@ -48,7 +48,10 @@ pub fn migrate(conn: &Connection) -> ApiResult<()> {
                 0,repository_revision TEXT,evidence TEXT); CREATE TABLE IF NOT EXISTS agent_steering(id INTEGER PRIMARY
                 KEY AUTOINCREMENT,job TEXT NOT NULL REFERENCES agent_jobs(id) ON DELETE CASCADE,actor TEXT NOT
                 NULL,request_id TEXT NOT NULL,message TEXT NOT NULL,created_at INTEGER NOT
-                NULL,UNIQUE(job,actor,request_id));",
+                NULL,UNIQUE(job,actor,request_id)); CREATE TABLE IF NOT EXISTS bug_research_requests(ticket TEXT NOT NULL
+                REFERENCES tickets(id) ON DELETE CASCADE,actor TEXT NOT NULL,request_id TEXT NOT NULL,job TEXT NOT NULL
+                REFERENCES agent_jobs(id) ON DELETE CASCADE,prompt TEXT NOT NULL,created_at INTEGER NOT
+                NULL,PRIMARY KEY(ticket,actor,request_id));",
     )?;
     let duplicate_rule: Option<String> = conn
         .query_row(
@@ -136,6 +139,27 @@ fn ticket(conn: &Connection, ctx: &AuthCtx, id: &str, write: bool) -> ApiResult<
         }
     }
     Ok(t)
+}
+const DETACH_DUPLICATE: &str =
+    "UPDATE bug_triage SET duplicate_of=NULL,triage=CASE WHEN triage='duplicate' THEN
+    'needs_triage' ELSE triage END WHERE duplicate_of IS NOT NULL AND ";
+pub(super) fn detach_cross_project_duplicates(conn: &Connection, ticket: &str) -> ApiResult<usize> {
+    Ok(conn.execute(
+        &format!(
+            "{DETACH_DUPLICATE}(ticket=?1 OR duplicate_of=?1) AND (SELECT project FROM tickets WHERE
+            id=bug_triage.ticket) IS NOT (SELECT project FROM tickets WHERE id=bug_triage.duplicate_of)"
+        ),
+        [ticket],
+    )?)
+}
+pub(super) fn detach_duplicates_targeting_project(
+    conn: &Connection,
+    project: &str,
+) -> ApiResult<usize> {
+    Ok(conn.execute(
+        &format!("{DETACH_DUPLICATE}duplicate_of IN (SELECT id FROM tickets WHERE project=?1)"),
+        [project],
+    )?)
 }
 fn detail(conn: &Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
     describe(conn, ctx, id, true)
@@ -404,8 +428,9 @@ detail(c,ctx,id)})
                 .unwrap_or("Research this bug against the configured codebase. Record evidence, uncertainty, reproduction gaps, and recommended triage. Do not change code or ticket workflow.");
             let prior: Option<String> = c
                 .query_row(
-                    "SELECT j.prompt FROM agent_jobs j JOIN bug_research_jobs b ON b.job=j.id WHERE b.ticket=?1 AND
-                j.requested_by=?2 AND j.request_id=?3",
+                    "SELECT prompt FROM (SELECT j.prompt FROM agent_jobs j JOIN bug_research_jobs b ON b.job=j.id WHERE
+                b.ticket=?1 AND j.requested_by=?2 AND j.request_id=?3 UNION ALL SELECT prompt FROM bug_research_requests
+                WHERE ticket=?1 AND actor=?2 AND request_id=?3) LIMIT 1",
                     params![id, ctx.actor, r.request_id],
                     |r| r.get(0),
                 )
@@ -428,13 +453,20 @@ detail(c,ctx,id)})
             if active >= 100 {
                 return Err(conflict("This project has reached 100 queued or running bug research jobs. Wait or cancel one."));
             }
-            let busy: bool = c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM bug_research_jobs b JOIN agent_jobs j ON j.id=b.job WHERE b.ticket=?1 AND
-                j.status IN ('queued','running'))",
-                [id],
-                |r| r.get(0),
-            )?;
-            if busy {
+            let busy: Option<String> = c
+                .query_row(
+                    "SELECT b.job FROM bug_research_jobs b JOIN agent_jobs j ON j.id=b.job WHERE b.ticket=?1 AND
+                j.status IN ('queued','running') ORDER BY j.rowid DESC LIMIT 1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(active_job) = busy {
+                c.execute(
+                    "INSERT OR IGNORE INTO bug_research_requests(ticket,actor,request_id,job,prompt,created_at)
+                VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![id, ctx.actor, r.request_id, active_job, prompt, now_ms()],
+                )?;
                 return research(c, ctx, id);
             }
             let turns: i64 = c.query_row("SELECT COUNT(*) FROM bug_research_jobs WHERE ticket=?1", [id], |r| r.get(0))?;
