@@ -4,13 +4,40 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: Validation scope
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$EVENT" == schedule || "$EVENT" == workflow_dispatch ]]; then
+            echo 'full=true' >> "$GITHUB_OUTPUT"
+          else
+            full=$(./scripts/ci-full-required.sh "$BASE_SHA")
+            echo "full=$full" >> "$GITHUB_OUTPUT"
+          fi
+
   agent-service:
     name: Codex agent service protocol tests
     runs-on: ubuntu-latest
@@ -22,12 +49,22 @@ jobs:
       - run: node --test services/agent/test/*.test.mjs
 
   rust:
-    needs: web
+    needs: [web, scope]
+    if: ${{ !cancelled() }}
     name: Rust (build · clippy · fmt · test)
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
     steps:
+      - name: Upstream jobs succeeded
+        if: needs.web.result != 'success' || needs.scope.result != 'success'
+        env:
+          WEB_RESULT: ${{ needs.web.result }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: |
+          echo "::error::cannot run Rust checks: web=$WEB_RESULT scope=$SCOPE_RESULT"
+          exit 1
+
       - uses: actions/checkout@v4
 
       - name: Download frontend build
@@ -47,14 +84,22 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # Keep the existing check name for branch-protection compatibility.
+      # Full runs also compile the shipping binary and use release-profile tests.
       - name: Build (release)
-        run: cargo build --release
+        if: needs.scope.outputs.full == 'true'
+        run: cargo build --release --locked
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Test (debug)
+        if: needs.scope.outputs.full != 'true'
+        run: cargo test --locked
+
       - name: Test (release)
-        run: cargo test --release
+        if: needs.scope.outputs.full == 'true'
+        run: cargo test --release --locked
 
   deps:
     name: No unused dependencies
@@ -98,6 +143,9 @@ jobs:
       # is covered by existing, rather than by remembering.
       - name: ShellCheck
         run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
+
+      - name: CI scope behavior
+        run: python3 scripts/test-ci-full-required.py
 
   copies:
     name: Duplicated files stay in sync
@@ -212,6 +260,8 @@ jobs:
           retention-days: 7
 
   docker:
+    needs: scope
+    if: needs.scope.outputs.full == 'true'
     name: Docker image (builds · serves every page)
     runs-on: ubuntu-latest
     steps:
@@ -232,7 +282,7 @@ jobs:
       - name: It serves every page
         run: |
           docker run -d --name takomo-ci -p 8080:8080 takomo-ci
-          for i in $(seq 1 30); do
+          for _attempt in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
             sleep 1
           done

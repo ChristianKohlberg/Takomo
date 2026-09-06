@@ -49,10 +49,10 @@ lease with `--ttl` and the store stays yours.
 
 ```sh
 ./scripts/build.sh                                       # frontend + embedded Rust binary
-cargo test --release                                     # unit + tests/api.rs + tests/mcp.rs
-cargo test --release --test api <substring>               # ONE integration test
-cargo test --release --test api <substring> -- --nocapture
-cargo test --release --lib <substring>                    # ONE unit test
+cargo test --locked                                      # fast profile: unit + tests/api.rs + tests/mcp.rs
+cargo test --test api <substring>                         # ONE integration test
+cargo test --test api <substring> -- --nocapture
+cargo test --lib <substring>                              # ONE unit test
 cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
@@ -81,11 +81,12 @@ four tokens (`admin`/`human`/`worker`/`worker2`), and serves on an ephemeral por
 the real HTTP surface over `reqwest`. Only `src/workflow.rs` and `src/seed.rs` carry `#[cfg(test)]`
 units — anything touching the HTTP surface belongs in `tests/`.
 
-**There is no in-session gate runner. CI is the only wall**, so run the commands above yourself
-before wrapping up — `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --release`,
-and the `web/` gates. Two conventions that used to have their own detectors are now yours to keep:
-a new or changed HTTP route ships with an integration test, and with an `spec/openapi.yaml` update.
-Nothing will remind you.
+**Choose checks by impact and exposure**, following [docs/validation.md](docs/validation.md).
+Small, low-risk tasks use focused checks without no-mistakes by default. Larger
+features run it once at integration; releases and high-risk work use the full
+pipeline. Do not repeat the full suite or browser evidence after every tweak.
+A changed HTTP route still needs a behavioral integration test and its
+`spec/openapi.yaml` update.
 
 ### Verify a branch in a worktree, not in a dirty tree
 
@@ -105,9 +106,15 @@ git worktree add --detach /tmp/verify <sha>
 # Private target dir, deliberately — a shared one makes this result untrustworthy
 # whenever another session is building. See "Share one target/" below.
 cd /tmp/verify && export CARGO_TARGET_DIR=/tmp/verify-target
-cargo test --release && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cargo test --locked && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 git worktree remove /tmp/verify && rm -rf /tmp/verify-target
 ```
+
+That is the debug profile, the same one ordinary PR and main CI runs — measured locally on this
+repo, a cold `cargo test --locked` took 83 s against 313 s for `cargo test --release --locked`, and
+the two run the same 569 tests. Release or high-risk work (see `docs/validation.md`) adds
+`cargo test --release --locked` in the same worktree, because that is the profile the full CI lane
+and the shipped binary use.
 
 A worktree is also the way to merge or rebase at all when the tree is dirty: `git merge` refuses if
 any file it must touch has local changes, and stashing someone else's work in order to proceed risks
@@ -169,7 +176,7 @@ especially the clean-worktree verification above — must not share a target dir
 building session. Give that one run a private dir:
 
 ```sh
-cd /tmp/verify && CARGO_TARGET_DIR=/tmp/verify-target cargo test --release
+cd /tmp/verify && CARGO_TARGET_DIR=/tmp/verify-target cargo test --locked
 ```
 
 It costs a full cold build, which is the price of an answer that is about your branch. CI is the

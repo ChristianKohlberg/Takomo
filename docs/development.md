@@ -4,11 +4,13 @@ Takomo is a Rust + axum server (single binary), a `bash` CLI, and a TypeScript M
 
 ## Build, test, lint
 
-CI runs the same gates on every push and PR ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) — keep them green:
+Choose proportionate local checks using [Validation by impact and exposure](validation.md).
+CI runs a fast lane on ordinary PRs/main pushes and full release/packaging checks
+nightly, manually before release, and for packaging changes ([workflow](../.github/workflows/ci.yml)).
 
 ```sh
 ./scripts/build.sh                                 # Node 22 frontend, then Rust binary
-cargo test --release                               # integration suite (spawns real servers on ephemeral ports)
+cargo test --locked                                # fast integration suite (spawns real servers on ephemeral ports)
 cargo clippy --all-targets -- -D warnings          # lint, warnings-as-errors
 cargo fmt                                           # format (rustfmt.toml); CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh    # shell lint
