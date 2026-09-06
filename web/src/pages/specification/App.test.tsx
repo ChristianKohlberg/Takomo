@@ -172,6 +172,25 @@ describe('opening a project specification', () => {
     },
   )
 
+  it('opens an archived project without a map as read-only instead of loading forever', async () => {
+    api.listProjects.mockResolvedValue([{ id: 'vetbill', name: 'VetBill', archived: true }])
+    mount()
+    await screen.findByText(/This project is archived/)
+    expect(api.listMindmaps).toHaveBeenCalled()
+    expect(api.createMindmap).not.toHaveBeenCalled()
+    expect(api.toast).not.toHaveBeenCalled()
+  })
+
+  it('treats an archive refusal on first visit as read-only rather than an error', async () => {
+    api.createMindmap.mockRejectedValue(Object.assign(new Error('frozen'), { status: 409, code: 'project.archived' }))
+    mount()
+    await screen.findByText(/This project is archived/)
+    expect(api.createMindmap).toHaveBeenCalledOnce()
+    expect(api.mintMindmapSession).not.toHaveBeenCalled()
+    expect(api.toast).not.toHaveBeenCalled()
+    expect(screen.queryByText('Loading specification…')).toBeNull()
+  })
+
   it('does not ask a reader to create a missing specification', async () => {
     api.whoami.mockResolvedValue({ actor: 'reader', scopes: ['read'] })
     mount()

@@ -13,6 +13,8 @@ import * as Y from 'yjs'
 
 import SectionEditor from './SectionEditor'
 import type { Editor } from '@tiptap/react'
+import { readPlanTree } from '@/lib/mindmap-crdt'
+import { insertPlanSection } from '@/lib/plan-insert'
 
 /** A node with prose in it, as `createNode` and the server both write one. */
 function section(doc: Y.Doc, id: string, text: string): Y.XmlFragment {
@@ -66,6 +68,26 @@ describe('SectionEditor', () => {
     expect(insert).toHaveBeenCalledWith(2, 'Invoices')
     expect(fragment.toString()).toContain('Keep this paragraph.')
     expect(fragment.toString()).not.toContain('Invoices')
+    awareness.destroy()
+  })
+
+  it('leaves an empty final heading to the editor rather than creating an untitled section', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Keep this paragraph.')
+    const awareness = new Awareness(doc)
+    let editor: Editor | null = null
+    render(<SectionEditor ydoc={doc} fragment={fragment}
+      provider={{ awareness } as unknown as WebsocketProvider}
+      display="Ada" color="#2563eb" canWrite onSettled={() => {}}
+      onEditor={(value) => { editor = value }} label="Section heading"
+      onInsertSection={(level, title) => insertPlanSection(doc, 'mn-1', level, title, 'Ada') !== null} />)
+    act(() => {
+      editor!.commands.insertContentAt(editor!.state.doc.content.size, { type: 'heading', attrs: { level: 1 } })
+      editor!.commands.focus('end')
+    })
+    fireEvent.keyDown(screen.getByLabelText('Section heading'), { key: 'Enter' })
+    expect(readPlanTree(doc).map((node) => node.id)).toEqual(['mn-1'])
+    expect(fragment.toString()).toContain('Keep this paragraph.')
     awareness.destroy()
   })
 

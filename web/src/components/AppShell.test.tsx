@@ -4,20 +4,25 @@ import { AppShell } from './AppShell'
 import { AppHeader } from './AppHeader'
 import { listQuestions } from '@/lib/questions'
 import { loadToken } from '@/lib/session'
+import { api } from '@/lib/api'
+import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
 
 vi.mock('@/lib/questions', () => ({ listQuestions: vi.fn() }))
 vi.mock('@/lib/session', () => ({ loadToken: vi.fn(() => '') }))
-vi.mock('@/hooks/useProjectUpdates', () => ({ useProjectUpdates: vi.fn() }))
-beforeEach(() => { vi.mocked(loadToken).mockReturnValue(''); vi.mocked(listQuestions).mockReset() })
+vi.mock('@/lib/api', () => ({ api: vi.fn() }))
+beforeEach(() => { vi.mocked(loadToken).mockReturnValue(''); vi.mocked(listQuestions).mockReset(); vi.mocked(api).mockReset() })
 
 const nav = { specification: 'Plan', board: 'Board', inbox: 'Inbox', documents: 'Documents', initiatives: 'Initiatives', mindmaps: 'Mindmaps', schedules: 'Schedules', verification: 'Verification', environments: 'Environments' }
 
-function mount(collapsed: boolean, views = false, count: number | null = 4) {
+type Updates = { project: string; subscribe: (callback: () => Promise<unknown>) => () => void }
+
+function mount(collapsed: boolean, views = false, count: number | null = 4, updates: Updates | null = null) {
   const onLang = vi.fn()
   const onProject = vi.fn()
   const onNavigate = vi.fn()
   const onCollapsed = vi.fn()
   render(
+    <ProjectUpdatesContext value={updates}>
     <AppShell lang="en" onLang={onLang} rail={{
       nav, current: 'board', collapsed, onCollapsed, onNavigate, onProject,
       onSignOut: vi.fn(), badges: { inbox: count ?? undefined },
@@ -26,7 +31,8 @@ function mount(collapsed: boolean, views = false, count: number | null = 4) {
       project: 'one', projectLabels: { project: 'Project', search: 'Search projects', noMatch: 'No matches' },
     }}>
       <AppHeader title="Board" lang="en" onLang={vi.fn()} views={views ? <span>Plan views</span> : undefined} />
-    </AppShell>,
+    </AppShell>
+    </ProjectUpdatesContext>,
   )
   return { onProject, onNavigate, onCollapsed, onLang }
 }
@@ -83,6 +89,27 @@ describe('persistent rail navigation', () => {
     expect(listQuestions).toHaveBeenCalledWith('token', { project: 'one', status: 'open' })
     await act(async () => { resolve([]) })
     expect(screen.getByRole('img', { name: 'Inbox: 0' })).toBeTruthy()
+  })
+
+  it('never opens a project socket of its own for the badge', async () => {
+    vi.mocked(loadToken).mockReturnValue('token')
+    vi.mocked(listQuestions).mockResolvedValue([])
+    mount(false, false, null)
+    await screen.findByRole('img', { name: 'Inbox: 0' })
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the badge through a shared project subscription when the page has one', async () => {
+    vi.mocked(loadToken).mockReturnValue('token')
+    vi.mocked(listQuestions).mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'q-1' }] as never)
+    let callback: (() => Promise<unknown>) | null = null
+    const subscribe = vi.fn((fn: () => Promise<unknown>) => { callback = fn; return () => {} })
+    mount(false, false, null, { project: 'one', subscribe })
+    await screen.findByRole('img', { name: 'Inbox: 0' })
+    expect(subscribe).toHaveBeenCalledOnce()
+    await act(async () => { await callback!() })
+    expect(within(screen.getByRole('complementary')).getByText('1')).toBeTruthy()
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('removes the completion badge if a refresh fails', async () => {

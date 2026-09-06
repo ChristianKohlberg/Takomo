@@ -37,6 +37,17 @@ describe('inline document sections', () => {
     doc.destroy()
   })
 
+  it('refuses a blank or whitespace-only heading and stores a trimmed one', () => {
+    const doc = new Y.Doc()
+    expect(insertPlanSection(doc, null, 1, '', 'Ada')).toBeNull()
+    expect(insertPlanSection(doc, null, 1, ' \t ', 'Ada')).toBeNull()
+    expect(readPlanTree(doc)).toEqual([])
+    const h1 = insertPlanSection(doc, null, 1, '  Billing  ', 'Ada')!
+    expect(insertPlanSection(doc, h1, 2, '   ', 'Ada')).toBeNull()
+    expect(outline(doc)).toEqual([{ title: 'Billing', number: '1', depth: 0 }])
+    doc.destroy()
+  })
+
   it('refuses orphan headings or a boundary removed by another editor without writing', () => {
     const doc = new Y.Doc()
     expect(insertPlanSection(doc, null, 2, 'Orphan', 'Ada')).toBeNull()

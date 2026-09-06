@@ -13,6 +13,8 @@ export function insertPlanSection(
   title: string,
   by: string,
 ): string | null {
+  const heading = title.trim()
+  if (!heading) return null
   const tree = readPlanTree(doc)
   const rows = flattenSections(planSections(tree))
   const index = after === null ? -1 : rows.findIndex((row) => row.key === after)
@@ -25,7 +27,7 @@ export function insertPlanSection(
   const previous = preceding.find((row) => siblings.some((node) => node.id === row.key))
   let id: string | null = null
   doc.transact(() => {
-    id = createNode(doc, { parent, after: previous?.key, title, by })
+    id = createNode(doc, { parent, after: previous?.key, title: heading, by })
     // createNode's null anchor appends. An insertion before any sibling needs
     // the key before the first sibling instead, in this same transaction.
     if (id && !previous && siblings.length) {

@@ -417,7 +417,6 @@ function ConnectedPlan({
     setCollapsed(new Set())
     setNear((current) => current === null ? null : new Set([...current, key]))
     setSelected(key)
-    onEdited(key)
     return true
   }
 

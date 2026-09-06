@@ -10,10 +10,10 @@
 // defaults to `min-width: auto`, so a wide table or a long unbroken ticket title
 // inside it would refuse to shrink and push the page sideways instead of
 // scrolling within itself.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { listQuestions } from '@/lib/questions'
 import { loadToken } from '@/lib/session'
-import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
 import type { Locale } from '@/lib/i18n'
 import { AppNavigationContext } from './AppNavigation'
 import { NavRail, type NavRailProps } from './NavRail'
@@ -31,6 +31,7 @@ export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
   const token = loadToken()
   const project = rail.project ?? ''
   const explicitCount = rail.badges?.inbox
+  const shared = useContext(ProjectUpdatesContext)
   const [inbox, setInbox] = useState<{ scope: string; count?: number } | null>(null)
   const request = useRef(0)
   const scope = `${token}:${project}`
@@ -53,7 +54,10 @@ export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
     const timer = setInterval(refresh, 30_000)
     return () => { ++requests.current; clearInterval(timer); window.removeEventListener('focus', refresh) }
   }, [refreshInbox, token, explicitCount])
-  useProjectUpdates(explicitCount == null ? token : '', project, refreshInbox)
+  useEffect(() => {
+    if (!token || explicitCount != null || !shared || shared.project !== project) return
+    return shared.subscribe(refreshInbox)
+  }, [shared, project, token, explicitCount, refreshInbox])
   const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
     <AppNavigationContext.Provider value={navigation}>

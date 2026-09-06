@@ -53,6 +53,7 @@ const words = {
     untitled: 'Project plan',
     loading: 'Loading specification…',
     all: 'Whole specification',
+    archived: 'This project is archived: its specification can be read, but nothing can be written to it.',
     tests: 'Section tests',
     choose: 'Choose a project to open its specification.',
   },
@@ -61,6 +62,7 @@ const words = {
     untitled: 'Projektplan',
     loading: 'Spezifikation laden…',
     all: 'Gesamte Spezifikation',
+    archived: 'Dieses Projekt ist archiviert: seine Spezifikation kann gelesen, aber nicht geschrieben werden.',
     tests: 'Abschnittstests',
     choose: 'Wähle ein Projekt, um seine Spezifikation zu öffnen.',
   },
@@ -162,7 +164,8 @@ function SpecificationWorkspace({
       setScopes(who.scopes ?? [])
       setVoice(who.features?.voice === true)
       setProjects(items)
-      access.current = { canWrite: (who.scopes ?? []).includes('write'), title: items.find((item) => item.id === project)?.name || project }
+      const current = items.find((item) => item.id === project)
+      access.current = { canWrite: (who.scopes ?? []).includes('write') && current?.archived !== true, title: current?.name || project }
       await Promise.all([refreshMap(), refreshChecks()])
       if (!project && items[0]) navigate(specificationLink(items[0].id), { replace: true })
     }, abort.signal).catch((error) => {
@@ -337,7 +340,9 @@ function SpecificationWorkspace({
   const empty = (
     <main className="min-h-0 flex-1 bg-white p-5 dark:bg-card">
       {!project && <p className="text-sm text-muted-foreground">{w.choose}</p>}
-      {project && !access.current.canWrite && <p className="text-sm text-muted-foreground">{t.readOnlyBanner}</p>}
+      {project && (
+        <p className="text-sm text-muted-foreground">{scopes.includes('write') ? w.archived : t.readOnlyBanner}</p>
+      )}
     </main>
   )
   return (

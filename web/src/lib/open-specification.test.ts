@@ -35,4 +35,10 @@ describe('opening a specification', () => {
     vi.mocked(createMindmap).mockRejectedValue(error)
     await expect(openSpecification('token', map.project, map.title, true)).rejects.toBe(error)
   })
+  it('opens an archived project as a read-only empty plan instead of failing', async () => {
+    vi.mocked(listMindmaps).mockResolvedValue(page([]))
+    vi.mocked(createMindmap).mockRejectedValue({ status: 409, code: 'project.archived' })
+    expect(await openSpecification('token', map.project, map.title, true)).toBeNull()
+    expect(listMindmaps).toHaveBeenCalledOnce()
+  })
 })
