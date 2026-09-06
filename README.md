@@ -154,6 +154,8 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 
 ## Docs
 
+- [services/agent/README.md](services/agent/README.md) — connect a standalone Codex service for read-only section conversations.
+
 - [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, the follow-up thread, expertise routing, and email/Slack notifications.
 - [docs/promotions.md](docs/promotions.md) — recording that a ticket's work reached a stage (staging/production/published/…), domain-agnostic.
 - [docs/hosting.md](docs/hosting.md) — self-hosting depth: local build, TLS, and off-box backups (Litestream).

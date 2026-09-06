@@ -124,6 +124,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/users/{handle}",
             get(crate::api::users::get_one).merge(patch(crate::api::users::patch)),
         )
+        .route("/v1/mindmaps/{id}/nodes/{node}/conversation", get(crate::api::agent_chat::conversation))
+        .route("/v1/mindmaps/{id}/nodes/{node}/conversation/messages", post(crate::api::agent_chat::send))
+        .route("/v1/agent-jobs/claim", post(crate::api::agent_chat::claim))
+        .route("/v1/agent-jobs/{id}/heartbeat", post(crate::api::agent_chat::heartbeat))
+        .route("/v1/agent-jobs/{id}/result", post(crate::api::agent_chat::result))
         .route("/v1/users/{handle}/disable", post(crate::api::users::disable))
         .route("/v1/users/{handle}/enable", post(crate::api::users::enable))
         .route(
@@ -694,6 +699,11 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
                 Ok(n) if n > 0 => woke = true,
                 Ok(_) => {}
                 Err(e) => eprintln!("question sweep failed: {}", e.body.message),
+            }
+            match state.store.sweep_expired_agent_jobs() {
+                Ok(n) if n > 0 => woke = true,
+                Ok(_) => {}
+                Err(e) => eprintln!("agent job sweep failed: {}", e.body.message),
             }
             // The third pass: fire every schedule whose slot has come. Each one
             // is its own transaction, so a single corrupt cadence cannot stop

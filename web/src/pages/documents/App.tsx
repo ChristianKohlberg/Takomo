@@ -21,6 +21,7 @@ import { useSpecification } from '../specification/context'
 // owns the plan's review history and document actions.
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { SectionConversation } from '@/components/documents/SectionConversation'
 import { useToast } from '@/components/Toaster'
 import { pick } from '@/lib/i18n'
 import {
@@ -46,6 +47,7 @@ const TRACE_LIMIT = 500
 export function DocumentView() {
   const {
     token,
+    scopes,
     lang,
     project,
     map,
@@ -185,6 +187,10 @@ export function DocumentView() {
   return (
     <Plan
       key={session.session}
+      conversationFor={(node) => (
+        <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
+          canAsk={scopes.includes('human') && scopes.includes('write')} onError={handleErr} />
+      )}
       session={session}
       connection={connection}
       testsFor={testsFor}

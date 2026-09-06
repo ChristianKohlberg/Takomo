@@ -3,6 +3,7 @@
 //! kept narrow and connection-agnostic so a Postgres implementation could be
 //! added behind the same methods later.
 
+pub mod agent_chat;
 mod answer_grants;
 mod checkcollab;
 mod checklist;
@@ -161,6 +162,7 @@ impl Store {
         // `rename_lanes_to_checks`, because before that the table is `lanes`.
         add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(include_str!("agent_chat.sql"))?;
         migrate(&conn)?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
