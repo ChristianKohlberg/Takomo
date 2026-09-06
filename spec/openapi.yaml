@@ -49,13 +49,14 @@ paths:
     - name: id
       in: path
       required: true
-      schema: &id001
+      schema:
         type: string
       description: Mindmap id.
     - name: node
       in: path
       required: true
-      schema: *id001
+      schema:
+        type: string
       description: Stable section node id.
     get:
       tags:
@@ -78,13 +79,14 @@ paths:
     - name: id
       in: path
       required: true
-      schema: &id001
+      schema:
         type: string
       description: Mindmap id.
     - name: node
       in: path
       required: true
-      schema: *id001
+      schema:
+        type: string
       description: Stable section node id.
     post:
       tags:
@@ -7092,10 +7094,12 @@ components:
     AgentConversation:
       type: object
       properties:
-        id: &id001
+        id:
           type: string
-        mindmap: *id001
-        node: *id001
+        mindmap:
+          type: string
+        node:
+          type: string
         created_at:
           type: integer
       required:
@@ -7106,14 +7110,16 @@ components:
     AgentMessage:
       type: object
       properties:
-        id: &id001
+        id:
           type: string
-        job_id: *id001
+        job_id:
+          type: string
         role:
           enum:
           - user
           - assistant
-        body: *id001
+        body:
+          type: string
         created_at:
           type: integer
       required:
@@ -7125,7 +7131,7 @@ components:
     AgentJobStatus:
       type: object
       properties:
-        id: &id001
+        id:
           type: string
         status:
           type: string
@@ -7144,7 +7150,8 @@ components:
           type:
           - integer
           - 'null'
-        source_revision: *id001
+        source_revision:
+          type: string
       required:
       - id
       - status
@@ -7209,11 +7216,14 @@ components:
     AgentClaimedJob:
       type: object
       properties:
-        id: &id001
+        id:
           type: string
-        attempt_id: *id001
-        conversation_id: *id001
-        prompt: *id001
+        attempt_id:
+          type: string
+        conversation_id:
+          type: string
+        prompt:
+          type: string
         snapshot:
           type: string
           description: Authoritative section title and plain text captured when submitted; at most 100000
@@ -7245,11 +7255,14 @@ components:
           maxLength: 120
         attempt_id:
           type: string
-        thread_id: &id001
+        thread_id:
           type:
           - string
           - 'null'
-        turn_id: *id001
+        turn_id:
+          type:
+          - string
+          - 'null'
       required:
       - service_id
       - attempt_id
@@ -7262,20 +7275,27 @@ components:
           maxLength: 120
         attempt_id:
           type: string
-        thread_id: &id001
-          type: &id002
+        thread_id:
+          type:
           - string
           - 'null'
-        turn_id: *id001
+        turn_id:
+          type:
+          - string
+          - 'null'
         status:
           enum:
           - completed
           - failed
         message:
-          type: *id002
+          type:
+          - string
+          - 'null'
           description: Required for completed; 1–64000 UTF-8 bytes. Absent/null for failed.
         error:
-          type: *id002
+          type:
+          - string
+          - 'null'
           description: Required for failed; 1–4000 UTF-8 bytes. Absent/null for completed.
       required:
       - service_id
