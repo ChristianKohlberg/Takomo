@@ -346,7 +346,9 @@ spacing. Existing global templates and project overrides supply the type scale, 
 spacing and line height; there is no additional configuration layer or pagination.
 
 Select prose and choose Add comment. Threads keep the quoted passage, replies and
-open/resolved state in the shared document; Comments in the section actions opens them.
+open/resolved state in the shared document — a top-level `documentComments` map in the same
+Y.Doc as `proposals`, keyed by thread id and carrying the section id, so no route or table is
+involved (`web/src/lib/document-comments.ts`). Comments in the section actions opens them.
 Click a highlighted passage to open its discussion, or use Show text from the thread to
 locate it. Readers can see comments but cannot post, reply, resolve or reopen them. Comments
 use the same authorized connection and save status as the document and persist after reload.

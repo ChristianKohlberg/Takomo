@@ -805,9 +805,10 @@ function ConnectedPlan({
           </div>
         ) : (
           // A measure, not a width: prose running the full width of a desktop
-          // window is unreadable, and `max-w-*` cannot overflow a phone.
-          // `mx-auto` centres that measure in whatever column is left once the
-          // outline has taken its share.
+          // window is unreadable, and a `max-width` cap cannot overflow a phone.
+          // The cap and the page padding live on `.document-page` in
+          // `styles/editor.css`; `mx-auto` centres that measure in whatever
+          // column is left once the outline has taken its share.
           <div className="document-appearance document-page mx-auto min-w-0"
             style={documentAppearanceStyle(appearance)}>
             {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
