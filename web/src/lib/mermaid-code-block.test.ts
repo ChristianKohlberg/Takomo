@@ -29,6 +29,44 @@ describe('Mermaid code block view', () => {
     expect(stop).toHaveBeenCalled()
   })
 
+  it('keeps view preferences out of the document and exposes source for a read-only reader', () => {
+    localStorage.clear()
+    const editor = new Editor({
+      element: document.createElement('div'),
+      editable: false,
+      extensions: [StarterKit.configure({ codeBlock: false }), MermaidCodeBlock],
+      content: '<pre><code class="language-mermaid">flowchart TD\nA --> B</code></pre>',
+    })
+    const before = editor.getJSON()
+    const updates = vi.fn()
+    editor.on('update', updates)
+    const root = editor.view.dom
+    expect(root.querySelector('pre')?.hidden).toBe(true)
+    const buttons = Array.from(root.querySelectorAll('button'))
+    buttons.find(button => button.textContent === 'Code')!.click()
+    expect(root.querySelector('pre')?.hidden).toBe(false)
+    expect(editor.isEditable).toBe(false)
+    buttons.find(button => button.textContent === 'Diagram')!.click()
+    expect(editor.getJSON()).toEqual(before)
+    expect(updates).not.toHaveBeenCalled()
+    editor.destroy()
+    localStorage.clear()
+  })
+
+  it('opens empty Mermaid source for typing without saving an automatic preference', () => {
+    localStorage.clear()
+    const editor = new Editor({
+      element: document.createElement('div'),
+      extensions: [StarterKit.configure({ codeBlock: false }), MermaidCodeBlock],
+      content: { type: 'doc', content: [{ type: 'codeBlock', attrs: { language: 'mermaid' } }] },
+    })
+    expect(editor.view.dom.querySelector('pre')?.hidden).toBe(false)
+    editor.commands.insertContentAt(1, 'flowchart TD\nA --> B')
+    expect(editor.view.dom.querySelector('code')?.textContent).toBe('flowchart TD\nA --> B')
+    expect(localStorage.getItem('takomo.mermaid.preferences.v1')).toBeNull()
+    editor.destroy()
+  })
+
   it('leaves ordinary code blocks as source without starting Mermaid', () => {
     mount.mockClear()
     const editor = new Editor({

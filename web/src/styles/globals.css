@@ -58,6 +58,7 @@
 @source '../**/*.{ts,tsx}';
 
 @import './tokens.css';
+@import './mermaid.css';
 @import './fonts.css';
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';

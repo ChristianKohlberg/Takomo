@@ -521,7 +521,19 @@ does not need Node or a separate frontend server at runtime.
 Mermaid diagrams render in document code blocks whose language is `mermaid`,
 including proposals, and in Markdown previews with fenced `mermaid` blocks.
 In the document editor, type three backticks followed by `mermaid` and press
-Enter to start one. The diagram appears above its editable source and updates
-when typing pauses. Invalid diagrams keep their source and show an error.
+Enter to start one; empty writer blocks open Code immediately for typing.
+Existing diagrams default to Diagram, with a top-right Diagram / Code switch.
+Code stays editable for writers and readable for readers. Switching views never
+changes the shared source, block identity, or undo history. Invalid diagrams
+show an error directing the reader to Code.
+
+Inline sizes are Compact (320 px high), Comfortable (520 px high), and Original
+(intrinsic size, fitted to available width). Each preserves the entire diagram.
+Expand opens a modal preview with Fit, 100%, and zoom controls; zoomed content
+scrolls inside the overlay. Escape or Close returns focus to Expand. View and
+size preferences are stored for this browser device under
+`takomo.mermaid.preferences.v1`, separately from the collaborative document;
+controls also work when browser storage is blocked. Preferences apply to newly
+mounted diagrams, while each open diagram can be adjusted independently.
 The renderer loads only when a diagram is shown; diagrams use strict mode and
 isolated SVG images, so Mermaid click actions are intentionally unavailable.
