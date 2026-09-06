@@ -7,6 +7,147 @@ use yrs::{updates::decoder::Decode, Doc, Transact, Update};
 
 const CLAIM: &str = "/v1/agent-jobs/claim";
 
+#[tokio::test]
+async fn queue_inspection_is_project_scoped_and_does_not_expose_worker_credentials() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node, path) = fixture(&app).await;
+    let queued = send(&app, &path, "inspect", "Grill this section").await;
+    let id = queued["jobs"][0]["id"].as_str().unwrap();
+    let detail = format!("/v1/agent-jobs/{id}");
+    let reader = app.mint("human:observer", &["read"], Some(&["tp"]));
+    let outsider = app.mint("human:outsider", &["read"], Some(&["elsewhere"]));
+    let runner = runner(&app);
+    for endpoint in ["/v1/agent-jobs", detail.as_str()] {
+        assert_eq!(app.get(&runner, endpoint).await.0, StatusCode::FORBIDDEN);
+    }
+    let (status, outside) = app.get(&outsider, "/v1/agent-jobs").await;
+    assert_eq!(status, StatusCode::OK, "{outside}");
+    assert_eq!(outside["items"], json!([]));
+    assert_eq!(
+        outside["counts"],
+        json!({"queued":0,"running":0,"completed":0,"failed":0})
+    );
+    assert_eq!(
+        app.get(&outsider, "/v1/agent-jobs?project=tp").await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(app.get(&outsider, &detail).await.0, StatusCode::FORBIDDEN);
+    let job = claim(&app, &runner, "inspection-worker").await;
+    let (status, inspected) = app.get(&reader, &detail).await;
+    assert_eq!(status, StatusCode::OK, "{inspected}");
+    assert_eq!(inspected["job"]["service_id"], "inspection-worker");
+    assert_eq!(inspected["job"]["attempt_id"], job["attempt_id"]);
+    assert_eq!(inspected["job"]["prompt"], "Grill this section");
+    assert!(inspected["job"].get("token_id").is_none());
+    assert!(inspected["job"].get("result_json").is_none());
+    assert!(!inspected.to_string().contains(&runner));
+    let (status, listed) = app.get(&reader, "/v1/agent-jobs?project=tp").await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    for field in ["token_id", "result_json", "prompt", "snapshot", "response"] {
+        assert!(
+            listed["items"][0].get(field).is_none(),
+            "list leaks {field}"
+        );
+    }
+    // Inspecting overdue work must not itself expire a lease or emit events.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute("UPDATE agent_jobs SET lease_expires_at=0 WHERE id=?1", [id])
+        .unwrap();
+    let before = app.open_store().agent_conversation(&map, &node).unwrap();
+    assert_eq!(
+        app.get(&reader, &detail).await.1["job"]["status"],
+        "running"
+    );
+    assert_eq!(
+        app.get(&reader, "/v1/agent-jobs").await.1["items"][0]["lease_expires_at"],
+        0
+    );
+    assert_eq!(read(&app, &path).await, before);
+}
+
+#[tokio::test]
+async fn queue_inspection_filters_jobs_and_preserves_historical_input_and_results() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let token = runner(&app);
+    let (map, node, path) = fixture(&app).await;
+    send(&app, &path, "first-inspection", "Grill this section").await;
+    let job = claim(&app, &token, "inspection-worker").await;
+    assert_eq!(
+        app.post(
+            &token,
+            &endpoint(&job, "result"),
+            completed(&job, "inspection-worker", "turn-1")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let queued = send(&app, &path, "second-inspection", "Please explain").await;
+    let (status, listed) = app
+        .get(&app.human, "/v1/agent-jobs?project=tp&limit=1")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"][0]["status"], "queued");
+    assert_eq!(
+        listed["items"][0]["conversation_service_id"],
+        "inspection-worker"
+    );
+    assert_eq!(listed["total"], 2);
+    assert_eq!(
+        listed["counts"],
+        json!({"queued":1,"running":0,"completed":1,"failed":0})
+    );
+    let (status, filtered) = app
+        .get(&app.human, "/v1/agent-jobs?project=tp&status=completed")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered["items"][0]["id"], job["id"]);
+    assert_eq!(filtered["counts"], listed["counts"]);
+    assert_eq!(filtered["total"], 1);
+    assert_eq!(
+        app.patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({"text":"Changed title","notes":"Changed requirements"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let inspected = read(
+        &app,
+        &format!("/v1/agent-jobs/{}", job["id"].as_str().unwrap()),
+    )
+    .await;
+    assert_eq!(inspected["job"]["section_title"], "Overdue invoices");
+    assert_eq!(
+        inspected["job"]["snapshot"],
+        "# Overdue invoices\n\nNotify the customer promptly."
+    );
+    assert_eq!(
+        inspected["job"]["response"],
+        "How many hours count as promptly?"
+    );
+    assert_eq!(inspected["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(read(&app, &path).await["jobs"], queued["jobs"]);
+    for (query, expected) in [
+        ("status=bogus", StatusCode::UNPROCESSABLE_ENTITY),
+        ("limit=0", StatusCode::UNPROCESSABLE_ENTITY),
+        ("limit=101", StatusCode::UNPROCESSABLE_ENTITY),
+        ("limit=nope", StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(
+            app.get(&app.human, &format!("/v1/agent-jobs?{query}"))
+                .await
+                .0,
+            expected,
+            "{query}"
+        );
+    }
+}
+
 async fn fixture(app: &TestApp) -> (String, String, String) {
     let (s, map) = app
         .post(

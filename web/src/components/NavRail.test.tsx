@@ -74,9 +74,14 @@ describe('NavRail', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Specification', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments']) {
+    for (const name of ['Specification', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
+  })
+
+  it('localizes the queue destination and keeps a real URL', () => {
+    mount({ lang: 'de', collapsed: true })
+    expect(screen.getByRole('link', { name: 'Agenten-Queue' }).getAttribute('href')).toBe('/agent-queues')
   })
 
   it('renders the count when expanded', () => {

@@ -23,6 +23,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
+  ListChecksIcon,
   LanguagesIcon,
   LayersIcon,
   InboxIcon,
@@ -51,6 +52,7 @@ export interface NavLabels {
   initiatives: string
   schedules: string
   environments: string
+  agentQueues?: string
 }
 
 export interface NavRailLabels {
@@ -119,6 +121,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
   initiatives: '/initiatives',
   schedules: '/schedules',
   environments: '/environments',
+  agentQueues: '/agent-queues',
 }
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
@@ -129,6 +132,7 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   initiatives: LightbulbIcon,
   schedules: CalendarClockIcon,
   environments: ServerIcon,
+  agentQueues: ListChecksIcon,
 }
 
 // Specification is FIRST, and it is one entry rather than three.
@@ -150,6 +154,7 @@ const NAV_ORDER: (keyof NavLabels)[] = [
   'initiatives',
   'schedules',
   'environments',
+  'agentQueues',
 ]
 
 const SETTINGS_HREF = '/settings'
@@ -365,6 +370,7 @@ export function NavRail({
 
         <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
           {NAV_ORDER.filter((key) => !navigationInHeader || key !== 'inbox').map((key) => {
+            const label = nav[key] ?? (lang === 'de' ? 'Agenten-Queue' : 'Agent queue')
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0
             const isCurrent = key === current
@@ -379,7 +385,7 @@ export function NavRail({
                     <span className="bg-primary absolute -top-0.5 -right-1 size-2 rounded-full" />
                   )}
                 </span>
-                {expanded && <span className="min-w-0 grow truncate">{nav[key]}</span>}
+                {expanded && <span className="min-w-0 grow truncate">{label}</span>}
                 {expanded && count > 0 && (
                   <span className="bg-primary text-primary-foreground inline-block min-w-[17px] flex-none rounded-[9px] px-1.25 text-center text-[11px] leading-[17px] font-bold">
                     {count}
@@ -395,17 +401,17 @@ export function NavRail({
                 : 'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer',
             )
             return isCurrent ? (
-              <Hint key={key} text={nav[key]}>
-                <span className={cls} aria-current="page" aria-label={nav[key]}>
+              <Hint key={key} text={label}>
+                <span className={cls} aria-current="page" aria-label={label}>
                   {inner}
                 </span>
               </Hint>
             ) : (
-              <Hint key={key} text={nav[key]}>
+              <Hint key={key} text={label}>
                 <a
                   href={NAV_HREF[key]}
                   className={cls}
-                  aria-label={nav[key]}
+                  aria-label={label}
                   onClick={(e) => {
                     if (!onNavigate) return
                     if (!plainLeftClick(e)) return

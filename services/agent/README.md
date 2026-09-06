@@ -52,6 +52,8 @@ The service's persisted ID and Codex state belong together. Run only one service
 
 ## Check
 
+Open **Agent queues** in Takomo's navigation (`/agent-queues`) to inspect recent jobs. Filter by project and status, then open a job to see its original section snapshot, prompt, reply or failure, conversation history, and worker/session identifiers. Counts and details refresh automatically while the page is open. A queued follow-up shows the worker its conversation is bound to. The page requires project read access and does not change jobs.
+
 ```sh
 node --test services/agent/test/*.test.mjs
 ```

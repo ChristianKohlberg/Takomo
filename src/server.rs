@@ -126,6 +126,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation", get(crate::api::agent_chat::conversation))
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation/messages", post(crate::api::agent_chat::send))
+        .route("/v1/agent-jobs", get(crate::api::agent_chat::list))
+        .route("/v1/agent-jobs/{id}", get(crate::api::agent_chat::detail))
         .route("/v1/agent-jobs/claim", post(crate::api::agent_chat::claim))
         .route("/v1/agent-jobs/{id}/heartbeat", post(crate::api::agent_chat::heartbeat))
         .route("/v1/agent-jobs/{id}/result", post(crate::api::agent_chat::result))
@@ -658,6 +660,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // mangled. `/v1/documents/{id}/sync` did exactly that.
         .route("/v1/docsync/{id}", get(crate::api::docsync::sync))
         .route("/v1/sync/{id}", get(crate::api::docsync::sync))
+        .route("/agent-queues", get(crate::api::agent_queues_page))
         .route("/board", get(crate::api::board))
         .route("/epics", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
