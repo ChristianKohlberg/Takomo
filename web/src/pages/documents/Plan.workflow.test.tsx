@@ -5,10 +5,31 @@ import * as Y from 'yjs'
 import Plan, { type PlanProps } from './Plan'
 import { createStructureHistory } from '@/lib/plan-structure'
 import { createNode, nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
+import type { Editor } from '@tiptap/react'
+
+const probe = vi.hoisted(() => ({ editors: new Map<string, Editor>(), panelRenders: 0 }))
+vi.mock('./SectionEditor', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./SectionEditor')>()
+  const Original = mod.default
+  const Probed: typeof Original = (props) => <Original {...props} onEditor={(editor) => {
+    if (editor) probe.editors.set(props.label, editor)
+    else probe.editors.delete(props.label)
+    props.onEditor?.(editor)
+  }} />
+  return { ...mod, default: Probed }
+})
+vi.mock('@/components/documents/SectionPanel', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@/components/documents/SectionPanel')>()
+  const Original = mod.SectionPanel
+  const Probed: typeof Original = (props) => { probe.panelRenders++; return <Original {...props} /> }
+  return { ...mod, SectionPanel: Probed }
+})
 
 const fixtures: { doc: Y.Doc; awareness: Awareness }[] = []
 beforeEach(() => {
   localStorage.clear()
+  probe.editors.clear()
+  probe.panelRenders = 0
   Element.prototype.scrollIntoView = vi.fn()
 })
 afterEach(() => { vi.unstubAllGlobals(); for (const { doc, awareness } of fixtures.splice(0)) { awareness.destroy(); doc.destroy() } })
@@ -102,6 +123,30 @@ describe('document workflow integration', () => {
     act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' More prose.')]) })
     expect(screen.getByLabelText('Section 1.1 prose').textContent).toContain('More prose.')
     expect(vi.mocked(props.onSelection!).mock.calls.length).toBe(count)
+  })
+
+  it('enables text undo for the selected section only, without re-rendering the plan on every keystroke', () => {
+    const { props } = setup()
+    render(<Plan {...props} />)
+    const undo = screen.getByRole('button', { name: 'Undo section text' }) as HTMLButtonElement
+    const invoices = probe.editors.get('Section 1.1 prose')!
+    const billing = probe.editors.get('Section 1 prose')!
+    expect(undo.disabled).toBe(true)
+    act(() => { billing.commands.insertContentAt(1, 'Unselected. ') })
+    expect(undo.disabled).toBe(true)
+    fireEvent.pointerDown(screen.getByLabelText('Section 1.1 prose'))
+    expect(undo.disabled).toBe(true)
+    act(() => { invoices.commands.insertContentAt(1, 'First. ') })
+    expect(undo.disabled).toBe(false)
+    const settled = probe.panelRenders
+    act(() => { invoices.commands.insertContentAt(1, 'Second. ') })
+    act(() => { invoices.commands.insertContentAt(1, 'Third. ') })
+    act(() => { billing.commands.insertContentAt(1, 'Elsewhere. ') })
+    expect(probe.panelRenders).toBe(settled)
+    expect(undo.disabled).toBe(false)
+    fireEvent.click(undo)
+    expect(screen.getByLabelText('Section 1.1 prose').textContent).not.toContain('Third. ')
+    expect(screen.getByLabelText('Section 1 prose').textContent).toContain('Elsewhere. ')
   })
 
   it('retains workspace move history when the document view remounts', () => {

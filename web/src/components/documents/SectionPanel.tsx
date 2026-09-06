@@ -168,7 +168,8 @@ export function SectionPanel({
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       setActionsOpen(false)
-      menuRef.current?.focus()
+      const target = event.target
+      if (target instanceof Node && (actionsRef.current?.contains(target) || menuRef.current?.contains(target))) menuRef.current?.focus()
     }
     document.addEventListener('pointerdown', dismiss)
     document.addEventListener('keydown', escape)

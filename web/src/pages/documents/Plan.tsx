@@ -198,11 +198,11 @@ function ConnectedPlan({
   const [moving, setMoving] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ text: string; undo?: boolean } | null>(null)
   const [history, setHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
-  const [, refreshTools] = useState(0)
+  const [, refreshMoveTools] = useState(0)
   useEffect(() => {
     const next = structureHistory ?? createStructureHistory(ydoc)
     setHistory(next)
-    const unsubscribe = next.subscribe(() => refreshTools(value => value + 1))
+    const unsubscribe = next.subscribe(() => refreshMoveTools(value => value + 1))
     return () => { unsubscribe(); if (!structureHistory) next.destroy() }
   }, [ydoc, structureHistory])
   useEffect(() => {
@@ -472,6 +472,17 @@ function ConnectedPlan({
     const subscriptions = editorUnsubscribes.current
     return () => { for (const unsubscribe of subscriptions.values()) unsubscribe() }
   }, [])
+
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const [textTools, setTextTools] = useState({ undo: false, redo: false })
+  const syncTextTools = useCallback(() => {
+    const editor = selectedRef.current ? editors.current.get(selectedRef.current) : undefined
+    const undo = editor?.can().undo() ?? false
+    const redo = editor?.can().redo() ?? false
+    setTextTools(current => (current.undo === undo && current.redo === redo ? current : { undo, redo }))
+  }, [])
+  useEffect(() => { syncTextTools() }, [selected, syncTextTools])
   const editorRefFor = useCallback((key: string) => {
     const existing = editorRefs.current.get(key)
     if (existing) return existing
@@ -480,7 +491,7 @@ function ConnectedPlan({
       editorUnsubscribes.current.delete(key)
       if (editor) {
         editors.current.set(key, editor)
-        const update = () => refreshTools(value => value + 1)
+        const update = () => { if (selectedRef.current === key) syncTextTools() }
         editor.on('transaction', update)
         editor.on('focus', update)
         editorUnsubscribes.current.set(key, () => { editor.off('transaction', update); editor.off('focus', update) })
@@ -490,11 +501,14 @@ function ConnectedPlan({
           editor.commands.focus('start')
         }
       }
-      else { editors.current.delete(key); refreshTools(value => value + 1) }
+      else {
+        editors.current.delete(key)
+        if (selectedRef.current === key) syncTextTools()
+      }
     }
     editorRefs.current.set(key, fn)
     return fn
-  }, [])
+  }, [syncTextTools])
 
   /** The current text of a block, for the before-side of a diff. */
   const textForIn = useCallback(
@@ -651,16 +665,16 @@ function ConnectedPlan({
       setNotice({ text: locale === 'de' ? 'Verschiebung aktualisiert' : 'Section move updated' })
     } else setNotice({ text: locale === 'de' ? 'Die Abschnittsstruktur wurde inzwischen geändert. Diese Aktion ist nicht mehr verfügbar.' : 'The section structure has changed. This action is no longer available.' })
   }
-  const activeEditor = selected ? editors.current.get(selected) : undefined
   const textHistory = (direction: 'undo' | 'redo') => {
-    if (!canWrite || !activeEditor) return
-    activeEditor.commands[direction]()
-    activeEditor.commands.focus()
+    const editor = selected ? editors.current.get(selected) : undefined
+    if (!canWrite || !editor) return
+    editor.commands[direction]()
+    editor.commands.focus()
   }
   return (
     <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <DocumentActions locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
-        canWrite={canWrite} textUndo={activeEditor?.can().undo() ?? false} textRedo={activeEditor?.can().redo() ?? false}
+        canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
         onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} />

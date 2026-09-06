@@ -31,19 +31,36 @@ export function proseMatches(doc: PMNode, query: string): TextMatch[] {
 const textBlocks = new Set(['paragraph', 'heading', 'codeBlock'])
 const leaves = new Set(['hardBreak', 'horizontalRule', 'image'])
 
+interface AnchoredMatch extends TextMatch { anchor: string }
+
 /** Mirror ProseMirror positions directly from the shared fragment: no editor
  * needs to mount, and reading never initializes or writes a missing fragment. */
-export function fragmentMatches(fragment: Y.XmlFragment, query: string): TextMatch[] {
-  const found: TextMatch[] = []
+function scanFragment(fragment: Y.XmlFragment, query: string): AnchoredMatch[] {
+  const found: AnchoredMatch[] = []
   const walk = (part: Y.XmlElement | Y.XmlText | Y.XmlHook, position: number): number => {
     if (part instanceof Y.XmlText) return part.length
     if (!(part instanceof Y.XmlElement)) return 1
     if (leaves.has(part.nodeName)) return 1
     if (textBlocks.has(part.nodeName)) {
-      const text = part.toArray().map(child => child instanceof Y.XmlText
-        ? child.toDelta().map((delta: { insert: unknown }) => typeof delta.insert === 'string' ? delta.insert : '\n').join('')
-        : '\n').join('')
-      found.push(...literalMatches(text, query, position + 1))
+      const runs: { text: Y.XmlText; start: number }[] = []
+      let text = ''
+      for (const child of part.toArray()) {
+        if (child instanceof Y.XmlText) {
+          runs.push({ text: child, start: text.length })
+          text += child.toDelta().map((delta: { insert: unknown }) => typeof delta.insert === 'string' ? delta.insert : '\n').join('')
+        } else text += '\n'
+      }
+      const start = position + 1
+      let run = 0
+      for (const match of literalMatches(text, query, start)) {
+        const offset = match.from - start
+        while (run < runs.length && runs[run]!.start + runs[run]!.text.length <= offset) run++
+        const inside = runs[run]
+        const anchor = inside && inside.start <= offset
+          ? JSON.stringify(Y.createRelativePositionFromTypeIndex(inside.text, offset - inside.start))
+          : String(match.from)
+        found.push({ ...match, anchor })
+      }
       return text.length + 2
     }
     let size = 2
@@ -55,6 +72,13 @@ export function fragmentMatches(fragment: Y.XmlFragment, query: string): TextMat
   return found
 }
 
+export function fragmentMatches(fragment: Y.XmlFragment, query: string): TextMatch[] {
+  return scanFragment(fragment, query).map(({ from, to }) => ({ from, to }))
+}
+
+/** A prose result is keyed by a CRDT relative position, so remote insertions
+ * above a match move the same result and deleting it cannot activate the next
+ * occurrence. */
 export function findDocumentMatches(
   nodes: readonly { id: string; title: string }[], doc: Y.Doc, query: string,
 ): DocumentMatch[] {
@@ -63,29 +87,11 @@ export function findDocumentMatches(
     // A stale tree projection must never return results for a deleted section.
     if (!doc.getMap('nodes').has(node.id)) return []
     const fragment = readProseOf(doc, node.id)
-    const heading = literalMatches(node.title, query).map(match => ({ ...match, kind: 'heading' as const }))
-    const prose = fragment ? fragmentMatches(fragment, query).map(match => ({ ...match, kind: 'prose' as const })) : []
-    return [...heading, ...prose].map(match => ({ ...match, sectionId: node.id, key: `${node.id}:${match.kind}:${match.kind === 'heading' ? `${node.title}:${match.from}:${match.to}` : fragment ? fragmentAnchor(fragment, match.from) : match.from}` }))
+    const heading: DocumentMatch[] = literalMatches(node.title, query)
+      .map(match => ({ ...match, sectionId: node.id, kind: 'heading', key: `${node.id}:heading:${node.title}:${match.from}:${match.to}` }))
+    const prose: DocumentMatch[] = fragment
+      ? scanFragment(fragment, query).map(({ from, to, anchor }) => ({ from, to, sectionId: node.id, kind: 'prose', key: `${node.id}:prose:${anchor}` }))
+      : []
+    return [...heading, ...prose]
   })
-}
-
-/** Anchor result identity to CRDT characters, so remote insertions above a match
- * move the same result and deleting it cannot activate the next occurrence. */
-function fragmentAnchor(fragment: Y.XmlFragment, target: number): string {
-  let anchor = ''
-  const walk = (part: Y.XmlElement | Y.XmlText | Y.XmlHook, position: number): number => {
-    if (part instanceof Y.XmlText) {
-      if (position <= target && target < position + part.length) {
-        anchor = JSON.stringify(Y.createRelativePositionFromTypeIndex(part, target - position))
-      }
-      return part.length
-    }
-    if (!(part instanceof Y.XmlElement) || leaves.has(part.nodeName)) return 1
-    let size = 2
-    for (const child of part.toArray()) size += walk(child, position + size - 1)
-    return size
-  }
-  let position = 0
-  for (const child of fragment.toArray()) position += walk(child, position)
-  return anchor || String(target)
 }

@@ -17,6 +17,10 @@ const validParent = (tree: PlanNode[], id: string, parent: string | null): boole
   return true
 }
 
+const stamp = (doc: Y.Doc, id: string): void => {
+  doc.transact(() => { nodesMap(doc).get(id)?.set('updated_at', Date.now()) })
+}
+
 /** Only parent/order change: prose, children, links and identity stay in place. */
 export function movePlanSection(doc: Y.Doc, id: string, target: string, placement: SectionPlacement, origin?: unknown): StructureResult {
   const tree = readPlanTree(doc)
@@ -35,6 +39,7 @@ export function movePlanSection(doc: Y.Doc, id: string, target: string, placemen
     node.set('x', null)
     node.set('y', null)
   }, origin)
+  stamp(doc, id)
   return { ok: true }
 }
 
@@ -67,6 +72,7 @@ export function createStructureHistory(doc: Y.Doc) {
     if (restore.parent !== null && !tree.some(n => n.id === restore.parent)) return { ok: false, error: 'missing' }
     if (!validParent(tree, move.id, restore.parent)) return { ok: false, error: 'cycle' }
     manager[direction]()
+    stamp(doc, move.id)
     const opposite = direction === 'undo' ? manager.redoStack : manager.undoStack
     opposite.at(-1)?.meta.set(key, move)
     notify()

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { getSchema } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
@@ -16,7 +16,34 @@ function fixture() {
   return { doc, fragment }
 }
 
+afterEach(() => { vi.restoreAllMocks() })
+
 describe('personal document search', () => {
+  it('keys a prose result to its characters and reads each block once however many times the query hits', () => {
+    const { doc, fragment } = fixture()
+    prosemirrorToYXmlFragment(schema.nodeFromJSON({ type: 'doc', content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'find ' }, { type: 'text', marks: [{ type: 'bold' }], text: 'find find find find find find find find find' }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'unique' }] },
+    ] }), fragment)
+    const nodes = [{ id: 'section', title: 'Section' }]
+    const before = findDocumentMatches(nodes, doc, 'find')
+    expect(before).toHaveLength(10)
+    expect(new Set(before.map(m => m.key)).size).toBe(10)
+    const [first, second] = before as [typeof before[number], typeof before[number]]
+    ;(fragment.get(0) as Y.XmlElement).insert(0, [new Y.XmlText('Preface. ')])
+    const after = findDocumentMatches(nodes, doc, 'find')
+    expect(after[0]).toMatchObject({ key: first.key, from: first.from + 'Preface. '.length })
+    expect(after[1]).toMatchObject({ key: second.key, from: second.from + 'Preface. '.length })
+    ;((fragment.get(0) as Y.XmlElement).get(1) as Y.XmlText).delete(0, 'find '.length)
+    expect(findDocumentMatches(nodes, doc, 'find').map(m => m.key)).not.toContain(first.key)
+    expect(findDocumentMatches(nodes, doc, 'find').map(m => m.key)).toContain(second.key)
+    const reads = vi.spyOn(Y.XmlElement.prototype, 'toArray')
+    findDocumentMatches(nodes, doc, 'unique')
+    const single = reads.mock.calls.length
+    reads.mockClear()
+    findDocumentMatches(nodes, doc, 'find')
+    expect(reads.mock.calls.length).toBe(single)
+  })
   it('treats punctuation literally, ignores case, and preserves Unicode offsets', () => {
     expect(literalMatches('A.b a.b axb İa.b', 'a.b')).toEqual([{ from: 0, to: 3 }, { from: 4, to: 7 }, { from: 13, to: 16 }])
     expect(literalMatches('anything', '')).toEqual([])

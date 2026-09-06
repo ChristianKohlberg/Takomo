@@ -65,9 +65,12 @@ describe('SectionEditor', () => {
     act(() => { originalEditor.commands.insertContentAt(1, 'Added. ') })
 
     view.rerender(<SectionEditor {...props} label="Section 2.1" />)
+    view.rerender(<SectionEditor {...props} label="Section 3.1" />)
+    view.rerender(<SectionEditor {...props} label="Section 2.1" />)
 
     expect(screen.queryByLabelText('Section 1')).toBeNull()
     expect(screen.getByLabelText('Section 2.1')).toBe(originalDom)
+    expect(originalEditor.options.editorProps.attributes).toEqual({ class: expect.stringContaining('prose'), 'aria-label': 'Section 2.1' })
     expect(editor).toBe(originalEditor)
     expect(originalEditor.options.editorProps.handleKeyDown).toBe(originalKeyHandler)
     expect(originalDom.classList.contains('prose')).toBe(true)

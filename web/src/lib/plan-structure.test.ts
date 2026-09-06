@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { createNode, nodesMap, readPlanTree, setTitle } from './mindmap-crdt'
 import { createStructureHistory, movePlanSection } from './plan-structure'
@@ -11,7 +11,35 @@ function setup() {
   return { doc, a, b, child }
 }
 
+afterEach(() => { vi.useRealTimers() })
+
 describe('document structure moves and local history', () => {
+  it('stamps a move like a drag does, and never lets undo restore a stale stamp over a collaborator\'s', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    const { doc, a, b } = setup()
+    const history = createStructureHistory(doc)
+    vi.setSystemTime(2_000)
+    expect(movePlanSection(doc, a, b, 'after')).toEqual({ ok: true })
+    expect(nodesMap(doc).get(a)!.get('updated_at')).toBe(2_000)
+    vi.setSystemTime(3_000)
+    history.move(a, b, 'child')
+    expect(nodesMap(doc).get(a)!.get('updated_at')).toBe(3_000)
+    const peer = new Y.Doc()
+    Y.applyUpdate(peer, Y.encodeStateAsUpdate(doc))
+    vi.setSystemTime(4_000)
+    setTitle(peer, a, 'Renamed by a peer')
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer))
+    expect(nodesMap(doc).get(a)!.get('updated_at')).toBe(4_000)
+    vi.setSystemTime(5_000)
+    expect(history.undo()).toEqual({ ok: true })
+    expect(readPlanTree(doc).find(n => n.id === a)).toMatchObject({ parent: null, title: 'Renamed by a peer' })
+    expect(nodesMap(doc).get(a)!.get('updated_at')).toBe(5_000)
+    expect(history.redo()).toEqual({ ok: true })
+    expect(nodesMap(doc).get(a)!.get('parent')).toBe(b)
+    expect(nodesMap(doc).get(a)!.get('updated_at')).toBe(5_000)
+    history.destroy()
+  })
   it('moves the existing subtree and shared fields, preserving identities', () => {
     const { doc, a, b, child } = setup()
     const node = nodesMap(doc).get(a)!

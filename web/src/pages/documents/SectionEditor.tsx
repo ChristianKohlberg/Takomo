@@ -39,6 +39,8 @@ import type * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
 
+const EDITOR_ATTRIBUTES = { class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1' }
+
 import { MermaidCodeBlock } from '@/lib/mermaid-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
@@ -168,10 +170,7 @@ export default function SectionEditor({
           view.dispatch(tr)
           return true
         },
-        attributes: {
-          class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1',
-          'aria-label': label,
-        },
+        attributes: { ...EDITOR_ATTRIBUTES, 'aria-label': label },
       },
       // The app is client-only, so this is simply the correct answer; Tiptap
       // warns without it when an editor mounts during an SSR-shaped render.
@@ -194,14 +193,7 @@ export default function SectionEditor({
   // Refresh the accessible name while retaining this fragment's undo history.
   useEffect(() => {
     if (!editor) return
-    const props = editor.options.editorProps
-    const attributes = props.attributes
-    editor.setOptions({ editorProps: {
-      ...props,
-      attributes: typeof attributes === 'function'
-        ? state => ({ ...attributes(state), 'aria-label': label })
-        : { ...attributes, 'aria-label': label },
-    } })
+    editor.setOptions({ editorProps: { ...editor.options.editorProps, attributes: { ...EDITOR_ATTRIBUTES, 'aria-label': label } } })
   }, [editor, label])
 
   useEffect(() => {

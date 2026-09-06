@@ -81,13 +81,30 @@ describe('SectionPanel', () => {
     expect(menu.getAttribute('aria-expanded')).toBe('true')
     fireEvent.pointerDown(screen.getByText('⌖ Show it on the map'))
     expect(menu.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.keyDown(screen.getByText('⌖ Show it on the map'), { key: 'Escape' })
     expect(menu.getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(menu)
     expect(pending.isConnected).toBe(true)
     fireEvent.click(menu)
     fireEvent.pointerDown(document.body)
     expect(menu.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes the open menu on Escape typed elsewhere without pulling focus away from there', () => {
+    panel()
+    const input = document.createElement('input')
+    document.body.append(input)
+    try {
+      const menu = screen.getByRole('button', { name: 'Section actions' })
+      fireEvent.click(menu)
+      expect(menu.getAttribute('aria-expanded')).toBe('true')
+      input.focus()
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(menu.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(input)
+    } finally {
+      input.remove()
+    }
   })
 
   it('heads the section with its address and its title, at its level', () => {
