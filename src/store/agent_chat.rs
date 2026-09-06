@@ -415,7 +415,7 @@ impl Store {
             let scope = " FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE (?1 IS NULL OR
                 c.project=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2)))";
             let projected_status="CASE WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id AND b.cancelled=1) THEN 'cancelled' ELSE j.status END";
-            let mut counts = json!({"queued":0,"running":0,"completed":0,"failed":0});
+            let mut counts = json!({"queued":0,"running":0,"completed":0,"failed":0,"cancelled":0});
             let mut stmt = conn.prepare(&format!("SELECT {projected_status},COUNT(*){scope} GROUP BY {projected_status}"))?;
             for row in stmt.query_map(params![project, allowed], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (status, count) = row?;

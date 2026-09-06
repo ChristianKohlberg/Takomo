@@ -8510,7 +8510,6 @@ components:
             cancelled:
               type: integer
               minimum: 0
-              description: Present when cancellations exist.
             failed:
               type: integer
               minimum: 0
@@ -8519,6 +8518,7 @@ components:
           - running
           - completed
           - failed
+          - cancelled
       required:
       - items
       - total

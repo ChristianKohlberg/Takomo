@@ -120,6 +120,8 @@ async fn bugs_are_tickets_research_is_explicit_and_review_preserves_workflow() {
     );
     let (s, jobs) = app.get(&app.worker, "/v1/agent-jobs?project=tp").await;
     assert_eq!(s, StatusCode::OK, "{jobs}");
+    assert_eq!(jobs["counts"]["cancelled"], 0, "{jobs}");
+    assert_eq!(jobs["counts"]["completed"], 1, "{jobs}");
     let item = &jobs["items"][0];
     assert_eq!(item["id"], run["id"]);
     assert_eq!(item["ticket_id"], id);
@@ -469,5 +471,120 @@ async fn heartbeat_evidence_survives_cancellation_without_accepting_late_success
             .await
             .1["total"],
         1
+    );
+}
+
+async fn beta(app: &TestApp) {
+    let (s, v) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({"id":"beta","name":"Beta","workflow":{"name":"beta-wf","initial":"ready","states":[
+                {"id":"ready","category":"todo","claimable":true},{"id":"done","category":"done","terminal":true}],
+                "transitions":[{"from":"ready","to":"done"}]}}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+#[tokio::test]
+async fn moving_a_bug_across_projects_keeps_research_and_triage_consistent() {
+    let app = TestApp::spawn_without_sweeper().await;
+    beta(&app).await;
+    let moved = bug(&app, "Moves to beta").await;
+    let stays = bug(&app, "Stays in tp").await;
+    configure(&app).await;
+    let run = start(&app, &moved, "before-move").await;
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{stays}"),
+            json!({"triage":"duplicate","duplicate_of":moved}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = app
+        .post(
+            &app.admin,
+            "/v1/tickets/move",
+            json!({"tickets":[moved],"to_project":"beta"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let beta_reader = app.mint("human:beta", &["read", "write", "human"], Some(&["beta"]));
+    let (s, v) = app.get(&beta_reader, "/v1/bugs?project=beta").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["items"][0]["ticket"]["id"], moved);
+    assert_eq!(v["items"][0]["latest_job"]["id"], run["id"]);
+    let (s, v) = app.get(&beta_reader, &format!("/v1/bugs/{moved}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["latest_job"]["project"], "beta");
+    let (s, v) = app
+        .get(&beta_reader, &format!("/v1/bugs/{moved}/research"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["jobs"][0]["id"], run["id"]);
+    let (s, v) = app.get(&app.worker, &format!("/v1/bugs/{stays}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["triage"], "needs_triage");
+    assert!(v["duplicate_of"].is_null(), "{v}");
+    let tp_runner = app.mint("agent:tp", &["agent:run"], Some(&["tp"]));
+    assert!(claim(&app, &tp_runner, "tp-worker").await.is_null());
+    let beta_runner = app.mint("agent:beta", &["agent:run"], Some(&["beta"]));
+    let claimed = claim(&app, &beta_runner, "beta-worker").await;
+    assert_eq!(claimed["ticket_id"], moved, "{claimed}");
+    let (s, v) = app
+        .get(&beta_reader, "/v1/agent-jobs?project=beta&status=running")
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["counts"]["cancelled"], 0);
+    let (s, v) = app.delete(&app.admin, "/v1/projects/beta?force=true").await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, v) = app.get(&app.worker, "/v1/bugs").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["total"], 1);
+    assert_eq!(v["items"][0]["ticket"]["id"], stays);
+}
+#[tokio::test]
+async fn deleting_a_duplicate_target_project_clears_the_pointer_after_schema_rebuild() {
+    let app = TestApp::spawn_without_sweeper().await;
+    beta(&app).await;
+    let target = bug(&app, "Target").await;
+    let pointer = bug(&app, "Pointer").await;
+    let (s, v) = app
+        .patch(
+            &app.human,
+            &format!("/v1/bugs/{pointer}"),
+            json!({"triage":"duplicate","duplicate_of":target}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    conn.execute_batch("BEGIN; CREATE TABLE bug_triage_old(ticket TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,triage TEXT NOT NULL DEFAULT 'needs_triage',severity TEXT NOT NULL DEFAULT 'unknown',duplicate_of TEXT REFERENCES tickets(id),note TEXT,updated_by TEXT,updated_at INTEGER); INSERT INTO bug_triage_old SELECT ticket,triage,severity,duplicate_of,note,updated_by,updated_at FROM bug_triage; DROP TABLE bug_triage; ALTER TABLE bug_triage_old RENAME TO bug_triage; COMMIT;").unwrap();
+    conn.execute(
+        "UPDATE tickets SET project='beta', state='ready' WHERE id=?1",
+        [&target],
+    )
+    .unwrap();
+    drop(conn);
+    drop(app.open_store());
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+    drop(conn);
+    let (s, v) = app.delete(&app.admin, "/v1/projects/beta").await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (s, v) = app.get(&app.worker, &format!("/v1/bugs/{pointer}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["duplicate_of"].is_null(), "{v}");
+    assert_eq!(
+        app.get(&app.worker, &format!("/v1/bugs/{target}")).await.0,
+        StatusCode::NOT_FOUND
     );
 }

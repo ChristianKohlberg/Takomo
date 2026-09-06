@@ -40,7 +40,7 @@ pub fn migrate(conn: &Connection) -> ApiResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bug_triage(ticket TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE
                 CASCADE,triage TEXT NOT NULL DEFAULT 'needs_triage',severity TEXT NOT NULL DEFAULT 'unknown',duplicate_of
-                TEXT REFERENCES tickets(id),note TEXT,updated_by TEXT,updated_at INTEGER); CREATE TABLE IF NOT EXISTS
+                TEXT REFERENCES tickets(id) ON DELETE SET NULL,note TEXT,updated_by TEXT,updated_at INTEGER); CREATE TABLE IF NOT EXISTS
                 bug_research_config(project TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,repository TEXT
                 NOT NULL,revision TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS
                 bug_research_jobs(job TEXT PRIMARY KEY REFERENCES agent_jobs(id) ON DELETE CASCADE,ticket TEXT NOT NULL
@@ -50,6 +50,29 @@ pub fn migrate(conn: &Connection) -> ApiResult<()> {
                 NULL,request_id TEXT NOT NULL,message TEXT NOT NULL,created_at INTEGER NOT
                 NULL,UNIQUE(job,actor,request_id));",
     )?;
+    let duplicate_rule: Option<String> = conn
+        .query_row(
+            "SELECT on_delete FROM pragma_foreign_key_list('bug_triage') WHERE \"from\"='duplicate_of'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if duplicate_rule.as_deref() != Some("SET NULL") {
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        let result = conn.execute_batch(
+            "BEGIN IMMEDIATE; CREATE TABLE bug_triage_new(ticket TEXT PRIMARY KEY REFERENCES tickets(id) ON DELETE
+                CASCADE,triage TEXT NOT NULL DEFAULT 'needs_triage',severity TEXT NOT NULL DEFAULT 'unknown',duplicate_of
+                TEXT REFERENCES tickets(id) ON DELETE SET NULL,note TEXT,updated_by TEXT,updated_at INTEGER); INSERT INTO
+                bug_triage_new(ticket,triage,severity,duplicate_of,note,updated_by,updated_at) SELECT
+                ticket,triage,severity,duplicate_of,note,updated_by,updated_at FROM bug_triage; DROP TABLE bug_triage;
+                ALTER TABLE bug_triage_new RENAME TO bug_triage; COMMIT;",
+        );
+        if result.is_err() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        result?;
+    }
     for column in ["repository_revision", "evidence"] {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('bug_research_jobs') WHERE name=?1)",
