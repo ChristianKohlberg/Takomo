@@ -1,5 +1,5 @@
 //! Read-only agent conversations anchored to specification sections.
-use super::{long_poll, ApiJson};
+use super::{first, long_poll, parse_i64_param, query_pairs, ApiJson};
 use crate::{
     auth::AuthCtx,
     error::{ApiError, ApiResult},
@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use axum::{
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     Extension, Json,
 };
 use serde::de::DeserializeOwned;
@@ -116,4 +116,35 @@ pub async fn result(
         .finish_agent_job(&ctx, &id, &decode::<ResultInput>(body)?)?;
     state.wake();
     Ok(Json(result))
+}
+
+/// Read the latest authorized jobs without changing queue state.
+pub async fn list(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    RawQuery(raw): RawQuery,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    let pairs = query_pairs(raw.as_deref());
+    let project = first(&pairs, "project").map(String::from);
+    let status = first(&pairs, "status").map(String::from);
+    let limit = parse_i64_param(&pairs, "limit")?.unwrap_or(50);
+    Ok(Json(
+        super::blocking_read(move || {
+            state
+                .store
+                .inspect_agent_jobs(&ctx, project.as_deref(), status.as_deref(), limit)
+        })
+        .await?,
+    ))
+}
+pub async fn detail(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("read")?;
+    Ok(Json(
+        super::blocking_read(move || state.store.inspect_agent_job(&ctx, &id)).await?,
+    ))
 }
