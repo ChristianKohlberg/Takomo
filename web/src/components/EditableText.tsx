@@ -30,6 +30,8 @@ export interface EditableTextProps {
   className?: string
   as?: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'p'
   onEnter?: () => void
+  onArrowUp?: () => boolean
+  onArrowDown?: () => boolean
   'aria-label'?: string
 }
 
@@ -42,6 +44,8 @@ export function EditableText({
   className,
   as = 'p',
   onEnter,
+  onArrowUp,
+  onArrowDown,
   'aria-label': ariaLabel,
 }: EditableTextProps) {
   const ref = useRef<HTMLElement>(null)
@@ -70,11 +74,29 @@ export function EditableText({
       contentEditable={editable}
       suppressContentEditableWarning
       onKeyDown={(event) => {
-        if (event.key === 'Enter' && onEnter && !event.nativeEvent.isComposing) {
+        if (!editable || event.nativeEvent.isComposing) return
+        if (event.key === 'Enter') {
+          if (!onEnter) return
           event.preventDefault()
           event.currentTarget.blur()
           onEnter()
+          return
         }
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return
+        const selection = window.getSelection()
+        if (!selection || !selection.isCollapsed || !selection.rangeCount || !event.currentTarget.contains(selection.anchorNode)) return
+        const caret = selection.getRangeAt(0)
+        const before = caret.cloneRange()
+        before.selectNodeContents(event.currentTarget)
+        before.setEnd(caret.startContainer, caret.startOffset)
+        const after = caret.cloneRange()
+        after.selectNodeContents(event.currentTarget)
+        after.setStart(caret.endContainer, caret.endOffset)
+        const handled = event.key === 'ArrowUp'
+          ? before.toString().length === 0 && onArrowUp?.()
+          : after.toString().length === 0 && onArrowDown?.()
+        if (handled) event.preventDefault()
       }}
       onBlur={() => {
         const node = ref.current

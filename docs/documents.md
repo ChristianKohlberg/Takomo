@@ -319,3 +319,40 @@ Matches are literal and case-insensitive; Enter and Shift+Enter visit the next a
 result. Opening a result temporarily expands its outline ancestors, and closing Find restores
 the saved folds. Search works for read-only viewers, edits nothing, and leaves the browser's
 own find shortcut alone.
+
+## Formatting, continuous writing and text comments
+
+The compact formatting toolbar follows the current prose selection. Choose Normal text or
+Heading 1–3, or apply bold, italic and lists. Mixed selections and unsupported block styles
+are named explicitly. Using a control preserves the selected words; changing a paragraph’s
+style does not split its section. While editing a section title, prose formatting controls
+are unavailable so they cannot change a previous selection elsewhere.
+
+Enter in a title, or ArrowDown at its end, moves into its prose. Enter commits the title as one
+line whether or not a modifier is held or part of it is selected, so a title never gains a line
+break; only an active input-method composition is left alone. ArrowUp or Backspace at the start
+of a top-level paragraph returns to the title without deleting anything. ArrowDown at the
+end of a section goes to the next visible title, and ArrowUp at a title’s beginning goes to
+the previous visible prose. For that arrow and Backspace navigation, modified shortcuts,
+selected text, composition, lists, tables, code and slash-menu navigation keep their existing
+behavior. Hidden sections stay folded.
+
+Copy section link in the heading’s actions copies a canonical project/section URL, with
+confirmation or a selectable fallback if clipboard access is refused. Stable node identity
+keeps these links valid after renaming and moving sections.
+
+The reading layout uses a continuous page with responsive margins and paragraph/list
+spacing. Existing global templates and project overrides supply the type scale, heading
+spacing and line height; there is no additional configuration layer or pagination.
+
+Select prose and choose Add comment. Threads keep the quoted passage, replies and
+open/resolved state in the shared document — a top-level `documentComments` map in the same
+Y.Doc as `proposals`, keyed by thread id and carrying the section id, so no route or table is
+involved (`web/src/lib/document-comments.ts`). Comments in the section actions opens them.
+Click a highlighted passage to open its discussion, or use Show text from the thread to
+locate it. Readers can see comments but cannot post, reply, resolve or reopen them. Comments
+use the same authorized connection and save status as the document and persist after reload.
+Edits outside a passage shift its anchor with the text. If the selected words change or
+are removed, the quote and discussion remain with a detached-text indication; they are not
+matched to another occurrence. This first version supports plain-text comments on a
+selection within one section, without mentions or notifications.

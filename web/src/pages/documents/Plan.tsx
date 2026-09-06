@@ -1,4 +1,10 @@
 import { DocumentActions } from '@/components/documents/DocumentActions'
+import { CopySectionLink } from '@/components/documents/CopySectionLink'
+import { DocumentFormattingToolbar } from '@/components/documents/DocumentFormattingToolbar'
+import { DocumentComments } from '@/components/documents/DocumentComments'
+import { DocumentCommentButton } from '@/components/documents/DocumentCommentButton'
+import type { CommentAnchor } from '@/lib/document-comments'
+import { specificationLink } from '@/lib/specification-url'
 import { DocumentSearchToolbar } from '@/components/documents/DocumentSearchToolbar'
 import { useDocumentSearch } from '@/hooks/useDocumentSearch'
 import { highlightDocumentHeadings } from '@/lib/document-search-headings'
@@ -122,6 +128,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  project?: string
   focusMode?: boolean
   structureHistory?: ReturnType<typeof createStructureHistory> | null
   appearance?: DocumentAppearance
@@ -162,6 +169,7 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  project = '',
   focusMode = false,
   structureHistory,
   appearance,
@@ -196,6 +204,8 @@ function ConnectedPlan({
   const focused = useRef<string | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [moving, setMoving] = useState<string | null>(null)
+  const [comments, setComments] = useState<{ section: string; draft: CommentAnchor | null } | null>(null)
+  const [commentsEditor, setCommentsEditor] = useState<Editor | null>(null)
   const [notice, setNotice] = useState<{ text: string; undo?: boolean } | null>(null)
   const [history, setHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
   const [, refreshMoveTools] = useState(0)
@@ -466,6 +476,9 @@ function ConnectedPlan({
   }
 
   const editors = useRef(new Map<string, Editor>())
+  const pendingBoundaryFocus = useRef<{ key: string; position: 'start' | 'end' } | null>(null)
+  const [activeEditor, setActiveEditor] = useState<Editor | null>(null)
+  const editingTitle = useRef(false)
   const editorRefs = useRef(new Map<string, (editor: Editor | null) => void>())
   const editorUnsubscribes = useRef(new Map<string, () => void>())
   useEffect(() => {
@@ -475,9 +488,16 @@ function ConnectedPlan({
 
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const commentsSection = comments?.section ?? null
+  const commentsSectionRef = useRef(commentsSection)
+  commentsSectionRef.current = commentsSection
+  useEffect(() => {
+    setCommentsEditor(commentsSection ? editors.current.get(commentsSection) ?? null : null)
+  }, [commentsSection])
   const [textTools, setTextTools] = useState({ undo: false, redo: false })
   const syncTextTools = useCallback(() => {
-    const editor = selectedRef.current ? editors.current.get(selectedRef.current) : undefined
+    const editor = !editingTitle.current && selectedRef.current ? editors.current.get(selectedRef.current) : undefined
+    setActiveEditor(editor ?? null)
     const undo = editor?.can().undo() ?? false
     const redo = editor?.can().redo() ?? false
     setTextTools(current => (current.undo === undo && current.redo === redo ? current : { undo, redo }))
@@ -491,18 +511,26 @@ function ConnectedPlan({
       editorUnsubscribes.current.delete(key)
       if (editor) {
         editors.current.set(key, editor)
+        if (commentsSectionRef.current === key) setCommentsEditor(editor)
         const update = () => { if (selectedRef.current === key) syncTextTools() }
+        const focus = () => { editingTitle.current = false; update() }
         editor.on('transaction', update)
-        editor.on('focus', update)
-        editorUnsubscribes.current.set(key, () => { editor.off('transaction', update); editor.off('focus', update) })
+        editor.on('focus', focus)
+        editorUnsubscribes.current.set(key, () => { editor.off('transaction', update); editor.off('focus', focus) })
         update()
         if (pendingEditorFocus.current === key) {
           pendingEditorFocus.current = null
           editor.commands.focus('start')
         }
+        if (pendingBoundaryFocus.current?.key === key) {
+          const position = pendingBoundaryFocus.current.position
+          pendingBoundaryFocus.current = null
+          editor.commands.focus(position)
+        }
       }
       else {
         editors.current.delete(key)
+        if (commentsSectionRef.current === key) setCommentsEditor(null)
         if (selectedRef.current === key) syncTextTools()
       }
     }
@@ -671,13 +699,37 @@ function ConnectedPlan({
     editor.commands[direction]()
     editor.commands.focus()
   }
+  const focusProse = (key: string, position: 'start' | 'end'): boolean => {
+    if (!canWrite) return false
+    setSelected(key)
+    const editor = editors.current.get(key)
+    if (editor) editor.commands.focus(position)
+    else pendingBoundaryFocus.current = { key, position }
+    return true
+  }
+  const focusTitle = (key: string, position: 'start' | 'end'): boolean => {
+    const heading = elements.current.get(key)?.querySelector<HTMLElement>('.document-heading[contenteditable="true"]')
+    if (!canWrite || !heading) return false
+    setSelected(key)
+    heading.focus()
+    const range = document.createRange()
+    range.selectNodeContents(heading)
+    range.collapse(position === 'start')
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    return true
+  }
   return (
     <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <DocumentActions locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
-        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} />
+        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} >
+        <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />
+        <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}
+          onComment={draft => { if (selected) setComments({ section: selected, draft }) }} />
+      </DocumentActions>
       {findOpen && <DocumentSearchToolbar query={search.query} onQuery={search.setQuery} count={search.matches.length}
         activeIndex={search.activeIndex} onNext={search.next} onPrevious={search.previous} onClose={closeFind} locale={locale} />}
       {notice && <div role="status" className="flex flex-none items-center gap-3 bg-muted px-4 py-2 text-sm">
@@ -753,13 +805,14 @@ function ConnectedPlan({
           </div>
         ) : (
           // A measure, not a width: prose running the full width of a desktop
-          // window is unreadable, and `max-w-*` cannot overflow a phone.
-          // `mx-auto` centres that measure in whatever column is left once the
-          // outline has taken its share.
-          <div className="document-appearance mx-auto min-w-0 max-w-[720px]"
+          // window is unreadable, and a `max-width` cap cannot overflow a phone.
+          // The cap and the page padding live on `.document-page` in
+          // `styles/editor.css`; `mx-auto` centres that measure in whatever
+          // column is left once the outline has taken its share.
+          <div className="document-appearance document-page mx-auto min-w-0"
             style={documentAppearanceStyle(appearance)}>
             {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
-            {visible.map((row) => {
+            {visible.map((row, rowIndex) => {
               const mounted = near === null || near.has(row.key) || row.key === selected || row.key === activeMatch?.sectionId
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null
               const preview = previews.get(row.key) ?? ''
@@ -771,7 +824,16 @@ function ConnectedPlan({
                   depth={row.depth}
                   title={row.title}
                   onTitle={(text) => onTitle(row.key, text)}
-                  onHeadingEnter={() => editors.current.get(row.key)?.commands.focus('start')}
+                  onHeadingEnter={() => { focusProse(row.key, 'start') }}
+                  onHeadingDown={() => focusProse(row.key, 'start')}
+                  onHeadingFocus={() => { editingTitle.current = true; syncTextTools() }}
+                  onHeadingUp={() => rowIndex > 0 && focusProse(visible[rowIndex - 1]!.key, 'end')}
+                  headingActions={<>
+                    <CopySectionLink href={new URL(specificationLink(project, 'document', row.key), window.location.origin).href} locale={locale} />
+                    <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}>
+                      {locale === 'de' ? 'Kommentare' : 'Comments'}
+                    </button>
+                  </>}
                   standing={standings[row.key] ?? 'unseen'}
                   entries={trace.get(row.key) ?? []}
                   historyOpen={openHistory.has(row.key)}
@@ -808,6 +870,8 @@ function ConnectedPlan({
                     <SectionEditor
                       locale={locale}
                       ydoc={ydoc}
+                      sectionId={row.key}
+                      onOpenComments={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}
                       fragment={fragment}
                       provider={provider}
                       display={session.display}
@@ -815,6 +879,8 @@ function ConnectedPlan({
                       canWrite={canWrite}
                       maxSectionLevel={Math.min(row.depth + 2, 3)}
                       onInsertSection={(level, title) => insertSection(row.key, level, title)}
+                      onNavigate={target => target === 'title' ? focusTitle(row.key, 'end') :
+                        !!visible[rowIndex + 1] && focusTitle(visible[rowIndex + 1]!.key, 'start')}
                       onSettled={() => onEdited(row.key)}
                       highlight={highlights[row.key] ?? ''}
                       searchQuery={search.query}
@@ -831,6 +897,10 @@ function ConnectedPlan({
                     </p>
                   )}
                   {conversationFor?.(row.key)}
+                  {comments?.section === row.key && <DocumentComments key={row.key} ydoc={ydoc} sectionId={row.key}
+                    editor={commentsEditor} actor={session.display} locale={locale} canWrite={canWrite}
+                    draft={comments.draft} onDraftConsumed={() => setComments(current => current?.section === row.key ? { section: row.key, draft: null } : current)}
+                    onClose={() => setComments(null)} />}
                   {canWrite && <InlineSection locale={locale} maxLevel={Math.min(row.depth + 2, 3)} onInsert={(level, title) => insertSection(row.key, level, title)} />}
                 </SectionPanel>
               )

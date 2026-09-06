@@ -141,13 +141,16 @@ prefix would imply a sixth auth path, and there is not one.
 
 ## 3. The Y.Doc
 
-Two top-level maps. Both keyed by id, neither an array — an array makes removal
-fight an insert, and keyed maps merge cleanly.
+Two top-level maps carry the tree. Both keyed by id, neither an array — an array
+makes removal fight an insert, and keyed maps merge cleanly.
 
 ```
 nodes:         Y.Map<nodeId, Y.Map>
 relationships: Y.Map<relId,  Y.Map>
 ```
+
+The document surface adds two more beside them, `proposals` and `documentComments`,
+also keyed by id; `docs/documents.md` owns both.
 
 ### 3.1 Node
 
