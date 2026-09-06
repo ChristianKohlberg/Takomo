@@ -16,9 +16,11 @@ function Probe() {
   const navigate = useNavigate()
   return <><output data-testid="search">{search}</output><button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button></>
 }
+const onAuthError = vi.fn()
 function mount(url: string, project = 'demo') {
-  render(<MemoryRouter initialEntries={[url]}><Probe /><Queue token="tk" project={project} lang="en" onAuthError={vi.fn()} canWrite canReview canConfigure={false} /></MemoryRouter>)
+  render(<MemoryRouter initialEntries={[url]}><Probe /><Queue token="tk" project={project} lang="en" onAuthError={onAuthError} canWrite canReview canConfigure={false} /></MemoryRouter>)
 }
+const failWith = (status: number, message: string) => Object.assign(new Error(message), { status, auth: status === 401 })
 const listCalls = () => vi.mocked(api).mock.calls.map(([, path]) => path).filter(path => path.startsWith('/bugs?'))
 const params = (path: string) => Object.fromEntries(new URLSearchParams(path.slice(path.indexOf('?') + 1)))
 beforeEach(() => {
@@ -78,5 +80,35 @@ describe('the queue as a URL', () => {
     await screen.findByRole('button', {name: /Receipt crashes/})
     await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?project=demo'))
     expect(screen.queryByTestId('detail')).toBeNull()
+    expect(screen.getByTestId('linked-notice').textContent).toBe('The linked bug could not be opened: it belongs to another project.')
+  })
+  for (const [status, message] of [[404, 'Ticket demo-999 was not found.'], [403, 'Project demo is outside this token.']] as const) {
+    it(`a linked bug the server answers ${status} for leaves the queue usable and is dropped from the URL`, async () => {
+      vi.mocked(api).mockImplementation(async (_token, path) => {
+        if (path.startsWith('/bugs?')) return {items: [bugs['demo-1']!, bugs['demo-2']!], total: 2, limit: 50, offset: 0} as never
+        if (path === '/bugs/demo-2') return bugs['demo-2'] as never
+        throw failWith(status, message)
+      })
+      mount('/bugs?project=demo&bug=demo-999')
+      await screen.findByRole('button', {name: /Receipt crashes/})
+      await waitFor(() => expect(screen.getByTestId('search').textContent).toBe('?project=demo'))
+      expect(screen.queryByTestId('detail')).toBeNull()
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByTestId('linked-notice').textContent).toBe(`The linked bug could not be opened: ${message}`)
+      expect(onAuthError).not.toHaveBeenCalled()
+      await waitFor(() => expect(listCalls().length).toBeGreaterThanOrEqual(2))
+      expect(vi.mocked(api).mock.calls.filter(([, path]) => path === '/bugs/demo-999')).toHaveLength(1)
+      fireEvent.click(screen.getByRole('button', {name: /Total doubles/}))
+      await waitFor(() => expect(screen.getByTestId('detail').textContent).toBe('demo-2'))
+      expect(screen.queryByTestId('linked-notice')).toBeNull()
+    })
+  }
+  it('a linked bug answered 401 still signs the reader out', async () => {
+    vi.mocked(api).mockImplementation(async (_token, path) => {
+      if (path.startsWith('/bugs?')) return {items: [], total: 0, limit: 50, offset: 0} as never
+      throw failWith(401, 'auth')
+    })
+    mount('/bugs?project=demo&bug=demo-1')
+    await waitFor(() => expect(onAuthError).toHaveBeenCalled())
   })
 })

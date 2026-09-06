@@ -8,7 +8,7 @@ export const STR = defineStrings({
     ticket: 'Open ticket', select: 'Select a bug to review its details.', research: 'Research with Codex', config: 'Research settings', repository: 'Repository', revision: 'Revision', enabled: 'Enable research', save: 'Save', notConfigured: 'Configure a repository before requesting research.',
     history: 'Research history', noRuns: 'No research requested.', queued: 'Queued', running: 'Running', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', steer: 'Send guidance', guidance: 'Guidance for Codex', retry: 'Research again',
     review: 'Human review', accept: 'Accept findings', reject: 'Request changes', unreviewed: 'Not reviewed', accepted: 'Accepted', rejected: 'Changes requested', result: 'Research findings', observations: 'Observations', hypotheses: 'Hypotheses', evidence: 'Evidence',
-    priority: 'Priority', ticketVersion: 'Ticket version', reportedBy: 'Reported by', reportedAt: 'Reported at',
+    priority: 'Priority', ticketVersion: 'Ticket version', reportedBy: 'Reported by', reportedAt: 'Reported at', linkedUnavailable: 'The linked bug could not be opened:', linkedElsewhere: 'it belongs to another project.',
     inspectionOnly: 'Code inspection; runtime reproduction has not been verified.', automatic: 'Refreshes every 5 seconds.', readOnly: 'You have read-only access.', duplicateOf: 'Duplicate of ticket', note: 'Review note', status: 'Ticket status', researchStatus: 'Research status', reviewHint: 'Research completion does not confirm the bug or close its ticket.',
   },
   de: {
@@ -19,7 +19,7 @@ export const STR = defineStrings({
     ticket: 'Ticket öffnen', select: 'Einen Fehler auswählen, um seine Details zu prüfen.', research: 'Mit Codex recherchieren', config: 'Recherche-Einstellungen', repository: 'Repository', revision: 'Revision', enabled: 'Recherche aktivieren', save: 'Speichern', notConfigured: 'Vor der Recherche ein Repository konfigurieren.',
     history: 'Rechercheverlauf', noRuns: 'Noch keine Recherche angefragt.', queued: 'Wartend', running: 'Läuft', completed: 'Abgeschlossen', failed: 'Fehlgeschlagen', cancelled: 'Abgebrochen', steer: 'Hinweis senden', guidance: 'Hinweise für Codex', retry: 'Erneut recherchieren',
     review: 'Menschliche Prüfung', accept: 'Ergebnisse annehmen', reject: 'Überarbeitung anfordern', unreviewed: 'Ungeprüft', accepted: 'Angenommen', rejected: 'Überarbeitung angefragt', result: 'Rechercheergebnisse', observations: 'Beobachtungen', hypotheses: 'Hypothesen', evidence: 'Belege',
-    priority: 'Priorität', ticketVersion: 'Ticketversion', reportedBy: 'Gemeldet von', reportedAt: 'Gemeldet am',
+    priority: 'Priorität', ticketVersion: 'Ticketversion', reportedBy: 'Gemeldet von', reportedAt: 'Gemeldet am', linkedUnavailable: 'Der verlinkte Fehler konnte nicht geöffnet werden:', linkedElsewhere: 'er gehört zu einem anderen Projekt.',
     inspectionOnly: 'Codeprüfung; Reproduktion zur Laufzeit wurde nicht verifiziert.', automatic: 'Aktualisiert alle 5 Sekunden.', readOnly: 'Du hast nur Lesezugriff.', duplicateOf: 'Duplikat von Ticket', note: 'Prüfnotiz', status: 'Ticketstatus', researchStatus: 'Recherchestatus', reviewHint: 'Eine abgeschlossene Recherche bestätigt den Fehler nicht und schließt das Ticket nicht.',
   },
 })
