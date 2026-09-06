@@ -5738,6 +5738,20 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /agent-queues:
+    servers: [{ url: / }]
+    get:
+      operationId: agentQueuesPage
+      tags: [agent conversations]
+      summary: Agent queue inspection page (the app shell)
+      description: |
+        Unauthenticated HTML shell. Data requests to `/v1/agent-jobs` and
+        `/v1/agent-jobs/{id}` require the viewer's project-scoped read credential.
+        Displays recent requests and their saved input, results, and execution metadata.
+      security: []
+      responses:
+        "200": { description: HTML page }
+
   /assets/{file}:
     servers: [{ url: / }]
     get:
