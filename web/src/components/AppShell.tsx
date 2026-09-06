@@ -10,22 +10,55 @@
 // defaults to `min-width: auto`, so a wide table or a long unbroken ticket title
 // inside it would refuse to shrink and push the page sideways instead of
 // scrolling within itself.
-import type { ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { listQuestions } from '@/lib/questions'
+import { loadToken } from '@/lib/session'
+import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import type { Locale } from '@/lib/i18n'
 import { AppNavigationContext } from './AppNavigation'
 import { NavRail, type NavRailProps } from './NavRail'
 
 export interface AppShellProps {
+  lang?: Locale
+  onLang?: (lang: Locale) => void
   /** Everything the rail needs; see NavRail. */
   rail: NavRailProps
   /** The surface: its header and its body. */
   children: ReactNode
 }
 
-export function AppShell({ rail, children }: AppShellProps) {
+export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
+  const token = loadToken()
+  const project = rail.project ?? ''
+  const explicitCount = rail.badges?.inbox
+  const [inbox, setInbox] = useState<{ scope: string; count?: number } | null>(null)
+  const request = useRef(0)
+  const scope = `${token}:${project}`
+  const refreshInbox = useCallback(async () => {
+    if (!token || explicitCount != null) return
+    const generation = ++request.current
+    try {
+      const questions = await listQuestions(token, { project, status: 'open' })
+      if (generation === request.current) setInbox({ scope, count: questions.length })
+    } catch {
+      if (generation === request.current) setInbox({ scope })
+    }
+  }, [token, project, scope, explicitCount])
+  useEffect(() => {
+    if (!token || explicitCount != null) return
+    const requests = request
+    void refreshInbox()
+    const refresh = () => { void refreshInbox() }
+    window.addEventListener('focus', refresh)
+    const timer = setInterval(refresh, 30_000)
+    return () => { ++requests.current; clearInterval(timer); window.removeEventListener('focus', refresh) }
+  }, [refreshInbox, token, explicitCount])
+  useProjectUpdates(explicitCount == null ? token : '', project, refreshInbox)
+  const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
-    <AppNavigationContext.Provider value={rail}>
+    <AppNavigationContext.Provider value={navigation}>
       <div className="flex h-dvh overflow-hidden">
-        <NavRail {...rail} navigationInHeader />
+        <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
         <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
       </div>
     </AppNavigationContext.Provider>

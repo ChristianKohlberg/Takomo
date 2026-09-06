@@ -1101,6 +1101,7 @@ function ConnectedLive({
           onRenameNode={onRenameNode}
           onSibling={onSibling}
           onChild={onChild}
+          onAddBranch={() => add(null, null)}
           onDelete={setPruning}
           onReparent={onReparent}
           onPlace={onPlace}

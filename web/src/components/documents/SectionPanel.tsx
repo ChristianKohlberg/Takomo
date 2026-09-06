@@ -72,6 +72,7 @@ export interface SectionPanelProps {
   depth: number
   title: string
   /** Rename the section from here. Absent leaves the heading static. */
+  onHeadingEnter?: () => void
   onTitle?: (text: string) => Promise<unknown> | void
   standing: Standing
   /** This section's history, newest first. */
@@ -108,7 +109,7 @@ export interface SectionPanelProps {
 }
 
 /** Heading level from depth. Stops at h6, which is where HTML stops. */
-const HEADINGS = ['h2', 'h3', 'h4', 'h5', 'h6'] as const
+const HEADINGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const
 
 const headingClass = (depth: number): string =>
   depth === 0
@@ -130,6 +131,7 @@ export function SectionPanel({
   depth,
   title,
   onTitle,
+  onHeadingEnter,
   standing,
   entries,
   historyOpen,
@@ -153,7 +155,7 @@ export function SectionPanel({
   children,
   className,
 }: SectionPanelProps) {
-  const Heading = HEADINGS[Math.min(depth, HEADINGS.length - 1)] as 'h2'
+  const Heading = HEADINGS[Math.min(depth, HEADINGS.length - 1)] ?? 'h6'
   const standingLabel: Record<Standing, string> = {
     confirmed: labels.standingConfirmed,
     changed: labels.standingChanged,
@@ -188,7 +190,8 @@ export function SectionPanel({
             }}
             placeholder={labels.untitled}
             aria-label={labels.renameSection}
-            as="h1"
+            as={Heading}
+            onEnter={onHeadingEnter}
             className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}
           />
         ) : (

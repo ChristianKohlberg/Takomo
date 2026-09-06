@@ -191,6 +191,7 @@ export function DocumentView() {
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
           canAsk={scopes.includes('human') && scopes.includes('write')} onError={handleErr} />
       )}
+      locale={lang}
       session={session}
       connection={connection}
       testsFor={testsFor}

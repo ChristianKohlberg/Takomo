@@ -171,6 +171,8 @@ export function App() {
 
   return (
     <AppShell
+      lang={lang}
+      onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       rail={{
         onNavigate: navigate,
         current: 'environments',
