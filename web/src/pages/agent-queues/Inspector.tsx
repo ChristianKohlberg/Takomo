@@ -73,12 +73,12 @@ function Details({ token, id, automatic, refresh, lang, onAuthError }: {
       <h3 className="mt-5 text-sm font-semibold">{t.prompt}</h3>
       <pre className="bg-muted mt-2 rounded-lg p-3 text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{j.prompt}</pre>
       <h3 className="mt-5 text-sm font-semibold">{t.response}</h3>
-      {j.response ? <Markdown text={j.response} className="mt-2 min-w-0 text-sm [overflow-wrap:anywhere]" /> : <p className="text-muted-foreground mt-2 text-sm">{t.noResponse}</p>}
+      {j.response ? <Markdown diagramAccess={{ token, project: j.project }} text={j.response} className="mt-2 min-w-0 text-sm [overflow-wrap:anywhere]" /> : <p className="text-muted-foreground mt-2 text-sm">{t.noResponse}</p>}
       <details className="mt-5"><summary className="cursor-pointer text-sm font-semibold">{t.snapshot}</summary><pre className="bg-muted mt-2 rounded-lg p-3 text-xs whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{j.snapshot}</pre></details>
       <details className="mt-5"><summary className="cursor-pointer text-sm font-semibold">{t.history} ({data.messages.length})</summary>
         <div className="mt-3 space-y-3">{data.messages.map(message => <div key={message.id} className="border-border rounded-lg border p-3">
           <p className="text-muted-foreground text-xs">{message.role === 'assistant' ? t.codex : t.member} · {date(message.created_at, lang, t.noValue)}</p>
-          <Markdown text={message.body} className="mt-2 text-sm [overflow-wrap:anywhere]" />
+          <Markdown diagramAccess={{ token, project: j.project }} text={message.body} className="mt-2 text-sm [overflow-wrap:anywhere]" />
           <p className="text-muted-foreground mt-2 break-all text-xs">{message.job_id}</p>
         </div>)}</div>
       </details>

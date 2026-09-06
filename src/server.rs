@@ -46,6 +46,8 @@ pub struct AppState {
     /// Dictation, from `TAKOMO_ASSEMBLYAI_API_KEY`. `None` leaves the map's mic
     /// button out rather than offering one that cannot work.
     pub speech: Option<crate::speech::SpeechConfig>,
+    /// Private Kroki renderer; disabled unless TAKOMO_KROKI_URL is configured.
+    pub diagrams: Option<crate::diagrams::DiagramRenderer>,
     /// The OAuth authorization server's identity, from `TAKOMO_PUBLIC_URL`.
     /// `None` disables the OAuth endpoints and the `WWW-Authenticate` challenge
     /// on `/mcp` — a server that cannot state its own issuer identity cannot run
@@ -92,6 +94,7 @@ impl AppState {
             rooms: crate::api::docsync::Rooms::default(),
             doc_agent: None,
             speech: None,
+            diagrams: None,
             oauth,
         })
     }
@@ -126,6 +129,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation", get(crate::api::agent_chat::conversation))
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation/messages", post(crate::api::agent_chat::send))
+        .route("/v1/diagrams/render", post(crate::api::diagrams::render))
         .route("/v1/agent-jobs", get(crate::api::agent_chat::list))
         .route("/v1/agent-jobs/{id}", get(crate::api::agent_chat::detail))
         .route("/v1/agent-jobs/claim", post(crate::api::agent_chat::claim))
@@ -832,6 +836,9 @@ pub async fn serve(bind: &str, db_path: &str, sweep_secs: u64) -> Result<(), Str
         doc_agent,
         crate::speech::SpeechConfig::from_env(std::env::var("TAKOMO_ASSEMBLYAI_API_KEY").ok()),
     );
+    let mut state = Arc::try_unwrap(state).map_err(|_| "unexpected shared startup state")?;
+    state.diagrams = crate::diagrams::DiagramRenderer::from_env()?;
+    let state = Arc::new(state);
     spawn_sweeper(state.clone(), std::time::Duration::from_secs(sweep_secs));
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr)

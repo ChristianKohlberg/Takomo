@@ -11,6 +11,7 @@
 // inside it would refuse to shrink and push the page sideways instead of
 // scrolling within itself.
 import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { DiagramContext } from '@/lib/diagram'
 import { listQuestions } from '@/lib/questions'
 import { loadToken } from '@/lib/session'
 import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
@@ -60,11 +61,13 @@ export function AppShell({ rail, children, lang, onLang, hideRail = false }: App
   }, [shared, project, token, explicitCount, refreshInbox])
   const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
+    <DiagramContext value={{ token, project }}>
     <div className="flex h-dvh overflow-hidden">
       <div style={{ display: hideRail ? 'none' : 'contents' }}>
         <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
       </div>
       <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
     </div>
+    </DiagramContext>
   )
 }

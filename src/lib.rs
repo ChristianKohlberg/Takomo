@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod diagrams;
 pub mod docagent;
 pub mod error;
 pub mod error_codes;
