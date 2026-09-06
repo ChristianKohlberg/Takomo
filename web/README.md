@@ -149,13 +149,19 @@ of it. The header used to carry the brand, five surface names, the project
 picker and up to four action buttons in one row — the nav was already scrolling
 sideways to hide what did not fit, behind an edge that signals nothing. The rail
 gives the surfaces their own axis, so a sixth costs vertical space nobody is
-short of. Two states, toggled by the icon at its top: expanded (icon + label,
-`w-56`) and collapsed (icons only, `w-14`). The choice is a viewer preference,
-so `useNavCollapsed` persists it per origin and every surface reads the same key.
+short of. Two states, toggled by the icon under its top row: expanded (icon +
+label, `w-56`) and collapsed (icons only, `w-24` — wide enough for the project
+initial and the Inbox icon side by side). The choice is a viewer preference, so
+`useNavCollapsed` persists it per origin and every surface reads the same key.
 
-**The project picker is in the rail too**, because it is not about the current
-surface — it SCOPES all of them, and a control every page obeys belongs with the
-navigation rather than in each page's own toolbar. It stopped being a native
+**The project picker is in the rail too** — its top row, where the wordmark used
+to be, with Inbox beside it — because it is not about the current surface: it
+SCOPES all of them, and a control every page obeys belongs with the navigation
+rather than in each page's own toolbar. The Inbox icon carries the count of open
+questions, or a green check at zero; a page that does not pass `badges.inbox`
+gets it from `AppShell`, which counts open questions on an interval, on focus,
+and on the specification page's existing project socket — never by opening a
+socket of its own. It stopped being a native
 `<select>` in the move: a `<select>` cannot be searched, and an install with
 fifty projects turns it into a scroll hunt. `ProjectPicker` is a trigger plus a
 popover with a search field, and it collapses to the project's initial.
@@ -173,7 +179,9 @@ states. The other three surfaces offer it.
 
 Sign-out lives at the bottom of the rail, with the actor and its role. It used
 to be one more icon button beside "refresh" on every page — two adjacent glyphs,
-one harmless and one that ends the session.
+one harmless and one that ends the session. The DE/EN switch is in that same
+profile menu, so the page header carries only the surface's title, its views
+(centred) and its actions.
 
 On a phone the expanded rail would take 224 of 375 px, so there it **overlays**
 the content with a backdrop instead of pushing it, a spacer holds the collapsed
@@ -204,13 +212,19 @@ Three consequences worth knowing before editing `pages/documents/`:
   so nothing jumps as editors mount behind you. jsdom has no
   `IntersectionObserver`, so there everything mounts — which is what makes the
   binding testable at all.
-- **A heading is read-only here.** The title caret lives on the canvas; two
-  carets on one `Y.Text` in two layouts is a fight, not a feature. The section
-  offers "show it on the map" instead, which hands over by link (`#m=…&n=…`) and
-  the canvas selects and centres what arrives. The other direction is the map's
-  ⌘K "read it as the plan" and the `≣ Plan` button, which land on `#n=…`; both
-  links are built and read in `lib/plan-url.ts`, and both are honoured once and
-  then cleared, because a cursor kept in step between two views drags a reader
+- **Headings and new sections are edited in place, against the map's tree.** A
+  heading is `EditableText` bound to the node's title, and Enter on it moves
+  into the section's prose. Every section ends in an inline line: type a title,
+  pick H1–H3 (or prefix `#`/`##`/`###`) and press Enter, and `lib/plan-insert.ts`
+  creates the node under the nearest preceding heading one level up — a skipped
+  level or a blank title is refused rather than silently placed. A heading typed
+  as the last line of a section's prose becomes a section the same way on Enter.
+  The section still offers "show it on the map", which hands over by link
+  (`#m=…&n=…`) and the canvas selects and centres what arrives. The other
+  direction is the map's ⌘K "read it as the plan" and the `≣ Plan` button, which
+  land on `#n=…`; both links are built and read in `lib/plan-url.ts`, and both
+  are honoured once and then cleared, because a cursor kept in step between two
+  views drags a reader
   back every time the other one moves.
 
 **An agent proposes to a SECTION; a person accepts it there.** Proposals live in

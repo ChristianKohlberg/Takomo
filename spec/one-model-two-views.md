@@ -10,6 +10,17 @@ Status: **built** · supersedes the conversion in `spec/mindmap-crdt.md` §"Writ
 A project has **one plan**. The map and the document are two ways of looking at
 it, not two things kept in step.
 
+Opening a project's specification with write access now provides its empty plan
+automatically; there is no separate creation dialog. Existing plans are reused,
+including when two browsers open a new project together. Read-only visits never
+create a plan.
+
+In Doc, type a heading on an inline insertion line and press Enter. Choose H1,
+H2 or H3, or prefix the title with `#`, `##` or `###`. Child headings require a
+preceding parent level. A heading completed at the end of a section's prose also
+becomes a shared section on Enter. The new section appears in Map immediately;
+the map root's + creates a top-level section that appears in Doc.
+
 ---
 
 ## 1. Why the conversion has to go

@@ -31,9 +31,10 @@ import { type SyncConnection } from '@/hooks/useSyncConnection'
 // not construct nodes (`src/api/docprops.rs`). A decision is recorded on the
 // proposal, never erased.
 //
-// **Titles are not edited here.** A heading is read-only and the section offers
-// "show it on the map" instead: the title caret lives on the canvas, and two
-// carets on one Y.Text in two layouts is a fight rather than a feature.
+// Titles and new sections are edited inline against that same map tree.
+import { InlineSection } from '@/components/documents/InlineSection'
+import { insertPlanSection } from '@/lib/plan-insert'
+import type { Locale } from '@/lib/i18n'
 import { ChevronDownIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Y from 'yjs'
@@ -115,6 +116,7 @@ export interface PlanLabels {
 
 export interface PlanProps {
   conversationFor?: (node: string) => ReactNode
+  locale?: Locale
   testsFor: (node: string) => { total: number; failing: number }
   onShowTests: (node: string) => void
   testsLabel: string
@@ -150,6 +152,7 @@ export default function Plan(props: PlanProps) {
 
 function ConnectedPlan({
   conversationFor,
+  locale = 'en',
   connection,
   testsFor,
   onShowTests,
@@ -405,13 +408,31 @@ function ConnectedPlan({
    * Memoised per section for the same reason `refFor` is: an inline arrow would
    * re-register every editor on every render.
    */
+  const pendingEditorFocus = useRef<string | null>(null)
+  const insertSection = (after: string | null, level: 1 | 2 | 3, title: string): boolean => {
+    if (!canWrite) return false
+    const key = insertPlanSection(ydoc, after, level, title, session.display)
+    if (!key) return false
+    pendingEditorFocus.current = key
+    setCollapsed(new Set())
+    setNear((current) => current === null ? null : new Set([...current, key]))
+    setSelected(key)
+    return true
+  }
+
   const editors = useRef(new Map<string, Editor>())
   const editorRefs = useRef(new Map<string, (editor: Editor | null) => void>())
   const editorRefFor = useCallback((key: string) => {
     const existing = editorRefs.current.get(key)
     if (existing) return existing
     const fn = (editor: Editor | null) => {
-      if (editor) editors.current.set(key, editor)
+      if (editor) {
+        editors.current.set(key, editor)
+        if (pendingEditorFocus.current === key) {
+          pendingEditorFocus.current = null
+          editor.commands.focus('start')
+        }
+      }
       else editors.current.delete(key)
     }
     editorRefs.current.set(key, fn)
@@ -589,8 +610,9 @@ function ConnectedPlan({
 
         {rows.length === 0 ? (
           <div className="text-muted-foreground py-8 text-[13.5px]">
-            <p>{labels.empty}</p>
-            <p className="mt-2 opacity-80">{labels.emptyHint}</p>
+            {canWrite ? (
+              <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />
+            ) : <p>{labels.empty}</p>}
           </div>
         ) : (
           // A measure, not a width: prose running the full width of a desktop
@@ -598,6 +620,7 @@ function ConnectedPlan({
           // `mx-auto` centres that measure in whatever column is left once the
           // outline has taken its share.
           <div className="mx-auto min-w-0 max-w-[720px]">
+            {canWrite && <InlineSection locale={locale} maxLevel={1} onInsert={(level, title) => insertSection(null, level, title)} />}
             {visible.map((row) => {
               const mounted = near === null || near.has(row.key)
               const fragment = mounted ? (fragments.get(row.key) ?? null) : null
@@ -610,6 +633,7 @@ function ConnectedPlan({
                   depth={row.depth}
                   title={row.title}
                   onTitle={(text) => onTitle(row.key, text)}
+                  onHeadingEnter={() => editors.current.get(row.key)?.commands.focus('start')}
                   standing={standings[row.key] ?? 'unseen'}
                   entries={trace.get(row.key) ?? []}
                   historyOpen={openHistory.has(row.key)}
@@ -650,6 +674,7 @@ function ConnectedPlan({
                       display={session.display}
                       color={color}
                       canWrite={canWrite}
+                      onInsertSection={(level, title) => insertSection(row.key, level, title)}
                       onSettled={() => onEdited(row.key)}
                       highlight={highlights[row.key] ?? ''}
                       onEditor={editorRefFor(row.key)}
@@ -664,6 +689,7 @@ function ConnectedPlan({
                     </p>
                   )}
                   {conversationFor?.(row.key)}
+                  {canWrite && <InlineSection locale={locale} maxLevel={Math.min(row.depth + 2, 3)} onInsert={(level, title) => insertSection(row.key, level, title)} />}
                 </SectionPanel>
               )
             })}

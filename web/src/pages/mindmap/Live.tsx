@@ -196,10 +196,9 @@ export interface LiveProps {
   /**
    * A section to select and centre once the map is here, or null.
    *
-   * `/documents` renders the same plan as prose, and a heading there is not
-   * editable — the title caret lives on the map. So that view offers "show it on
-   * the map", and this is where the map honours it. It is cleared the moment it
-   * is honoured, so a later fold or pan is not undone by a stale ask.
+   * `/documents` renders the same plan as prose and offers "show it on the map"
+   * beside each section; this is where the map honours it. It is cleared the
+   * moment it is honoured, so a later fold or pan is not undone by a stale ask.
    */
   focusNode?: string | null
   onSelection?: (node: string | null) => void
@@ -1101,6 +1100,7 @@ function ConnectedLive({
           onRenameNode={onRenameNode}
           onSibling={onSibling}
           onChild={onChild}
+          onAddBranch={() => add(null, null)}
           onDelete={setPruning}
           onReparent={onReparent}
           onPlace={onPlace}

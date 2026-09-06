@@ -1,4 +1,5 @@
-// The left navigation rail: brand, the four work surfaces, and the profile block.
+// The left navigation rail: project scope and Inbox (or the brand), the work
+// surfaces, and the profile block.
 //
 // This replaces the horizontal nav strip that used to live inside AppHeader.
 // The strip had to scroll sideways the moment a fifth surface arrived, which
@@ -22,6 +23,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
+  LanguagesIcon,
   InboxIcon,
   LayoutGridIcon,
   LightbulbIcon,
@@ -33,6 +35,8 @@ import {
   SettingsIcon,
 } from 'lucide-react'
 import { Logo } from './Logo'
+import { AppNavigation } from './AppNavigation'
+import type { Locale } from '@/lib/i18n'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
 import { cn } from '@/lib/utils'
 import { useIsPhone } from '@/hooks/useIsPhone'
@@ -60,7 +64,10 @@ export interface NavRailLabels {
 }
 
 export interface NavRailProps {
-  /** AppShell moves global controls to AppHeader. */
+  lang?: Locale
+  onLang?: (lang: Locale) => void
+  /** Set by AppShell: project scope and Inbox take the top row in place of the
+   *  brand, the collapse toggle drops beneath it, and Inbox leaves the list. */
   navigationInHeader?: boolean
   nav: NavLabels
   /**
@@ -182,6 +189,8 @@ function IconButton({
 
 export function NavRail({
   navigationInHeader = false,
+  lang,
+  onLang,
   nav,
   current,
   badges,
@@ -211,6 +220,7 @@ export function NavRail({
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const settingsRef = useRef<HTMLAnchorElement>(null)
+  const languageRef = useRef<HTMLButtonElement>(null)
   const signOutRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const settingsItemId = `${menuId}-settings`
@@ -259,16 +269,18 @@ export function NavRail({
   function onMenuKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      const next = Math.min(menuActive + 1, 1)
+      const next = Math.min(menuActive + 1, onLang ? 2 : 1)
       setMenuActive(next)
       if (next === 0) settingsRef.current?.focus()
-      else signOutRef.current?.focus()
+      else if (next === 1) signOutRef.current?.focus()
+      else languageRef.current?.focus()
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       const next = Math.max(menuActive - 1, 0)
       setMenuActive(next)
       if (next === 0) settingsRef.current?.focus()
-      else signOutRef.current?.focus()
+      else if (next === 1) signOutRef.current?.focus()
+      else languageRef.current?.focus()
     } else if (e.key === 'Escape') {
       e.preventDefault()
       closeMenu()
@@ -280,7 +292,7 @@ export function NavRail({
       {overlay && (
         <>
           {/* Keeps the content from sliding left as the rail lifts out of flow. */}
-          <div className="w-14 flex-none" aria-hidden />
+          <div className={navigationInHeader ? "w-24 flex-none" : "w-14 flex-none"} aria-hidden />
           <div
             className="fixed inset-0 z-40 bg-black/40"
             aria-hidden
@@ -296,7 +308,7 @@ export function NavRail({
           // It rendered half off-screen until the scrolling moved to the nav
           // list, which is the only part long enough to need it anyway.
           'bg-card border-r-border-soft flex flex-none flex-col border-r',
-          expanded ? 'w-56' : 'w-14',
+          expanded ? 'w-56' : navigationInHeader ? 'w-24' : 'w-14',
           overlay && 'fixed inset-y-0 left-0 z-50 shadow-[var(--shadow)]',
         )}
       >
@@ -304,9 +316,10 @@ export function NavRail({
           className={cn(
             'flex min-h-[58px] flex-none items-center gap-2 px-3 py-2.5',
             collapsed && 'justify-center',
+            navigationInHeader && collapsed && 'px-1',
           )}
         >
-          {expanded && (
+          {navigationInHeader ? <AppNavigation navigation={{ nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed, onCollapsed, onSignOut, onNavigate }} /> : expanded && (
             <div className="flex min-w-0 items-center gap-2.5 text-[color:var(--accent2)]">
               <Logo />
               <span className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">
@@ -314,15 +327,21 @@ export function NavRail({
               </span>
             </div>
           )}
-          {navigationInHeader && collapsed && <Logo />}
-          <span className={cn(expanded && 'grow')} />
-          {(!navigationInHeader || overlay) && <IconButton
+
+          {!navigationInHeader && <span className={cn(expanded && 'grow')} />}
+          {(!navigationInHeader) && <IconButton
             label={collapsed ? labels.expand : labels.collapse}
             onClick={() => onCollapsed(!collapsed)}
           >
             {collapsed ? <PanelLeftOpenIcon size={18} /> : <PanelLeftCloseIcon size={18} />}
           </IconButton>}
         </div>
+
+        {navigationInHeader && <div className="flex justify-end px-2">
+          <IconButton label={collapsed ? labels.expand : labels.collapse} onClick={() => onCollapsed(!collapsed)}>
+            {collapsed ? <PanelLeftOpenIcon size={18} /> : <PanelLeftCloseIcon size={18} />}
+          </IconButton>
+        </div>}
 
         {/* The scope sits ABOVE the destinations, because it changes what each
             of them shows — reading it after picking a surface would be reading
@@ -406,7 +425,7 @@ export function NavRail({
         <div
           className={cn(
             'border-t-border-soft flex flex-none border-t px-2 py-2.5',
-            collapsed && 'px-0',
+            collapsed && 'justify-center px-0',
           )}
         >
           <div ref={menuRef} className={cn('relative', collapsed && 'flex justify-center')}>
@@ -486,6 +505,16 @@ export function NavRail({
                   <LogOutIcon size={16} className="flex-none" />
                   <span>{labels.signOut}</span>
                 </button>
+                {lang && onLang && <button
+                  ref={languageRef}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => onLang(lang === 'de' ? 'en' : 'de')}
+                  className={cn('text-foreground hover:bg-muted flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[13px] font-[650]', menuActive === 2 && 'bg-accent')}
+                >
+                  <LanguagesIcon size={16} className="flex-none" />
+                  <span>{lang === 'de' ? 'Sprache: Deutsch → English' : 'Language: English → Deutsch'}</span>
+                </button>}
               </div>
             )}
           </div>

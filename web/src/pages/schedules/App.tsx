@@ -251,6 +251,8 @@ export function App() {
 
   return (
     <AppShell
+      lang={lang}
+      onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       rail={{
         onNavigate: navigate,
         current: 'schedules',
@@ -296,11 +298,6 @@ export function App() {
     >
       <AppHeader
         title={t.schedules}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       >
         <Button
           onClick={() => {

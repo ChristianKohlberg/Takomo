@@ -75,12 +75,12 @@ describe('SectionPanel', () => {
   it('heads the section with its address and its title, at its level', () => {
     panel()
     expect(screen.getByText('2.1')).toBeTruthy()
-    expect(screen.getByRole('heading', { level: 3 }).textContent).toBe('Versioning')
+    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Versioning')
   })
 
   it('reads a top-level section as the plan\'s first heading level', () => {
     panel({ depth: 0 })
-    expect(screen.getByRole('heading', { level: 2 })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1 })).toBeTruthy()
   })
 
   it('renames the section in place, and still offers the map', async () => {

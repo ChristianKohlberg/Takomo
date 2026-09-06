@@ -76,6 +76,7 @@ export interface SectionEditorProps {
    * decision is made against the right one.
    */
   onEditor?: (editor: Editor | null) => void
+  onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
   label: string
 }
 
@@ -90,7 +91,10 @@ export default function SectionEditor({
   highlight = '',
   onEditor,
   label,
+  onInsertSection,
 }: SectionEditorProps) {
+  const insertSection = useRef(onInsertSection)
+  insertSection.current = onInsertSection
   const dirty = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // The callback is read at fire time rather than captured, so a settle already
@@ -121,6 +125,30 @@ export default function SectionEditor({
         HighlightBlocks,
       ],
       editorProps: {
+        handleKeyDown: (view, event) => {
+          if (!canWrite || event.key !== 'Enter' || event.shiftKey || event.isComposing || !insertSection.current) return false
+          const { $from, empty } = view.state.selection
+          const block = $from.parent
+          // A completed heading on the final line becomes a real section.
+          // Earlier headings stay in place: moving their following prose would
+          // require splitting the section, so never silently discard that text.
+          if (!empty || block.type.name !== 'heading' || $from.depth !== 1 ||
+              $from.parentOffset !== block.content.size) return false
+          let hasFollowingContent = false
+          view.state.doc.nodesBetween($from.after(), view.state.doc.content.size, (node) => {
+            if (node.type.name !== 'paragraph' || node.content.size > 0) hasFollowingContent = true
+          })
+          if (hasFollowingContent) return false
+          const level = Number(block.attrs.level)
+          if (level < 1 || level > 3 || !insertSection.current(level as 1 | 2 | 3, block.textContent)) return false
+          const from = $from.before()
+          const to = $from.after()
+          const tr = view.state.tr
+          if (view.state.doc.childCount === 1) tr.replaceWith(from, to, view.state.schema.nodes.paragraph!.create())
+          else tr.delete(from, to)
+          view.dispatch(tr)
+          return true
+        },
         attributes: {
           class: 'prose prose-neutral dark:prose-invert max-w-none focus:outline-none px-1 py-1',
           'aria-label': label,

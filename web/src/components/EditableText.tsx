@@ -28,7 +28,8 @@ export interface EditableTextProps {
    */
   placeholder?: string
   className?: string
-  as?: 'h1' | 'p'
+  as?: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' | 'p'
+  onEnter?: () => void
   'aria-label'?: string
 }
 
@@ -40,6 +41,7 @@ export function EditableText({
   placeholder,
   className,
   as = 'p',
+  onEnter,
   'aria-label': ariaLabel,
 }: EditableTextProps) {
   const ref = useRef<HTMLElement>(null)
@@ -65,6 +67,13 @@ export function EditableText({
       )}
       contentEditable={editable}
       suppressContentEditableWarning
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' && onEnter && !event.nativeEvent.isComposing) {
+          event.preventDefault()
+          event.currentTarget.blur()
+          onEnter()
+        }
+      }}
       onBlur={() => {
         const node = ref.current
         if (!node) return

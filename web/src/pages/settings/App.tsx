@@ -439,6 +439,8 @@ export function App() {
 
   return (
     <AppShell
+      lang={lang}
+      onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       rail={{
         onNavigate: navigate,
         current: 'account',
@@ -466,11 +468,6 @@ export function App() {
     >
       <AppHeader
         title={t.settings}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       />
 
       {/* max-w-3xl, not the wider column this used with a sidebar: the global

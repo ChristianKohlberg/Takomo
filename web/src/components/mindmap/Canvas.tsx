@@ -142,6 +142,8 @@ export interface CanvasProps {
   /** Enter: a sibling after this node. Tab: a child of it. */
   onSibling: (id: string) => void
   onChild: (id: string) => void
+  /** Add a first-level section under the map root. */
+  onAddBranch: () => void
   onDelete: (id: string) => void
   onReparent: (id: string, parent: string) => void
   onPlace: (id: string, at: Point) => void
@@ -277,6 +279,7 @@ export function Canvas({
   onRenameNode,
   onSibling,
   onChild,
+  onAddBranch,
   onDelete,
   onReparent,
   onPlace,
@@ -324,6 +327,7 @@ export function Canvas({
   // The node a file or link is hovering over, mid-drag.
   const [dropOver, setDropOver] = useState<string | null>(null)
   const fitted = useRef(false)
+  const rootFitted = useRef(false)
 
   const placed = mode === 'radial' ? radialLayout(nodes) : layout(nodes)
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
@@ -335,15 +339,17 @@ export function Canvas({
     (a, b) => Number(a.node.id === naming) - Number(b.node.id === naming),
   )
 
-  // Fit once, when the map first arrives with something in it. Refitting on every
+  // Centre the root immediately, then fit once when synced sections arrive.
+  // Refitting on every
   // change would yank the view out from under somebody who had panned somewhere —
   // and on a shared canvas that somebody might be a collaborator typing.
   useLayoutEffect(() => {
-    if (fitted.current || nodes.length === 0) return
+    if (fitted.current || (nodes.length === 0 && rootFitted.current)) return
     const box = svgRef.current?.getBoundingClientRect()
     if (!box || box.width === 0) return
     setViewport(fit(placed.bounds, box.width, box.height))
-    fitted.current = true
+    rootFitted.current = true
+    fitted.current = nodes.length > 0
   }, [nodes.length, placed.bounds])
 
   const pointIn = useCallback((e: { clientX: number; clientY: number }): Point => {
@@ -696,15 +702,17 @@ export function Canvas({
           // goes, and forcing a parent is wrong for the ten minutes a brainstorm
           // is for. Centred on the cursor, because that is where it was aimed.
           if (!canWrite) return
-          // The root box is the MAP, not a node, and it is not in `placed.nodes`
-          // for `nodeAt` to have found — so it has to be excluded by hand, or a
-          // double-click on the title drops a thought on top of it.
+          // The root is outside `placed.nodes`. Grow a top-level section when
+          // it is double-clicked instead of placing a loose thought over it.
           const onRoot =
             world.x >= placed.root.x &&
             world.x <= placed.root.x + NODE_WIDTH &&
             world.y >= placed.root.y &&
             world.y <= placed.root.y + NODE_HEIGHT
-          if (onRoot) return
+          if (onRoot) {
+            onAddBranch()
+            return
+          }
           onCreateAt({ x: world.x - NODE_WIDTH / 2, y: world.y - NODE_HEIGHT / 2 })
         }}
       >
@@ -794,8 +802,7 @@ export function Canvas({
             })}
           </g>
 
-          {/* The root: the map's title, which is not a node and cannot be edited
-              here — it is the map, and renaming it belongs with the map. */}
+          {/* The map root is always present. Its children are top-level sections. */}
           <g transform={`translate(${placed.root.x} ${placed.root.y})`}>
             <rect
               width={NODE_WIDTH}
@@ -808,6 +815,24 @@ export function Canvas({
                 {title}
               </div>
             </foreignObject>
+            {canWrite && (
+              <foreignObject x={NODE_WIDTH - 14} y={NODE_HEIGHT / 2 - 18} width={36} height={36}>
+                <div className="pointer-events-none flex h-full items-center">
+                  <button
+                    type="button"
+                    aria-label={labels.addChild}
+                    title={labels.addChild}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onClick={onAddBranch}
+                    className="bg-primary text-primary-foreground ring-card hover:bg-primary/90 focus-visible:ring-ring pointer-events-auto flex h-7 w-7 cursor-pointer items-center justify-center rounded-full shadow-md ring-2 focus-visible:ring-4 focus-visible:outline-none"
+                  >
+                    <PlusIcon className="size-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </foreignObject>
+            )}
           </g>
 
           {ordered.map((p) => {
@@ -1024,13 +1049,6 @@ export function Canvas({
           })}
         </g>
       </svg>
-
-      {nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
-          <div className="text-foreground text-[15px] font-[680]">{labels.empty}</div>
-          <div className="text-muted-foreground text-[13px]">{labels.emptyHint}</div>
-        </div>
-      )}
 
       {relationFrom && (
         <div className="bg-card border-border text-foreground pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-lg border px-3 py-1.5 text-[12px] font-[650]">

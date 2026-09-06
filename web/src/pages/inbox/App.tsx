@@ -506,6 +506,8 @@ export function App() {
 
   return (
     <AppShell
+      lang={lang}
+      onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       rail={{
         onNavigate: navigate,
         current: 'inbox',
@@ -554,11 +556,6 @@ export function App() {
     >
       <AppHeader
         title={t.inbox}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       >
         <span className="text-muted-foreground mr-1 hidden text-[11.5px] md:inline">{t.kbd}</span>
         <Button variant="outline" size="icon" title="Refresh" onClick={() => void fetchAll()}>

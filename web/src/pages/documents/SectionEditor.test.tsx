@@ -5,13 +5,16 @@
 // map whose entries carry a `prose` XmlFragment — because the claim being tested
 // is about Yjs and Tiptap agreeing, and a mock of either would only assert that
 // the mock was written to match the test.
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
 import SectionEditor from './SectionEditor'
+import type { Editor } from '@tiptap/react'
+import { readPlanTree } from '@/lib/mindmap-crdt'
+import { insertPlanSection } from '@/lib/plan-insert'
 
 /** A node with prose in it, as `createNode` and the server both write one. */
 function section(doc: Y.Doc, id: string, text: string): Y.XmlFragment {
@@ -45,6 +48,49 @@ function mount(doc: Y.Doc, fragment: Y.XmlFragment, label: string) {
 }
 
 describe('SectionEditor', () => {
+  it('turns a completed final heading into a shared section without losing earlier prose', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Keep this paragraph.')
+    const awareness = new Awareness(doc)
+    const insert = vi.fn(() => true)
+    let editor: Editor | null = null
+    render(<SectionEditor ydoc={doc} fragment={fragment}
+      provider={{ awareness } as unknown as WebsocketProvider}
+      display="Ada" color="#2563eb" canWrite onSettled={() => {}}
+      onEditor={(value) => { editor = value }} onInsertSection={insert} label="Section heading" />)
+    act(() => {
+      editor!.commands.insertContentAt(editor!.state.doc.content.size, { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Invoices' }] })
+      editor!.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'heading') editor!.commands.setTextSelection(pos + node.nodeSize - 1)
+      })
+    })
+    fireEvent.keyDown(screen.getByLabelText('Section heading'), { key: 'Enter' })
+    expect(insert).toHaveBeenCalledWith(2, 'Invoices')
+    expect(fragment.toString()).toContain('Keep this paragraph.')
+    expect(fragment.toString()).not.toContain('Invoices')
+    awareness.destroy()
+  })
+
+  it('leaves an empty final heading to the editor rather than creating an untitled section', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Keep this paragraph.')
+    const awareness = new Awareness(doc)
+    let editor: Editor | null = null
+    render(<SectionEditor ydoc={doc} fragment={fragment}
+      provider={{ awareness } as unknown as WebsocketProvider}
+      display="Ada" color="#2563eb" canWrite onSettled={() => {}}
+      onEditor={(value) => { editor = value }} label="Section heading"
+      onInsertSection={(level, title) => insertPlanSection(doc, 'mn-1', level, title, 'Ada') !== null} />)
+    act(() => {
+      editor!.commands.insertContentAt(editor!.state.doc.content.size, { type: 'heading', attrs: { level: 1 } })
+      editor!.commands.focus('end')
+    })
+    fireEvent.keyDown(screen.getByLabelText('Section heading'), { key: 'Enter' })
+    expect(readPlanTree(doc).map((node) => node.id)).toEqual(['mn-1'])
+    expect(fragment.toString()).toContain('Keep this paragraph.')
+    awareness.destroy()
+  })
+
   it('shows the prose of the fragment it was handed', () => {
     const doc = new Y.Doc()
     const one = section(doc, 'mn-1', 'The surface everything hangs off.')
