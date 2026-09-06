@@ -44,7 +44,7 @@ export default function App() {
   if (!token) return <TokenGate title={`takomo · ${t.title}`} subtitle={c.tokenNeeded} tokenLabel={c.gateLabel} openLabel={c.gateOpen} emptyMessage={c.tokenNeeded} error={gateError} onSubmit={value => { saveToken(value); setToken(value); setGateError('') }} />
   return <AppShell lang={lang} onLang={value => { setLang(value); localStorage.setItem('takomo.lang', value) }} rail={{
     current: 'agentQueues', onNavigate: navigate,
-    nav: { board: c.board, inbox: c.inbox, specification: c.specification, initiatives: c.initiatives, schedules: c.schedules, environments: c.environments, agentQueues: t.title },
+    nav: { board: c.board, epics: c.epics, inbox: c.inbox, specification: c.specification, initiatives: c.initiatives, schedules: c.schedules, environments: c.environments, agentQueues: t.title },
     projects: identity?.projects ?? [], project, onProject: value => { setProject(value); saveProject(value) },
     projectLabels: { project: c.project, search: c.projectSearch, noMatch: c.projectNoMatch, all: c.allProjects },
     labels: { expand: c.navExpand, collapse: c.navCollapse, signOut: c.signOut, account: c.navAccount, settings: c.settings },
