@@ -120,8 +120,8 @@ paths:
         '409':
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
-      parameters: &id001
-      - &id002
+      parameters: &laneRoute001
+      - &laneRoute002
         name: limit
         in: query
         schema:
@@ -129,7 +129,7 @@ paths:
           minimum: 1
           maximum: 200
           default: 100
-      - &id003
+      - &laneRoute003
         name: offset
         in: query
         schema:
@@ -312,7 +312,7 @@ paths:
         '409':
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
-      parameters: *id001
+      parameters: *laneRoute001
     post:
       tags:
       - lanes
@@ -374,8 +374,8 @@ paths:
           description: Archived project or lane, invalid handoff state, revision mismatch,
             or stale worker attempt
       parameters:
-      - *id002
-      - *id003
+      - *laneRoute002
+      - *laneRoute003
       - name: status
         in: query
         schema:

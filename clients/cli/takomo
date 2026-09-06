@@ -4265,7 +4265,7 @@ cmd_lane() {
 
 cmd_handoff() {
   local action=${1:-} id=${2:-}
-  [ $# -eq 2 ] && [ -n "$id" ] || die "handoff: usage: takomo handoff show|send|cancel ID"
+  if [ $# -ne 2 ] || [ -z "$id" ]; then die "handoff: usage: takomo handoff show|send|cancel ID"; fi
   case "$action" in
     show) api GET "/v1/handoffs/$(urlenc "$id")" >/dev/null ;;
     send) api POST "/v1/handoffs/$(urlenc "$id")/dispatch" '{}' >/dev/null ;;
