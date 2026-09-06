@@ -50,11 +50,21 @@ jobs:
 
   rust:
     needs: [web, scope]
+    if: ${{ !cancelled() }}
     name: Rust (build · clippy · fmt · test)
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
     steps:
+      - name: Upstream jobs succeeded
+        if: needs.web.result != 'success' || needs.scope.result != 'success'
+        env:
+          WEB_RESULT: ${{ needs.web.result }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+        run: |
+          echo "::error::cannot run Rust checks: web=$WEB_RESULT scope=$SCOPE_RESULT"
+          exit 1
+
       - uses: actions/checkout@v4
 
       - name: Download frontend build

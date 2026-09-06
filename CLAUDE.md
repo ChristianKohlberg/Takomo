@@ -106,9 +106,15 @@ git worktree add --detach /tmp/verify <sha>
 # Private target dir, deliberately — a shared one makes this result untrustworthy
 # whenever another session is building. See "Share one target/" below.
 cd /tmp/verify && export CARGO_TARGET_DIR=/tmp/verify-target
-cargo test --release && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cargo test --locked && cargo clippy --all-targets -- -D warnings && cargo fmt --check
 git worktree remove /tmp/verify && rm -rf /tmp/verify-target
 ```
+
+That is the debug profile, the same one ordinary PR and main CI runs — measured locally on this
+repo, a cold `cargo test --locked` took 83 s against 313 s for `cargo test --release --locked`, and
+the two run the same 569 tests. Release or high-risk work (see `docs/validation.md`) adds
+`cargo test --release --locked` in the same worktree, because that is the profile the full CI lane
+and the shipped binary use.
 
 A worktree is also the way to merge or rebase at all when the tree is dirty: `git merge` refuses if
 any file it must touch has local changes, and stashing someone else's work in order to proceed risks
@@ -170,7 +176,7 @@ especially the clean-worktree verification above — must not share a target dir
 building session. Give that one run a private dir:
 
 ```sh
-cd /tmp/verify && CARGO_TARGET_DIR=/tmp/verify-target cargo test --release
+cd /tmp/verify && CARGO_TARGET_DIR=/tmp/verify-target cargo test --locked
 ```
 
 It costs a full cold build, which is the price of an answer that is about your branch. CI is the

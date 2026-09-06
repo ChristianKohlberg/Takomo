@@ -50,9 +50,12 @@ renames of those files must retain that coverage. Keep this list updated when
 adding build inputs.
 
 Docker is skipped on ordinary fast runs; it is not silently considered tested.
-Existing Rust/frontend check names are retained. A full run is identified by
-successful **Build (release)** and **Test (release)** steps and the successful
-**Docker image (builds · serves every page)** job, not just a green fast CI badge.
+Existing Rust/frontend check names are retained. If the scope job itself fails,
+the Rust check fails rather than being skipped: a skipped required check counts
+as satisfied on GitHub, so skipping would let a PR merge with no Rust tests run.
+A full run is identified by successful **Build (release)** and **Test (release)**
+steps and the successful **Docker image (builds · serves every page)** job, not
+just a green fast CI badge.
 Nightly runs use default-branch HEAD. Manual runs use the selected branch/tag
 commit; record the run's actual SHA because the branch can advance.
 
@@ -101,4 +104,6 @@ small sample and cannot prove project-wide savings.
 If deferred checks expose regressions or debug tests do not improve turnaround,
 restore unconditional release tests and Docker in CI. Keep proportionate local
 validation unless evidence shows it caused the regression. Never share a Cargo
-test target directory between concurrent worktrees; see CLAUDE.md.
+test target directory between concurrent worktrees; see CLAUDE.md. Ordinary
+isolated-worktree verification uses the debug profile (`cargo test --locked`);
+release and high-risk work adds `cargo test --release --locked`.
