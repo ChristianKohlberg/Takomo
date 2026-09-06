@@ -513,6 +513,7 @@ export function App() {
         current: 'inbox',
         nav: {
           board: t.board,
+          epics: t.epics,
           inbox: t.inbox,
           specification: t.specification,
           initiatives: t.initiatives,

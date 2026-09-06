@@ -1,333 +1,125 @@
-// What the epics view must get right, minus what jsdom cannot see.
-//
-// There is no layout engine here, so nothing below proves the grid LOOKS right —
-// the responsive contract in web/README.md and the eslint rules own that. What
-// these prove is the reasoning: which epics are called stalled, what a claim
-// reads as, that the lanes an epic belongs to are named rather than shown as
-// ids, preset definitions, filters, honest unknown last-activity, and that a row
-// is a real button a keyboard can reach.
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { EpicsView } from './EpicsView'
+import { EPICS_STR } from './epics-strings'
+import { applyEpicsGrid, DEFAULT_FILTERS, needsAttention } from './epicsGrid'
 import type { RoadmapEpic } from '@/lib/roadmap'
-import {
-  applyEpicsGrid,
-  matchesPreset,
-  presetSort,
-  PRESET_IDS,
-} from './epicsGrid'
 
-afterEach(cleanup)
-
-const labels = {
-  held: 'held',
-  stalled: 'stalled',
-  awaiting: 'awaiting an answer',
-  flagged: 'flagged',
-  ready: 'ready',
-  backlog: 'backlog',
-  heldBy: 'held by',
-  idle: 'idle',
-  indefinite: 'no expiry',
-  noLane: 'No initiative',
-  empty: 'No epics in this project.',
-  emptyHint: 'An epic groups the work of one version.',
-  progress: 'Progress',
-  colEpic: 'Epic',
-  colState: 'State',
-  colLanes: 'Initiatives',
-  colProgress: 'Progress',
-  colHolder: 'Holder',
-  colLastActivity: 'Last activity',
-  sortAscending: 'sorted ascending',
-  sortDescending: 'sorted descending',
-  sortNone: 'sortable',
-  filters: 'Filters',
-  filterStateCategory: 'Category',
-  filterLane: 'Initiative',
-  filterClaimed: 'Claim',
-  filterAll: 'All',
-  filterClaimedYes: 'Claimed',
-  filterClaimedNo: 'Unclaimed',
-  clearFilters: 'Clear filters',
-  noMatchFilters: 'No epics match these filters.',
-  presets: 'Quick views',
-  presetRecentCreated: 'Recently created',
-  presetNearlyComplete: 'Nearly complete',
-  presetNotStarted: 'Not started',
-  presetStalled: 'Stalled',
-  presetAwaiting: 'Awaiting answer',
-  presetUnclaimed: 'Unclaimed',
-  presetFlagged: 'Flagged',
-  unclaimed: 'unclaimed',
-  lastActivityUnknown: 'unknown (unclaimed)',
-  stalledMarker: 'stalled',
-}
-
+afterEach(() => { cleanup(); vi.restoreAllMocks() })
 const base: RoadmapEpic = {
-  id: 'demo-a',
-  title: 'Billing v2',
-  state: 'ready',
-  state_category: 'todo',
-  priority: 'normal',
-  total: 3,
-  done: 1,
-  percent: 33,
-  ready: 2,
-  backlog: 0,
-  awaiting_answer: 0,
-  initiatives: [],
-  claim: null,
-  flags: [],
+  id: 'demo-a', title: 'Billing v2', state: 'ready', state_category: 'todo', priority: 'normal',
+  total: 12, done: 8, percent: 67, ready: 2, backlog: 2, awaiting_answer: 0,
+  initiatives: ['ini-billing'], claim: null, flags: [], last_activity_at: '2026-09-06T09:00:00Z',
 }
-
-const claim = {
-  holder: 'agent:w1',
-  held_since: '2026-08-14T00:00:00.000Z',
-  held_for_seconds: 7200,
-  indefinite: true,
-  expires_at: null,
-  last_activity_at: '2026-08-16T12:00:00.000Z',
-  idle_seconds: 260_000,
-}
-
-function view(epics: RoadmapEpic[], onOpen = vi.fn(), titles: Record<string, string> = {}) {
-  render(<EpicsView epics={epics} laneTitles={titles} onOpen={onOpen} labels={labels} />)
+const claim = { holder: 'agent:builder', held_since: null, held_for_seconds: 90000,
+  indefinite: true, expires_at: null, last_activity_at: '2026-09-05T09:00:00Z', idle_seconds: 90000 }
+const labels = EPICS_STR.en
+function view(epics: RoadmapEpic[], extra: Partial<React.ComponentProps<typeof EpicsView>> = {}) {
+  const onOpen = vi.fn()
+  render(<EpicsView epics={epics} laneTitles={{ 'ini-billing': 'Billing' }} onOpen={onOpen} labels={labels} {...extra} />)
   return onOpen
 }
+function choose(label: string, option: string) {
+  fireEvent.keyDown(screen.getByLabelText(label), { key: 'ArrowDown' })
+  fireEvent.click(screen.getByRole('option', { name: option }))
+}
 
-describe('epicsGrid presets', () => {
-  const epics: RoadmapEpic[] = [
-    base,
-    {
-      ...base,
-      id: 'demo-b',
-      title: 'Old epic',
-      done: 0,
-      percent: 0,
-      total: 5,
-      state_category: 'todo',
-    },
-    {
-      ...base,
-      id: 'demo-c',
-      title: 'Nearly done',
-      done: 4,
-      percent: 80,
-      total: 5,
-      state_category: 'in_progress',
-    },
-    { ...base, id: 'demo-d', claim, flags: ['open_with_all_children_done'] },
-    { ...base, id: 'demo-e', awaiting_answer: 2 },
-  ]
-
-  it('defines every shipped preset id', () => {
-    expect(PRESET_IDS).toEqual([
-      'recentCreated',
-      'nearlyComplete',
-      'notStarted',
-      'stalled',
-      'awaiting',
-      'unclaimed',
-      'flagged',
-    ])
+describe('epic list ordering and filters', () => {
+  it('puts attention first, newest activity within groups, and unknown activity last', () => {
+    const epics = [
+      { ...base, id: 'routine', last_activity_at: '2026-09-06T12:00:00Z' },
+      { ...base, id: 'older', awaiting_answer: 1, last_activity_at: '2026-09-05T12:00:00Z' },
+      { ...base, id: 'unknown', last_activity_at: null },
+      { ...base, id: 'newer', by_category: { blocked: 2 }, last_activity_at: '2026-09-06T10:00:00Z' },
+    ]
+    expect(applyEpicsGrid(epics, DEFAULT_FILTERS, 'attention').map((e) => e.id)).toEqual(['newer', 'older', 'routine', 'unknown'])
+    expect(applyEpicsGrid(epics, DEFAULT_FILTERS, 'activity').map((e) => e.id)).toEqual(['routine', 'newer', 'older', 'unknown'])
   })
-
-  it('nearlyComplete means 75–99% with work', () => {
-    const nearly = epics[2]!
-    expect(matchesPreset(nearly, 'nearlyComplete', 86_400)).toBe(true)
-    expect(matchesPreset(epics[0]!, 'nearlyComplete', 86_400)).toBe(false)
-    expect(matchesPreset({ ...base, percent: 100, done: 3, total: 3 }, 'nearlyComplete', 86_400)).toBe(
-      false,
-    )
+  it('does not mistake empty epics or reserved work for blocked work', () => {
+    expect(needsAttention({ ...base, flags: ['empty_epic'], total: 0 })).toBe(false)
+    expect(needsAttention({ ...base, backlog: 12 })).toBe(false)
+    expect(needsAttention({ ...base, claim })).toBe(true)
   })
-
-  it('notStarted means zero children completed', () => {
-    expect(matchesPreset(epics[1]!, 'notStarted', 86_400)).toBe(true)
-    expect(matchesPreset(epics[0]!, 'notStarted', 86_400)).toBe(false)
-  })
-
-  it('recentCreated sorts by creation index descending', () => {
-    expect(presetSort('recentCreated')).toEqual({ key: 'creation', dir: 'desc' })
-    const out = applyEpicsGrid(epics, { stateCategory: '', lane: '', claimed: 'all' }, {
-      key: 'creation',
-      dir: 'asc',
-    }, 'recentCreated', 86_400)
-    expect(out.map((e) => e.id)).toEqual(['demo-e', 'demo-d', 'demo-c', 'demo-b', 'demo-a'])
-  })
-
-  it('stalled preset uses the same idle threshold as epicAttention', () => {
-    const fresh = { ...base, id: 'fresh', claim: { ...claim, idle_seconds: 3_600 } }
-    expect(matchesPreset(fresh, 'stalled', 7_200)).toBe(false)
-    expect(matchesPreset(epics[3]!, 'stalled', 86_400)).toBe(true)
+  it('respects custom terminal states and composes search with advanced filters', () => {
+    const epics = [base, { ...base, id: 'closed', title: 'Billing finished', state: 'released', claim }]
+    expect(applyEpicsGrid(epics, DEFAULT_FILTERS, 'title', 86400, ['released']).map((e) => e.id)).toEqual(['demo-a'])
+    expect(applyEpicsGrid(epics, { search: 'BILLING', scope: 'all', state: 'released', lane: 'ini-billing', claimed: 'claimed' }, 'title', 86400, ['released']).map((e) => e.id)).toEqual(['closed'])
+    expect(applyEpicsGrid(epics, { ...DEFAULT_FILTERS, search: 'demo-a' }, 'title').map((e) => e.id)).toEqual(['demo-a'])
   })
 })
 
 describe('EpicsView', () => {
-  it('says the project has no epics rather than rendering an empty list', () => {
-    view([])
-    expect(screen.getByText(labels.empty)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /billing/i })).toBeNull()
-  })
-
-  it('makes each epic a real button that opens the ticket', () => {
+  it('renders title, initiative, state and task-count progress with an actionable row', () => {
     const onOpen = view([base])
-    const row = screen.getByRole('button', { name: /billing v2/i })
+    const row = screen.getByRole('button', { name: /Billing v2/ })
+    expect(row.textContent).toContain('Billing')
+    expect(row.textContent).toContain('8/12 done')
+    expect(row.textContent).toContain('Ready')
+    expect(row.textContent).not.toContain('67%')
     fireEvent.click(row)
     expect(onOpen).toHaveBeenCalledWith('demo-a')
   })
-
-  it('names the lanes an epic belongs to, and says so when it belongs to none', () => {
-    view([{ ...base, initiatives: ['ini-a', 'ini-b'] }], vi.fn(), {
-      'ini-a': 'Billing',
-      'ini-b': 'Reporting',
-    })
-    expect(screen.getByText('Billing · Reporting')).toBeTruthy()
-    cleanup()
-    view([base])
-    expect(screen.getByText(labels.noLane)).toBeTruthy()
+  it('surfaces questions attached directly to an epic without tasks', () => {
+    const epic = { ...base, total: 0, own_open_questions: 2 }
+    expect(needsAttention(epic)).toBe(true)
+    view([epic])
+    expect(screen.getByText('2 open questions on this epic')).toBeTruthy()
+    expect(screen.queryByText(/tasks awaiting answers/)).toBeNull()
   })
-
-  it('falls back to the lane id when its title is unknown', () => {
-    view([{ ...base, initiatives: ['ini-zz'] }])
-    expect(screen.getByText('ini-zz')).toBeTruthy()
+  it('keeps the heading and creation action when empty', () => {
+    const onCreate = vi.fn()
+    view([], { canCreate: true, onCreate })
+    expect(screen.getByRole('heading', { name: 'Epics' })).toBeTruthy()
+    expect(screen.getByText(labels.empty)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'New epic' }))
+    expect(onCreate).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('list')).toBeNull()
   })
-
-  it('reads an indefinite claim as having no expiry, not as a duration', () => {
-    view([{ ...base, claim }])
-    expect(screen.getByRole('table').textContent).toMatch(
-      /held by agent:w1.*no expiry · idle 3d/,
-    )
+  it('does not offer creation to a read-only viewer', () => {
+    view([], { canCreate: false, onCreate: vi.fn() })
+    expect(screen.queryByRole('button', { name: 'New epic' })).toBeNull()
   })
-
-  it('reads a bounded claim as its held-for duration', () => {
-    view([{ ...base, claim: { ...claim, indefinite: false, idle_seconds: 120 } }])
-    expect(screen.getByRole('table').textContent).toMatch(/held by agent:w1.*2h · idle 2m/)
+  it('shows no-task progress quietly and omits zero attention labels', () => {
+    view([{ ...base, total: 0, done: 0, percent: 0, flags: ['empty_epic'] }])
+    const row = screen.getByRole('button', { name: /Billing v2/ })
+    expect(row.textContent).toContain('No tasks')
+    expect(row.textContent).not.toContain('0/0')
+    expect(row.textContent).not.toContain('awaiting')
+    expect(row.textContent).not.toContain('Empty epic')
   })
-
-  it('counts what wants attention across every epic', () => {
-    view([
-      { ...base, claim },
-      { ...base, id: 'demo-b', awaiting_answer: 2 },
-      { ...base, id: 'demo-c', flags: ['done_with_open_children'] },
-    ])
-    const strip = screen.getByText('held').parentElement?.parentElement
-    expect(strip?.textContent).toContain('1 held')
-    expect(strip?.textContent).toContain('1 stalled')
-    expect(strip?.textContent).toContain('1 awaiting an answer')
-    expect(strip?.textContent).toContain('1 flagged')
+  it('shows factual attention labels and human-readable contradictions', () => {
+    view([{ ...base, awaiting_answer: 2, by_category: { blocked: 3 }, claim, flags: ['open_with_all_children_done'] }])
+    expect(screen.getByText('2 tasks awaiting answers')).toBeTruthy()
+    expect(screen.getByText('3 blocked tasks')).toBeTruthy()
+    expect(screen.getByText(/No movement for/)).toBeTruthy()
+    expect(screen.getByText(labels.openWithDone)).toBeTruthy()
+    expect(screen.queryByText('open_with_all_children_done')).toBeNull()
   })
-
-  it('respects the stalled threshold it is given', () => {
-    const fresh = { ...base, claim: { ...claim, idle_seconds: 3_600 } }
-    render(
-      <EpicsView
-        epics={[fresh]}
-        laneTitles={{}}
-        onOpen={vi.fn()}
-        stalledAfter={7_200}
-        labels={labels}
-      />,
-    )
-    const strip = screen.getByText('stalled').parentElement?.parentElement
-    expect(strip?.textContent).toContain('0 stalled')
+  it('shows unclaimed activity and honest unknown on older API responses', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-06T10:00:00Z'))
+    view([base, { ...base, id: 'unknown', title: 'Unknown', last_activity_at: undefined }])
+    expect(screen.getByText('Updated 1h ago')).toBeTruthy()
+    expect(screen.getByText(labels.unknown)).toBeTruthy()
   })
-
-  it('omits claimable counts entirely when there are none', () => {
-    view([
-      {
-        ...base,
-        state: 'done',
-        state_category: 'done',
-        total: 2,
-        done: 2,
-        percent: 100,
-        ready: 0,
-        backlog: 0,
-      },
-    ])
-    expect(screen.queryByText(/^ready /)).toBeNull()
-    expect(screen.queryByText(/^backlog /)).toBeNull()
+  it('keeps advanced filters in a popover with count, summary and clear', () => {
+    view([base, { ...base, id: 'other', title: 'Other', claim, initiatives: [] }])
+    expect(screen.queryByLabelText('Claim')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    choose('Claim', 'Unclaimed')
+    expect(screen.getByRole('button', { name: 'Filters (1)' })).toBeTruthy()
+    expect(screen.getByLabelText('Applied filters').textContent).toContain('Unclaimed')
+    expect(screen.queryByRole('button', { name: /Other/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(screen.getByRole('button', { name: /Other/ })).toBeTruthy()
   })
-
-  it('shows an epic’s flags so a contradiction is visible without opening it', () => {
-    view([{ ...base, flags: ['open_with_all_children_done'] }])
-    expect(screen.getByText('open_with_all_children_done')).toBeTruthy()
-  })
-
-  it('shows honest unknown for last activity when the epic is unclaimed', () => {
-    view([base])
-    expect(screen.getByText(labels.lastActivityUnknown)).toBeTruthy()
-    expect(screen.queryByText('—')).toBeNull()
-  })
-
-  it('shows last activity age when a claim carries a timestamp', () => {
-    const now = new Date('2026-08-17T12:00:00.000Z').getTime()
-    vi.spyOn(Date, 'now').mockReturnValue(now)
-    view([{ ...base, claim }])
-    expect(screen.getByText('1d')).toBeTruthy()
-    vi.restoreAllMocks()
-  })
-
-/**
- * Choose an option from a `Picker`.
- *
- * A native `<select>` took `fireEvent.change`; a listbox has to be opened first,
- * and Radix opens on `pointerDown`, not `click`. The stubs that let it open at
- * all live in src/test-setup.ts.
- */
-function choose(labelText: string, optionName: string | RegExp) {
-  const trigger = screen.getByLabelText(labelText)
-  // Keyboard, not pointer: Radix's trigger opens on ArrowDown/Enter/Space, and
-  // that path needs none of the geometry jsdom cannot supply.
-  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
-  fireEvent.click(screen.getByRole('option', { name: optionName }))
-}
-
-  it('filters epics by claim state', () => {
-    view([
-      base,
-      { ...base, id: 'demo-b', title: 'Claimed epic', claim },
-    ])
-    choose(labels.filterClaimed, labels.filterClaimedNo)
-    expect(screen.getByRole('button', { name: /billing v2/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /claimed epic/i })).toBeNull()
-  })
-
-  it('filters epics by initiative lane', () => {
-    view(
-      [
-        { ...base, initiatives: ['ini-a'] },
-        { ...base, id: 'demo-b', title: 'Other', initiatives: ['ini-b'] },
-      ],
-      vi.fn(),
-      { 'ini-a': 'Billing', 'ini-b': 'Reporting' },
-    )
-    choose(labels.filterLane, 'Billing')
-    expect(screen.getByRole('button', { name: /billing v2/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /other/i })).toBeNull()
-  })
-
-  it('applies the unclaimed preset from the quick views', () => {
-    view([
-      base,
-      { ...base, id: 'demo-b', title: 'Claimed epic', claim },
-    ])
-    fireEvent.click(screen.getByRole('button', { name: labels.presetUnclaimed }))
-    expect(screen.getByRole('button', { name: /billing v2/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /claimed epic/i })).toBeNull()
-  })
-
-  it('labels recently created precisely — creation order, not activity', () => {
-    view([
-      { ...base, id: 'first', title: 'First' },
-      { ...base, id: 'second', title: 'Second' },
-    ])
-    expect(screen.getByRole('button', { name: labels.presetRecentCreated })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: labels.presetRecentCreated }))
-    const epicRows = screen
-      .getAllByRole('button')
-      .filter((b) => b.textContent?.includes('First') || b.textContent?.includes('Second'))
-    expect(epicRows[0]?.textContent).toContain('Second')
+  it('searches epics, toggles completed work and explains no matching results', () => {
+    view([base, { ...base, id: 'done', title: 'Finished', state: 'done', state_category: 'done' }])
+    expect(screen.queryByRole('button', { name: /Finished/ })).toBeNull()
+    fireEvent.click(within(screen.getByRole('group', { name: labels.visibility })).getByRole('button', { name: 'All' }))
+    expect(screen.getByRole('button', { name: /Finished/ })).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'missing' } })
+    expect(screen.getByText(labels.noMatch)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByRole('button', { name: /Finished/ })).toBeTruthy()
   })
 })

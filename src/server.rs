@@ -662,6 +662,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/sync/{id}", get(crate::api::docsync::sync))
         .route("/agent-queues", get(crate::api::agent_queues_page))
         .route("/board", get(crate::api::board))
+        .route("/epics", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/documents", get(crate::api::documents_page))
         .route("/specification", get(crate::api::documents_page))

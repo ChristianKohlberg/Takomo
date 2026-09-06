@@ -1,172 +1,68 @@
-// Filter, sort, and preset logic for the epics grid — kept out of the component
-// so preset definitions stay testable without a DOM.
-import type { RoadmapEpic } from '@/lib/roadmap'
+import { STALLED_AFTER_SECONDS, type RoadmapEpic } from '@/lib/roadmap'
 
-export type SortKey = 'title' | 'state' | 'progress' | 'holder' | 'lastActivity' | 'creation'
-export type SortDir = 'asc' | 'desc'
 export type ClaimedFilter = 'all' | 'claimed' | 'unclaimed'
-
-/** One-click views onto common questions. Each preset's filter is in `matchesPreset`. */
-export type PresetId =
-  | 'recentCreated'
-  | 'nearlyComplete'
-  | 'notStarted'
-  | 'stalled'
-  | 'awaiting'
-  | 'unclaimed'
-  | 'flagged'
-
-export const PRESET_IDS: PresetId[] = [
-  'recentCreated',
-  'nearlyComplete',
-  'notStarted',
-  'stalled',
-  'awaiting',
-  'unclaimed',
-  'flagged',
-]
-
+export type EpicsSort = 'attention' | 'activity' | 'title' | 'progress'
 export interface EpicsFilters {
-  /** Empty string means every category. */
-  stateCategory: string
-  /** Empty string means every lane. */
+  search: string
+  scope: 'active' | 'all'
+  state: string
   lane: string
   claimed: ClaimedFilter
 }
-
-export interface EpicsSort {
-  key: SortKey
-  dir: SortDir
-}
-
 export const DEFAULT_FILTERS: EpicsFilters = {
-  stateCategory: '',
-  lane: '',
-  claimed: 'all',
+  search: '', scope: 'active', state: '', lane: '', claimed: 'all',
 }
+export const DEFAULT_SORT: EpicsSort = 'attention'
 
-export const DEFAULT_SORT: EpicsSort = { key: 'creation', dir: 'asc' }
-
-/** Server order is creation order — the index is the only honest "recently created" signal. */
-export function creationIndex(epics: RoadmapEpic[], id: string): number {
-  return epics.findIndex((e) => e.id === id)
+export function isStalled(epic: RoadmapEpic, threshold = STALLED_AFTER_SECONDS): boolean {
+  return epic.claim != null && (epic.claim.idle_seconds ?? 0) >= threshold
 }
-
-export function matchesFilters(e: RoadmapEpic, filters: EpicsFilters): boolean {
-  if (filters.stateCategory && e.state_category !== filters.stateCategory) return false
-  if (filters.lane && !(e.initiatives ?? []).includes(filters.lane)) return false
-  if (filters.claimed === 'claimed' && !e.claim) return false
-  if (filters.claimed === 'unclaimed' && e.claim) return false
-  return true
+export function epicWarnings(epic: RoadmapEpic): string[] {
+  // Planning an epic before its tasks is ordinary, not an attention signal.
+  return epic.flags.filter((flag) => flag !== 'empty_epic')
 }
-
-/**
- * Preset filters — documented here so the PR and tests share one definition.
- *
- * - recentCreated: no filter (sort only — newest creation index first)
- * - nearlyComplete: has work, 75–99% done
- * - notStarted: zero children completed (`done === 0`)
- * - stalled: active claim idle ≥ threshold (same predicate as `epicAttention`)
- * - awaiting: `awaiting_answer > 0`
- * - unclaimed: no active claim
- * - flagged: at least one contradiction flag
- */
-export function matchesPreset(e: RoadmapEpic, preset: PresetId, stalledAfter: number): boolean {
-  switch (preset) {
-    case 'recentCreated':
-      return true
-    case 'nearlyComplete':
-      return e.total > 0 && e.percent >= 75 && e.percent < 100
-    case 'notStarted':
-      return e.done === 0
-    case 'stalled':
-      return e.claim != null && (e.claim.idle_seconds ?? 0) >= stalledAfter
-    case 'awaiting':
-      return e.awaiting_answer > 0
-    case 'unclaimed':
-      return !e.claim
-    case 'flagged':
-      return e.flags.length > 0
-  }
+export function needsAttention(epic: RoadmapEpic, threshold = STALLED_AFTER_SECONDS): boolean {
+  return (epic.own_open_questions ?? 0) > 0 || epic.awaiting_answer > 0 || (epic.by_category?.blocked ?? 0) > 0
+    || epic.state_category === 'blocked' || isStalled(epic, threshold) || epicWarnings(epic).length > 0
 }
-
-/** Sort each preset applies when active — recentCreated is the only one that reorders by creation. */
-export function presetSort(preset: PresetId): EpicsSort {
-  switch (preset) {
-    case 'recentCreated':
-      return { key: 'creation', dir: 'desc' }
-    case 'nearlyComplete':
-      return { key: 'progress', dir: 'desc' }
-    case 'notStarted':
-      return { key: 'progress', dir: 'asc' }
-    default:
-      return { key: 'title', dir: 'asc' }
-  }
+export function activityAt(epic: RoadmapEpic): string | null {
+  return epic.last_activity_at ?? epic.claim?.last_activity_at ?? null
 }
-
-function compareNullableString(a: string | null | undefined, b: string | null | undefined): number {
-  if (!a && !b) return 0
-  if (!a) return 1
-  if (!b) return -1
-  return a.localeCompare(b)
+function compareActivity(a: RoadmapEpic, b: RoadmapEpic): number {
+  const at = Date.parse(activityAt(a) ?? '')
+  const bt = Date.parse(activityAt(b) ?? '')
+  // Unknown dates stay last, including on older servers that omit unclaimed activity.
+  if (!Number.isFinite(at)) return Number.isFinite(bt) ? 1 : 0
+  if (!Number.isFinite(bt)) return -1
+  return bt - at
 }
-
-export function compareEpics(
-  a: RoadmapEpic,
-  b: RoadmapEpic,
-  sort: EpicsSort,
-  epics: RoadmapEpic[],
-): number {
-  const mul = sort.dir === 'asc' ? 1 : -1
-  let cmp = 0
-  switch (sort.key) {
-    case 'creation':
-      cmp = creationIndex(epics, a.id) - creationIndex(epics, b.id)
-      break
-    case 'title':
-      cmp = a.title.localeCompare(b.title) || a.id.localeCompare(b.id)
-      break
-    case 'state':
-      cmp = a.state.localeCompare(b.state) || a.title.localeCompare(b.title)
-      break
-    case 'progress':
-      cmp = a.percent - b.percent || a.done - b.done || a.total - b.total
-      break
-    case 'holder':
-      cmp = compareNullableString(a.claim?.holder, b.claim?.holder)
-      break
-    case 'lastActivity': {
-      const at = a.claim?.last_activity_at
-      const bt = b.claim?.last_activity_at
-      if (!at && !bt) cmp = 0
-      else if (!at) cmp = 1
-      else if (!bt) cmp = -1
-      else cmp = new Date(at).getTime() - new Date(bt).getTime()
-      break
-    }
-  }
-  return cmp * mul
-}
-
 export function activeFilterCount(filters: EpicsFilters): number {
-  let n = 0
-  if (filters.stateCategory) n++
-  if (filters.lane) n++
-  if (filters.claimed !== 'all') n++
-  return n
+  return Number(!!filters.state) + Number(!!filters.lane) + Number(filters.claimed !== 'all')
 }
-
 export function applyEpicsGrid(
-  epics: RoadmapEpic[],
-  filters: EpicsFilters,
-  sort: EpicsSort,
-  preset: PresetId | null,
-  stalledAfter: number,
+  epics: RoadmapEpic[], filters: EpicsFilters, sort: EpicsSort,
+  threshold = STALLED_AFTER_SECONDS, terminalStates?: string[],
 ): RoadmapEpic[] {
-  let result = epics.filter((e) => matchesFilters(e, filters))
-  const effectiveSort = preset ? presetSort(preset) : sort
-  if (preset) {
-    result = result.filter((e) => matchesPreset(e, preset, stalledAfter))
-  }
-  return [...result].sort((a, b) => compareEpics(a, b, effectiveSort, epics))
+  const search = filters.search.trim().toLocaleLowerCase()
+  return epics.filter((epic) => {
+    const terminal = terminalStates ? terminalStates.includes(epic.state)
+      : ['done', 'cancelled'].includes(epic.state_category)
+    return (filters.scope === 'all' || !terminal)
+      && (!search || `${epic.title} ${epic.id}`.toLocaleLowerCase().includes(search))
+      && (!filters.state || epic.state === filters.state)
+      && (!filters.lane || (epic.initiatives ?? []).includes(filters.lane))
+      && (filters.claimed === 'all' || (filters.claimed === 'claimed') === !!epic.claim)
+  }).sort((a, b) => {
+    const tie = a.title.localeCompare(b.title) || a.id.localeCompare(b.id)
+    if (sort === 'title') return tie
+    if (sort === 'progress') {
+      if (!a.total || !b.total) return Number(!a.total) - Number(!b.total) || tie
+      return b.percent - a.percent || tie
+    }
+    if (sort === 'attention') {
+      const attention = Number(needsAttention(b, threshold)) - Number(needsAttention(a, threshold))
+      if (attention) return attention
+    }
+    return compareActivity(a, b) || tie
+  })
 }

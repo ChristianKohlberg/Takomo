@@ -587,7 +587,8 @@ impl Store {
                 SELECT t.id, t.title, t.state, t.priority,
                        COALESCE((SELECT ws.category FROM workflow_states ws
                                  WHERE ws.project = t.project AND ws.state = t.state), '') AS category,
-                       t.claim_holder, t.claim_since, t.claim_expires_at
+                       t.claim_holder, t.claim_since, t.claim_expires_at, t.updated_at,
+                       (SELECT COUNT(*) FROM questions q WHERE q.ticket = t.id AND q.status = 'open')
                 FROM tickets t
                 WHERE t.project = ?1 AND t.type = 'epic'
                   AND (?2 IS NULL OR t.id = ?2)
@@ -605,6 +606,8 @@ impl Store {
                         r.get::<_, Option<String>>(5)?,
                         r.get::<_, Option<i64>>(6)?,
                         r.get::<_, Option<i64>>(7)?,
+                        r.get::<_, i64>(8)?,
+                        r.get::<_, i64>(9)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -615,7 +618,7 @@ impl Store {
             let lanes_of = initiatives_by_epic(&epics_for);
 
             let mut out = Vec::with_capacity(epics.len());
-            for (id, title, st, priority, category, holder, since, expires) in epics {
+            for (id, title, st, priority, category, holder, since, expires, updated, own_open_questions) in epics {
                 let r = rollup_for_epic(conn, &id, now)?;
                 let flags = epic_flags(&category, &r);
                 let percent = r.percent();
@@ -626,6 +629,9 @@ impl Store {
                     "state": st,
                     "state_category": category,
                     "priority": priority,
+                    // Available regardless of a claim, including epics with no tasks.
+                    "last_activity_at": iso(r.last_activity.map_or(updated, |at| at.max(updated))),
+                    "own_open_questions": own_open_questions,
                     "total": r.total,
                     "done": r.done,
                     "percent": percent,

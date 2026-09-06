@@ -446,6 +446,7 @@ export function App() {
         current: 'account',
         nav: {
           board: t.board,
+          epics: t.epics,
           inbox: t.inbox,
           specification: t.specification,
           initiatives: t.initiatives,

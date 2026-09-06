@@ -43,6 +43,9 @@ export interface RoadmapEpic extends Counts {
   state: string
   state_category: string
   priority: string
+  /** Newest update on the epic or its descendants, independent of a claim. */
+  own_open_questions?: number
+  last_activity_at?: string | null
   /** Ids of the lanes this epic is filed under — the inverse of a lane's `epics`. */
   initiatives?: string[]
   claim?: EpicClaim | null

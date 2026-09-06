@@ -1,0 +1,41 @@
+import { defineStrings } from '@/lib/i18n'
+
+export const EPICS_STR = defineStrings({
+  en: {
+    title: 'Epics', count: '{visible} of {total}', newEpic: 'New epic',
+    search: 'Search epics', active: 'Active', all: 'All', visibility: 'Epic visibility',
+    filters: 'Filters', state: 'State', initiative: 'Initiative', claim: 'Claim',
+    anyState: 'Any state', anyInitiative: 'Any initiative', anyClaim: 'Any claim',
+    claimed: 'Claimed', unclaimed: 'Unclaimed', clear: 'Clear', applied: 'Applied filters',
+    sort: 'Sort epics', attentionFirst: 'Needs attention first', recentActivity: 'Recent activity',
+    titleOrder: 'Title', progressOrder: 'Most complete',
+    epic: 'Epic', progress: 'Progress', working: 'Holder / activity',
+    noInitiative: 'No initiative', noTasks: 'No tasks', done: '{done}/{total} done',
+    ownQuestion: '1 open question on this epic', awaitingOne: '1 task awaiting an answer', blockedOne: '1 blocked task',
+    ownQuestions: '{n} open questions on this epic',
+    awaiting: '{n} tasks awaiting answers', blocked: '{n} blocked tasks',
+    stalled: 'No movement for {age}', unknown: 'Activity unknown', updated: 'Updated {age} ago',
+    empty: 'No epics in this project yet.', emptyHint: 'Create an epic to group related work.',
+    noMatch: 'No epics match these filters.', reset: 'Clear filters',
+    doneWithOpen: 'Marked done with unfinished tasks', openWithDone: 'All tasks done; epic still open',
+  },
+  de: {
+    title: 'Epics', count: '{visible} von {total}', newEpic: 'Neues Epic',
+    search: 'Epics suchen', active: 'Aktiv', all: 'Alle', visibility: 'Epic-Sichtbarkeit',
+    filters: 'Filter', state: 'Status', initiative: 'Initiative', claim: 'Reservierung',
+    anyState: 'Jeder Status', anyInitiative: 'Jede Initiative', anyClaim: 'Jede Reservierung',
+    claimed: 'Reserviert', unclaimed: 'Nicht reserviert', clear: 'Zurücksetzen', applied: 'Aktive Filter',
+    sort: 'Epics sortieren', attentionFirst: 'Aufmerksamkeit zuerst', recentActivity: 'Letzte Aktivität',
+    titleOrder: 'Titel', progressOrder: 'Fortschritt',
+    epic: 'Epic', progress: 'Fortschritt', working: 'Reserviert von / Aktivität',
+    noInitiative: 'Keine Initiative', noTasks: 'Keine Aufgaben', done: '{done}/{total} erledigt',
+    ownQuestion: '1 offene Frage an diesem Epic', awaitingOne: '1 Aufgabe wartet auf eine Antwort', blockedOne: '1 blockierte Aufgabe',
+    ownQuestions: '{n} offene Fragen an diesem Epic',
+    awaiting: '{n} Aufgaben warten auf Antworten', blocked: '{n} blockierte Aufgaben',
+    stalled: 'Keine Bewegung seit {age}', unknown: 'Aktivität unbekannt', updated: 'Vor {age} aktualisiert',
+    empty: 'Noch keine Epics in diesem Projekt.', emptyHint: 'Erstelle ein Epic, um zusammengehörige Arbeit zu bündeln.',
+    noMatch: 'Keine Epics entsprechen diesen Filtern.', reset: 'Filter zurücksetzen',
+    doneWithOpen: 'Als erledigt markiert, aber Aufgaben sind offen', openWithDone: 'Alle Aufgaben erledigt; Epic noch offen',
+  },
+})
+export type EpicsViewLabels = typeof EPICS_STR.en

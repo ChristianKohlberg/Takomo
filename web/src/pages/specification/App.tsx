@@ -382,6 +382,7 @@ function SpecificationWorkspace({
             current: 'specification',
             nav: {
               board: t.board,
+          epics: t.epics,
               inbox: t.inbox,
               specification: w.title,
               initiatives: t.initiatives,

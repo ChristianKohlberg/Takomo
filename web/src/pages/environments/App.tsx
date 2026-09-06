@@ -178,6 +178,7 @@ export function App() {
         current: 'environments',
         nav: {
           board: t.board,
+          epics: t.epics,
           inbox: t.inbox,
           specification: t.specification,
           initiatives: t.initiatives,
