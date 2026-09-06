@@ -35,7 +35,7 @@ import { type SyncConnection } from '@/hooks/useSyncConnection'
 // "show it on the map" instead: the title caret lives on the canvas, and two
 // carets on one Y.Text in two layouts is a fight rather than a feature.
 import { ChevronDownIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
@@ -114,6 +114,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  conversationFor?: (node: string) => ReactNode
   testsFor: (node: string) => { total: number; failing: number }
   onShowTests: (node: string) => void
   testsLabel: string
@@ -148,6 +149,7 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  conversationFor,
   connection,
   testsFor,
   onShowTests,
@@ -661,6 +663,7 @@ function ConnectedPlan({
                       {preview || labels.proseEmpty}
                     </p>
                   )}
+                  {conversationFor?.(row.key)}
                 </SectionPanel>
               )
             })}

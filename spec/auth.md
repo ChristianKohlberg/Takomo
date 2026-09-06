@@ -41,6 +41,7 @@ an admin minting one would be handing out that person's approval authority.
 
 | scope     | grants |
 |-----------|--------|
+| `agent:run` | claim on-demand agent jobs, heartbeat the owning attempt, and deliver its result, restricted to the token’s projects. Grants no specification, ticket, test or general read/write access. |
 | `read`    | all GETs (including `GET /v1/export`, `GET /v1/metrics`, and `GET /v1/projects/{project}/roadmap`, each scoped to the token's readable projects) |
 | `write`   | create/patch/comment/deps/claim/heartbeat/release/transition/archive/unarchive (subject to workflow `requires`) |
 | `human`   | satisfies `scope:human` transition requirements (approval gates) |

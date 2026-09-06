@@ -6,6 +6,7 @@
 // anywhere else (eslint.config.js makes that a hard error), so markup in a
 // ticket body can never become markup in the page.
 import { useEffect, useRef } from 'react'
+import { mountMermaid } from '../lib/mermaid'
 import { renderMarkdown } from '../lib/markdown'
 
 export interface MarkdownProps {
@@ -24,8 +25,14 @@ export function Markdown({ text, variant, className }: MarkdownProps) {
     const node = host.current
     if (!node) return
     node.replaceChildren(renderMarkdown(text, variant))
+    const cancel = Array.from(node.querySelectorAll('code[data-lang]')).flatMap((code) => {
+      if (code.getAttribute('data-lang')?.toLowerCase() !== 'mermaid') return []
+      const preview = document.createElement('div')
+      code.parentElement?.before(preview)
+      return [mountMermaid(preview, code.textContent ?? '')]
+    })
     // Leave the host empty on unmount so a detached tree cannot be retained.
-    return () => node.replaceChildren()
+    return () => { cancel.forEach((stop) => stop()); node.replaceChildren() }
   }, [text, variant])
 
   return <div ref={host} className={className} />

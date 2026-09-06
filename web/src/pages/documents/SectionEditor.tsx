@@ -33,6 +33,7 @@ import type * as Y from 'yjs'
 
 import type { Editor } from '@tiptap/react'
 
+import { MermaidCodeBlock } from '@/lib/mermaid-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 
@@ -106,7 +107,8 @@ export default function SectionEditor({
         // Collaboration owns the document, so StarterKit's own history has to
         // go: an undo stack that does not know about remote edits would undo
         // somebody else's sentence.
-        StarterKit.configure({ undoRedo: false }),
+        StarterKit.configure({ undoRedo: false, codeBlock: false }),
+        MermaidCodeBlock,
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
         // Only a writer mints block ids — an `appendTransaction` runs regardless
