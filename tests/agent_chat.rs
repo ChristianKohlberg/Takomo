@@ -25,7 +25,7 @@ async fn queue_inspection_is_project_scoped_and_does_not_expose_worker_credentia
     assert_eq!(outside["items"], json!([]));
     assert_eq!(
         outside["counts"],
-        json!({"queued":0,"running":0,"completed":0,"failed":0})
+        json!({"queued":0,"running":0,"completed":0,"failed":0,"cancelled":0})
     );
     assert_eq!(
         app.get(&outsider, "/v1/agent-jobs?project=tp").await.0,
@@ -96,7 +96,7 @@ async fn queue_inspection_filters_jobs_and_preserves_historical_input_and_result
     assert_eq!(listed["total"], 2);
     assert_eq!(
         listed["counts"],
-        json!({"queued":1,"running":0,"completed":1,"failed":0})
+        json!({"queued":1,"running":0,"completed":1,"failed":0,"cancelled":0})
     );
     let (status, filtered) = app
         .get(&app.human, "/v1/agent-jobs?project=tp&status=completed")
