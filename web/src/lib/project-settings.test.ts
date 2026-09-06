@@ -101,6 +101,10 @@ describe('document appearance settings persistence', () => {
       body: JSON.stringify(base.documentAppearance),
     }))
   })
+  it('blocks a save while a numeric field is cleared mid-edit', () => {
+    const cleared = { ...base, documentAppearance: { template: 'balanced' as const, overrides: { h2_size: NaN } } }
+    expect(saveBlockReason(cleared, false, { ...W, appearanceInvalid: 'invalid' })).toBe('invalid')
+  })
   it('blocks invalid appearance before making any settings writes', async () => {
     const next = { ...base, language: 'de', documentAppearance: { template: 'balanced' as const, overrides: { h1_size: 100 } } }
     await expect(saveProjectSettings('token', 'demo', next, base)).rejects.toThrow('Invalid document appearance')

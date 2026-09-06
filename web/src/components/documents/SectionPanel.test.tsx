@@ -218,3 +218,25 @@ describe('SectionPanel', () => {
     expect(screen.getByText('Nothing recorded for this section yet.')).toBeTruthy()
   })
 })
+
+describe('SectionPanel depth', () => {
+  it('keeps H1–H3 on one left edge and steps H4–H6 in by depth', () => {
+    const insetAt = (depth: number) => {
+      const { container, unmount } = panel({ depth })
+      const inset = (container.querySelector('section') as HTMLElement).style.paddingLeft
+      unmount()
+      return inset
+    }
+    expect([0, 1, 2].map(insetAt)).toEqual(['0px', '0px', '0px'])
+    const [h4, h5, h6] = [3, 4, 5].map((d) => parseInt(insetAt(d), 10)) as [number, number, number]
+    expect(h4).toBeGreaterThan(0)
+    expect(h5).toBeGreaterThan(h4)
+    expect(h6).toBeGreaterThan(h5)
+    expect(insetAt(9)).toBe(insetAt(5))
+  })
+
+  it('still marks a deep section with its semantic heading level', () => {
+    panel({ depth: 4 })
+    expect(screen.getByRole('heading', { level: 5 }).textContent).toBe('Versioning')
+  })
+})

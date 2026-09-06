@@ -31,18 +31,28 @@ export const DOCUMENT_APPEARANCE_BOUNDS: Record<keyof DocumentTypography, { min:
 }
 export const DOCUMENT_APPEARANCE_FIELDS = Object.keys(DOCUMENT_APPEARANCE_BOUNDS) as (keyof DocumentTypography)[]
 
-export function validDocumentAppearance(config: DocumentAppearance): boolean {
-  if (!Object.hasOwn(DOCUMENT_TEMPLATES, config.template)) return false
-  return Object.entries(config.overrides).every(([key, value]) => {
-    const bounds = DOCUMENT_APPEARANCE_BOUNDS[key as keyof DocumentTypography]
-    return bounds && Number.isFinite(value) && value >= bounds.min && value <= bounds.max &&
-      (key !== 'heading_weight' || value % 100 === 0)
-  })
+export function validDocumentValue(key: string, value: unknown): value is number {
+  const bounds = Object.hasOwn(DOCUMENT_APPEARANCE_BOUNDS, key) && DOCUMENT_APPEARANCE_BOUNDS[key as keyof DocumentTypography]
+  return !!bounds && typeof value === 'number' && Number.isFinite(value) && value >= bounds.min && value <= bounds.max &&
+    (key !== 'heading_weight' || value % 100 === 0)
 }
 
+export function validDocumentAppearance(config: DocumentAppearance): boolean {
+  if (!Object.hasOwn(DOCUMENT_TEMPLATES, config.template)) return false
+  return Object.entries(config.overrides).every(([key, value]) => validDocumentValue(key, value))
+}
+
+/** Template values with the project's overrides on top. An override that is
+ *  not a finite number — a field mid-edit — falls back to the template, so a
+ *  preview never receives NaN. */
 export function resolveDocumentAppearance(config?: DocumentAppearance | null): DocumentTypography {
   const template = DOCUMENT_TEMPLATES[config?.template ?? 'balanced'] ?? DOCUMENT_TEMPLATES.balanced
-  return { ...template, ...config?.overrides }
+  const resolved: DocumentTypography = { ...template }
+  for (const key of DOCUMENT_APPEARANCE_FIELDS) {
+    const value = config?.overrides[key]
+    if (typeof value === 'number' && Number.isFinite(value)) resolved[key] = value
+  }
+  return resolved
 }
 
 export function documentAppearanceStyle(config?: DocumentAppearance | null): CSSProperties {

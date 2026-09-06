@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import { describe, expect, it } from 'vitest'
 import {
   documentAppearanceStyle, resolveDocumentAppearance, sameDocumentAppearance, validDocumentAppearance,
@@ -23,7 +24,13 @@ describe('document appearance inheritance', () => {
       '--doc-h1-size': '32px', '--doc-body-size': '16px', '--doc-heading-spacing': '0px', '--doc-line-height': 1.6, '--doc-heading-weight': 600,
     })
   })
-  it.each([{ h1_size: 65 }, { body_size: 0 }, { heading_weight: 650 }, { line_height: Infinity }, { heading_spacing: -1 }])('rejects invalid overrides %s', (overrides) => {
+  it.each([{ h1_size: 65 }, { body_size: 0 }, { heading_weight: 650 }, { line_height: Infinity }, { heading_spacing: -1 }, { h2_size: NaN }])('rejects invalid overrides %s', (overrides) => {
     expect(validDocumentAppearance({ template: 'balanced', overrides })).toBe(false)
+  })
+  it('falls back to the template for an override that is not a number yet', () => {
+    const resolved = resolveDocumentAppearance({ template: 'strong', overrides: { h1_size: NaN, h2_size: 30 } })
+    expect(resolved.h1_size).toBe(32)
+    expect(resolved.h2_size).toBe(30)
+    expect(documentAppearanceStyle({ template: 'strong', overrides: { h1_size: NaN } })['--doc-h1-size' as keyof CSSProperties]).toBe('32px')
   })
 })

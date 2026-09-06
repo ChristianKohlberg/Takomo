@@ -1,9 +1,11 @@
+import { useState } from 'react'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   DEFAULT_DOCUMENT_APPEARANCE, DOCUMENT_APPEARANCE_BOUNDS, DOCUMENT_APPEARANCE_FIELDS,
-  resolveDocumentAppearance, type DocumentAppearance, type DocumentTemplate, type DocumentTypography,
+  resolveDocumentAppearance, validDocumentValue,
+  type DocumentAppearance, type DocumentTemplate, type DocumentTypography,
 } from '@/lib/document-appearance'
 
 export interface DocumentAppearanceLabels {
@@ -21,6 +23,8 @@ export interface DocumentAppearanceLabels {
   fields: Record<keyof DocumentTypography, string>
 }
 
+type Drafts = Partial<Record<keyof DocumentTypography, string>>
+
 export function DocumentAppearanceFields({ value = DEFAULT_DOCUMENT_APPEARANCE, onChange, disabled, labels }: {
   value?: DocumentAppearance
   onChange: (value: DocumentAppearance) => void
@@ -28,11 +32,36 @@ export function DocumentAppearanceFields({ value = DEFAULT_DOCUMENT_APPEARANCE, 
   labels: DocumentAppearanceLabels
 }) {
   const effective = resolveDocumentAppearance(value)
+  const [drafts, setDrafts] = useState<Drafts>({})
+  const setDraft = (key: keyof DocumentTypography, draft?: string) =>
+    setDrafts((prev) => {
+      const next = { ...prev }
+      if (draft === undefined) delete next[key]
+      else next[key] = draft
+      return next
+    })
   const update = (key: keyof DocumentTypography, number?: number) => {
     const overrides = { ...value.overrides }
     if (number === undefined) delete overrides[key]
     else overrides[key] = number
     onChange({ ...value, overrides })
+  }
+  const parse = (draft: string): number | undefined => (draft.trim() === '' ? undefined : Number(draft))
+  const edit = (key: keyof DocumentTypography, draft: string) => {
+    setDraft(key, draft)
+    const parsed = parse(draft)
+    update(key, parsed === undefined ? NaN : parsed)
+  }
+  const settle = (key: keyof DocumentTypography) => {
+    const draft = drafts[key]
+    setDraft(key, undefined)
+    if (draft === undefined) return
+    const parsed = parse(draft)
+    if (parsed === undefined || !Number.isFinite(parsed)) update(key)
+  }
+  const reset = (key: keyof DocumentTypography) => {
+    setDraft(key, undefined)
+    update(key)
   }
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-label={labels.title}>
@@ -50,16 +79,17 @@ export function DocumentAppearanceFields({ value = DEFAULT_DOCUMENT_APPEARANCE, 
       </Field>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {DOCUMENT_APPEARANCE_FIELDS.map((key) => {
-          const overridden = value.overrides[key] !== undefined
+          const raw = value.overrides[key]
+          const overridden = raw !== undefined
           const bounds = DOCUMENT_APPEARANCE_BOUNDS[key]
-          const invalid = !Number.isFinite(effective[key]) || effective[key] < bounds.min || effective[key] > bounds.max ||
-            (key === 'heading_weight' && effective[key] % 100 !== 0)
+          const invalid = overridden && !validDocumentValue(key, raw)
+          const shown = drafts[key] ?? String(effective[key])
           return <Field key={key} label={labels.fields[key]}>
             {(id) => <div className="flex min-w-0 items-center gap-1">
               <Input id={id} type="number" {...bounds} disabled={disabled} aria-invalid={invalid || undefined}
-                value={effective[key]} onChange={(event) => update(key, event.target.value === '' ? undefined : Number(event.target.value))} />
+                value={shown} onChange={(event) => edit(key, event.target.value)} onBlur={() => settle(key)} />
               {overridden && <Button type="button" variant="ghost" size="sm" disabled={disabled}
-                aria-label={`${labels.reset}: ${labels.fields[key]}`} onClick={() => update(key)}>{labels.reset}</Button>}
+                aria-label={`${labels.reset}: ${labels.fields[key]}`} onClick={() => reset(key)}>{labels.reset}</Button>}
             </div>}
           </Field>
         })}

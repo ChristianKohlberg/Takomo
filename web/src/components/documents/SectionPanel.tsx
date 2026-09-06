@@ -114,6 +114,10 @@ const HEADINGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const
 const headingClass = (depth: number): string =>
   `document-heading document-heading-${Math.min(depth + 1, 6)}`
 
+/** H1–H3 share the page's left edge; H4–H6 step in so nesting stays visible
+ *  once the type scale has stopped stepping down. */
+export const sectionInset = (depth: number): number => Math.max(0, Math.min(depth, 5) - 2) * 12
+
 const STANDING_CLASS: Record<Standing, string> = {
   confirmed: 'border-emerald-300 text-emerald-800 dark:border-emerald-800 dark:text-emerald-300',
   changed: 'border-amber-300 text-amber-900 dark:border-amber-800 dark:text-amber-300',
@@ -168,7 +172,7 @@ export function SectionPanel({
         active ? 'bg-accent/30' : '',
         className,
       )}
-
+      style={{ paddingLeft: `${sectionInset(depth)}px` }}
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>
