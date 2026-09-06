@@ -49,10 +49,10 @@ lease with `--ttl` and the store stays yours.
 
 ```sh
 ./scripts/build.sh                                       # frontend + embedded Rust binary
-cargo test --release                                     # unit + tests/api.rs + tests/mcp.rs
-cargo test --release --test api <substring>               # ONE integration test
-cargo test --release --test api <substring> -- --nocapture
-cargo test --release --lib <substring>                    # ONE unit test
+cargo test --locked                                      # fast profile: unit + tests/api.rs + tests/mcp.rs
+cargo test --test api <substring>                         # ONE integration test
+cargo test --test api <substring> -- --nocapture
+cargo test --lib <substring>                              # ONE unit test
 cargo clippy --all-targets -- -D warnings                 # CI denies warnings
 cargo fmt                                                 # CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
@@ -81,11 +81,12 @@ four tokens (`admin`/`human`/`worker`/`worker2`), and serves on an ephemeral por
 the real HTTP surface over `reqwest`. Only `src/workflow.rs` and `src/seed.rs` carry `#[cfg(test)]`
 units — anything touching the HTTP surface belongs in `tests/`.
 
-**There is no in-session gate runner. CI is the only wall**, so run the commands above yourself
-before wrapping up — `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --release`,
-and the `web/` gates. Two conventions that used to have their own detectors are now yours to keep:
-a new or changed HTTP route ships with an integration test, and with an `spec/openapi.yaml` update.
-Nothing will remind you.
+**Choose checks by impact and exposure**, following [docs/validation.md](docs/validation.md).
+Small, low-risk tasks use focused checks without no-mistakes by default. Larger
+features run it once at integration; releases and high-risk work use the full
+pipeline. Do not repeat the full suite or browser evidence after every tweak.
+A changed HTTP route still needs a behavioral integration test and its
+`spec/openapi.yaml` update.
 
 ### Verify a branch in a worktree, not in a dirty tree
 

@@ -17,6 +17,8 @@ services:
     plan: starter
     region: frankfurt
     branch: main
+    # Deploy the exact commit after a successful full CI run; see docs/validation.md.
+    autoDeployTrigger: "off"
     buildCommand: ./scripts/build.sh
     startCommand: ./target/release/takomo --db /var/data/takomo.db serve --bind 0.0.0.0:$PORT
     healthCheckPath: /healthz
