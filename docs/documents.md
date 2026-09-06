@@ -276,14 +276,18 @@ and spreadsheet formulas are not provided.
 
 In an empty paragraph in a section, type `/` to open the block menu and keep typing to
 filter it. Arrow keys select a result; Enter inserts it; Escape closes the menu while
-leaving the typed text intact. Headings, lists, quotes, code, tables and Mermaid diagrams
-use the editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or
-Escape returns to the command menu. Mermaid starts with its editable source visible.
-Ordinary slashes in prose or code keep their normal meaning. The existing `#`/`##` heading
-shortcuts and heading-to-section behavior continue to work: typing `/h1`, `/h2` or `/h3` picks a
-heading directly, the heading rows show the platform shortcut (Ctrl/Cmd + Alt + 1, 2 or 3), and
-a final heading completed with Enter still becomes a shared section. Formatting an existing
-paragraph never splits or discards the prose around it.
+leaving the typed text intact. Lists, quotes, code, tables and Mermaid diagrams use the
+editor's existing blocks. The table picker accepts 1–10 rows and columns; Back or Escape
+returns to the command menu. Mermaid starts with its editable source visible.
+
+`/h1`, `/h2` and `/h3` ask for a section title and create a real shared section at the
+current section boundary. H1 creates a top-level section; H2 and H3 nest under the appropriate
+preceding parent. Levels that would skip a parent remain visible with an explanation.
+Creation focuses the new section body and leaves surrounding prose in the original section.
+Back or Escape keeps the slash query; a refused creation retains the title for retry.
+Ordinary slashes in prose or code keep their normal meaning. The existing `#`/`##` and
+Ctrl/Cmd + Alt + 1/2/3 formatting shortcuts remain unchanged, including converting a final
+heading into a section on Enter.
 
 The menu state is local to the editor. Typed `/query` remains document text until a choice
 replaces it, and insertion uses the current section's normal collaboration and undo path.

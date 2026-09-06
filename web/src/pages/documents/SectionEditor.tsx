@@ -86,6 +86,7 @@ export interface SectionEditorProps {
    */
   onEditor?: (editor: Editor | null) => void
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  maxSectionLevel?: number
   searchQuery?: string
   searchActiveFrom?: number
   locale?: Locale
@@ -104,6 +105,7 @@ export default function SectionEditor({
   onEditor,
   label,
   onInsertSection,
+  maxSectionLevel = 3,
   searchQuery = '',
   searchActiveFrom,
   locale = 'en',
@@ -242,6 +244,6 @@ export default function SectionEditor({
   return <>
     {canWrite && <TableToolbar editor={editor} labels={STR[locale]} disabled={false} />}
     <EditorContent editor={editor} />
-    {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} />}
+    {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} onInsertSection={onInsertSection} maxSectionLevel={maxSectionLevel} />}
   </>
 }
