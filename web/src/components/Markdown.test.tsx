@@ -1,8 +1,22 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 import { Markdown } from './Markdown'
 
+const { preview } = vi.hoisted(() => ({ preview: vi.fn(() => vi.fn()) }))
+vi.mock('../lib/mermaid', () => ({ mountMermaid: preview }))
+
 describe('<Markdown>', () => {
+  it('renders Mermaid fences with source retained and cancels replaced previews', () => {
+    const { container, rerender, unmount } = render(<Markdown text={'```mermaid\nflowchart TD\nA --> B\n```'} />)
+    expect(container.querySelector('code[data-lang="mermaid"]')?.textContent).toBe('flowchart TD\nA --> B')
+    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'flowchart TD\nA --> B')
+    const cancel = preview.mock.results.at(-1)!.value
+    rerender(<Markdown text="No diagram" />)
+    expect(cancel).toHaveBeenCalled()
+    expect(container.querySelector('code')).toBeNull()
+    unmount()
+  })
+
   it('mounts the rendered tree', () => {
     const { container } = render(<Markdown text="**bold** and `code`" />)
     expect(container.querySelector('.md b')?.textContent).toBe('bold')
