@@ -1514,6 +1514,11 @@ for n in nodes:
     kids.setdefault(n.get("parent"), []).append(n)
 
 print(f"# {m.get('title')}   ({m.get('id')}, {m.get('status')})")
+guidance = d.get("default_writing_instruction")
+if guidance:
+    print(f"\nProject writing instruction: {guidance['name']} (advisory; your current request takes precedence)")
+    print(guidance["instruction"])
+    print()
 
 def line(n, depth):
     # The id sits beside the text because the next thing anyone does is hang a

@@ -259,8 +259,15 @@ pub async fn run_agent(
         crate::api::docprops::annotate(&blocks)
     });
 
-    let plan =
-        crate::docagent::run(cfg, trimmed, &annotated, scope.as_deref(), model.as_deref()).await?;
+    let prompted = state.store.writing_prompt(&doc.project, trimmed)?;
+    let plan = crate::docagent::run(
+        cfg,
+        &prompted,
+        &annotated,
+        scope.as_deref(),
+        model.as_deref(),
+    )
+    .await?;
 
     // Re-read inside the mutation: the document may have moved while the model
     // was thinking, which is the ordinary case this whole surface is built for.

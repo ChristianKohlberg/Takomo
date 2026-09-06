@@ -3736,3 +3736,42 @@ async fn mcp_reads_and_names_saved_specification_versions() {
         .await;
     assert_eq!(page["total"], 1);
 }
+
+#[tokio::test]
+async fn writing_instructions_are_visible_to_mcp_agents() {
+    let app = TestApp::spawn().await;
+    let selected = json!({"id":"guide","name":"Guide","instruction":"Keep headings short and explanations in bodies."});
+    let (status, _) = app
+        .put(
+            &app.admin,
+            "/v1/projects/tp/writing-instructions",
+            json!({"templates":[selected.clone()],"default_id":"guide"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let workflow = app
+        .tool_ok(&app.worker, "takomo_workflow", json!({"project":"tp"}))
+        .await;
+    assert_eq!(workflow["default_writing_instruction"], selected);
+    let made = app
+        .tool_ok(
+            &app.worker,
+            "takomo_mindmap_new",
+            json!({"project":"tp","title":"Plan"}),
+        )
+        .await;
+    let id = made["mindmap"]["id"].as_str().unwrap();
+    assert_eq!(made["default_writing_instruction"], selected);
+    for tool in ["takomo_mindmap_show", "takomo_plan_read"] {
+        let read = app.tool_ok(&app.worker, tool, json!({"id":id})).await;
+        assert_eq!(read["default_writing_instruction"], selected);
+    }
+    let grown = app
+        .tool_ok(
+            &app.worker,
+            "takomo_mindmap_grow",
+            json!({"id":id,"nodes":[{"text":"A section"}]}),
+        )
+        .await;
+    assert_eq!(grown["default_writing_instruction"], selected);
+}

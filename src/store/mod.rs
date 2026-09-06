@@ -22,6 +22,8 @@ mod model;
 mod moves;
 mod oauth;
 mod projects;
+mod writing_instructions;
+pub use writing_instructions::{WritingInstruction, WritingInstructions};
 pub mod prose;
 mod questions;
 mod ready_sql;
@@ -1103,6 +1105,11 @@ CREATE TABLE IF NOT EXISTS projects (
   -- to work, which is what makes archiving safe to reach for instead of DELETE.
   archived_at             INTEGER,
   created_at              INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_writing_instructions (
+  project TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  settings_json TEXT NOT NULL
 );
 
 -- Denormalized view of each project's workflow states so queue/blocking

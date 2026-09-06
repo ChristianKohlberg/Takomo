@@ -281,6 +281,7 @@ pub async fn get_one(
         "nodes": nodes,
         "relationships": relationships,
         "standing": standing,
+        "default_writing_instruction": state.store.default_writing_instruction(&map.project)?,
         "total": total,
     })))
 }
@@ -995,7 +996,7 @@ pub async fn prose(
     RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("read")?;
-    let (_, room) = join(&state, &ctx, &id).await?;
+    let (map, room) = join(&state, &ctx, &id).await?;
     let pairs = query_pairs(raw.as_deref());
     let node = first(&pairs, "node").map(str::to_string);
 
@@ -1034,7 +1035,7 @@ pub async fn prose(
     })?;
 
     Ok(Json(
-        json!({ "mindmap": id, "node": node, "markdown": markdown }),
+        json!({ "mindmap": id, "node": node, "markdown": markdown, "default_writing_instruction": state.store.default_writing_instruction(&map.project)? }),
     ))
 }
 
@@ -1231,9 +1232,10 @@ pub async fn run_agent(
         })?
     };
 
+    let prompted = state.store.writing_prompt(&map.project, &trimmed)?;
     let plan = crate::docagent::run(
         cfg,
-        &trimmed,
+        &prompted,
         &annotated,
         scope.as_deref(),
         model.as_deref(),

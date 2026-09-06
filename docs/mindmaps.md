@@ -407,3 +407,32 @@ an offline application shell: opening/reloading the whole site without network
 access may require reconnecting before the editor can load and obtain a session.
 Clearing browser site data removes local drafts. Server-authorized verdicts,
 approvals, and configuration actions remain online operations.
+
+### Project writing instructions
+
+Each project can save named writing instructions in Project settings → Writing
+instructions and choose an optional default. An instruction is only text: it
+never inserts an outline or fixes the subject, sections, or heading levels. New
+projects have no templates and no default. Existing content is never rewritten
+when the default changes.
+
+`GET /v1/projects/{project}/writing-instructions` requires read access to the
+project. `PUT` at the same path requires admin access and replaces the full value:
+
+```json
+{"templates": [{"id": "my-guide", "name": "My guide", "instruction": "Your project's writing guidance"}], "default_id": "my-guide"}
+```
+
+Send `default_id: null` to apply no named instruction. Remove a template from the
+array to delete it; clear or change the default in the same request when deleting
+the selected template. Both fields are required. Up to 20 templates are allowed;
+ids are unique 1–80 ASCII letters/digits/underscores/hyphens, names are 1–80
+characters, and instruction bodies are 1–4000 characters after trimming.
+Archived projects remain readable and reject changes.
+
+Specification and document AI actions receive the selected instruction as
+advisory guidance; explicit user requests take precedence. REST map and prose
+reads and MCP map/plan/document reads expose `default_writing_instruction`
+(the selected `{id,name,instruction}` object, or null). MCP workflow, map creation,
+and grow responses also carry it so external agents can follow project guidance.
+The existing project `style_guide` remains independent and is never overwritten.

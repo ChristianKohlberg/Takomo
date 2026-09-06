@@ -66,6 +66,7 @@ export interface ProjectDetailProps {
    * component would make it the editor's controller instead of a form.
    */
   workflowSlot?: ReactNode
+  writingSlot?: ReactNode
   settings: ProjectSettings
   onChange: (patch: Partial<ProjectSettings>) => void
   /** No `admin` scope: everything is shown, nothing can be saved. */
@@ -84,6 +85,7 @@ export interface ProjectDetailProps {
 export function ProjectDetail({
   project,
   workflowSlot,
+  writingSlot,
   settings: s,
   onChange,
   readOnly,
@@ -138,6 +140,8 @@ export function ProjectDetail({
           {labels.archivedBanner}
         </div>
       )}
+
+      {writingSlot}
 
       <div className="flex flex-col gap-4">
         <Field label={labels.langLabel} hint={labels.langHelp}>
