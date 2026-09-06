@@ -452,13 +452,10 @@ integration test in `tests/api.rs` and an `spec/openapi.yaml` update:
   document, and vice versa
 - **cascade** — deleting a map removes its updates and sessions
 
-Gates to run before wrapping up, since CI is the only wall: `cargo fmt`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test --release`, and in
-`web/`: `npm run check`, `npm run lint`, `npm test`, `npm run size`.
-
-Verify on a clean worktree with a private `CARGO_TARGET_DIR`. A shared target dir
-makes a concurrent `cargo test` result untrustworthy — the integration-test
-binaries are not keyed on the workspace and two sessions overwrite the same file.
+Which checks to run before wrapping up, and how to verify on a clean worktree
+with a private `CARGO_TARGET_DIR`, is owned by [docs/validation.md](../docs/validation.md)
+and the "Verify a branch in a worktree" section of `CLAUDE.md`; a CRDT change
+touches persistence and collaboration, so it is high-risk work there.
 
 ---
 
