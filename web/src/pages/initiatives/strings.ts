@@ -16,6 +16,7 @@ export const STR = defineStrings({
     environments: 'Environments',
     specification: 'Specification',
     board: 'Board',
+    epics: "Epics",
     inbox: 'Inbox',
     settings: 'Settings',
     gateTokenSub: "A token with 'read' and 'write' — initiatives are read and fed here.",
@@ -272,6 +273,7 @@ export const STR = defineStrings({
     environments: 'Umgebungen',
     specification: 'Spezifikation',
     board: 'Board',
+    epics: "Epics",
     inbox: 'Inbox',
     settings: 'Einstellungen',
     gateTokenSub:

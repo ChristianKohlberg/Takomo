@@ -5,8 +5,9 @@
 //   neither   the board itself, on a `tk_` token from localStorage
 //
 // The fragment wins over a stored token — see lib/board-mode.ts for why.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { CreateEpicDialog } from '@/components/board/CreateEpicDialog'
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
 import { useNavigate } from 'react-router'
@@ -18,6 +19,7 @@ import { Typeahead } from '@/components/Typeahead'
 import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { Column } from '@/components/board/Column'
+import { EPICS_STR } from '@/components/board/epics-strings'
 import { EpicsView } from '@/components/board/EpicsView'
 import { AskDrawer } from '@/components/board/AskDrawer'
 import { DetailPanel } from '@/components/board/DetailPanel'
@@ -50,13 +52,13 @@ import { Picker } from '@/components/Picker'
 const LS_LANG = 'takomo.lang'
 const POLL_MS = 4000
 
-export function App() {
+export function App({ surface = 'board' }: { surface?: 'board' | 'epics' }) {
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const t = useMemo(() => pick(STR, lang), [lang])
 
   // Read once: a grant is what the URL asked for at load, and re-reading it on
   // every render would fight the board's own hash writes.
-  const [mode] = useState(() => modeFor(window.location.hash))
+  const [mode] = useState(() => modeFor(surface === 'board' ? window.location.hash : ''))
 
   if (mode.kind === 'answer') {
     return (
@@ -102,14 +104,16 @@ export function App() {
     )
   }
 
-  return <Board lang={lang} setLang={setLang} deepTicket={mode.ticket} />
+  return <Board surface={surface} lang={lang} setLang={setLang} deepTicket={mode.ticket} />
 }
 
 function Board({
   lang,
   setLang,
   deepTicket,
+  surface,
 }: {
+  surface: 'board' | 'epics'
   lang: Locale
   setLang: (l: Locale) => void
   deepTicket?: string
@@ -123,6 +127,8 @@ function Board({
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [project, setProject] = useState(() => loadProject())
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectsStatus, setProjectsStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [projectRetry, setProjectRetry] = useState(0)
 
   // The project selection is shared across all four surfaces, and `''` there
   // means ALL PROJECTS — a real state the inbox, initiatives and schedules each
@@ -141,6 +147,7 @@ function Board({
    */
   const [askPeople, setAskPeople] = useState<{ handle: string; label: string }[]>([])
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [cursor, setCursor] = useState<number | string>(0)
   const [selectedId, setSelectedId] = useState<string | null>(deepTicket ?? null)
@@ -163,8 +170,19 @@ function Board({
   // Which altitude the reader is at. `epics` is NOT the board grouped by epic —
   // that stays a ticket board and answers where each ticket is. This answers
   // where each epic is, who holds it, and whether it is moving.
-  const [view, setView] = useState<'board' | 'epics'>('board')
-  const [roadmap, setRoadmap] = useState<Roadmap | undefined>(undefined)
+  const view = surface
+  const [creatingEpic, setCreatingEpic] = useState(false)
+  const [roadmapStatus, setRoadmapStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const activeScope = useRef(effectiveProject)
+  activeScope.current = effectiveProject
+  const detailRequest = useRef(0)
+  const detailContext = useRef({ token, project: effectiveProject })
+  detailContext.current = { token, project: effectiveProject }
+  useEffect(() => () => { detailRequest.current++ }, [token, effectiveProject])
+  const [roadmapResult, setRoadmapResult] = useState<{ project: string; data: Roadmap }>()
+  const roadmap = roadmapResult?.project === effectiveProject ? roadmapResult.data : undefined
+  const availableRoadmap = useRef(roadmap)
+  availableRoadmap.current = roadmap
   // Bumped when the event poll actually finds something, so the epics view
   // refreshes on real change rather than on every four-second tick — it is one
   // query per epic and does not belong on a timer.
@@ -224,9 +242,11 @@ function Board({
 
   useEffect(() => {
     if (!token) return
+    let cancelled = false
+    setProjectsStatus('loading')
     listProjects(token)
-      .then(setProjects)
-      .catch(() => setProjects([]))
+      .then((items) => { if (!cancelled) { setProjects(items); setProjectsStatus('ready') } })
+      .catch((e) => { if (!cancelled) { setProjectsStatus('error'); handleErr(e) } })
     whoami(token)
       .then((w) => {
         const scopes = w.scopes ?? []
@@ -238,32 +258,36 @@ function Board({
         })
       })
       .catch(() => setMe({ actor: '', scopes: [], expertise: [] }))
-  }, [token])
+    return () => { cancelled = true }
+  }, [token, handleErr, projectRetry])
 
   const load = useCallback(async () => {
     if (!token || !effectiveProject) return
+    setLoadError(false)
     setConn((c) => (c === 'live' ? c : 'loading'))
     const [wf, ts] = await Promise.all([
       getWorkflow(token, effectiveProject),
       listTickets(token, effectiveProject),
-    ])
+    ]).catch((error) => {
+      if (activeScope.current === effectiveProject) setLoadError(true)
+      throw error
+    })
+    if (activeScope.current !== effectiveProject) return
     setWorkflow(wf)
     setTickets(ts)
     setConn('live')
   }, [token, effectiveProject])
 
-  // The project list is what makes `effectiveProject` resolvable, so it is
-  // fetched whenever there is a token — not only from the token gate, which is
-  // where it used to happen and which a returning viewer never sees.
-  useEffect(() => {
-    if (!token || projects.length) return
-    listProjects(token).then(setProjects).catch(handleErr)
-  }, [token, projects.length, handleErr])
-
   useEffect(() => {
     if (!token || !effectiveProject) return
+    setTickets([])
+    setWorkflow(null)
+    setRoadmapStatus('loading')
+    setDetail(null)
+    setSelectedId(deepTicket ?? null)
+    setCreatingEpic(false)
     load().catch(handleErr)
-  }, [token, effectiveProject, load, handleErr])
+  }, [token, effectiveProject, load, handleErr, deepTicket])
 
   // Who a question raised here can be addressed to. A failed read leaves the list
   // empty, which hides the control rather than offering names the server refuses.
@@ -295,7 +319,7 @@ function Board({
           if (page.cursor != null) setCursor(page.cursor)
           setConn('live')
           if (hasEvents(page)) {
-            void load()
+            void load().catch(handleErr)
             setEpoch((n) => n + 1)
           }
         })
@@ -318,21 +342,23 @@ function Board({
   }, [token, effectiveProject, cursor, load, handleErr])
 
   // The roadmap, fetched only while the epics view is open: it runs a query per
-  // epic, so a reader on the board should not pay for it. Soft on failure — the
-  // view says it has nothing rather than throwing the board into an error state.
+  // epic, so a reader on the board should not pay for it. A failed read is
+  // explicit and retryable; it must never look like a project without epics.
   useEffect(() => {
     if (!token || !effectiveProject || view !== 'epics') return
     let cancelled = false
+    // Preserve the mounted view during background refreshes so filters survive.
+    setRoadmapStatus((status) => status === 'error' ? (availableRoadmap.current ? 'ready' : 'loading') : status)
     fetchRoadmap(token, effectiveProject)
       .then((rm) => {
-        if (!cancelled) setRoadmap(rm)
+        if (!cancelled) { setRoadmapResult({ project: effectiveProject, data: rm }); setRoadmapStatus('ready') }
       })
       .catch((e) => {
         if (isAuthError(e)) {
           handleErr(e)
           return
         }
-        if (!cancelled) setRoadmap(undefined)
+        if (!cancelled) { setRoadmapStatus('error') }
       })
     return () => {
       cancelled = true
@@ -347,13 +373,16 @@ function Board({
   // same time, which is worse than either being stale alone.
   useEffect(() => {
     if (!token || !selectedId || !detail) return
+    let cancelled = false
+    const request = detailRequest.current
     getTicket(token, selectedId)
-      .then(setDetail)
+      .then((ticket) => { if (!cancelled && detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject) setDetail(ticket) })
       // A failed refresh leaves the drawer on what it had; the next tick retries.
       .catch(() => {})
+    return () => { cancelled = true }
     // `tickets` is the signal that something changed — the poll replaces it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, selectedId, tickets])
+  }, [token, effectiveProject, selectedId, tickets])
 
   // Open questions per ticket — what the detail drawer's callout counts.
   useEffect(() => {
@@ -467,12 +496,13 @@ function Board({
   // re-reads the one ticket rather than fattening the list request for all.
   const openTicket = useCallback(
     (id: string) => {
+      const request = ++detailRequest.current
       setSelectedId(id)
       const known = tickets.find((x) => x.id === id) ?? null
       setDetail(known)
-      if (token) getTicket(token, id).then(setDetail).catch(() => {})
+      if (token) getTicket(token, id).then((ticket) => { if (detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject) setDetail(ticket) }).catch(() => {})
     },
-    [tickets, token],
+    [tickets, token, effectiveProject],
   )
 
   const currentProject = projects.find((p) => p.id === effectiveProject) as
@@ -482,10 +512,10 @@ function Board({
   if (!token) {
     return (
       <TokenGate
-        title="takomo · board"
-        subtitle={t.gateSub}
+        title={`takomo · ${surface}`}
+        subtitle={surface === 'epics' ? t.epGateSub : t.gateSub}
         tokenLabel={t.gateTokenLabel}
-        openLabel={t.gateOpen}
+        openLabel={surface === 'epics' ? t.epGateOpen : t.gateOpen}
         emptyMessage={t.typeFirst}
         initialToken={token}
         onSubmit={(tk) => {
@@ -504,9 +534,10 @@ function Board({
       onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       rail={{
         onNavigate: navigate,
-        current: 'board',
+        current: surface,
         nav: {
           board: t.board,
+          epics: t.epics,
           inbox: t.inbox,
           specification: t.specification,
           initiatives: t.initiatives,
@@ -551,7 +582,7 @@ function Board({
         onSignOut: signOut,
       }}
     >
-      <AppHeader
+      {view === 'board' && <AppHeader
         title={t.board}
       >
         {/* Why nothing on this board can be changed. The board itself only
@@ -590,31 +621,6 @@ function Board({
             filtersOpen ? 'flex w-full md:w-auto' : 'hidden md:flex',
           )}
         >
-        {/* Altitude first, because it changes what every control below means:
-            the filters shape the ticket board, and the epics view is a different
-            question rather than a filtered answer to the same one. */}
-        <div
-          className="border-border flex shrink-0 overflow-hidden rounded-lg border"
-          role="group"
-          aria-label={t.viewLabel}
-        >
-          {(['board', 'epics'] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              aria-pressed={view === v}
-              onClick={() => setView(v)}
-              className={cn(
-                'cursor-pointer px-2.5 py-1.5 text-[12.5px] font-[650]',
-                view === v
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground',
-              )}
-            >
-              {v === 'board' ? t.viewBoard : t.viewEpics}
-            </button>
-          ))}
-        </div>
         <Typeahead
           id="tickfilter"
           options={tickets.map((x) => ({ id: x.id, title: x.title }))}
@@ -757,11 +763,11 @@ function Board({
             ↻
           </Button>
         </Hint>
-      </AppHeader>
+      </AppHeader>}
 
       {/* One state at a time on a phone. Rendered outside <main> so it does not
           scroll away with the columns. */}
-      {states.length > 0 && (
+      {view === 'board' && states.length > 0 && (
         <div className="border-b-border-soft flex gap-1 overflow-x-auto border-b px-3 py-2 md:hidden">
           {states.map((s) => {
             const n = (columns.get(s) ?? []).length
@@ -789,55 +795,25 @@ function Board({
             reading 0, with no statement that a filter caused it and no way to
             undo them together. */}
         {view === 'epics' ? (
+          projectsStatus === 'loading' ? <p role="status" className="text-muted-foreground p-6">{t.loading}</p> :
+          projectsStatus === 'error' ? <div role="alert" className="p-6"><p>{t.epLoadError}</p><Button variant="outline" className="mt-3" onClick={() => setProjectRetry((n) => n + 1)}>{t.epRetry}</Button></div> :
+          !effectiveProject ? <p className="text-muted-foreground p-6">{t.epNoProject}</p> :
+          loadError && !workflow ? <div role="alert" className="p-6"><p>{t.epLoadError}</p><Button variant="outline" className="mt-3" onClick={() => { void load().catch(handleErr); setEpoch((n) => n + 1) }}>{t.epRetry}</Button></div> :
+          (roadmapStatus === 'loading' || ((!roadmap || !workflow) && roadmapStatus !== 'error')) ? <p role="status" className="text-muted-foreground p-6">{t.loading}</p> :
+          roadmapStatus === 'error' && !roadmap ? <div role="alert" className="p-6"><p>{t.epLoadError}</p><Button variant="outline" className="mt-3" onClick={() => setEpoch((n) => n + 1)}>{t.epRetry}</Button></div> :
+          <>
+          {(roadmapStatus === 'error' || loadError) && <div role="alert" className="mb-3 flex flex-wrap items-center gap-2 text-sm"><p>{t.epRefreshError}</p><Button variant="outline" size="sm" onClick={() => { void load().catch(handleErr); setEpoch((n) => n + 1) }}>{t.epRetry}</Button></div>}
           <EpicsView
+            key={effectiveProject}
+            onCreate={() => setCreatingEpic(true)}
+            canCreate={(me.scopes.includes('write') || me.scopes.includes('admin')) && currentProject?.archived !== true}
             epics={roadmap?.epics ?? []}
             laneTitles={laneTitles(roadmap)}
             onOpen={openTicket}
-            labels={{
-              held: t.epHeld,
-              stalled: t.epStalled,
-              awaiting: t.epAwaiting,
-              flagged: t.epFlagged,
-              ready: t.epReady,
-              backlog: t.epBacklog,
-              heldBy: t.epHeldBy,
-              idle: t.epIdle,
-              indefinite: t.epIndefinite,
-              noLane: t.epNoLane,
-              empty: t.epEmpty,
-              emptyHint: t.epEmptyHint,
-              progress: t.epProgress,
-              colEpic: t.epColEpic,
-              colState: t.epColState,
-              colLanes: t.epColLanes,
-              colProgress: t.epProgress,
-              colHolder: t.epColHolder,
-              colLastActivity: t.epColLastActivity,
-              sortAscending: t.epSortAsc,
-              sortDescending: t.epSortDesc,
-              sortNone: t.epSortNone,
-              filters: t.filters,
-              filterStateCategory: t.epFilterStateCategory,
-              filterLane: t.epFilterLane,
-              filterClaimed: t.epFilterClaimed,
-              filterAll: t.epFilterAll,
-              filterClaimedYes: t.epFilterClaimedYes,
-              filterClaimedNo: t.epFilterClaimedNo,
-              clearFilters: t.clearFilters,
-              noMatchFilters: t.noMatchFilters,
-              presets: t.epPresets,
-              presetRecentCreated: t.epPresetRecentCreated,
-              presetNearlyComplete: t.epPresetNearlyComplete,
-              presetNotStarted: t.epPresetNotStarted,
-              presetStalled: t.epPresetStalled,
-              presetAwaiting: t.epPresetAwaiting,
-              presetUnclaimed: t.epPresetUnclaimed,
-              presetFlagged: t.epPresetFlagged,
-              unclaimed: t.epUnclaimed,
-              lastActivityUnknown: t.epLastActivityUnknown,
-              stalledMarker: t.epStalledMarker,
-            }}
+            terminalStates={workflow?.states.filter((s) => s.terminal).map((s) => s.id)}
+            labels={EPICS_STR[lang]}
           />
+          </>
         ) : visible.length === 0 && tickets.length > 0 && activeFilterCount > 0 ? (
           <div className="text-muted-foreground px-2 py-14 text-center">
             <div className="text-[13.5px]">{t.noMatchFilters}</div>
@@ -897,6 +873,24 @@ function Board({
         )}
       </main>
 
+      <CreateEpicDialog
+        key={effectiveProject}
+        open={creatingEpic}
+        onOpenChange={setCreatingEpic}
+        token={token}
+        project={effectiveProject}
+        lang={lang}
+        onCreated={(ticket) => {
+          if (activeScope.current !== effectiveProject) return
+          setCreatingEpic(false)
+          setTickets((items) => [...items, ticket])
+          detailRequest.current++
+          setSelectedId(ticket.id)
+          setDetail(ticket)
+          setEpoch((n) => n + 1)
+        }}
+      />
+
       <DetailPanel
         ticket={detail}
         questions={detail ? questionsByTicket.get(detail.id) : undefined}
@@ -927,6 +921,7 @@ function Board({
           agoSep: t.agoSep,
         }}
         onClose={() => {
+          detailRequest.current++
           setDetail(null)
           setSelectedId(null)
         }}

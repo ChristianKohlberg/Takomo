@@ -30,6 +30,7 @@ const SpecificationApp = lazy(() => import('./pages/specification/App'))
 /** The document title each surface used to carry in its own `<head>`. */
 const TITLES: Record<string, string> = {
   '/board': 'takomo · board',
+  '/epics': 'takomo · epics',
   '/inbox': 'takomo · inbox',
   '/documents': 'takomo · documents',
   '/initiatives': 'takomo · initiatives',
@@ -72,7 +73,8 @@ const router = createBrowserRouter([
   {
     element: <Root />,
     children: [
-      { path: '/board', element: <BoardApp /> },
+      { path: '/board', element: <BoardApp key="board" /> },
+      { path: '/epics', element: <BoardApp key="epics" surface="epics" /> },
       { path: '/inbox', element: <InboxApp /> },
       { path: '/documents', element: <LegacySpecificationRedirect /> },
       { path: '/specification', element: <SpecificationApp /> },

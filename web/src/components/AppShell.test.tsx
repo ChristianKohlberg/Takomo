@@ -12,7 +12,7 @@ vi.mock('@/lib/session', () => ({ loadToken: vi.fn(() => '') }))
 vi.mock('@/lib/api', () => ({ api: vi.fn() }))
 beforeEach(() => { vi.mocked(loadToken).mockReturnValue(''); vi.mocked(listQuestions).mockReset(); vi.mocked(api).mockReset() })
 
-const nav = { specification: 'Plan', board: 'Board', inbox: 'Inbox', documents: 'Documents', initiatives: 'Initiatives', mindmaps: 'Mindmaps', schedules: 'Schedules', verification: 'Verification', environments: 'Environments' }
+const nav = { specification: 'Plan', board: 'Board', epics: 'Epics', inbox: 'Inbox', documents: 'Documents', initiatives: 'Initiatives', mindmaps: 'Mindmaps', schedules: 'Schedules', verification: 'Verification', environments: 'Environments' }
 
 type Updates = { project: string; subscribe: (callback: () => Promise<unknown>) => () => void }
 

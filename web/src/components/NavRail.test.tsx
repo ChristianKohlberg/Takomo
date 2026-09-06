@@ -16,7 +16,7 @@ const LABELS = {
   settings: 'Settings',
 }
 const NAV = {
-  board: 'Board',
+  board: 'Board', epics: 'Epics',
   inbox: 'Inbox',
   specification: 'Specification',
   initiatives: 'Initiatives',
@@ -56,6 +56,15 @@ describe('NavRail', () => {
     expect(screen.getByText('Board')).toBeTruthy()
   })
 
+  it('makes Epics a dedicated destination beside Board', () => {
+    const { onNavigate } = mount({ current: 'inbox' })
+    const epic = screen.getByRole('link', { name: 'Epics' })
+    expect(epic).toHaveProperty('pathname', '/epics')
+    expect(epic.previousElementSibling).toHaveProperty('pathname', '/board')
+    fireEvent.click(epic)
+    expect(onNavigate).toHaveBeenCalledWith('/epics')
+  })
+
   it('does not list settings among the surface links', () => {
     mount()
     expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull()
@@ -65,7 +74,7 @@ describe('NavRail', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Specification', 'Inbox', 'Initiatives', 'Schedules', 'Environments']) {
+    for (const name of ['Specification', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })

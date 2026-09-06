@@ -24,6 +24,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   CalendarClockIcon,
   LanguagesIcon,
+  LayersIcon,
   InboxIcon,
   LayoutGridIcon,
   LightbulbIcon,
@@ -43,6 +44,7 @@ import { useIsPhone } from '@/hooks/useIsPhone'
 import { Hint } from '@/components/Hint'
 
 export interface NavLabels {
+  epics: string
   board: string
   inbox: string
   specification: string
@@ -111,6 +113,7 @@ export interface NavRailProps {
 
 const NAV_HREF: Record<keyof NavLabels, string> = {
   board: '/board',
+  epics: '/epics',
   inbox: '/inbox',
   specification: '/specification',
   initiatives: '/initiatives',
@@ -120,6 +123,7 @@ const NAV_HREF: Record<keyof NavLabels, string> = {
 
 const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
   board: LayoutGridIcon,
+  epics: LayersIcon,
   inbox: InboxIcon,
   specification: NetworkIcon,
   initiatives: LightbulbIcon,
@@ -141,6 +145,7 @@ const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
 const NAV_ORDER: (keyof NavLabels)[] = [
   'specification',
   'board',
+  'epics',
   'inbox',
   'initiatives',
   'schedules',

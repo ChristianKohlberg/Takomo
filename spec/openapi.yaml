@@ -856,6 +856,13 @@ paths:
                         state_category: { type: string }
                         priority: { type: string }
                         total: { type: integer, description: descendants in the subtree }
+                        own_open_questions:
+                          type: integer
+                          description: Open questions attached directly to this epic, separate from descendant tasks awaiting answers.
+                        last_activity_at:
+                          type: string
+                          format: date-time
+                          description: Newest updated_at on the epic or its descendants, regardless of claim status.
                         done: { type: integer, description: descendants in a done-category state }
                         percent: { type: integer, description: done/total as a whole percent (0 when empty) }
                         ready:

@@ -55,6 +55,7 @@ async fn inbox_and_board_pages_served_unauthenticated() {
     let bundle = app.eager_bundle().await;
     for title in [
         "takomo · board",
+        "takomo · epics",
         "takomo · inbox",
         "takomo · initiatives",
         "takomo · schedules",
@@ -335,6 +336,7 @@ const PAGE_ROUTES: &[&str] = &[
     "/specification",
     "/projects/demo/specification?view=map&section=mn-example",
     "/board",
+    "/epics",
     "/documents",
     "/verification",
     "/environments",
@@ -10005,7 +10007,7 @@ async fn questions_list_is_paginated_with_limit_and_cursor() {
 #[tokio::test]
 async fn html_apps_send_security_headers() {
     let app = TestApp::spawn().await;
-    for path in ["/board", "/inbox"] {
+    for path in ["/board", "/epics", "/inbox"] {
         let resp = app.request(Method::GET, path).send().await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{path}");
         let h = resp.headers();
