@@ -1,4 +1,5 @@
-// The left navigation rail: brand, the four work surfaces, and the profile block.
+// The left navigation rail: project scope and Inbox (or the brand), the work
+// surfaces, and the profile block.
 //
 // This replaces the horizontal nav strip that used to live inside AppHeader.
 // The strip had to scroll sideways the moment a fifth surface arrived, which
@@ -65,7 +66,8 @@ export interface NavRailLabels {
 export interface NavRailProps {
   lang?: Locale
   onLang?: (lang: Locale) => void
-  /** AppShell moves global controls to AppHeader. */
+  /** Set by AppShell: project scope and Inbox take the top row in place of the
+   *  brand, the collapse toggle drops beneath it, and Inbox leaves the list. */
   navigationInHeader?: boolean
   nav: NavLabels
   /**
