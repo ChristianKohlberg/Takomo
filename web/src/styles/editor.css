@@ -210,6 +210,21 @@
 .document-appearance .ProseMirror h3 { font-size: var(--doc-h3-size, 18px); }
 .document-appearance .ProseMirror :is(h1, h2, h3, h4, h5, h6):first-child { margin-top: 0; }
 
+/* A continuous page, with spacing scaled by the selected project typography. */
+.document-page {
+  max-width: 840px;
+  padding: clamp(12px, 3vw, 48px) clamp(0px, 16.667% - 80px, 60px) 64px;
+}
+.document-page > .document-section { border-top: 0; }
+.document-page .ProseMirror > p + p { margin-top: 0.85em; }
+.document-page .ProseMirror :is(ul, ol) { padding-inline-start: 1.6em; margin-block: 0.85em; }
+.document-page .ProseMirror li { padding-inline-start: 0.2em; }
+.document-page .ProseMirror li + li { margin-top: 0.3em; }
+.document-page .ProseMirror li > p { margin-block: 0.25em; }
+.document-page .ProseMirror li > :is(ul, ol) { margin-block: 0.3em; }
+.document-page .ProseMirror blockquote { margin-block: 1em; padding-inline: 1em; }
+.document-page .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { line-height: 1.25; margin-bottom: 0.45em; }
+
 /* Reserve the action row on pointer devices so revealing it never reflows prose. */
 .document-section { position: relative; }
 .section-actions { opacity: 0; pointer-events: none; }

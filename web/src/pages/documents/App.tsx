@@ -191,6 +191,7 @@ export function DocumentView() {
   return (
     <DiagramContext value={{ token, project: map?.project ?? project }}>
     <Plan
+      project={project}
       key={session.session}
       conversationFor={(node) => (
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}

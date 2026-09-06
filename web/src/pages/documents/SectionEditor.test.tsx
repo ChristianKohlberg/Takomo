@@ -196,3 +196,66 @@ it('edits a table in its own section and shows it to a read-only replica without
   expect(changes).not.toHaveBeenCalled()
   reader.unmount(); awareness.destroy(); remoteAwareness.destroy(); doc.destroy(); replica.destroy()
 })
+
+it('crosses plain paragraph boundaries without altering prose and preserves native interior navigation', () => {
+  const doc = new Y.Doc()
+  const fragment = section(doc, 'mn-writing', 'Keep this prose.')
+  const awareness = new Awareness(doc)
+  const navigate = vi.fn((_target: 'title' | 'next-title') => true)
+  let editor: Editor | null = null
+  const view = render(<SectionEditor ydoc={doc} fragment={fragment}
+    provider={{ awareness } as unknown as WebsocketProvider}
+    display="Ada" color="#2563eb" canWrite onSettled={() => {}}
+    onEditor={value => { editor = value }} onNavigate={navigate} label="Writing" />)
+  const handler = (key: string, options: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent('keydown', { key, ...options })
+    let handled = false
+    act(() => { handled = editor!.options.editorProps.handleKeyDown!(editor!.view, event) === true })
+    return handled
+  }
+  const select = (from: number, to = from) => act(() => { editor!.commands.setTextSelection({ from, to }) })
+  select(1)
+  expect(handler('ArrowUp')).toBe(true)
+  expect(handler('Backspace')).toBe(true)
+  expect(navigate.mock.calls).toEqual([['title'], ['title']])
+  select(editor!.state.doc.content.size - 1)
+  expect(handler('ArrowDown')).toBe(true)
+  expect(navigate).toHaveBeenLastCalledWith('next-title')
+  expect(fragment.toString()).toContain('Keep this prose.')
+  navigate.mockClear()
+  select(3)
+  expect(handler('ArrowUp')).toBe(false)
+  expect(handler('Backspace')).toBe(false)
+  expect(handler('ArrowDown')).toBe(false)
+  select(1, 4)
+  expect(handler('Backspace')).toBe(false)
+  select(1)
+  for (const modifier of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey', 'isComposing']) {
+    expect(handler('ArrowUp', { [modifier]: true })).toBe(false)
+  }
+  expect(navigate).not.toHaveBeenCalled()
+  for (const content of [
+    { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Item' }] }] }] },
+    { type: 'codeBlock', content: [{ type: 'text', text: 'Code' }] },
+    { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Cell' }] }] }] }] },
+  ]) {
+    act(() => {
+      editor!.commands.setContent({ type: 'doc', content: [content] })
+      let found = false
+      editor!.state.doc.descendants((node, pos) => {
+        if (!found && node.isTextblock) { editor!.commands.setTextSelection(pos + 1); found = true }
+      })
+    })
+    expect(handler('ArrowUp')).toBe(false)
+    expect(handler('Backspace')).toBe(false)
+    act(() => {
+      let found = false
+      editor!.state.doc.descendants((node, pos) => {
+        if (!found && node.isTextblock) { editor!.commands.setTextSelection(pos + node.nodeSize - 1); found = true }
+      })
+    })
+    expect(handler('ArrowDown')).toBe(false)
+  }
+  expect(navigate).not.toHaveBeenCalled()
+  view.unmount(); awareness.destroy(); doc.destroy()
+})

@@ -75,6 +75,10 @@ export interface SectionPanelProps {
   title: string
   /** Rename the section from here. Absent leaves the heading static. */
   onHeadingEnter?: () => void
+  onHeadingUp?: () => boolean
+  onHeadingDown?: () => boolean
+  onHeadingFocus?: () => void
+  headingActions?: ReactNode
   onTitle?: (text: string) => Promise<unknown> | void
   standing: Standing
   /** This section's history, newest first. */
@@ -132,6 +136,10 @@ export function SectionPanel({
   title,
   onTitle,
   onHeadingEnter,
+  onHeadingUp,
+  onHeadingDown,
+  onHeadingFocus,
+  headingActions,
   standing,
   entries,
   historyOpen,
@@ -187,7 +195,10 @@ export function SectionPanel({
   return (
     <section
       ref={sectionRef}
-      onFocusCapture={onActivate}
+      onFocusCapture={event => {
+        onActivate?.()
+        if ((event.target as HTMLElement).classList.contains('document-heading')) onHeadingFocus?.()
+      }}
       onPointerDown={onActivate}
       className={cn(
         'document-section border-border-soft border-t first:border-t-0',
@@ -214,6 +225,8 @@ export function SectionPanel({
             aria-label={labels.renameSection}
             as={Heading}
             onEnter={onHeadingEnter}
+            onArrowUp={onHeadingUp}
+            onArrowDown={onHeadingDown}
             className={cn('min-w-0', headingClass(depth), title ? '' : 'italic opacity-70')}
           />
         ) : (
@@ -239,6 +252,7 @@ export function SectionPanel({
       <div ref={actionsRef} id={actionsId} role="group" aria-label={labels.actions ?? 'Section actions'}
         data-open={actionsOpen || historyOpen || proposalsOpen || undefined}
         className="section-actions mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+        {headingActions}
         <Hint text={canWrite ? labels.reviewHint : labels.needWrite}>
           <button
             type="button"

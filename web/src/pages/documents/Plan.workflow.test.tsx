@@ -31,6 +31,8 @@ beforeEach(() => {
   probe.editors.clear()
   probe.panelRenders = 0
   Element.prototype.scrollIntoView = vi.fn()
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+  Range.prototype.getBoundingClientRect = () => new DOMRect()
 })
 afterEach(() => { vi.unstubAllGlobals(); for (const { doc, awareness } of fixtures.splice(0)) { awareness.destroy(); doc.destroy() } })
 
@@ -174,4 +176,105 @@ describe('document workflow integration', () => {
     expect(screen.getByLabelText('Section 1.1 prose')).toBe(editor)
     expect(view.container.querySelector('aside')?.style.display).toBe('')
   })
+})
+
+function titleCaret(title: HTMLElement, end: boolean) {
+  title.focus()
+  const range = document.createRange()
+  range.selectNodeContents(title)
+  range.collapse(!end)
+  const selection = window.getSelection()!
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+it('writes continuously between titles and prose without losing text', async () => {
+  const { doc, child, fragment, props } = setup()
+  render(<Plan {...props} />)
+  const title = screen.getAllByLabelText('Rename section')[1]!
+  const nextTitle = screen.getAllByLabelText('Rename section')[2]!
+  title.textContent = 'Invoice details'
+  act(() => { titleCaret(title, true) })
+  fireEvent.keyDown(title, { key: 'Enter' })
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Section 1.1 prose')))
+  expect(readPlanTree(doc).find(node => node.id === child)!.title).toBe('Invoice details')
+  const prose = probe.editors.get('Section 1.1 prose')!
+  expect(prose.state.selection.from).toBe(1)
+  fireEvent.keyDown(prose.view.dom, { key: 'Backspace' })
+  expect(document.activeElement).toBe(title)
+  const remainder = window.getSelection()!.getRangeAt(0).cloneRange()
+  remainder.setEndAfter(title.lastChild!)
+  expect(remainder.toString()).toBe('')
+  expect(fragment.toString()).toContain('Payment deadline is thirty days.')
+  fireEvent.keyDown(title, { key: 'ArrowDown' })
+  await waitFor(() => expect(document.activeElement).toBe(prose.view.dom))
+  act(() => { prose.commands.setTextSelection(prose.state.doc.content.size - 1) })
+  fireEvent.keyDown(prose.view.dom, { key: 'ArrowDown' })
+  expect(document.activeElement).toBe(nextTitle)
+  expect(window.getSelection()!.anchorOffset).toBe(0)
+  fireEvent.keyDown(nextTitle, { key: 'ArrowUp' })
+  await waitFor(() => expect(document.activeElement).toBe(prose.view.dom))
+  expect(prose.state.selection.from).toBe(prose.state.doc.content.size - 1)
+  expect(fragment.toString()).toContain('Payment deadline is thirty days.')
+})
+
+it('mounts offscreen prose when a heading boundary requests it', async () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} })
+  const { props } = setup()
+  render(<Plan {...props} />)
+  expect(screen.queryByLabelText('Section 1.1 prose')).toBeNull()
+  const title = screen.getAllByLabelText('Rename section')[1]!
+  act(() => { titleCaret(title, true) })
+  fireEvent.keyDown(title, { key: 'ArrowDown' })
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Section 1.1 prose')))
+  expect(probe.editors.get('Section 1.1 prose')!.state.selection.from).toBe(1)
+})
+
+it('formats the selected prose through the shared toolbar and copies the stable section link', async () => {
+  const { child, props } = setup()
+  const writeText = vi.fn(async (_text: string) => {})
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+  render(<Plan {...props} project="takomo" />)
+  const prose = probe.editors.get('Section 1.1 prose')!
+  fireEvent.pointerDown(prose.view.dom)
+  act(() => { prose.commands.setTextSelection({ from: 1, to: 8 }) })
+  const style = screen.getByRole('combobox', { name: 'Paragraph style' }) as HTMLSelectElement
+  expect(style.value).toBe('paragraph')
+  fireEvent.mouseDown(screen.getByRole('button', { name: 'Bold' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+  expect(prose.state.selection.from).toBe(1)
+  expect(prose.state.selection.to).toBe(8)
+  expect(prose.isActive('bold')).toBe(true)
+  fireEvent.change(style, { target: { value: 'h2' } })
+  expect(style.value).toBe('h2')
+  expect(prose.state.doc.firstChild!.type.name).toBe('heading')
+  expect(prose.state.doc.firstChild!.textContent).toBe('Payment deadline is thirty days.')
+  fireEvent.click(screen.getAllByRole('button', { name: 'Copy section link' })[1]!)
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining(`section=${child}`)))
+  expect(writeText.mock.calls[0]![0]).toContain('/projects/takomo/specification?view=document')
+})
+
+it('disables stale prose tools while editing a title and restores them on returning to prose', async () => {
+  const { fragment, props } = setup()
+  render(<Plan {...props} />)
+  const prose = probe.editors.get('Section 1.1 prose')!
+  fireEvent.pointerDown(prose.view.dom)
+  act(() => { prose.commands.focus(); prose.commands.setTextSelection({ from: 1, to: 8 }) })
+  const style = screen.getByRole('combobox', { name: 'Paragraph style' }) as HTMLSelectElement
+  const comment = screen.getByRole('button', { name: 'Add comment' }) as HTMLButtonElement
+  await waitFor(() => expect(style.disabled).toBe(false))
+  expect(comment.disabled).toBe(false)
+  const title = screen.getAllByLabelText('Rename section')[1]!
+  act(() => { titleCaret(title, true) })
+  expect(style.disabled).toBe(true)
+  expect(comment.disabled).toBe(true)
+  fireEvent.keyDown(title, { key: 'Enter' })
+  await waitFor(() => expect(document.activeElement).toBe(prose.view.dom))
+  expect(style.disabled).toBe(false)
+  // Enter places a collapsed caret at the beginning, so commenting waits for
+  // an actual prose selection rather than retaining the old title-era range.
+  expect(comment.disabled).toBe(true)
+  act(() => { prose.commands.setTextSelection({ from: 1, to: 8 }) })
+  expect(comment.disabled).toBe(false)
+  expect(fragment.toString()).toContain('Payment deadline is thirty days.')
 })

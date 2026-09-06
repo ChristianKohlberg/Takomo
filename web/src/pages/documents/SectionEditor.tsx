@@ -27,7 +27,7 @@ import { DiagramContext } from '@/lib/diagram'
 import { useEffect, useId, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { TableKit } from '@tiptap/extension-table'
-import { SlashInsert, type SlashMatch } from '@/lib/slash-insert'
+import { SlashInsert, slashMatch, type SlashMatch } from '@/lib/slash-insert'
 import { SlashMenu } from './SlashMenu'
 import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
@@ -35,7 +35,7 @@ import type { Locale } from '@/lib/i18n'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
-import { ySyncPluginKey } from 'y-prosemirror'
+import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import type { WebsocketProvider } from 'y-websocket'
 import type * as Y from 'yjs'
 
@@ -47,12 +47,16 @@ import { DiagramCodeBlock } from '@/lib/diagram-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
+import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
+import '@/styles/document-comments.css'
 
 /** How long a person stops typing before the edit counts as settled. */
 const SETTLE_MS = 2500
 
 export interface SectionEditorProps {
   ydoc: Y.Doc
+  sectionId?: string
+  onOpenComments?: () => void
   /** The node's own `prose` fragment. See `proseOf` in lib/mindmap-crdt. */
   fragment: Y.XmlFragment
   provider: WebsocketProvider
@@ -89,6 +93,8 @@ export interface SectionEditorProps {
   onEditor?: (editor: Editor | null) => void
   onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
   maxSectionLevel?: number
+  /** Keyboard movement at a plain paragraph boundary; returning false preserves native behavior. */
+  onNavigate?: (target: 'title' | 'next-title') => boolean
   searchQuery?: string
   searchActiveFrom?: number
   locale?: Locale
@@ -97,6 +103,8 @@ export interface SectionEditorProps {
 
 export default function SectionEditor({
   ydoc,
+  sectionId = '',
+  onOpenComments,
   fragment,
   provider,
   display,
@@ -108,6 +116,7 @@ export default function SectionEditor({
   label,
   onInsertSection,
   maxSectionLevel = 3,
+  onNavigate,
   searchQuery = '',
   searchActiveFrom,
   locale = 'en',
@@ -121,6 +130,10 @@ export default function SectionEditor({
   const slashId = useId()
   const insertSection = useRef(onInsertSection)
   insertSection.current = onInsertSection
+  const navigate = useRef(onNavigate)
+  navigate.current = onNavigate
+  const openComments = useRef(onOpenComments)
+  openComments.current = onOpenComments
   const dirty = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // The callback is read at fire time rather than captured, so a settle already
@@ -152,11 +165,22 @@ export default function SectionEditor({
         // rule the highlight illustrates. See `lib/block-highlight.ts`.
         HighlightBlocks,
         DocumentSearchHighlight,
+        DocumentCommentHighlight.configure({ ydoc, sectionId, onOpen: () => openComments.current?.() }),
       ],
       editorProps: {
         handleKeyDown: (view, event) => {
-          if (!canWrite || event.key !== 'Enter' || event.shiftKey || event.isComposing || !insertSection.current) return false
+          if (!canWrite || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey ||
+              event.isComposing || view.composing || slashMatch(view.state)) return false
           const { $from, empty } = view.state.selection
+          // Only cross section boundaries from plain top-level paragraphs.
+          // Nested lists, tables and code retain their own keyboard navigation.
+          if (empty && $from.depth === 1 && $from.parent.type.name === 'paragraph') {
+            if ((event.key === 'ArrowUp' || event.key === 'Backspace') && $from.pos === 1 &&
+                navigate.current?.('title')) return true
+            if (event.key === 'ArrowDown' && $from.pos === view.state.doc.content.size - 1 &&
+                navigate.current?.('next-title')) return true
+          }
+          if (event.key !== 'Enter' || !insertSection.current) return false
           const block = $from.parent
           // A completed heading on the final line becomes a real section.
           // Earlier headings stay in place: moving their following prose would
@@ -184,7 +208,7 @@ export default function SectionEditor({
       // warns without it when an editor mounts during an SSR-shaped render.
       immediatelyRender: false,
     },
-    [ydoc, fragment, provider, canWrite],
+    [ydoc, fragment, provider, canWrite, sectionId],
   )
 
   // The page keeps a handle on this editor while it is mounted, and loses it the
