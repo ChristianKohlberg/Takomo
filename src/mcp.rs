@@ -92,6 +92,9 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 /// A name that is not listed counts as a write, so a tool added later is
 /// charged until it is deliberately declared a read — the safe direction.
 pub const READ_TOOLS: &[&str] = &[
+    "takomo_lanes",
+    "takomo_lane_show",
+    "takomo_lane_handoffs",
     "takomo_specification_history",
     "takomo_specification_version",
     "takomo_test_definitions",
@@ -167,6 +170,58 @@ fn slim_tools(mut tools: Vec<rmcp::model::Tool>) -> Vec<rmcp::model::Tool> {
 }
 
 // ---- tool argument schemas --------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkLanesArgs {
+    pub project: String,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkLaneIdArgs {
+    pub id: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkLaneCreateArgs {
+    pub project: String,
+    pub title: String,
+    pub purpose: Option<String>,
+    pub context: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct WorkLaneUpdateArgs {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkLaneTicketArgs {
+    pub lane: String,
+    pub ticket: String,
+    pub remove: Option<bool>,
+}
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct WorkLaneHandoffArgs {
+    pub lane: String,
+    pub kind: String,
+    pub provider: String,
+    pub instructions: String,
+    pub ticket_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_handoff: Option<String>,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WorkLaneHandoffsArgs {
+    pub lane: String,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct NewArgs {
@@ -2103,6 +2158,169 @@ impl TakomoMcp {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         respond(self.do_initiative_update(&require_auth(&ctx)?, a))
+    }
+
+    #[tool(
+        description = "List project-defined lanes for related tickets and retained agent context."
+    )]
+    async fn takomo_lanes(
+        &self,
+        Parameters(a): Parameters<WorkLanesArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            auth.require_project(&a.project)?;
+            let (items, total) = self.state.store.work_lane_list(
+                &a.project,
+                a.limit.unwrap_or(50).clamp(1, 200),
+                a.offset.unwrap_or(0).max(0),
+            )?;
+            Ok(crate::api::paged(
+                items,
+                total,
+                a.limit.unwrap_or(50).clamp(1, 200),
+                "Continue with offset=N and limit=N (maximum 200).",
+            ))
+        })())
+    }
+    #[tool(
+        description = "Read a lane's durable context and ticket membership before preparing work."
+    )]
+    async fn takomo_lane_show(
+        &self,
+        Parameters(a): Parameters<WorkLaneIdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            let lane = self.state.store.work_lane_get(&a.id)?;
+            auth.require_project(lane["project"].as_str().unwrap_or_default())?;
+            Ok(lane)
+        })())
+    }
+    #[tool(
+        description = "Create a lane to collect related work. Does not dispatch or execute an agent."
+    )]
+    async fn takomo_lane_create(
+        &self,
+        Parameters(a): Parameters<WorkLaneCreateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            auth.require_project(&a.project)?;
+            let lane = self.state.store.work_lane_create(
+                &a.project,
+                &a.title,
+                a.purpose.as_deref().unwrap_or(""),
+                a.context.as_deref().unwrap_or(""),
+                &auth.actor,
+            )?;
+            self.state.wake();
+            Ok(lane)
+        })())
+    }
+    #[tool(
+        description = "Update lane title, purpose or context. Read first and preserve prior decisions. Does not execute work."
+    )]
+    async fn takomo_lane_update(
+        &self,
+        Parameters(a): Parameters<WorkLaneUpdateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let lane = self.state.store.work_lane_get(&a.id)?;
+            auth.require_project(lane["project"].as_str().unwrap_or_default())?;
+            let mut body = serde_json::to_value(&a).expect("lane fields serialize");
+            body.as_object_mut().unwrap().remove("id");
+            let out = self
+                .state
+                .store
+                .work_lane_patch(&a.id, &body, &auth.actor)?;
+            self.state.wake();
+            Ok(out)
+        })())
+    }
+    #[tool(
+        description = "Add or remove a same-project ticket from a lane. Existing handoff snapshots stay fixed."
+    )]
+    async fn takomo_lane_ticket(
+        &self,
+        Parameters(a): Parameters<WorkLaneTicketArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let lane = self.state.store.work_lane_get(&a.lane)?;
+            auth.require_project(lane["project"].as_str().unwrap_or_default())?;
+            let out = self.state.store.work_lane_ticket(
+                &a.lane,
+                &a.ticket,
+                a.remove.unwrap_or(false),
+                &auth.actor,
+            )?;
+            self.state.wake();
+            Ok(out)
+        })())
+    }
+    #[tool(
+        description = "Draft an immutable preparation, implementation or review handoff for codex or claude. Does NOT dispatch work: a human must explicitly send it. Reviews need parent_handoff and exact target_revision."
+    )]
+    async fn takomo_lane_handoff(
+        &self,
+        Parameters(a): Parameters<WorkLaneHandoffArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("write")?;
+            let lane = self.state.store.work_lane_get(&a.lane)?;
+            auth.require_project(lane["project"].as_str().unwrap_or_default())?;
+            let mut body = serde_json::to_value(&a).expect("handoff fields serialize");
+            body.as_object_mut().unwrap().remove("lane");
+            let out = self
+                .state
+                .store
+                .work_handoff_create(&a.lane, &body, &auth.actor)?;
+            self.state.wake();
+            Ok(out)
+        })())
+    }
+    #[tool(
+        description = "Read handoff results and revision-specific review findings returned to a lane."
+    )]
+    async fn takomo_lane_handoffs(
+        &self,
+        Parameters(a): Parameters<WorkLaneHandoffsArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let auth = require_auth(&ctx)?;
+        respond((|| {
+            auth.require_scope("read")?;
+            let lane = self.state.store.work_lane_get(&a.lane)?;
+            let project = lane["project"].as_str().unwrap_or_default();
+            auth.require_project(project)?;
+            let (items, total) = self.state.store.work_handoff_list(
+                project,
+                Some(&a.lane),
+                None,
+                a.limit.unwrap_or(50).clamp(1, 200),
+                a.offset.unwrap_or(0).max(0),
+            )?;
+            Ok(crate::api::paged(
+                items,
+                total,
+                a.limit.unwrap_or(50).clamp(1, 200),
+                "Continue with offset=N and limit=N (maximum 200).",
+            ))
+        })())
     }
 
     #[tool(

@@ -228,6 +228,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Environments: where a check can be run. Writes take `write`, not
         // `human` — an agent that just leased an ephemeral instance is exactly
         // the caller this registry exists for.
+        .route("/v1/projects/{project}/lanes", get(crate::api::work_lanes::list).post(crate::api::work_lanes::create))
+        .route("/v1/projects/{project}/handoffs", get(crate::api::work_lanes::project_handoffs))
+        .route("/v1/lanes/{id}", get(crate::api::work_lanes::get).patch(crate::api::work_lanes::patch))
+        .route("/v1/lanes/{id}/tickets/{ticket}", axum::routing::put(crate::api::work_lanes::attach).delete(crate::api::work_lanes::detach))
+        .route("/v1/lanes/{id}/handoffs", get(crate::api::work_lanes::handoff_list).post(crate::api::work_lanes::handoff_create))
+        .route("/v1/handoffs/{id}", get(crate::api::work_lanes::handoff_get))
+        .route("/v1/handoffs/{id}/dispatch", post(crate::api::work_lanes::dispatch))
+        .route("/v1/handoffs/{id}/cancel", post(crate::api::work_lanes::cancel))
+        .route("/v1/handoffs/{id}/claim", post(crate::api::work_lanes::claim))
+        .route("/v1/handoffs/{id}/heartbeat", post(crate::api::work_lanes::heartbeat))
+        .route("/v1/handoffs/{id}/result", post(crate::api::work_lanes::result))
         .route(
             "/v1/projects/{project}/environments",
             get(crate::api::environments::list).post(crate::api::environments::create),
@@ -667,6 +678,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/agent-queues", get(crate::api::agent_queues_page))
         .route("/board", get(crate::api::board))
         .route("/epics", get(crate::api::board))
+        .route("/lanes", get(crate::api::board))
         .route("/inbox", get(crate::api::inbox))
         .route("/documents", get(crate::api::documents_page))
         .route("/specification", get(crate::api::documents_page))

@@ -163,3 +163,8 @@ Override the project with `TAKOMO_TEST_PROJECT`.
   ready/claim every ~2s up to `wait` seconds).
 - Fences live only in this process. A fresh server process starts with no remembered leases;
   pass an explicit `fence`, or re-`claim`, after a restart.
+
+Lane tools let organizing agents create lanes, retain preparation context, associate
+existing tickets, and draft immutable handoffs. `takomo_lane_handoff` never executes
+work; an authorized person dispatches the draft separately. Read returned review
+findings using `takomo_lane_handoffs`. See [lanes and review handoffs](../../docs/lanes.md).

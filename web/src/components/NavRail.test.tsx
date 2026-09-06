@@ -56,11 +56,12 @@ describe('NavRail', () => {
     expect(screen.getByText('Board')).toBeTruthy()
   })
 
-  it('makes Epics a dedicated destination beside Board', () => {
+  it('keeps Epics beside the work destinations', () => {
     const { onNavigate } = mount({ current: 'inbox' })
     const epic = screen.getByRole('link', { name: 'Epics' })
     expect(epic).toHaveProperty('pathname', '/epics')
-    expect(epic.previousElementSibling).toHaveProperty('pathname', '/board')
+    expect(epic.previousElementSibling).toHaveProperty('pathname', '/lanes')
+    expect(screen.getByRole('link', { name: 'Lanes' }).previousElementSibling).toHaveProperty('pathname', '/board')
     fireEvent.click(epic)
     expect(onNavigate).toHaveBeenCalledWith('/epics')
   })
@@ -74,7 +75,7 @@ describe('NavRail', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Specification', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) {
+    for (const name of ['Specification', 'Lanes', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })

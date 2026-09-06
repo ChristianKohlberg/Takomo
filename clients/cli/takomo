@@ -4215,6 +4215,66 @@ PY
   echo "$f"
 }
 
+# Lane operations return complete JSON so agents retain context and source links.
+cmd_lane() {
+  local action=${1:-} id="" ticket="" project="" file="" title="" data="" limit=100 offset=0
+  [ $# -gt 0 ] && shift
+  case "$action" in
+    ls|new) ;;
+    show|set|add|remove|handoffs|handoff)
+      id=${1:-}; [ -n "$id" ] || die "lane $action: lane id required"; shift ;;
+    *) die "lane: use ls, new, show, set, add, remove, handoffs or handoff" ;;
+  esac
+  if [ "$action" = add ] || [ "$action" = remove ]; then
+    ticket=${1:-}; [ -n "$ticket" ] || die "lane $action: ticket id required"; shift
+  fi
+  if [ "$action" = new ]; then
+    title=${1:-}; [ -n "$title" ] || die "lane new: title required"; shift
+  fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) [ $# -ge 2 ] || die "--project needs a value"; project=$2; shift 2 ;;
+      --limit) [ $# -ge 2 ] || die "--limit needs a value"; limit=$2; shift 2 ;;
+      --offset) [ $# -ge 2 ] || die "--offset needs a value"; offset=$2; shift 2 ;;
+      --file) [ $# -ge 2 ] || die "--file needs a path"; file=$2; shift 2 ;;
+      *) die "lane $action: unknown argument '$1'" ;;
+    esac
+  done
+  is_uint "$limit" || die "--limit must be positive"
+  case "$offset" in ''|*[!0-9]*) die "--offset must be nonnegative" ;; esac
+  if [ "$action" = set ] || [ "$action" = handoff ]; then
+    [ -n "$file" ] || die "lane $action: --file JSON is required (use - for stdin)"
+    if [ "$file" = - ]; then data=$(cat); else data=$(cat -- "$file") || die "cannot read $file"; fi
+    printf '%s' "$data" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d,dict), "expected JSON object"' || die "invalid JSON object"
+  fi
+  case "$action" in
+    ls) project=$(resolve_project "$project"); api GET "/v1/projects/$(urlenc "$project")/lanes?limit=$limit&offset=$offset" >/dev/null ;;
+    new)
+      project=$(resolve_project "$project")
+      data=$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")
+      api POST "/v1/projects/$(urlenc "$project")/lanes" "$data" >/dev/null ;;
+    show) api GET "/v1/lanes/$(urlenc "$id")" >/dev/null ;;
+    set) api PATCH "/v1/lanes/$(urlenc "$id")" "$data" >/dev/null ;;
+    add) api PUT "/v1/lanes/$(urlenc "$id")/tickets/$(urlenc "$ticket")" '{}' >/dev/null ;;
+    remove) api DELETE "/v1/lanes/$(urlenc "$id")/tickets/$(urlenc "$ticket")" >/dev/null ;;
+    handoffs) api GET "/v1/lanes/$(urlenc "$id")/handoffs?limit=$limit&offset=$offset" >/dev/null ;;
+    handoff) api POST "/v1/lanes/$(urlenc "$id")/handoffs" "$data" >/dev/null ;;
+  esac
+  cat "$REQ_OUT"
+}
+
+cmd_handoff() {
+  local action=${1:-} id=${2:-}
+  [ $# -eq 2 ] && [ -n "$id" ] || die "handoff: usage: takomo handoff show|send|cancel ID"
+  case "$action" in
+    show) api GET "/v1/handoffs/$(urlenc "$id")" >/dev/null ;;
+    send) api POST "/v1/handoffs/$(urlenc "$id")/dispatch" '{}' >/dev/null ;;
+    cancel) api POST "/v1/handoffs/$(urlenc "$id")/cancel" '{}' >/dev/null ;;
+    *) die "handoff: use show, send or cancel" ;;
+  esac
+  cat "$REQ_OUT"
+}
+
 cmd_help() {
   cat <<'EOF'
 takomo — command-line client for the takomo
@@ -4320,6 +4380,17 @@ Mindmaps (brainstorming, before any of it is an idea):
          what it became, so the map keeps working as navigation afterwards.
          A mindmap is scratch by design: `rm` is ordinary, and what its branches
          became is untouched.
+
+Lanes and review handoffs:
+  takomo lane ls [--project P] [--limit N --offset N]   ·   takomo lane new TITLE [--project P]
+  takomo lane show ID   ·   takomo lane set ID --file JSON
+  takomo lane add ID TICKET   ·   takomo lane remove ID TICKET
+  takomo lane handoffs ID   ·   takomo lane handoff ID --file JSON
+         Draft fields: kind (preparation|implementation|review), provider
+         (codex|claude), instructions, ticket_ids; review also needs
+         parent_handoff and target_revision. Drafting does not execute work.
+  takomo handoff show ID   ·   takomo handoff send ID   ·   takomo handoff cancel ID
+         Sending needs explicit human authorization and a human-scoped credential.
 
 Ask a human (block on a human decision, then resume):
   takomo ask ID --title T [--kind confirm|choose|clarify|approve] [--advisory]
@@ -4529,6 +4600,8 @@ main() {
     new)     cmd_new "$@" ;;
     ls|list) cmd_ls "$@" ;;
     ready)   cmd_ready "$@" ;;
+    lane) cmd_lane "$@" ;;
+    handoff) cmd_handoff "$@" ;;
     roadmap) cmd_roadmap "$@" ;;
     impact) cmd_impact "$@" ;;
     show)    cmd_show "$@" ;;

@@ -26,6 +26,7 @@ pub mod tickets;
 pub mod tokens;
 pub mod transition;
 pub mod users;
+pub mod work_lanes;
 pub mod workflows;
 
 use crate::error::{ApiError, ApiResult};
