@@ -1,16 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/react'
-import { closeSlashMenu, insertSlashBlock, type InsertKind, type SlashMatch } from '@/lib/slash-insert'
+import { closeSlashMenu, insertSlashBlock, insertSlashSection, type InsertKind, type SlashMatch } from '@/lib/slash-insert'
 import type { Locale } from '@/lib/i18n'
 import { STR } from './strings'
 
-// A heading also has a keyboard shortcut (StarterKit's Mod-Alt-n), shown so the
-// menu teaches the faster path rather than being the only one.
-const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; icon: string; shortcut?: 1 | 2 | 3 }[] = [
-  { kind: 'heading1', label: 'slashHeading1', search: 'heading title überschrift h1', icon: 'H1', shortcut: 1 },
-  { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2', shortcut: 2 },
-  { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3', shortcut: 3 },
+const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; icon: string; level?: 1 | 2 | 3 }[] = [
+  { kind: 'heading1', label: 'slashHeading1', search: 'heading title überschrift h1', icon: 'H1', level: 1 },
+  { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2', level: 2 },
+  { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3', level: 3 },
   { kind: 'bulletList', label: 'slashBullets', search: 'bullet list liste aufzählung', icon: '•' },
   { kind: 'orderedList', label: 'slashNumbered', search: 'numbered ordered list liste nummeriert', icon: '1.' },
   { kind: 'quote', label: 'slashQuote', search: 'quote quotation blockquote zitat', icon: '❝' },
@@ -22,12 +20,18 @@ const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; i
   { kind: 'mermaid', label: 'slashMermaid', search: 'mermaid diagram diagramm flowchart', icon: '◇' },
 ]
 
-export function SlashMenu({ editor, match, locale, menuId, keys }: {
+export function SlashMenu({ editor, match, locale, menuId, keys, onInsertSection, maxSectionLevel }: {
   editor: Editor; match: SlashMatch; locale: Locale; menuId: string
+  onInsertSection?: (level: 1 | 2 | 3, title: string) => boolean
+  maxSectionLevel: number
   keys: MutableRefObject<((event: KeyboardEvent) => boolean) | null>
 }) {
   const t = STR[locale]
   const [selected, setSelected] = useState(0)
+  const [section, setSection] = useState<1 | 2 | 3 | null>(null)
+  const [title, setTitle] = useState('')
+  const [failed, setFailed] = useState(false)
+  const submitting = useRef(false)
   const [table, setTable] = useState(false)
   const [rows, setRows] = useState('3')
   const [cols, setCols] = useState('3')
@@ -36,13 +40,23 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
   const results = choices.filter(c => `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(match.query.toLocaleLowerCase().trim()))
   const active = Math.min(selected, Math.max(0, results.length - 1))
   const validSize = [rows, cols].every(n => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= 10)
-  const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘⌥' : 'Ctrl+Alt+'
   const close = () => { closeSlashMenu(editor); editor.commands.focus() }
   const choose = (kind: InsertKind) => {
-    if (kind === 'table') setTable(true)
+    const level = choices.find(choice => choice.kind === kind)?.level
+    if (level) { if (onInsertSection && level <= maxSectionLevel) setSection(level) }
+    else if (kind === 'table') setTable(true)
     else if (!insertSlashBlock(editor, match, kind)) close()
   }
-  const back = () => { setTable(false); editor.commands.focus() }
+  const back = () => { setTable(false); setSection(null); setFailed(false); editor.commands.focus() }
+  const createSection = () => {
+    if (!section || !onInsertSection || !title.trim() || submitting.current) return
+    submitting.current = true
+    try {
+      if (insertSlashSection(editor, match, section, title, onInsertSection)) return
+    } catch { /* Keep the title and slash query available to retry. */ }
+    submitting.current = false
+    setFailed(true)
+  }
 
   useLayoutEffect(() => {
     const place = () => {
@@ -67,7 +81,7 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { close(); return true }
-      if (table) return false
+      if (table || section) return false
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         setSelected((active + (event.key === 'ArrowDown' ? 1 : -1) + results.length) % Math.max(1, results.length)); return true
       }
@@ -76,7 +90,7 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
       return false
     }
     keys.current = key
-    if (!table && results[active]) editor.view.dom.setAttribute('aria-activedescendant', `${menuId}-${results[active].kind}`)
+    if (!table && !section && results[active]) editor.view.dom.setAttribute('aria-activedescendant', `${menuId}-${results[active].kind}`)
     else editor.view.dom.removeAttribute('aria-activedescendant')
     return () => { keys.current = null; editor.view.dom.removeAttribute('aria-activedescendant') }
   })
@@ -85,9 +99,14 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
 
   return createPortal(<div ref={panel} style={{ position: 'fixed', ...position }}
     className="bg-popover text-popover-foreground border-border z-50 max-h-[calc(100dvh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border p-2 shadow-lg"
-    onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (table) back(); else close() } }}>
-    <div className="text-muted-foreground px-2 py-1 text-xs">{table ? t.slashTableSize : t.slashTitle}</div>
-    {table ? <form id={menuId} role="dialog" aria-label={t.slashTableSize} onSubmit={e => { e.preventDefault(); if (validSize && !insertSlashBlock(editor, match, 'table', Number(rows), Number(cols))) close() }} className="space-y-3 p-2">
+    onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (table || section) back(); else close() } }}>
+    <div className="text-muted-foreground px-2 py-1 text-xs">{section ? `${t.slashSection} H${section}` : table ? t.slashTableSize : t.slashTitle}</div>
+    {section ? <form id={menuId} role="dialog" aria-label={`${t.slashSection} H${section}`} onSubmit={e => { e.preventDefault(); createSection() }} className="space-y-3 p-2">
+      <label className="text-sm">{t.slashSectionTitle}<input autoFocus value={title} onChange={e => { setTitle(e.target.value); setFailed(false) }} className="border-input bg-background mt-1 w-full rounded border px-2 py-1" /></label>
+      <p className="text-muted-foreground text-xs">{t.slashSectionHint}</p>
+      {failed && <p role="alert" className="text-destructive text-sm">{t.slashSectionFailed}</p>}
+      <div className="flex justify-end gap-2"><button type="button" onClick={back} className="rounded px-2 py-1 text-sm hover:bg-accent">{t.slashBack}</button><button type="submit" disabled={!title.trim()} className="bg-primary text-primary-foreground rounded px-3 py-1 text-sm disabled:opacity-40">{t.slashSectionCreate}</button></div>
+    </form> : table ? <form id={menuId} role="dialog" aria-label={t.slashTableSize} onSubmit={e => { e.preventDefault(); if (validSize && !insertSlashBlock(editor, match, 'table', Number(rows), Number(cols))) close() }} className="space-y-3 p-2">
       <div className="grid grid-cols-2 gap-3">
         <label className="text-sm">{t.slashRows}<input autoFocus type="number" min="1" max="10" value={rows} onChange={e => setRows(e.target.value)} className="border-input bg-background mt-1 w-full rounded border px-2 py-1" /></label>
         <label className="text-sm">{t.slashColumns}<input type="number" min="1" max="10" value={cols} onChange={e => setCols(e.target.value)} className="border-input bg-background mt-1 w-full rounded border px-2 py-1" /></label>
@@ -96,12 +115,11 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
       <div className="flex justify-end gap-2"><button type="button" onClick={back} className="rounded px-2 py-1 text-sm hover:bg-accent">{t.slashBack}</button><button type="submit" disabled={!validSize} className="bg-primary text-primary-foreground rounded px-3 py-1 text-sm disabled:opacity-40">{t.tableInsert}</button></div>
     </form> : <>
       <div id={menuId} role="listbox" aria-label={t.slashTitle} className="max-h-64 overflow-y-auto">
-        {results.map((choice, index) => <button key={choice.kind} id={`${menuId}-${choice.kind}`} role="option" aria-selected={index === active} type="button" tabIndex={-1}
+        {results.map((choice, index) => <button key={choice.kind} id={`${menuId}-${choice.kind}`} role="option" aria-selected={index === active} aria-disabled={!!choice.level && (!onInsertSection || choice.level > maxSectionLevel)} type="button" tabIndex={-1}
           onMouseDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => choose(choice.kind)}
           className={`flex w-full items-center gap-3 rounded px-2 py-2 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'}`}>
           <span aria-hidden className="text-muted-foreground w-6 shrink-0 text-center text-xs">{choice.icon}</span>
-          <span className="min-w-0 flex-1">{t[choice.label]}</span>
-          {choice.shortcut && <kbd className="text-muted-foreground shrink-0 text-xs">{modifier}{choice.shortcut}</kbd>}
+          <span className="min-w-0 flex-1">{t[choice.label]}{choice.level && (!onInsertSection || choice.level > maxSectionLevel) && <span className="text-muted-foreground block text-xs">{t.slashSectionUnavailable}</span>}</span>
         </button>)}
         {!results.length && <p role="status" className="text-muted-foreground px-2 py-3 text-sm">{t.slashEmpty}</p>}
       </div>

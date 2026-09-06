@@ -813,6 +813,7 @@ function ConnectedPlan({
                       display={session.display}
                       color={color}
                       canWrite={canWrite}
+                      maxSectionLevel={Math.min(row.depth + 2, 3)}
                       onInsertSection={(level, title) => insertSection(row.key, level, title)}
                       onSettled={() => onEdited(row.key)}
                       highlight={highlights[row.key] ?? ''}
