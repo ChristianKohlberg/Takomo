@@ -74,28 +74,29 @@ export function EditableText({
       contentEditable={editable}
       suppressContentEditableWarning
       onKeyDown={(event) => {
-        if (!editable || event.nativeEvent.isComposing || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return
-        const selection = window.getSelection()
-        if (selection && !selection.isCollapsed) return
-        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-          if (!selection?.rangeCount || !event.currentTarget.contains(selection.anchorNode)) return
-          const caret = selection.getRangeAt(0)
-          const before = caret.cloneRange()
-          before.selectNodeContents(event.currentTarget)
-          before.setEnd(caret.startContainer, caret.startOffset)
-          const after = caret.cloneRange()
-          after.selectNodeContents(event.currentTarget)
-          after.setStart(caret.endContainer, caret.endOffset)
-          const handled = event.key === 'ArrowUp'
-            ? before.toString().length === 0 && onArrowUp?.()
-            : after.toString().length === 0 && onArrowDown?.()
-          if (handled) event.preventDefault()
-        }
-        if (event.key === 'Enter' && onEnter) {
+        if (!editable || event.nativeEvent.isComposing) return
+        if (event.key === 'Enter') {
+          if (!onEnter) return
           event.preventDefault()
           event.currentTarget.blur()
           onEnter()
+          return
         }
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return
+        const selection = window.getSelection()
+        if (!selection || !selection.isCollapsed || !selection.rangeCount || !event.currentTarget.contains(selection.anchorNode)) return
+        const caret = selection.getRangeAt(0)
+        const before = caret.cloneRange()
+        before.selectNodeContents(event.currentTarget)
+        before.setEnd(caret.startContainer, caret.startOffset)
+        const after = caret.cloneRange()
+        after.selectNodeContents(event.currentTarget)
+        after.setStart(caret.endContainer, caret.endOffset)
+        const handled = event.key === 'ArrowUp'
+          ? before.toString().length === 0 && onArrowUp?.()
+          : after.toString().length === 0 && onArrowDown?.()
+        if (handled) event.preventDefault()
       }}
       onBlur={() => {
         const node = ref.current

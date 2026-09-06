@@ -1,5 +1,6 @@
 import * as Y from 'yjs'
 import type { Editor } from '@tiptap/react'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { absolutePositionToRelativePosition, relativePositionToAbsolutePosition, ySyncPluginKey } from '@tiptap/y-tiptap'
 
 export const COMMENT_FIELD = 'documentComments'
@@ -20,17 +21,17 @@ export function captureCommentAnchor(editor: Editor): CommentAnchor | null {
   return { quote, start: Y.relativePositionToJSON(start), end: Y.relativePositionToJSON(end) }
 }
 
-export function resolveCommentAnchor(editor: Editor, anchor: CommentAnchor): { from: number; to: number } | null {
+export function resolveCommentAnchor(editor: Editor, anchor: CommentAnchor, doc: ProseMirrorNode = editor.state.doc): { from: number; to: number } | null {
   const sync = ySyncPluginKey.getState(editor.state)
   if (!sync?.binding) return null
   try {
     const from = relativePositionToAbsolutePosition(sync.doc, sync.type, Y.createRelativePositionFromJSON(anchor.start), sync.binding.mapping)
     const to = relativePositionToAbsolutePosition(sync.doc, sync.type, Y.createRelativePositionFromJSON(anchor.end), sync.binding.mapping)
-    if (from === null || to === null || from >= to || to > editor.state.doc.content.size) return null
+    if (from === null || to === null || from >= to || to > doc.content.size) return null
     // A replaced passage must not quietly adopt an old discussion. Edits outside
     // the range keep its CRDT anchors and highlight; changed quotes stay visible
     // in the panel with an explicit unattached state.
-    if (editor.state.doc.textBetween(from, to, '\n') !== anchor.quote) return null
+    if (doc.textBetween(from, to, '\n') !== anchor.quote) return null
     return { from, to }
   } catch { return null }
 }

@@ -6,6 +6,7 @@ import Plan, { type PlanProps } from './Plan'
 import { createStructureHistory } from '@/lib/plan-structure'
 import { createNode, nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
 import type { Editor } from '@tiptap/react'
+import { COMMENT_FIELD, readCommentThreads, type CommentAnchor } from '@/lib/document-comments'
 
 const probe = vi.hoisted(() => ({ editors: new Map<string, Editor>(), panelRenders: 0 }))
 vi.mock('./SectionEditor', async (importOriginal) => {
@@ -228,6 +229,27 @@ it('mounts offscreen prose when a heading boundary requests it', async () => {
   fireEvent.keyDown(title, { key: 'ArrowDown' })
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Section 1.1 prose')))
   expect(probe.editors.get('Section 1.1 prose')!.state.selection.from).toBe(1)
+})
+
+it('gives the comments panel its editor when the section mounts after opening while a title is focused', async () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} })
+  const { doc, fragment, props } = setup()
+  const text = (fragment.get(0) as Y.XmlElement).get(0) as Y.XmlText
+  const anchor: CommentAnchor = { quote: 'Payment', start: Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, 0, -1)), end: Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, 7, -1)) }
+  const thread = new Y.Map<unknown>()
+  doc.getMap(COMMENT_FIELD).set('t1', thread)
+  thread.set('sectionId', readPlanTree(doc).find(node => node.title === 'Invoices')!.id)
+  thread.set('anchor', anchor); thread.set('resolved', false)
+  const messages = new Y.Map<unknown>(); thread.set('messages', messages)
+  messages.set('m1', { author: 'Ada', text: 'Due when?', created: 1 })
+  expect(readCommentThreads(doc)).toHaveLength(1)
+  render(<Plan {...props} />)
+  expect(screen.queryByLabelText('Section 1.1 prose')).toBeNull()
+  act(() => { titleCaret(screen.getAllByLabelText('Rename section')[0]!, true) })
+  fireEvent.click(screen.getAllByRole('button', { name: 'Comments' })[1]!)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Show text' })).toBeTruthy())
+  expect(screen.getByLabelText('Section 1.1 prose').querySelector('[data-comment-id]')?.textContent).toBe('Payment')
+  expect(probe.editors.get('Section 1.1 prose')!.state.doc.textContent).toBe('Payment deadline is thirty days.')
 })
 
 it('formats the selected prose through the shared toolbar and copies the stable section link', async () => {

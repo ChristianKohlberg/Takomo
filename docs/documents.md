@@ -328,11 +328,14 @@ are named explicitly. Using a control preserves the selected words; changing a p
 style does not split its section. While editing a section title, prose formatting controls
 are unavailable so they cannot change a previous selection elsewhere.
 
-Enter in a title, or ArrowDown at its end, moves into its prose. ArrowUp or Backspace at the start
+Enter in a title, or ArrowDown at its end, moves into its prose. Enter commits the title as one
+line whether or not a modifier is held or part of it is selected, so a title never gains a line
+break; only an active input-method composition is left alone. ArrowUp or Backspace at the start
 of a top-level paragraph returns to the title without deleting anything. ArrowDown at the
 end of a section goes to the next visible title, and ArrowUp at a title’s beginning goes to
-the previous visible prose. Modified shortcuts, selected text, composition, lists, tables,
-code and slash-menu navigation keep their existing behavior. Hidden sections stay folded.
+the previous visible prose. For that arrow and Backspace navigation, modified shortcuts,
+selected text, composition, lists, tables, code and slash-menu navigation keep their existing
+behavior. Hidden sections stay folded.
 
 Copy section link in the heading’s actions copies a canonical project/section URL, with
 confirmation or a selectable fallback if clipboard access is refused. Stable node identity

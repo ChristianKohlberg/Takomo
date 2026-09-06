@@ -205,6 +205,7 @@ function ConnectedPlan({
   const [findOpen, setFindOpen] = useState(false)
   const [moving, setMoving] = useState<string | null>(null)
   const [comments, setComments] = useState<{ section: string; draft: CommentAnchor | null } | null>(null)
+  const [commentsEditor, setCommentsEditor] = useState<Editor | null>(null)
   const [notice, setNotice] = useState<{ text: string; undo?: boolean } | null>(null)
   const [history, setHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
   const [, refreshMoveTools] = useState(0)
@@ -487,6 +488,12 @@ function ConnectedPlan({
 
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const commentsSection = comments?.section ?? null
+  const commentsSectionRef = useRef(commentsSection)
+  commentsSectionRef.current = commentsSection
+  useEffect(() => {
+    setCommentsEditor(commentsSection ? editors.current.get(commentsSection) ?? null : null)
+  }, [commentsSection])
   const [textTools, setTextTools] = useState({ undo: false, redo: false })
   const syncTextTools = useCallback(() => {
     const editor = !editingTitle.current && selectedRef.current ? editors.current.get(selectedRef.current) : undefined
@@ -504,6 +511,7 @@ function ConnectedPlan({
       editorUnsubscribes.current.delete(key)
       if (editor) {
         editors.current.set(key, editor)
+        if (commentsSectionRef.current === key) setCommentsEditor(editor)
         const update = () => { if (selectedRef.current === key) syncTextTools() }
         const focus = () => { editingTitle.current = false; update() }
         editor.on('transaction', update)
@@ -522,6 +530,7 @@ function ConnectedPlan({
       }
       else {
         editors.current.delete(key)
+        if (commentsSectionRef.current === key) setCommentsEditor(null)
         if (selectedRef.current === key) syncTextTools()
       }
     }
@@ -888,7 +897,7 @@ function ConnectedPlan({
                   )}
                   {conversationFor?.(row.key)}
                   {comments?.section === row.key && <DocumentComments key={row.key} ydoc={ydoc} sectionId={row.key}
-                    editor={editors.current.get(row.key) ?? null} actor={session.display} locale={locale} canWrite={canWrite}
+                    editor={commentsEditor} actor={session.display} locale={locale} canWrite={canWrite}
                     draft={comments.draft} onDraftConsumed={() => setComments(current => current?.section === row.key ? { section: row.key, draft: null } : current)}
                     onClose={() => setComments(null)} />}
                   {canWrite && <InlineSection locale={locale} maxLevel={Math.min(row.depth + 2, 3)} onInsert={(level, title) => insertSection(row.key, level, title)} />}
