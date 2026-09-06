@@ -1000,11 +1000,6 @@ export function App() {
     >
       <AppHeader
         title={t.initiatives}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       >
         {/* A view of the same project rather than a page of its own, so it is a
             toggle here and not an entry in the nav rail: leaving it puts you

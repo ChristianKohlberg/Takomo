@@ -191,6 +191,25 @@ describe('opening a project specification', () => {
     expect(screen.queryByText('Loading specification…')).toBeNull()
   })
 
+  it.each([
+    ['a write budget refusal', { status: 429, code: 'rate.limited', message: 'Write budget exhausted' }],
+    ['a stale project id', { status: 404, code: 'project.not_found', message: "Project 'vetbill' not found" }],
+  ])('ends the spinner on %s with the actual error and a retry that recovers', async (_, refusal) => {
+    api.createMindmap.mockRejectedValueOnce(Object.assign(new Error(refusal.message), refusal))
+    mount()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain(refusal.message)
+    expect(screen.queryByText('Loading specification…')).toBeNull()
+    expect(screen.queryByText(/This project is archived/)).toBeNull()
+    expect(screen.queryByRole('main', { name: 'Document editor' })).toBeNull()
+    expect(api.createMindmap).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    const document = await screen.findByRole('main', { name: 'Document editor' })
+    expect(document.getAttribute('data-map')).toBe(map.id)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(api.createMindmap).toHaveBeenCalledTimes(2)
+  })
+
   it('does not ask a reader to create a missing specification', async () => {
     api.whoami.mockResolvedValue({ actor: 'reader', scopes: ['read'] })
     mount()

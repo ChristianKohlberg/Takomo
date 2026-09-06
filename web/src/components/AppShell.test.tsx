@@ -30,7 +30,7 @@ function mount(collapsed: boolean, views = false, count: number | null = 4, upda
       projects: [{ id: 'one', name: 'First project' }, { id: 'two', name: 'Second project' }],
       project: 'one', projectLabels: { project: 'Project', search: 'Search projects', noMatch: 'No matches' },
     }}>
-      <AppHeader title="Board" lang="en" onLang={vi.fn()} views={views ? <span>Plan views</span> : undefined} />
+      <AppHeader title="Board" views={views ? <span>Plan views</span> : undefined} />
     </AppShell>
     </ProjectUpdatesContext>,
   )

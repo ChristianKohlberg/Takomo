@@ -1,13 +1,10 @@
 // Surface title, centered view controls, and page actions. Global controls live in the rail.
 import type { ReactNode } from 'react'
-import type { Locale } from '@/lib/i18n'
 
 export interface AppHeaderProps {
   /** The current surface's name — what the nav pill used to say. */
   title: string
   subtitle?: string
-  lang: Locale
-  onLang: (l: Locale) => void
   /** Right-hand actions (a primary button, icon buttons). */
   children?: ReactNode
   /** Views of this surface, centered independently of the title and actions. */

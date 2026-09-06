@@ -15,7 +15,6 @@ import { listQuestions } from '@/lib/questions'
 import { loadToken } from '@/lib/session'
 import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
 import type { Locale } from '@/lib/i18n'
-import { AppNavigationContext } from './AppNavigation'
 import { NavRail, type NavRailProps } from './NavRail'
 
 export interface AppShellProps {
@@ -60,11 +59,9 @@ export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
   }, [shared, project, token, explicitCount, refreshInbox])
   const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
-    <AppNavigationContext.Provider value={navigation}>
-      <div className="flex h-dvh overflow-hidden">
-        <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
-        <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
-      </div>
-    </AppNavigationContext.Provider>
+    <div className="flex h-dvh overflow-hidden">
+      <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
+      <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
+    </div>
   )
 }

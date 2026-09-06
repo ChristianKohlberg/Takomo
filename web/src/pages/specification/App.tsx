@@ -5,6 +5,7 @@ import { AppHeader } from '@/components/AppHeader'
 import { ViewSwitcher } from '@/components/ViewSwitcher'
 import { TokenGate } from '@/components/TokenGate'
 import { SaveStatus } from '@/components/SaveStatus'
+import { Button } from '@/components/ui/button'
 import {
   Sheet,
   SheetContent,
@@ -54,6 +55,8 @@ const words = {
     loading: 'Loading specification…',
     all: 'Whole specification',
     archived: 'This project is archived: its specification can be read, but nothing can be written to it.',
+    failed: 'The specification could not be opened.',
+    retry: 'Try again',
     tests: 'Section tests',
     choose: 'Choose a project to open its specification.',
   },
@@ -63,6 +66,8 @@ const words = {
     loading: 'Spezifikation laden…',
     all: 'Gesamte Spezifikation',
     archived: 'Dieses Projekt ist archiviert: seine Spezifikation kann gelesen, aber nicht geschrieben werden.',
+    failed: 'Die Spezifikation konnte nicht geöffnet werden.',
+    retry: 'Erneut versuchen',
     tests: 'Abschnittstests',
     choose: 'Wähle ein Projekt, um seine Spezifikation zu öffnen.',
   },
@@ -103,6 +108,8 @@ function SpecificationWorkspace({
   const [projects, setProjects] = useState<Project[]>([])
   const [map, setMap] = useState<Mindmap | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
   const [session, setSession] = useState<MindmapSession | null>(null)
   const [checks, setChecks] = useState<Check[]>([])
   const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>([])
@@ -167,15 +174,27 @@ function SpecificationWorkspace({
       const current = items.find((item) => item.id === project)
       access.current = { canWrite: (who.scopes ?? []).includes('write') && current?.archived !== true, title: current?.name || project }
       await Promise.all([refreshMap(), refreshChecks()])
+      if (cancelled) return
+      setFailure(null)
       if (!project && items[0]) navigate(specificationLink(items[0].id), { replace: true })
     }, abort.signal).catch((error) => {
-      if (!cancelled) onError(error)
+      if (cancelled) return
+      onError(error)
+      if (!isAuthError(error)) {
+        setFailure(error instanceof Error ? error.message : String(error))
+        setLoaded(true)
+      }
     })
     return () => {
       cancelled = true
       abort.abort()
     }
-  }, [token, project, navigate, onError, refreshMap, refreshChecks])
+  }, [token, project, attempt, navigate, onError, refreshMap, refreshChecks])
+  const retry = useCallback(() => {
+    setFailure(null)
+    setLoaded(false)
+    setAttempt((count) => count + 1)
+  }, [])
   const mapId = map?.id
   useEffect(() => {
     setSession(null)
@@ -337,7 +356,12 @@ function SpecificationWorkspace({
         }}
       />
     )
-  const empty = (
+  const empty = failure !== null ? (
+    <main className="min-h-0 flex-1 bg-white p-5 dark:bg-card">
+      <p role="alert" className="text-sm text-destructive">{w.failed} {failure}</p>
+      <Button className="mt-3" variant="outline" size="sm" onClick={retry}>{w.retry}</Button>
+    </main>
+  ) : (
     <main className="min-h-0 flex-1 bg-white p-5 dark:bg-card">
       {!project && <p className="text-sm text-muted-foreground">{w.choose}</p>}
       {project && (
@@ -393,11 +417,6 @@ function SpecificationWorkspace({
           <AppHeader
             title={w.title}
             subtitle={map?.title ?? w.untitled}
-            lang={lang}
-            onLang={(value) => {
-              setLang(value)
-              localStorage.setItem('takomo.lang', value)
-            }}
             views={
               <ViewSwitcher
                 current={view}

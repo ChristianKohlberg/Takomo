@@ -553,11 +553,6 @@ function Board({
     >
       <AppHeader
         title={t.board}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       >
         {/* Why nothing on this board can be changed. The board itself only
             reads, so the freeze would otherwise be invisible here until someone

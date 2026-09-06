@@ -1,17 +1,11 @@
-import { createContext, useContext } from 'react'
 import { CheckIcon, InboxIcon } from 'lucide-react'
 import type { NavRailProps } from './NavRail'
 import { ProjectPicker } from './ProjectPicker'
 import { Hint } from './Hint'
 import { cn } from '@/lib/utils'
 
-export const AppNavigationContext = createContext<NavRailProps | null>(null)
-
 /** Project scope and inbox share the top of the navigation rail. */
-export function AppNavigation({ navigation }: { navigation?: NavRailProps }) {
-  const context = useContext(AppNavigationContext)
-  const rail = navigation ?? context
-  if (!rail) return null
+export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }) {
   const count = rail.badges?.inbox
   const active = rail.current === 'inbox'
   return (

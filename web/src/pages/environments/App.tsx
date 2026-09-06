@@ -217,11 +217,6 @@ export function App() {
     >
       <AppHeader
         title={t.environments}
-        lang={lang}
-        onLang={(l) => {
-          setLang(l)
-          localStorage.setItem(LS_LANG, l)
-        }}
       >
         <Button
           onClick={() => {
