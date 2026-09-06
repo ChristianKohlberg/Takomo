@@ -24,6 +24,7 @@ security:
   - bearer: []
 
 tags:
+  - { name: agent conversations }
   - { name: tickets }
   - { name: workflow }
   - { name: claims }
@@ -43,6 +44,180 @@ tags:
   - { name: schedules }
 
 paths:
+  /mindmaps/{id}/nodes/{node}/conversation:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema: &id001
+        type: string
+      description: Mindmap id.
+    - name: node
+      in: path
+      required: true
+      schema: *id001
+      description: Stable section node id.
+    get:
+      tags:
+      - agent conversations
+      operationId: agentConversation
+      summary: Read the section conversation
+      description: 'Requires read and project access. Shared with project readers. Complete bounded history:
+        at most 100 turns / 200 messages. Timestamps are epoch milliseconds. Does not change the specification.'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationView'
+        default:
+          $ref: '#/components/responses/Error'
+  /mindmaps/{id}/nodes/{node}/conversation/messages:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema: &id001
+        type: string
+      description: Mindmap id.
+    - name: node
+      in: path
+      required: true
+      schema: *id001
+      description: Stable section node id.
+    post:
+      tags:
+      - agent conversations
+      operationId: agentConversationSend
+      summary: Queue a read-only Codex conversation turn
+      description: Requires write AND human and a writable project. Saves authoritative section snapshot
+        and user message atomically with job. request_id deduplicates per conversation and actor; changing
+        its message returns 409. Only one queued/running turn per conversation; limit 100 turns. No ticket
+        is created.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConversationView'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSend'
+  /agent-jobs/claim:
+    post:
+      tags:
+      - agent conversations
+      operationId: agentJobClaim
+      summary: Immediately claim or long-poll for an agent job
+      description: Requires agent:run and matching project access. One active job per service. Follow-ups
+        stay bound to the same service_id and persisted Codex thread. Lease 60 seconds; hard deadline 15
+        minutes. Expired jobs fail without automatic retry. Null job means no eligible work.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    oneOf:
+                    - $ref: '#/components/schemas/AgentClaimedJob'
+                    - type: 'null'
+                required:
+                - job
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentClaim'
+  /agent-jobs/{id}/heartbeat:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Agent job id.
+    post:
+      tags:
+      - agent conversations
+      operationId: agentJobHeartbeat
+      summary: Renew lease and record Codex session identity
+      description: Requires agent:run, project access and the claiming token/service/attempt. Call every
+        15 seconds, and immediately when thread/turn IDs become available. Expired, archived or terminal
+        jobs refuse heartbeats.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lease_expires_at:
+                    type: integer
+                required:
+                - lease_expires_at
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentHeartbeat'
+  /agent-jobs/{id}/result:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Agent job id.
+    post:
+      tags:
+      - agent conversations
+      operationId: agentJobResult
+      summary: Atomically save a response and complete the job
+      description: Requires agent:run, project access and the claiming token/service/attempt. Valid active
+        lease required on first delivery. Exact duplicate delivery is idempotent; conflicting or expired
+        results return 409. Failure saves no assistant message.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    const: true
+                  status:
+                    enum:
+                    - completed
+                    - failed
+                required:
+                - ok
+                - status
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentResult'
   /projects/{project}/test-definitions:
     get:
       tags: [checklist]
@@ -6914,6 +7089,201 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    AgentConversation:
+      type: object
+      properties:
+        id: &id001
+          type: string
+        mindmap: *id001
+        node: *id001
+        created_at:
+          type: integer
+      required:
+      - id
+      - mindmap
+      - node
+      - created_at
+    AgentMessage:
+      type: object
+      properties:
+        id: &id001
+          type: string
+        job_id: *id001
+        role:
+          enum:
+          - user
+          - assistant
+        body: *id001
+        created_at:
+          type: integer
+      required:
+      - id
+      - job_id
+      - role
+      - body
+      - created_at
+    AgentJobStatus:
+      type: object
+      properties:
+        id: &id001
+          type: string
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+        error:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: integer
+        finished_at:
+          type:
+          - integer
+          - 'null'
+        source_revision: *id001
+      required:
+      - id
+      - status
+      - error
+      - created_at
+      - finished_at
+      - source_revision
+    AgentConversationView:
+      type: object
+      properties:
+        conversation:
+          oneOf:
+          - $ref: '#/components/schemas/AgentConversation'
+          - type: 'null'
+        messages:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AgentMessage'
+        jobs:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AgentJobStatus'
+        turn_limit:
+          type: integer
+          const: 100
+      required:
+      - conversation
+      - messages
+      - jobs
+    AgentSend:
+      type: object
+      properties:
+        message:
+          type: string
+          minLength: 1
+          description: 1–8000 UTF-8 bytes.
+        request_id:
+          type: string
+          minLength: 1
+          maxLength: 120
+      required:
+      - message
+      - request_id
+      additionalProperties: false
+    AgentClaim:
+      type: object
+      properties:
+        service_id:
+          type: string
+          minLength: 1
+          maxLength: 120
+        wait_seconds:
+          type: integer
+          minimum: 0
+          maximum: 25
+          default: 0
+      required:
+      - service_id
+      additionalProperties: false
+    AgentClaimedJob:
+      type: object
+      properties:
+        id: &id001
+          type: string
+        attempt_id: *id001
+        conversation_id: *id001
+        prompt: *id001
+        snapshot:
+          type: string
+          description: Authoritative section title and plain text captured when submitted; at most 100000
+            UTF-8 bytes.
+        source_revision:
+          type: string
+          description: SHA-256 of the immutable snapshot.
+        thread_id:
+          type:
+          - string
+          - 'null'
+        lease_seconds:
+          type: integer
+          const: 60
+      required:
+      - id
+      - attempt_id
+      - conversation_id
+      - prompt
+      - snapshot
+      - source_revision
+      - thread_id
+      - lease_seconds
+    AgentHeartbeat:
+      type: object
+      properties:
+        service_id:
+          type: string
+          maxLength: 120
+        attempt_id:
+          type: string
+        thread_id: &id001
+          type:
+          - string
+          - 'null'
+        turn_id: *id001
+      required:
+      - service_id
+      - attempt_id
+      additionalProperties: false
+    AgentResult:
+      type: object
+      properties:
+        service_id:
+          type: string
+          maxLength: 120
+        attempt_id:
+          type: string
+        thread_id: &id001
+          type: &id002
+          - string
+          - 'null'
+        turn_id: *id001
+        status:
+          enum:
+          - completed
+          - failed
+        message:
+          type: *id002
+          description: Required for completed; 1–64000 UTF-8 bytes. Absent/null for failed.
+        error:
+          type: *id002
+          description: Required for failed; 1–4000 UTF-8 bytes. Absent/null for completed.
+      required:
+      - service_id
+      - attempt_id
+      - status
+      additionalProperties: false
+      description: Completed results also require nonempty thread_id and turn_id. IDs cannot change after
+        a heartbeat records them. Only terminal delivery may be retried, with exactly the same payload.
     SpecificationVersion:
       type: object
       required: [version, kind, recorded_at, recorded_by, checkpoints]
@@ -9037,6 +9407,10 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  validation.agent_chat: "The request is malformed or exceeds a documented size bound."
+  conflict.agent_job: "The conversation is busy or full, an idempotency key conflicts, or the job attempt is stale or owned by another service/token."
+  notfound.agent_job: "No agent job has this id."
+  notfound.section: "The selected section no longer exists in this mindmap."
   notfound.specification_version: "No saved version with that number exists in this specification. Read its version list."
   validation.specification_history: "Invalid checkpoint or history query. Correct the named field and retry."
   conflict.specification_history: "The saved version changed, no saved content exists, or the checkpoint name belongs to another version. Refresh history and review the head."

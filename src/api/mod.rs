@@ -1,6 +1,7 @@
 //! HTTP handlers. Parsing is done by hand from `serde_json::Value` so that
 //! malformed input gets teaching errors, not bare 400s.
 
+pub mod agent_chat;
 pub mod checklist;
 pub mod claims;
 pub mod docprops;

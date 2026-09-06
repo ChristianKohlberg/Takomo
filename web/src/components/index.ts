@@ -247,3 +247,5 @@ export { cn } from '../lib/utils'
 
 export { SharedText } from './SharedText'
 export { CheckEditor } from './verification/CheckEditor'
+
+export { SectionConversation } from './documents/SectionConversation'
