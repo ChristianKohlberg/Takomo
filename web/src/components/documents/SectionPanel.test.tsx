@@ -72,6 +72,24 @@ function panel(over: Partial<Parameters<typeof SectionPanel>[0]> = {}) {
 }
 
 describe('SectionPanel', () => {
+  it('keeps pending work visible while its compact action menu opens and closes', () => {
+    panel({ pending: 2 })
+    const menu = screen.getByRole('button', { name: 'Section actions' })
+    const pending = screen.getByText('◆ 2 waiting')
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(menu)
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.pointerDown(screen.getByText('⌖ Show it on the map'))
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(menu)
+    expect(pending.isConnected).toBe(true)
+    fireEvent.click(menu)
+    fireEvent.pointerDown(document.body)
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('heads the section with its address and its title, at its level', () => {
     panel()
     expect(screen.getByText('2.1')).toBeTruthy()

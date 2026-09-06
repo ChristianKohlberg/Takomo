@@ -41,6 +41,7 @@ export interface OutlineRailLabels {
   standingUnseen: string
   /** What the ◆ beside a row means. `{n}` is how many are waiting. */
   pending: string
+  move?: string
 }
 
 export interface OutlineRailProps {
@@ -48,6 +49,8 @@ export interface OutlineRailProps {
   /** The section the column is scrolled to, if any. */
   selected: string | null
   onSelect: (key: string) => void
+  /** Absent for read-only viewers. Pointer, keyboard and touch share one action. */
+  onMove?: (key: string) => void
   /** Section keys this viewer has folded. Never shared. */
   collapsed: ReadonlySet<string>
   onToggle: (key: string) => void
@@ -103,6 +106,7 @@ export function OutlineRail({
   sections,
   selected,
   onSelect,
+  onMove,
   collapsed,
   onToggle,
   standing,
@@ -184,6 +188,9 @@ export function OutlineRail({
               </span>
             </button>
 
+            {onMove && (
+              <button type="button" className="flex-none rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-background focus-visible:ring-2" aria-label={`${labels.move || 'Move'} ${section.number}`} title={labels.move || 'Move'} onClick={() => onMove(section.key)}>↕</button>
+            )}
             {folded && (
               <span
                 className="text-muted-foreground flex-none font-mono text-[10px]"

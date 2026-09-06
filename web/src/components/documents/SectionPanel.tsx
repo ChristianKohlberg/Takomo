@@ -28,7 +28,8 @@
 // the section as it now reads, and the trace says who did what — the pair is
 // what "better diffs" actually comes from, and it is why the review button is
 // beside the prose rather than in a panel somewhere else.
-import type { ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { MoreHorizontal } from 'lucide-react'
 
 import { EditableText } from '@/components/EditableText'
 import { Hint } from '@/components/Hint'
@@ -39,6 +40,7 @@ import { traceActor } from '@/lib/plan-trace'
 import { cn } from '@/lib/utils'
 
 export interface SectionPanelLabels {
+  actions?: string
   /** Read out by the heading's editor. */
   renameSection: string
   /** A section nobody has given a title yet. */
@@ -153,6 +155,25 @@ export function SectionPanel({
   children,
   className,
 }: SectionPanelProps) {
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const actionsId = useId()
+  const actionsRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!actionsOpen) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (!actionsRef.current?.contains(target) && !menuRef.current?.contains(target)) setActionsOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setActionsOpen(false)
+      menuRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', escape)
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape) }
+  }, [actionsOpen])
   const Heading = HEADINGS[Math.min(depth, HEADINGS.length - 1)] ?? 'h6'
   const standingLabel: Record<Standing, string> = {
     confirmed: labels.standingConfirmed,
@@ -175,6 +196,11 @@ export function SectionPanel({
       style={{ paddingLeft: `${sectionInset(depth)}px` }}
     >
       <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <button ref={menuRef} type="button" className="section-menu-trigger order-last ml-auto rounded p-1 hover:bg-muted"
+          aria-label={labels.actions ?? 'Section actions'} aria-expanded={actionsOpen} aria-controls={actionsId}
+          onMouseDown={(event) => event.preventDefault()} onClick={() => setActionsOpen((value) => !value)}>
+          <MoreHorizontal className="size-4" aria-hidden="true" />
+        </button>
         <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>
         {canWrite && onTitle ? (
           <EditableText
@@ -209,7 +235,9 @@ export function SectionPanel({
         )}
       </div>
 
-      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+      <div ref={actionsRef} id={actionsId} role="group" aria-label={labels.actions ?? 'Section actions'}
+        data-open={actionsOpen || historyOpen || proposalsOpen || undefined}
+        className="section-actions mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
         <Hint text={canWrite ? labels.reviewHint : labels.needWrite}>
           <button
             type="button"

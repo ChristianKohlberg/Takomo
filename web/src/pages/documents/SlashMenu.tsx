@@ -5,10 +5,12 @@ import { closeSlashMenu, insertSlashBlock, type InsertKind, type SlashMatch } fr
 import type { Locale } from '@/lib/i18n'
 import { STR } from './strings'
 
-const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; icon: string }[] = [
-  { kind: 'heading1', label: 'slashHeading1', search: 'heading title überschrift h1', icon: 'H1' },
-  { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2' },
-  { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3' },
+// A heading also has a keyboard shortcut (StarterKit's Mod-Alt-n), shown so the
+// menu teaches the faster path rather than being the only one.
+const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; icon: string; shortcut?: 1 | 2 | 3 }[] = [
+  { kind: 'heading1', label: 'slashHeading1', search: 'heading title überschrift h1', icon: 'H1', shortcut: 1 },
+  { kind: 'heading2', label: 'slashHeading2', search: 'heading subtitle überschrift h2', icon: 'H2', shortcut: 2 },
+  { kind: 'heading3', label: 'slashHeading3', search: 'heading überschrift h3', icon: 'H3', shortcut: 3 },
   { kind: 'bulletList', label: 'slashBullets', search: 'bullet list liste aufzählung', icon: '•' },
   { kind: 'orderedList', label: 'slashNumbered', search: 'numbered ordered list liste nummeriert', icon: '1.' },
   { kind: 'quote', label: 'slashQuote', search: 'quote quotation blockquote zitat', icon: '❝' },
@@ -31,6 +33,7 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
   const results = choices.filter(c => `${t[c.label]} ${c.search}`.toLocaleLowerCase().includes(match.query.toLocaleLowerCase().trim()))
   const active = Math.min(selected, Math.max(0, results.length - 1))
   const validSize = [rows, cols].every(n => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= 10)
+  const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘⌥' : 'Ctrl+Alt+'
   const close = () => { closeSlashMenu(editor); editor.commands.focus() }
   const choose = (kind: InsertKind) => {
     if (kind === 'table') setTable(true)
@@ -93,7 +96,9 @@ export function SlashMenu({ editor, match, locale, menuId, keys }: {
         {results.map((choice, index) => <button key={choice.kind} id={`${menuId}-${choice.kind}`} role="option" aria-selected={index === active} type="button" tabIndex={-1}
           onMouseDown={e => e.preventDefault()} onPointerMove={() => setSelected(index)} onClick={() => choose(choice.kind)}
           className={`flex w-full items-center gap-3 rounded px-2 py-2 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'}`}>
-          <span aria-hidden className="text-muted-foreground w-6 shrink-0 text-center text-xs">{choice.icon}</span>{t[choice.label]}
+          <span aria-hidden className="text-muted-foreground w-6 shrink-0 text-center text-xs">{choice.icon}</span>
+          <span className="min-w-0 flex-1">{t[choice.label]}</span>
+          {choice.shortcut && <kbd className="text-muted-foreground shrink-0 text-xs">{modifier}{choice.shortcut}</kbd>}
         </button>)}
         {!results.length && <p role="status" className="text-muted-foreground px-2 py-3 text-sm">{t.slashEmpty}</p>}
       </div>

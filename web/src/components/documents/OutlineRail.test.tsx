@@ -32,6 +32,18 @@ const sections = planSections([
 ])
 
 describe('OutlineRail', () => {
+  it('offers moving only when allowed, without selecting a different section', () => {
+    const onMove = vi.fn()
+    const onSelect = vi.fn()
+    const props = { sections, selected: null, onSelect, collapsed: new Set<string>(), onToggle: () => {}, labels }
+    const view = render(<OutlineRail {...props} />)
+    expect(screen.queryByRole('button', { name: 'Move 1' })).toBeNull()
+    view.rerender(<OutlineRail {...props} onMove={onMove} />)
+    screen.getByRole('button', { name: 'Move 1' }).click()
+    expect(onMove).toHaveBeenCalledWith('a')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   it('shows a section number beside every row', () => {
     render(
       <OutlineRail

@@ -18,6 +18,7 @@ import type { Locale } from '@/lib/i18n'
 import { NavRail, type NavRailProps } from './NavRail'
 
 export interface AppShellProps {
+  hideRail?: boolean
   lang?: Locale
   onLang?: (lang: Locale) => void
   /** Everything the rail needs; see NavRail. */
@@ -26,7 +27,7 @@ export interface AppShellProps {
   children: ReactNode
 }
 
-export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
+export function AppShell({ rail, children, lang, onLang, hideRail = false }: AppShellProps) {
   const token = loadToken()
   const project = rail.project ?? ''
   const explicitCount = rail.badges?.inbox
@@ -60,7 +61,9 @@ export function AppShell({ rail, children, lang, onLang }: AppShellProps) {
   const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
     <div className="flex h-dvh overflow-hidden">
-      <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
+      <div style={{ display: hideRail ? 'none' : 'contents' }}>
+        <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
+      </div>
       <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
     </div>
   )

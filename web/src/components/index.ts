@@ -249,3 +249,7 @@ export { SharedText } from './SharedText'
 export { CheckEditor } from './verification/CheckEditor'
 
 export { SectionConversation } from './documents/SectionConversation'
+
+export { DocumentActions } from './documents/DocumentActions'
+export { DocumentSearchToolbar } from './documents/DocumentSearchToolbar'
+export { MoveSectionDialog } from './documents/MoveSectionDialog'

@@ -48,6 +48,38 @@ function mount(doc: Y.Doc, fragment: Y.XmlFragment, label: string) {
 }
 
 describe('SectionEditor', () => {
+  it('refreshes the accessible label after a move while retaining editor, prose and undo', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Keep this paragraph.')
+    const awareness = new Awareness(doc)
+    const provider = { awareness } as unknown as WebsocketProvider
+    let editor: Editor | null = null
+    const props = {
+      ydoc: doc, fragment, provider, display: 'Ada', color: '#2563eb', canWrite: true,
+      onSettled: () => {}, onEditor: (value: Editor | null) => { editor = value },
+    }
+    const view = render(<SectionEditor {...props} label="Section 1" />)
+    const originalEditor = editor!
+    const originalDom = screen.getByLabelText('Section 1')
+    const originalKeyHandler = originalEditor.options.editorProps.handleKeyDown
+    act(() => { originalEditor.commands.insertContentAt(1, 'Added. ') })
+
+    view.rerender(<SectionEditor {...props} label="Section 2.1" />)
+
+    expect(screen.queryByLabelText('Section 1')).toBeNull()
+    expect(screen.getByLabelText('Section 2.1')).toBe(originalDom)
+    expect(editor).toBe(originalEditor)
+    expect(originalEditor.options.editorProps.handleKeyDown).toBe(originalKeyHandler)
+    expect(originalDom.classList.contains('prose')).toBe(true)
+    expect(originalDom.textContent).toBe('Added. Keep this paragraph.')
+    expect(originalEditor.can().undo()).toBe(true)
+    act(() => { originalEditor.commands.undo() })
+    expect(originalDom.textContent).toBe('Keep this paragraph.')
+    view.unmount()
+    awareness.destroy()
+    doc.destroy()
+  })
+
   it('turns a completed final heading into a shared section without losing earlier prose', () => {
     const doc = new Y.Doc()
     const fragment = section(doc, 'mn-1', 'Keep this paragraph.')

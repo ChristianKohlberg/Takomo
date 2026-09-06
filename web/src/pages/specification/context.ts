@@ -7,6 +7,8 @@ import type { Check } from '@/lib/verification'
 import type { SyncConnection } from '@/hooks/useSyncConnection'
 
 export interface SpecificationState {
+  focusMode?: boolean
+  structureHistory?: ReturnType<typeof import('@/lib/plan-structure').createStructureHistory> | null
   token: string
   lang: Locale
   project: string
