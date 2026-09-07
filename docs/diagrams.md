@@ -13,11 +13,46 @@ preview but cannot edit the document.
 
 Rendering requires a connection to Takomo. While editing or after a failed render,
 the last successful preview stays visible and is marked outdated. Invalid source
-is retained so it can be corrected. Existing Mermaid blocks use Kroki too; deploy
-the service and configure Takomo together when upgrading. Without configuration,
-the source remains available and the preview explains that rendering is unavailable.
+is retained so it can be corrected. Existing Mermaid blocks use Kroki too. The
+default Docker image includes all required renderers; native binary deployments
+need the external service configuration below.
 
-## Run the service on the same machine
+## Default: one Docker container
+
+The standard image bundles Kroki 0.32.1, PlantUML/Salt, D2 and the Mermaid
+companion. Run Takomo normally: one image, port 8080 and `/var/data` volume. No
+renderer URL or Compose stack is required. See [hosting](hosting.md#docker-runtime).
+
+Takomo connects to Kroki on `127.0.0.1:8000`; Kroki connects to Mermaid on
+`127.0.0.1:8002`. Both renderer listeners bind only to loopback. Tini reaps orphaned
+processes and the supervisor forwards shutdown to all service process groups. If
+any main service exits, the entire container exits nonzero, letting Docker's
+restart policy recover it coherently. Startup waits up to 60 seconds for both
+renderers; Docker health checks include an actual Mermaid sample render.
+
+The services run under separate non-root accounts. Renderers receive a fixed,
+minimal environment, without Takomo/cloud credentials. `/var/data` is private to
+Takomo. The bundled configuration forces secure modes, `D2_BUNDLE=false`, four
+concurrent Mermaid renders and bounded rendering timeouts. Java has a 512 MiB
+heap cap and Node a 256 MiB heap cap. These are **not total memory limits**:
+Chromium, native renderers and the application share the container's resources.
+Apply a container memory/CPU/PID budget; the hosting example is a starting point.
+
+The pinned upstream native PlantUML build uses glibc and D2 is static. The final
+image uses Debian trixie for Takomo, Java, Graphviz and Chromium. Mermaid's source,
+assets and lockfile come from its pinned image, but dependencies are reinstalled
+on Debian; no Alpine Node/Chromium executable is copied. Upstream's Mermaid
+listener is adapted to loopback during the build with an exact-source assertion.
+The bundled image is currently validated on **linux/amd64**; other architectures
+require matching upstream artifacts and a full build/render smoke before support.
+
+Set a nonempty `TAKOMO_KROKI_URL` to use an external service instead. Bundled
+renderers then stay dormant, including their startup and health checks. Set
+`TAKOMO_KROKI_VERSION` for that external service as described below. Administrative
+commands also skip renderer startup. The native Render blueprint is unchanged;
+it still needs an external Kroki service.
+
+## Optional external service on the same machine
 
 Install Docker with Compose, then from the repository root:
 
