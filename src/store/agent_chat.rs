@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 pub const LEASE_SECONDS: i64 = 60;
 const MAX_RUN_MS: i64 = 15 * 60 * 1000;
-const MAX_TURNS: i64 = 100;
+pub(super) const MAX_TURNS: i64 = 100;
 pub fn bounded(value: &str, max: usize, name: &str) -> ApiResult<()> {
     if value.trim().is_empty() || value.len() > max {
         return Err(ApiError::validation(
@@ -43,6 +43,7 @@ pub struct Claim {
     pub service_id: String,
     #[serde(default)]
     pub wait_seconds: u64,
+    pub supported_kinds: Option<Vec<String>>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +72,7 @@ pub struct ResultInput {
     pub turn_id: Option<String>,
 }
 
-fn view(conn: &Connection, map: &str, node: &str) -> ApiResult<Value> {
+pub(super) fn view(conn: &Connection, map: &str, node: &str) -> ApiResult<Value> {
     let conversation = conn
         .query_row("SELECT id, created_at FROM agent_conversations WHERE mindmap=?1 AND node=?2", params![map, node], |r| {
             Ok(json!({"id":r.get::<_,String>(0)?,"mindmap":map,"node":node,"created_at":r.get::<_,i64>(1)?}))
@@ -289,13 +290,29 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
         [id],
         |r| r.get(0),
     )?;
-    value["kind"] = json!(if organizer {
+    let document: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM document_agent_jobs WHERE job=?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    value["kind"] = json!(if document {
+        "document_chat"
+    } else if organizer {
         "lane_organize"
     } else if bug.is_some() {
         "bug_research"
     } else {
         "section_chat"
     });
+    if document {
+        value["section_title"] = conn
+            .query_row(
+                "SELECT json_extract(snapshot,'$.title') FROM agent_jobs WHERE id=?1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )?
+            .into();
+    }
     if organizer {
         value["section_title"] = json!("Organize pending work");
     }
@@ -531,8 +548,37 @@ impl Store {
             view(tx, map, node)
         })
     }
-    pub fn claim_agent_job(&self, ctx: &AuthCtx, service: &str) -> ApiResult<Option<Value>> {
+    pub fn claim_agent_job(
+        &self,
+        ctx: &AuthCtx,
+        service: &str,
+        supported: Option<&[String]>,
+    ) -> ApiResult<Option<Value>> {
         bounded(service, 120, "service_id")?;
+        let legacy = [
+            "section_chat".to_string(),
+            "bug_research".to_string(),
+            "lane_organize".to_string(),
+        ];
+        let supported = supported.unwrap_or(&legacy);
+        if supported.is_empty()
+            || supported.len() > 4
+            || supported.iter().any(|kind| {
+                ![
+                    "section_chat",
+                    "bug_research",
+                    "lane_organize",
+                    "document_chat",
+                ]
+                .contains(&kind.as_str())
+            })
+        {
+            return Err(ApiError::validation(
+                "validation.agent_chat",
+                "supported_kinds must list 1–4 recognized job kinds",
+            ));
+        }
+        let supported = serde_json::to_string(supported).unwrap();
         self.with_tx(|tx| {
             expire(tx)?;
             // MVP: at most one active job per connected service, even if it has
@@ -546,8 +592,12 @@ impl Store {
                 (SELECT archived_at FROM tickets WHERE id=c.ticket) IS NULL) AND (c.ticket IS NULL OR (SELECT COUNT(*)
                 FROM agent_jobs running JOIN agent_conversations rc ON rc.id=running.conversation_id WHERE
                 rc.project=c.project AND rc.ticket IS NOT NULL AND running.status='running')<2) AND (c.service_id IS NULL
-                OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) ORDER BY
-                j.created_at,j.rowid LIMIT 1",params![service,allowed],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+                OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) AND
+                (CASE WHEN EXISTS(SELECT 1 FROM document_agent_jobs d WHERE d.job=j.id) THEN 'document_chat'
+                WHEN EXISTS(SELECT 1 FROM lane_organizer_jobs o WHERE o.job=j.id) THEN 'lane_organize'
+                WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id) THEN 'bug_research'
+                ELSE 'section_chat' END) IN (SELECT value FROM json_each(?3)) ORDER BY
+                j.created_at,j.rowid LIMIT 1",params![service,allowed,supported],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             let Some((jid,cid,thread))=candidate else { return Ok(None);
  };
             let now=now_ms();
@@ -560,7 +610,8 @@ impl Store {
             let project:String=tx.query_row("SELECT project FROM agent_conversations WHERE id=?1",[&cid],|r|r.get(0))?;
             let bug:Option<(String,String)>=tx.query_row("SELECT ticket,repository_ref FROM bug_research_jobs WHERE job=?1",[&jid],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let organizer:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lane_organizer_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
-            value["kind"]=json!(if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
+            let document:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM document_agent_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
+            value["kind"]=json!(if document {"document_chat"}else if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
             value["project"]=json!(project);
             if let Some((ticket,reference))=bug {value["ticket_id"]=json!(ticket);
 value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);

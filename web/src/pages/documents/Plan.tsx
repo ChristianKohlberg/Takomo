@@ -129,6 +129,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  agentTools?: ReactNode
   project?: string
   focusMode?: boolean
   structureHistory?: ReturnType<typeof createStructureHistory> | null
@@ -175,6 +176,7 @@ function ConnectedPlan({
   structureHistory,
   appearance,
   conversationFor,
+  agentTools,
   locale = 'en',
   connection,
   testsFor,
@@ -737,6 +739,7 @@ function ConnectedPlan({
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
         onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} >
+        {agentTools}
         <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />
         <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}

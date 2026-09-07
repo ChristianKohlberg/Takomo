@@ -379,3 +379,38 @@ Pasting HTML automatically removes source fonts, colors, sizes, spacing and copi
 Supported headings, nested lists, tables, code, links and emphasis remain editable and use the
 project template. Style-only bold/italic/underline/strike emphasis is retained, including Google
 Docs exports. Plain-text paste and ordinary undo work as before; saved content is not rewritten.
+
+## Discuss a document with Codex
+
+The document's Codex conversation is shared with its project and persists across
+refreshes and reopening the document. Use **Ask Codex** from the document commands
+or toolbar. Select one or several sections in its context picker, or explicitly
+choose **Whole document**. The context is shown before sending and recorded with
+each turn; changing the selection does not start a new conversation.
+
+Actions can discuss the context, challenge assumptions, draft test descriptions,
+or draft clarification questions. Replies are reviewable Markdown: they do not
+create verification checks, open workflow questions, edit the specification or
+execute tests. Existing section-level conversations remain separate and readable.
+Readers can inspect the shared history; sending requires human and write scopes
+and a writable project.
+
+Takomo reads the current shared document on each send, preserving section order,
+parent IDs and structured prose (including table boundaries and code languages).
+The combined context is capped at 100 KB; oversized requests fail without silent
+truncation, so choose fewer sections. Sent context retains its original titles
+and text even after later edits. One turn can be queued/running at a time, with
+at most 100 turns per document conversation; reaching the limit leaves history
+readable and disables new messages. This MVP has no reset or continuation thread.
+
+The Codex service resumes the existing App Server thread and remains bound to the
+same worker service ID. Keep that worker's state directory when restarting it.
+Losing its Codex thread state is not repaired by browser refresh; failures remain
+visible with the stored conversation history. Takomo does not attach arbitrary
+terminal Codex sessions through this feature.
+
+Deploy the updated Takomo API before updating the standalone worker. The worker
+must advertise `document_chat` in `supported_kinds` when claiming jobs. Older
+workers continue consuming their existing job kinds and leave document turns
+queued until a compatible worker is available. The worker remains a separate
+service; bundling diagram renderers does not install a Codex worker.
