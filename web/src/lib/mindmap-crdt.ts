@@ -74,8 +74,19 @@ export const PROSE_KEY = 'prose'
  * card `<paragraph id="blk_x">…</paragraph>` as if it were prose. The same trap
  * `element_text` documents in `src/store/prose.rs`, and the same answer.
  */
+export function sectionReferenceTitle(doc: Y.Doc, id: string): string | null {
+  const entry = nodesMap(doc).get(id)
+  return entry instanceof Y.Map ? readText(entry, 'title') : null
+}
+
 function elementText(el: Y.XmlElement | Y.XmlText): string {
   if (el instanceof Y.XmlText) return el.toString()
+  if (el.nodeName === 'sectionReference') {
+    const title = el.doc ? sectionReferenceTitle(el.doc, el.getAttribute('sectionId') ?? '') : null
+    if (title !== null) return title || 'Untitled section'
+    const fallback = el.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText).map(child => child.toString()).join('')
+    return `${fallback || 'Untitled section'} (Missing section)`
+  }
   let out = ''
   for (const child of el.toArray()) {
     if (child instanceof Y.XmlText) out += child.toString()

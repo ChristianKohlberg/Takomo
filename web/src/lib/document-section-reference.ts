@@ -1,14 +1,9 @@
 import { Node, type Editor } from '@tiptap/react'
 import * as Y from 'yjs'
-import { nodesMap } from './mindmap-crdt'
+import { nodesMap, sectionReferenceTitle } from './mindmap-crdt'
 import { specificationLink } from './specification-url'
 
-export function sectionReferenceTitle(ydoc: Y.Doc, id: string): string | null {
-  const entry = nodesMap(ydoc).get(id)
-  if (!(entry instanceof Y.Map)) return null
-  const value = entry.get('title')
-  return value instanceof Y.Text ? value.toString() : typeof value === 'string' ? value : ''
-}
+export { sectionReferenceTitle } from './mindmap-crdt'
 
 /** Labels are read at render time, so a locale change redraws mounted references in place. */
 export function refreshSectionReferenceLabels(editor: Editor): void {
@@ -33,12 +28,13 @@ export const DocumentSectionReference = Node.create<{
   },
   renderHTML({ node }) {
     const title = this.options.ydoc ? sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId) : null
-    return ['a', { 'data-section-id': node.attrs.sectionId, 'data-reference-project': this.options.project(),
-      ...(title === null ? {} : { href: specificationLink(this.options.project(), 'document', node.attrs.sectionId) }) },
-      (title ?? node.textContent) || this.options.untitledLabel()]
+    return ['a', { class: 'document-section-reference', 'data-section-id': node.attrs.sectionId, 'data-reference-project': this.options.project(),
+      ...(title === null ? { 'aria-disabled': 'true' } : { href: specificationLink(this.options.project(), 'document', node.attrs.sectionId) }) },
+      title === null ? `${node.textContent || this.options.untitledLabel()} (${this.options.missingLabel()})` : title || this.options.untitledLabel()]
   },
   renderText({ node }) {
-    return (this.options.ydoc && sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId)) || node.textContent || this.options.untitledLabel()
+    const title = this.options.ydoc ? sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId) : null
+    return title === null ? `${node.textContent || this.options.untitledLabel()} (${this.options.missingLabel()})` : title || this.options.untitledLabel()
   },
   addNodeView() {
     const options = this.options

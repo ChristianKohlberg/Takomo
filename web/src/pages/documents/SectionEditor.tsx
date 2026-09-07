@@ -1,3 +1,4 @@
+import { CollaborationHistorySelection } from '@/lib/collaboration-history-selection'
 import { useContext } from 'react'
 import { DiagramContext } from '@/lib/diagram'
 // One section's prose, bound to that section's own fragment.
@@ -51,6 +52,7 @@ import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/docum
 import { DocumentSectionReference, refreshSectionReferenceLabels } from '@/lib/document-section-reference'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 import '@/styles/document-comments.css'
+import '@/styles/document-references.css'
 
 /** How long a person stops typing before the edit counts as settled. */
 const SETTLE_MS = 2500
@@ -168,7 +170,8 @@ export default function SectionEditor({
         // Only a writer mints block ids — an `appendTransaction` runs regardless
         // of `editable`, so a reader would otherwise change the shared document
         // by opening a section.
-        BlockId.configure({ canWrite }),
+        CollaborationHistorySelection,
+      BlockId.configure({ canWrite }),
         // A decoration, never a mark: a mark would be content, written into the
         // shared document and synced to everybody, which would break the very
         // rule the highlight illustrates. See `lib/block-highlight.ts`.

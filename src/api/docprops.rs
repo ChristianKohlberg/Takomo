@@ -50,7 +50,7 @@
 use crate::error::{ApiError, ApiResult};
 use serde_json::{json, Value};
 use yrs::types::xml::XmlOut;
-use yrs::{Any, GetString, Map, ReadTxn, Text, Transact, Xml, XmlFragment};
+use yrs::{Any, Map, ReadTxn, Text, Transact, Xml, XmlFragment};
 
 /// The Y.Doc key the editor binds its prose to. Must match the `field` given to
 /// Tiptap's `Collaboration` extension in `web/src/pages/documents/SectionEditor.tsx` —
@@ -136,15 +136,7 @@ pub fn read_blocks<T: ReadTxn>(txn: &T, frag: &yrs::XmlFragmentRef) -> Vec<Block
 /// hand an agent `<paragraph id="blk_x">…</paragraph>` as if it were prose. That
 /// is what shipped in the first draft, and the test caught it.
 fn element_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
-    let mut out = String::new();
-    for child in el.children(txn) {
-        match child {
-            XmlOut::Text(t) => out.push_str(&t.get_string(txn)),
-            XmlOut::Element(e) => out.push_str(&element_text(txn, &e)),
-            XmlOut::Fragment(_) => {}
-        }
-    }
-    out
+    crate::store::prose::element_text(txn, el)
 }
 
 fn escape_html(text: &str) -> String {
@@ -156,6 +148,11 @@ fn escape_html(text: &str) -> String {
 
 /// Emit only schema-supported tags/attributes, never arbitrary CRDT names as HTML.
 fn element_html<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
+    // References are inline atoms, including in table paragraphs. Resolve only
+    // for this projection: never rewrite their stored insertion text on reads.
+    if el.tag().as_ref() == "sectionReference" {
+        return format!("<span>{}</span>", escape_html(&element_text(txn, el)));
+    }
     let tag = match el.tag().as_ref() {
         "table" => "table",
         "tableRow" => "tr",
@@ -653,6 +650,72 @@ mod tests {
     use super::*;
     use yrs::updates::decoder::Decode;
     use yrs::{Update, XmlElementPrelim, XmlTextPrelim};
+
+    #[test]
+    fn section_references_project_current_titles_inline_without_mutating_prose() {
+        use yrs::{GetString, MapPrelim, TextPrelim};
+        let doc = yrs::Doc::new();
+        let nodes = doc.get_or_insert_map("nodes");
+        let frag = doc.get_or_insert_xml_fragment(PROSE_FIELD);
+        let target;
+        {
+            let mut txn = doc.transact_mut();
+            target = nodes.insert(&mut txn, "target", MapPrelim::default());
+            target.insert(&mut txn, "title", "Initial");
+            let table = frag.push_back(&mut txn, XmlElementPrelim::empty("table"));
+            let row = table.push_back(&mut txn, XmlElementPrelim::empty("tableRow"));
+            let cell = row.push_back(&mut txn, XmlElementPrelim::empty("tableCell"));
+            let para = cell.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+            para.push_back(&mut txn, XmlTextPrelim::new("Before < "));
+            let reference = para.push_back(&mut txn, XmlElementPrelim::empty("sectionReference"));
+            reference.insert_attribute(&mut txn, "sectionId", "target");
+            reference.push_back(&mut txn, XmlTextPrelim::new("Old & fallback"));
+            para.push_back(&mut txn, XmlTextPrelim::new(" > after"));
+        }
+        // Older nodes may store a plain string title instead of Y.Text.
+        assert_eq!(
+            read_blocks(&doc.transact(), &frag)[0].text,
+            "Before < Initial > after"
+        );
+        for (title, expected) in [
+            (Some("Initial"), "Initial"),
+            (Some("New <&\" title"), "New <&\" title"),
+            (Some(""), "Untitled section"),
+            (None, "Old & fallback (Missing section)"),
+        ] {
+            {
+                let mut txn = doc.transact_mut();
+                if let Some(title) = title {
+                    target.insert(&mut txn, "title", TextPrelim::new(title));
+                } else {
+                    nodes.remove(&mut txn, "target");
+                }
+            }
+            let txn = doc.transact();
+            let before = txn.encode_state_as_update_v1(&yrs::StateVector::default());
+            let blocks = read_blocks(&txn, &frag);
+            assert_eq!(blocks[0].text, format!("Before < {expected} > after"));
+            assert_eq!(crate::store::prose::plain_text(&txn, &frag), blocks[0].text);
+            assert_eq!(
+                blocks[0].html.as_deref(),
+                Some(
+                    format!(
+                "<table><tr><td><p>Before &lt; <span>{}</span> &gt; after</p></td></tr></table>",
+                escape_html(expected)
+            )
+                    .as_str()
+                )
+            );
+            assert!(
+                frag.get_string(&txn).contains("Old &amp; fallback")
+                    || frag.get_string(&txn).contains("Old & fallback")
+            );
+            assert_eq!(
+                before,
+                txn.encode_state_as_update_v1(&yrs::StateVector::default())
+            );
+        }
+    }
 
     #[test]
     fn code_languages_survive_yjs_updates_and_agent_reads() {

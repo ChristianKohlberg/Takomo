@@ -4,7 +4,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import * as Y from 'yjs'
 import { DocumentSectionReference } from './document-section-reference'
-import { createNode, nodesMap, proseOf, proseTextOf, setTitle } from './mindmap-crdt'
+import { createNode, nodesMap, proseOf, proseTextOf, readNodes, setTitle } from './mindmap-crdt'
 
 const editors: Editor[] = []
 const docs: Y.Doc[] = []
@@ -35,22 +35,26 @@ describe('document section references', () => {
     expect(modified.defaultPrevented).toBe(false)
   })
   it('follows renames without modifying shared prose and keeps stable links', () => {
-    const { doc, id, editor, fragment } = setup()
+    const { doc, id, source, editor, fragment } = setup()
     const before = fragment.toString()
     setTitle(doc, id, 'Renamed heading')
     expect(editor.view.dom.querySelector('a')?.textContent).toBe('Renamed heading')
     expect(editor.view.dom.querySelector('a')?.getAttribute('href')).toContain(`section=${id}`)
     expect(editor.getText()).toBe('Renamed heading')
+    expect(proseTextOf(doc, source)).toBe('Renamed heading')
+    expect(readNodes(doc).find(node => node.id === source)?.notes).toBe('Renamed heading')
     expect(fragment.toString()).toBe(before)
     expect(editor.getHTML()).toContain('Renamed heading')
   })
-  it('retains plain text for generic CRDT readers and disables deleted references without losing the label', () => {
+  it('marks deleted references explicitly for both CRDT readers and the editor', () => {
     const { doc, id, source, editor } = setup()
     expect(proseTextOf(doc, source)).toBe('Original heading')
     nodesMap(doc).delete(id)
     expect(editor.view.dom.querySelector('a')?.textContent).toBe('Original heading (Missing section)')
     expect(editor.view.dom.querySelector('a')?.hasAttribute('href')).toBe(false)
-    expect(proseTextOf(doc, source)).toBe('Original heading')
+    expect(proseTextOf(doc, source)).toBe('Original heading (Missing section)')
+    expect(editor.getText()).toBe('Original heading (Missing section)')
+    expect(editor.getHTML()).toContain('Original heading (Missing section)')
   })
   it('survives a CRDT reload and follows a remote rename without changing the prose', () => {
     const { doc, id, source } = setup()
@@ -65,6 +69,16 @@ describe('document section references', () => {
     setTitle(doc, id, 'Remote renamed')
     Y.applyUpdate(replica, Y.encodeStateAsUpdate(doc))
     expect(editor.view.dom.querySelector('a')?.textContent).toBe('Remote renamed')
+    expect(proseTextOf(replica, source)).toBe('Remote renamed')
+    expect(fragment.toString()).toBe(before)
+  })
+  it('projects untitled references consistently without rewriting fallback text', () => {
+    const { doc, id, source, editor, fragment } = setup()
+    const before = fragment.toString()
+    setTitle(doc, id, '')
+    expect(editor.getText()).toBe('Untitled section')
+    expect(proseTextOf(doc, source)).toBe('Untitled section')
+    expect(editor.getHTML()).toContain('Untitled section')
     expect(fragment.toString()).toBe(before)
   })
   it('preserves same-project reference identity through HTML paste', () => {

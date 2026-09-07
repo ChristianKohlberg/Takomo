@@ -317,7 +317,11 @@ carries separate undo/redo controls for the current section's prose and for sect
 Move history survives switching between Doc and Map during the visit but not a reload, and
 neither history is an audit log — that is the trace. Undo preserves collaborators' prose edits
 and refuses a stale structural restore that would overwrite a conflicting move; a successful
-move also offers Undo in a six-second confirmation.
+move also offers Undo in a six-second confirmation. Enter and multi-block paste are undoable
+as single prose edits, with their generated block ids restored on redo. Automatic id repairs
+when opening or receiving a remote update do not add undo entries. History captures the selection before the original edit, including before Yjs rebuilds its
+position mapping, and restores it from CRDT relative anchors immediately after undo/redo. This
+also avoids stale absolute offsets leaking into the next transaction after a multi-block paste.
 
 **Find** searches section titles and prose, including collapsed and unmounted sections.
 Matches are literal and case-insensitive; Enter and Shift+Enter visit the next and previous
@@ -371,14 +375,18 @@ without a misleading navigation link. Readers can filter and navigate without ed
 Insert section reference searches section titles and shows their document numbers to distinguish
 duplicate titles. It inserts at the current prose selection. References store the stable section
 id and a nested fallback title; the displayed title follows renames without writing new prose.
-Deleted targets show the fallback with a missing-section label. Existing generic API/Map text
-projections retain the insertion title. Copying a reference within the project preserves its
+References are underlined links with hover and keyboard-focus feedback. Deleted targets show
+the fallback with a missing-section label. API and Map text projections resolve the current
+target title on every read too; empty titles use “Untitled section”. These reads never modify
+the stored fallback or prose. Table exports render references as escaped inline spans, preserving
+the surrounding cell text. Copying a reference within the project preserves its
 identity; pasting it into another project retains an ordinary link to the original project.
 
 Pasting HTML automatically removes source fonts, colors, sizes, spacing and copied block ids.
 Supported headings, nested lists, tables, code, links and emphasis remain editable and use the
 project template. Style-only bold/italic/underline/strike emphasis is retained, including Google
-Docs exports. Plain-text paste and ordinary undo work as before; saved content is not rewritten.
+Docs exports. Plain-text paste remains supported; multi-block paste undoes in one step and
+redo restores the same block identities. Saved content is not rewritten.
 
 ## Discuss a document with Codex
 

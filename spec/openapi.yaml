@@ -5588,7 +5588,11 @@ paths:
         Annotated with block ids, which is what makes a reply addressable: an
         agent answers with OPERATIONS against block ids, never with a document.
         One section with `node`, or the whole plan — headings from the tree,
-        each section's blocks beneath its own.
+        each section's blocks beneath its own. Inline section references resolve
+        to the current target title without changing stored prose. Missing targets
+        retain their insertion title followed by `(Missing section)`; existing
+        targets with empty titles use `Untitled section`. Table HTML renders these
+        labels as escaped inline spans, preserving paragraph flow.
       parameters:
         - { name: node, in: query, schema: { type: string }, description: 'one section' }
       responses:
@@ -10019,6 +10023,9 @@ components:
             The long form of one thought. Does not appear in the outline; you open
             a node to read it. Past this length the branch wants to be an
             initiative, and the refusal (`validation.mindmap_notes`) says so.
+            On reads, inline section references in prose resolve to current target
+            titles. Missing targets retain the insertion title with `(Missing section)`;
+            empty titles use `Untitled section`. Reading never rewrites shared prose.
         position:
           type: integer
           description: |
