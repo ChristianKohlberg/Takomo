@@ -325,7 +325,7 @@ result. Opening a result temporarily expands its outline ancestors, and closing 
 the saved folds. Search works for read-only viewers, edits nothing, and leaves the browser's
 own find shortcut alone.
 
-## Formatting, continuous writing and text comments
+## Formatting, continuous writing, text comments, section references and paste
 
 The compact formatting toolbar follows the current prose selection. Choose Normal text or
 Heading 1–3, or apply bold, italic and lists. Mixed selections and unsupported block styles
@@ -361,7 +361,6 @@ Edits outside a passage shift its anchor with the text. If the selected words ch
 are removed, the quote and discussion remain with a detached-text indication; they are not
 matched to another occurrence. This first version supports plain-text comments on a
 selection within one section, without mentions or notifications.
-
 
 All comments opens a document-wide panel with Open (default), Resolved and All filters. Threads
 show their section title and support the same replies and status changes as section comments.
