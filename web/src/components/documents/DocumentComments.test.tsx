@@ -1,12 +1,12 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import * as Y from 'yjs'
 import { DocumentComments } from './DocumentComments'
 import { DocumentCommentButton } from './DocumentCommentButton'
-import { captureCommentAnchor, createCommentThread, readCommentThreads } from '@/lib/document-comments'
+import { captureCommentAnchor, createCommentThread, readCommentThreads, resolveCommentThread } from '@/lib/document-comments'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 
 function setup() {
@@ -19,6 +19,34 @@ function setup() {
   return { ydoc, editor, draft }
 }
 describe('DocumentComments', () => {
+  it('filters document-wide threads and retains removed-section discussions for readers', () => {
+    const { ydoc, editor, draft } = setup()
+    const first = createCommentThread(ydoc, 'one', draft, 'Ada', 'First question')
+    const second = createCommentThread(ydoc, 'two', draft, 'Bob', 'Second question')
+    createCommentThread(ydoc, 'removed', draft, 'Bob', 'Retained question')
+    resolveCommentThread(ydoc, second, true)
+    const jump = vi.fn()
+    const titles: Record<string, string> = { one: 'Billing', two: 'Reports' }
+    const view = render(<DocumentComments ydoc={ydoc} editor={null} actor="Reader" canWrite={false} locale="en"
+      sectionTitle={id => titles[id] ?? null} onShowThread={jump} onDraftConsumed={() => {}} onClose={() => {}} />)
+    expect(screen.getByText('First question')).toBeTruthy()
+    expect(screen.queryByText('Second question')).toBeNull()
+    expect(screen.getByText('Section removed')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Go to text' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Go to text' }))
+    expect(jump).toHaveBeenCalledWith(expect.objectContaining({ id: first }))
+    expect(screen.queryByRole('button', { name: 'Resolve' })).toBeNull()
+    act(() => { resolveCommentThread(ydoc, first, true) })
+    expect(screen.queryByText('First question')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Filter comments'), { target: { value: 'resolved' } })
+    expect(screen.getByText('Second question')).toBeTruthy()
+    expect(screen.getByText('First question')).toBeTruthy()
+    expect(screen.queryByText('Retained question')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Filter comments'), { target: { value: 'all' } })
+    expect(screen.getByText('Retained question')).toBeTruthy()
+    view.unmount(); editor.destroy(); ydoc.destroy()
+  })
+
   it('posts, replies, resolves and reopens while preserving quote and highlights', () => {
     const { ydoc, editor, draft } = setup()
     const view = render(<DocumentComments ydoc={ydoc} sectionId="one" editor={editor} actor="Ada" canWrite locale="en" draft={draft} onDraftConsumed={() => {}} onClose={() => {}} />)

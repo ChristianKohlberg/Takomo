@@ -1,9 +1,10 @@
+import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
 import { DocumentActions } from '@/components/documents/DocumentActions'
 import { CopySectionLink } from '@/components/documents/CopySectionLink'
 import { DocumentFormattingToolbar } from '@/components/documents/DocumentFormattingToolbar'
 import { DocumentComments } from '@/components/documents/DocumentComments'
 import { DocumentCommentButton } from '@/components/documents/DocumentCommentButton'
-import type { CommentAnchor } from '@/lib/document-comments'
+import { resolveCommentAnchor, type CommentThread, type CommentAnchor } from '@/lib/document-comments'
 import { specificationLink } from '@/lib/specification-url'
 import { DocumentSearchToolbar } from '@/components/documents/DocumentSearchToolbar'
 import { useDocumentSearch } from '@/hooks/useDocumentSearch'
@@ -205,6 +206,8 @@ function ConnectedPlan({
   const [findOpen, setFindOpen] = useState(false)
   const [moving, setMoving] = useState<string | null>(null)
   const [comments, setComments] = useState<{ section: string; draft: CommentAnchor | null } | null>(null)
+  const [allComments, setAllComments] = useState(false)
+  const pendingComment = useRef<CommentThread | null>(null)
   const [commentsEditor, setCommentsEditor] = useState<Editor | null>(null)
   const [notice, setNotice] = useState<{ text: string; undo?: boolean } | null>(null)
   const [history, setHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
@@ -494,6 +497,14 @@ function ConnectedPlan({
   useEffect(() => {
     setCommentsEditor(commentsSection ? editors.current.get(commentsSection) ?? null : null)
   }, [commentsSection])
+  useEffect(() => {
+    const thread = pendingComment.current
+    if (!thread || !commentsEditor || thread.sectionId !== commentsSection) return
+    pendingComment.current = null
+    const range = resolveCommentAnchor(commentsEditor, thread.anchor)
+    if (range) { commentsEditor.commands.setTextSelection(range); commentsEditor.commands.focus(); commentsEditor.commands.scrollIntoView() }
+    else setNotice({ text: locale === 'de' ? 'Text geändert oder entfernt · Zitat im Kommentar erhalten' : 'Text changed or removed · quote retained in the comment' })
+  }, [commentsEditor, commentsSection, comments, locale])
   const [textTools, setTextTools] = useState({ undo: false, redo: false })
   const syncTextTools = useCallback(() => {
     const editor = !editingTitle.current && selectedRef.current ? editors.current.get(selectedRef.current) : undefined
@@ -721,16 +732,18 @@ function ConnectedPlan({
   }
   return (
     <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <DocumentActions locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
+      <DocumentActions focusMode={focusMode} locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
         onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} >
         <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />
+        <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}
           onComment={draft => { if (selected) setComments({ section: selected, draft }) }} />
+        <button type="button" hidden={focusMode} className="rounded px-2 py-1 text-sm hover:bg-muted" aria-expanded={allComments} onClick={() => setAllComments(value => !value)}>{locale === 'de' ? 'Alle Kommentare' : 'All comments'}</button>
       </DocumentActions>
-      {findOpen && <DocumentSearchToolbar query={search.query} onQuery={search.setQuery} count={search.matches.length}
+      {findOpen && !focusMode && <DocumentSearchToolbar query={search.query} onQuery={search.setQuery} count={search.matches.length}
         activeIndex={search.activeIndex} onNext={search.next} onPrevious={search.previous} onClose={closeFind} locale={locale} />}
       {notice && <div role="status" className="flex flex-none items-center gap-3 bg-muted px-4 py-2 text-sm">
         <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
@@ -871,6 +884,7 @@ function ConnectedPlan({
                       locale={locale}
                       ydoc={ydoc}
                       sectionId={row.key}
+                      onFollowReference={id => { onSelect(id); if (selected === id) elements.current.get(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }}
                       onOpenComments={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}
                       fragment={fragment}
                       provider={provider}
@@ -908,6 +922,12 @@ function ConnectedPlan({
           </div>
         )}
       </div>
+      {allComments && !focusMode && <aside className="max-h-[42vh] min-w-0 flex-none overflow-y-auto border-t border-border-soft bg-card md:max-h-none md:w-full md:max-w-80 md:border-t-0 md:border-l">
+        <DocumentComments ydoc={ydoc} editor={null} actor={session.display} locale={locale} canWrite={canWrite}
+          sectionTitle={id => { const row = rows.find(item => item.key === id); return row ? row.title || railLabels.untitled : null }}
+          onShowThread={thread => { pendingComment.current = thread; onSelect(thread.sectionId); setComments({ section: thread.sectionId, draft: null }); setAllComments(false) }}
+          onDraftConsumed={() => {}} onClose={() => setAllComments(false)} />
+      </aside>}
       </div>
     </main>
   )

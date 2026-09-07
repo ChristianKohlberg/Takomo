@@ -33,6 +33,7 @@ import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
 import type { Locale } from '@/lib/i18n'
 import StarterKit from '@tiptap/starter-kit'
+import { CleanPaste } from '@/lib/clean-paste'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import { ySyncPluginKey } from '@tiptap/y-tiptap'
@@ -47,6 +48,7 @@ import { DiagramCodeBlock } from '@/lib/diagram-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
+import { DocumentSectionReference } from '@/lib/document-section-reference'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 import '@/styles/document-comments.css'
 
@@ -57,6 +59,7 @@ export interface SectionEditorProps {
   ydoc: Y.Doc
   sectionId?: string
   onOpenComments?: () => void
+  onFollowReference?: (id: string) => void
   /** The node's own `prose` fragment. See `proseOf` in lib/mindmap-crdt. */
   fragment: Y.XmlFragment
   provider: WebsocketProvider
@@ -105,6 +108,7 @@ export default function SectionEditor({
   ydoc,
   sectionId = '',
   onOpenComments,
+  onFollowReference,
   fragment,
   provider,
   display,
@@ -132,6 +136,8 @@ export default function SectionEditor({
   insertSection.current = onInsertSection
   const navigate = useRef(onNavigate)
   navigate.current = onNavigate
+  const followReference = useRef(onFollowReference)
+  followReference.current = onFollowReference
   const openComments = useRef(onOpenComments)
   openComments.current = onOpenComments
   const dirty = useRef(false)
@@ -151,6 +157,7 @@ export default function SectionEditor({
         // go: an undo stack that does not know about remote edits would undo
         // somebody else's sentence.
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
+        CleanPaste,
         DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
         TableKit.configure({ table: { resizable: true } }),
@@ -165,6 +172,9 @@ export default function SectionEditor({
         // rule the highlight illustrates. See `lib/block-highlight.ts`.
         HighlightBlocks,
         DocumentSearchHighlight,
+        DocumentSectionReference.configure({ ydoc, onNavigate: onFollowReference ? id => followReference.current?.(id) : null, project: () => accessRef.current?.project ?? '',
+          missingLabel: () => locale === 'de' ? 'Abschnitt fehlt' : 'Missing section',
+          untitledLabel: () => locale === 'de' ? 'Unbenannter Abschnitt' : 'Untitled section' }),
         DocumentCommentHighlight.configure({ ydoc, sectionId, onOpen: () => openComments.current?.() }),
       ],
       editorProps: {

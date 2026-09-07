@@ -6,7 +6,7 @@ import Plan, { type PlanProps } from './Plan'
 import { createStructureHistory } from '@/lib/plan-structure'
 import { createNode, nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
 import type { Editor } from '@tiptap/react'
-import { COMMENT_FIELD, readCommentThreads, type CommentAnchor } from '@/lib/document-comments'
+import { COMMENT_FIELD, captureCommentAnchor, createCommentThread, readCommentThreads, type CommentAnchor } from '@/lib/document-comments'
 
 const probe = vi.hoisted(() => ({ editors: new Map<string, Editor>(), panelRenders: 0 }))
 vi.mock('./SectionEditor', async (importOriginal) => {
@@ -77,6 +77,32 @@ describe('document workflow integration', () => {
     expect(screen.getByText('1 / 1')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Close search' }))
     expect(update).not.toHaveBeenCalled()
+  })
+
+  it('jumps from document comments to a folded section and selects its quoted passage', async () => {
+    const { doc, child, props } = setup()
+    render(<Plan {...props} />)
+    const editor = probe.editors.get('Section 1.1 prose')!
+    act(() => { editor.commands.setTextSelection({ from: 1, to: 8 }); createCommentThread(doc, child, captureCommentAnchor(editor)!, 'Ada', 'Clarify payment') })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
+    fireEvent.click(screen.getByRole('button', { name: 'All comments' }))
+    expect(screen.getByText('Clarify payment')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Go to text' }))
+    await waitFor(() => expect(probe.editors.get('Section 1.1 prose')?.state.selection.to).toBe(8))
+    expect(props.onSelection).toHaveBeenLastCalledWith(child)
+  })
+
+  it('follows an internal reference without replacing editors and unfolds the target', async () => {
+    const { child, props } = setup()
+    const view = render(<Plan {...props} />)
+    const editor = probe.editors.get('Section 1 prose')!
+    act(() => { editor.commands.insertContent({ type: 'sectionReference', attrs: { sectionId: child }, content: [{ type: 'text', text: 'Invoices' }] }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
+    const reference = view.container.querySelector(`a[data-section-id="${child}"]`)!
+    fireEvent.click(reference)
+    await waitFor(() => expect(screen.getByLabelText('Section 1.1 prose')).toBeTruthy())
+    expect(probe.editors.get('Section 1 prose')).toBe(editor)
+    expect(props.onSelection).toHaveBeenLastCalledWith(child)
   })
 
   it('moves a section through the outline, then undoes and redoes without replacing its subtree', async () => {
@@ -171,6 +197,8 @@ describe('document workflow integration', () => {
     view.rerender(<Plan {...props} focusMode />)
     expect(screen.getByLabelText('Section 1.1 prose')).toBe(editor)
     expect(view.container.querySelector('aside')?.style.display).toBe('none')
+    expect(screen.queryByRole('button', { name: 'Undo section move' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'All comments' })).toBeNull()
     act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' Extra detail.')]) })
     expect(editor.textContent).toContain('Extra detail.')
     view.rerender(<Plan {...props} focusMode={false} />)

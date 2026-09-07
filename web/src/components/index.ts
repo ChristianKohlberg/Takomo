@@ -257,3 +257,5 @@ export { DocumentFormattingToolbar } from './documents/DocumentFormattingToolbar
 export { CopySectionLink } from './documents/CopySectionLink'
 export { DocumentComments } from './documents/DocumentComments'
 export { DocumentCommentButton } from './documents/DocumentCommentButton'
+
+export { DocumentSectionReferenceButton } from './documents/DocumentSectionReferenceButton'
