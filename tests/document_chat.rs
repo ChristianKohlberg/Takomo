@@ -346,3 +346,272 @@ async fn snapshots_capture_live_crdt_table_cells_and_code_language_without_rewri
         .unwrap()
         .contains("live -> captured"));
 }
+
+fn workspace(id: &str, context: Value) -> Value {
+    json!({"message":"Review this requirement","request_id":id,"action":"grill","context":context})
+}
+fn evidence_for(job: &Value, ids: &[&str], total: usize) -> Value {
+    let snapshot: Value = serde_json::from_str(job["snapshot"].as_str().unwrap()).unwrap();
+    json!({"document":{"sources":ids.iter().map(|id|{
+        let section=snapshot["sections"].as_array().unwrap().iter().find(|s|s["id"]==*id).unwrap();
+        json!({"section_id":id,"version":section["version"]})
+    }).collect::<Vec<_>>(),"coverage":{"read_section_ids":ids,"total_sections":total,"complete":ids.len()==total}}})
+}
+#[tokio::test]
+async fn workspace_pins_quotes_permissions_and_default_context() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, first, second) = fixture(&app).await;
+    let path = format!("/v1/mindmaps/{map}/conversation");
+    let send = format!("{path}/messages");
+    let reader = app.mint("reader", &["read"], Some(&["tp"]));
+    let foreign = app.mint("other", &["read", "write", "human"], Some(&["other"]));
+    for token in [&reader, &app.worker, &foreign] {
+        assert_eq!(
+            app.patch(token, &path, json!({"pinned_section_ids":[first]}))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            app.post(token, &send, workspace("denied", json!({})))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let (status, pins) = app
+        .patch(&app.human, &path, json!({"pinned_section_ids":[first]}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{pins}");
+    assert!(pins["conversation"].is_null());
+    assert_eq!(
+        app.get(&reader, &path).await.1["pinned_section_ids"],
+        json!([first])
+    );
+    assert_eq!(
+        app.open_store().document_conversation(&map).unwrap()["pinned_section_ids"],
+        json!([first])
+    );
+    assert_eq!(
+        app.patch(&app.human, &path, json!({"pinned_section_ids":["missing"]}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let mut mixed = workspace("mixed", json!({}));
+    mixed["whole_document"] = json!(true);
+    assert_eq!(
+        app.post(&app.human, &send, mixed).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let forged = workspace(
+        "quote",
+        json!({"mode":"selected","section_ids":[first],"quote":{"section_id":first,"text":"Invented requirement"}}),
+    );
+    assert_eq!(
+        app.post(&app.human, &send, forged).await.0,
+        StatusCode::CONFLICT
+    );
+    let context = json!({"mode":"selected","section_ids":[first],"pinned_section_ids":[second],"quote":{"section_id":first,"text":"Charge  once."}});
+    let req = workspace("good", context.clone());
+    let (status, queued) = app.post(&app.human, &send, req.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{queued}");
+    assert_eq!(
+        queued["jobs"][0]["context"]["quote"]["text"],
+        "Charge  once."
+    );
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{first}"),
+        json!({"notes":"New wording."}),
+    )
+    .await;
+    assert_eq!(
+        app.post(&app.human, &send, req).await.1,
+        queued,
+        "retry revalidated stale quote"
+    );
+    let mut changed_mode = workspace("good", context.clone());
+    changed_mode["context"]["mode"] = json!("automatic");
+    changed_mode["context"]["section_ids"] = json!([]);
+    changed_mode["context"]["quote"] = Value::Null;
+    assert_eq!(
+        app.post(&app.human, &send, changed_mode).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut changed_quote = workspace("good", context.clone());
+    changed_quote["context"]["quote"]["text"] = json!("Charge once");
+    assert_eq!(
+        app.post(&app.human, &send, changed_quote).await.0,
+        StatusCode::CONFLICT
+    );
+    // A retry is resolved before validating whether its old quote section still exists.
+    let deleted = app
+        .delete(&app.worker, &format!("/v1/mindmaps/{map}/nodes/{first}"))
+        .await;
+    assert_eq!(deleted.0, StatusCode::OK);
+    assert_eq!(
+        app.post(&app.human, &send, workspace("good", context.clone()))
+            .await
+            .1,
+        queued
+    );
+    let mut changed = workspace("good", context);
+    changed["context"]["pinned_section_ids"] = json!([]);
+    assert_eq!(
+        app.post(&app.human, &send, changed).await.0,
+        StatusCode::CONFLICT
+    );
+    let runner = app.mint("runner", &["agent:run"], Some(&["tp"]));
+    assert!(claim(&app, &runner, "old", Some(vec!["document_chat"]))
+        .await
+        .is_null());
+    let job = claim(&app, &runner, "workspace", Some(vec!["document_workspace"])).await;
+    assert_eq!(job["kind"], "document_workspace");
+    assert_eq!(job["migrate_thread"], false);
+    let result = json!({"service_id":"workspace","attempt_id":job["attempt_id"],"status":"completed","thread_id":"workspace-thread","turn_id":"one","message":"Read both sources.","evidence":evidence_for(&job,&[&first,&second],2)});
+    assert_eq!(
+        app.post(
+            &runner,
+            &format!("/v1/agent-jobs/{}/result", job["id"].as_str().unwrap()),
+            result
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (status, automatic) = app
+        .post(
+            &app.human,
+            &send,
+            json!({"message":"What is ambiguous?","request_id":"default","action":"discuss"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{automatic}");
+    assert_eq!(automatic["jobs"][1]["context"]["mode"], "automatic");
+}
+
+#[tokio::test]
+async fn workspace_evidence_cannot_forge_sources_scope_versions_or_coverage() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, first, second) = fixture(&app).await;
+    let path = format!("/v1/mindmaps/{map}/conversation");
+    let (status, queued) = app
+        .post(
+            &app.human,
+            &format!("{path}/messages"),
+            workspace("one", json!({"mode":"selected","section_ids":[first]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{queued}");
+    let runner = app.mint("runner", &["agent:run"], Some(&["tp"]));
+    let job = claim(&app, &runner, "workspace", Some(vec!["document_workspace"])).await;
+    let url = format!("/v1/agent-jobs/{}/result", job["id"].as_str().unwrap());
+    let base = json!({"service_id":"workspace","attempt_id":job["attempt_id"],"status":"completed","thread_id":"workspace-thread","turn_id":"one","message":"[Payment](takomo-section:test)"});
+    for bad in [
+        Value::Null,
+        evidence_for(&job, &[&second], 1),
+        {
+            let mut e = evidence_for(&job, &[&first], 1);
+            e["document"]["sources"][0]["version"] = json!("forged");
+            e
+        },
+        {
+            let mut e = evidence_for(&job, &[&first], 1);
+            e["document"]["coverage"]["total_sections"] = json!(2);
+            e
+        },
+    ] {
+        let mut result = base.clone();
+        result["evidence"] = bad;
+        assert_eq!(
+            app.post(&runner, &url, result).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{first}"),
+        json!({"text":"Renamed","notes":"Changed requirement."}),
+    )
+    .await;
+    let mut result = base;
+    result["evidence"] = evidence_for(&job, &[&first], 1);
+    let (status, saved) = app.post(&runner, &url, result).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let history = app.get(&app.human, &path).await.1;
+    assert_eq!(history["jobs"][0]["sources"][0]["title"], "Payment");
+    assert_eq!(history["jobs"][0]["coverage"]["complete"], true);
+    assert_eq!(history["jobs"][0]["section_count"], 1);
+}
+
+#[tokio::test]
+async fn workspace_migrates_legacy_thread_once_and_retains_history_and_affinity() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, first, _) = fixture(&app).await;
+    let path = format!("/v1/mindmaps/{map}/conversation");
+    let runner = app.mint("runner", &["agent:run"], Some(&["tp"]));
+    app.post(
+        &app.human,
+        &format!("{path}/messages"),
+        message("old", vec![&first], false),
+    )
+    .await;
+    let old = claim(&app, &runner, "stable", Some(vec!["document_chat"])).await;
+    complete(&app, &runner, &old, "stable").await;
+    app.post(
+        &app.human,
+        &format!("{path}/messages"),
+        workspace("new", json!({"mode":"automatic"})),
+    )
+    .await;
+    assert!(
+        claim(&app, &runner, "other", Some(vec!["document_workspace"]))
+            .await
+            .is_null()
+    );
+    let job = claim(&app, &runner, "stable", Some(vec!["document_workspace"])).await;
+    assert_eq!(job["migrate_thread"], true);
+    assert_eq!(job["thread_id"], "document-thread");
+    let heartbeat = format!("/v1/agent-jobs/{}/heartbeat", job["id"].as_str().unwrap());
+    let mut hb =
+        json!({"service_id":"stable","attempt_id":job["attempt_id"],"thread_id":"new-thread"});
+    assert_eq!(
+        app.post(&runner, &heartbeat, hb.clone()).await.0,
+        StatusCode::CONFLICT
+    );
+    let old_heartbeat =
+        json!({"service_id":"stable","attempt_id":job["attempt_id"],"thread_id":"document-thread"});
+    assert_eq!(
+        app.post(&runner, &heartbeat, old_heartbeat).await.0,
+        StatusCode::CONFLICT,
+        "legacy heartbeat incorrectly marked old thread as tool-enabled"
+    );
+    let migration = json!({"previous_thread_id":"document-thread","new_thread_id":"new-thread","retained_turns":1,"omitted_turns":0});
+    hb["evidence"] = json!({"document_migration":migration});
+    let (status, value) = app.post(&runner, &heartbeat, hb).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let mut evidence = evidence_for(&job, &[&first], 2);
+    evidence["document_migration"] = migration;
+    let result = json!({"service_id":"stable","attempt_id":job["attempt_id"],"thread_id":"new-thread","turn_id":"next","status":"completed","message":"Partial review; one source remains unread.","evidence":evidence});
+    let (status, value) = app
+        .post(
+            &runner,
+            &format!("/v1/agent-jobs/{}/result", job["id"].as_str().unwrap()),
+            result,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let history = app.get(&app.human, &path).await.1;
+    assert_eq!(history["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(history["jobs"][1]["migration"]["retained_turns"], 1);
+    app.post(
+        &app.human,
+        &format!("{path}/messages"),
+        workspace("third", json!({"mode":"whole_document"})),
+    )
+    .await;
+    let next = claim(&app, &runner, "stable", Some(vec!["document_workspace"])).await;
+    assert_eq!(next["migrate_thread"], false);
+    assert_eq!(next["thread_id"], "new-thread");
+}

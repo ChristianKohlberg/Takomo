@@ -733,7 +733,7 @@ function ConnectedPlan({
     return true
   }
   return (
-    <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <main className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <DocumentActions focusMode={focusMode} locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
@@ -752,9 +752,9 @@ function ConnectedPlan({
         <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
       </div>}
       {moving && canWrite && <MoveSectionDialog sections={sections} sectionKey={moving} lang={locale} onClose={() => setMoving(null)} onMove={moveSection} />}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-      {/* One breakpoint, `md`, meaning phone or not: the outline stacks above
-          the plan on a phone and sits beside it everywhere else. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden @min-[650px]/document-pane:flex-row">
+      {/* The outline follows the available document pane, including when the
+          conversation takes half of a wide viewport. */}
       {/* Collapsible, and the state is remembered.
           On a long plan the outline is how you navigate; on a narrow window it
           is competing with the prose for the only column that matters. Both are
@@ -763,10 +763,10 @@ function ConnectedPlan({
       <aside
         style={{ display: focusMode ? 'none' : undefined }}
         className={[
-          'border-b-border-soft flex flex-none flex-col border-b bg-white md:border-r md:border-b-0 dark:bg-card',
+          'border-b-border-soft flex flex-none flex-col border-b bg-white @min-[650px]/document-pane:border-r @min-[650px]/document-pane:border-b-0 dark:bg-card',
           outlineOpen
-            ? 'max-h-[38vh] overflow-y-auto px-2 py-3 md:max-h-none md:w-full md:max-w-80'
-            : 'px-2 py-2 md:w-auto',
+            ? 'max-h-[38vh] overflow-y-auto px-2 py-3 @min-[650px]/document-pane:max-h-none @min-[650px]/document-pane:w-full @min-[650px]/document-pane:max-w-80'
+            : 'px-2 py-2 @min-[650px]/document-pane:w-auto',
         ].join(' ')}
       >
         <button
@@ -925,7 +925,7 @@ function ConnectedPlan({
           </div>
         )}
       </div>
-      {allComments && !focusMode && <aside className="max-h-[42vh] min-w-0 flex-none overflow-y-auto border-t border-border-soft bg-card md:max-h-none md:w-full md:max-w-80 md:border-t-0 md:border-l">
+      {allComments && !focusMode && <aside className="max-h-[42vh] min-w-0 flex-none overflow-y-auto border-t border-border-soft bg-card @min-[650px]/document-pane:max-h-none @min-[650px]/document-pane:w-full @min-[650px]/document-pane:max-w-80 md:border-t-0 md:border-l">
         <DocumentComments ydoc={ydoc} editor={null} actor={session.display} locale={locale} canWrite={canWrite}
           sectionTitle={id => { const row = rows.find(item => item.key === id); return row ? row.title || railLabels.untitled : null }}
           onShowThread={thread => { pendingComment.current = thread; onSelect(thread.sectionId); setComments({ section: thread.sectionId, draft: null }); setAllComments(false) }}

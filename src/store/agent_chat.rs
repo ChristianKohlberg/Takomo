@@ -198,11 +198,18 @@ fn session(
             bounded(v, 200, name)?;
         }
     }
-    if job
-        .thread
-        .as_deref()
-        .zip(thread)
-        .is_some_and(|(a, b)| a != b)
+    let migration = match (job.thread.as_deref(), thread) {
+        (Some(old), Some(new)) if old != new => {
+            super::document_chat::allows_migration(conn, id, old, new)?
+        }
+        _ => false,
+    };
+    if (!migration
+        && job
+            .thread
+            .as_deref()
+            .zip(thread)
+            .is_some_and(|(a, b)| a != b))
         || job.turn.as_deref().zip(turn).is_some_and(|(a, b)| a != b)
     {
         return Err(conflict(
@@ -215,10 +222,32 @@ fn session(
             [&job.conversation],
             |r| r.get(0),
         )?;
-        if existing.as_deref().is_some_and(|s| s != thread) {
+        if existing.as_deref().is_some_and(|s| s != thread)
+            && !super::document_chat::allows_migration(
+                conn,
+                id,
+                existing.as_deref().unwrap(),
+                thread,
+            )?
+        {
             return Err(conflict(
                 "This conversation already belongs to another Codex thread.",
             ));
+        }
+        let workspace: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM document_workspace_jobs WHERE job=?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if workspace {
+            if existing.as_deref() == Some(thread)
+                && super::document_chat::needs_migration(conn, &job.conversation, thread)?
+            {
+                return Err(conflict(
+                    "This legacy document thread must migrate before workspace tools can be used.",
+                ));
+            }
+            conn.execute("INSERT INTO document_thread_profiles(conversation_id,thread_id) VALUES(?1,?2) ON CONFLICT(conversation_id) DO UPDATE SET thread_id=excluded.thread_id",params![job.conversation,thread])?;
         }
         conn.execute(
             "UPDATE agent_conversations SET thread_id=?2 WHERE id=?1",
@@ -226,8 +255,8 @@ fn session(
         )?;
     }
     conn.execute(
-        "UPDATE agent_jobs SET thread_id=COALESCE(thread_id,?2),turn_id=COALESCE(turn_id,?3) WHERE id=?1",
-        params![id, thread, turn],
+        "UPDATE agent_jobs SET thread_id=CASE WHEN ?4 THEN ?2 ELSE COALESCE(thread_id,?2) END,turn_id=COALESCE(turn_id,?3) WHERE id=?1",
+        params![id, thread, turn, migration],
     )?;
     Ok(())
 }
@@ -295,7 +324,14 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
         [id],
         |r| r.get(0),
     )?;
-    value["kind"] = json!(if document {
+    let workspace: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM document_workspace_jobs WHERE job=?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    value["kind"] = json!(if workspace {
+        "document_workspace"
+    } else if document {
         "document_chat"
     } else if organizer {
         "lane_organize"
@@ -562,20 +598,21 @@ impl Store {
         ];
         let supported = supported.unwrap_or(&legacy);
         if supported.is_empty()
-            || supported.len() > 4
+            || supported.len() > 5
             || supported.iter().any(|kind| {
                 ![
                     "section_chat",
                     "bug_research",
                     "lane_organize",
                     "document_chat",
+                    "document_workspace",
                 ]
                 .contains(&kind.as_str())
             })
         {
             return Err(ApiError::validation(
                 "validation.agent_chat",
-                "supported_kinds must list 1–4 recognized job kinds",
+                "supported_kinds must list 1–5 recognized job kinds",
             ));
         }
         let supported = serde_json::to_string(supported).unwrap();
@@ -593,7 +630,8 @@ impl Store {
                 FROM agent_jobs running JOIN agent_conversations rc ON rc.id=running.conversation_id WHERE
                 rc.project=c.project AND rc.ticket IS NOT NULL AND running.status='running')<2) AND (c.service_id IS NULL
                 OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) AND
-                (CASE WHEN EXISTS(SELECT 1 FROM document_agent_jobs d WHERE d.job=j.id) THEN 'document_chat'
+                (CASE WHEN EXISTS(SELECT 1 FROM document_workspace_jobs w WHERE w.job=j.id) THEN 'document_workspace'
+                WHEN EXISTS(SELECT 1 FROM document_agent_jobs d WHERE d.job=j.id) THEN 'document_chat'
                 WHEN EXISTS(SELECT 1 FROM lane_organizer_jobs o WHERE o.job=j.id) THEN 'lane_organize'
                 WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id) THEN 'bug_research'
                 ELSE 'section_chat' END) IN (SELECT value FROM json_each(?3)) ORDER BY
@@ -611,7 +649,9 @@ impl Store {
             let bug:Option<(String,String)>=tx.query_row("SELECT ticket,repository_ref FROM bug_research_jobs WHERE job=?1",[&jid],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
             let organizer:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lane_organizer_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
             let document:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM document_agent_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
-            value["kind"]=json!(if document {"document_chat"}else if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
+            let workspace:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM document_workspace_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
+            value["kind"]=json!(if workspace {"document_workspace"}else if document {"document_chat"}else if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
+            if workspace { value["migrate_thread"]=json!(match thread.as_deref() {Some(t)=>super::document_chat::needs_migration(tx,&cid,t)?,None=>false}); }
             value["project"]=json!(project);
             if let Some((ticket,reference))=bug {value["ticket_id"]=json!(ticket);
 value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
@@ -635,6 +675,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
             }
             live(&job)?;
             ensure_project_writable(tx, &job.project)?;
+            super::document_chat::record_migration(tx,id,req.evidence.as_ref(),req.thread_id.as_deref())?;
             session(tx, &job, id, req.thread_id.as_deref(), req.turn_id.as_deref())?;
             save_evidence(tx, id, req.repository_revision.as_deref(), req.evidence.as_ref())?;
             let lease = (now_ms() + LEASE_SECONDS * 1000).min(job.deadline.unwrap());
@@ -720,7 +761,9 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
                     bounded(req.repository_revision.as_deref().unwrap_or(""), 200, "repository_revision")?;
                 }
             }
+            super::document_chat::validate_evidence(tx,jid,req.evidence.as_ref(),req.status=="completed")?;
             super::lane_organizer::save_proposal(tx,jid,req.proposal.as_ref(),req.status=="completed")?;
+            super::document_chat::record_migration(tx,jid,req.evidence.as_ref(),req.thread_id.as_deref())?;
             session(tx, &job, jid, req.thread_id.as_deref(), req.turn_id.as_deref())?;
             let now = now_ms();
             if let Some(body) = &req.message {

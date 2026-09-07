@@ -125,7 +125,7 @@ test('service claims advertise document support alongside all legacy job kinds',
     const [code] = await once(child, 'exit', { signal: AbortSignal.timeout(5000) });
     assert.equal(code, 0);
     assert.equal(claimed.path, '/v1/agent-jobs/claim');
-    assert.deepEqual(claimed.body, { service_id: 'document-worker', wait_seconds: 0, supported_kinds: ['section_chat', 'bug_research', 'lane_organize', 'document_chat'] });
+    assert.deepEqual(claimed.body, { service_id: 'document-worker', wait_seconds: 0, supported_kinds: ['section_chat', 'bug_research', 'lane_organize', 'document_chat', 'document_workspace'] });
   } finally {
     child.kill();
     await new Promise(resolve => server.close(resolve));

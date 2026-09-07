@@ -192,10 +192,11 @@ export function DocumentView() {
   if (!session || !connection) return null
   return (
     <DiagramContext value={{ token, project: map?.project ?? project }}>
-    <Plan
+    <DocumentAgent token={token} project={map?.project ?? project} map={session.mindmap} lang={lang} nodes={nodes}
+        selected={focusSection} canAsk={session.can_write && scopes.includes('human') && scopes.includes('write')} onError={handleErr} onNavigate={selectSection}>
+    {tools => <Plan
       project={project}
-      agentTools={<DocumentAgent token={token} project={map?.project ?? project} map={session.mindmap} lang={lang} nodes={nodes}
-        selected={focusSection} canAsk={session.can_write && scopes.includes('human') && scopes.includes('write')} onError={handleErr} />}
+      agentTools={tools}
       key={session.session}
       conversationFor={(node) => (
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
@@ -285,7 +286,8 @@ export function DocumentView() {
         opDelete: t.opDelete,
         readOnly: t.proposalReadOnly,
       }}
-    />
+    />}
+    </DocumentAgent>
     </DiagramContext>
   )
 }

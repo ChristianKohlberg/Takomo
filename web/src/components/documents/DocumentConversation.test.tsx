@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentConversation } from './DocumentConversation'
 import { getDocumentConversation, sendDocumentMessage, type DocumentConversationView } from '@/lib/document-conversation'
 
-vi.mock('@/lib/document-conversation', () => ({ getDocumentConversation: vi.fn(), sendDocumentMessage: vi.fn() }))
+vi.mock('@/lib/document-conversation', () => ({ getDocumentConversation: vi.fn(), sendDocumentMessage: vi.fn(), setDocumentPins: vi.fn() }))
 const get = vi.mocked(getDocumentConversation)
 const post = vi.mocked(sendDocumentMessage)
 const empty: DocumentConversationView = { conversation: null, messages: [], jobs: [] }
@@ -32,7 +32,7 @@ describe('document discussion', () => {
     get.mockResolvedValue(completed)
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await screen.findByText('A reviewable test draft.')
-    expect(post).toHaveBeenCalledWith('token', 'map', { message: 'Test the failure paths too', request_id: expect.any(String), action: 'draft_tests', section_ids: ['one', 'two'], whole_document: false }, expect.any(AbortSignal))
+    expect(post).toHaveBeenCalledWith('token', 'map', { message: 'Test the failure paths too', request_id: expect.any(String), action: 'draft_tests', context: { mode: 'selected', section_ids: ['one', 'two'], pinned_section_ids: [] } }, expect.any(AbortSignal))
     expect(within(screen.getByText('Review these requirements').closest('article')!).getByText('Original title')).toBeTruthy()
   })
 
@@ -44,7 +44,7 @@ describe('document discussion', () => {
     expect(screen.getByText('Whole document · 2 sections')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(post).toHaveBeenCalled())
-    expect(post.mock.calls[0]![2]).toMatchObject({ section_ids: [], whole_document: true })
+    expect(post.mock.calls[0]![2]).toMatchObject({ context: { mode: 'whole_document', section_ids: [], pinned_section_ids: [] } })
   })
 
   it('keeps the exact request, ID and context after uncertain delivery, including reopen/new intent', async () => {
@@ -117,7 +117,7 @@ describe('document discussion', () => {
     await screen.findByRole('textbox')
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(post).toHaveBeenCalled())
-    expect(post.mock.calls[0]![2]).toMatchObject({ whole_document: true, section_ids: [] })
+    expect(post.mock.calls[0]![2]).toMatchObject({ context: { mode: 'whole_document', section_ids: [], pinned_section_ids: [] } })
   })
 
   it('keeps history viewable for readers and at the turn limit', async () => {

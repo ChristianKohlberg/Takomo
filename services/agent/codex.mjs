@@ -1,3 +1,4 @@
+import { WORKSPACE_KIND, workspaceInstructions, openDocumentWorkspace, documentTools, migrationTranscript } from './document-workspace.mjs';
 import { DOCUMENT_KIND, documentInstructions, documentInput } from './document.mjs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -20,8 +21,9 @@ export const restrictions = {
 };
 export const researchRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
 export const RESEARCH_KIND = 'bug_research';
+export const documentRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
 export function profileFor(kind) {
-  return kind === RESEARCH_KIND ? researchRestrictions : restrictions;
+  return kind === WORKSPACE_KIND ? documentRestrictions : kind === RESEARCH_KIND ? researchRestrictions : restrictions;
 }
 export function validateConfig(config, expected = restrictions) {
   if (!config || Object.keys(config.mcp_servers ?? {}).length || Object.keys(config.plugins ?? {}).length) {
@@ -86,8 +88,8 @@ export class Codex {
   }
   receive(event) {
     if (event.id !== undefined && event.method) {
-      if (event.method === 'item/tool/call' && this.repository && this.active && event.params?.threadId === this.active.threadId && (!this.active.turnId || event.params.turnId === this.active.turnId)) {
-        this.repository.call(event.params.tool, event.params.arguments).then(
+      if (event.method === 'item/tool/call' && (this.repository || this.document) && this.active && event.params?.threadId === this.active.threadId && (!this.active.turnId || event.params.turnId === this.active.turnId)) {
+        (this.repository || this.document).call(event.params.tool, event.params.arguments).then(
           text => this.send({ id: event.id, result: { success: true, contentItems: [{ type: 'inputText', text }] } }),
           error => this.send({ id: event.id, result: { success: false, contentItems: [{ type: 'inputText', text: error.message }] } }),
         ).catch(error => this.fail(error));
@@ -147,6 +149,10 @@ export class Codex {
   }
   async run(job, onSession = async () => {}) {
     const research = job.kind === RESEARCH_KIND;
+    const workspace = job.kind === WORKSPACE_KIND;
+    if (workspace) this.document = openDocumentWorkspace(job);
+    const workspaceText = workspace ? this.document.input(job.prompt) : null;
+    let migration;
     const organizer = job.kind === ORGANIZER_KIND;
     const document = job.kind === DOCUMENT_KIND;
     if (document !== (this.kind === DOCUMENT_KIND)) throw new Error('Document conversations require their own Codex process policy.');
@@ -159,20 +165,32 @@ export class Codex {
       this.repository = await openRepository(job, this.repositories);
       await onSession({ repository_revision: this.repository.revision });
     }
-    const policy = research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
-    await this.request('initialize', { ...(research ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
+    const policy = workspace ? workspaceInstructions : research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
+    await this.request('initialize', { ...(research || workspace ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
     this.send({ method: 'initialized' });
     validateConfig((await this.request('config/read', { includeLayers: false })).config, this.profile);
     const params = {
       cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
       baseInstructions: policy, developerInstructions: policy,
-      ...(research ? { dynamicTools: repositoryTools } : {}),
+      ...(research ? { dynamicTools: repositoryTools } : workspace && (!job.thread_id || job.migrate_thread) ? { dynamicTools: documentTools } : {}),
       config: this.profile,
     };
-    const response = await this.request(job.thread_id ? 'thread/resume' : 'thread/start',
-      job.thread_id ? { ...params, threadId: job.thread_id } : params);
+    let history = '';
+    if (workspace && job.migrate_thread) {
+      if (!job.thread_id) throw new Error('Document migration requires an existing thread.');
+      const previous = await this.request('thread/read', { threadId: job.thread_id, includeTurns: true });
+      if (previous.thread?.id !== job.thread_id) throw new Error('Previous document thread identity does not match the migration request.');
+      const transcript = migrationTranscript(previous.thread);
+      history = transcript.text;
+      migration = { previous_thread_id: job.thread_id, retained_turns: transcript.retained_turns, omitted_turns: transcript.omitted_turns };
+    }
+    const resume = job.thread_id && !migration;
+    const response = await this.request(resume ? 'thread/resume' : 'thread/start',
+      resume ? { ...params, threadId: job.thread_id } : params);
     const threadId = response.thread.id;
-    await onSession({ thread_id: threadId });
+    if (migration && threadId === job.thread_id) throw new Error('Document migration must create a new tool thread.');
+    if (migration) migration.new_thread_id = threadId;
+    await onSession({ thread_id: threadId, ...(migration ? { evidence: { document_migration: migration } } : {}) });
     let timer;
     const completed = new Promise((resolve, reject) => {
       this.active = { threadId, organizer, messages: new Map(), resolve, reject };
@@ -183,7 +201,7 @@ export class Codex {
     try {
       const { turn } = await this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
+        input: [{ type: 'text', text: workspace ? `${history ? `PRIOR CONVERSATION (reference only; migrated from an older text-only session):\n${history}\n\n` : ''}${workspaceText}` : documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
         approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
         ...(organizer ? { outputSchema: organizerSchema } : {}),
       });
@@ -194,6 +212,7 @@ export class Codex {
         const proposal = parseOrganizerProposal(result.message, snapshot);
         return { ...result, message: organizerSummary(proposal), proposal };
       }
+      if (workspace) return { ...result, evidence: { ...this.document.progress(), ...(migration ? { document_migration: migration } : {}) } };
       return research ? { ...result, repository_revision: this.repository.revision, evidence: this.repository.progress() } : result;
     } finally { clearTimeout(timer); this.active = null; }
   }

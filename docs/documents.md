@@ -414,3 +414,40 @@ must advertise `document_chat` in `supported_kinds` when claiming jobs. Older
 workers continue consuming their existing job kinds and leave document turns
 queued until a compatible worker is available. The worker remains a separate
 service; bundling diagram renderers does not install a Codex worker.
+
+### Document workspace and sources
+
+The document chat offers automatic context, explicit selected sections (including
+quoted text), and whole-document review. Pins are shared conversation settings:
+they survive reloads before a message is sent. Each request captures the current
+pins, selection and quote. Selected mode limits every tool to selected sections
+plus pins; automatic and whole-document modes can read the full document.
+Quotes are checked against captured plain text. If the selection changed, select
+it again. Deleted pinned sections can be removed without losing conversation
+history.
+
+New requests queue `document_workspace` jobs containing an immutable document
+snapshot, section hierarchy, rich prose and deterministic section versions. The
+snapshot supports at most 500 total sections and has an 8 MB UTF-8 limit; oversized documents fail clearly without silently
+omitting material. This bound applies even when selected context is small, because
+the immutable capture stores the complete document. Worker-local outline, lexical
+search and bounded section reads use only this snapshot, without live API access
+or embedding services. Search ranks titles, section text and hierarchy; it is not
+a guarantee that every relevant section was found. Whole-document review tracks
+systematic reading coverage and exposes any unread sections rather than claiming
+a complete review.
+
+Each completed turn records the sections actually delivered to Codex, their
+versions and fully read coverage. History labels come from the captured snapshot,
+so later renames do not rewrite prior evidence. Citation links navigate to the
+corresponding section; the displayed source version describes the captured turn,
+not a claim that the live section remains unchanged. Full snapshots remain in the
+authenticated queue inspector for auditing.
+
+Deploy the backend first, then update the agent service: older servers reject the
+new `document_workspace` capability and older workers do not claim workspace jobs.
+Legacy `document_chat` requests and history remain supported. A preexisting Codex
+thread without document tools is migrated once to a new tool-enabled thread on
+the same worker, with retained/omitted history counts recorded visibly. Subsequent
+turns resume that thread. Preserve the worker service identity and Codex state.
+This feature does not install or restart a production worker automatically.
