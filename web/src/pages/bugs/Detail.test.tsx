@@ -75,8 +75,11 @@ describe('research input snapshot', () => {
     expect(view.textContent).toContain('Priority: high')
     expect(view.textContent).toContain('Ticket version: 3')
     expect(view.textContent).toContain('Reported by: ada')
-    expect(screen.getByText('Steps to reproduce').tagName).toMatch(/^H[1-6]$/)
-    expect(screen.getByText('empty').tagName).toMatch(/^(STRONG|B)$/)
+    // The markdown body is built in a passive effect (Markdown.tsx swaps the
+    // tree in with replaceChildren), which lands a scheduler tick after the
+    // render that findByRole observed — so wait for it rather than assume it.
+    expect((await screen.findByText('Steps to reproduce')).tagName).toMatch(/^H[1-6]$/)
+    expect((await screen.findByText('empty')).tagName).toMatch(/^(STRONG|B)$/)
     expect(view.textContent).not.toContain('{"id"')
     expect(view.textContent).not.toContain('metadata')
     expect(view.textContent).not.toContain('occurrence')
