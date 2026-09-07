@@ -7,6 +7,8 @@ import { getRelativeSelection, relativePositionToAbsolutePosition, ySyncPluginKe
  * instead of letting its absolute offsets leak into the next transaction's
  * structural recovery (where they can be beyond the current document's end).
  * Live remote selection recovery is unchanged. */
+type HistoryEvent = { stackItem: { meta: Map<unknown, unknown> } }
+
 const historySelectionKey = new PluginKey<ReturnType<typeof getRelativeSelection> | null>('collaborationHistorySelection')
 
 export const CollaborationHistorySelection = Extension.create({
@@ -34,8 +36,8 @@ export const CollaborationHistorySelection = Extension.create({
         const manager = yUndoPluginKey.getState(view.state)?.undoManager
         const binding = ySyncPluginKey.getState(view.state)?.binding
         if (!manager || !binding) return {}
-        const restore = () => {
-          const saved = binding.beforeTransactionSelection
+        const restore = ({ stackItem }: HistoryEvent) => {
+          const saved = stackItem.meta.get(binding) as ReturnType<typeof getRelativeSelection> | null | undefined
           binding.beforeTransactionSelection = null
           if (!saved) return
           const doc = view.state.doc
@@ -54,7 +56,7 @@ export const CollaborationHistorySelection = Extension.create({
           }
           if (selection && !selection.eq(view.state.selection)) view.dispatch(view.state.tr.setSelection(selection))
         }
-        const remember = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }) => {
+        const remember = ({ stackItem }: HistoryEvent) => {
           stackItem.meta.set(binding, historySelectionKey.getState(view.state))
         }
         manager.on('stack-item-added', remember)
