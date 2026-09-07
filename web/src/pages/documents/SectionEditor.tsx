@@ -167,11 +167,11 @@ export default function SectionEditor({
         TableKit.configure({ table: { resizable: true } }),
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
+        CollaborationHistorySelection,
         // Only a writer mints block ids — an `appendTransaction` runs regardless
         // of `editable`, so a reader would otherwise change the shared document
         // by opening a section.
-        CollaborationHistorySelection,
-      BlockId.configure({ canWrite }),
+        BlockId.configure({ canWrite }),
         // A decoration, never a mark: a mark would be content, written into the
         // shared document and synced to everybody, which would break the very
         // rule the highlight illustrates. See `lib/block-highlight.ts`.

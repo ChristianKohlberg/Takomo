@@ -319,9 +319,10 @@ neither history is an audit log — that is the trace. Undo preserves collaborat
 and refuses a stale structural restore that would overwrite a conflicting move; a successful
 move also offers Undo in a six-second confirmation. Enter and multi-block paste are undoable
 as single prose edits, with their generated block ids restored on redo. Automatic id repairs
-when opening or receiving a remote update do not add undo entries. History captures the selection before the original edit, including before Yjs rebuilds its
-position mapping, and restores it from CRDT relative anchors immediately after undo/redo. This
-also avoids stale absolute offsets leaking into the next transaction after a multi-block paste.
+when opening or receiving a remote update do not add undo entries. History captures the
+selection before the original edit, including before Yjs rebuilds its position mapping, and
+restores it from CRDT relative anchors immediately after undo/redo. This also avoids stale
+absolute offsets leaking into the next transaction after a multi-block paste.
 
 **Find** searches section titles and prose, including collapsed and unmounted sections.
 Matches are literal and case-insensitive; Enter and Shift+Enter visit the next and previous
