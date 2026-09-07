@@ -122,7 +122,9 @@ export function OutlineRail({
   }
 
   return (
-    <ul className={cn('flex flex-col', className)}>
+    // Anchor screen-reader labels here so they cannot extend the page beyond
+    // the outline's scroll container and leave blank space below the app.
+    <ul className={cn('relative flex flex-col', className)}>
       {rows.map((section) => {
         const active = section.key === selected
         const hasChildren = section.children.length > 0
