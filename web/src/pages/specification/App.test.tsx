@@ -136,6 +136,23 @@ describe('opening a project specification', () => {
     expect(screen.getByRole('complementary')).toBeTruthy()
   })
 
+  it('remembers focus preference across visits without affecting Map view', async () => {
+    const first = mount()
+    await screen.findByRole('main', { name: 'Document editor' })
+    fireEvent.click(screen.getByRole('button', { name: 'Focus mode' }))
+    expect(localStorage.getItem('takomo.document.focus')).toBe('on')
+    first.unmount()
+    const second = mount()
+    expect((await screen.findByRole('main', { name: 'Document editor' })).getAttribute('data-focus')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Exit focus mode' }))
+    expect(localStorage.getItem('takomo.document.focus')).toBe('off')
+    second.unmount()
+    localStorage.setItem('takomo.document.focus', 'on')
+    mount('map')
+    expect((await screen.findByRole('main', { name: 'Map editor' })).getAttribute('data-focus')).toBe('false')
+    expect(screen.getByRole('complementary')).toBeTruthy()
+  })
+
   it('refreshes saved document appearance for an already open collaborator', async () => {
     mount()
     const document = await screen.findByRole('main', { name: 'Document editor' })

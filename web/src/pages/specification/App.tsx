@@ -97,7 +97,12 @@ function SpecificationWorkspace({
   const navigate = useNavigate()
   const location = useLocation()
   const view = specificationView(location.search)
-  const [focusMode, setFocusMode] = useState(false)
+  const [focusMode, setFocusMode] = useState(() => {
+    try { return localStorage.getItem('takomo.document.focus') === 'on' } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('takomo.document.focus', focusMode ? 'on' : 'off') } catch { /* Keep the toggle usable when storage is unavailable. */ }
+  }, [focusMode])
   const query = new URLSearchParams(location.search)
   const [section] = useWorkspaceSection()
   const panel = query.get('panel') === 'tests' && view !== 'tests'

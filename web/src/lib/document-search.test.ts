@@ -4,9 +4,13 @@ import { getSchema } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { TableKit } from '@tiptap/extension-table'
 import { prosemirrorToYXmlFragment } from 'y-prosemirror'
+import Collaboration from '@tiptap/extension-collaboration'
+import { Editor } from '@tiptap/react'
 import { findDocumentMatches, fragmentMatches, literalMatches, proseMatches } from './document-search'
+import { DocumentSearchHighlight, setDocumentSearchHighlight } from './document-search-highlight'
+import { DocumentSectionReference } from './document-section-reference'
 
-const schema = getSchema([StarterKit, TableKit])
+const schema = getSchema([StarterKit, TableKit, DocumentSectionReference])
 function fixture() {
   const doc = new Y.Doc()
   const node = new Y.Map()
@@ -63,6 +67,37 @@ describe('personal document search', () => {
     expect(matches).toHaveLength(6)
     expect(matches[0]?.kind).toBe('heading')
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before)
+  })
+  it('places matches before and after an inline section reference where the editor highlights them', () => {
+    const { doc, fragment } = fixture()
+    const target = new Y.Map()
+    target.set('title', new Y.Text('Billing rules'))
+    doc.getMap('nodes').set('target', target)
+    const pm = schema.nodeFromJSON({ type: 'doc', content: [
+      { type: 'paragraph', content: [
+        { type: 'text', text: 'See ' },
+        { type: 'sectionReference', attrs: { sectionId: 'target' }, content: [{ type: 'text', text: 'Billing rules' }] },
+        { type: 'text', text: ' for details.' },
+      ] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Empty ' }, { type: 'sectionReference', attrs: { sectionId: 'target' } }, { type: 'text', text: ' details' }] },
+    ] })
+    prosemirrorToYXmlFragment(pm, fragment)
+    const nodes = [{ id: 'section', title: 'Section' }]
+    expect(fragmentMatches(fragment, 'details')).toEqual(proseMatches(pm, 'details'))
+    expect(fragmentMatches(fragment, 'See')).toEqual([{ from: 1, to: 4 }])
+    expect(fragmentMatches(fragment, 'details')).toEqual([{ from: 25, to: 32 }, { from: 44, to: 51 }])
+    expect(fragmentMatches(fragment, 'Billing')).toEqual([])
+    const editor = new Editor({ element: document.createElement('div'), extensions: [StarterKit.configure({ undoRedo: false }),
+      Collaboration.configure({ document: doc, fragment }), DocumentSectionReference.configure({ ydoc: doc, project: () => 'demo' }), DocumentSearchHighlight] })
+    try {
+      for (const match of findDocumentMatches(nodes, doc, 'details')) {
+        setDocumentSearchHighlight(editor.view, { query: 'details', activeFrom: match.from })
+        expect(editor.state.doc.textBetween(match.from, match.to)).toBe('details')
+        expect(editor.view.dom.querySelector('[data-document-search-active="true"]')?.textContent).toBe('details')
+      }
+      expect(editor.view.dom.querySelectorAll('.document-search-match')).toHaveLength(2)
+      expect(editor.view.dom.querySelector('a')?.textContent).toBe('Billing rules')
+    } finally { editor.destroy() }
   })
   it('does not match across blocks or include deleted sections from a stale outline', () => {
     const { doc, fragment } = fixture()

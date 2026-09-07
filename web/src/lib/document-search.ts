@@ -22,7 +22,9 @@ export function proseMatches(doc: PMNode, query: string): TextMatch[] {
   const found: TextMatch[] = []
   doc.descendants((node, position) => {
     if (!node.isTextblock) return true
-    found.push(...literalMatches(node.textBetween(0, node.content.size, '', '\n'), query, position + 1))
+    let text = ''
+    node.forEach(child => { text += child.isText ? child.text ?? '' : '\n'.repeat(child.nodeSize) })
+    found.push(...literalMatches(text, query, position + 1))
     return false
   })
   return found
@@ -30,6 +32,12 @@ export function proseMatches(doc: PMNode, query: string): TextMatch[] {
 
 const textBlocks = new Set(['paragraph', 'heading', 'codeBlock'])
 const leaves = new Set(['hardBreak', 'horizontalRule', 'image'])
+
+function inlineSize(part: Y.XmlElement | Y.XmlText | Y.XmlHook): number {
+  if (part instanceof Y.XmlText) return part.length
+  if (!(part instanceof Y.XmlElement) || leaves.has(part.nodeName)) return 1
+  return 2 + part.toArray().reduce((size, child) => size + inlineSize(child), 0)
+}
 
 interface AnchoredMatch extends TextMatch { anchor: string }
 
@@ -48,7 +56,7 @@ function scanFragment(fragment: Y.XmlFragment, query: string): AnchoredMatch[] {
         if (child instanceof Y.XmlText) {
           runs.push({ text: child, start: text.length })
           text += child.toDelta().map((delta: { insert: unknown }) => typeof delta.insert === 'string' ? delta.insert : '\n').join('')
-        } else text += '\n'
+        } else text += '\n'.repeat(inlineSize(child))
       }
       const start = position + 1
       let run = 0

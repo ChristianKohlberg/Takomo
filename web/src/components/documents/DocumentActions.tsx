@@ -3,7 +3,8 @@ import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
 import type { ReactNode } from 'react'
 
-export function DocumentActions({ locale, findOpen, onFind, canWrite, textUndo, textRedo, moveUndo, moveRedo, onTextUndo, onTextRedo, onMoveUndo, onMoveRedo, children }: {
+export function DocumentActions({ focusMode = false, locale, findOpen, onFind, canWrite, textUndo, textRedo, moveUndo, moveRedo, onTextUndo, onTextRedo, onMoveUndo, onMoveRedo, children }: {
+  focusMode?: boolean
   children?: ReactNode
   locale: Locale; findOpen: boolean; onFind: () => void; canWrite: boolean
   textUndo: boolean; textRedo: boolean; moveUndo: boolean; moveRedo: boolean
@@ -12,8 +13,8 @@ export function DocumentActions({ locale, findOpen, onFind, canWrite, textUndo, 
   const de = locale === 'de'
   return <div className="flex flex-none flex-wrap items-center gap-2 border-b border-border-soft bg-card px-3 py-1.5" role="toolbar" aria-label={de ? 'Dokumentwerkzeuge' : 'Document tools'}>
     {children}
-    <Button variant="ghost" size="sm" aria-label={de ? 'Im Dokument suchen' : 'Find in document'} title={de ? 'Im Dokument suchen' : 'Find in document'} aria-expanded={findOpen} onClick={onFind}><Search className="size-3.5" aria-hidden="true" /><span className="hidden sm:inline">{de ? 'Im Dokument suchen' : 'Find in document'}</span></Button>
-    {canWrite && <>
+    {!focusMode && <Button variant="ghost" size="sm" aria-label={de ? 'Im Dokument suchen' : 'Find in document'} title={de ? 'Im Dokument suchen' : 'Find in document'} aria-expanded={findOpen} onClick={onFind}><Search className="size-3.5" aria-hidden="true" /><span className="hidden sm:inline">{de ? 'Im Dokument suchen' : 'Find in document'}</span></Button>}
+    {canWrite && !focusMode && <>
       <div className="flex items-center gap-1" role="group" aria-label={de ? 'Text im aktuellen Abschnitt' : 'Current section text'}>
         <span className="hidden text-xs text-muted-foreground sm:inline">{de ? 'Abschnitt' : 'Section'}</span>
         <Button variant="ghost" size="icon-sm" disabled={!textUndo} aria-label={de ? 'Text rückgängig' : 'Undo section text'} title={de ? 'Text rückgängig' : 'Undo section text'} onMouseDown={e => e.preventDefault()} onClick={onTextUndo}><Undo2 className="size-4" /></Button>

@@ -304,9 +304,11 @@ replace text changed by another collaborator. Read-only viewers have no insertio
 Section actions appear on hover or keyboard focus; a compact actions button exposes them on
 touch screens. The standing and pending-review indicators stay visible while reading.
 
-**Focus mode** hides the project rail and the outline while keeping the current editor,
-selection, save status and view switcher. It is personal to the current visit and toggled from
-the header.
+**Focus mode** hides the project rail, outline, Find, move/history controls and document-wide
+comments panel while keeping the current editor, selection, formatting, save status and view
+switcher. The header toggle remains available to exit. The browser remembers the preference
+across visits; it does not affect Map or other collaborators. Unavailable browser storage falls
+back to a working toggle for the current visit.
 
 **Move**, offered on each outline section, places it before, after or inside another section
 and previews the resulting level. The whole subtree, its prose and its links travel with it;
@@ -323,7 +325,7 @@ result. Opening a result temporarily expands its outline ancestors, and closing 
 the saved folds. Search works for read-only viewers, edits nothing, and leaves the browser's
 own find shortcut alone.
 
-## Formatting, continuous writing and text comments
+## Formatting, continuous writing, text comments, section references and paste
 
 The compact formatting toolbar follows the current prose selection. Choose Normal text or
 Heading 1–3, or apply bold, italic and lists. Mixed selections and unsupported block styles
@@ -359,3 +361,21 @@ Edits outside a passage shift its anchor with the text. If the selected words ch
 are removed, the quote and discussion remain with a detached-text indication; they are not
 matched to another occurrence. This first version supports plain-text comments on a
 selection within one section, without mentions or notifications.
+
+All comments opens a document-wide panel with Open (default), Resolved and All filters. Threads
+show their section title and support the same replies and status changes as section comments.
+Go to text unfolds and selects the section, mounts its editor if needed, and selects the exact
+anchored passage. Changed text produces a notice; removed sections retain their discussion
+without a misleading navigation link. Readers can filter and navigate without editing.
+
+Insert section reference searches section titles and shows their document numbers to distinguish
+duplicate titles. It inserts at the current prose selection. References store the stable section
+id and a nested fallback title; the displayed title follows renames without writing new prose.
+Deleted targets show the fallback with a missing-section label. Existing generic API/Map text
+projections retain the insertion title. Copying a reference within the project preserves its
+identity; pasting it into another project retains an ordinary link to the original project.
+
+Pasting HTML automatically removes source fonts, colors, sizes, spacing and copied block ids.
+Supported headings, nested lists, tables, code, links and emphasis remain editable and use the
+project template. Style-only bold/italic/underline/strike emphasis is retained, including Google
+Docs exports. Plain-text paste and ordinary undo work as before; saved content is not rewritten.

@@ -3,17 +3,20 @@ import type { Editor } from '@tiptap/react'
 import type * as Y from 'yjs'
 import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
-import { COMMENT_FIELD, MAX_COMMENT_LENGTH, createCommentThread, readCommentThreads, replyToComment, resolveCommentAnchor, resolveCommentThread, type CommentAnchor } from '@/lib/document-comments'
+import { COMMENT_FIELD, MAX_COMMENT_LENGTH, createCommentThread, readCommentThreads, replyToComment, resolveCommentAnchor, resolveCommentThread, type CommentAnchor, type CommentThread } from '@/lib/document-comments'
 
 export interface DocumentCommentsProps {
-  ydoc: Y.Doc; sectionId: string; editor: Editor | null; actor: string; canWrite: boolean; locale: Locale
+  ydoc: Y.Doc; sectionId?: string; editor: Editor | null; actor: string; canWrite: boolean; locale: Locale
+  sectionTitle?: (id: string) => string | null; onShowThread?: (thread: CommentThread) => void;
   draft?: CommentAnchor | null; onDraftConsumed: () => void; onClose: () => void
 }
-export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, locale, draft, onDraftConsumed, onClose }: DocumentCommentsProps) {
+export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, locale, draft, onDraftConsumed, onClose, sectionTitle, onShowThread }: DocumentCommentsProps) {
   const de = locale === 'de'
   const [, refresh] = useState(0)
   const [text, setText] = useState('')
   const [error, setError] = useState('')
+  const [filter, setFilter] = useState('open')
+  const global = sectionId === undefined
   useEffect(() => {
     const comments = ydoc.getMap(COMMENT_FIELD)
     const update = () => refresh(n => n + 1)
@@ -21,15 +24,16 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
     editor?.on('transaction', update)
     return () => { comments.unobserveDeep(update); editor?.off('transaction', update) }
   }, [ydoc, editor])
-  const threads = readCommentThreads(ydoc, sectionId)
+  const threads = readCommentThreads(ydoc, sectionId).filter(thread => !global || filter === 'all' || thread.resolved === (filter === 'resolved'))
   const attempt = (operation: () => void) => {
     if (!canWrite) return false
     try { operation(); setError(''); return true } catch { setError(de ? 'Kommentar konnte nicht gespeichert werden. Bitte erneut versuchen.' : 'Could not save the comment. Please try again.'); return false }
   }
-  return <section className="min-w-0 border-b border-border-soft bg-card p-3" aria-label={de ? 'Textkommentare' : 'Text comments'}>
-    <div className="flex items-center justify-between gap-2"><h2 className="font-medium">{de ? 'Textkommentare' : 'Text comments'}</h2><Button variant="ghost" size="sm" onClick={onClose}>{de ? 'Schließen' : 'Close comments'}</Button></div>
+  return <section className="min-w-0 border-b border-border-soft bg-card p-3" aria-label={global ? (de ? 'Dokumentkommentare' : 'Document comments') : (de ? 'Textkommentare' : 'Text comments')}>
+    <div className="flex items-center justify-between gap-2"><h2 className="font-medium">{global ? (de ? 'Dokumentkommentare' : 'Document comments') : (de ? 'Textkommentare' : 'Text comments')}</h2><Button variant="ghost" size="sm" onClick={onClose}>{de ? 'Schließen' : 'Close comments'}</Button></div>
+    {global && <select aria-label={de ? 'Kommentare filtern' : 'Filter comments'} value={filter} onChange={event => setFilter(event.target.value)} className="my-2 rounded border border-border bg-background px-2 py-1 text-sm"><option value="open">{de ? 'Offen' : 'Open'}</option><option value="resolved">{de ? 'Erledigt' : 'Resolved'}</option><option value="all">{de ? 'Alle' : 'All'}</option></select>}
     {error && <p role="alert">{error}</p>}
-    {draft && canWrite && <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); attempt(() => {
+    {draft && canWrite && sectionId && <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); attempt(() => {
       createCommentThread(ydoc, sectionId, draft, actor, text)
       setText(''); onDraftConsumed()
     }) }}>
@@ -37,15 +41,17 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
       <textarea autoFocus aria-label={de ? 'Neuer Kommentar' : 'New comment'} className="w-full min-w-0 rounded border border-border bg-background p-2 text-sm" rows={2} maxLength={MAX_COMMENT_LENGTH} value={text} onChange={event => setText(event.target.value)} />
       <div className="flex gap-2"><Button type="submit" size="sm" disabled={!text.trim()}>{de ? 'Kommentieren' : 'Post comment'}</Button><Button type="button" variant="ghost" size="sm" onClick={() => { setText(''); onDraftConsumed() }}>{de ? 'Abbrechen' : 'Cancel'}</Button></div>
     </form>}
-    {!draft && threads.length === 0 && <p className="mt-2 text-sm text-muted-foreground">{canWrite ? (de ? 'Text auswählen, um einen Kommentar hinzuzufügen.' : 'Select text to add a comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')}</p>}
-    <div className="max-h-80 space-y-3 overflow-auto">
+    {!draft && threads.length === 0 && <p className="mt-2 text-sm text-muted-foreground">{global ? (de ? 'Keine Kommentare für diesen Filter.' : 'No comments for this filter.') : canWrite ? (de ? 'Text auswählen, um einen Kommentar hinzuzufügen.' : 'Select text to add a comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')}</p>}
+    <div className={global ? "space-y-3" : "max-h-80 space-y-3 overflow-auto"}>
       {threads.map(thread => {
         const range = editor ? resolveCommentAnchor(editor, thread.anchor) : null
         return <article key={thread.id} className="mt-3 rounded border border-border-soft p-3" aria-label={de ? 'Kommentarthread' : 'Comment thread'}>
+          {global && <p className="mb-2 text-sm font-medium break-words">{sectionTitle?.(thread.sectionId) ?? (de ? 'Abschnitt entfernt' : 'Section removed')}</p>}
           <blockquote className="border-l-2 border-border pl-2 text-sm break-words">{thread.anchor.quote}</blockquote>
           <div className="my-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
             <span>{thread.resolved ? (de ? 'Erledigt' : 'Resolved') : (de ? 'Offen' : 'Open')}</span>
             {editor && !range && <span>{de ? 'Text geändert oder entfernt · Zitat erhalten' : 'Text changed or removed · quote retained'}</span>}
+            {global && sectionTitle?.(thread.sectionId) !== null && <button className="underline" onClick={() => onShowThread?.(thread)}>{de ? 'Zum Text' : 'Go to text'}</button>}
             {range && <button className="underline" onClick={() => { editor?.commands.setTextSelection(range); editor?.commands.focus(); editor?.commands.scrollIntoView() }}>{de ? 'Text anzeigen' : 'Show text'}</button>}
           </div>
           {thread.messages.map(m => <div key={m.id} className="mt-2 text-sm"><span className="font-medium">{m.author}</span><p className="whitespace-pre-wrap break-words">{m.text}</p></div>)}
