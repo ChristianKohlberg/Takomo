@@ -24,6 +24,18 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Agent queue inspector', () => {
+  it('opens the organizer project in lanes without inventing a specification section', async () => {
+    const organizer: AgentJob = { ...job, kind: 'lane_organize', project: 'other-project', mindmap: null, node: 'lane-organizer', section_title: '' }
+    vi.mocked(listAgentJobs).mockResolvedValue(list([organizer]))
+    vi.mocked(getAgentJob).mockResolvedValue(detail(organizer))
+    render(<Inspector token="reader" project="" lang="en" onAuthError={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Organize pending work/ }))
+    const pane = await screen.findByRole('region', { name: 'Request details' })
+    expect((await within(pane).findByRole('link', { name: 'Open lanes' })).getAttribute('href')).toBe('/lanes?project=other-project')
+    expect(within(pane).queryByText('Section ID')).toBeNull()
+    expect(within(pane).queryByRole('link', { name: 'Open section' })).toBeNull()
+    expect(within(pane).getByText('Work and lane snapshot')).toBeTruthy()
+  })
   it('filters cancelled bug research and opens its ticket instead of a document', async () => {
     const cancelled: AgentJob = {...job, kind: 'bug_research', ticket_id: 'demo-bug', mindmap: null, status: 'cancelled'}
     vi.mocked(listAgentJobs).mockResolvedValue({...list([cancelled]), counts: {queued: 0, running: 0, completed: 0, failed: 0, cancelled: 1}})

@@ -1,6 +1,6 @@
 # Takomo agent service
 
-A standalone, single-job worker for read-only section conversations and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
+A standalone, single-job worker for read-only section conversations, [lane organization](#lane-organization), and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
 
 ## Start
 
@@ -61,6 +61,80 @@ node --test services/agent/test/*.test.mjs
 The fake JSON-RPC process tests thread start/resume, early IDs, final-answer filtering/deduplication, provider failure, process death, unsupported approvals, timeouts, result retry without model reexecution, lease-loss handling, and rejection of inherited tool configurations. To check the real integration, authenticate the dedicated home, queue a section grill in Takomo, run `--once`, then submit a follow-up and run it again. Reload Takomo to verify persisted messages. Stop a running service to verify lease expiry displays a failed job.
 
 Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server), [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference). For a CLI upgrade, regenerate its schema with `codex app-server generate-json-schema --out /tmp/codex-schema` and rerun these checks.
+
+## Lane organization
+
+Explicit organizer requests use the same queue and authenticated service with
+`kind: "lane_organize"`. No repository mapping or checkout is needed. The service
+starts Codex in its existing empty workspace with the section conversation's
+read-only, **no-tools** profile. It does not enable the research tool host.
+
+The server supplies a bounded JSON snapshot containing pending tickets, existing
+lanes and their context, source references, and any included persisted
+specification material. Pending tickets and existing lane membership are distinct:
+the proposal assigns only the current snapshot's pending ticket ids. Persisted
+specification content excludes unsaved editor changes; the organizer must not
+describe this as a live document read. Projects can concern any subject. The
+instructions prescribe no lane names, development phases or project outline.
+
+The Codex `turn/start.outputSchema` field constrains the answer to:
+
+```json
+{
+  "groups": [{
+    "lane_id": null,
+    "title": "A project-specific lane title",
+    "purpose": "What this group is for",
+    "context": "Prepared context and relevant references",
+    "readiness": "needs_clarification",
+    "reason": "The decision that remains unresolved",
+    "ticket_ids": ["project-1"]
+  }],
+  "unassigned": [{
+    "ticket_id": "project-2",
+    "reason": "Possible duplicate of project-1; confirm before grouping."
+  }]
+}
+```
+
+An existing group uses its snapshot lane id and preserves its title and purpose
+exactly. Every pending ticket appears once across groups and unassigned. Each
+group includes a readiness reason; readiness is `ready` or
+`needs_clarification`. Unclear placement and possible duplicate tickets remain
+unassigned with specific reasons. Prepared context may enrich an existing lane,
+but the service only proposes that change.
+
+The worker independently validates JSON shape, UTF-8 byte limits, current
+snapshot ids, complete/nonduplicated ticket coverage, and existing lane identity.
+The server validates again before storing the proposal. Invalid JSON, prose
+around JSON, invented ids, renamed existing lanes, unsupported fields, missing
+tickets, or oversized output fail the job; the worker never silently repairs or
+applies model output. Snapshots allow 512,000 bytes, 200 pending tickets and 100
+existing lanes; proposals allow 256,000 bytes. The ordinary human-facing message
+remains a short summary under the shared 64,000-byte limit.
+
+Completed results send `proposal` alongside the normal `message`, session ids and
+lease identity. No lane, ticket, context or handoff mutation is performed by this
+service. A person reviews and applies the server-stored proposal separately;
+`ready` does not dispatch implementation. The server supplies an isolated
+project-organizer thread id for explicit follow-ups, preserving earlier grouping
+discussion without mixing section conversation or bug research history. The
+current snapshot always governs which ids and lane identities are legal.
+
+The existing heartbeat, timeout and fenced result-delivery behavior applies.
+Only delivery is retried, never a failed model turn. This first version has no
+live organizer steering or cancellation controls; an explicit later request can
+continue the organizer conversation after completion/failure. Section
+conversation behavior and the separate bug research policy remain unchanged.
+
+Focused checks (fake App Server only; no model calls):
+
+```sh
+node --test services/agent/test/organizer.test.mjs services/agent/test/service.test.mjs services/agent/test/research.test.mjs
+```
+
+`outputSchema` was verified against the locally generated Codex App Server
+`v2/TurnStartParams.json` schema (`codex app-server generate-json-schema`).
 
 ## Explicit bug research
 

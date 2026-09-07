@@ -238,6 +238,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Environments: where a check can be run. Writes take `write`, not
         // `human` — an agent that just leased an ephemeral instance is exactly
         // the caller this registry exists for.
+        .route("/v1/projects/{project}/lane-organizer", get(crate::api::lane_organizer::get))
+        .route("/v1/projects/{project}/lane-organizer/messages", post(crate::api::lane_organizer::send))
+        .route("/v1/projects/{project}/lane-organizer/jobs/{id}/accept", post(crate::api::lane_organizer::accept))
         .route("/v1/projects/{project}/lanes", get(crate::api::work_lanes::list).post(crate::api::work_lanes::create))
         .route("/v1/projects/{project}/handoffs", get(crate::api::work_lanes::project_handoffs))
         .route("/v1/lanes/{id}", get(crate::api::work_lanes::get).patch(crate::api::work_lanes::patch))

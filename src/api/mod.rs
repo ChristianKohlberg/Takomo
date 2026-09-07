@@ -13,6 +13,7 @@ pub mod environments;
 pub mod events;
 pub mod export;
 pub mod initiatives;
+pub mod lane_organizer;
 pub mod metrics;
 pub mod mindmaps;
 pub mod oauth;

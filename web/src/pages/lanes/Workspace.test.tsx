@@ -4,6 +4,7 @@ import { Workspace } from './Workspace'
 import * as api from '@/lib/lanes'
 import { listTickets } from '@/lib/board'
 vi.mock('@/lib/lanes')
+vi.mock('./Organizer', () => ({ Organizer: () => null }))
 vi.mock('@/lib/board', () => ({ listTickets: vi.fn() }))
 const ticket = { id: 't-1', title: 'Recover edits', state: 'ready' }
 const lane: api.Lane = { id: 'ln-1', project: 'demo', title: 'Reliable editing', purpose: 'Keep work safe', context: 'Use existing persistence', conversation_ref: null, archived: false, tickets: [ticket], handoff_count: 0 }

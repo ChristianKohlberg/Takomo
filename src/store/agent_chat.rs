@@ -57,6 +57,8 @@ pub struct Heartbeat {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<Value>,
     pub cancelled: Option<bool>,
     pub repository_revision: Option<String>,
     pub evidence: Option<Value>,
@@ -282,11 +284,21 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    value["kind"] = json!(if bug.is_some() {
+    let organizer: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lane_organizer_jobs WHERE job=?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    value["kind"] = json!(if organizer {
+        "lane_organize"
+    } else if bug.is_some() {
         "bug_research"
     } else {
         "section_chat"
     });
+    if organizer {
+        value["section_title"] = json!("Organize pending work");
+    }
     if let Some((ticket, reference, cancelled)) = bug {
         value["ticket_id"] = json!(ticket);
         let title: Option<String> = conn.query_row(
@@ -547,7 +559,8 @@ impl Store {
             let mut value=tx.query_row("SELECT prompt,snapshot,source_revision FROM agent_jobs WHERE id=?1",[&jid],|r|Ok(json!({"id":jid,"attempt_id":attempt,"conversation_id":cid,"prompt":r.get::<_,String>(0)?,"snapshot":r.get::<_,String>(1)?,"source_revision":r.get::<_,String>(2)?,"thread_id":thread,"lease_seconds":LEASE_SECONDS})))?;
             let project:String=tx.query_row("SELECT project FROM agent_conversations WHERE id=?1",[&cid],|r|r.get(0))?;
             let bug:Option<(String,String)>=tx.query_row("SELECT ticket,repository_ref FROM bug_research_jobs WHERE job=?1",[&jid],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-            value["kind"]=json!(if bug.is_some(){"bug_research"}else{"section_chat"});
+            let organizer:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lane_organizer_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
+            value["kind"]=json!(if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
             value["project"]=json!(project);
             if let Some((ticket,reference))=bug {value["ticket_id"]=json!(ticket);
 value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
@@ -656,6 +669,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
                     bounded(req.repository_revision.as_deref().unwrap_or(""), 200, "repository_revision")?;
                 }
             }
+            super::lane_organizer::save_proposal(tx,jid,req.proposal.as_ref(),req.status=="completed")?;
             session(tx, &job, jid, req.thread_id.as_deref(), req.turn_id.as_deref())?;
             let now = now_ms();
             if let Some(body) = &req.message {

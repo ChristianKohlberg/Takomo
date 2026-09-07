@@ -2,7 +2,8 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
-    cancelled: 'Cancelled', openBug: 'Open bug ticket', bugSnapshot: 'Bug report snapshot', title: 'Agent queue', openSection: 'Open section', description: 'Inspect research requests and their Codex replies.',
+    organizeLanes: 'Organize pending work', openLanes: 'Open lanes', laneSnapshot: 'Work and lane snapshot',
+    cancelled: 'Cancelled', openBug: 'Open bug ticket', bugSnapshot: 'Bug report snapshot', title: 'Agent queue', openSection: 'Open section', description: 'Inspect agent requests and their Codex replies.',
     refresh: 'Refresh', automatic: 'Refresh every 3 seconds', loading: 'Loading…',
     all: 'All statuses', queued: 'Queued', running: 'Running', completed: 'Completed', failed: 'Failed',
     empty: 'No requests match this view.', recent: 'Recent requests', status: 'Status', section: 'Section',
@@ -22,7 +23,8 @@ export const STR = defineStrings({
     timestampHint: 'Times are shown in your local time zone.',
   },
   de: {
-    cancelled: 'Abgebrochen', openBug: 'Fehlerticket öffnen', bugSnapshot: 'Fehlermeldung zum Anfragezeitpunkt', title: 'Agenten-Queue', openSection: 'Abschnitt öffnen', description: 'Rechercheanfragen und ihre Codex-Antworten prüfen.',
+    organizeLanes: 'Offene Arbeit organisieren', openLanes: 'Lanes öffnen', laneSnapshot: 'Arbeit und Lanes zum Anfragezeitpunkt',
+    cancelled: 'Abgebrochen', openBug: 'Fehlerticket öffnen', bugSnapshot: 'Fehlermeldung zum Anfragezeitpunkt', title: 'Agenten-Queue', openSection: 'Abschnitt öffnen', description: 'Agentenanfragen und ihre Codex-Antworten prüfen.',
     refresh: 'Aktualisieren', automatic: 'Alle 3 Sekunden aktualisieren', loading: 'Lädt…',
     all: 'Alle Status', queued: 'Wartend', running: 'Läuft', completed: 'Abgeschlossen', failed: 'Fehlgeschlagen',
     empty: 'Keine Anfragen passen zu dieser Ansicht.', recent: 'Letzte Anfragen', status: 'Status', section: 'Abschnitt',

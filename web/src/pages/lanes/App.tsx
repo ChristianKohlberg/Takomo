@@ -14,7 +14,10 @@ import { Workspace } from './Workspace'
 export default function App() {
   const navigate = useNavigate()
   const [token, setToken] = useState(loadToken)
-  const [project, setProject] = useState(loadProject)
+  const [project, setProject] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('project')
+    return requested && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(requested) ? requested : loadProject()
+  })
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem('takomo.lang')))
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [identity, setIdentity] = useState<{ actor: string; scopes: string[]; projects: Project[] } | null>(null)
@@ -41,11 +44,14 @@ export default function App() {
     })()
     return () => { cancelled = true }
   }, [token, signOut, c.gateNoRead, c.requestFailed])
+  useEffect(() => {
+    if (identity?.projects.some(candidate => candidate.id === project)) saveProject(project)
+  }, [identity, project])
   if (!token) return <TokenGate title={`takomo · ${t.title}`} subtitle={c.tokenNeeded} tokenLabel={c.gateLabel} openLabel={c.gateOpen} emptyMessage={c.tokenNeeded} error={gateError} onSubmit={value => { saveToken(value); setToken(value); setGateError('') }} />
   return <AppShell lang={lang} onLang={value => { setLang(value); localStorage.setItem('takomo.lang', value) }} rail={{
     current: 'lanes', onNavigate: navigate,
     nav: { board: c.board, epics: c.epics, inbox: c.inbox, specification: c.specification, initiatives: c.initiatives, schedules: c.schedules, environments: c.environments, lanes: t.title },
-    projects: identity?.projects ?? [], project, onProject: value => { setProject(value); saveProject(value) },
+    projects: identity?.projects ?? [], project, onProject: value => { setProject(value); saveProject(value); void navigate({ search: value ? `?project=${encodeURIComponent(value)}` : '' }, { replace: true }) },
     projectLabels: { project: c.project, search: c.projectSearch, noMatch: c.projectNoMatch, all: c.allProjects },
     labels: { expand: c.navExpand, collapse: c.navCollapse, signOut: c.signOut, account: c.navAccount, settings: c.settings },
     collapsed: navCollapsed, onCollapsed: setNavCollapsed, actor: identity?.actor, scopes: identity?.scopes, onSignOut: signOut,

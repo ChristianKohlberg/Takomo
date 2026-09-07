@@ -8,6 +8,7 @@ import { cancelHandoff, createHandoff, createLane, dispatchHandoff, getLane, lis
 import { isAuthError } from '@/lib/session'
 import { pick, type Locale } from '@/lib/i18n'
 import { STR } from './strings'
+import { Organizer } from './Organizer'
 type Labels = typeof STR.en
 const selectClass = 'border-input bg-background h-9 w-full min-w-0 rounded-lg border px-2 text-sm'
 type Props = { token: string; project: string; lang: Locale; canWrite: boolean; canSend: boolean; onAuthError: () => void }
@@ -35,6 +36,7 @@ export function Workspace(props: Props) {
   if (selected) return <LaneDetail key={selected} {...props} id={selected} onBack={() => { setSelected(null); setRefresh(n => n + 1) }} />
   return <div className="mx-auto max-w-5xl space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground text-sm">{lanes?.length ?? '—'} {t.title}</span>{canWrite && <Button onClick={() => setCreating(true)}>{t.newLane}</Button>}</div>
+    <Organizer token={token} project={project} lang={lang} canOrganize={canWrite && props.canSend} onAuthError={onAuthError} onAccepted={() => setRefresh(n => n + 1)} />
     {error && <div role="alert" className="text-destructive break-words text-sm">{error} <Button variant="outline" onClick={() => setRefresh(n => n + 1)}>{t.retry}</Button></div>}
     {creating && <form className="bg-card space-y-3 rounded-xl border p-4" onSubmit={e => { e.preventDefault(); const form = new FormData(e.currentTarget); setBusy(true); void createLane(token, project, { title: String(form.get('title')).trim(), purpose: String(form.get('purpose')).trim() }).then(lane => { if (active.current) setSelected(lane.id) }).catch(fail).finally(() => { if (active.current) setBusy(false) }) }}>
       <label className="block text-sm">{t.laneTitle}<Input name="title" required maxLength={200} /></label><label className="block text-sm">{t.purpose}<Textarea name="purpose" /></label><div className="flex gap-2"><Button disabled={busy}>{t.create}</Button><Button type="button" variant="ghost" onClick={() => setCreating(false)}>{t.cancel}</Button></div>
