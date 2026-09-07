@@ -8972,7 +8972,7 @@ components:
           required: [section_id, text]
           properties:
             section_id: {type: string}
-            text: {type: string, description: Nonempty selected text, at most 12000 UTF-8 bytes.}
+            text: {type: string, description: "Nonempty selected text, at most 12000 UTF-8 bytes."}
     DocumentConversationSend:
       type: object
       additionalProperties: false
@@ -8989,7 +8989,7 @@ components:
       - {$ref: '#/components/schemas/AgentConversationView'}
       - type: object
         properties:
-          pinned_section_ids: {type: array, items: {type: string}, description: Shared durable conversation pins, including IDs that may since have been deleted.}
+          pinned_section_ids: {type: array, items: {type: string}, description: "Shared durable conversation pins, including IDs that may since have been deleted."}
           jobs:
             type: array
             maxItems: 100
