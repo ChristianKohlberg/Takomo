@@ -170,13 +170,19 @@ describe('SectionEditor', () => {
 
 it('edits a table in its own section and shows it to a read-only replica without writes', () => {
   const doc = new Y.Doc()
+  let tableEditor: Editor | null = null
   const fragment = section(doc, 'mn-table', 'Table section')
   const other = section(doc, 'mn-other', 'Untouched section')
   const awareness = new Awareness(doc)
   const view = render(<SectionEditor ydoc={doc} fragment={fragment}
     provider={{ awareness } as unknown as WebsocketProvider}
-    display="Ada" color="#2563eb" canWrite onSettled={() => {}} label="Table section" />)
-  fireEvent.click(view.getByRole('button', { name: 'Insert table' }))
+    display="Ada" color="#2563eb" canWrite onSettled={() => {}} label="Table section" onEditor={value => { tableEditor = value }} />)
+  const prose = view.getByLabelText('Table section')
+  act(() => {
+    // Slash insertion uses the editor command; this test checks CRDT isolation.
+    tableEditor!.commands.insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+    prose.focus()
+  })
   expect(fragment.toString()).toContain('<table')
   expect(fragment.toString()).toContain('<tableheader')
   expect(other.toString()).toContain('Untouched section')
