@@ -256,9 +256,12 @@ reviewer reads, accepts, and gets nothing from — with a summary that told them
 
 ## Tables
 
-The document editor offers **Insert table** (three rows and columns, with a header row).
-Inside a table, the controls add or remove rows and columns, toggle header rows or columns,
-merge selected cells, split a merged cell, or delete the table. Drag across cells to select a
+Use `/table` in an empty paragraph to insert a table and choose its row and column count.
+There is no standalone insertion button. While editing a table, one **Table actions** menu
+groups row and column changes, headers, merging/splitting cells and deletion. Actions and
+selection hints stay inside the menu; no table controls appear outside the active table.
+Keyboard and pointer actions preserve the cell selection. Escape returns focus to the table;
+clicking elsewhere dismisses the menu without taking focus back. Drag across cells to select a
 rectangle for merging; drag a column border to resize. Tab moves between cells. Cells accept
 the editor's rich content, including paragraphs, lists, links, and formatted text. Read-only
 viewers see tables but cannot change them. These edits use the same Yjs document and undo
