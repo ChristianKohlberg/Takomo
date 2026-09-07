@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import pwd
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -73,17 +74,124 @@ def shutdown():
         child.wait()
 
 
+def database_arguments(arguments, environment):
+    """Normalize the one global DB flag before the entrypoint adds it back."""
+    result = []
+    selected = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            result.extend(arguments[index:])
+            break
+        if argument == "--db" or argument.startswith("--db="):
+            if selected is not None:
+                raise RuntimeError("Specify --db only once")
+            if argument == "--db":
+                index += 1
+                if index == len(arguments) or arguments[index].startswith("--"):
+                    raise RuntimeError("--db requires a path")
+                selected = arguments[index]
+            else:
+                selected = argument.split("=", 1)[1]
+            if not selected:
+                raise RuntimeError("--db requires a path")
+        else:
+            result.append(argument)
+        index += 1
+    selected = selected if selected is not None else environment.get("TAKOMO_DB") or "/var/data/takomo.db"
+    # Both serve and admin commands use the persistent directory as their base.
+    environment["TAKOMO_DB"] = os.path.abspath(os.path.join("/var/data", selected))
+    return result
+
+
+def mount_id(descriptor):
+    for line in Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines():
+        if line.startswith("mnt_id:"):
+            return line.split()[1]
+    raise RuntimeError("Cannot determine data mount boundary")
+
+
+def prepare_data(database):
+    """Repair only the dedicated mount, selected DB and its own backup metadata."""
+    account = pwd.getpwnam("takomo")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    directory = os.open("/var/data", flags | os.O_DIRECTORY)
+    descriptors = []
+    metadata = None
+    try:
+        boundary = mount_id(directory)
+
+        def validate(descriptor, is_directory):
+            info = os.fstat(descriptor)
+            if mount_id(descriptor) != boundary:
+                raise RuntimeError("Refusing a nested mount in Takomo database state")
+            if is_directory:
+                valid = stat.S_ISDIR(info.st_mode)
+            else:
+                valid = stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+            if not valid:
+                raise RuntimeError("Takomo database state must contain only directories and regular files without hard links")
+
+        def own(descriptor, is_directory):
+            os.fchown(descriptor, account.pw_uid, account.pw_gid)
+            os.fchmod(descriptor, 0o700 if is_directory else 0o600)
+
+        def metadata_tree(descriptor, mutate=False, depth=0):
+            # Litestream 0.3 metadata is shallow; reject pathological trees.
+            if depth > 16:
+                raise RuntimeError("Unexpectedly deep Litestream metadata tree")
+            validate(descriptor, True)
+            for name in os.listdir(descriptor):
+                info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                is_directory = stat.S_ISDIR(info.st_mode)
+                child = os.open(name, flags | (os.O_DIRECTORY if is_directory else 0), dir_fd=descriptor)
+                try:
+                    validate(child, is_directory)
+                    if is_directory:
+                        metadata_tree(child, mutate, depth + 1)
+                    elif mutate:
+                        own(child, False)
+                finally:
+                    os.close(child)
+            if mutate:
+                own(descriptor, True)
+
+        path = Path(database)
+        if path.parent == Path("/var/data"):
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                try:
+                    descriptor = os.open(path.name + suffix, flags, dir_fd=directory)
+                except FileNotFoundError:
+                    continue
+                descriptors.append(descriptor)
+                validate(descriptor, False)
+            try:
+                metadata = os.open(f".{path.name}-litestream", flags | os.O_DIRECTORY, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            if metadata is not None:
+                metadata_tree(metadata)  # Validate every target before changing ownership.
+        own(directory, True)
+        for descriptor in descriptors:
+            own(descriptor, False)
+        if metadata is not None:
+            metadata_tree(metadata, mutate=True)
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+        if metadata is not None:
+            os.close(metadata)
+        os.close(directory)
+
+
 def main():
     if os.geteuid() != 0:
         raise RuntimeError("Bundled startup needs root to assign separate service users; application processes run non-root")
     os.umask(0o077)
-    # Named volumes inherit this ownership; never recursively chown user files.
-    data = Path("/var/data")
-    if data.stat().st_uid != pwd.getpwnam("takomo").pw_uid:
-        raise RuntimeError("/var/data must be owned by UID 10001 (use a named volume or chown the bind mount)")
-    data.chmod(0o700)
-    arguments = sys.argv[1:]
     app_environment = dict(os.environ)
+    arguments = database_arguments(sys.argv[1:], app_environment)
+    prepare_data(app_environment["TAKOMO_DB"])
     app_environment["HOME"] = "/var/data"
     server = bool(arguments and arguments[0] == "serve")
     bundled = server and not app_environment.get("TAKOMO_KROKI_URL", "").strip()

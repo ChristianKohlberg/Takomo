@@ -24,19 +24,29 @@ larger image than the standalone Rust binary: Java, Node and Chromium are runtim
 dependencies. The example budgets 3 GiB and two CPUs for the combined workload;
 measure your own document sizes and concurrency when sizing production.
 
-The supervisor starts as root solely to launch services under distinct UIDs;
+The supervisor starts as root to prepare persistent data and launch services under distinct UIDs;
 Takomo and Litestream run as UID 10001, Kroki as 10002 and Mermaid as 10003, with
 no-new-privileges. Do not override the container user: startup needs to select
 these accounts. Use `docker exec --user takomo` for CLI administration to keep
 new database files owned by the application. The supervisor does not run renderers
 for `docker run ... takomo token ...` and other CLI subcommands.
 
-Named volumes inherit UID 10001 and mode 0700 from the image. For a bind mount,
-prepare its directory with owner UID 10001; startup refuses incorrectly owned
-mounts instead of recursively changing user files. Keep any custom `TAKOMO_DB`
-path and backup credential mounts private to UID 10001 as well. Renderer accounts
-share the container kernel/network, so UID separation is not equivalent to
-separate containers. Keep unrelated secrets out of world-readable mounted files.
+Named volumes and provider-mounted disks, including Render disks owned by root
+or an earlier runtime user, are prepared automatically. Startup makes `/var/data` private to
+UID 10001 and repairs ownership of the selected database and its SQLite
+`-wal`, `-shm` and `-journal` files. Existing bytes are preserved. The database's
+own `.<name>-litestream` metadata tree is also preserved and made usable by
+Litestream. Unrelated files and directories are not recursively changed.
+
+This migration is limited to databases directly inside `/var/data`. `--db` takes
+precedence over `TAKOMO_DB`; relative database paths use `/var/data` as their base.
+For custom nested or external paths, prepare ownership and private permissions
+for UID 10001 yourself. Symlinks, hard-linked files and nested mounts in the
+selected database/backup state are rejected before ownership changes; startup
+never follows them into other data. Keep backup credential mounts private to
+UID 10001. Renderer accounts share the container kernel/network, so UID separation
+is not equivalent to separate containers. Keep unrelated secrets out of
+world-readable mounted files.
 
 `docker stop` requests shutdown of all services. A main service failure terminates
 the whole container with a nonzero status so `--restart unless-stopped` can

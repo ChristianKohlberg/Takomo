@@ -256,6 +256,7 @@ elif sys.argv[1] != 'restore':
 
 try:
     main()
+    subprocess.run([sys.executable, str(Path(__file__).with_name("test-container-volume.py")), IMAGE], check=True)
 except Exception:
     # Diagnose only long-running services, never the admin command's output or
     # Docker's Config/Env fields. Bound logs and redact credential-shaped text.
