@@ -6,12 +6,48 @@ Takomo is a single Rust + SQLite binary you run yourself. The [README](../README
 
 **Render (Blueprint).** [`render.yaml`](../render.yaml) provisions a `rust` web service that builds the frontend with Node 22 and the Rust binary via `./scripts/build.sh`, serves on `$PORT`, mounts a 1 GB persistent disk at `/var/data` (SQLite durability across deploys), sets `TAKOMO_ALLOW_PUBLIC_BIND=1`, and health-checks `/healthz`. Render terminates TLS for you. Deploy with the button in the README or via Dashboard → New → Blueprint. The blueprint sets `autoDeployTrigger: "off"`, so a push to `main` does not redeploy the service: a release is a specific commit deployed by hand after a full CI run, per [Validation by impact and exposure](validation.md#release-and-deployment).
 
-**Docker (portable).** The [`Dockerfile`](../Dockerfile) builds a small image and also bundles [Litestream](https://litestream.io/) (dormant unless you set a bucket — see [Backups](#backups-litestream)).
+**Docker (portable).** The [`Dockerfile`](../Dockerfile) builds one self-contained image with Kroki, PlantUML/Salt, D2, Mermaid and [Litestream](https://litestream.io/) (dormant unless you set a bucket — see [Backups](#backups-litestream)).
+
+### Docker runtime
 
 ```sh
 docker build -t takomo .
-docker run -d -p 8080:8080 -v takomo-data:/var/data --name takomo takomo
+docker run -d --name takomo --restart unless-stopped \
+  --memory=3g --cpus=2 --pids-limit=512 \
+  -p 8080:8080 -v takomo-data:/var/data takomo
+docker exec --user takomo takomo takomo --db /var/data/takomo.db token create \
+  --actor human:me --scopes read,write,human,admin --projects '*'
 ```
+
+Diagrams work immediately without another container or service URL. This is a
+larger image than the standalone Rust binary: Java, Node and Chromium are runtime
+dependencies. The example budgets 3 GiB and two CPUs for the combined workload;
+measure your own document sizes and concurrency when sizing production.
+
+The supervisor starts as root solely to launch services under distinct UIDs;
+Takomo and Litestream run as UID 10001, Kroki as 10002 and Mermaid as 10003, with
+no-new-privileges. Do not override the container user: startup needs to select
+these accounts. Use `docker exec --user takomo` for CLI administration to keep
+new database files owned by the application. The supervisor does not run renderers
+for `docker run ... takomo token ...` and other CLI subcommands.
+
+Named volumes inherit UID 10001 and mode 0700 from the image. For a bind mount,
+prepare its directory with owner UID 10001; startup refuses incorrectly owned
+mounts instead of recursively changing user files. Keep any custom `TAKOMO_DB`
+path and backup credential mounts private to UID 10001 as well. Renderer accounts
+share the container kernel/network, so UID separation is not equivalent to
+separate containers. Keep unrelated secrets out of world-readable mounted files.
+
+`docker stop` requests shutdown of all services. A main service failure terminates
+the whole container with a nonzero status so `--restart unless-stopped` can
+recover the bundle. The health check checks Takomo and both bundled services;
+Docker health status alone does not trigger a restart for a still-running process.
+For a custom `serve --bind`, the health probe follows that address and port.
+
+A nonempty `TAKOMO_KROKI_URL` switches to an external renderer and avoids launching
+bundled Java/Node/Chromium. See [diagram configuration](diagrams.md). The optional
+Litestream restore/replicate behavior is retained in either mode.
+
 
 ## Building and running from source
 

@@ -279,36 +279,10 @@ jobs:
       - name: Build the image
         run: docker build -t takomo-ci .
 
-      # Building is not enough: `include_str!` could be satisfied by an empty or
-      # stale file. Run it and check the pages actually come out.
-      - name: It serves every page
-        run: |
-          docker run -d --name takomo-ci -p 8080:8080 takomo-ci
-          for _attempt in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
-            sleep 1
-          done
-          curl -fsS http://127.0.0.1:8080/healthz >/dev/null || {
-            echo "::error::container never became healthy"; docker logs takomo-ci; exit 1;
-          }
-          for page in board epics lanes inbox initiatives schedules verification environments; do
-            if ! curl -fsS "http://127.0.0.1:8080/$page" | grep -q 'id="root"'; then
-              echo "::error::/$page did not serve the web build (no React mount point)"
-              exit 1
-            fi
-            echo "ok - /$page"
-          done
-          # The shell is inert without its assets. Serving the document but not
-          # the bundle is a blank page with a console error — which the check
-          # above would happily call a pass.
-          for asset in app.js vendor.js runtime.js app.css; do
-            if ! curl -fsS "http://127.0.0.1:8080/assets/$asset" -o /dev/null; then
-              echo "::error::/assets/$asset did not serve — the app would load blank"
-              exit 1
-            fi
-            echo "ok - /assets/$asset"
-          done
-          docker rm -f takomo-ci >/dev/null
+      # Test the actual default entrypoint, bundled renderers and volume lifecycle.
+      # A passing app health endpoint alone does not prove diagrams can render.
+      - name: Default container serves pages and diagrams, persists, and shuts down
+        run: python3 scripts/test-bundled-container.py takomo-ci
 
   mcp:
     name: MCP typecheck

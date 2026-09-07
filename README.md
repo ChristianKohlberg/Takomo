@@ -25,12 +25,15 @@ The [`render.yaml`](render.yaml) Blueprint provisions a web service with a persi
 
 ```sh
 docker build -t takomo .
-docker run -d -p 8080:8080 -v takomo-data:/var/data --name takomo takomo
+docker run -d --restart unless-stopped -p 8080:8080 -v takomo-data:/var/data --name takomo takomo
 ```
+
+The image includes diagram rendering (Mermaid, PlantUML/Salt and D2): one
+container, one port and one data volume. See [runtime sizing and permissions](docs/hosting.md#docker-runtime).
 
 Put TLS in front of it — Takomo terminates plain HTTP and refuses non-loopback binds unless `TAKOMO_ALLOW_PUBLIC_BIND=1`.
 
-**Then mint the first admin token** with shell access to the server (the root of trust) — `render ssh` on Render, `docker exec` locally:
+**Then mint the first admin token** with shell access to the server (the root of trust) — `render ssh` on Render, `docker exec --user takomo -it takomo sh` locally:
 
 ```sh
 takomo --db /var/data/takomo.db token create \
