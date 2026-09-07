@@ -12,7 +12,7 @@ type Labels = typeof STR.en
 const date = (value: number | null, lang: Locale, missing: string) => value == null ? missing : new Date(value).toLocaleString(lang)
 const errorText = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 
-const jobTitle = (job: AgentJob, t: Labels) => job.kind === 'document_chat' ? t.documentDiscussion : job.kind === 'lane_organize' ? t.organizeLanes : job.kind === 'bug_research' ? job.ticket_id ?? job.node : job.section_title || job.node
+const jobTitle = (job: AgentJob, t: Labels) => (job.kind === 'document_chat' || job.kind === 'document_workspace') ? t.documentDiscussion : job.kind === 'lane_organize' ? t.organizeLanes : job.kind === 'bug_research' ? job.ticket_id ?? job.node : job.section_title || job.node
 
 function Status({ status, t }: { status: AgentJobStatus; t: Labels }) {
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${status === 'failed' ? 'bg-destructive/10 text-destructive' : status === 'running' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>{t[status]}</span>
@@ -57,7 +57,7 @@ function Details({ token, id, automatic, refresh, lang, onAuthError }: {
     [t.lease, date(j.lease_expires_at, lang, t.noValue)], [t.deadline, date(j.deadline, lang, t.noValue)],
     [t.worker, j.service_id], [t.boundWorker, j.conversation_service_id],
     [t.conversation, j.conversation_id], [t.attempt, j.attempt_id], [t.thread, j.thread_id], [t.turn, j.turn_id],
-    ...(j.kind === 'lane_organize' ? [[t.revision, j.source_revision]] as [string, string][] : j.kind === 'bug_research' ? [[t.openBug, j.ticket_id ?? j.node], [t.revision, j.repository_revision ?? t.noValue]] as [string, string][] : [[t.map, j.mindmap], ...(j.kind === 'document_chat' ? [] : [[t.node, j.node]]), [t.revision, j.source_revision]] as [string, string | null][]),
+    ...(j.kind === 'lane_organize' ? [[t.revision, j.source_revision]] as [string, string][] : j.kind === 'bug_research' ? [[t.openBug, j.ticket_id ?? j.node], [t.revision, j.repository_revision ?? t.noValue]] as [string, string][] : [[t.map, j.mindmap], ...((j.kind === 'document_chat' || j.kind === 'document_workspace') ? [] : [[t.node, j.node]]), [t.revision, j.source_revision]] as [string, string | null][]),
   ] : []
   return <section ref={sectionRef} tabIndex={-1} aria-label={t.detail} className="bg-card border-border order-first min-w-0 rounded-xl border p-4 md:order-last">
     <h2 className="text-base font-semibold">{t.detail}</h2>
@@ -65,7 +65,7 @@ function Details({ token, id, automatic, refresh, lang, onAuthError }: {
     {!j ? !error && <p role="status" className="text-muted-foreground mt-3 text-sm">{t.loading}</p> : <>
       <h3 className="mt-3 break-words font-medium">{jobTitle(j, t)}</h3>
       <p className="text-muted-foreground mt-1 break-words text-xs">{j.project}</p>
-      <a href={j.kind === 'lane_organize' ? `/lanes?project=${encodeURIComponent(j.project)}` : j.kind === 'bug_research' ? `/board#t=${encodeURIComponent(j.ticket_id ?? j.node)}` : specificationLink(j.project, 'document', j.kind === 'document_chat' ? undefined : j.node)} className="text-primary mt-2 inline-block text-sm underline">{j.kind === 'document_chat' ? t.openDocument : j.kind === 'lane_organize' ? t.openLanes : j.kind === 'bug_research' ? t.openBug : t.openSection}</a>
+      <a href={j.kind === 'lane_organize' ? `/lanes?project=${encodeURIComponent(j.project)}` : j.kind === 'bug_research' ? `/board#t=${encodeURIComponent(j.ticket_id ?? j.node)}` : specificationLink(j.project, 'document', (j.kind === 'document_chat' || j.kind === 'document_workspace') ? undefined : j.node)} className="text-primary mt-2 inline-block text-sm underline">{(j.kind === 'document_chat' || j.kind === 'document_workspace') ? t.openDocument : j.kind === 'lane_organize' ? t.openLanes : j.kind === 'bug_research' ? t.openBug : t.openSection}</a>
       {j.status === 'queued' && <p className="text-muted-foreground mt-3 text-sm">{j.conversation_service_id ? t.boundWaiting : t.waiting}</p>}
       {j.error && <div className="text-destructive mt-4"><h3 className="text-sm font-semibold">{t.error}</h3><pre className="mt-1 whitespace-pre-wrap break-all text-xs">{j.error}</pre></div>}
       <dl className="mt-4 grid min-w-0 grid-cols-1 gap-x-4 gap-y-1 text-xs md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">

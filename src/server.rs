@@ -127,7 +127,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/users/{handle}",
             get(crate::api::users::get_one).merge(patch(crate::api::users::patch)),
         )
-        .route("/v1/mindmaps/{id}/conversation", get(crate::api::document_chat::get))
+        .route("/v1/mindmaps/{id}/conversation", get(crate::api::document_chat::get).patch(crate::api::document_chat::pins))
         .route("/v1/mindmaps/{id}/conversation/messages", post(crate::api::document_chat::send))
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation", get(crate::api::agent_chat::conversation))
         .route("/v1/mindmaps/{id}/nodes/{node}/conversation/messages", post(crate::api::agent_chat::send))

@@ -1,6 +1,6 @@
 # Takomo agent service
 
-A standalone, single-job worker for read-only section and document conversations, [lane organization](#lane-organization), and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
+A standalone, single-job worker for read-only section conversations, [document workspaces](#document-workspace-retrieval), [lane organization](#lane-organization), and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
 
 ## Start
 
@@ -65,6 +65,8 @@ Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-serve
 ## Document conversations and section actions
 
 `document_chat` jobs discuss a whole document or one or more selected sections.
+These remain supported for compatibility; new workspace requests use the scoped
+retrieval protocol below.
 Actions are `discuss`, `grill`, `draft_tests` and `draft_questions`. Custom requests
 use `discuss` with the user's prompt. Test cases, illustrative test code and
 questions arrive as Markdown drafts in the conversation. No document, checklist,
@@ -98,6 +100,75 @@ unchanged, and removes its temporary state afterward. It verifies a draft respon
 conversation recall after process restart and a refreshed document deadline. It
 uses the authenticated provider, but creates no Takomo jobs or records. Ordinary
 tests skip it.
+
+## Document workspace retrieval
+
+`document_workspace` jobs use schema version 2 and three read-only dynamic tools:
+`document_outline`, `document_search` and `document_read`. The tools operate only
+on the immutable job snapshot already supplied by Takomo. They cannot access the
+live database, files, repositories or networks. This profile enables only the
+dynamic-tool host in addition to the existing restrictions; ordinary document
+chat and lane organizer jobs retain their no-tools profiles. Unknown tools and
+unsupported arguments fail closed.
+
+Automatic mode searches titles, content and parent headings across the document,
+prioritizing pinned sections. Selected mode restricts every tool to the selected
+section ids plus explicit pins, including a pins-only selection. Whole-document
+mode instructs Codex to page through the outline and read all authorized content.
+Broad requests in automatic mode also require systematic review or explicit
+partial-coverage disclosure. The initial prompt contains at most eight section
+excerpts and fifty headings; subsequent tool calls retrieve further context.
+
+Search is deterministic lexical retrieval, with case/accent folding, German `ß`
+normalization, common German/English stopwords, heading/ancestor boosts and inverse
+document frequency weights. There are no embeddings or external search services.
+Results include ranked snippets and explicit match counts/truncation. Section
+reads retain rich document XML for tables, code blocks and formatting. Offsets
+count UTF-16 characters, and `next_offset` supports reading large sections without
+silently dropping their tail.
+
+Snapshots allow at most 500 sections and 8,000,000 UTF-8 bytes. Each turn has a
+200-tool-call limit and a 750,000-byte cumulative retrieval budget, alongside the
+existing five-minute deadline and 64,000-byte final response limit. Exhausting a
+budget returns an explicit error and leaves coverage incomplete. Source evidence
+records ids and versions actually delivered in initial context, search snippets
+or reads; a separate coverage list records only sections read completely with no
+gaps. Replies cite sources as `[Title](takomo-section:SECTION_ID)`. Takomo validates
+and stores evidence against the job's immutable source revision before exposing
+source links and coverage in the conversation.
+
+`grill` asks one consequential question per turn and follows up on the answer.
+`draft_tests` and `draft_questions` produce cited drafts, and `discuss` handles
+ordinary or custom requests. No artifact is automatically applied or executed.
+
+Existing text-only Codex threads need a one-time migration because the installed
+App Server accepts dynamic tools only when starting a thread. For a server-marked
+migration job, the worker reads the old thread, imports only visible user and
+assistant text from recent completed turns (up to 200 KB), and starts a new tool
+thread. Prior source wrappers, tool output, reasoning and commentary are excluded.
+The worker reports old/new thread ids and retained/omitted turn counts before the
+new turn; Takomo preserves all original conversation messages and records the
+migration. Subsequent workspace turns resume the new persisted thread while tools
+are rebound to each turn's fresh scoped snapshot.
+
+**Deploy the new Takomo server first, then upgrade this worker.** Claims advertise
+the distinct `document_workspace` kind so older workers cannot consume these
+jobs. An older server rejects the new claim capability with HTTP 422; do not leave
+a new worker polling it. Preserve the service identity, Codex home and existing
+launcher/token when upgrading. The runtime module set now also includes
+`document-workspace.mjs`.
+
+The opt-in provider smoke proves legacy migration, actual use of all three tools,
+source citations and a resumed turn reading refreshed content:
+
+```sh
+TAKOMO_AGENT_WORKSPACE_LIVE_SMOKE=1 node --test services/agent/test/workspace-live-smoke.test.mjs
+```
+
+It uses three small provider turns in a temporary Codex home with a private auth
+copy, creates no Takomo jobs, and removes its state afterward. Default tests skip
+it. Protocol fields were checked against the installed Codex App Server's
+experimental JSON schema and the [official App Server documentation](https://learn.chatgpt.com/docs/app-server).
 
 ## Lane organization
 

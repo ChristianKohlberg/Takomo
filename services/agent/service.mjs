@@ -4,10 +4,11 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { WORKSPACE_KIND } from './document-workspace.mjs';
 import { DOCUMENT_KIND } from './document.mjs';
 import { Codex } from './codex.mjs';
 
-export const supportedKinds = Object.freeze(['section_chat', 'bug_research', 'lane_organize', DOCUMENT_KIND]);
+export const supportedKinds = Object.freeze(['section_chat', 'bug_research', 'lane_organize', DOCUMENT_KIND, WORKSPACE_KIND]);
 
 export class ApiError extends Error {
   constructor(status) { super(`Takomo returned HTTP ${status}.`); this.status = status; }
@@ -37,7 +38,7 @@ export async function executeJob(job, { api, serviceId, createCodex, signal, hea
     heartbeatChain = heartbeatChain.then(async () => {
       if (lost) throw new Error('Agent job lease was lost.');
       let control;
-      try { control = await api(`${prefix}/heartbeat`, { ...identity, ...session, ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}) }); }
+      try { control = await api(`${prefix}/heartbeat`, { ...identity, ...session, ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}) }); }
       catch (error) { lost = true; codex?.close(); throw error; }
       try {
         if (job.kind === 'bug_research' && control?.cancel_requested) {
@@ -65,7 +66,7 @@ export async function executeJob(job, { api, serviceId, createCodex, signal, hea
       await heartbeat();
     }) };
   } catch (error) {
-    result = { status: 'failed', ...(cancelled ? { cancelled: true } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}), error: error.message.slice(0, 2000), ...session };
+    result = { ...session, status: 'failed', ...(cancelled ? { cancelled: true } : {}), ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}), error: error.message.slice(0, 2000) };
   } finally { codex?.close(); }
   try {
     if (lost || signal.aborted) return;

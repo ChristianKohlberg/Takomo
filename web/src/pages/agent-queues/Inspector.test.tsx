@@ -24,8 +24,8 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Agent queue inspector', () => {
-  it('opens a document discussion without inventing a section link', async () => {
-    const discussion: AgentJob = { ...job, kind: 'document_chat', node: 'document-conversation', section_title: '' }
+  it.each(['document_chat', 'document_workspace'] as const)('opens a %s discussion without inventing a section link', async kind => {
+    const discussion: AgentJob = { ...job, kind, node: 'document-conversation', section_title: '' }
     vi.mocked(listAgentJobs).mockResolvedValue(list([discussion]))
     vi.mocked(getAgentJob).mockResolvedValue(detail(discussion))
     render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
