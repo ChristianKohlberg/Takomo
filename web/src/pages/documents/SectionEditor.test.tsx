@@ -83,6 +83,43 @@ describe('SectionEditor', () => {
     doc.destroy()
   })
 
+  it('relabels mounted section references on a locale change without rebuilding the editor or moving the caret', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'See ')
+    const reference = new Y.XmlElement('sectionReference')
+    reference.setAttribute('sectionId', 'mn-gone')
+    reference.insert(0, [new Y.XmlText('Old title')])
+    ;(fragment.get(0) as Y.XmlElement).insert(1, [reference, new Y.XmlText(' now.')])
+    const awareness = new Awareness(doc)
+    const provider = { awareness } as unknown as WebsocketProvider
+    let editor: Editor | null = null
+    const props = {
+      ydoc: doc, fragment, provider, display: 'Ada', color: '#2563eb', canWrite: true, label: 'Section 1',
+      onSettled: () => {}, onEditor: (value: Editor | null) => { editor = value },
+    }
+    const view = render(<SectionEditor {...props} locale="en" />)
+    const originalEditor = editor!
+    const dom = screen.getByLabelText('Section 1')
+    const before = fragment.toString()
+    expect(dom.querySelector('a')?.textContent).toBe('Old title (Missing section)')
+    act(() => { originalEditor.commands.setTextSelection(3) })
+
+    view.rerender(<SectionEditor {...props} locale="de" />)
+
+    expect(editor).toBe(originalEditor)
+    expect(screen.getByLabelText('Section 1')).toBe(dom)
+    expect(dom.querySelector('a')?.textContent).toBe('Old title (Abschnitt fehlt)')
+    expect(originalEditor.state.selection.from).toBe(3)
+    expect(fragment.toString()).toBe(before)
+
+    view.rerender(<SectionEditor {...props} locale="en" />)
+    expect(dom.querySelector('a')?.textContent).toBe('Old title (Missing section)')
+    expect(editor).toBe(originalEditor)
+    view.unmount()
+    awareness.destroy()
+    doc.destroy()
+  })
+
   it('turns a completed final heading into a shared section without losing earlier prose', () => {
     const doc = new Y.Doc()
     const fragment = section(doc, 'mn-1', 'Keep this paragraph.')

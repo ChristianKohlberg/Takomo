@@ -23,6 +23,29 @@ describe('clean paste', () => {
     expect(result.state.doc.firstChild!.child(1).marks).toEqual([])
   })
 
+  it('keeps an explicit nested reset inside a styled or semantic emphasis container', () => {
+    const result = paste('<p style="font-weight:700">Bold <span style="font-weight:400">normal</span></p>' +
+      '<p style="font-style:italic">Italic <span style="font-style:normal">upright <span style="font-style:italic">again</span></span></p>' +
+      '<p><b>Strong <span style="font-weight:normal">plain</span></b></p>' +
+      '<p><u style="text-decoration:underline">Under <span style="text-decoration:none">none</span></u></p>')
+    const marks = (block: number, index: number) => result.state.doc.child(block).child(index).marks.map(mark => mark.type.name)
+    const texts = (block: number) => { const out: string[] = []; result.state.doc.child(block).forEach(node => out.push(node.text ?? '')); return out }
+    expect(texts(0)).toEqual(['Bold ', 'normal'])
+    expect(marks(0, 0)).toEqual(['bold'])
+    expect(marks(0, 1)).toEqual([])
+    expect(texts(1)).toEqual(['Italic ', 'upright ', 'again'])
+    expect(marks(1, 0)).toEqual(['italic'])
+    expect(marks(1, 1)).toEqual([])
+    expect(marks(1, 2)).toEqual(['italic'])
+    expect(texts(2)).toEqual(['Strong ', 'plain'])
+    expect(marks(2, 0)).toEqual(['bold'])
+    expect(marks(2, 1)).toEqual([])
+    expect(texts(3)).toEqual(['Under ', 'none'])
+    expect(marks(3, 0)).toEqual(['underline'])
+    expect(marks(3, 1)).toEqual([])
+    expect(result.getHTML()).not.toMatch(/style=/)
+  })
+
   it('keeps headings, nested lists, quotes and tables editable', () => {
     const result = paste('<h2 style="font-size:50px">Heading</h2><ol start="3"><li>First<ul><li>Nested</li></ul></li></ol><blockquote>Quote</blockquote><table style="width:900px;font-weight:bold"><tbody><tr><th colspan="2">Header</th></tr><tr><td>A</td><td>B</td></tr></tbody></table>')
     const doc = result.state.doc

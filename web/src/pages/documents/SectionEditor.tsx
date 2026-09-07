@@ -48,7 +48,7 @@ import { DiagramCodeBlock } from '@/lib/diagram-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
 import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
-import { DocumentSectionReference } from '@/lib/document-section-reference'
+import { DocumentSectionReference, refreshSectionReferenceLabels } from '@/lib/document-section-reference'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 import '@/styles/document-comments.css'
 
@@ -148,6 +148,8 @@ export default function SectionEditor({
   // a new one.
   const settle = useRef(onSettled)
   settle.current = onSettled
+  const localeRef = useRef(locale)
+  localeRef.current = locale
 
   const editor = useEditor(
     {
@@ -173,8 +175,8 @@ export default function SectionEditor({
         HighlightBlocks,
         DocumentSearchHighlight,
         DocumentSectionReference.configure({ ydoc, onNavigate: onFollowReference ? id => followReference.current?.(id) : null, project: () => accessRef.current?.project ?? '',
-          missingLabel: () => locale === 'de' ? 'Abschnitt fehlt' : 'Missing section',
-          untitledLabel: () => locale === 'de' ? 'Unbenannter Abschnitt' : 'Untitled section' }),
+          missingLabel: () => localeRef.current === 'de' ? 'Abschnitt fehlt' : 'Missing section',
+          untitledLabel: () => localeRef.current === 'de' ? 'Unbenannter Abschnitt' : 'Untitled section' }),
         DocumentCommentHighlight.configure({ ydoc, sectionId, onOpen: () => openComments.current?.() }),
       ],
       editorProps: {
@@ -243,6 +245,10 @@ export default function SectionEditor({
     if (!editor) return
     editor.setOptions({ editorProps: { ...editor.options.editorProps, attributes: { ...EDITOR_ATTRIBUTES, 'aria-label': label } } })
   }, [editor, label])
+
+  useEffect(() => {
+    if (editor) refreshSectionReferenceLabels(editor)
+  }, [editor, locale])
 
   useEffect(() => {
     if (!editor) return

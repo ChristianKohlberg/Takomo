@@ -1,4 +1,4 @@
-import { Node } from '@tiptap/react'
+import { Node, type Editor } from '@tiptap/react'
 import * as Y from 'yjs'
 import { nodesMap } from './mindmap-crdt'
 import { specificationLink } from './specification-url'
@@ -10,13 +10,20 @@ export function sectionReferenceTitle(ydoc: Y.Doc, id: string): string | null {
   return value instanceof Y.Text ? value.toString() : typeof value === 'string' ? value : ''
 }
 
+/** Labels are read at render time, so a locale change redraws mounted references in place. */
+export function refreshSectionReferenceLabels(editor: Editor): void {
+  const storage = (editor.storage as unknown as Record<string, { refresh?: Set<() => void> } | undefined>).sectionReference
+  storage?.refresh?.forEach(refresh => refresh())
+}
+
 /** Identity is shared content; the current title is presentation, never a rename-triggered prose edit. */
 export const DocumentSectionReference = Node.create<{
   onNavigate: ((id: string) => void) | null; ydoc: Y.Doc | null; project: () => string; missingLabel: () => string; untitledLabel: () => string
-}>({
+}, { refresh: Set<() => void> }>({
   name: 'sectionReference', priority: 1100,
   group: 'inline', inline: true, atom: true, selectable: true, content: 'text*',
   addOptions: () => ({ onNavigate: null, ydoc: null, project: () => '', missingLabel: () => 'Missing section', untitledLabel: () => 'Untitled section' }),
+  addStorage: () => ({ refresh: new Set<() => void>() }),
   addAttributes: () => ({
     sectionId: { default: '', parseHTML: element => element.getAttribute('data-section-id') },
   }),
@@ -35,6 +42,7 @@ export const DocumentSectionReference = Node.create<{
   },
   addNodeView() {
     const options = this.options
+    const storage = this.storage
     return ({ node }) => {
       let current = node
       const dom = document.createElement('a')
@@ -62,6 +70,7 @@ export const DocumentSectionReference = Node.create<{
         options.onNavigate(current.attrs.sectionId)
       })
       refresh()
+      storage.refresh.add(refresh)
       const nodes = options.ydoc ? nodesMap(options.ydoc) : null
       const changed = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
         if (events.some(event => event.path[0] === current.attrs.sectionId ||
@@ -73,7 +82,7 @@ export const DocumentSectionReference = Node.create<{
         update(next) { if (next.type !== current.type) return false; current = next; refresh(); return true },
         stopEvent: event => event.type === 'click' || event.type === 'mousedown',
         ignoreMutation: () => true,
-        destroy: () => nodes?.unobserveDeep(changed),
+        destroy: () => { storage.refresh.delete(refresh); nodes?.unobserveDeep(changed) },
       }
     }
   },
