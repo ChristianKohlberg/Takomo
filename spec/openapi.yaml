@@ -45,6 +45,123 @@ tags:
   - { name: schedules }
 
 paths:
+  /projects/{project}/lane-organizer:
+    parameters:
+    - name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      tags:
+      - lanes
+      operationId: getLaneOrganizer
+      summary: getLaneOrganizer
+      description: Requires read scope and project access. Reading never queues work.
+      responses:
+        '200':
+          description: Organizer conversation and proposal history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LaneOrganizerView'
+        '403':
+          description: Required project or human/write scope missing
+        '404':
+          description: Project or organizer job not found
+        '409':
+          description: Active request, reused request ID with changed content, or stale
+            snapshot; wait or request a new proposal
+        '422':
+          description: Invalid proposal, empty pending queue, or collection exceeds
+            documented bounds
+  /projects/{project}/lane-organizer/messages:
+    parameters:
+    - name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - lanes
+      operationId: requestLaneOrganization
+      summary: requestLaneOrganization
+      description: Requires write and human scopes. Enqueues read-only lane_organize
+        on the existing agent queue. Idempotent by project conversation, actor and request_id;
+        conflicting reuse is rejected. One active organizer turn per project. Captures
+        current persisted context and resumes an organizer-only conversation.
+      responses:
+        '200':
+          description: Organizer conversation and proposal history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LaneOrganizerView'
+        '403':
+          description: Required project or human/write scope missing
+        '404':
+          description: Project or organizer job not found
+        '409':
+          description: Active request, reused request ID with changed content, or stale
+            snapshot; wait or request a new proposal
+        '422':
+          description: Invalid proposal, empty pending queue, or collection exceeds
+            documented bounds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSend'
+  /projects/{project}/lane-organizer/jobs/{id}/accept:
+    parameters:
+    - name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      tags:
+      - lanes
+      operationId: acceptLaneOrganization
+      summary: acceptLaneOrganization
+      description: Requires write and human scopes. Atomically validates and applies
+        a completed proposal only while the entire persisted project snapshot still
+        matches. Creates or enriches lanes, attaches tickets, records advisory readiness,
+        and leaves unassigned tickets pending. No ticket workflow changes, handoffs
+        or execution. Acceptance replay is idempotent. Request a fresh proposal after
+        any snapshot change.
+      responses:
+        '200':
+          description: Organizer conversation and proposal history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LaneOrganizerView'
+        '403':
+          description: Required project or human/write scope missing
+        '404':
+          description: Project or organizer job not found
+        '409':
+          description: Active request, reused request ID with changed content, or stale
+            snapshot; wait or request a new proposal
+        '422':
+          description: Invalid proposal, empty pending queue, or collection exceeds
+            documented bounds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
   /diagrams/render:
     post:
       tags: [documents]
@@ -7971,6 +8088,174 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    LaneOrganizerProposal:
+      type: object
+      additionalProperties: false
+      properties:
+        groups:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              lane_id:
+                type:
+                - string
+                - 'null'
+              title:
+                type: string
+                maxLength: 200
+              purpose:
+                type: string
+                maxLength: 8000
+              context:
+                type: string
+                maxLength: 64000
+              readiness:
+                type: string
+                enum:
+                - ready
+                - needs_clarification
+              reason:
+                type: string
+                maxLength: 4000
+              ticket_ids:
+                type: array
+                minItems: 1
+                maxItems: 200
+                uniqueItems: true
+                items:
+                  type: string
+            required:
+            - lane_id
+            - title
+            - purpose
+            - context
+            - readiness
+            - reason
+            - ticket_ids
+        unassigned:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              ticket_id:
+                type: string
+              reason:
+                type: string
+                maxLength: 4000
+            required:
+            - ticket_id
+            - reason
+      required:
+      - groups
+      - unassigned
+      description: At most 256000 UTF-8 bytes. Every pending snapshot ticket must appear
+        exactly once in a group or unassigned. Existing lane title and purpose must match
+        the snapshot; context may be enriched. Readiness is advisory. New lanes have null
+        lane_id. No model output changes live work before human acceptance.
+    LaneOrganizerView:
+      type: object
+      additionalProperties: false
+      properties:
+        conversation_id:
+          type:
+          - string
+          - 'null'
+        jobs:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              status:
+                type: string
+                enum:
+                - queued
+                - running
+                - completed
+                - failed
+              error:
+                type:
+                - string
+                - 'null'
+              created_at:
+                type: string
+                format: date-time
+              snapshot:
+                type: object
+                description: 'Immutable project context, at most 512000 UTF-8 bytes: up
+                  to 200 live nonterminal non-epic tickets outside active lanes, up to
+                  100 active lanes including existing ticket details, and up to 20 persisted
+                  specification documents with text and CRDT sequence. Unsaved editor
+                  changes are excluded. Oversized collections are rejected, never silently
+                  truncated.'
+                additionalProperties: true
+              source_revision:
+                type: string
+              proposal:
+                oneOf:
+                - $ref: '#/components/schemas/LaneOrganizerProposal'
+                - type: 'null'
+              accepted_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+            required:
+            - id
+            - status
+            - snapshot
+            - proposal
+            - accepted_at
+            - created_at
+            - source_revision
+        messages:
+          type: array
+          maxItems: 40
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              role:
+                type: string
+                enum:
+                - user
+                - assistant
+              body:
+                type: string
+              created_at:
+                type: string
+                format: date-time
+            required:
+            - id
+            - role
+            - body
+            - created_at
+        total:
+          type: integer
+        limit:
+          type: integer
+          const: 20
+        note:
+          type: string
+      required:
+      - conversation_id
+      - jobs
+      - messages
+      - total
+      - limit
+      description: Latest 20 requests newest first, and latest 40 messages chronological.
+        total counts all organizer requests. note explains omitted history; older jobs
+        remain readable through agent job inspection.
     WorkLaneCreate:
       type: object
       additionalProperties: false
@@ -8007,6 +8292,14 @@ components:
       type: object
       additionalProperties: false
       properties:
+        readiness:
+          type: object
+          description: Advisory readiness from the last accepted organizer proposal; never triggers execution.
+          properties:
+            status: {type: string, enum: [ready, needs_clarification]}
+            reason: {type: string}
+            organizer_job: {type: string}
+          required: [status, reason, organizer_job]
         title:
           type: string
           minLength: 1
@@ -8366,7 +8659,7 @@ components:
     AgentJobInspection:
       type: object
       properties:
-        kind: {type: string, enum: [section_chat, bug_research]}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize]}
         ticket_id: {type: string, description: Present for bug research.}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
         repository_revision: {type: [string, 'null']}
@@ -8626,7 +8919,7 @@ components:
     AgentClaimedJob:
       type: object
       properties:
-        kind: {type: string, enum: [section_chat, bug_research]}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize]}
         project: {type: string}
         ticket_id: {type: string}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
@@ -8640,8 +8933,7 @@ components:
           type: string
         snapshot:
           type: string
-          description: Authoritative section title and plain text captured when submitted; at most 100000
-            UTF-8 bytes.
+          description: Authoritative context captured when submitted. Section chat is at most 100000 UTF-8 bytes; lane_organize carries a JSON project snapshot of at most 512000 bytes.
         source_revision:
           type: string
           description: SHA-256 of the immutable snapshot.
@@ -8686,6 +8978,9 @@ components:
     AgentResult:
       type: object
       properties:
+        proposal:
+          $ref: '#/components/schemas/LaneOrganizerProposal'
+          description: Required only for completed lane_organize jobs; forbidden on other kinds or failed results.
         cancelled: {type: [boolean, 'null'], description: True permits the owning cancelled attempt to save failed partial evidence without changing cancellation.}
         repository_revision: {type: [string, 'null'], maxLength: 200, description: Required resolved commit for completed bug research.}
         evidence: {description: Optional structured evidence bounded to 64000 serialized UTF-8 bytes.}
@@ -10093,7 +10388,7 @@ components:
             kinds in `x-event-kinds-reserved` are also listed but are never
             emitted — reserved so clients filtering the log can tell a dead arm
             from a missing one.
-          enum: [lane.created, lane.updated, handoff.created, handoff.updated, agent_job.queued, agent_job.running, agent_job.completed, agent_job.failed, agent_job.cancelled, agent_job.steered, bug.triaged, bug.research_configured, test_run.created, test_run.result, test_run.transition, archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, document.archived, document.created, document.unarchived, document.updated, document_appearance_changed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed, writing_instructions_changed]
+          enum: [lane.organization_accepted, lane.created, lane.updated, handoff.created, handoff.updated, agent_job.queued, agent_job.running, agent_job.completed, agent_job.failed, agent_job.cancelled, agent_job.steered, bug.triaged, bug.research_configured, test_run.created, test_run.result, test_run.transition, archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, document.archived, document.created, document.unarchived, document.updated, document_appearance_changed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed, writing_instructions_changed]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 
@@ -10888,6 +11183,8 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  validation.lane_organizer: "Organizer input, pending collection, or model proposal is invalid or oversized. Read the message; no partial organization was applied."
+  conflict.lane_organizer: "An organizer request is active, request_id was reused with changed content, or its snapshot is stale. Wait or request a fresh proposal; acceptance is atomic."
   diagram.busy: "all four rendering slots are occupied; retry shortly."
   diagram.not_configured: "the operator has not configured TAKOMO_KROKI_URL; diagram source remains available."
   diagram.timeout: "the rendering service exceeded the ten-second deadline; simplify the diagram or retry."

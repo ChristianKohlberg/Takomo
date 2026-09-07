@@ -18,6 +18,7 @@ mod events;
 mod helpers;
 mod impact;
 mod initiatives;
+pub mod lane_organizer;
 mod metrics;
 pub mod mindmapdoc;
 mod mindmaps;
@@ -170,6 +171,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
+        conn.execute_batch(include_str!("lane_organizer.sql"))?;
         bugs::migrate(&conn)?;
         migrate(&conn)?;
         checkcollab::seed_existing(&conn)?;

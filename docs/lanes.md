@@ -10,10 +10,40 @@ unresolved questions. An organizing agent can do the same through the CLI, nativ
 MCP, or REST API. Lane names and ticket associations are project-defined; lanes
 are not automatically generated from specification headings.
 
-Create a preparation handoff to have an agent enrich the selected work. Preparation
-produces context for a later assignment. It does not automatically dispatch
-implementation. Agent grouping can also be performed through the ordinary lane
-and ticket tools, without running an embedded agent.
+## Organize pending work
+
+Choose **Organize pending work** on the Lanes page to ask the existing Codex
+app-server service for a proposal. Give it any grouping priorities or constraints.
+It considers pending tickets without an active lane, existing lanes and their
+durable context, and saved project specification text. It proposes new or existing
+lanes, explains each grouping, prepares context, and identifies questions that
+prevent the work from being ready. Unclear or potentially duplicate work can stay
+unassigned with an explanation. No predefined lane names or project structure are
+imposed.
+
+Review the proposal before accepting it. Acceptance applies the complete grouping
+and prepared context together; it does not create or send an implementation
+assignment. Existing lane names and purposes are preserved. If the source work
+changed while the proposal was being prepared or reviewed, request a fresh
+proposal. You can give revised instructions before requesting another proposal,
+or edit lanes normally after acceptance.
+
+The first version reads persisted specifications; unsaved editor changes are not
+included. Requests are limited to 200 pending tickets, 100 active lanes and 20
+specifications, with a combined 512,000-byte snapshot limit. Oversized projects
+receive an error instead of silently organizing a partial collection. Saving or
+changing included source material before acceptance requires a fresh proposal.
+
+The organizer uses `services/agent`, with the same dedicated Codex authentication,
+persistent service state and project-scoped `agent:run` token as section
+conversations. Update and restart that service when adopting this feature. Without
+a running service, requests remain queued. The organizer has no repository or
+write tools; Takomo validates its structured answer and applies accepted changes.
+Readiness is advice, not proof that implementation or review has succeeded.
+
+For work already selected within a lane, a preparation handoff can enrich that
+assignment through the separate lane worker. Agent grouping can also be performed
+through the ordinary lane and ticket tools.
 
 ## Dispatch and execution
 

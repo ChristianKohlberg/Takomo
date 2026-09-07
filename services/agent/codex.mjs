@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { openRepository, repositoryTools } from './repository.mjs';
+import { ORGANIZER_KIND, PROPOSAL_BYTES, organizerInstructions, organizerSchema, organizerSnapshot, parseOrganizerProposal, organizerSummary } from './organizer.mjs';
 
 // Verified against Codex 0.153.4's config schema and generated App Server schema.
 export const restrictions = {
@@ -127,7 +128,8 @@ export class Codex {
         const final = all.filter(item => item.phase === 'final_answer');
         const message = (final.length ? final : all.filter(item => item.phase !== 'commentary'))
           .map(item => item.text).filter(Boolean).join('\n\n').trim();
-        if (Buffer.byteLength(message, 'utf8') > 64_000) active.reject(new Error('Codex response exceeded the 64,000-byte message limit.'));
+        const limit = active.organizer ? PROPOSAL_BYTES : 64_000;
+        if (Buffer.byteLength(message, 'utf8') > limit) active.reject(new Error(`Codex response exceeded the ${limit.toLocaleString('en-US')}-byte message limit.`));
         else if (!message) active.reject(new Error('Codex completed without a user-facing response.'));
         else active.resolve({ thread_id: active.threadId, turn_id: active.turnId, message });
       }
@@ -144,6 +146,8 @@ export class Codex {
   }
   async run(job, onSession = async () => {}) {
     const research = job.kind === RESEARCH_KIND;
+    const organizer = job.kind === ORGANIZER_KIND;
+    const snapshot = organizer ? organizerSnapshot(job.snapshot) : null;
     if (profileFor(job.kind) !== this.profile) {
       throw new Error(`Codex was started for ${this.kind === RESEARCH_KIND ? 'research' : 'section review'} and cannot run a ${research ? 'research' : 'section review'} job.`);
     }
@@ -151,7 +155,7 @@ export class Codex {
       this.repository = await openRepository(job, this.repositories);
       await onSession({ repository_revision: this.repository.revision });
     }
-    const policy = research ? researchInstructions : instructions;
+    const policy = research ? researchInstructions : organizer ? organizerInstructions : instructions;
     await this.request('initialize', { ...(research ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
     this.send({ method: 'initialized' });
     validateConfig((await this.request('config/read', { includeLayers: false })).config, this.profile);
@@ -167,7 +171,7 @@ export class Codex {
     await onSession({ thread_id: threadId });
     let timer;
     const completed = new Promise((resolve, reject) => {
-      this.active = { threadId, messages: new Map(), resolve, reject };
+      this.active = { threadId, organizer, messages: new Map(), resolve, reject };
       timer = setTimeout(() => reject(new Error('Codex response timed out.')), this.timeoutMs ?? (research ? 900_000 : 300_000));
     });
     // Attach a handler immediately: failures can arrive before turn/start returns.
@@ -175,12 +179,17 @@ export class Codex {
     try {
       const { turn } = await this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
+        input: [{ type: 'text', text: `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
         approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
+        ...(organizer ? { outputSchema: organizerSchema } : {}),
       });
       this.active.turnId = turn.id;
       await onSession({ thread_id: threadId, turn_id: turn.id });
       const result = await completed;
+      if (organizer) {
+        const proposal = parseOrganizerProposal(result.message, snapshot);
+        return { ...result, message: organizerSummary(proposal), proposal };
+      }
       return research ? { ...result, repository_revision: this.repository.revision, evidence: this.repository.progress() } : result;
     } finally { clearTimeout(timer); this.active = null; }
   }
