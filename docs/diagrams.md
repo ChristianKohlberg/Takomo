@@ -32,7 +32,8 @@ renderers; Docker health checks include an actual Mermaid sample render.
 
 The services run under separate non-root accounts. Renderers receive a fixed,
 minimal environment, without Takomo/cloud credentials. `/var/data` is private to
-Takomo. The bundled configuration forces secure modes, `D2_BUNDLE=false`, four
+Takomo; startup initializes provider-owned mounts and migrates only the selected
+database and its sidecars/backup metadata. The bundled configuration forces secure modes, `D2_BUNDLE=false`, four
 concurrent Mermaid renders and bounded rendering timeouts. Java has a 512 MiB
 heap cap and Node a 256 MiB heap cap. These are **not total memory limits**:
 Chromium, native renderers and the application share the container's resources.
