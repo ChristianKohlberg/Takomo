@@ -3,6 +3,7 @@ import { Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import * as Y from 'yjs'
+import { CleanPaste } from './clean-paste'
 import { DocumentSectionReference } from './document-section-reference'
 import { createNode, nodesMap, proseOf, proseTextOf, readNodes, setTitle } from './mindmap-crdt'
 
@@ -19,6 +20,11 @@ function setup(onNavigate: ((id: string) => void) | null = null) {
   editors.push(editor)
   editor.commands.insertContent({ type: 'sectionReference', attrs: { sectionId: id }, content: [{ type: 'text', text: 'Original heading' }] })
   return { doc, id, source, editor, fragment }
+}
+function referenceClipboardHTML(editor: Editor): string {
+  const reference = editor.state.doc.firstChild!.firstChild!
+  editor.commands.setTextSelection({ from: 1, to: 1 + reference.nodeSize })
+  return editor.view.serializeForClipboard(editor.state.selection.content()).dom.innerHTML
 }
 describe('document section references', () => {
   it('uses in-document navigation for ordinary clicks and preserves modified links', () => {
@@ -87,6 +93,46 @@ describe('document section references', () => {
     editors.push(other)
     expect(other.state.doc.firstChild?.firstChild?.attrs.sectionId).toBe(id)
     expect(other.view.dom.querySelector('a')?.textContent).toBe('Original heading')
+  })
+  it.each(['Original heading', '', 'A real (Missing section) title', 'Quotes " and <tags> & text'])(
+    'preserves raw missing fallback through repeated localized HTML pastes: %j', fallback => {
+      const doc = new Y.Doc(); docs.push(doc)
+      let html = ''
+      for (const [index, missingLabel] of ['Missing section', 'Abschnitt fehlt', 'Missing section'].entries()) {
+        const untitledLabel = missingLabel === 'Abschnitt fehlt' ? 'Unbenannter Abschnitt' : 'Untitled section'
+        const editor = new Editor({ extensions: [StarterKit, CleanPaste,
+          DocumentSectionReference.configure({ ydoc: doc, project: () => 'demo', missingLabel: () => missingLabel, untitledLabel: () => untitledLabel })] })
+        editors.push(editor)
+        if (index === 0) editor.commands.insertContent({ type: 'sectionReference', attrs: { sectionId: 'missing-id' },
+          content: fallback ? [{ type: 'text', text: fallback }] : [] })
+        else editor.view.pasteHTML(html, new Event('paste') as ClipboardEvent)
+        const reference = editor.state.doc.firstChild!.firstChild!
+        expect(reference.type.name).toBe('sectionReference')
+        expect(reference.attrs.sectionId).toBe('missing-id')
+        expect(reference.textContent).toBe(fallback)
+        expect(editor.getText()).toBe(`${fallback || untitledLabel} (${missingLabel})`)
+        expect(editor.view.dom.querySelector('a')?.textContent).toBe(editor.getText())
+        html = referenceClipboardHTML(editor)
+      }
+    },
+  )
+  it('copies a renamed live title while retaining its original fallback for later deletion', () => {
+    const { editor, doc, id } = setup()
+    setTitle(doc, id, 'Current heading')
+    const other = new Editor({ extensions: [StarterKit, CleanPaste,
+      DocumentSectionReference.configure({ ydoc: doc, project: () => 'demo' })] })
+    editors.push(other)
+    other.view.pasteHTML(referenceClipboardHTML(editor), new Event('paste') as ClipboardEvent)
+    expect(other.getText()).toBe('Current heading')
+    expect(other.state.doc.firstChild!.firstChild!.textContent).toBe('Original heading')
+    nodesMap(doc).delete(id)
+    expect(other.getText()).toBe('Original heading (Missing section)')
+  })
+  it('accepts legacy same-project HTML without guessing whether its text is a status suffix', () => {
+    const { editor, id } = setup()
+    editor.commands.clearContent()
+    editor.view.pasteHTML(`<a data-section-id="${id}" data-reference-project="demo">Literal (Missing section)</a>`, new Event('paste') as ClipboardEvent)
+    expect(editor.state.doc.firstChild!.firstChild!.textContent).toBe('Literal (Missing section)')
   })
   it('pastes a foreign-project reference as an ordinary link to its original destination', () => {
     const { editor, id } = setup()

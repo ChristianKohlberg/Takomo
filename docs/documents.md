@@ -381,7 +381,8 @@ the fallback with a missing-section label. API and Map text projections resolve 
 target title on every read too; empty titles use “Untitled section”. These reads never modify
 the stored fallback or prose. Table exports render references as escaped inline spans, preserving
 the surrounding cell text. Copying a reference within the project preserves its
-identity; pasting it into another project retains an ordinary link to the original project.
+identity and raw fallback across repeated copies, including after renames or language changes;
+pasting it into another project retains an ordinary link to the original project.
 
 Pasting HTML automatically removes source fonts, colors, sizes, spacing and copied block ids.
 Supported headings, nested lists, tables, code, links and emphasis remain editable and use the

@@ -1,4 +1,5 @@
 import { Node, type Editor } from '@tiptap/react'
+import { Fragment } from '@tiptap/pm/model'
 import * as Y from 'yjs'
 import { nodesMap, sectionReferenceTitle } from './mindmap-crdt'
 import { specificationLink } from './specification-url'
@@ -24,11 +25,19 @@ export const DocumentSectionReference = Node.create<{
   }),
   parseHTML() {
     return [{ tag: 'a[data-section-id]', priority: 100, getAttrs: element =>
-      element.getAttribute('data-reference-project') === this.options.project() ? null : false }]
+      element.getAttribute('data-reference-project') === this.options.project() ? null : false,
+      getContent: (element, schema) => {
+        // Display labels include current titles and localized missing markers.
+        // Clipboard round trips must retain the raw shared fallback instead.
+        const fallback = (element as HTMLElement).getAttribute('data-reference-fallback') ?? element.textContent ?? ''
+        return fallback ? Fragment.from(schema.text(fallback)) : Fragment.empty
+      },
+    }]
   },
   renderHTML({ node }) {
     const title = this.options.ydoc ? sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId) : null
     return ['a', { class: 'document-section-reference', 'data-section-id': node.attrs.sectionId, 'data-reference-project': this.options.project(),
+      'data-reference-fallback': node.textContent,
       ...(title === null ? { 'aria-disabled': 'true' } : { href: specificationLink(this.options.project(), 'document', node.attrs.sectionId) }) },
       title === null ? `${node.textContent || this.options.untitledLabel()} (${this.options.missingLabel()})` : title || this.options.untitledLabel()]
   },
@@ -48,6 +57,7 @@ export const DocumentSectionReference = Node.create<{
         const title = options.ydoc ? sectionReferenceTitle(options.ydoc, current.attrs.sectionId) : null
         dom.dataset.sectionId = current.attrs.sectionId
         dom.dataset.referenceProject = options.project()
+        dom.dataset.referenceFallback = current.textContent
         dom.textContent = title === null
           ? `${current.textContent || options.untitledLabel()} (${options.missingLabel()})`
           : title || options.untitledLabel()
