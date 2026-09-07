@@ -9,6 +9,7 @@ pub mod diagrams;
 pub mod docprops;
 pub mod docs;
 pub mod docsync;
+pub mod document_chat;
 pub mod environments;
 pub mod events;
 pub mod export;

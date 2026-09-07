@@ -1,3 +1,4 @@
+import { DOCUMENT_KIND, documentInstructions, documentInput } from './document.mjs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { openRepository, repositoryTools } from './repository.mjs';
@@ -147,6 +148,9 @@ export class Codex {
   async run(job, onSession = async () => {}) {
     const research = job.kind === RESEARCH_KIND;
     const organizer = job.kind === ORGANIZER_KIND;
+    const document = job.kind === DOCUMENT_KIND;
+    if (document !== (this.kind === DOCUMENT_KIND)) throw new Error('Document conversations require their own Codex process policy.');
+    const documentText = document ? documentInput(job) : null;
     const snapshot = organizer ? organizerSnapshot(job.snapshot) : null;
     if (profileFor(job.kind) !== this.profile) {
       throw new Error(`Codex was started for ${this.kind === RESEARCH_KIND ? 'research' : 'section review'} and cannot run a ${research ? 'research' : 'section review'} job.`);
@@ -155,7 +159,7 @@ export class Codex {
       this.repository = await openRepository(job, this.repositories);
       await onSession({ repository_revision: this.repository.revision });
     }
-    const policy = research ? researchInstructions : organizer ? organizerInstructions : instructions;
+    const policy = research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
     await this.request('initialize', { ...(research ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
     this.send({ method: 'initialized' });
     validateConfig((await this.request('config/read', { includeLayers: false })).config, this.profile);
@@ -179,7 +183,7 @@ export class Codex {
     try {
       const { turn } = await this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
+        input: [{ type: 'text', text: documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
         approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
         ...(organizer ? { outputSchema: organizerSchema } : {}),
       });

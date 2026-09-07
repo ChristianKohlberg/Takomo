@@ -84,7 +84,9 @@ pub async fn claim(
         ));
     }
     let job = long_poll(&state, Duration::from_secs(req.wait_seconds), || {
-        state.store.claim_agent_job(&ctx, &req.service_id)
+        state
+            .store
+            .claim_agent_job(&ctx, &req.service_id, req.supported_kinds.as_deref())
     })
     .await?;
     if job.is_some() {

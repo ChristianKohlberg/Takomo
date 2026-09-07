@@ -24,6 +24,17 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Agent queue inspector', () => {
+  it('opens a document discussion without inventing a section link', async () => {
+    const discussion: AgentJob = { ...job, kind: 'document_chat', node: 'document-conversation', section_title: '' }
+    vi.mocked(listAgentJobs).mockResolvedValue(list([discussion]))
+    vi.mocked(getAgentJob).mockResolvedValue(detail(discussion))
+    render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Document discussion/ }))
+    const pane = await screen.findByRole('region', { name: 'Request details' })
+    expect((await within(pane).findByRole('link', { name: 'Open document' })).getAttribute('href')).toBe('/projects/demo/specification?view=document')
+    expect(within(pane).queryByText('Section ID')).toBeNull()
+    expect(within(pane).queryByRole('link', { name: 'Open section' })).toBeNull()
+  })
   it('opens the organizer project in lanes without inventing a specification section', async () => {
     const organizer: AgentJob = { ...job, kind: 'lane_organize', project: 'other-project', mindmap: null, node: 'lane-organizer', section_title: '' }
     vi.mocked(listAgentJobs).mockResolvedValue(list([organizer]))

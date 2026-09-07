@@ -259,3 +259,6 @@ export { DocumentComments } from './documents/DocumentComments'
 export { DocumentCommentButton } from './documents/DocumentCommentButton'
 
 export { DocumentSectionReferenceButton } from './documents/DocumentSectionReferenceButton'
+
+export { DocumentAgent } from "./documents/DocumentAgent"
+export { DocumentConversation } from "./documents/DocumentConversation"

@@ -1,6 +1,6 @@
 # Takomo agent service
 
-A standalone, single-job worker for read-only section conversations, [lane organization](#lane-organization), and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
+A standalone, single-job worker for read-only section and document conversations, [lane organization](#lane-organization), and [explicit bug research](#explicit-bug-research). It claims jobs from Takomo, runs a Codex App Server turn over stdio, and delivers the completed response. The same process can run beside Takomo, on a developer machine, or on another server; it only needs an outbound connection to Takomo and Codex's provider.
 
 ## Start
 
@@ -48,7 +48,7 @@ The service's persisted ID and Codex state belong together. Run only one service
 - A heartbeat renews the job lease every 15 seconds. Losing a heartbeat stops Codex, preventing the worker from continuing after losing ownership. Takomo marks expired jobs failed. Turns are never automatically rerun; result delivery alone may be retried, using the same attempt ID and payload.
 - Codex starts in an empty workspace with a dedicated HOME/CODEX_HOME and a small environment allowlist. The Takomo token and parent process secrets are not passed to Codex. Read-only sandbox policy and disabled network access apply to each turn. Shell execution, apps, plugins, hooks, browser/computer tools, images, multi-agent tools, code mode, and web search are disabled. The process is started for one job kind: a research process additionally enables Codex's dynamic-tool host (`features.code_mode_host`), which is what lets the declared repository tools execute at all, while a section process keeps it disabled and is refused a research job. Before starting a thread, effective configuration is checked against that kind's profile: inherited MCP servers/plugins, a feature that differs from the profile, relaxed permissions, and custom instruction files/notify hooks fail closed. Unsupported tool/approval requests fail the turn.
 - No document API, edit tool, or test creation tool is exposed. Section text is supplied as review material. The worker has a five-minute turn timeout and a 64,000-byte response limit, and SIGINT/SIGTERM stop the active Codex process. An interrupted job is resolved by lease expiry.
-- This MVP returns the response after completion; it does not stream text, expose approval dialogs, migrate sessions, retry failed turns, or generate code.
+- Responses arrive after completion; the worker does not stream text, expose approval dialogs, migrate sessions or retry failed turns. Document requests can draft illustrative test code as reply text; the worker never writes or runs it.
 
 ## Check
 
@@ -61,6 +61,43 @@ node --test services/agent/test/*.test.mjs
 The fake JSON-RPC process tests thread start/resume, early IDs, final-answer filtering/deduplication, provider failure, process death, unsupported approvals, timeouts, result retry without model reexecution, lease-loss handling, and rejection of inherited tool configurations. To check the real integration, authenticate the dedicated home, queue a section grill in Takomo, run `--once`, then submit a follow-up and run it again. Reload Takomo to verify persisted messages. Stop a running service to verify lease expiry displays a failed job.
 
 Protocol references: [Codex App Server](https://learn.chatgpt.com/docs/app-server), [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference). For a CLI upgrade, regenerate its schema with `codex app-server generate-json-schema --out /tmp/codex-schema` and rerun these checks.
+
+## Document conversations and section actions
+
+`document_chat` jobs discuss a whole document or one or more selected sections.
+Actions are `discuss`, `grill`, `draft_tests` and `draft_questions`. Custom requests
+use `discuss` with the user's prompt. Test cases, illustrative test code and
+questions arrive as Markdown drafts in the conversation. No document, checklist,
+question record or repository is changed, and tests are never run.
+
+Each turn receives a fresh JSON snapshot with the document identity, action,
+explicit scope and section ids/titles/notes. This replaces earlier snapshots as
+current reference material while the resumed Codex thread retains conversation
+history. The worker validates action and scope, keeps the no-tools/read-only
+profile, and uses a dedicated document drafting policy rather than the older
+section review policy that prohibits drafting tests. The same five-minute timeout,
+64,000-byte reply limit, lease checks and result-only retries apply.
+
+The worker advertises `supported_kinds` when claiming jobs. Upgrade this service
+alongside Takomo to enable document requests: workers that omit this capability
+continue receiving only the older section, research and organizer jobs. Pending
+document requests remain queued until a compatible worker is available. Preserve
+the service id and Codex state directory to resume attached document sessions;
+Takomo stores messages in its database, while Codex's resumable thread state lives
+in that worker's persistent directory. An attached session uses this service's
+managed Codex thread, not an arbitrary terminal or desktop session.
+
+An optional provider check runs two tiny document turns in a temporary Codex home:
+
+```sh
+TAKOMO_AGENT_DOCUMENT_LIVE_SMOKE=1 node --test services/agent/test/document-live-smoke.test.mjs
+```
+
+It privately copies the configured worker home's authentication, leaves that home
+unchanged, and removes its temporary state afterward. It verifies a draft response,
+conversation recall after process restart and a refreshed document deadline. It
+uses the authenticated provider, but creates no Takomo jobs or records. Ordinary
+tests skip it.
 
 ## Lane organization
 

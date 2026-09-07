@@ -22,6 +22,7 @@ import { useSpecification } from '../specification/context'
 // owns the plan's review history and document actions.
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { DocumentAgent } from '@/components/documents/DocumentAgent'
 import { SectionConversation } from '@/components/documents/SectionConversation'
 import { useToast } from '@/components/Toaster'
 import { pick } from '@/lib/i18n'
@@ -49,6 +50,7 @@ export function DocumentView() {
   const {
     token,
     scopes,
+    nodes,
     lang,
     project,
     projects,
@@ -192,6 +194,8 @@ export function DocumentView() {
     <DiagramContext value={{ token, project: map?.project ?? project }}>
     <Plan
       project={project}
+      agentTools={<DocumentAgent token={token} project={map?.project ?? project} map={session.mindmap} lang={lang} nodes={nodes}
+        selected={focusSection} canAsk={session.can_write && scopes.includes('human') && scopes.includes('write')} onError={handleErr} />}
       key={session.session}
       conversationFor={(node) => (
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}

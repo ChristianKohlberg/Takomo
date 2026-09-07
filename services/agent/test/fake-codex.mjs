@@ -12,6 +12,7 @@ function effectiveConfig() {
   }
   return config;
 }
+let threadParams;
 const send = message => process.stdout.write(`${JSON.stringify(message)}\n`);
 createInterface({ input: process.stdin }).on('line', line => {
   const request = JSON.parse(line);
@@ -20,6 +21,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (request.method === 'initialize') return reply({});
   if (request.method === 'config/read') return reply({ config: effectiveConfig() });
   if (request.method.startsWith('thread/')) {
+    threadParams = { method: request.method, ...request.params };
     if (request.params.sandbox !== 'read-only' || request.params.config.features.shell_tool !== false || request.params.config.features.code_mode_host !== false || request.params.dynamicTools) process.exit(2);
     return reply({ thread: { id: request.params.threadId || 'thread-new' } });
   }
@@ -32,7 +34,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (text.includes('HANG')) return;
     send({ method: 'item/completed', params: { threadId: 'unrelated-thread', turnId: 'turn-1', item: { id: 'bad', type: 'agentMessage', text: 'WRONG' } } });
     send({ method: 'item/completed', params: { threadId, turnId: 'turn-1', item: { id: 'commentary', type: 'agentMessage', phase: 'commentary', text: 'Working...' } } });
-    const item = { id: 'final', type: 'agentMessage', phase: 'final_answer', text: `Which deadline applies? (${threadId})` };
+    const item = { id: 'final', type: 'agentMessage', phase: 'final_answer', text: text.includes('DOCUMENT_PROTOCOL') ? JSON.stringify({ thread: threadParams, turn: request.params }) : `Which deadline applies? (${threadId})` };
     send({ method: 'item/completed', params: { threadId, turnId: 'turn-1', item } });
     send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: text.includes('FAIL') ? 'failed' : 'completed', items: [item], error: { message: 'Provider unavailable' } } } });
   }

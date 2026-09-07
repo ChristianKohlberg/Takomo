@@ -928,6 +928,41 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/AgentSend'
+  /mindmaps/{id}/conversation:
+    parameters:
+    - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [agent conversations]
+      operationId: documentConversationGet
+      summary: Read the shared document Codex conversation
+      description: Requires read access to the map project. History is shared and persisted independently of browser state. The empty node anchor identifies the whole-document session, while every job records its own explicit context.
+      responses:
+        '200':
+          description: Conversation and immutable context for each turn
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentConversationView'}
+        default: {$ref: '#/components/responses/Error'}
+  /mindmaps/{id}/conversation/messages:
+    parameters:
+    - {name: id, in: path, required: true, schema: {type: string}}
+    post:
+      tags: [agent conversations]
+      operationId: documentConversationSend
+      summary: Discuss selected sections or draft tests and questions
+      description: Requires human and write access to a writable project. Context must explicitly select whole_document with no section_ids, or 1–500 unique section_ids with whole_document false. Source is captured from the current shared CRDT in document order, including hierarchy and structured prose XML; the combined snapshot is limited to 100000 UTF-8 bytes without truncation. Each turn refreshes context while retaining the Codex thread. Responses are discussion and reviewable drafts only; no document, check or question record is changed. One active turn and 100 total turns per document conversation. request_id deduplicates actor/message/action/scope, including retries after selected sections change or disappear; changed instructions or scope with the same ID return 409. Only workers advertising document_chat may claim these jobs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DocumentConversationSend'}
+      responses:
+        '200':
+          description: Persisted conversation, messages and jobs
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentConversationView'}
+        default: {$ref: '#/components/responses/Error'}
   /agent-jobs:
     get:
       tags:
@@ -8659,7 +8694,7 @@ components:
     AgentJobInspection:
       type: object
       properties:
-        kind: {type: string, enum: [section_chat, bug_research, lane_organize]}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat]}
         ticket_id: {type: string, description: Present for bug research.}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
         repository_revision: {type: [string, 'null']}
@@ -8901,6 +8936,43 @@ components:
       - message
       - request_id
       additionalProperties: false
+    DocumentConversationSend:
+      type: object
+      additionalProperties: false
+      required: [message, request_id, action, section_ids, whole_document]
+      properties:
+        message: {type: string, minLength: 1, description: 1–8000 UTF-8 bytes.}
+        request_id: {type: string, minLength: 1, maxLength: 120}
+        action: {type: string, enum: [discuss, grill, draft_tests, draft_questions]}
+        section_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 120}}
+        whole_document: {type: boolean, description: Must be true exactly when section_ids is empty.}
+    DocumentConversationView:
+      allOf:
+      - {$ref: '#/components/schemas/AgentConversationView'}
+      - type: object
+        properties:
+          jobs:
+            type: array
+            maxItems: 100
+            items:
+              allOf:
+              - {$ref: '#/components/schemas/AgentJobStatus'}
+              - type: object
+                required: [action, section_ids, whole_document, section_count, sections]
+                properties:
+                  action: {type: string, enum: [discuss, grill, draft_tests, draft_questions]}
+                  section_ids: {type: array, items: {type: string}}
+                  whole_document: {type: boolean}
+                  section_count: {type: integer, minimum: 0}
+                  sections:
+                    type: array
+                    description: IDs and titles captured when this turn was submitted, unaffected by later edits.
+                    items:
+                      type: object
+                      required: [id, title]
+                      properties:
+                        id: {type: string}
+                        title: {type: string}
     AgentClaim:
       type: object
       properties:
@@ -8908,6 +8980,12 @@ components:
           type: string
           minLength: 1
           maxLength: 120
+        supported_kinds:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat]}
+          description: Omission preserves legacy claims for section_chat, bug_research and lane_organize. document_chat requires explicit advertisement. A worker must only advertise kinds it supports.
         wait_seconds:
           type: integer
           minimum: 0
@@ -8919,7 +8997,7 @@ components:
     AgentClaimedJob:
       type: object
       properties:
-        kind: {type: string, enum: [section_chat, bug_research, lane_organize]}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat]}
         project: {type: string}
         ticket_id: {type: string}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
@@ -11203,6 +11281,7 @@ x-error-codes:
   conflict.bug_research: Research is disabled, unavailable, archived, already finished or at a bounded capacity; configure, wait, restore or explicitly retry as instructed.
   project.document_appearance: "Invalid document appearance: template must be balanced or strong, overrides may only name the documented typography fields, and each override must be a finite number inside its documented range (heading_weight in steps of 100). Omit a field or send null to inherit it from the template."
   project.writing_instructions: "Invalid project writing instructions: use at most 20 templates with unique 1–80 character ASCII ids, nonblank names up to 80 characters, and nonblank instructions up to 4000 characters. default_id must name an included template or be null."
+  validation.document_chat: "The document action or explicit section context is invalid; source snapshots cannot be supplied by callers."
   validation.agent_chat: "The request is malformed or exceeds a documented size bound."
   conflict.agent_job: "The conversation is busy or full, an idempotency key conflicts, or the job attempt is stale or owned by another service/token."
   notfound.agent_job: "No agent job has this id."

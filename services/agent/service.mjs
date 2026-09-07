@@ -4,7 +4,10 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { DOCUMENT_KIND } from './document.mjs';
 import { Codex } from './codex.mjs';
+
+export const supportedKinds = Object.freeze(['section_chat', 'bug_research', 'lane_organize', DOCUMENT_KIND]);
 
 export class ApiError extends Error {
   constructor(status) { super(`Takomo returned HTTP ${status}.`); this.status = status; }
@@ -118,7 +121,7 @@ export async function main() {
   try {
     while (!signal.aborted) {
       try {
-        const { job } = await api('/v1/agent-jobs/claim', { service_id: serviceId, wait_seconds: process.argv.includes('--once') ? 0 : 25 });
+        const { job } = await api('/v1/agent-jobs/claim', { service_id: serviceId, supported_kinds: supportedKinds, wait_seconds: process.argv.includes('--once') ? 0 : 25 });
         if (job) {
           console.log(`Running job ${job.id}.`);
           await executeJob(job, {
