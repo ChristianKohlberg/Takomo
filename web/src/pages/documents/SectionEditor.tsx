@@ -1,3 +1,4 @@
+import { CollaborationHistorySelection } from '@/lib/collaboration-history-selection'
 import { useContext } from 'react'
 import { DiagramContext } from '@/lib/diagram'
 // One section's prose, bound to that section's own fragment.
@@ -51,6 +52,7 @@ import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/docum
 import { DocumentSectionReference, refreshSectionReferenceLabels } from '@/lib/document-section-reference'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 import '@/styles/document-comments.css'
+import '@/styles/document-references.css'
 
 /** How long a person stops typing before the edit counts as settled. */
 const SETTLE_MS = 2500
@@ -165,6 +167,7 @@ export default function SectionEditor({
         TableKit.configure({ table: { resizable: true } }),
         Collaboration.configure({ document: ydoc, fragment }),
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
+        CollaborationHistorySelection,
         // Only a writer mints block ids — an `appendTransaction` runs regardless
         // of `editable`, so a reader would otherwise change the shared document
         // by opening a section.

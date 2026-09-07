@@ -16,6 +16,7 @@
 // resolves that by keeping the first occurrence.
 import { DOMSerializer } from '@tiptap/pm/model'
 import { Extension } from '@tiptap/react'
+import { ySyncPluginKey } from '@tiptap/y-tiptap'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { Node as PMNode } from '@tiptap/pm/model'
 
@@ -76,7 +77,7 @@ export const BlockId = Extension.create<{ canWrite: boolean }>({
     return [
       new Plugin({
         key: new PluginKey('blockId'),
-        appendTransaction: (_transactions, _oldState, newState) => {
+        appendTransaction: (transactions, _oldState, newState) => {
           // A reader does not mint ids.
           //
           // `editable: false` does not stop an `appendTransaction`, so a
@@ -113,10 +114,14 @@ export const BlockId = Extension.create<{ canWrite: boolean }>({
           for (const { pos, id } of fixes) {
             tr.setNodeAttribute(pos, 'id', id)
           }
-          // Not undoable and not a user edit: this is bookkeeping the writer
-          // never asked for, and putting it in the undo stack would make ⌘Z
-          // appear to do nothing.
-          tr.setMeta('addToHistory', false)
+          // Yjs sees the original edit and appended ID repair as one update.
+          // Excluding the repair unconditionally therefore excludes Enter/paste
+          // itself. Include IDs in their local edit's undo item, but never turn
+          // mount/remote/undo repairs or explicitly excluded imports into edits.
+          const userEdit = transactions.some(transaction => transaction.docChanged &&
+            transaction.getMeta('addToHistory') !== false &&
+            !transaction.getMeta(ySyncPluginKey)?.isChangeOrigin)
+          tr.setMeta('addToHistory', userEdit)
           return tr
         },
       }),

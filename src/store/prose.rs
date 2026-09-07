@@ -25,16 +25,53 @@
 //! nested the way ProseMirror nests them (`bulletList > listItem > paragraph`).
 
 use yrs::{
-    GetString, ReadTxn, TransactionMut, Xml, XmlElementPrelim, XmlFragment, XmlFragmentRef, XmlOut,
-    XmlTextPrelim,
+    Any, GetString, Map, Out, ReadTxn, TransactionMut, Xml, XmlElementPrelim, XmlFragment,
+    XmlFragmentRef, XmlOut, XmlTextPrelim,
 };
 
 /// The text of one block, with any nesting flattened.
 ///
 /// Not `get_string`, which serialises the element back to XML and would hand a
 /// reader `<paragraph id="blk_x">…</paragraph>` as if it were prose. The same
-/// trap `docprops::element_text` documents, and the same answer.
-fn element_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
+/// trap `docprops::element_text` documents, and the same answer. References read
+/// their target title from this transaction, leaving the stored fallback and
+/// all shared prose unchanged.
+pub(crate) fn element_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
+    if el.tag().as_ref() == "sectionReference" {
+        let title = match el.get_attribute(txn, "sectionId") {
+            Some(Out::Any(Any::String(id))) => txn
+                .get_map(super::mindmapdoc::NODES_FIELD)
+                .and_then(|nodes| nodes.get(txn, id.as_ref()))
+                .and_then(|entry| match entry {
+                    Out::YMap(entry) => Some(match entry.get(txn, "title") {
+                        Some(Out::YText(text)) => text.get_string(txn),
+                        Some(Out::Any(Any::String(text))) => text.to_string(),
+                        _ => String::new(),
+                    }),
+                    _ => None,
+                }),
+            _ => None,
+        };
+        return match title {
+            Some(title) if !title.is_empty() => title,
+            Some(_) => "Untitled section".to_string(),
+            None => {
+                let fallback = element_children_text(txn, el);
+                format!(
+                    "{} (Missing section)",
+                    if fallback.is_empty() {
+                        "Untitled section"
+                    } else {
+                        &fallback
+                    }
+                )
+            }
+        };
+    }
+    element_children_text(txn, el)
+}
+
+fn element_children_text<T: ReadTxn>(txn: &T, el: &yrs::XmlElementRef) -> String {
     let mut out = String::new();
     for child in el.children(txn) {
         match child {

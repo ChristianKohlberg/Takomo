@@ -83,6 +83,31 @@ describe('SectionEditor', () => {
     doc.destroy()
   })
 
+  it('undoes and redoes multi-block paste through the mounted editor with the caret restored', () => {
+    const doc = new Y.Doc()
+    const fragment = section(doc, 'mn-1', 'Original')
+    const awareness = new Awareness(doc)
+    const provider = { awareness } as unknown as WebsocketProvider
+    let editor: Editor | null = null
+    const view = render(<SectionEditor ydoc={doc} fragment={fragment} provider={provider}
+      display="Ada" color="#2563eb" canWrite onSettled={() => {}} label="Paste section"
+      onEditor={value => { editor = value }} />)
+    const active = editor!
+    act(() => {
+      active.commands.setTextSelection(9)
+      active.view.pasteHTML('<p>Paste one</p><p>Paste two</p>', new Event('paste') as ClipboardEvent)
+    })
+    const pasted = active.getJSON()
+    const caret = active.state.selection.toJSON()
+    act(() => { active.commands.undo() })
+    expect(active.getText()).toBe('Original')
+    expect(active.state.selection.anchor).toBe(9)
+    act(() => { active.commands.redo() })
+    expect(active.getJSON()).toEqual(pasted)
+    expect(active.state.selection.toJSON()).toEqual(caret)
+    view.unmount(); awareness.destroy(); doc.destroy()
+  })
+
   it('relabels mounted section references on a locale change without rebuilding the editor or moving the caret', () => {
     const doc = new Y.Doc()
     const fragment = section(doc, 'mn-1', 'See ')

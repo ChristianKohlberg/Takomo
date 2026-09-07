@@ -22319,3 +22319,124 @@ async fn collaboration_save_ack_is_a_durability_barrier_including_deletes_and_re
         );
     }
 }
+
+/// API prose and Map notes are projections of the same live reference identity.
+#[tokio::test]
+async fn section_reference_api_projections_follow_renames_and_deletion() {
+    use docsync_support::*;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    use yrs::encoding::read::{Cursor, Read as _};
+    use yrs::encoding::write::Write as _;
+    use yrs::{
+        Map, MapPrelim, TextPrelim, Transact, Xml, XmlElementPrelim, XmlFragment,
+        XmlFragmentPrelim, XmlTextPrelim,
+    };
+
+    let app = TestApp::spawn().await;
+    let (map, url) = mindmap_socket(&app, &app.admin, "Reference projection").await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let doc = yrs::Doc::new();
+    let nodes = doc.get_or_insert_map("nodes");
+    let update = {
+        let mut txn = doc.transact_mut();
+        let target = nodes.insert(&mut txn, "mn-reftarget", MapPrelim::default());
+        target.insert(&mut txn, "title", TextPrelim::new("Original"));
+        target.insert(&mut txn, "order", "a0");
+        let source = nodes.insert(&mut txn, "mn-refsource", MapPrelim::default());
+        source.insert(&mut txn, "title", TextPrelim::new("Source"));
+        source.insert(&mut txn, "order", "a1");
+        let prose = source.insert(&mut txn, "prose", XmlFragmentPrelim::default());
+        let table = prose.push_back(&mut txn, XmlElementPrelim::empty("table"));
+        table.insert_attribute(&mut txn, "id", "blk_reference");
+        let row = table.push_back(&mut txn, XmlElementPrelim::empty("tableRow"));
+        let cell = row.push_back(&mut txn, XmlElementPrelim::empty("tableCell"));
+        let para = cell.push_back(&mut txn, XmlElementPrelim::empty("paragraph"));
+        para.push_back(&mut txn, XmlTextPrelim::new("Before "));
+        let reference = para.push_back(&mut txn, XmlElementPrelim::empty("sectionReference"));
+        reference.insert_attribute(&mut txn, "sectionId", "mn-reftarget");
+        reference.push_back(&mut txn, XmlTextPrelim::new("Original"));
+        para.push_back(&mut txn, XmlTextPrelim::new(" after"));
+        txn.encode_update_v1()
+    };
+    socket
+        .send(Message::Binary(sync_message(SYNC_UPDATE, &update).into()))
+        .await
+        .unwrap();
+    let mut barrier = Vec::new();
+    barrier.write_var(4u64);
+    barrier.write_var(1u64);
+    socket.send(Message::Binary(barrier.into())).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() {
+                let mut decoder = Cursor::new(bytes.as_ref());
+                if decoder.read_var::<u64>().ok() == Some(4) {
+                    assert_eq!(decoder.read_var::<u64>().unwrap(), 1);
+                    assert_eq!(decoder.read_var::<u64>().unwrap(), 1);
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let reader = app.mint("reference-reader", &["read"], None);
+    for (step, expected, html) in [
+        (0, "Original", "Original"),
+        (1, "Renamed <& title", "Renamed &lt;&amp; title"),
+        (
+            2,
+            "Original (Missing section)",
+            "Original (Missing section)",
+        ),
+    ] {
+        if step == 1 {
+            let (status, body) = app
+                .patch(
+                    &app.admin,
+                    &format!("/v1/mindmaps/{map}/nodes/mn-reftarget"),
+                    json!({"title": "Renamed <& title"}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        } else if step == 2 {
+            let (status, body) = app
+                .delete(
+                    &app.admin,
+                    &format!("/v1/mindmaps/{map}/nodes/mn-reftarget"),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        let saved = app.open_store().load_collab_updates(&map).unwrap();
+        let (status, prose) = app
+            .get(
+                &reader,
+                &format!("/v1/mindmaps/{map}/prose?node=mn-refsource"),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{prose}");
+        assert!(
+            prose["markdown"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("<p>Before <span>{html}</span> after</p>")),
+            "{prose}"
+        );
+        let (status, map_body) = app.get(&reader, &format!("/v1/mindmaps/{map}")).await;
+        assert_eq!(status, StatusCode::OK, "{map_body}");
+        let source = map_body["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "mn-refsource")
+            .unwrap();
+        assert_eq!(source["notes"], format!("Before {expected} after"));
+        assert_eq!(
+            app.open_store().load_collab_updates(&map).unwrap(),
+            saved,
+            "read projections must not rewrite CRDT content"
+        );
+    }
+}

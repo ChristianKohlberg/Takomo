@@ -68,6 +68,17 @@ function readString(m: Inner, key: string, fallback = ''): string {
 export const PROSE_KEY = 'prose'
 
 /**
+ * The current title of the section a reference points at, or `null` when the
+ * target no longer exists. Read on every projection so a rename shows through
+ * without rewriting the reference's stored fallback. Mirrors the lookup
+ * `element_text` makes in `src/store/prose.rs`.
+ */
+export function sectionReferenceTitle(doc: Y.Doc, id: string): string | null {
+  const entry = nodesMap(doc).get(id)
+  return entry instanceof Y.Map ? readText(entry, 'title') : null
+}
+
+/**
  * The text of one block, with any nesting flattened.
  *
  * Not `toString()`, which serialises the element back to XML and would hand a
@@ -76,6 +87,12 @@ export const PROSE_KEY = 'prose'
  */
 function elementText(el: Y.XmlElement | Y.XmlText): string {
   if (el instanceof Y.XmlText) return el.toString()
+  if (el.nodeName === 'sectionReference') {
+    const title = el.doc ? sectionReferenceTitle(el.doc, el.getAttribute('sectionId') ?? '') : null
+    if (title !== null) return title || 'Untitled section'
+    const fallback = el.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText).map(child => child.toString()).join('')
+    return `${fallback || 'Untitled section'} (Missing section)`
+  }
   let out = ''
   for (const child of el.toArray()) {
     if (child instanceof Y.XmlText) out += child.toString()
