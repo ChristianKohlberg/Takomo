@@ -3,6 +3,8 @@
 The shared header also opens [version history](specification-history.md):
 automatic saved CRDT versions, named agreements, comparisons, and downloads.
 Reviewing an earlier version keeps the live editor and collaboration session open.
+Collaborators appear in the header as a count that opens a list of names with
+their session counts; a name identifies a session, not a verified person or role.
 
 Open `/projects/{project}/specification?view=document`. Document, Map and Tests
 are views within this workspace; the project and selected section stay in the
@@ -28,12 +30,21 @@ socket refreshes server-owned metadata and verdicts for the workspace and its
 visible views.
 
 The project picker and Inbox sit at the top of the shared navigation rail, not
-in the page header; the Inbox icon carries the count of open questions, or a
+in the page header — on a phone, in the compact top bar that stands in for the
+rail; the Inbox icon carries the count of open questions, or a
 green check when there are none. The language switch is in the profile menu.
+
+The Definitions tab summarizes how many definitions are not run, verified,
+failed or outdated, narrows by that status, by text and by section, and links
+each card to its source section. An empty Runs tab explains that runs are
+created from definitions and offers a way there; a section filter that matches
+no run says so instead. A permission failure is shown once, naming the project,
+in place of an empty list.
 
 Test definitions keep the readable example separate from its technical details.
 Cases with `steps` and `expected` in their assignment show a numbered procedure
-and expected result; other parameters remain available in a collapsed section.
+and expected result; other parameters remain in a collapsed section as labelled
+values with a copy action, the raw JSON beneath them.
 Existing `metadata.specification.bindings` on a check appear under **Code
 references**: an array of `{file, selector, proves?, limits?}` entries, with an
 optional `bindings_source_commit` beside it naming the commit they were recorded

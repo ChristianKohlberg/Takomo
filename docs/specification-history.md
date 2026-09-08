@@ -4,6 +4,10 @@ Document and Map edit the same CRDT document. **Version history** in the shared
 specification header lets readers revisit saved content, compare two versions,
 and name an agreed version without disturbing the live editor. The selected
 versions are URL parameters, so a link or reload reopens the same comparison.
+The list groups bursts of automatic saves within five minutes of each other and
+keeps every named checkpoint as its own entry; a selected version shows a summary
+of the sections changed since the previous one, and a comparison highlights the
+changed words in each section.
 The history list receives updates through the workspace's existing project socket.
 
 Every mindmap CRDT flush containing new operations now archives its update **in the same SQLite
@@ -45,7 +49,11 @@ versions and checkpoints. This is not an offsite backup or a tamper-proof audit 
 - `GET /v1/mindmaps/{id}/versions/{version}` returns the full earlier section tree
   and relationships. `notes` is untruncated plain text; `prose_xml` retains rich
   formatting for inspection; `prose_structure` gives canonical structured content
-  for comparisons independent of XML attribute order. The UI reads plain text and exposes other changed
+  for comparisons independent of XML attribute order. The UI renders the saved
+  content read-only from `prose_structure` (or, for older versions, from
+  `prose_xml` parsed as inert data — never inserted as markup), including
+  diagrams; a comparison diffs the plain-text projection word by word, treats
+  attribute-order-only differences as unchanged, and exposes other changed
   fields in expandable details.
 - `GET /v1/mindmaps/{id}/versions/{version}/state` downloads a Yjs v1 update that
   reconstructs the version in an **empty** Y.Doc, including rich content.

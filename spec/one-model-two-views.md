@@ -15,7 +15,9 @@ automatically; there is no separate creation dialog. Existing plans are reused,
 including when two browsers open a new project together. Read-only visits never
 create a plan.
 
-In Doc, type a heading on an inline insertion line and press Enter. Choose H1,
+In Doc, choose **Add section** at a section boundary (shown on hover or focus,
+always on touch screens), type a heading on the inline insertion line and press
+Enter. Choose H1,
 H2 or H3, or prefix the title with `#`, `##` or `###`. Child headings require a
 preceding parent level. A heading completed at the end of a section's prose also
 becomes a shared section on Enter. The new section appears in Map immediately;

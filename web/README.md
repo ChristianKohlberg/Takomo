@@ -112,7 +112,11 @@ duplication. The dark variant is bound to `prefers-color-scheme`, not shadcn's
 Takomo has no tablet-specific design, so `sm:` and `lg:` exist in Tailwind but
 should not appear in new code — a third layout nobody looks at is worse than two
 that are checked. `web/src/hooks/useIsPhone.ts` mirrors the same line in JS, for
-the handful of cases where the difference is structural rather than visual.
+the handful of cases where the difference is structural rather than visual. The
+one deliberate exception is the rail: below 1024px `useNavCollapsed` starts it
+collapsed and treats expanding it as momentary rather than a preference, because
+an expanded rail took a third of a tablet's width. It is a JS `matchMedia`
+query, not a Tailwind prefix, so the lint contract below is unchanged.
 
 Design mobile-first where it is free: an unprefixed class is the PHONE style, and
 `md:` adds the desktop one. That ordering matters, because the failure mode is
@@ -152,8 +156,12 @@ sideways to hide what did not fit, behind an edge that signals nothing. The rail
 gives the surfaces their own axis, so a sixth costs vertical space nobody is
 short of. Two states, toggled by the icon under its top row: expanded (icon +
 label, `w-56`) and collapsed (icons only, `w-24` — wide enough for the project
-initial and the Inbox icon side by side). The choice is a viewer preference, so
-`useNavCollapsed` persists it per origin and every surface reads the same key.
+initial and the Inbox icon side by side). On a desktop the choice is a viewer
+preference, so `useNavCollapsed` persists it per origin and every surface reads
+the same key; on a phone or tablet the rail starts collapsed and a toggle is not
+persisted, so opening it there never overwrites the desktop preference. Every
+rail link carries `?project=<current>`, so the selected project survives
+navigation, copy-link and new-tab alike.
 
 **The project picker is in the rail too** — its top row, where the wordmark used
 to be, with Inbox beside it — because it is not about the current surface: it
@@ -180,15 +188,17 @@ states. The other three surfaces offer it.
 
 Sign-out lives at the bottom of the rail, with the actor and its role. It used
 to be one more icon button beside "refresh" on every page — two adjacent glyphs,
-one harmless and one that ends the session. The DE/EN switch is in that same
-profile menu, so the page header carries only the surface's title, its views
-(centred) and its actions.
+one harmless and one that ends the session. Language is a submenu of that same
+profile menu — English and Deutsch as radio items with the current one checked —
+so the page header carries only the surface's title, its views (centred) and its
+actions.
 
-On a phone the expanded rail would take 224 of 375 px, so there it **overlays**
-the content with a backdrop instead of pushing it, a spacer holds the collapsed
-strip's place in the flow, and following a link closes it. That is a structural
-difference rather than a visual one, which is why it reads `useIsPhone` instead
-of taking a `md:` prefix.
+On a phone the expanded rail would take 224 of 375 px and even the collapsed
+strip a quarter of the screen, so there the rail is out of the flow entirely: a
+compact top bar carries a menu button, the project picker and Inbox, and the
+menu button opens the rail as an **overlay** with a backdrop; following a link
+closes it. That is a structural difference rather than a visual one, which is
+why it reads `useIsPhone` instead of taking a `md:` prefix.
 
 **/documents is the PLAN, not a filing cabinet.** A project has one plan, and
 the map and this page are two renderings of it: a node is a section, its title
@@ -215,7 +225,9 @@ Three consequences worth knowing before editing `pages/documents/`:
   binding testable at all.
 - **Headings and new sections are edited in place, against the map's tree.** A
   heading is `EditableText` bound to the node's title, and Enter on it moves
-  into the section's prose. Every section ends in an inline line: type a title,
+  into the section's prose. Every section ends in an **Add section** control
+  (shown on hover or focus, and always on touch screens, so reading is not
+  interrupted by a row of empty inputs) that reveals an inline line: type a title,
   pick H1–H3 (or prefix `#`/`##`/`###`) and press Enter, and `lib/plan-insert.ts`
   creates the node under the nearest preceding heading one level up — a skipped
   level or a blank title is refused rather than silently placed. A heading typed
@@ -283,9 +295,12 @@ the editing surface and already has a read-only state; one surface rather than a
 canvas panel and a dialog that overlap. It holds who wrote it, what it became, the
 notes, kind, shape, colour, edge label, the reviewed flag, this node's relations,
 a question's answer, and a read-only attachment list with a button through to
-`AttachmentsDialog`. It opens from the pill's `node.open`, ⌘K, the right-click
-menu, and the `✎` on an `Outline` row — deliberately NOT from selection and not
-from double-click. It commits a field when you leave it and when it closes — no
+`AttachmentsDialog`. Notes open as a read-only rendering of the node's prose
+(the same `SavedProse` history uses, so formatting and diagrams appear rather
+than their markup) behind an explicit **Edit notes** switch to the textarea. It
+opens from the pill's `node.open`, ⌘K, the right-click
+menu, and Open in an `Outline` row's `⋯` menu — deliberately NOT from selection
+and not from double-click. It commits a field when you leave it and when it closes — no
 save button, for the reason `/documents` has none — and closing hands the keyboard
 back to the canvas.
 
@@ -345,12 +360,16 @@ is prevented on the WHOLE canvas, not just on a node: a file dropped in empty
 space would otherwise navigate the browser to it and throw away the map, the
 connection and whatever anyone was typing.
 
-The phone gets all of that as plain buttons on each `Outline` row — attachments
-(with the count), open, rename, add after, add underneath, detach, remove —
-because every canvas affordance here is pointer-driven and a phone has neither
-hover nor a right button. It carries the same one caret the canvas does and no
-more: a row being named shows a title caret in place, `Aa` opens it on a row that
-already has a name, and `✎` opens the same `NodeDialog` for everything else.
+The phone gets all of that on each `Outline` row — open, attachments (with the
+count), rename, add underneath, add after, detach, remove — because every canvas
+affordance here is pointer-driven and a phone has neither hover nor a right
+button. The verbs sit behind one `⋯` menu per row rather than beside the title,
+which left a deep title forty pixels: one menu is open at a time, an outside
+click or Escape closes it and returns focus to its trigger, and the selected row
+shows a compact bar with Open and Add underneath. It carries the same one caret
+the canvas does and no more: a row being named shows a title caret in place,
+Rename in the menu opens it on a row that already has a name, and Open opens the
+same `NodeDialog` for everything else.
 
 **Every card carries a line of substance, and folding SUMMARISES.** A card used to
 be a title and its marks; it now also carries one quiet line saying
@@ -543,8 +562,11 @@ inline markup, so diagram scripts and click actions cannot run in the app DOM.
 Inline sizes are Compact (320 px high), Comfortable (520 px high), and Original
 (intrinsic size, fitted to available width). Each preserves the entire diagram.
 Expand opens a modal preview with Fit, 100%, and zoom controls; zoomed content
-scrolls inside the overlay. Escape or Close returns focus to Expand. View and
-size preferences retain the existing browser storage key
+scrolls inside the overlay. Escape or Close returns focus to Expand. In dark mode
+the preview is adapted to the theme by an image filter, toggled per block with
+**Adapt canvas to theme**; the shared source is untouched, and the filter is what
+keeps the adaptation engine-independent. View, size and canvas
+preferences retain the existing browser storage key
 `takomo.mermaid.preferences.v1`, separately from the collaborative document;
 controls work when storage is blocked. Preferences apply to newly mounted
 diagrams, while each open diagram can be adjusted independently.

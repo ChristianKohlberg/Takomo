@@ -333,7 +333,13 @@ event.
   prune; fit, tidy, rename the map, switch project. And **go to a thought…**,
   which fuzzy-matches titles, unfolds whatever was hiding the match and centres
   it — with no rail, that is how you move around a map that has outgrown the
-  screen. A node with no hand placement is laid out automatically, which
+  screen; a **Find a node** field on the canvas does the same. The canvas opens
+  on the root and its first ring at a readable scale rather than fitting the
+  whole tree to a thumbnail, and its controls carry **Fit all** for the overview,
+  **Fit branch** for the selected subtree, the zoom percentage, and a
+  **Keep zoom and position** switch — without it, changing layout refits the
+  selected branch or the map, so nothing lands off-screen. A node with no hand
+  placement is laid out automatically, which
   keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
   back to the layout. On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.
