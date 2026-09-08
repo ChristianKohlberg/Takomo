@@ -22,6 +22,7 @@ import { useSpecification } from '../specification/context'
 // owns the plan's review history and document actions.
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { SectionTicketLinks } from '@/components/documents/SectionTicketLinks'
 import { DocumentAgent } from '@/components/documents/DocumentAgent'
 import { SectionConversation } from '@/components/documents/SectionConversation'
 import { useToast } from '@/components/Toaster'
@@ -197,6 +198,7 @@ export function DocumentView() {
     {tools => <Plan
       project={project}
       agentTools={tools}
+      ticketLinksFor={section => <SectionTicketLinks token={token} project={project} section={section} lang={lang} />}
       key={session.session}
       conversationFor={(node) => (
         <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}

@@ -38,6 +38,7 @@ pub struct Ticket {
     pub tags: Vec<String>,
     pub metadata: Value,
     pub links: Value,
+    pub document_refs: Vec<Value>,
     pub blocked_by: Vec<String>,
     pub claim_holder: Option<String>,
     /// When the lease expires — or None while `claim_holder` is set, for an
@@ -135,6 +136,7 @@ impl Ticket {
             "tags": self.tags,
             "metadata": self.metadata,
             "links": self.links,
+            "document_refs": self.document_refs,
             "blocked_by": self.blocked_by,
             "claim": claim,
             "version": self.version,

@@ -6,7 +6,7 @@ export interface AgentJob {
   id: string
   conversation_id: string
   project: string
-  kind?: 'section_chat' | 'document_chat' | 'document_workspace' | 'bug_research' | 'lane_organize'
+  kind?: 'section_chat' | 'document_chat' | 'document_workspace' | 'ticket_document_classify' | 'bug_research' | 'lane_organize'
   ticket_id?: string
   repository_revision?: string | null
   mindmap: string | null

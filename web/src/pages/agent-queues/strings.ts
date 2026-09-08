@@ -2,6 +2,7 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    documentClassification: 'Ticket document matching', openTicket: 'Open ticket',
     documentDiscussion: 'Document discussion', openDocument: 'Open document',
     organizeLanes: 'Organize pending work', openLanes: 'Open lanes', laneSnapshot: 'Work and lane snapshot',
     cancelled: 'Cancelled', openBug: 'Open bug ticket', bugSnapshot: 'Bug report snapshot', title: 'Agent queue', openSection: 'Open section', description: 'Inspect agent requests and their Codex replies.',
@@ -24,6 +25,7 @@ export const STR = defineStrings({
     timestampHint: 'Times are shown in your local time zone.',
   },
   de: {
+    documentClassification: 'Ticket-Dokumentzuordnung', openTicket: 'Ticket öffnen',
     documentDiscussion: 'Dokumentgespräch', openDocument: 'Dokument öffnen',
     organizeLanes: 'Offene Arbeit organisieren', openLanes: 'Lanes öffnen', laneSnapshot: 'Arbeit und Lanes zum Anfragezeitpunkt',
     cancelled: 'Abgebrochen', openBug: 'Fehlerticket öffnen', bugSnapshot: 'Fehlermeldung zum Anfragezeitpunkt', title: 'Agenten-Queue', openSection: 'Abschnitt öffnen', description: 'Agentenanfragen und ihre Codex-Antworten prüfen.',

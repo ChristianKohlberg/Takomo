@@ -155,6 +155,8 @@ pub enum ArchivedFilter {
 
 #[derive(Debug, Clone, Default)]
 pub struct TicketListFilter {
+    pub document_section: Option<String>,
+    pub document_linked: Option<bool>,
     pub project: Option<String>,
     /// State id or category name.
     pub state: Option<String>,
@@ -660,7 +662,13 @@ impl Store {
     }
 
     pub fn get_ticket(&self, id: &str) -> ApiResult<Option<Ticket>> {
-        self.with_conn(|conn| get_ticket_opt(conn, id))
+        self.with_conn(|conn| {
+            let mut ticket = get_ticket_opt(conn, id)?;
+            if let Some(t) = &mut ticket {
+                super::ticket_document::hydrate_refs(conn, std::slice::from_mut(t))?;
+            }
+            Ok(ticket)
+        })
     }
 
     /// Every ticket (with blocked_by) plus its comments, for JSONL export.
@@ -730,6 +738,12 @@ impl Store {
         self.with_conn(|conn| {
             let mut sql = format!("SELECT {TICKET_COLS}, t.rowid AS rid FROM tickets t WHERE 1=1");
             let mut params_vec: Vec<SqlValue> = Vec::new();
+            if filter.document_section.is_some() || filter.document_linked.is_some() {
+                let ids=super::ticket_document::filtered_tickets(conn,filter.project.as_deref(),filter.allowed_projects.as_deref(),filter.document_section.as_deref())?;
+                sql.push_str(if filter.document_linked==Some(false) {" AND t.id NOT IN (SELECT value FROM json_each(?))"} else {" AND t.id IN (SELECT value FROM json_each(?))"});
+                params_vec.push(SqlValue::Text(serde_json::to_string(&ids).unwrap()));
+            }
+
             match filter.archived {
                 ArchivedFilter::Exclude => sql.push_str(" AND t.archived_at IS NULL"),
                 ArchivedFilter::Only => sql.push_str(" AND t.archived_at IS NOT NULL"),
@@ -865,6 +879,7 @@ impl Store {
                 load_blocked_by(conn, &mut t)?;
                 tickets.push(t);
             }
+            super::ticket_document::hydrate_refs(conn,&mut tickets)?;
             Ok((tickets, next_cursor))
         })
     }

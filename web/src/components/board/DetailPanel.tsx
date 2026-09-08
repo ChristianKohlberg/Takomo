@@ -62,6 +62,7 @@ export interface DetailPanelLabels {
 }
 
 export interface DetailPanelProps {
+  documentLinks?: React.ReactNode
   relatedTickets?: Ticket[]
   onOpenTicket?: (id: string) => void
   terminalStates?: string[]
@@ -81,6 +82,7 @@ export function DetailPanel({
   onOpenTicket,
   terminalStates,
   navigationLabels,
+  documentLinks,
   ticket: t,
   questions,
   labels,
@@ -302,6 +304,8 @@ export function DetailPanel({
               <div className="text-muted-foreground text-[13px]">{labels.noComments}</div>
             )}
           </Section>
+
+          {documentLinks}
 
           {canAsk && (
             <Button variant="outline" onClick={onAsk} className="w-fit">

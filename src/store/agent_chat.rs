@@ -329,7 +329,16 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
         [id],
         |r| r.get(0),
     )?;
-    value["kind"] = json!(if workspace {
+    let classification: Option<String> = conn
+        .query_row(
+            "SELECT ticket FROM ticket_document_jobs WHERE job=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    value["kind"] = json!(if classification.is_some() {
+        "ticket_document_classify"
+    } else if workspace {
         "document_workspace"
     } else if document {
         "document_chat"
@@ -340,6 +349,10 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
     } else {
         "section_chat"
     });
+    if let Some(ticket) = classification {
+        value["ticket_id"] = json!(ticket);
+        value["section_title"] = json!("Classify ticket against document");
+    }
     if document {
         value["section_title"] = conn
             .query_row(
@@ -598,7 +611,7 @@ impl Store {
         ];
         let supported = supported.unwrap_or(&legacy);
         if supported.is_empty()
-            || supported.len() > 5
+            || supported.len() > 6
             || supported.iter().any(|kind| {
                 ![
                     "section_chat",
@@ -606,13 +619,14 @@ impl Store {
                     "lane_organize",
                     "document_chat",
                     "document_workspace",
+                    "ticket_document_classify",
                 ]
                 .contains(&kind.as_str())
             })
         {
             return Err(ApiError::validation(
                 "validation.agent_chat",
-                "supported_kinds must list 1–5 recognized job kinds",
+                "supported_kinds must list 1–6 recognized job kinds",
             ));
         }
         let supported = serde_json::to_string(supported).unwrap();
@@ -630,7 +644,8 @@ impl Store {
                 FROM agent_jobs running JOIN agent_conversations rc ON rc.id=running.conversation_id WHERE
                 rc.project=c.project AND rc.ticket IS NOT NULL AND running.status='running')<2) AND (c.service_id IS NULL
                 OR c.service_id=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2))) AND
-                (CASE WHEN EXISTS(SELECT 1 FROM document_workspace_jobs w WHERE w.job=j.id) THEN 'document_workspace'
+                (CASE WHEN EXISTS(SELECT 1 FROM ticket_document_jobs td WHERE td.job=j.id) THEN 'ticket_document_classify'
+                WHEN EXISTS(SELECT 1 FROM document_workspace_jobs w WHERE w.job=j.id) THEN 'document_workspace'
                 WHEN EXISTS(SELECT 1 FROM document_agent_jobs d WHERE d.job=j.id) THEN 'document_chat'
                 WHEN EXISTS(SELECT 1 FROM lane_organizer_jobs o WHERE o.job=j.id) THEN 'lane_organize'
                 WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id) THEN 'bug_research'
@@ -650,8 +665,10 @@ impl Store {
             let organizer:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lane_organizer_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
             let document:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM document_agent_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
             let workspace:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM document_workspace_jobs WHERE job=?1)",[&jid],|r|r.get(0))?;
-            value["kind"]=json!(if workspace {"document_workspace"}else if document {"document_chat"}else if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
+            let classification:Option<String>=tx.query_row("SELECT ticket FROM ticket_document_jobs WHERE job=?1",[&jid],|r|r.get(0)).optional()?;
+            value["kind"]=json!(if classification.is_some(){"ticket_document_classify"}else if workspace {"document_workspace"}else if document {"document_chat"}else if organizer {"lane_organize"}else if bug.is_some(){"bug_research"}else{"section_chat"});
             if workspace { value["migrate_thread"]=json!(match thread.as_deref() {Some(t)=>super::document_chat::needs_migration(tx,&cid,t)?,None=>false}); }
+            if let Some(ticket)=classification {value["ticket_id"]=json!(ticket);}
             value["project"]=json!(project);
             if let Some((ticket,reference))=bug {value["ticket_id"]=json!(ticket);
 value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
@@ -688,6 +705,15 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
         ctx: &AuthCtx,
         jid: &str,
         req: &ResultInput,
+    ) -> ApiResult<Value> {
+        self.finish_agent_job_with_document(ctx, jid, req, None)
+    }
+    pub fn finish_agent_job_with_document(
+        &self,
+        ctx: &AuthCtx,
+        jid: &str,
+        req: &ResultInput,
+        document: Option<&Value>,
     ) -> ApiResult<Value> {
         if !matches!(req.status.as_str(), "completed" | "failed") {
             return Err(ApiError::validation(
@@ -762,6 +788,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
                 }
             }
             super::document_chat::validate_evidence(tx,jid,req.evidence.as_ref(),req.status=="completed")?;
+            super::ticket_document::save_proposal(tx,jid,req.proposal.as_ref(),req.evidence.as_ref(),req.status=="completed",document)?;
             super::lane_organizer::save_proposal(tx,jid,req.proposal.as_ref(),req.status=="completed")?;
             super::document_chat::record_migration(tx,jid,req.evidence.as_ref(),req.thread_id.as_deref())?;
             session(tx, &job, jid, req.thread_id.as_deref(), req.turn_id.as_deref())?;

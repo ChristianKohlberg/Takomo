@@ -2730,6 +2730,8 @@ paths:
         - { name: label, in: query, schema: { type: string }, description: 'repeatable, AND semantics' }
         - { name: tag, in: query, schema: { type: string }, description: 'exact `kind:handle` tag reference; repeatable, AND semantics' }
         - { name: tag_kind, in: query, schema: { type: string }, description: 'match any tag of this kind (e.g. person); repeatable, AND semantics' }
+        - { name: document_section, in: query, schema: { type: string }, description: Only tickets with a valid accepted reference to this section. }
+        - { name: document_linked, in: query, schema: { type: boolean }, description: Filter presence or absence of valid accepted document references. Missing sections and references to previous projects do not count. }
         - { name: parent, in: query, schema: { type: string }, description: direct children of this id }
         - { name: epic, in: query, schema: { type: string }, description: "every descendant at any depth (the whole subtree); the ticket itself is excluded, unlike `parent` which matches one level" }
         - { name: q, in: query, schema: { type: string }, description: full-text over title+body }
@@ -2760,6 +2762,201 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/Ticket" } }
                   next_cursor: { type: [string, "null"] }
+
+  /tickets/{id}/document-links:
+    get:
+      tags: [tickets]
+      summary: Inspect accepted, suggested and removed document references
+      description: Requires read scope and project access. Captured versions and review metadata remain available; missing or changed source is explicit. Classification does not alter ticket parent, epic or workflow state.
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      responses:
+        '200':
+          description: Reference history and current classification state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentLinks' }
+        '403': { description: Read scope or project access required. }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [tickets]
+      summary: Add a manual related-section reference
+      description: Requires human and write scopes in a writable project. The section must belong to this project's document. Optional primary replaces the prior primary marker without removing other accepted references. A manual link to the same related section supersedes its previous record while retaining history. Source provenance is reserved for trusted server creation paths.
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [section_id]
+              properties:
+                section_id: { type: string }
+                primary: { type: boolean, default: false }
+                reason: { type: string, maxLength: 4000 }
+      responses:
+        '200':
+          description: Updated reference history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentLinks' }
+        '403': { description: Human and write scopes required. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Project archived or reference conflicts with current state. }
+        '422': { description: Invalid section or reason. }
+  /tickets/{id}/document-links/{link}:
+    parameters:
+      - { $ref: '#/components/parameters/id' }
+      - { name: link, in: path, required: true, schema: { type: string } }
+    patch:
+      tags: [tickets]
+      summary: Accept, remove or change the primary marker on a reference
+      description: Requires human and write scopes in a writable project. Stale suggestions and missing sections cannot be accepted. Setting primary clears the previous primary marker. Removal retains the reference history and never changes ticket hierarchy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                state: { type: string, enum: [accepted, removed] }
+                primary: { type: boolean }
+      responses:
+        '200':
+          description: Updated reference history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentLinks' }
+        '403': { description: Human and write scopes required. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Stale suggestion or unavailable source; classify again or select a current section manually. }
+        '422': { description: Invalid reference state. }
+    delete:
+      tags: [tickets]
+      summary: Remove a reference while preserving its history
+      description: Requires human and write scopes in a writable project. Equivalent to PATCH with state removed.
+      responses:
+        '200':
+          description: Updated reference history.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentLinks' }
+        '403': { description: Human and write scopes required. }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/{id}/document-classification:
+    post:
+      tags: [tickets]
+      summary: Request another document match for a ticket
+      description: Requires human and write scopes. request_id identifies retries of the same request. Returns an asynchronous ticket_document_classify job or null when no work is eligible. Explicit retry may reconsider previously dismissed matches. Classification is limited to 500 sections and 8000000 UTF-8 bytes; oversized documents report unavailable while manual reference operations remain usable. Accepted manual or source references are never automatically replaced.
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketDocumentRequest' }
+      responses:
+        '200':
+          description: Requested job, or no eligible job.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id]
+                properties:
+                  job_id: { type: [string, 'null'] }
+        '403': { description: Human and write scopes required. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Request conflicts with current ticket or job state. }
+        '422': { description: Invalid request identifier. }
+  /projects/{id}/document-classification-config:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      tags: [projects]
+      summary: Read document classification policy
+      description: Requires read scope and project access. Default is suggest.
+      responses:
+        '200':
+          description: Project policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentPolicy' }
+        '403': { description: Read scope or project access required. }
+    put:
+      tags: [projects]
+      summary: Set document classification policy
+      description: Requires admin scope in a writable project. auto_apply_clear only accepts a sole candidate without ambiguity whose title uniquely equals the ticket title after whitespace and case normalization, with verified retrieved quote/version evidence and unchanged ticket/document context and no existing accepted references. Other matches remain suggestions. No workflow gate is installed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketDocumentPolicy' }
+      responses:
+        '200':
+          description: Updated policy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketDocumentPolicy' }
+        '403': { description: Admin scope or project access required. }
+        '409': { description: Project archived. }
+        '422': { description: Unknown policy mode. }
+  /projects/{id}/document-classification:
+    post:
+      tags: [projects]
+      summary: Schedule existing open tickets for document matching
+      description: Requires human and write scopes in a writable project. This explicit backfill adds pending markers; a bounded background sweeper skips ineligible or already-linked tickets. It does not synchronously process the whole project. Opening a browser page never schedules backfill.
+      parameters: [{ $ref: '#/components/parameters/id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketDocumentRequest' }
+      responses:
+        '200':
+          description: Number of newly scheduled pending markers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scheduled]
+                properties:
+                  scheduled: { type: integer, minimum: 0 }
+        '403': { description: Human and write scopes required. }
+        '409': { description: Project archived. }
+        '422': { description: Invalid request identifier. }
+  /projects/{id}/document-links:
+    get:
+      tags: [projects]
+      summary: Page accepted ticket references, optionally for one document section
+      description: Requires read scope and project access. Stable order is ticket ID, reference creation time and reference ID. Multiple references may belong to one ticket. Use offset and total to retrieve all reverse associations.
+      parameters:
+        - { $ref: '#/components/parameters/id' }
+        - { name: section_id, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 100000, default: 0 } }
+      responses:
+        '200':
+          description: Accepted references with ticket titles and states.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: '#/components/schemas/TicketDocumentLink' }
+                        - type: object
+                          properties:
+                            ticket_title: { type: string }
+                            ticket_state: { type: string }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '403': { description: Read scope or project access required. }
+        '422': { description: Invalid pagination bounds. }
 
   /tickets/{id}:
     get:
@@ -8720,8 +8917,8 @@ components:
     AgentJobInspection:
       type: object
       properties:
-        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace]}
-        ticket_id: {type: string, description: Present for bug research.}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace, ticket_document_classify]}
+        ticket_id: {type: string, description: Present for bug research and ticket document classification.}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
         repository_revision: {type: [string, 'null']}
         evidence: {description: Retained partial or final evidence.}
@@ -9051,9 +9248,9 @@ components:
         supported_kinds:
           type: array
           minItems: 1
-          maxItems: 5
-          items: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace]}
-          description: Omission preserves legacy claims for section_chat, bug_research and lane_organize. document_chat and document_workspace require explicit advertisement. A worker must only advertise kinds it supports.
+          maxItems: 6
+          items: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace, ticket_document_classify]}
+          description: Omission preserves legacy claims for section_chat, bug_research and lane_organize. document_chat, document_workspace and ticket_document_classify require explicit advertisement. A worker must only advertise kinds it supports.
         wait_seconds:
           type: integer
           minimum: 0
@@ -9066,7 +9263,7 @@ components:
       type: object
       properties:
         migrate_thread: {type: boolean, description: Workspace-only indication that a legacy thread requires controlled migration to dynamic tools.}
-        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace]}
+        kind: {type: string, enum: [section_chat, bug_research, lane_organize, document_chat, document_workspace, ticket_document_classify]}
         project: {type: string}
         ticket_id: {type: string}
         repository_ref: {type: object, properties: {repository: {type: string}, revision: {type: string}}}
@@ -9126,8 +9323,10 @@ components:
       type: object
       properties:
         proposal:
-          $ref: '#/components/schemas/LaneOrganizerProposal'
-          description: Required only for completed lane_organize jobs; forbidden on other kinds or failed results.
+          oneOf:
+            - { $ref: '#/components/schemas/LaneOrganizerProposal' }
+            - { $ref: '#/components/schemas/TicketDocumentProposal' }
+          description: Required for completed lane_organize or ticket_document_classify jobs using the matching proposal schema; forbidden on other kinds or failed results.
         cancelled: {type: [boolean, 'null'], description: True permits the owning cancelled attempt to save failed partial evidence without changing cancellation.}
         repository_revision: {type: [string, 'null'], maxLength: 200, description: Required resolved commit for completed bug research.}
         evidence: {description: Optional structured evidence bounded to 64000 serialized UTF-8 bytes.}
@@ -9839,9 +10038,93 @@ components:
         claimed_by: { type: [string, "null"], description: 'who holds or last held the lease — evidence for the outcome, not part of it' }
         archived_at: { type: [string, "null"], format: date-time }
 
+    TicketDocumentRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 120 }
+    TicketDocumentPolicy:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [suggest, auto_apply_clear], default: suggest }
+    TicketDocumentLink:
+      type: object
+      required: [id, ticket, mindmap, section_id, title, section_version, relation, provenance, state, primary, missing, stale]
+      properties:
+        id: { type: string }
+        ticket: { type: string }
+        project: { type: string }
+        mindmap: { type: string }
+        section_id: { type: string }
+        title: { type: string, description: Current title when available. }
+        captured_title: { type: string, description: Title at reference creation; unavailable cross-project source is redacted. }
+        section_version: { type: string }
+        ticket_revision: { type: string }
+        relation: { type: string, enum: [source, related] }
+        provenance: { type: string, enum: [direct, manual, automatic] }
+        state: { type: string, enum: [suggested, accepted, removed] }
+        primary: { type: boolean, description: At most one accepted reference per ticket is primary. }
+        reason: { type: string }
+        quote: { type: string }
+        created_by: { type: string }
+        created_at: { type: integer, description: Unix milliseconds. }
+        updated_at: { type: integer, description: Unix milliseconds. }
+        reviewed_by: { type: [string, 'null'] }
+        reviewed_at: { type: [integer, 'null'], description: Unix milliseconds. }
+        missing: { type: boolean }
+        stale: { type: boolean }
+    TicketDocumentLinks:
+      type: object
+      required: [links, classification]
+      properties:
+        links: { type: array, items: { $ref: '#/components/schemas/TicketDocumentLink' } }
+        classification:
+          type: [object, 'null']
+          properties:
+            status: { type: string, enum: [queued, running, completed, failed, no_match, stale, unavailable, linked] }
+            job_id: { type: [string, 'null'] }
+            error: { type: [string, 'null'] }
+            no_match_reason: { type: [string, 'null'] }
+            ambiguity: { type: [string, 'null'] }
+    TicketDocumentProposal:
+      type: object
+      additionalProperties: false
+      required: [candidates]
+      description: Completed classification proposal, at most 24000 serialized UTF-8 bytes. Every candidate must name a unique actually retrieved section at its captured version and quote text present in that section. An empty candidate list requires no_match_reason; candidates and no_match_reason are mutually exclusive. Worker result evidence.document.sources must prove retrieved source IDs and versions.
+      properties:
+        candidates:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [section_id, version, quote, rationale]
+            properties:
+              section_id: { type: string }
+              version: { type: string }
+              quote: { type: string, minLength: 1, maxLength: 2000 }
+              rationale: { type: string, minLength: 1, maxLength: 4000 }
+        ambiguity: { type: [string, 'null'], maxLength: 4000 }
+        no_match_reason: { type: [string, 'null'], maxLength: 4000 }
+
     Ticket:
       type: object
       properties:
+        document_refs:
+          type: array
+          description: Accepted document associations, including historical missing references. Ignore missing entries when filtering unlinked tickets or grouping by primary heading; secondary references do not change ticket hierarchy.
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              section_id: { type: string }
+              title: { type: string }
+              primary: { type: boolean }
+              provenance: { type: string, enum: [direct, manual, automatic] }
+              missing: { type: boolean }
         id: { type: string }
         project: { type: string }
         type: { type: string, enum: [epic, task, bug, spike] }
@@ -10538,7 +10821,7 @@ components:
             kinds in `x-event-kinds-reserved` are also listed but are never
             emitted — reserved so clients filtering the log can tell a dead arm
             from a missing one.
-          enum: [document_agent.pins_updated, lane.organization_accepted, lane.created, lane.updated, handoff.created, handoff.updated, agent_job.queued, agent_job.running, agent_job.completed, agent_job.failed, agent_job.cancelled, agent_job.steered, bug.triaged, bug.research_configured, test_run.created, test_run.result, test_run.transition, archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, document.archived, document.created, document.unarchived, document.updated, document_appearance_changed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed, writing_instructions_changed]
+          enum: [ticket.document_linked, ticket.document_reference_updated, project.document_classification_configured, document_agent.pins_updated, lane.organization_accepted, lane.created, lane.updated, handoff.created, handoff.updated, agent_job.queued, agent_job.running, agent_job.completed, agent_job.failed, agent_job.cancelled, agent_job.steered, bug.triaged, bug.research_configured, test_run.created, test_run.result, test_run.transition, archived, checklist.cases_filed, checklist.check_archived, checklist.check_created, checklist.check_updated, checklist.policy_set, checklist.verdict, claimed, commented, created, dep_added, dep_removed, document.archived, document.created, document.unarchived, document.updated, document_appearance_changed, environment.archived, environment.created, environment.unarchived, environment.updated, heartbeat, initiative_created, initiative_deleted, initiative_entry_added, initiative_updated, lease_expired, lease_revoked, mindmap_created, mindmap_deleted, mindmap_grown, mindmap_moved, mindmap_promoted, mindmap_pruned, mindmap_updated, project_archived, project_deleted, project_unarchived, project_updated, question_answered, question_assigned, question_asked, question_escalated, question_expired, question_followup_requested, question_options_revised, question_reopened, question_replied, question_withdrawn, release.pushed, released, schedule_activated, schedule_created, schedule_deleted, schedule_fired, schedule_missed, schedule_paused, schedule_proposed, schedule_rejected, schedule_updated, tag_created, tag_deleted, tag_updated, ticket_created, ticket_moved, ticket_orphaned, ticket_promoted, transitioned, unarchived, updated, user_created, user_disabled, user_enabled, user_project_added, user_project_removed, user_updated, workflow_changed, writing_instructions_changed]
         payload: { type: object, description: kind-specific; transitions carry from/to/reason }
         at: { type: string, format: date-time }
 
@@ -11333,6 +11616,9 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  validation.ticket_document: "Invalid document-reference, classification, policy or pagination input. Read the returned message and use current sections from the ticket project."
+  conflict.ticket_document: "The suggestion or source is stale, the section is unavailable, or classification conflicts with current state. Retry classification or manually link a current section."
+  notfound.ticket_document_link: "No document reference has this ID for the ticket. Read its document-links history."
   validation.lane_organizer: "Organizer input, pending collection, or model proposal is invalid or oversized. Read the message; no partial organization was applied."
   conflict.lane_organizer: "An organizer request is active, request_id was reused with changed content, or its snapshot is stale. Wait or request a fresh proposal; acceptance is atomic."
   diagram.busy: "all four rendering slots are occupied; retry shortly."

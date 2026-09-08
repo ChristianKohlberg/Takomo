@@ -27,6 +27,7 @@ mod model;
 mod moves;
 mod oauth;
 mod projects;
+pub mod ticket_document;
 mod work_lanes;
 mod writing_instructions;
 pub use writing_instructions::{WritingInstruction, WritingInstructions};
@@ -176,6 +177,8 @@ impl Store {
         conn.execute_batch(include_str!("lane_organizer.sql"))?;
         bugs::migrate(&conn)?;
         migrate(&conn)?;
+        // Install cross-table triggers only after legacy table rebuilds finish.
+        conn.execute_batch(include_str!("ticket_document.sql"))?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.

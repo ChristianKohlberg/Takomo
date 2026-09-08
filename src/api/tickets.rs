@@ -123,6 +123,8 @@ pub async fn list(
         validate_tag_kind(kind)?;
     }
     let filter = TicketListFilter {
+        document_section:first(&pairs,"document_section").map(str::to_string),
+        document_linked:match first(&pairs,"document_linked") {None=>None,Some("true")=>Some(true),Some("false")=>Some(false),_=>return Err(ApiError::validation("validation.ticket_document","document_linked must be true or false"))},
         project: first(&pairs, "project").map(str::to_string),
         state: first(&pairs, "state").map(str::to_string),
         ty: first(&pairs, "type").map(str::to_string),

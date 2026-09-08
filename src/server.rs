@@ -135,6 +135,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/bugs", get(crate::api::bugs::list))
         .route("/v1/bugs/{id}", get(crate::api::bugs::get).patch(crate::api::bugs::patch))
         .route("/v1/bugs/{id}/research", get(crate::api::bugs::research).post(crate::api::bugs::start))
+        .route("/v1/tickets/{id}/document-links",get(crate::api::ticket_document::get).post(crate::api::ticket_document::add))
+        .route("/v1/tickets/{id}/document-links/{link}",axum::routing::patch(crate::api::ticket_document::change).delete(crate::api::ticket_document::remove))
+        .route("/v1/tickets/{id}/document-classification",post(crate::api::ticket_document::classify))
+        .route("/v1/projects/{id}/document-classification-config",get(crate::api::ticket_document::config).put(crate::api::ticket_document::set_config))
+        .route("/v1/projects/{id}/document-classification",post(crate::api::ticket_document::backfill))
+        .route("/v1/projects/{id}/document-links",get(crate::api::ticket_document::reverse))
         .route("/v1/projects/{id}/bug-research-config", get(crate::api::bugs::config).put(crate::api::bugs::set_config))
         .route("/v1/agent-jobs/{id}/steer", post(crate::api::bugs::steer))
         .route("/v1/agent-jobs/{id}/cancel", post(crate::api::bugs::cancel))
@@ -745,6 +751,11 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
                 Ok(n) if n > 0 => woke = true,
                 Ok(_) => {}
                 Err(e) => eprintln!("agent job sweep failed: {}", e.body.message),
+            }
+            match state.store.sweep_ticket_classification() {
+                Ok(n) if n > 0 => woke = true,
+                Ok(_) => {}
+                Err(e) => eprintln!("document classification sweep failed: {}", e.body.message),
             }
             // The third pass: fire every schedule whose slot has come. Each one
             // is its own transaction, so a single corrupt cadence cannot stop

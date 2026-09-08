@@ -133,6 +133,7 @@ export interface PlanLabels {
 
 export interface PlanProps {
   agentTools?: ReactNode
+  ticketLinksFor?: (section: string) => ReactNode
   project?: string
   focusMode?: boolean
   structureHistory?: ReturnType<typeof createStructureHistory> | null
@@ -180,6 +181,7 @@ function ConnectedPlan({
   appearance,
   conversationFor,
   agentTools,
+  ticketLinksFor,
   locale = 'en',
   connection,
   testsFor,
@@ -866,6 +868,7 @@ function ConnectedPlan({
                   onHeadingFocus={() => { editingTitle.current = true; syncTextTools() }}
                   onHeadingUp={() => rowIndex > 0 && focusProse(visible[rowIndex - 1]!.key, 'end')}
                   headingActions={<>
+                    {ticketLinksFor?.(row.key)}
                     <CopySectionLink href={new URL(specificationLink(project, 'document', row.key), window.location.origin).href} locale={locale} />
                     <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}>
                       {locale === 'de' ? 'Kommentare' : 'Comments'}

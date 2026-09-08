@@ -1,3 +1,4 @@
+import { CLASSIFICATION_KIND } from './ticket-document-classification.mjs';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -8,7 +9,7 @@ import { WORKSPACE_KIND } from './document-workspace.mjs';
 import { DOCUMENT_KIND } from './document.mjs';
 import { Codex } from './codex.mjs';
 
-export const supportedKinds = Object.freeze(['section_chat', 'bug_research', 'lane_organize', DOCUMENT_KIND, WORKSPACE_KIND]);
+export const supportedKinds = Object.freeze(['section_chat', 'bug_research', 'lane_organize', DOCUMENT_KIND, WORKSPACE_KIND, CLASSIFICATION_KIND]);
 
 export class ApiError extends Error {
   constructor(status) { super(`Takomo returned HTTP ${status}.`); this.status = status; }
