@@ -802,12 +802,7 @@ function ConnectedPlan({
       <aside
         id="document-outline"
         style={{ display: focusMode || !outlineOpen ? 'none' : undefined }}
-        className={[
-          'document-outline border-b-border-soft flex flex-none flex-col border-b bg-white @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 dark:bg-card',
-          outlineOpen
-            ? 'absolute inset-x-0 top-0 z-40 max-h-[80%] overflow-y-auto px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:shadow-none'
-            : 'px-2 py-1 @min-[850px]/document-pane:w-auto',
-        ].join(' ')}
+        className="document-outline border-b-border-soft absolute inset-x-0 top-0 z-40 flex max-h-[80%] flex-none flex-col overflow-y-auto border-b bg-white px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:flex-none @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 @min-[850px]/document-pane:shadow-none dark:bg-card"
       >
         {outlineOpen && <div className="mb-2 flex flex-wrap gap-2 px-1 text-xs"><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set(rows.filter(row => row.children.length > 0).map(row => row.key)))}>{locale === 'de' ? 'Alle einklappen' : 'Collapse all'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set())}>{locale === 'de' ? 'Alle ausklappen' : 'Expand all'}</button></div>}
         {outlineOpen && (

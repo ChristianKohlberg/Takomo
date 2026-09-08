@@ -58,7 +58,7 @@ export interface CommandContext {
   /** The socket ticket's write bit: can this browser change the document. */
   canWrite: boolean
   /**
-   * Whether the page's own token may change the MAP — rename, delete, promote.
+   * Whether the page's own token may change the MAP — rename, delete.
    * Those go over REST rather than the socket, so they are a separate question
    * from `canWrite`.
    */

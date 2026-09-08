@@ -85,9 +85,8 @@ export interface NavRailProps {
    */
   current: keyof NavLabels | 'account'
   /**
-   * A count beside a nav entry, the way /inbox badges open questions and
-   * /schedules badges proposals waiting on a human. Zero renders nothing —
-   * a "0" badge is noise, not information.
+   * A count beside a nav entry, the way /inbox badges open questions. Zero
+   * renders nothing — a "0" badge is noise, not information.
    */
   badges?: Partial<Record<keyof NavLabels, number>>
   labels: NavRailLabels
@@ -190,7 +189,7 @@ export function NavRail({
   const initial = (actor || labels.account).trim().charAt(0).toUpperCase()
   const settingsHref = project ? `/settings?scope=${encodeURIComponent(project)}` : '/settings'
   const accountActive = current === 'account'
-  const footerRail = { nav, current, badges, labels, project, collapsed, onCollapsed, onSignOut, onNavigate: (href: string) => { if (overlay) onCollapsed(true); onNavigate?.(href) } }
+  const footerRail = { nav, current, badges, labels, project, collapsed, onCollapsed, onSignOut, onNavigate: onNavigate && ((href: string) => { if (overlay) onCollapsed(true); onNavigate(href) }) }
   const scopedHref = (key: typeof NAV_ORDER[number]) => key === 'specification' ? specificationLink(project) : project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key]
   const accountName = actor || labels.account
 
@@ -420,7 +419,7 @@ export function NavRail({
         </nav>
 
         <div className={cn('flex flex-none flex-col gap-1 px-2 pb-2', collapsed && 'items-center')}>
-          <InboxNavigation navigation={{ ...footerRail, onNavigate: onNavigate ? footerRail.onNavigate : undefined }} />
+          <InboxNavigation navigation={footerRail} />
         </div>
 
         {/* Profile block at the bottom: avatar opens a menu for settings and

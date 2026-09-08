@@ -291,23 +291,6 @@ export function deleteNode(token: string, id: string, node: string): Promise<unk
   )
 }
 
-/**
- * Graduate a branch. The node stays and keeps a link to what it became — the map
- * is the record of how the thinking got there.
- */
-export function promoteNode(
-  token: string,
-  id: string,
-  node: string,
-  target: 'epic' | 'initiative',
-): Promise<{ node: MindmapNode; created: Promoted & { children?: string[] } }> {
-  return api(
-    token,
-    `/mindmaps/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/promote`,
-    { method: 'POST', headers: json, body: JSON.stringify({ target }) },
-  )
-}
-
 // ---- the sync socket ------------------------------------------------------
 
 /**

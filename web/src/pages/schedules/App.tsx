@@ -265,7 +265,6 @@ export function App() {
           schedules: t.schedules,
           environments: t.environments,
         },
-        badges: { schedules: pending.length },
         projects: projects.map(({ id, name, archived, archived_at }) => ({
           id,
           name,
