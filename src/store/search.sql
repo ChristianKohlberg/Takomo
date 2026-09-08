@@ -32,7 +32,6 @@ CREATE TRIGGER IF NOT EXISTS search_crdt_dirty AFTER INSERT ON crdt_updates WHEN
  INSERT INTO search_dirty_maps(map_id,changed_at) VALUES(new.object_id,new.created_at)
  ON CONFLICT(map_id) DO UPDATE SET changed_at=excluded.changed_at;
 END;
-INSERT OR IGNORE INTO search_dirty_maps SELECT id,updated_at FROM mindmaps;
 CREATE TABLE IF NOT EXISTS search_failures (
  map_id TEXT PRIMARY KEY REFERENCES mindmaps(id) ON DELETE CASCADE, failed_at INTEGER NOT NULL, message TEXT NOT NULL
 );

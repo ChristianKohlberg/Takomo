@@ -62,8 +62,15 @@ pub async fn save_settings(
                 .ok_or_else(|| ApiError::validation("embeddings.key", "API key must be a string"))
         })
         .transpose()?;
-    let config: EmbeddingConfig = serde_json::from_value(body)
-        .map_err(|e| ApiError::validation("embeddings.config", e.to_string()))?;
+    let config: EmbeddingConfig = serde_json::from_value(body).map_err(|e| {
+        ApiError::validation(
+            "embeddings.config",
+            format!(
+                "Embedding settings are replaced whole, never merged: send provider, endpoint, model, dimensions, quiet_seconds and max_wait_seconds together, with api_key only when it changes ({e}). Nothing was changed."
+            ),
+        )
+        .remedy("GET /v1/settings/embeddings, edit the fields you want, and PUT all six back.")
+    })?;
     Ok(Json(state.store.save_embedding_config(config, key)?))
 }
 pub async fn search(
@@ -88,7 +95,6 @@ pub async fn search(
                 .remedy("Shorten the query and retry."),
         );
     }
-    let projection_error = state.store.project_search(&map, crate::ids::now_ms())?;
     let (config, key) = state.store.embedding_config()?;
     let status = state.store.search_status(&map)?;
     let mut semantic_status = if key.is_empty() {
@@ -128,10 +134,10 @@ pub async fn search(
         vector.as_deref().map(|v| (v, config.fingerprint())),
     )?;
     if vector.is_some() && !outcome.used_vectors {
-        semantic_status = if state.store.embedding_config()?.1.is_empty() {
-            "unconfigured"
-        } else {
+        semantic_status = if outcome.configured {
             "indexing"
+        } else {
+            "unconfigured"
         };
     }
     let shown = outcome.hits.len();
@@ -143,8 +149,8 @@ pub async fn search(
         "truncated": truncated,
         "mode": if outcome.used_vectors { "hybrid" } else { "keyword" },
         "semantic_status": semantic_status,
-        "projection": if projection_error.is_some() { "stale" } else { "current" },
-        "projection_error": projection_error,
+        "projection": if outcome.projection_error.is_some() { "stale" } else { "current" },
+        "projection_error": outcome.projection_error,
     });
     if truncated {
         body["note"] = json!(format!(

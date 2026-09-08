@@ -62,7 +62,7 @@ paths:
       tags: [admin]
       operationId: put_embedding_settings
       summary: Configure the global embedding provider
-      description: Requires unrestricted admin. Changed provider/endpoint clears a retained key unless a replacement is supplied. Changed provider/model/dimensions selects a new index generation; keyword search remains available while rebuilding.
+      description: "Requires unrestricted admin. Replaces the configuration whole: all six fields are required and an omission is refused with `embeddings.config` before anything changes (a key-only body is not a key rotation; GET, edit, and PUT everything back). Only `api_key` may be omitted, which retains the stored key. Changed provider/endpoint clears a retained key unless a replacement is supplied. Changed provider/model/dimensions selects a new index generation; keyword search remains available while rebuilding."
       requestBody:
         required: true
         content:
@@ -8462,6 +8462,7 @@ components:
   schemas:
     EmbeddingConfig:
       type: object
+      required: [provider, endpoint, model, dimensions, quiet_seconds, max_wait_seconds]
       properties:
         provider: { type: string, enum: [voyage, openai], default: voyage }
         endpoint: { type: string, format: uri, default: 'https://api.voyageai.com/v1/embeddings' }
@@ -11761,7 +11762,7 @@ x-error-codes:
   validation.ticket_document: "Invalid document-reference, classification, policy or pagination input. Read the returned message and use current sections from the ticket project."
   conflict.ticket_document: "The suggestion or source is stale, the section is unavailable, or classification conflicts with current state. Retry classification or manually link a current section."
   notfound.ticket_document_link: "No document reference has this ID for the ticket. Read its document-links history."
-  embeddings.config: "Embedding settings are invalid. Choose a supported protocol, model, dimensions and quiet/max-wait delays."
+  embeddings.config: "Embedding settings are invalid or incomplete. The PUT replaces the configuration whole, so send all six fields (provider, endpoint, model, dimensions, quiet_seconds, max_wait_seconds) with a supported protocol, model, dimensions and quiet/max-wait delays; nothing was changed."
   embeddings.endpoint: "The provider endpoint is not a valid URL. Use an HTTP(S) embeddings endpoint without embedded credentials, query or fragment."
   embeddings.global: "A project-scoped token cannot manage global embeddings. Use an unrestricted administrator token."
   embeddings.key: "The supplied API key is not a string or exceeds its limit. Supply a string, omit it to retain an eligible existing key, or clear it with an empty string."

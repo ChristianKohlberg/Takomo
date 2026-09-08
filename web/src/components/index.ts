@@ -195,6 +195,7 @@ export type { OutlineRailProps, OutlineRailLabels } from './documents/OutlineRai
 export { ProposalPanel } from './documents/ProposalPanel'
 export type { ProposalPanelProps, ProposalPanelLabels } from './documents/ProposalPanel'
 export { SectionPanel } from './documents/SectionPanel'
+export { DocumentHybridSearch, SearchExcerpt } from './documents/DocumentHybridSearch'
 export type { SectionPanelProps, SectionPanelLabels } from './documents/SectionPanel'
 
 // ---- mindmaps ----
@@ -234,6 +235,7 @@ export type { NodePillProps, PillVerb } from './mindmap/NodePill'
 export { PeopleList } from './settings/PeopleList'
 export type { PeopleListProps, PeopleListLabels } from './settings/PeopleList'
 export { PersonDialog } from './settings/PersonDialog'
+export { EmbeddingSettings } from './settings/EmbeddingSettings'
 export type { PersonDialogProps, PersonDialogLabels, PersonSaved } from './settings/PersonDialog'
 
 // ---- shared ----

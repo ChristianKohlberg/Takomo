@@ -25,7 +25,10 @@ token per minute; past that the search answers from keywords alone and reports
 An unrestricted administrator can configure embeddings in Settings. The default
 is Voyage, `voyage-4-lite`, 1024 dimensions. The other supported wire protocol is
 an OpenAI-compatible embeddings endpoint. Endpoint, model, dimensions and indexing
-delays are configurable; no provider is contacted until a key is supplied.
+delays are configurable; no provider is contacted until a key is supplied. The
+settings PUT replaces the configuration whole: all six fields travel together,
+and a body that omits one is refused before anything changes, so a key cannot be
+rotated by sending the key alone. Only the key may be omitted, which keeps it.
 Use a provider that supports the selected dimensions and request format.
 
 API keys are write-only in the settings API and stored in the server's SQLite
@@ -44,9 +47,11 @@ provider. Local testing uses a mock endpoint, never production content.
 
 The CRDT update log and document structure remain authoritative. SQLite FTS5,
 chunks, vectors and queue records are additive, rebuildable projections. Migration
-runs transactionally and preserves existing source tables, IDs and links. Existing
-maps are scheduled for projection on startup; unconfigured instances still get
-keyword search without an external service.
+runs transactionally and preserves existing source tables, IDs and links. The first
+upgrade schedules every existing map for projection; an ordinary restart schedules
+nothing, because the trigger already marks a map when its log grows and a
+projected map is projected. Unconfigured instances still get keyword search
+without an external service.
 
 A section is the normal chunk. Long sections split at paragraph boundaries around
 2000 characters, splitting an oversized paragraph only as a last resort. Ancestor
@@ -59,7 +64,7 @@ provider capacity and retry backoff can add time after a job becomes eligible.
 Unrelated edits do not reset a section's deadline. Leases recover interrupted jobs,
 and content hashes plus provider fingerprints reject stale completions.
 
-**Sync embeddings** in Document flushes pending document saves and makes the map's
+**Sync document** in the search modal flushes pending document saves and makes the map's
 pending jobs eligible immediately. It preserves already current embeddings, rather
 than paying to embed unchanged content again. The status reports queued, running,
 failed and indexed sections and a sanitized failure message. A failed provider

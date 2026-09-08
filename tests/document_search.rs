@@ -885,3 +885,159 @@ async fn symbol_only_queries_spend_nothing_and_stay_truthful() {
     }
     task.abort();
 }
+
+#[tokio::test]
+async fn key_only_put_is_refused_before_anything_changes() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let (endpoint, calls, task) = mock_provider().await;
+    let mut setting = serde_json::to_value(config(&endpoint)).unwrap();
+    setting["api_key"] = json!("private-test-key");
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/search/sync"),
+        json!({}),
+    )
+    .await;
+    let store = app.open_store();
+    process_jobs(&store).await.unwrap();
+    let indexed_calls = calls.load(Ordering::SeqCst);
+    let (before_config, before_key) = store.embedding_config().unwrap();
+    let before_status = store.search_status(&map).unwrap();
+    assert_eq!(before_status["indexed"], before_status["total"]);
+    let (s, refused) = app
+        .put(
+            &app.admin,
+            "/v1/settings/embeddings",
+            json!({"api_key":"rotated"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "embeddings.config");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.contains("provider") && message.contains("Nothing was changed"),
+        "{message}"
+    );
+    assert!(refused["remedy"].is_string());
+    let (after_config, after_key) = store.embedding_config().unwrap();
+    assert_eq!(
+        after_key, before_key,
+        "the old key is neither replaced nor cleared"
+    );
+    assert_eq!(after_config.endpoint, before_config.endpoint);
+    assert_eq!(after_config.fingerprint(), before_config.fingerprint());
+    assert_eq!(
+        store.search_status(&map).unwrap(),
+        before_status,
+        "no job was re-queued"
+    );
+    let (_, shown) = app.get(&app.admin, "/v1/settings/embeddings").await;
+    assert_eq!(shown["provider"], "openai");
+    assert_eq!(shown["endpoint"], endpoint);
+    process_jobs(&store).await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        indexed_calls,
+        "nothing was sent anywhere"
+    );
+    // A complete replacement still works, and rotates the key with it.
+    let mut full = serde_json::to_value(config(&endpoint)).unwrap();
+    full["model"] = json!("fixture-v2");
+    full["api_key"] = json!("rotated");
+    let (s, saved) = app.put(&app.admin, "/v1/settings/embeddings", full).await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    assert_eq!(saved["model"], "fixture-v2");
+    assert_eq!(saved["configured"], true);
+    assert_eq!(store.embedding_config().unwrap().1, "rotated");
+    task.abort();
+}
+
+#[tokio::test]
+async fn an_ordinary_reopen_does_not_redirty_projected_maps() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let empty = second_map(&app, "empty").await;
+    let now = takomo::ids::now_ms();
+    {
+        let store = app.open_store();
+        store.refresh_search(&map, false, now).unwrap();
+        store.refresh_search(&empty, false, now).unwrap();
+        assert_eq!(store.search_status(&empty).unwrap()["total"], 0);
+    }
+    let reopened = app.open_store();
+    let mut changes = reopened.changes.subscribe();
+    reopened.refresh_search(&map, false, now).unwrap();
+    reopened.refresh_search(&empty, false, now).unwrap();
+    assert!(
+        !changes.has_changed().unwrap(),
+        "a reopen schedules no replay for a map that is already projected, even an empty one"
+    );
+    assert_eq!(
+        reopened
+            .search_document(&map, "invoices", None)
+            .unwrap()
+            .hits[0]
+            .node_id,
+        node
+    );
+    assert_eq!(
+        reopened.search_status(&empty).unwrap()["projection"],
+        "current"
+    );
+    // The trigger still marks a map whose log grows after the reopen.
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices after restart"}),
+    )
+    .await;
+    reopened.refresh_search(&map, false, now + 1).unwrap();
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(
+        reopened
+            .search_document(&map, "restart", None)
+            .unwrap()
+            .hits[0]
+            .node_id,
+        node
+    );
+}
+
+#[tokio::test]
+async fn idle_worker_passes_write_nothing_and_a_due_job_is_still_claimed() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let store = app.open_store();
+    let now = takomo::ids::now_ms();
+    store.refresh_search(&map, false, now).unwrap();
+    let mut changes = store.changes.subscribe();
+    process_jobs(&store).await.unwrap();
+    assert!(store.claim_embedding_job(now).unwrap().is_none());
+    assert!(
+        !changes.has_changed().unwrap(),
+        "an unconfigured worker pass commits nothing and signals nothing"
+    );
+    let setting = config("http://127.0.0.1:9/embeddings");
+    store
+        .save_embedding_config(setting.clone(), Some("test".into()))
+        .unwrap();
+    changes.borrow_and_update();
+    assert!(store.claim_embedding_job(now).unwrap().is_none());
+    assert!(
+        !changes.has_changed().unwrap(),
+        "configured with nothing due yet is still an idle pass"
+    );
+    let job = store
+        .claim_embedding_job(now + setting.quiet_seconds * 1000 + 1)
+        .unwrap()
+        .expect("a due job is claimed");
+    assert!(changes.has_changed().unwrap(), "a real claim is a write");
+    assert!(job.lease > now);
+}

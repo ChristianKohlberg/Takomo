@@ -16,7 +16,7 @@ pub const MAX_ATTEMPTS: i64 = 3;
 pub const RESULT_LIMIT: usize = 20;
 pub const CANDIDATE_LIMIT: usize = 100;
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct EmbeddingConfig {
     pub provider: String,
     pub endpoint: String,
@@ -73,7 +73,18 @@ impl EmbeddingConfig {
 }
 pub fn migrate(conn: &Connection) -> ApiResult<()> {
     let tx = conn.unchecked_transaction()?;
+    let first_upgrade: bool = tx.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_dirty_maps')",
+        [],
+        |r| r.get(0),
+    )?;
     tx.execute_batch(include_str!("search.sql"))?;
+    if first_upgrade {
+        tx.execute(
+            "INSERT OR IGNORE INTO search_dirty_maps SELECT id,updated_at FROM mindmaps",
+            [],
+        )?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -118,6 +129,8 @@ pub struct SearchOutcome {
     pub hits: Vec<SearchHit>,
     pub used_vectors: bool,
     pub candidates: usize,
+    pub configured: bool,
+    pub projection_error: Option<String>,
 }
 /// Split only within a large paragraph as a last resort;
 /// Normal sections remain one chunk.
@@ -435,6 +448,21 @@ c.fingerprint<>?2))",
         })
     }
     pub fn claim_embedding_job(&self, now: i64) -> ApiResult<Option<EmbeddingJob>> {
+        let eligible = self.with_conn(|conn| {
+            let (c, k) = config(conn)?;
+            if k.is_empty() {
+                return Ok(false);
+            }
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM embedding_jobs WHERE due_at<=?1 AND lease_until<=?1 AND
+fingerprint=?2 AND attempts<?3)",
+                params![now, c.fingerprint(), MAX_ATTEMPTS],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if !eligible {
+            return Ok(None);
+        }
         self.with_tx(|tx| {
             let (c, k) = config(tx)?;
             if k.is_empty() {
@@ -566,14 +594,19 @@ impl Store {
         query: &str,
         vector: Option<(&[f32], String)>,
     ) -> ApiResult<SearchOutcome> {
-        self.project_search(map, now_ms())?;
+        let projection_error = self.project_search(map, now_ms())?;
         self.with_conn(|conn| {
-            let (config, _) = config(conn)?;
+            let (config, key) = config(conn)?;
             let fingerprint = config.fingerprint();
             let vector = vector.filter(|(_, generation)| generation == &fingerprint).map(|(v, _)| v);
             let tokens = terms(query);
+            let outcome = SearchOutcome {
+                configured: !key.is_empty(),
+                projection_error,
+                ..Default::default()
+            };
             if tokens.is_empty() {
-                return Ok(SearchOutcome::default());
+                return Ok(outcome);
             }
             let fts = tokens.iter().map(|s| format!("\"{}\"", s.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR ");
             let mut lexical = conn.prepare(
@@ -648,7 +681,12 @@ MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT ?3",
                     break;
                 }
             }
-            Ok(SearchOutcome { hits, used_vectors: vector.is_some(), candidates })
+            Ok(SearchOutcome {
+                hits,
+                used_vectors: vector.is_some(),
+                candidates,
+                ..outcome
+            })
         })
     }
 }
