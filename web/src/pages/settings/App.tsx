@@ -1,3 +1,4 @@
+import { EmbeddingSettings } from '@/components/settings/EmbeddingSettings'
 // /settings — the admin console.
 //
 // The page is new; almost nothing behind it is. Tokens and projects have had
@@ -96,7 +97,7 @@ import { Hint } from '@/components/Hint'
 const LS_LANG = 'takomo.lang'
 const LS_SECTION = 'takomo.settings.section'
 
-type SectionKey = 'overview' | 'data' | 'access' | 'people' | 'projects' | 'library'
+type SectionKey = 'overview' | 'data' | 'access' | 'people' | 'projects' | 'library' | 'search'
 
 /** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
 function fill(template: string, values: Record<string, string>): string {
@@ -116,12 +117,13 @@ export function App() {
   // the remembered tab over that landed them on Tokens with the project silently
   // selected behind it.
   const [section, setSection] = useState<SectionKey>(() => {
+    if (new URLSearchParams(window.location.search).get('section') === 'search') return 'search'
     if (new URLSearchParams(window.location.search).get('project')) return 'projects'
     const stored = localStorage.getItem(LS_SECTION)
     return stored === 'data' ||
       stored === 'access' ||
       stored === 'projects' ||
-      stored === 'library'
+      stored === 'library' || stored === 'search'
       ? stored
       : 'overview'
   })
@@ -268,6 +270,7 @@ export function App() {
     { key: 'people', label: t.navPeople, hint: t.navPeopleHint },
     { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
     { key: 'library', label: t.navLibrary, hint: t.navLibraryHint },
+    { key: 'search', label: lang === 'de' ? 'Suche' : 'Search', hint: lang === 'de' ? 'Bedeutungssuche konfigurieren' : 'Configure meaning search' },
   ]
 
   /**
@@ -507,6 +510,7 @@ export function App() {
             </Section>
           ) : (
             <>
+              <TabsContent value="search" className="mt-0"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></TabsContent>
               <TabsContent value="overview" className="mt-0">
                 <Section title={t.overviewTitle} description={t.overviewSub}>
                   <dl className="border-border-soft bg-card rounded-xl border px-4">

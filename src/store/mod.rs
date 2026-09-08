@@ -12,6 +12,7 @@ mod claims;
 pub mod crdt;
 mod docs;
 mod document_appearance;
+pub mod search;
 pub use document_appearance::{DocumentAppearance, DocumentAppearanceOverrides, DocumentTemplate};
 pub mod document_chat;
 mod environments;
@@ -183,6 +184,7 @@ impl Store {
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.
         mindmaps::adopt_legacy_nodes(&conn)?;
+        search::migrate(&conn)?;
         // After the schema and the migrations, before any reader opens: the
         // shipped workflows must be in the library for the same reason the
         // schema must exist, and a reader that saw the table without them would

@@ -1,3 +1,5 @@
+import { DocumentHybridSearch } from '@/components/documents/DocumentHybridSearch'
+import { passageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
 import { DocumentActions } from '@/components/documents/DocumentActions'
 import { CopySectionLink } from '@/components/documents/CopySectionLink'
@@ -132,6 +134,7 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  token?: string
   agentTools?: ReactNode
   ticketLinksFor?: (section: string) => ReactNode
   project?: string
@@ -175,6 +178,7 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  token,
   project = '',
   focusMode = false,
   structureHistory,
@@ -485,6 +489,12 @@ function ConnectedPlan({
     return true
   }
 
+  const pendingPassage = useRef<SearchResult | null>(null)
+  const revealPassage = useCallback((editor: Editor, result: SearchResult) => {
+    const range = passageRange(editor.state.doc, result.passage)
+    if (range) editor.chain().setTextSelection(range).focus().scrollIntoView().run()
+    else editor.commands.focus('start')
+  }, [])
   const editors = useRef(new Map<string, Editor>())
   const pendingBoundaryFocus = useRef<{ key: string; position: 'start' | 'end' } | null>(null)
   const [activeEditor, setActiveEditor] = useState<Editor | null>(null)
@@ -529,6 +539,11 @@ function ConnectedPlan({
       editorUnsubscribes.current.delete(key)
       if (editor) {
         editors.current.set(key, editor)
+        if (pendingPassage.current?.node_id === key) {
+          const result = pendingPassage.current
+          pendingPassage.current = null
+          requestAnimationFrame(() => { if (!editor.isDestroyed) revealPassage(editor, result) })
+        }
         if (commentsSectionRef.current === key) setCommentsEditor(editor)
         const update = () => { if (selectedRef.current === key) syncTextTools() }
         const focus = () => { editingTitle.current = false; update() }
@@ -554,7 +569,7 @@ function ConnectedPlan({
     }
     editorRefs.current.set(key, fn)
     return fn
-  }, [syncTextTools])
+  }, [syncTextTools, revealPassage])
 
   /** The current text of a block, for the before-side of a diff. */
   const textForIn = useCallback(
@@ -781,6 +796,18 @@ function ConnectedPlan({
           <span>{railLabels.outline}</span>
         </button>
 <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} /></>} >
+        {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} locale={locale} canSync={canWrite} onNavigate={result => {
+          if (!rows.some(section => section.key === result.node_id)) {
+            setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })
+            return
+          }
+          onSelect(result.node_id)
+          setOutlineDrawer(false)
+          setNear(current => current === null ? null : new Set([...current, result.node_id]))
+          const editor = editors.current.get(result.node_id)
+          if (editor) requestAnimationFrame(() => { if (!editor.isDestroyed) revealPassage(editor, result) })
+          else pendingPassage.current = result
+        }} />}
         {agentTools}
         <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}

@@ -21,6 +21,7 @@ pub mod oauth;
 pub mod projects;
 pub mod questions;
 pub mod schedules;
+pub mod search;
 pub mod shares;
 pub mod spec_history;
 pub mod speech;

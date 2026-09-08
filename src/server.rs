@@ -32,6 +32,10 @@ pub struct AppState {
     /// registration is unauthenticated by specification), and merging it would
     /// make "what has this credential spent" unanswerable.
     pub oauth_register_rate: Mutex<HashMap<String, VecDeque<i64>>>,
+    /// token id -> unix-ms timestamps of query-embedding provider calls. Its own
+    /// map for the reason `share_rate` is: a search is a read, so it must not
+    /// spend the token's write budget, yet each one is a paid provider call.
+    pub search_rate: Mutex<HashMap<String, VecDeque<i64>>>,
     /// Every collaborative document currently open, keyed by id.
     ///
     /// In-memory and deliberately not a cache: a room exists only while somebody
@@ -54,6 +58,12 @@ pub struct AppState {
     /// the flow, and half-running it produces connection failures with no
     /// diagnostics on the client side.
     pub oauth: Option<crate::api::oauth::OauthConfig>,
+}
+
+impl AsRef<Store> for AppState {
+    fn as_ref(&self) -> &Store {
+        &self.store
+    }
 }
 
 impl AppState {
@@ -91,6 +101,7 @@ impl AppState {
             share_rate: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
             oauth_register_rate: Mutex::new(HashMap::new()),
+            search_rate: Mutex::new(HashMap::new()),
             rooms: crate::api::docsync::Rooms::default(),
             doc_agent: None,
             speech: None,
@@ -532,6 +543,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(patch(crate::api::mindmaps::patch))
                 .merge(axum::routing::delete(crate::api::mindmaps::delete)),
         )
+        .route("/v1/settings/embeddings", get(crate::api::search::settings).put(crate::api::search::save_settings))
+        .route("/v1/mindmaps/{id}/search", get(crate::api::search::search))
+        .route("/v1/mindmaps/{id}/search/status", get(crate::api::search::status))
+        .route("/v1/mindmaps/{id}/search/sync", post(crate::api::search::sync))
         .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
         // The plan's sections, flat: what resolves a check's `node` to a title.
         .route(
@@ -731,6 +746,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Background sweep: clear expired leases (emitting lease_expired) and wake
 /// long-pollers so freed tickets are re-dispatched promptly.
 pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
+    let search_state = Arc::downgrade(&state);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let Some(state) = search_state.upgrade() else {
+                break;
+            };
+            if let Err(error) = crate::store::search::process_jobs(state).await {
+                eprintln!("search indexing failed: {}", error.body.message);
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
