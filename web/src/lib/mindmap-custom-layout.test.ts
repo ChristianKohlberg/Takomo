@@ -68,6 +68,23 @@ describe('the persistent custom arrangement', () => {
     expect(readCustomRoot(doc)).toEqual(root)
   })
 
+  it('places a new first-ring thought beside the saved root rather than on a ring around the origin', () => {
+    const { doc } = fixture()
+    ensureCustomLayout(doc, 'tidy')
+    const root = readCustomRoot(doc)!
+    const saved = positions(custom(doc))
+    const added = createNode(doc, { parent: null, title: 'Fourth branch', by: 'test' })!
+    const placed = positions(custom(doc))
+    for (const [id, point] of Object.entries(saved)) expect(placed[id]).toEqual(point)
+    expect(Math.abs(placed[added]!.x - root.x)).toBeLessThan(1000)
+    expect(Math.abs(placed[added]!.y - root.y)).toBeLessThan(1000)
+    expect(placed[added]!.x).toBeGreaterThan(root.x)
+    expect(Object.values(saved)).not.toContainEqual(placed[added])
+    ensureCustomLayout(doc, 'radial')
+    expect(positions(custom(doc))).toEqual(placed)
+    expect(readCustomRoot(doc)).toEqual(root)
+  })
+
   it('is idempotent and does not restore deleted nodes or stale titles and parents', () => {
     const { doc, a, b, child } = fixture()
     ensureCustomLayout(doc, 'tidy')

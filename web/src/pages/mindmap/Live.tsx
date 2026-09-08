@@ -603,10 +603,6 @@ function ConnectedLive({
     },
     [guard, ydoc, mode],
   )
-  const onTidy = useCallback(() => {
-    onMode('tidy')
-  }, [onMode])
-
   const onFields = useCallback(
     (id: string, fields: Partial<NodeFields>) => {
       if (!guard()) return
@@ -983,7 +979,7 @@ function ConnectedLive({
           })
           break
         case 'map.tidy':
-          onTidy()
+          onMode('tidy')
           break
         case 'map.rename':
           onRenameMap()
@@ -1008,7 +1004,7 @@ function ConnectedLive({
       onRenameNode,
       onAsk,
       onToggleCollapse,
-      onTidy,
+      onMode,
       onRenameMap,
       onDeleteMap,
     ],

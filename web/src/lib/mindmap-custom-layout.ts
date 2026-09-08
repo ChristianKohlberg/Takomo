@@ -30,7 +30,7 @@ export function layoutForMode<T extends LayoutNode>(
   const occupied: Point[] = [customRoot, ...placed.nodes.filter(p => p.node.at).map(p => p.node.at!)]
   for (const p of [...placed.nodes].sort((a, b) => a.depth - b.depth)) {
     if (p.node.at) continue
-    const parent = p.node.parent ? byId.get(p.node.parent) : undefined
+    const parent = p.node.parent ? byId.get(p.node.parent) : customRoot
     if (parent) {
       const direction = parent.x >= customRoot.x ? 1 : -1
       p.x = parent.x + direction * (NODE_WIDTH + COLUMN_GAP)

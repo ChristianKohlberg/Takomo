@@ -564,18 +564,6 @@ export function place(doc: Y.Doc, id: string, at: Point | null): void {
   })
 }
 
-/** Hand every node back to the layout. */
-export function tidyAll(doc: Y.Doc): void {
-  doc.transact(() => {
-    nodesMap(doc).forEach((m) => {
-      if (!(m instanceof Y.Map)) return
-      if (m.get('x') === null && m.get('y') === null) return
-      m.set('x', null)
-      m.set('y', null)
-    })
-  })
-}
-
 // ---- relationships --------------------------------------------------------
 
 /** A labelled edge outside the hierarchy. Returns its id, or null at the cap. */
