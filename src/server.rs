@@ -532,6 +532,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .merge(patch(crate::api::mindmaps::patch))
                 .merge(axum::routing::delete(crate::api::mindmaps::delete)),
         )
+        .route("/v1/settings/embeddings", get(crate::api::search::settings).put(crate::api::search::save_settings))
+        .route("/v1/mindmaps/{id}/search", get(crate::api::search::search))
+        .route("/v1/mindmaps/{id}/search/status", get(crate::api::search::status))
+        .route("/v1/mindmaps/{id}/search/sync", post(crate::api::search::sync))
         .route("/v1/mindmaps/{id}/outline", get(crate::api::mindmaps::outline))
         // The plan's sections, flat: what resolves a check's `node` to a title.
         .route(
@@ -731,6 +735,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Background sweep: clear expired leases (emitting lease_expired) and wake
 /// long-pollers so freed tickets are re-dispatched promptly.
 pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
+    let search_state = Arc::downgrade(&state);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let Some(state) = search_state.upgrade() else {
+                break;
+            };
+            if let Err(error) = crate::store::search::process_jobs(&state.store).await {
+                eprintln!("search indexing failed: {}", error.body.message);
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

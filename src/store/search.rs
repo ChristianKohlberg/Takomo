@@ -1,0 +1,598 @@
+//! Rebuildable search projections. The CRDT log remains authoritative.
+use super::{mindmapdoc, Store};
+use crate::{
+    error::{ApiError, ApiResult},
+    ids::{now_ms, sha256_hex},
+};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use yrs::{
+    types::text::YChange, types::ToJson, updates::decoder::Decode, ReadTxn, Text, Transact,
+    XmlFragment, XmlOut,
+};
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub dimensions: usize,
+    pub quiet_seconds: i64,
+    pub max_wait_seconds: i64,
+}
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: "voyage".into(),
+            endpoint: "https://api.voyageai.com/v1/embeddings".into(),
+            model: "voyage-4-lite".into(),
+            dimensions: 1024,
+            quiet_seconds: 60,
+            max_wait_seconds: 300,
+        }
+    }
+}
+impl EmbeddingConfig {
+    pub fn fingerprint(&self) -> String {
+        sha256_hex(
+            format!(
+                "v1:{}:{}:{}:{}",
+                self.provider, self.endpoint, self.model, self.dimensions
+            )
+            .as_bytes(),
+        )
+    }
+    pub fn validate(&self) -> ApiResult<()> {
+        let url = reqwest::Url::parse(&self.endpoint).map_err(|_| {
+            ApiError::validation("embeddings.endpoint", "Invalid provider endpoint")
+        })?;
+        if !["voyage", "openai"].contains(&self.provider.as_str())
+            || !matches!(url.scheme(), "https" | "http")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || self.model.trim().is_empty()
+            || self.model.len() > 200
+            || self.dimensions == 0
+            || self.dimensions > 4096
+            || !(1..=3600).contains(&self.quiet_seconds)
+            || self.max_wait_seconds < self.quiet_seconds
+            || self.max_wait_seconds > 86400
+        {
+            return Err(ApiError::validation("embeddings.config","Choose a supported provider, HTTP(S) endpoint without credentials/query, model, 1–4096 dimensions and a quiet delay from 1–3600 seconds with maximum wait no shorter and at most one day"));
+        }
+        Ok(())
+    }
+}
+pub fn migrate(conn: &Connection) -> ApiResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(include_str!("search.sql"))?;
+    tx.commit()?;
+    Ok(())
+}
+fn config(conn: &Connection) -> ApiResult<(EmbeddingConfig, String)> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT config,api_key FROM embedding_settings WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        Some((c, k)) => Ok((
+            serde_json::from_str(&c)
+                .map_err(|_| ApiError::internal("Invalid stored embedding configuration"))?,
+            k,
+        )),
+        None => Ok((EmbeddingConfig::default(), String::new())),
+    }
+}
+#[derive(Clone, Debug)]
+pub struct EmbeddingJob {
+    pub map_id: String,
+    pub node_id: String,
+    pub hash: String,
+    pub fingerprint: String,
+    pub lease: i64,
+    pub chunks: Vec<(i64, String)>,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct SearchHit {
+    pub node_id: String,
+    pub title: String,
+    pub heading_path: Vec<String>,
+    pub excerpt: String,
+    pub passage: String,
+    pub highlights: Vec<String>,
+    pub match_kind: String,
+}
+/// Split only within a large paragraph as a last resort;
+/// Normal sections remain one chunk.
+pub fn chunks(text: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    for paragraph in text.split('\n').filter(|p| !p.trim().is_empty()) {
+        if current.chars().count() + paragraph.chars().count() + 1 > 2000 && !current.is_empty() {
+            result.push(std::mem::take(&mut current));
+        }
+        if paragraph.chars().count() > 2000 {
+            let chars: Vec<char> = paragraph.chars().collect();
+            for part in chars.chunks(2000) {
+                result.push(part.iter().collect());
+            }
+        } else {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(paragraph);
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+fn plain<T: ReadTxn, F: XmlFragment>(txn: &T, frag: &F) -> String {
+    frag.children(txn)
+        .map(|child| match child {
+            XmlOut::Text(text) => text
+                .diff(txn, YChange::identity)
+                .into_iter()
+                .filter_map(|part| match part.insert.to_json(txn) {
+                    yrs::Any::String(s) => Some(s.to_string()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            XmlOut::Element(el) => plain(txn, &el),
+            XmlOut::Fragment(f) => plain(txn, &f),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn hydrate(conn: &Connection, map: &str) -> ApiResult<yrs::Doc> {
+    let doc = yrs::Doc::new();
+    {
+        let mut txn = doc.transact_mut();
+        let mut stmt =
+            conn.prepare("SELECT blob FROM crdt_updates WHERE object_id=?1 ORDER BY seq")?;
+        for row in stmt.query_map([map], |r| r.get::<_, Vec<u8>>(0))? {
+            let update = yrs::Update::decode_v1(&row?)
+                .map_err(|_| ApiError::internal("Cannot decode source document"))?;
+            txn.apply_update(update)
+                .map_err(|_| ApiError::internal("Cannot replay source document"))?;
+        }
+    }
+    Ok(doc)
+}
+fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<()> {
+    let dirty: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)",
+        [map],
+        |row| row.get(0),
+    )?;
+    if !dirty && !manual {
+        return Ok(());
+    }
+    let (settings, _) = config(conn)?;
+    let fingerprint = settings.fingerprint();
+    let doc = hydrate(conn, map)?;
+    let (_, _, nodes) = mindmapdoc::snapshot(&doc, map);
+    let by_id: HashMap<_, _> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut present = HashSet::new();
+    for node in &nodes {
+        present.insert(node.id.clone());
+        let mut path = vec![node.title.clone()];
+        let mut parent = node.parent.as_deref();
+        let mut seen = HashSet::new();
+        seen.insert(node.id.as_str());
+        while let Some(id) = parent {
+            if !seen.insert(id) {
+                break;
+            }
+            let Some(p) = by_id.get(id) else { break };
+            path.push(p.title.clone());
+            parent = p.parent.as_deref();
+        }
+        path.reverse();
+        let passage = mindmapdoc::read_section_prose(&doc, &node.id)
+            .map(|f| plain(&doc.transact(), &f))
+            .unwrap_or_else(|| node.notes.clone());
+        let path_json = serde_json::to_string(&path).unwrap();
+        let hash = sha256_hex(format!("{path_json}\n{passage}").as_bytes());
+        let old: Option<String> = conn
+            .query_row(
+                "SELECT content_hash FROM search_nodes WHERE map_id=?1 AND node_id=?2",
+                params![map, node.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if old.as_deref() != Some(&hash) {
+            conn.execute(
+                "INSERT INTO search_nodes(map_id,node_id,content_hash)VALUES(?1,?2,?3)ON
+CONFLICT(map_id,node_id)DO UPDATE SET content_hash=excluded.content_hash",
+                params![map, node.id, hash],
+            )?;
+            conn.execute(
+                "DELETE FROM search_chunks WHERE map_id=?1 AND node_id=?2",
+                params![map, node.id],
+            )?;
+            for (ordinal, chunk) in chunks(&passage).iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO
+search_chunks(map_id,node_id,ordinal,title,heading_path,passage,content_hash)VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![map, node.id, ordinal, node.title, path_json, chunk, hash],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO
+embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALUES(?1,?2,?3,?4,?5,?6)ON
+CONFLICT(map_id,node_id)DO UPDATE SET
+content_hash=excluded.content_hash,fingerprint=excluded.fingerprint,due_at=min(excluded.due_at,embedding_jobs.first_changed+?7),lease_until=0,attempts=0,last_error=NULL",
+                params![
+                    map,
+                    node.id,
+                    hash,
+                    fingerprint,
+                    now,
+                    if manual { now } else { now + settings.quiet_seconds * 1000 },
+                    settings.max_wait_seconds * 1000
+                ],
+            )?;
+        } else {
+            let missing: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM search_chunks WHERE map_id=?1 AND node_id=?2 AND (vector IS
+NULL OR fingerprint<>?3))",
+                params![map, node.id, fingerprint],
+                |r| r.get(0),
+            )?;
+            if missing {
+                conn.execute(
+                    "INSERT OR IGNORE INTO
+embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![map, node.id, hash, fingerprint, now, if manual { now } else { now + settings.quiet_seconds * 1000 }],
+                )?;
+            }
+        }
+    }
+    let mut stmt = conn.prepare("SELECT node_id FROM search_nodes WHERE map_id=?1")?;
+    let stored: Vec<String> = stmt
+        .query_map([map], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    for id in stored {
+        if !present.contains(&id) {
+            conn.execute(
+                "DELETE FROM search_nodes WHERE map_id=?1 AND node_id=?2",
+                params![map, id],
+            )?;
+        }
+    }
+    if manual {
+        conn.execute(
+            "UPDATE embedding_jobs SET due_at=?2 WHERE map_id=?1",
+            params![map, now],
+        )?;
+    }
+    conn.execute("DELETE FROM search_dirty_maps WHERE map_id=?1", [map])?;
+    Ok(())
+}
+impl Store {
+    pub fn embedding_config(&self) -> ApiResult<(EmbeddingConfig, String)> {
+        self.with_conn(config)
+    }
+    pub fn save_embedding_config(
+        &self,
+        next: EmbeddingConfig,
+        key: Option<String>,
+    ) -> ApiResult<Value> {
+        next.validate()?;
+        if key.as_ref().is_some_and(|s| s.len() > 4096) {
+            return Err(ApiError::validation(
+                "embeddings.key",
+                "API key is too long",
+            ));
+        }
+        self.with_tx(|tx| {
+            let (old, old_key) = config(tx)?;
+            let key = key.unwrap_or_else(|| if old.provider == next.provider && old.endpoint == next.endpoint { old_key } else { String::new() });
+            let fingerprint = next.fingerprint();
+            tx.execute(
+                "INSERT INTO embedding_settings(id,config,api_key,fingerprint)VALUES(1,?1,?2,?3)ON
+CONFLICT(id)DO UPDATE SET
+config=excluded.config,api_key=excluded.api_key,fingerprint=excluded.fingerprint",
+                params![serde_json::to_string(&next).unwrap(), key, fingerprint],
+            )?;
+            if old.fingerprint() != fingerprint {
+                tx.execute(
+                    "INSERT INTO
+embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)SELECT
+map_id,node_id,content_hash,?1,?2,?2 FROM search_nodes WHERE 1 ON
+CONFLICT(map_id,node_id)DO UPDATE SET
+fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=excluded.due_at,lease_until=0,attempts=0,last_error=NULL",
+                    params![fingerprint, now_ms()],
+                )?;
+            }
+            let mut value = serde_json::to_value(&next).unwrap();
+            value["configured"] = json!(!key.is_empty());
+            Ok(value)
+        })
+    }
+    pub fn refresh_search(&self, map: &str, manual: bool, now: i64) -> ApiResult<()> {
+        self.with_tx(|tx| reconcile(tx, map, now, manual))
+    }
+    pub fn refresh_dirty_search(&self, now: i64) -> ApiResult<()> {
+        self.with_tx(|tx| {
+            let mut stmt =
+                tx.prepare("SELECT map_id FROM search_dirty_maps ORDER BY changed_at LIMIT 10")?;
+            let maps: Vec<String> = stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            drop(stmt);
+            for map in maps {
+                reconcile(tx, &map, now, false)?;
+            }
+            Ok(())
+        })
+    }
+    pub fn search_status(&self, map: &str) -> ApiResult<Value> {
+        self.with_conn(|conn| {
+            let (c, k) = config(conn)?;
+            let queued: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1", [map], |r| r.get(0))?;
+            let running: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND lease_until>?2", params![map, now_ms()], |r| r.get(0))?;
+            let total: i64 = conn.query_row("SELECT count(*) FROM search_nodes WHERE map_id=?1", [map], |r| r.get(0))?;
+            let indexed: i64 = conn.query_row(
+                "SELECT count(*) FROM search_nodes n WHERE map_id=?1 AND NOT EXISTS(SELECT 1 FROM
+search_chunks c WHERE c.map_id=n.map_id AND c.node_id=n.node_id AND (c.vector IS NULL OR
+c.fingerprint<>?2))",
+                params![map, c.fingerprint()],
+                |r| r.get(0),
+            )?;
+            let error: Option<String> = conn
+                .query_row("SELECT last_error FROM embedding_jobs WHERE map_id=?1 AND last_error IS NOT NULL LIMIT 1", [map], |r| r.get(0))
+                .optional()?;
+            Ok(json!({
+            "configured":!k.is_empty(),"queued":queued,"running":running,"indexed":indexed,"total":total,"last_error":error}
+            ))
+        })
+    }
+    pub fn claim_embedding_job(&self, now: i64) -> ApiResult<Option<EmbeddingJob>> {
+        self.with_tx(|tx| {
+            let (c, k) = config(tx)?;
+            if k.is_empty() {
+                return Ok(None);
+            }
+            let row: Option<(String, String, String)> = tx
+                .query_row(
+                    "SELECT map_id,node_id,content_hash FROM embedding_jobs WHERE due_at<=?1 AND
+lease_until<=?1 AND fingerprint=?2 ORDER BY due_at LIMIT 1",
+                    params![now, c.fingerprint()],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((map, node, hash)) = row else { return Ok(None) };
+            let lease = now + 60000;
+            tx.execute("UPDATE embedding_jobs SET lease_until=?3 WHERE map_id=?1 AND node_id=?2", params![map, node, lease])?;
+            let mut stmt = tx.prepare("SELECT id,heading_path,passage FROM search_chunks WHERE map_id=?1 AND node_id=?2 ORDER BY ordinal")?;
+            let chunks = stmt
+                .query_map(params![map, node], |r| {
+                    let path: String = r.get(1)?;
+                    let text: String = r.get(2)?;
+                    Ok((r.get(0)?, format!("{path}\n{text}")))
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok(Some(EmbeddingJob {
+                map_id: map,
+                node_id: node,
+                hash,
+                fingerprint: c.fingerprint(),
+                lease,
+                chunks,
+            }))
+        })
+    }
+    pub fn finish_embedding_job(
+        &self,
+        job: &EmbeddingJob,
+        vectors: Result<&[Vec<f32>], &str>,
+    ) -> ApiResult<bool> {
+        self.with_tx(|tx| {
+            let dirty: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)", [&job.map_id], |r| r.get(0))?;
+            if dirty {
+                reconcile(tx, &job.map_id, now_ms(), false)?;
+            }
+            let (c, _) = config(tx)?;
+            if c.fingerprint() != job.fingerprint {
+                return Ok(false);
+            }
+            let valid: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM embedding_jobs WHERE map_id=?1 AND node_id=?2 AND
+content_hash=?3 AND fingerprint=?4 AND lease_until=?5)",
+                params![job.map_id, job.node_id, job.hash, job.fingerprint, job.lease],
+                |r| r.get(0),
+            )?;
+            if !valid {
+                return Ok(false);
+            }
+            match vectors {
+                Ok(vectors) => {
+                    if vectors.len() != job.chunks.len() || vectors.iter().any(|v| v.len() != c.dimensions || v.iter().any(|n| !n.is_finite()) || v.iter().all(|n| *n == 0.0)) {
+                        return Err(ApiError::internal("Invalid embedding completion"));
+                    }
+                    for ((id, _), vector) in job.chunks.iter().zip(vectors) {
+                        tx.execute(
+                            "UPDATE search_chunks SET vector=?2,fingerprint=?3 WHERE id=?1 AND content_hash=?4",
+                            params![id, serde_json::to_string(vector).unwrap(), job.fingerprint, job.hash],
+                        )?;
+                    }
+                    tx.execute("DELETE FROM embedding_jobs WHERE map_id=?1 AND node_id=?2", params![job.map_id, job.node_id])?;
+                }
+                Err(error) => {
+                    tx.execute(
+                        "UPDATE embedding_jobs SET
+lease_until=0,attempts=attempts+1,due_at=?3+min(300000,10000*(attempts+1)),last_error=?4
+WHERE map_id=?1 AND node_id=?2",
+                        params![job.map_id, job.node_id, now_ms(), error],
+                    )?;
+                }
+            }
+            Ok(true)
+        })
+    }
+}
+pub fn terms(query: &str) -> Vec<String> {
+    query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .take(16)
+        .map(str::to_lowercase)
+        .collect()
+}
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() {
+        return -1.0;
+    }
+    let mut dot = 0.0;
+    let mut aa = 0.0;
+    let mut bb = 0.0;
+    for (&a, &b) in a.iter().zip(b) {
+        dot += (a as f64) * (b as f64);
+        aa += (a as f64).powi(2);
+        bb += (b as f64).powi(2);
+    }
+    if aa == 0.0 || bb == 0.0 {
+        return -1.0;
+    }
+    dot / (aa * bb).sqrt()
+}
+impl Store {
+    pub fn search_document(
+        &self,
+        map: &str,
+        query: &str,
+        vector: Option<(&[f32], String)>,
+    ) -> ApiResult<(Vec<SearchHit>, bool)> {
+        self.with_tx(|conn| {
+            reconcile(conn, map, now_ms(), false)?;
+            let (config, _) = config(conn)?;
+            let vector = vector.filter(|(_, fingerprint)| fingerprint == &config.fingerprint()).map(|(v, _)| v);
+            let tokens = terms(query);
+            if tokens.is_empty() {
+                return Ok((vec![], false));
+            }
+            let fts = tokens.iter().map(|s| format!("\"{}\"", s.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR ");
+            let mut lexical = conn.prepare(
+                "SELECT c.id FROM search_fts JOIN search_chunks c ON c.id=search_fts.rowid WHERE search_fts
+MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT 100",
+            )?;
+            let ids: Vec<i64> = lexical.query_map(params![fts, map], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            let mut scores: HashMap<i64, (f64, bool, bool)> = ids.iter().enumerate().map(|(rank, id)| (*id, (1.0 / (60.0 + rank as f64), true, false))).collect();
+            if let Some(q) = vector {
+                let mut stmt = conn.prepare("SELECT id,vector FROM search_chunks WHERE map_id=?1 AND fingerprint=?2 AND vector IS NOT NULL")?;
+                let mut ranked = Vec::new();
+                for row in stmt.query_map(params![map, config.fingerprint()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+                    let (id, value) = row?;
+                    if let Ok(v) = serde_json::from_str::<Vec<f32>>(&value) {
+                        let similarity = cosine(q, &v);
+                        if similarity > 0.2 {
+                            ranked.push((id, similarity));
+                        }
+                    }
+                }
+                ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+                for (rank, (id, _)) in ranked.into_iter().take(100).enumerate() {
+                    let s = scores.entry(id).or_insert((0.0, false, false));
+                    s.0 += 1.0 / (60.0 + rank as f64);
+                    s.2 = true;
+                }
+            }
+            let mut ranked: Vec<_> = scores.into_iter().collect();
+            ranked.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0).then(a.0.cmp(&b.0)));
+            let mut seen = HashSet::new();
+            let mut hits = Vec::new();
+            for (id, (_, keyword, semantic)) in ranked {
+                let (node, title, path, passage): (String, String, String, String) = conn.query_row("SELECT node_id,title,heading_path,passage FROM search_chunks WHERE id=?1", [id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?;
+                if !seen.insert(node.clone()) {
+                    continue;
+                }
+                let chars: Vec<char> = passage.chars().collect();
+                let first = if keyword {
+                    tokens
+                        .iter()
+                        .filter_map(|token| passage.to_lowercase().find(token))
+                        .min()
+                        .map(|byte| passage.get(..byte).unwrap_or("").chars().count())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                let start = first.saturating_sub(60);
+                let excerpt: String = chars.iter().skip(start).take(280).collect();
+                let highlights = if keyword {
+                    tokens.iter().filter(|token| excerpt.to_lowercase().contains(token.as_str())).cloned().collect()
+                } else {
+                    vec![]
+                };
+                hits.push(SearchHit {
+                    node_id: node,
+                    title,
+                    heading_path: serde_json::from_str(&path).unwrap_or_default(),
+                    excerpt,
+                    passage,
+                    highlights,
+                    match_kind: if keyword && semantic {
+                        "both"
+                    } else if keyword {
+                        "keyword"
+                    } else {
+                        "semantic"
+                    }
+                    .into(),
+                });
+                if hits.len() == 20 {
+                    break;
+                }
+            }
+            Ok((hits, vector.is_some()))
+        })
+    }
+}
+/// One bounded worker pass. Provider work never holds a SQLite lock.
+pub async fn process_jobs(store: &Store) -> ApiResult<()> {
+    store.refresh_dirty_search(now_ms())?;
+    for _ in 0..8 {
+        let Some(job) = store.claim_embedding_job(now_ms())? else {
+            break;
+        };
+        let (config, key) = store.embedding_config()?;
+        let mut vectors = Vec::new();
+        let mut failure = None;
+        for batch in job.chunks.chunks(32) {
+            let texts = batch
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>();
+            match crate::embeddings::embed(&config, &key, &texts, false).await {
+                Ok(v) => vectors.extend(v),
+                Err(e) => {
+                    failure = Some(e.body.message.clone());
+                    break;
+                }
+            }
+        }
+        if let Some(message) = failure {
+            store.finish_embedding_job(&job, Err(&message))?;
+        } else {
+            store.finish_embedding_job(&job, Ok(&vectors))?;
+        }
+    }
+    Ok(())
+}

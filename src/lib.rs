@@ -19,3 +19,5 @@ pub mod server;
 pub mod speech;
 pub mod store;
 pub mod workflow;
+
+pub mod embeddings;
