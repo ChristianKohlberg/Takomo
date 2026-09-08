@@ -17,7 +17,7 @@ ad-hoc port nothing else can find.
 ```sh
 backlot status                     # existing envs — check before spinning anything up
 BACKLOT_HOLDER_PID=$$ backlot up   # build, seed, serve, wait for /healthz, print URL + port
-backlot up --ttl 900               # …but from an agent, use this instead — see below
+backlot up --ttl 15                # …but from an agent, use this instead — see below
 backlot token --role human         # bearer token for /board and /inbox  (prints JSON)
 backlot ctx                        # URLs/ports as one blob
 backlot run api                    # integration suite with a work-vs-env-vs-infra verdict
@@ -27,7 +27,7 @@ backlot release                    # return the env to the pool, warm
 **`BACKLOT_HOLDER_PID=$$` only works from an interactive shell.** It frees the lease when *that*
 shell exits, which is right for a human at a terminal and useless for an agent: an agent harness
 runs each command in a fresh shell, so the holder is dead the instant `backlot up` returns and the
-lease is released before the next command. Agents should use `backlot up --ttl <secs>` and call
+lease is released before the next command. Agents should use `backlot up --ttl <minutes>` and call
 `backlot release` explicitly. `backlot token` prints JSON (`{"token":…,"role":…}`), not a bare
 string — parse it.
 
@@ -68,7 +68,7 @@ reuse the generated assets.
 
 **A page change needs TWO builds.** `npm run build` in `web/` regenerates
 `web/dist/`; `cargo build --release` embeds it. Editing `web/src/` alone changes nothing the
-server serves. In the dev loop use `npm run dev` instead — it proxies `/v1` at a `backlot up`
+server serves. In the dev loop use `npm run dev:backlot` in `web/` instead — it proxies `/v1` at a `backlot up`
 instance, so there is no Rust rebuild at all.
 
 `web/` carries its own gates: `npm run check` (tsc), `npm run lint` (eslint, defect rules only),
@@ -496,7 +496,7 @@ the log cannot drift from state. `AppState::notify` is woken after every commit 
   replaced a fixed four-name `include_str!` list, which code splitting made untenable — a dynamic
   `import()` emits a chunk whose name is not knowable when Rust compiles. Add a new file extension to
   `mime_for` in `build.rs` and the build tells you when you must.
-  In the dev loop use `npm run dev` instead — it proxies `/v1` to a `backlot up` instance, so there
+  In the dev loop use `npm run dev:backlot` in `web/` instead — it proxies `/v1` to a `backlot up` instance, so there
   is no Rust rebuild at all.
 - **No page renders user text through `innerHTML`.** `dangerouslySetInnerHTML` and `innerHTML =`
   are eslint ERRORS in `web/`; agent- and human-written text goes through `web/src/lib/markdown.ts`,
