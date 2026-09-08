@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { canonical, savedText, wordChanges } from './saved-prose'
+import { canonical, savedText, sectionBlocks, wordChanges } from './saved-prose'
 import { compareVersions, groupVersions, type VersionDetail, type SavedVersion } from './spec-history'
 
 describe('saved content review', () => {
   it('keeps literal markup as user text and separates blocks without leaking mark attributes', () => {
     expect(savedText([{ tag: 'paragraph', children: [{ text: [{ insert: 'Use <bold> literally', attributes: { bold: {} } }] }] }, { tag: 'paragraph', children: [{ text: [{ insert: 'Next' }] }] }])).toBe('Use <bold> literally\nNext')
+  })
+  it('projects legacy XML marks as formatted runs of one line, not as lines of their own', () => {
+    const blocks = sectionBlocks({ prose_xml: '<paragraph><bold>Important</bold> rest <link href="https://x.test"><italic>here</italic></link></paragraph><paragraph>Next</paragraph>' })!
+    expect(savedText(blocks)).toBe('Important rest here\nNext')
+    expect(blocks[0]?.children).toEqual([{ text: [
+      { insert: 'Important', attributes: { bold: {} } },
+      { insert: ' rest ', attributes: null },
+      { insert: 'here', attributes: { link: { href: 'https://x.test' }, italic: {} } },
+    ] }])
+    const [before, after] = wordChanges(savedText(blocks), savedText(sectionBlocks({ prose_xml: '<paragraph><bold>Important</bold> rest here</paragraph><paragraph>Next</paragraph>' })))
+    expect(before.some(x => x.changed)).toBe(false)
+    expect(after.some(x => x.changed)).toBe(false)
   })
   it('ignores attribute key order while retaining text, child order and mark changes', () => {
     const a = { tag: 'paragraph', attributes: { id: 'a', level: 1 }, children: [{ text: [{ insert: 'same', attributes: { bold: {}, italic: {} } }] }] }

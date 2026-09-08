@@ -88,6 +88,9 @@ import {
 import { standingOf, type Standing } from '@/lib/plan-trace'
 import SectionEditor from './SectionEditor'
 
+/** The pane width at which the outline stops being a drawer; the same 850 the stylesheet's container query uses. */
+export const DOCUMENT_PANE_WIDE = 850
+
 /** Caret colours. Fixed palette, picked by hashing the name so it is stable —
  *  the same function the canvas uses, for the same reason. */
 const CARET_COLORS = ['#2563eb', '#059669', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#c026d3']
@@ -628,20 +631,39 @@ function ConnectedPlan({
   // Remembered per browser, not per session: somebody who folds the outline away
   // wants it folded next time too, and this is a per-viewer preference that
   // never needs to reach the server or another peer.
-  const [outlineOpen, setOutlineOpen] = useState(() => {
+  const [outlinePinned, setOutlinePinned] = useState(() => {
     try {
-      return !window.matchMedia?.('(max-width: 1023px)').matches && localStorage.getItem('takomo.plan.outline') !== 'closed'
+      return localStorage.getItem('takomo.plan.outline') !== 'closed'
     } catch {
       return true
     }
   })
   useEffect(() => {
     try {
-      localStorage.setItem('takomo.plan.outline', outlineOpen ? 'open' : 'closed')
+      localStorage.setItem('takomo.plan.outline', outlinePinned ? 'open' : 'closed')
     } catch {
       // A private window refuses storage; the fold still works for this visit.
     }
-  }, [outlineOpen])
+  }, [outlinePinned])
+  // Below DOCUMENT_PANE_WIDE the stylesheet lays the outline over the prose as a
+  // drawer, so its behaviour follows the same measurement: the pane, not the
+  // viewport, because a conversation beside the document narrows the pane alone.
+  const paneRef = useRef<HTMLElement>(null)
+  const [paneNarrow, setPaneNarrow] = useState(() => typeof window !== 'undefined' && window.innerWidth < DOCUMENT_PANE_WIDE)
+  useEffect(() => {
+    const pane = paneRef.current
+    if (!pane || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(entries => {
+      const width = entries[entries.length - 1]?.contentRect.width
+      if (width) setPaneNarrow(width < DOCUMENT_PANE_WIDE)
+    })
+    observer.observe(pane)
+    return () => observer.disconnect()
+  }, [])
+  const [outlineDrawer, setOutlineDrawer] = useState(false)
+  useEffect(() => { setOutlineDrawer(false) }, [paneNarrow])
+  const outlineOpen = paneNarrow ? outlineDrawer : outlinePinned
+  const toggleOutline = () => { if (paneNarrow) setOutlineDrawer(v => !v); else setOutlinePinned(v => !v) }
 
   const [fragments, setFragments] = useState<Map<string, Y.XmlFragment>>(() => new Map())
   const known = useRef(fragments)
@@ -733,7 +755,7 @@ function ConnectedPlan({
     return true
   }
   return (
-    <main className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <main ref={paneRef} className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <DocumentActions focusMode={focusMode} locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
@@ -770,7 +792,7 @@ function ConnectedPlan({
       >
         <button
           type="button"
-          onClick={() => setOutlineOpen((v) => !v)}
+          onClick={toggleOutline}
           aria-expanded={outlineOpen}
           className="text-muted-foreground hover:text-foreground mb-1 flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[12px] font-[650]"
         >
@@ -788,7 +810,7 @@ function ConnectedPlan({
           <OutlineRail
             sections={sections}
             selected={selected}
-            onSelect={key => { onSelect(key); if (window.matchMedia?.('(max-width: 1023px)').matches) setOutlineOpen(false) }}
+            onSelect={key => { onSelect(key); if (paneNarrow) setOutlineDrawer(false) }}
             collapsed={effectiveCollapsed}
             onToggle={onToggleFold}
             standing={standings}

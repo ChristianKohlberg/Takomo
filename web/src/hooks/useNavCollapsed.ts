@@ -9,43 +9,51 @@ import { useCallback, useEffect, useState } from 'react'
 import { useIsPhone } from './useIsPhone'
 
 const LS_KEY = 'takomo.nav.collapsed'
+const TABLET_QUERY = '(max-width: 1023px)'
+
+function readStored(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(LS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 
 export function useNavCollapsed(): [boolean, (collapsed: boolean) => void] {
   const isPhone = useIsPhone()
-  const [isTablet, setIsTablet] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(max-width: 1023px)').matches)
+  const [isTablet, setIsTablet] = useState(() => typeof matchMedia === 'function' && !!matchMedia(TABLET_QUERY)?.matches)
   useEffect(() => {
     if (typeof matchMedia !== 'function') return
-    const media = matchMedia('(max-width: 1023px)')
+    const media = matchMedia(TABLET_QUERY)
+    if (!media) return
     const update = () => setIsTablet(media.matches)
+    update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
-  const [stored, setStored] = useState(
-    () => typeof localStorage !== 'undefined' && localStorage.getItem(LS_KEY) === '1',
-  )
-  // A phone starts collapsed whatever the stored preference says: expanded
-  // there is an overlay covering the page, which is not a state to open into.
-  const [collapsed, setCollapsed] = useState(() => isPhone || isTablet || stored)
+  // A phone or tablet starts collapsed whatever the stored preference says:
+  // expanded there is an overlay covering the page, or a rail taking a third of
+  // the width, and neither is a state to open into.
+  const narrow = isPhone || isTablet
+  const [collapsed, setCollapsed] = useState(() => narrow || readStored())
 
   useEffect(() => {
-    if (isPhone || isTablet) setCollapsed(true)
-    else setCollapsed(stored)
-  }, [isPhone, isTablet, stored])
+    setCollapsed(narrow || readStored())
+  }, [narrow])
 
   const update = useCallback(
     (next: boolean) => {
       setCollapsed(next)
-      // Opening the overlay on a phone is a momentary act, not a preference —
-      // persisting it would expand the rail on the next desktop visit.
-      if (isPhone) return
-      setStored(next)
+      // Opening the rail on a phone or tablet is a momentary act, not a
+      // preference — persisting it would expand the rail on the next desktop visit.
+      if (narrow) return
       try {
         localStorage.setItem(LS_KEY, next ? '1' : '0')
       } catch {
         // Private mode, or storage full. The rail still toggles for this visit.
       }
     },
-    [isPhone],
+    [narrow],
   )
 
   return [collapsed, update]

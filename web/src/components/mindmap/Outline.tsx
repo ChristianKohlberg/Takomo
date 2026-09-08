@@ -16,7 +16,9 @@
 // are pointer-driven — a badge, a `+` on hover, a right-click menu — and a phone
 // has no hover and no right button. Rather than give the list a worse version of
 // each, every row carries the same four verbs as plain buttons.
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   NodeNameInput,
   type NameThen,
@@ -110,6 +112,8 @@ export function Outline({
   className,
 }: OutlineProps) {
   const kids = childrenOf(nodes)
+  const [menuFor, setMenuFor] = useState<string | null>(null)
+  const chose = useRef(false)
 
   const rows: { node: MapNode; depth: number }[] = []
   const walk = (parent: string | null, depth: number) => {
@@ -216,9 +220,11 @@ export function Outline({
             )}
           </button>
           )}
-          <details className="relative shrink-0">
-            <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-md border text-lg focus-visible:outline-2" aria-label={labels.actions ?? labels.edit}>⋯</summary>
-            <div className="bg-card border-border absolute right-0 z-20 flex w-52 flex-col items-stretch rounded-lg border p-1 shadow-lg">
+          <Popover open={menuFor === node.id} onOpenChange={open => { if (open) chose.current = false; setMenuFor(open ? node.id : null) }}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="icon" className="shrink-0 text-lg" aria-label={labels.actions ?? labels.edit}>⋯</Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-52 gap-0 p-1" onCloseAutoFocus={event => { if (chose.current) event.preventDefault() }}>
               {[
                 { label: labels.edit, action: () => onEdit(node.id) },
                 { label: labels.attachments.replace('{n}', String(node.attachments.length)), action: () => onAttachments(node.id) },
@@ -229,13 +235,14 @@ export function Outline({
                   ...(node.parent !== null ? [{ label: labels.detach, action: () => onDetach(node.id) }] : []),
                   { label: labels.remove, action: () => onDelete(node.id) },
                 ] : []),
-              ].map(item => <Button key={item.label} variant="ghost" size="sm" className="h-auto min-h-9 justify-start whitespace-normal text-left" onClick={event => {
-                event.currentTarget.closest('details')?.removeAttribute('open')
+              ].map(item => <Button key={item.label} variant="ghost" size="sm" className="h-auto min-h-9 justify-start whitespace-normal text-left" onClick={() => {
+                chose.current = true
+                setMenuFor(null)
                 onSelect(node.id)
                 item.action()
               }}>{item.label}</Button>)}
-            </div>
-          </details>
+            </PopoverContent>
+          </Popover>
           {selected === node.id && naming !== node.id && <div className="flex w-full flex-wrap gap-1" role="group" aria-label={labels.actions ?? labels.edit}>
             <Button variant="outline" size="sm" onClick={() => onEdit(node.id)}>{labels.edit}</Button>
             {canWrite && <Button variant="outline" size="sm" onClick={() => onChild(node.id)}>{labels.addChild}</Button>}

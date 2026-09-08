@@ -46,13 +46,29 @@ export function sectionBlocks(node: { prose_structure?: unknown; prose_xml?: str
   const doc = new DOMParser().parseFromString(`<saved>${node.prose_xml}</saved>`, 'application/xml')
   if (doc.querySelector('parsererror')) return null
   const tags = ['tableRow', 'tableCell', 'tableHeader', 'codeBlock', 'sectionReference', 'bulletList', 'orderedList', 'listItem', 'hardBreak', 'horizontalRule']
-  const convert = (node: Node): SavedBlock => {
-    if (node.nodeType === 3) return { text: [{ insert: node.textContent ?? '' }] }
-    const original = (node as Element).tagName
-    const tag = tags.find(value => value.toLowerCase() === original?.toLowerCase()) ?? original
-    const children = Array.from(node.childNodes).filter(child =>
-      !['table', 'tableRow'].includes(tag) || child.nodeType !== 3 || !!child.textContent?.trim())
-    return { tag, attributes: Object.fromEntries(Array.from((node as Element).attributes ?? [], a => [a.name, a.value])), children: children.map(convert) }
+  const marks = ['bold', 'italic', 'strike', 'code', 'link', 'underline', 'highlight', 'subscript', 'superscript', 'textStyle']
+  const attributesOf = (element: Element) => Object.fromEntries(Array.from(element.attributes ?? [], a => [a.name, a.value]))
+  const canonicalTag = (element: Element) => {
+    const original = element.tagName
+    return [...tags, ...marks].find(value => value.toLowerCase() === original?.toLowerCase()) ?? original
   }
-  return Array.from(doc.documentElement.childNodes, convert)
+  const convert = (node: Node, active: Record<string, unknown> | null): SavedBlock[] => {
+    if (node.nodeType === 3) return [{ text: [{ insert: node.textContent ?? '', attributes: active }] }]
+    const element = node as Element
+    const tag = canonicalTag(element)
+    if (marks.includes(tag)) {
+      const inherited = { ...(active ?? {}), [tag]: attributesOf(element) }
+      return Array.from(element.childNodes).flatMap(child => convert(child, inherited))
+    }
+    const children = Array.from(element.childNodes).filter(child =>
+      !['table', 'tableRow'].includes(tag) || child.nodeType !== 3 || !!child.textContent?.trim())
+    return [{ tag, attributes: attributesOf(element), children: coalesce(children.flatMap(child => convert(child, null))) }]
+  }
+  const coalesce = (blocks: SavedBlock[]): SavedBlock[] => blocks.reduce<SavedBlock[]>((out, block) => {
+    const last = out[out.length - 1]
+    if (block.text && last?.text) last.text.push(...block.text)
+    else out.push(block)
+    return out
+  }, [])
+  return coalesce(Array.from(doc.documentElement.childNodes).flatMap(child => convert(child, null)))
 }

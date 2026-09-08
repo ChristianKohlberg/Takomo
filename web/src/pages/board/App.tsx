@@ -574,6 +574,9 @@ function Board({
           saveProject(id)
           setTicketFilter('')
           setTagFilter('')
+          const params = new URLSearchParams(window.location.search)
+          params.set('project', id)
+          window.history.replaceState(window.history.state, '', `${window.location.pathname}?${params}`)
         },
         // No "all projects" entry here on purpose: a kanban's columns come from
         // ONE project's workflow, and two projects need not agree on their states.
