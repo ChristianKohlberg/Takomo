@@ -238,7 +238,6 @@ export interface LiveProps {
   voiceLabels: VoiceButtonLabels
   onRenameMap: () => void
   onDeleteMap: () => void
-  onPromote: (node: string, target: 'epic' | 'initiative') => void
   labels: LiveLabels
   canvasLabels: CanvasLabels
   outlineLabels: OutlineLabels
@@ -278,7 +277,6 @@ function ConnectedLive({
   onSelection,
   onRenameMap,
   onDeleteMap,
-  onPromote,
   labels,
   canvasLabels,
   outlineLabels,
@@ -943,12 +941,6 @@ function ConnectedLive({
         case 'node.ask':
           onAsk(node)
           break
-        case 'node.promoteEpic':
-          if (node) onPromote(node, 'epic')
-          break
-        case 'node.promoteInitiative':
-          if (node) onPromote(node, 'initiative')
-          break
         case 'node.collapse':
         case 'node.expand':
           if (node) onToggleCollapse(node)
@@ -996,7 +988,6 @@ function ConnectedLive({
       onSibling,
       onRenameNode,
       onAsk,
-      onPromote,
       onToggleCollapse,
       onTidy,
       onRenameMap,

@@ -9,6 +9,9 @@ their session counts; a name identifies a session, not a verified person or role
 Open `/projects/{project}/specification?view=document`. Document, Map and Tests
 are views within this workspace; the project and selected section stay in the
 URL. Use `view=map` or `view=tests`, and `section={node-id}` to share a selection.
+The navigation rail lists the three views under **Specification**, and each link
+carries the current project and selected section, so switching views there keeps
+the place you were reading.
 Older `/documents`, `/mindmaps` and `/verification` bookmarks redirect here,
 including section/check selections. A legacy map ID resolves its actual project.
 
@@ -29,10 +32,11 @@ filter. Check editors keep their own CRDT sessions. A shared project notificatio
 socket refreshes server-owned metadata and verdicts for the workspace and its
 visible views.
 
-The project picker and Inbox sit at the top of the shared navigation rail, not
-in the page header — on a phone, in the compact top bar that stands in for the
-rail; the Inbox icon carries the count of open questions, or a
-green check when there are none. The language switch is in the profile menu.
+The project picker sits at the top of the shared navigation rail, not in the
+page header — on a phone, in the compact top bar that stands in for the rail.
+Inbox is the rail's footer entry, directly above the profile block; it carries
+the count of open questions, or a green check when there are none. The language
+switch is in the profile menu.
 
 The Definitions tab summarizes how many definitions are not run, verified,
 failed or outdated, narrows by that status, by text and by section, and links

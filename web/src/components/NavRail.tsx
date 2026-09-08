@@ -1,5 +1,5 @@
-// The left navigation rail: project scope and Inbox (or the brand), the work
-// surfaces, and the profile block.
+// The left navigation rail: project scope (or the brand), the work surfaces,
+// Inbox, and the profile block.
 //
 // This replaces the horizontal nav strip that used to live inside AppHeader.
 // The strip had to scroll sideways the moment a fifth surface arrived, which
@@ -22,27 +22,23 @@
 // a visual one, which is why it uses `useIsPhone` rather than a `md:` prefix.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
-  BugIcon,
   CheckIcon,
   ChevronRightIcon,
   MenuIcon,
-  CalendarClockIcon,
-  ListChecksIcon,
   LanguagesIcon,
-  LayersIcon,
   Rows3Icon,
-  InboxIcon,
   LayoutGridIcon,
-  LightbulbIcon,
   LogOutIcon,
   NetworkIcon,
+  FileTextIcon,
+  ListChecksIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
-  ServerIcon,
   SettingsIcon,
 } from 'lucide-react'
+import { specificationLink, type SpecificationView } from '@/lib/specification-url'
 import { Logo } from './Logo'
-import { AppNavigation } from './AppNavigation'
+import { AppNavigation, InboxNavigation } from './AppNavigation'
 import type { Locale } from '@/lib/i18n'
 import { ProjectPicker, type ProjectOption, type ProjectPickerLabels } from './ProjectPicker'
 import { cn } from '@/lib/utils'
@@ -75,10 +71,12 @@ export interface NavRailLabels {
 }
 
 export interface NavRailProps {
+  specificationView?: SpecificationView
+  specificationSection?: string | null
   lang?: Locale
   onLang?: (lang: Locale) => void
-  /** Set by AppShell: project scope and Inbox take the top row in place of the
-   *  brand, the collapse toggle drops beneath it, and Inbox leaves the list. */
+  /** Set by AppShell: project scope takes the top row in place of the brand
+   *  and the collapse toggle drops beneath it. */
   navigationInHeader?: boolean
   nav: NavLabels
   /**
@@ -87,9 +85,8 @@ export interface NavRailProps {
    */
   current: keyof NavLabels | 'account'
   /**
-   * A count beside a nav entry, the way /inbox badges open questions and
-   * /schedules badges proposals waiting on a human. Zero renders nothing —
-   * a "0" badge is noise, not information.
+   * A count beside a nav entry, the way /inbox badges open questions. Zero
+   * renders nothing — a "0" badge is noise, not information.
    */
   badges?: Partial<Record<keyof NavLabels, number>>
   labels: NavRailLabels
@@ -120,57 +117,10 @@ export interface NavRailProps {
   onNavigate?: (href: string) => void
 }
 
-const NAV_HREF: Record<keyof NavLabels, string> = {
-  bugs: '/bugs',
-  board: '/board',
-  epics: '/epics',
-  lanes: '/lanes',
-  inbox: '/inbox',
-  specification: '/specification',
-  initiatives: '/initiatives',
-  schedules: '/schedules',
-  environments: '/environments',
-  agentQueues: '/agent-queues',
-}
+const NAV_HREF = { specification: '/specification', board: '/board', lanes: '/lanes' }
+const NAV_ICON = { specification: NetworkIcon, board: LayoutGridIcon, lanes: Rows3Icon }
+const NAV_ORDER = ['specification', 'board', 'lanes'] as const
 
-const NAV_ICON: Record<keyof NavLabels, typeof LayoutGridIcon> = {
-  bugs: BugIcon,
-  board: LayoutGridIcon,
-  epics: LayersIcon,
-  lanes: Rows3Icon,
-  inbox: InboxIcon,
-  specification: NetworkIcon,
-  initiatives: LightbulbIcon,
-  schedules: CalendarClockIcon,
-  environments: ServerIcon,
-  agentQueues: ListChecksIcon,
-}
-
-// Specification is FIRST, and it is one entry rather than three.
-//
-// The map, the written plan and the tests are three renderings of one thing —
-// the same nodes drawn, composed as prose, and checked — so they are one place
-// you go and a switch you flip, not three destinations to choose between. The
-// rail's job is to say what parts of the product exist; picking a view of one
-// part is the surface's own business, and it lives in that surface's header.
-//
-// Everything after it is ordered as before: the work surfaces, then the idea
-// being nurtured, then scheduling, then Environments, which is configuration —
-// you read what needs verifying far more often than you edit where it runs.
-const NAV_ORDER: (keyof NavLabels)[] = [
-  'specification',
-  'board',
-  'bugs',
-  'lanes',
-  'epics',
-  'inbox',
-  'initiatives',
-  'schedules',
-  'environments',
-  'agentQueues',
-]
-
-const SETTINGS_HREF = '/settings'
 
 /** The role worth showing, most privileged first. Anything else reads as "agent". */
 function roleOf(scopes: string[] | undefined): string {
@@ -212,6 +162,8 @@ function IconButton({
 
 export function NavRail({
   navigationInHeader = false,
+  specificationView = 'document',
+  specificationSection,
   lang,
   onLang,
   nav,
@@ -235,7 +187,10 @@ export function NavRail({
   const overlay = isPhone && expanded
   const role = roleOf(scopes)
   const initial = (actor || labels.account).trim().charAt(0).toUpperCase()
+  const settingsHref = project ? `/settings?scope=${encodeURIComponent(project)}` : '/settings'
   const accountActive = current === 'account'
+  const footerRail = { nav, current, badges, labels, project, collapsed, onCollapsed, onSignOut, onNavigate: onNavigate && ((href: string) => { if (overlay) onCollapsed(true); onNavigate(href) }) }
+  const scopedHref = (key: typeof NAV_ORDER[number]) => key === 'specification' ? specificationLink(project) : project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key]
   const accountName = actor || labels.account
 
   const [menuOpen, setMenuOpen] = useState(false)
@@ -278,7 +233,7 @@ export function NavRail({
     e.preventDefault()
     if (overlay) onCollapsed(true)
     setMenuOpen(false)
-    onNavigate(SETTINGS_HREF)
+    onNavigate(settingsHref)
   }
 
   function signOut() {
@@ -340,7 +295,7 @@ export function NavRail({
           // list, which is the only part long enough to need it anyway.
           'bg-card border-r-border-soft flex flex-none flex-col border-r',
           isPhone && !overlay && 'hidden',
-          expanded ? 'w-56' : navigationInHeader ? 'w-24' : 'w-14',
+          expanded ? 'w-56' : 'w-14',
           overlay && 'fixed inset-y-0 left-0 z-50 shadow-[var(--shadow)]',
         )}
       >
@@ -391,8 +346,8 @@ export function NavRail({
         )}
 
         <nav className="flex min-h-0 grow flex-col gap-1 overflow-y-auto px-2 py-2">
-          {NAV_ORDER.filter((key) => !navigationInHeader || key !== 'inbox').map((key) => {
-            const label = nav[key] ?? (key === 'lanes' ? 'Lanes' : key === 'bugs' ? (lang === 'de' ? 'Fehler' : 'Bugs') : (lang === 'de' ? 'Agenten-Queue' : 'Agent queue'))
+          {NAV_ORDER.map((key) => {
+            const label = nav[key] ?? 'Lanes'
             const Icon = NAV_ICON[key]
             const count = badges?.[key] ?? 0
             const isCurrent = key === current
@@ -422,7 +377,7 @@ export function NavRail({
                 ? 'text-primary bg-secondary font-[680]'
                 : 'text-muted-foreground hover:text-primary hover:bg-muted cursor-pointer',
             )
-            return isCurrent ? (
+            const destination = isCurrent ? (
               <Hint key={key} text={label}>
                 <span className={cls} aria-current="page" aria-label={label}>
                   {inner}
@@ -431,7 +386,7 @@ export function NavRail({
             ) : (
               <Hint key={key} text={label}>
                 <a
-                  href={project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key]}
+                  href={scopedHref(key)}
                   className={cls}
                   aria-label={label}
                   onClick={(e) => {
@@ -441,15 +396,31 @@ export function NavRail({
                     // On a phone the rail is covering the page it just navigated
                     // to, so leaving it open would hide the destination.
                     if (overlay) onCollapsed(true)
-                    onNavigate(project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key])
+                    onNavigate(scopedHref(key))
                   }}
                 >
                   {inner}
                 </a>
               </Hint>
             )
+            return <div key={key}>{destination}{key === 'specification' && <div role="group" aria-label={nav.specification} className={cn('mt-1 flex flex-col gap-1', expanded && 'ml-4 border-l border-border-soft pl-2')}>
+              {(['document', 'map', 'tests'] as const).map(view => {
+                const name = view === 'document' ? (lang === 'de' ? 'Dokument' : 'Document') : view === 'map' ? (lang === 'de' ? 'Karte' : 'Map') : 'Tests'
+                const ViewIcon = view === 'document' ? FileTextIcon : view === 'map' ? NetworkIcon : ListChecksIcon
+                const href = specificationLink(project, view, current === 'specification' ? specificationSection : undefined)
+                return <Hint key={view} text={name}><a href={href} aria-label={name} aria-current={current === 'specification' && specificationView === view ? 'page' : undefined}
+                  className={cn('flex min-h-9 items-center gap-2 rounded-lg px-2 text-[13px] text-muted-foreground hover:bg-muted hover:text-primary aria-[current=page]:bg-secondary aria-[current=page]:text-primary', collapsed && 'justify-center')}
+                  onClick={event => { if (!onNavigate || !plainLeftClick(event)) return; event.preventDefault(); if (overlay) onCollapsed(true); onNavigate(href) }}>
+                  <ViewIcon size={16} />{expanded && name}
+                </a></Hint>
+              })}
+            </div>}</div>
           })}
         </nav>
+
+        <div className={cn('flex flex-none flex-col gap-1 px-2 pb-2', collapsed && 'items-center')}>
+          <InboxNavigation navigation={footerRail} />
+        </div>
 
         {/* Profile block at the bottom: avatar opens a menu for settings and
             sign-out. Hand-rolled rather than Radix — ProjectPicker already owns
@@ -513,7 +484,7 @@ export function NavRail({
                   ref={settingsRef}
                   id={settingsItemId}
                   role="menuitem"
-                  href={SETTINGS_HREF}
+                  href={settingsHref}
                   className={cn(
                     'text-foreground hover:bg-muted flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-[13px] font-[650] no-underline',
                     menuActive === 0 && 'bg-accent',

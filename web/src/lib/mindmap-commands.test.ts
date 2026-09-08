@@ -47,7 +47,7 @@ describe('commandsFor', () => {
 
   it('puts the node scope first when a node is selected', () => {
     const ids = commandsFor(ctx({ node: node({ hasChildren: true }) }))
-    expect(ids.slice(0, 11)).toEqual([
+    expect(ids.slice(0, 9)).toEqual([
       'node.open',
       'node.child',
       'node.sibling',
@@ -55,8 +55,6 @@ describe('commandsFor', () => {
       'node.relate',
       'node.attach',
       'node.ask',
-      'node.promoteEpic',
-      'node.promoteInitiative',
       'node.collapse',
       'node.delete',
     ])
@@ -283,4 +281,11 @@ describe('menuVerbsFor', () => {
   it('does not offer to promote a branch that already graduated', () => {
     expect(menuVerbsFor(ctx({ node: node({ promoted: true }) }))).not.toContain('node.promoteEpic')
   })
+})
+
+it.each([commandsFor, menuVerbsFor])('does not offer Epic or Initiative creation for an unpromoted writable node', commands => {
+  const ids = commands(ctx({ canWrite: true, canManageMap: true, node: node({ promoted: false }) }))
+  expect(ids).not.toContain('node.promoteEpic')
+  expect(ids).not.toContain('node.promoteInitiative')
+  expect(ids).toContain('node.child')
 })

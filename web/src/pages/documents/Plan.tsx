@@ -760,7 +760,25 @@ function ConnectedPlan({
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
-        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} primary={<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />} >
+        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} primary={<>        <button
+          type="button"
+          onClick={toggleOutline}
+          hidden={focusMode}
+          aria-controls="document-outline"
+          onMouseDown={event => event.preventDefault()}
+          aria-expanded={outlineOpen}
+          className="text-muted-foreground hover:text-foreground flex min-h-8 items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[12px] font-[650]"
+        >
+          <ChevronDownIcon
+            className={[
+              'size-3.5 flex-none transition-transform',
+              outlineOpen ? '' : '-rotate-90',
+            ].join(' ')}
+            aria-hidden="true"
+          />
+          <span>{railLabels.outline}</span>
+        </button>
+<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} /></>} >
         {agentTools}
         <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}
@@ -779,32 +797,13 @@ function ConnectedPlan({
       {/* Collapsible, and the state is remembered.
           On a long plan the outline is how you navigate; on a narrow window it
           is competing with the prose for the only column that matters. Both are
-          true at different moments, so it folds to a strip you can open again
-          rather than a choice made once in the layout. */}
+          true at different moments, so hiding it frees the entire column.
+          A compact toolbar control reopens it without retaining a sidebar strip. */}
       <aside
-        style={{ display: focusMode ? 'none' : undefined }}
-        className={[
-          'document-outline border-b-border-soft flex flex-none flex-col border-b bg-white @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 dark:bg-card',
-          outlineOpen
-            ? 'absolute inset-x-0 top-0 z-40 max-h-[80%] overflow-y-auto px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:shadow-none'
-            : 'px-2 py-1 @min-[850px]/document-pane:w-auto',
-        ].join(' ')}
+        id="document-outline"
+        style={{ display: focusMode || !outlineOpen ? 'none' : undefined }}
+        className="document-outline border-b-border-soft absolute inset-x-0 top-0 z-40 flex max-h-[80%] flex-none flex-col overflow-y-auto border-b bg-white px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:flex-none @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 @min-[850px]/document-pane:shadow-none dark:bg-card"
       >
-        <button
-          type="button"
-          onClick={toggleOutline}
-          aria-expanded={outlineOpen}
-          className="text-muted-foreground hover:text-foreground mb-1 flex items-center gap-1.5 self-start rounded-md px-1.5 py-1 text-[12px] font-[650]"
-        >
-          <ChevronDownIcon
-            className={[
-              'size-3.5 flex-none transition-transform',
-              outlineOpen ? '' : '-rotate-90',
-            ].join(' ')}
-            aria-hidden="true"
-          />
-          <span>{railLabels.outline}</span>
-        </button>
         {outlineOpen && <div className="mb-2 flex flex-wrap gap-2 px-1 text-xs"><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set(rows.filter(row => row.children.length > 0).map(row => row.key)))}>{locale === 'de' ? 'Alle einklappen' : 'Collapse all'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set())}>{locale === 'de' ? 'Alle ausklappen' : 'Expand all'}</button></div>}
         {outlineOpen && (
           <OutlineRail

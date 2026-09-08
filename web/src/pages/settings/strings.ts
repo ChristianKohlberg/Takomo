@@ -84,7 +84,7 @@ export const STR = defineStrings({
     navAccount: 'Account',
     notAdminTitle: 'This token is not an admin',
     notAdmin:
-      "Everything on this page needs the 'admin' scope. Sign in with an admin token, or mint one on the server:",
+      "Administrative settings need the 'admin' scope. The pages above remain available with your existing permissions. Sign in with an admin token, or mint one on the server:",
     notAdminCmd: 'takomo token create --actor you --scopes read,write,human,admin',
 
     // Overview
@@ -381,7 +381,7 @@ export const STR = defineStrings({
     navAccount: 'Konto',
     notAdminTitle: 'Dieses Token ist kein Admin',
     notAdmin:
-      "Alles auf dieser Seite benötigt den 'admin'-Scope. Melde dich mit einem Admin-Token an oder erzeuge eines auf dem Server:",
+      "Die Verwaltungseinstellungen benötigen den 'admin'-Scope. Die Seiten oben bleiben mit deinen bisherigen Berechtigungen erreichbar. Melde dich mit einem Admin-Token an oder erzeuge eines auf dem Server:",
     notAdminCmd: 'takomo token create --actor du --scopes read,write,human,admin',
 
     overviewTitle: 'Dieses Token',

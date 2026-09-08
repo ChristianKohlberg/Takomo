@@ -155,22 +155,34 @@ picker and up to four action buttons in one row — the nav was already scrollin
 sideways to hide what did not fit, behind an edge that signals nothing. The rail
 gives the surfaces their own axis, so a sixth costs vertical space nobody is
 short of. Two states, toggled by the icon under its top row: expanded (icon +
-label, `w-56`) and collapsed (icons only, `w-24` — wide enough for the project
-initial and the Inbox icon side by side). On a desktop the choice is a viewer
-preference, so `useNavCollapsed` persists it per origin and every surface reads
+label, `w-56`) and collapsed (icons only, `w-14`). On a desktop the choice is a
+viewer preference, so `useNavCollapsed` persists it per origin and every surface reads
 the same key; on a phone or tablet the rail starts collapsed and a toggle is not
 persisted, so opening it there never overwrites the desktop preference. Every
 rail link carries `?project=<current>`, so the selected project survives
 navigation, copy-link and new-tab alike.
 
+**The rail lists three destinations: Specification, Board, Lanes.** Specification
+carries Document, Map and Tests as child anchors — reachable in the expanded,
+collapsed and phone rail alike — and each child link keeps the current project and
+selected section, so switching a view is not a fresh start. Every other page
+(`/agent-queues`, `/bugs`, `/epics`, `/initiatives`, `/schedules`, `/environments`)
+keeps its route and its own permissions, and is reached from the **More pages**
+collection at the top of `/settings` (`components/settings/PageCollection.tsx`),
+which sits outside the admin gate; Settings itself stays behind the profile menu
+rather than becoming a visible destination. The rail badges only what it shows,
+so the counts those pages once fed it live on the pages themselves.
+
 **The project picker is in the rail too** — its top row, where the wordmark used
-to be, with Inbox beside it — because it is not about the current surface: it
+to be — because it is not about the current surface: it
 SCOPES all of them, and a control every page obeys belongs with the navigation
-rather than in each page's own toolbar. The Inbox icon carries the count of open
+rather than in each page's own toolbar. **Inbox is the rail's footer entry**,
+directly above the profile block, with its label visible when expanded and a
+tooltip when collapsed. It carries the count of open
 questions, or a green check at zero; a page that does not pass `badges.inbox`
 gets it from `AppShell`, which counts open questions on an interval, on focus,
 and on the specification page's existing project socket — never by opening a
-socket of its own. It stopped being a native
+socket of its own. The picker stopped being a native
 `<select>` in the move: a `<select>` cannot be searched, and an install with
 fifty projects turns it into a scroll hunt. `ProjectPicker` is a trigger plus a
 popover with a search field, and it collapses to the project's initial.
@@ -195,10 +207,11 @@ actions.
 
 On a phone the expanded rail would take 224 of 375 px and even the collapsed
 strip a quarter of the screen, so there the rail is out of the flow entirely: a
-compact top bar carries a menu button, the project picker and Inbox, and the
-menu button opens the rail as an **overlay** with a backdrop; following a link
-closes it. That is a structural difference rather than a visual one, which is
-why it reads `useIsPhone` instead of taking a `md:` prefix.
+compact top bar carries a menu button and the project picker, and the
+menu button opens the rail as an **overlay** with a backdrop — Inbox is in that
+overlay's footer, as on the desktop — and following a link closes it. That is a
+structural difference rather than a visual one, which is why it reads
+`useIsPhone` instead of taking a `md:` prefix.
 
 **/documents is the PLAN, not a filing cabinet.** A project has one plan, and
 the map and this page are two renderings of it: a node is a section, its title

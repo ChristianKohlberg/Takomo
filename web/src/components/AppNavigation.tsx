@@ -4,10 +4,8 @@ import { ProjectPicker } from './ProjectPicker'
 import { Hint } from './Hint'
 import { cn } from '@/lib/utils'
 
-/** Project scope and inbox share the top of the navigation rail. */
+/** Project scope stays at the top of the navigation rail. */
 export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }) {
-  const count = rail.badges?.inbox
-  const active = rail.current === 'inbox'
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1">
       {rail.projects && rail.projectLabels && (
@@ -19,13 +17,23 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
           collapsed={rail.collapsed}
         /></div>
       )}
+    </div>
+  )
+}
+
+/** Inbox belongs beside the account, independent of project-picker placement. */
+export function InboxNavigation({ navigation: rail }: { navigation: NavRailProps }) {
+  const count = rail.badges?.inbox
+  const active = rail.current === 'inbox'
+  return (
       <Hint text={rail.nav.inbox}>
         <a
           href={rail.project ? `/inbox?project=${encodeURIComponent(rail.project)}` : '/inbox'}
           aria-label={rail.nav.inbox}
           aria-current={active ? 'page' : undefined}
           className={cn(
-            'relative flex size-10 shrink-0 items-center justify-center rounded-lg',
+            'flex min-h-10 shrink-0 items-center gap-2.5 rounded-lg text-[13px] font-[650]',
+            rail.collapsed ? 'size-10 justify-center' : 'px-2.5',
             active ? 'text-primary bg-secondary' : 'text-muted-foreground hover:text-primary hover:bg-muted',
           )}
           onClick={(event) => {
@@ -34,7 +42,7 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
             rail.onNavigate(rail.project ? `/inbox?project=${encodeURIComponent(rail.project)}` : '/inbox')
           }}
         >
-          <InboxIcon size={18} />
+          <span className="relative flex size-5 shrink-0 items-center justify-center"><InboxIcon size={18} />
           {count != null && count > 0 ? (
             <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-1 min-w-[17px] rounded-full px-1 text-center text-[10px] leading-[17px] font-bold">
               {count > 99 ? '99+' : count}
@@ -43,9 +51,9 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
             <span role="img" aria-label={rail.nav.inbox + ': 0'} className="bg-card absolute -top-0.5 -right-0.5 rounded-full text-emerald-600">
               <CheckIcon size={13} strokeWidth={3} />
             </span>
-          )}
+          )}</span>
+          {!rail.collapsed && <span>{rail.nav.inbox}</span>}
         </a>
       </Hint>
-    </div>
   )
 }

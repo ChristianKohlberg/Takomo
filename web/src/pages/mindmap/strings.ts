@@ -62,12 +62,6 @@ export const STR = defineStrings({
     zoomOut: 'Zoom out',
     cannotDrop: 'Cannot drop a branch onto its own child',
 
-    promoteEpicHint:
-      'An epic titled from this thought, with its direct children as tickets under it.',
-    promoteIniHint: 'An initiative seeded with this whole branch.',
-    promotedEpic: 'Epic {id} created. The node stays, pointing at it.',
-    promotedInitiative: 'Initiative {id} created. The node stays, pointing at it.',
-
     connected: 'Live',
     connecting: 'Connecting…',
     disconnected: 'Offline',
@@ -164,8 +158,6 @@ export const STR = defineStrings({
     cmdOpenHint: 'Its notes, what is attached, and the lines running to other branches.',
     cmdRelate: 'Relate to…',
     cmdAttach: 'Attach something',
-    cmdPromoteEpic: 'Make an epic',
-    cmdPromoteInitiative: 'Make an initiative',
     cmdCollapse: 'Fold this branch',
     cmdExpand: 'Unfold this branch',
     cmdDelete: 'Remove this branch',
@@ -294,12 +286,6 @@ export const STR = defineStrings({
     zoomOut: 'Verkleinern',
     cannotDrop: 'Ein Ast kann nicht auf sein eigenes Kind gelegt werden',
 
-    promoteEpicHint:
-      'Ein Epic mit diesem Gedanken als Titel und den direkten Kindern als Tickets darunter.',
-    promoteIniHint: 'Eine Initiative, die mit diesem ganzen Ast startet.',
-    promotedEpic: 'Epic {id} erstellt. Der Knoten bleibt und zeigt darauf.',
-    promotedInitiative: 'Initiative {id} erstellt. Der Knoten bleibt und zeigt darauf.',
-
     connected: 'Live',
     connecting: 'Verbinde…',
     disconnected: 'Offline',
@@ -397,8 +383,6 @@ export const STR = defineStrings({
     cmdOpenHint: 'Seine Notizen, was daran hängt, und die Linien zu anderen Ästen.',
     cmdRelate: 'Beziehung ziehen zu…',
     cmdAttach: 'Etwas anhängen',
-    cmdPromoteEpic: 'Epic daraus machen',
-    cmdPromoteInitiative: 'Initiative daraus machen',
     cmdCollapse: 'Ast einklappen',
     cmdExpand: 'Ast aufklappen',
     cmdDelete: 'Diesen Ast entfernen',

@@ -413,6 +413,8 @@ function SpecificationWorkspace({
           }}
           rail={{
             current: 'specification',
+            specificationView: view,
+            specificationSection: section,
             nav: {
               board: t.board,
           epics: t.epics,

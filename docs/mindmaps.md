@@ -329,8 +329,10 @@ event.
   the map is the thing you are working in.
 
   **⌘K is how you reach the rest**, scoped to the selected node or to the map
-  and saying which. Add, rename, write notes, relate, attach, promote, fold,
-  prune; fit, tidy, rename the map, switch project. And **go to a thought…**,
+  and saying which. Add, rename, write notes, relate, attach, fold, prune; fit,
+  tidy, rename the map, switch project. Promoting a branch to an epic or an
+  initiative is not a canvas command — it is the CLI, MCP and REST call above,
+  and a promoted node still shows its `→ epic` mark. And **go to a thought…**,
   which fuzzy-matches titles, unfolds whatever was hiding the match and centres
   it — with no rail, that is how you move around a map that has outgrown the
   screen; a **Find a node** field on the canvas does the same. The canvas opens

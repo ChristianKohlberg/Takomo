@@ -309,7 +309,9 @@ boundary, shown on hover or focus (always on touch screens) so a row of empty in
 interrupts reading.
 
 The outline is a sidebar when the document pane is at least 850px wide — resizable, with
-Collapse all / Expand all, two-line titles and the full title on hover — and its open/closed
+Collapse all / Expand all, two-line titles and the full title on hover. The **Outline** toggle
+sits in the document toolbar; hiding the outline gives its whole column to the prose rather
+than folding it to a strip, keeps the selected section and editor state, and the open/closed
 state is remembered per browser. In a narrower pane it is a drawer over the prose: it starts
 closed and closes after each selection. Both follow the pane's width, not the viewport's,
 because a conversation beside the document narrows the pane alone. Document-wide comments

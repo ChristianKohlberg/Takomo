@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { PageCollection } from '@/components/settings/PageCollection'
 import { AppHeader } from '@/components/AppHeader'
 import { AppShell } from '@/components/AppShell'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
@@ -56,7 +57,7 @@ import {
   type SectionDef,
 } from '@/components/settings/SettingsShell'
 
-import { isAuthError, loadToken, saveToken } from '@/lib/session'
+import { isAuthError, loadToken, saveToken, loadProject, saveProject } from '@/lib/session'
 import { detectLocale, pick, type Locale } from '@/lib/i18n'
 import { whoami, listProjects, type Project, type Whoami } from '@/lib/initiatives'
 import {
@@ -123,6 +124,8 @@ export function App() {
       ? stored
       : 'overview'
   })
+
+  const [navProject, setNavProject] = useState(() => new URLSearchParams(window.location.search).get('scope') ?? new URLSearchParams(window.location.search).get('project') ?? loadProject())
 
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
@@ -394,6 +397,7 @@ export function App() {
         if (cancelled) return
         setWho(w)
         if ((w.scopes ?? []).includes('admin')) await refresh()
+        else { const visibleProjects = await listProjects(token); if (!cancelled) setProjects(visibleProjects) }
       } catch (e) {
         if (!cancelled) handleErr(e)
       }
@@ -444,6 +448,10 @@ export function App() {
       rail={{
         onNavigate: navigate,
         current: 'account',
+        projects,
+        project: navProject,
+        onProject: id => { setNavProject(id); saveProject(id); const url = new URL(window.location.href); url.searchParams.set('scope', id); window.history.replaceState(null, '', url) },
+        projectLabels: { project: lang === 'de' ? 'Projekt' : 'Project', search: lang === 'de' ? 'Projekte suchen' : 'Search projects', noMatch: lang === 'de' ? 'Keine Treffer' : 'No matches' },
         nav: {
           board: t.board,
           epics: t.epics,
@@ -486,6 +494,7 @@ export function App() {
         }}
         className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6"
       >
+        <PageCollection lang={lang} project={navProject} />
         {isAdmin && <SectionTabs sections={SECTIONS} />}
 
         <div className="min-w-0 flex-1 pb-10">

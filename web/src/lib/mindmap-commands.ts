@@ -20,8 +20,6 @@ export const NODE_COMMANDS = [
   'node.relate',
   'node.attach',
   'node.ask',
-  'node.promoteEpic',
-  'node.promoteInitiative',
   'node.collapse',
   'node.expand',
   'node.delete',
@@ -60,7 +58,7 @@ export interface CommandContext {
   /** The socket ticket's write bit: can this browser change the document. */
   canWrite: boolean
   /**
-   * Whether the page's own token may change the MAP — rename, delete, promote.
+   * Whether the page's own token may change the MAP — rename, delete.
    * Those go over REST rather than the socket, so they are a separate question
    * from `canWrite`.
    */
@@ -92,7 +90,6 @@ export function commandsFor(ctx: CommandContext): CommandId[] {
       // absent on a read-only token like all of them.
       out.push('node.ask')
     }
-    if (ctx.canManageMap && !n.promoted) out.push('node.promoteEpic', 'node.promoteInitiative')
     if (n.collapsed) out.push('node.expand')
     else if (n.hasChildren) out.push('node.collapse')
     if (ctx.canWrite) out.push('node.delete')
@@ -247,7 +244,6 @@ export function menuVerbsFor(ctx: CommandContext): CommandId[] {
   if (ctx.canWrite) out.push('node.child', 'node.sibling', 'node.rename', 'node.attach')
   if (n.collapsed) out.push('node.expand')
   else if (n.hasChildren) out.push('node.collapse')
-  if (ctx.canManageMap && !n.promoted) out.push('node.promoteEpic', 'node.promoteInitiative')
   if (ctx.canWrite) out.push('node.delete')
   return out
 }
