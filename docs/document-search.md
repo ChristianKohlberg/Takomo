@@ -70,11 +70,19 @@ is edited again rather than becoming due at once. The worker checks every five
 seconds; provider capacity and retry backoff can add time after a job becomes
 eligible. Unrelated edits do not reset a section's deadline. Leases recover
 interrupted jobs, and content hashes plus provider fingerprints reject stale
-completions.
+completions. A completion that arrives while the map is still changing is
+discarded and its job waits one more quiet period, so the same text is not sent
+to the provider again in the same pass; a projection failure at that point is
+treated the same way and the other jobs in the pass continue.
 
 **Sync document** in the search modal flushes pending document saves and makes the map's
 pending jobs eligible immediately. It preserves already current embeddings, rather
-than paying to embed unchanged content again. The status reports queued, running,
+than paying to embed unchanged content again. The response says whether that
+happened: `sync: scheduled`, or `sync: deferred` with a `sync_note` when the
+document kept changing under every projection attempt. Deferred means nothing was
+scheduled and pending changes keep their normal quiet delay; the modal shows the
+note until the index reports current, and syncing again once editing pauses
+applies the bypass. The status reports queued, running,
 failed and indexed sections and a sanitized failure message. A failed provider
 call retries with bounded backoff at most three times; after that the job is
 parked and counted as `failed`, and is not sent to the provider again until the

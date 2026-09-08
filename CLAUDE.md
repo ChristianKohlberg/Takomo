@@ -241,6 +241,11 @@ ids, its answer goes through the same `validate_ops` a fleet agent's does, and i
 a person accepts. The anti-fabrication rules in the system prompt are load-bearing — the prototype
 measured a model inventing statistics — and a `replace` carrying the block's existing text is refused,
 because a model once answered that way while its summary described a change it had not made.
+The one other external-model call is **document search** (`src/api/search.rs`, `src/store/search.rs`,
+`src/embeddings.rs`): `GET /v1/mindmaps/{id}/search` and the indexing worker send section text and
+queries to the embedding provider an admin configured under `/v1/settings/embeddings`. Off until a
+key is stored; keyword search (FTS5 over a rebuildable projection of the CRDT log) answers without
+it, and the key lives in the SQLite file, so a database backup is a credential. `docs/document-search.md`.
 
 **Five independent auth paths, not one middleware with branches** — a token of one kind cannot
 reach another's routes (`src/auth.rs` + the router in `src/server.rs`):
@@ -562,6 +567,6 @@ Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workfl
 `spec/auth.md`, `docs/ask-a-human.md`, `docs/users.md`, `docs/checklist.md`,
 `docs/environments.md`, `docs/documents.md`, `docs/epic-claims.md`
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
-`docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`,
+`docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`, `docs/document-search.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini),
 `docs/bugs.md` (the `/bugs` page and explicitly requested Codex research over pinned Git objects).
