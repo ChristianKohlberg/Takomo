@@ -57,12 +57,20 @@ A section is the normal chunk. Long sections split at paragraph boundaries aroun
 2000 characters, splitting an oversized paragraph only as a last resort. Ancestor
 headings accompany each chunk. Search presents the best matching chunk per section.
 
-Saved content changes mark maps durably for projection. Only sections whose content
-or heading path changed are queued, with a default 60-second quiet delay capped at
-five minutes from the first pending change. The worker checks every five seconds;
-provider capacity and retry backoff can add time after a job becomes eligible.
-Unrelated edits do not reset a section's deadline. Leases recover interrupted jobs,
-and content hashes plus provider fingerprints reject stale completions.
+Saved content changes mark maps durably for projection. Projection reads the
+map's log on a read connection and applies the result in one short write that
+first rechecks the log's sequence; if the log grew meanwhile the projection is
+recomputed, a bounded number of times, and a map still changing under it stays
+marked and answers reads as `stale` until the next pass completes. Only sections
+whose content or heading path changed are queued, with a default 60-second quiet
+delay capped at five minutes from the first pending change. That window belongs to
+one pending change: a section whose job was parked by failures, or whose window
+already elapsed while it waited in a backlog, starts a fresh quiet period when it
+is edited again rather than becoming due at once. The worker checks every five
+seconds; provider capacity and retry backoff can add time after a job becomes
+eligible. Unrelated edits do not reset a section's deadline. Leases recover
+interrupted jobs, and content hashes plus provider fingerprints reject stale
+completions.
 
 **Sync document** in the search modal flushes pending document saves and makes the map's
 pending jobs eligible immediately. It preserves already current embeddings, rather

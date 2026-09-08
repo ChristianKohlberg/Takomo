@@ -60,6 +60,12 @@ pub struct AppState {
     pub oauth: Option<crate::api::oauth::OauthConfig>,
 }
 
+impl AsRef<Store> for AppState {
+    fn as_ref(&self) -> &Store {
+        &self.store
+    }
+}
+
 impl AppState {
     pub fn new(store: Store) -> Arc<Self> {
         AppState::new_with_oauth(store, None)
@@ -749,7 +755,7 @@ pub fn spawn_sweeper(state: Arc<AppState>, interval: std::time::Duration) {
             let Some(state) = search_state.upgrade() else {
                 break;
             };
-            if let Err(error) = crate::store::search::process_jobs(&state.store).await {
+            if let Err(error) = crate::store::search::process_jobs(state).await {
                 eprintln!("search indexing failed: {}", error.body.message);
             }
         }

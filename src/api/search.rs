@@ -128,12 +128,20 @@ pub async fn search(
     }
     // A map can move projects while the provider request is in flight.
     authorize(&state, &ctx, &map, false)?;
-    let outcome = state.store.search_document(
-        &map,
-        &q,
-        vector.as_deref().map(|v| (v, config.fingerprint())),
-    )?;
-    if vector.is_some() && !outcome.used_vectors {
+    let had_vector = vector.is_some();
+    let outcome = {
+        let state = state.clone();
+        let map = map.clone();
+        let q = q.clone();
+        let fingerprint = config.fingerprint();
+        super::blocking_read(move || {
+            state
+                .store
+                .search_document(&map, &q, vector.as_deref().map(|v| (v, fingerprint)))
+        })
+        .await?
+    };
+    if had_vector && !outcome.used_vectors {
         semantic_status = if outcome.configured {
             "indexing"
         } else {
@@ -168,8 +176,12 @@ pub async fn status(
     Path(map): Path<String>,
 ) -> ApiResult<Json<Value>> {
     authorize(&state, &ctx, &map, false)?;
-    state.store.project_search(&map, crate::ids::now_ms())?;
-    Ok(Json(state.store.search_status(&map)?))
+    let status = super::blocking_read(move || {
+        state.store.project_search(&map, crate::ids::now_ms())?;
+        state.store.search_status(&map)
+    })
+    .await?;
+    Ok(Json(status))
 }
 pub async fn sync(
     State(state): State<Arc<AppState>>,
@@ -180,8 +192,12 @@ pub async fn sync(
     authorize(&state, &ctx, &map, true)?;
     let room = crate::api::docsync::open_room(&state, &map).await?;
     crate::api::docsync::flush(&state, &room, &ctx.actor).await;
-    state
-        .store
-        .refresh_search(&map, true, crate::ids::now_ms())?;
-    Ok(Json(state.store.search_status(&map)?))
+    let status = super::blocking_read(move || {
+        state
+            .store
+            .refresh_search(&map, true, crate::ids::now_ms())?;
+        state.store.search_status(&map)
+    })
+    .await?;
+    Ok(Json(status))
 }

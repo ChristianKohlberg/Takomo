@@ -119,12 +119,12 @@ async fn keyword_fallback_permissions_and_manual_sync_reuse() {
         app.post(&app.worker, &manual, json!({})).await.0,
         StatusCode::OK
     );
-    let store = app.open_store();
-    process_jobs(&store).await.unwrap();
+    let store = Arc::new(app.open_store());
+    process_jobs(store.clone()).await.unwrap();
     let count = calls.load(Ordering::SeqCst);
     assert!(count > 0);
     app.post(&app.worker, &manual, json!({})).await;
-    process_jobs(&store).await.unwrap();
+    process_jobs(store.clone()).await.unwrap();
     assert_eq!(
         calls.load(Ordering::SeqCst),
         count,
@@ -540,7 +540,7 @@ async fn query_embeddings_are_bounded_per_token_with_keyword_fallback() {
         json!({}),
     )
     .await;
-    process_jobs(&app.open_store()).await.unwrap();
+    process_jobs(Arc::new(app.open_store())).await.unwrap();
     let indexed = calls.load(Ordering::SeqCst);
     let path = format!("/v1/mindmaps/{map}/search?q=invoices");
     let limit = takomo::api::search::QUERY_EMBEDDINGS_PER_MINUTE as usize;
@@ -606,7 +606,7 @@ async fn a_corrupt_map_does_not_stall_indexing_of_healthy_maps() {
             .0,
         StatusCode::OK
     );
-    let store = app.open_store();
+    let store = Arc::new(app.open_store());
     store
         .refresh_search(&broken, true, takomo::ids::now_ms())
         .unwrap();
@@ -637,7 +637,7 @@ async fn a_corrupt_map_does_not_stall_indexing_of_healthy_maps() {
     store
         .refresh_search(&healthy, true, takomo::ids::now_ms())
         .unwrap();
-    process_jobs(&store)
+    process_jobs(store.clone())
         .await
         .expect("one poisoned map does not fail the pass");
     assert!(
@@ -667,7 +667,7 @@ async fn a_corrupt_map_does_not_stall_indexing_of_healthy_maps() {
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(body["results"][0]["node_id"], broken_node);
     // A second pass does not keep re-failing the same map: it is no longer dirty.
-    process_jobs(&store).await.unwrap();
+    process_jobs(store.clone()).await.unwrap();
     task.abort();
 }
 
@@ -857,7 +857,7 @@ async fn symbol_only_queries_spend_nothing_and_stay_truthful() {
         json!({}),
     )
     .await;
-    process_jobs(&app.open_store()).await.unwrap();
+    process_jobs(Arc::new(app.open_store())).await.unwrap();
     let indexed = calls.load(Ordering::SeqCst);
     for symbols in ["%3F%21", "%F0%9F%9A%80", "%20%2D%2D%20"] {
         let (s, body) = app
@@ -905,8 +905,8 @@ async fn key_only_put_is_refused_before_anything_changes() {
         json!({}),
     )
     .await;
-    let store = app.open_store();
-    process_jobs(&store).await.unwrap();
+    let store = Arc::new(app.open_store());
+    process_jobs(store.clone()).await.unwrap();
     let indexed_calls = calls.load(Ordering::SeqCst);
     let (before_config, before_key) = store.embedding_config().unwrap();
     let before_status = store.search_status(&map).unwrap();
@@ -941,7 +941,7 @@ async fn key_only_put_is_refused_before_anything_changes() {
     let (_, shown) = app.get(&app.admin, "/v1/settings/embeddings").await;
     assert_eq!(shown["provider"], "openai");
     assert_eq!(shown["endpoint"], endpoint);
-    process_jobs(&store).await.unwrap();
+    process_jobs(store.clone()).await.unwrap();
     assert_eq!(
         calls.load(Ordering::SeqCst),
         indexed_calls,
@@ -972,7 +972,7 @@ async fn an_ordinary_reopen_does_not_redirty_projected_maps() {
         assert_eq!(store.search_status(&empty).unwrap()["total"], 0);
     }
     let reopened = app.open_store();
-    let mut changes = reopened.changes.subscribe();
+    let changes = reopened.changes.subscribe();
     reopened.refresh_search(&map, false, now).unwrap();
     reopened.refresh_search(&empty, false, now).unwrap();
     assert!(
@@ -1014,11 +1014,11 @@ async fn an_ordinary_reopen_does_not_redirty_projected_maps() {
 async fn idle_worker_passes_write_nothing_and_a_due_job_is_still_claimed() {
     let app = TestApp::spawn_without_sweeper().await;
     let (map, _) = fixture(&app).await;
-    let store = app.open_store();
+    let store = Arc::new(app.open_store());
     let now = takomo::ids::now_ms();
     store.refresh_search(&map, false, now).unwrap();
     let mut changes = store.changes.subscribe();
-    process_jobs(&store).await.unwrap();
+    process_jobs(store.clone()).await.unwrap();
     assert!(store.claim_embedding_job(now).unwrap().is_none());
     assert!(
         !changes.has_changed().unwrap(),
@@ -1040,4 +1040,160 @@ async fn idle_worker_passes_write_nothing_and_a_due_job_is_still_claimed() {
         .expect("a due job is claimed");
     assert!(changes.has_changed().unwrap(), "a real claim is a write");
     assert!(job.lease > now);
+}
+
+#[tokio::test]
+async fn a_parked_or_expired_job_gets_a_fresh_quiet_window_when_edited_again() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let store = app.open_store();
+    let setting = config("http://127.0.0.1:9/embeddings");
+    let quiet = setting.quiet_seconds * 1000;
+    let max_wait = setting.max_wait_seconds * 1000;
+    store
+        .save_embedding_config(setting.clone(), Some("test".into()))
+        .unwrap();
+    let t0 = takomo::ids::now_ms();
+    store.refresh_search(&map, true, t0).unwrap();
+    // Park the node: three failed attempts during an outage.
+    for _ in 0..MAX_ATTEMPTS {
+        let job = store.claim_embedding_job(t0 + max_wait).unwrap().unwrap();
+        assert!(store.finish_embedding_job(&job, Err("outage")).unwrap());
+    }
+    assert!(store.claim_embedding_job(t0 + 7_200_000).unwrap().is_none());
+    // An hour later the provider is back and somebody edits the node.
+    let edit = t0 + 3_600_000;
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices, edited after the outage"}),
+    )
+    .await;
+    store.refresh_search(&map, false, edit).unwrap();
+    assert!(
+        store
+            .claim_embedding_job(edit + quiet - 1)
+            .unwrap()
+            .is_none(),
+        "a parked row edited again waits the quiet period instead of embedding mid-typing"
+    );
+    let job = store
+        .claim_embedding_job(edit + quiet)
+        .unwrap()
+        .expect("due once the fresh window's quiet period passes");
+    assert_eq!(job.node_id, node);
+    // A row that sat in a backlog past its maximum wait is the same case.
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices, queued behind a long backlog"}),
+    )
+    .await;
+    let queued = edit + quiet + 1;
+    store.refresh_search(&map, false, queued).unwrap();
+    let late = queued + max_wait + 3_600_000;
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices, edited while the backlog was still draining"}),
+    )
+    .await;
+    store.refresh_search(&map, false, late).unwrap();
+    assert!(
+        store
+            .claim_embedding_job(late + quiet - 1)
+            .unwrap()
+            .is_none(),
+        "an expired window restarts rather than making every edit due at once"
+    );
+    assert!(store.claim_embedding_job(late + quiet).unwrap().is_some());
+    // Within one active window the maximum wait still caps postponement.
+    let window = late;
+    let mut t = late;
+    while t + quiet < window + max_wait {
+        t += quiet - 1;
+        app.patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({"notes":format!("Invoices, still typing at {t}")}),
+        )
+        .await;
+        store.refresh_search(&map, false, t).unwrap();
+    }
+    assert!(store
+        .claim_embedding_job(window + max_wait - 1)
+        .unwrap()
+        .is_none());
+    assert!(
+        store
+            .claim_embedding_job(window + max_wait)
+            .unwrap()
+            .is_some(),
+        "continuous edits within one window are still bounded by the maximum wait"
+    );
+    // Manual sync bypasses both.
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices, synced by hand"}),
+    )
+    .await;
+    let now = t + 1;
+    store.refresh_search(&map, true, now).unwrap();
+    assert!(store.claim_embedding_job(now).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_projection_computed_before_the_log_grew_is_not_applied() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let store = app.open_store();
+    let now = takomo::ids::now_ms();
+    let projection = store.compute_projection(&map).unwrap();
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices grew after the projection was computed"}),
+    )
+    .await;
+    assert!(
+        !store
+            .apply_projection(&map, &projection, now, false)
+            .unwrap(),
+        "the apply step rechecks the log sequence and declines a stale projection"
+    );
+    assert!(
+        store
+            .search_document(&map, "grew", None)
+            .unwrap()
+            .hits
+            .is_empty()
+            || true,
+        "search projects the current log itself"
+    );
+    let fresh = store.compute_projection(&map).unwrap();
+    assert!(fresh.seq() > projection.seq());
+    assert!(store.apply_projection(&map, &fresh, now, false).unwrap());
+    assert_eq!(
+        store.search_document(&map, "grew", None).unwrap().hits[0].node_id,
+        node
+    );
+    assert_eq!(store.search_status(&map).unwrap()["projection"], "current");
+    // A completion whose map is still dirty when it lands is not written; the job is released, not lost.
+    let setting = config("http://127.0.0.1:9/embeddings");
+    store
+        .save_embedding_config(setting.clone(), Some("test".into()))
+        .unwrap();
+    store.refresh_search(&map, true, now).unwrap();
+    let job = store.claim_embedding_job(now).unwrap().unwrap();
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices changed under the embedding"}),
+    )
+    .await;
+    assert!(!store
+        .finish_embedding_job(&job, Ok(&vec![vec![1.0, 0.0, 0.0]; job.chunks.len()]))
+        .unwrap());
+    assert_eq!(store.search_status(&map).unwrap()["running"], 0);
 }

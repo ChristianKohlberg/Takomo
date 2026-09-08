@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use yrs::{
     types::text::YChange, types::ToJson, updates::decoder::Decode, ReadTxn, Text, Transact,
     XmlFragment, XmlOut,
@@ -209,27 +210,50 @@ fn projection_failure(conn: &Connection, map: &str) -> ApiResult<Option<String>>
         )
         .optional()?)
 }
-fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<()> {
-    if manual {
-        let project: Option<String> = conn
-            .query_row("SELECT project FROM mindmaps WHERE id=?1", [map], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        if let Some(project) = project {
-            super::helpers::ensure_project_writable(conn, &project)?;
-        }
-    } else if !is_dirty(conn, map)? {
-        return Ok(());
+pub const PROJECTION_ATTEMPTS: usize = 3;
+pub const PROJECTION_DEFERRED: &str = "The document changed while it was being indexed, repeatedly; results reflect the last completed projection and the next read or worker pass retries";
+struct NodeProjection {
+    id: String,
+    title: String,
+    path_json: String,
+    passage: String,
+    hash: String,
+}
+/// What a map's log says, computed on a reader so the writer is held only to apply it.
+pub struct Projection {
+    seq: i64,
+    nodes: Vec<NodeProjection>,
+}
+impl Projection {
+    pub fn seq(&self) -> i64 {
+        self.seq
     }
-    let (settings, _) = config(conn)?;
-    let fingerprint = settings.fingerprint();
+}
+fn log_seq(conn: &Connection, map: &str) -> ApiResult<i64> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(seq),0) FROM crdt_updates WHERE object_id=?1",
+        [map],
+        |r| r.get(0),
+    )?)
+}
+fn manual_gate(conn: &Connection, map: &str) -> ApiResult<()> {
+    let project: Option<String> = conn
+        .query_row("SELECT project FROM mindmaps WHERE id=?1", [map], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if let Some(project) = project {
+        super::helpers::ensure_project_writable(conn, &project)?;
+    }
+    Ok(())
+}
+fn compute(conn: &Connection, map: &str) -> ApiResult<Projection> {
+    let seq = log_seq(conn, map)?;
     let doc = hydrate(conn, map)?;
     let (_, _, nodes) = mindmapdoc::snapshot(&doc, map);
     let by_id: HashMap<_, _> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut present = HashSet::new();
+    let mut projected = Vec::with_capacity(nodes.len());
     for node in &nodes {
-        present.insert(node.id.clone());
         let mut path = vec![node.title.clone()];
         let mut parent = node.parent.as_deref();
         let mut seen = HashSet::new();
@@ -248,6 +272,39 @@ fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<
             .unwrap_or_else(|| node.notes.clone());
         let path_json = serde_json::to_string(&path).unwrap();
         let hash = sha256_hex(format!("{path_json}\n{passage}").as_bytes());
+        projected.push(NodeProjection {
+            id: node.id.clone(),
+            title: node.title.clone(),
+            path_json,
+            passage,
+            hash,
+        });
+    }
+    Ok(Projection {
+        seq,
+        nodes: projected,
+    })
+}
+fn apply(
+    conn: &Connection,
+    map: &str,
+    projection: &Projection,
+    now: i64,
+    manual: bool,
+) -> ApiResult<bool> {
+    if manual {
+        manual_gate(conn, map)?;
+    }
+    if log_seq(conn, map)? != projection.seq {
+        return Ok(false);
+    }
+    let (settings, _) = config(conn)?;
+    let fingerprint = settings.fingerprint();
+    let quiet = settings.quiet_seconds * 1000;
+    let max_wait = settings.max_wait_seconds * 1000;
+    let mut present = HashSet::new();
+    for node in &projection.nodes {
+        present.insert(node.id.as_str());
         let old: Option<String> = conn
             .query_row(
                 "SELECT content_hash FROM search_nodes WHERE map_id=?1 AND node_id=?2",
@@ -255,36 +312,40 @@ fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<
                 |r| r.get(0),
             )
             .optional()?;
-        if old.as_deref() != Some(&hash) {
+        if old.as_deref() != Some(&node.hash) {
             conn.execute(
                 "INSERT INTO search_nodes(map_id,node_id,content_hash)VALUES(?1,?2,?3)ON
 CONFLICT(map_id,node_id)DO UPDATE SET content_hash=excluded.content_hash",
-                params![map, node.id, hash],
+                params![map, node.id, node.hash],
             )?;
             conn.execute(
                 "DELETE FROM search_chunks WHERE map_id=?1 AND node_id=?2",
                 params![map, node.id],
             )?;
-            for (ordinal, chunk) in chunks(&passage).iter().enumerate() {
+            for (ordinal, chunk) in chunks(&node.passage).iter().enumerate() {
                 conn.execute(
                     "INSERT INTO
 search_chunks(map_id,node_id,ordinal,title,heading_path,passage,content_hash)VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                    params![map, node.id, ordinal, node.title, path_json, chunk, hash],
+                    params![map, node.id, ordinal, node.title, node.path_json, chunk, node.hash],
                 )?;
             }
             conn.execute(
                 "INSERT INTO
 embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALUES(?1,?2,?3,?4,?5,?6)ON
 CONFLICT(map_id,node_id)DO UPDATE SET
-content_hash=excluded.content_hash,fingerprint=excluded.fingerprint,due_at=min(excluded.due_at,embedding_jobs.first_changed+?7),lease_until=0,attempts=0,last_error=NULL",
+content_hash=excluded.content_hash,fingerprint=excluded.fingerprint,
+first_changed=CASE WHEN embedding_jobs.first_changed+?7<=excluded.first_changed OR embedding_jobs.attempts>=?8 THEN excluded.first_changed ELSE embedding_jobs.first_changed END,
+due_at=min(excluded.due_at,(CASE WHEN embedding_jobs.first_changed+?7<=excluded.first_changed OR embedding_jobs.attempts>=?8 THEN excluded.first_changed ELSE embedding_jobs.first_changed END)+?7),
+lease_until=0,attempts=0,last_error=NULL",
                 params![
                     map,
                     node.id,
-                    hash,
+                    node.hash,
                     fingerprint,
                     now,
-                    if manual { now } else { now + settings.quiet_seconds * 1000 },
-                    settings.max_wait_seconds * 1000
+                    if manual { now } else { now + quiet },
+                    max_wait,
+                    MAX_ATTEMPTS
                 ],
             )?;
         } else {
@@ -298,7 +359,7 @@ NULL OR fingerprint<>?3))",
                 conn.execute(
                     "INSERT OR IGNORE INTO
 embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALUES(?1,?2,?3,?4,?5,?6)",
-                    params![map, node.id, hash, fingerprint, now, if manual { now } else { now + settings.quiet_seconds * 1000 }],
+                    params![map, node.id, node.hash, fingerprint, now, if manual { now } else { now + quiet }],
                 )?;
             }
         }
@@ -309,7 +370,7 @@ embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALU
         .collect::<Result<_, _>>()?;
     drop(stmt);
     for id in stored {
-        if !present.contains(&id) {
+        if !present.contains(id.as_str()) {
             conn.execute(
                 "DELETE FROM search_nodes WHERE map_id=?1 AND node_id=?2",
                 params![map, id],
@@ -324,7 +385,7 @@ embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALU
     }
     conn.execute("DELETE FROM search_dirty_maps WHERE map_id=?1", [map])?;
     conn.execute("DELETE FROM search_failures WHERE map_id=?1", [map])?;
-    Ok(())
+    Ok(true)
 }
 fn record_failure(conn: &Connection, map: &str, now: i64, message: &str) -> ApiResult<()> {
     conn.execute("DELETE FROM search_dirty_maps WHERE map_id=?1", [map])?;
@@ -376,34 +437,62 @@ fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=exclu
             Ok(value)
         })
     }
-    pub fn refresh_search(&self, map: &str, manual: bool, now: i64) -> ApiResult<()> {
-        if !manual && !self.with_conn(|conn| is_dirty(conn, map))? {
-            return Ok(());
+    pub fn compute_projection(&self, map: &str) -> ApiResult<Projection> {
+        self.with_conn(|conn| compute(conn, map))
+    }
+    pub fn apply_projection(
+        &self,
+        map: &str,
+        projection: &Projection,
+        now: i64,
+        manual: bool,
+    ) -> ApiResult<bool> {
+        self.with_tx(|tx| apply(tx, map, projection, now, manual))
+    }
+    /// Project the map's log into the search tables. `Ok(false)` means the log
+    /// kept growing under the projection for every bounded attempt; the map
+    /// stays dirty and the next read or worker pass tries again.
+    pub fn refresh_search(&self, map: &str, manual: bool, now: i64) -> ApiResult<bool> {
+        if manual {
+            self.with_conn(|conn| manual_gate(conn, map))?;
+        } else if !self.with_conn(|conn| is_dirty(conn, map))? {
+            return Ok(true);
         }
-        match self.with_tx(|tx| reconcile(tx, map, now, manual)) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                if error.status == axum::http::StatusCode::CONFLICT {
+        for _ in 0..PROJECTION_ATTEMPTS {
+            let step = self
+                .compute_projection(map)
+                .and_then(|projection| self.apply_projection(map, &projection, now, manual));
+            match step {
+                Ok(true) => return Ok(true),
+                Ok(false) => continue,
+                Err(error) => {
+                    if error.status == axum::http::StatusCode::CONFLICT {
+                        return Err(error);
+                    }
+                    self.with_tx(|tx| record_failure(tx, map, now, &error.body.message))?;
                     return Err(error);
                 }
-                self.with_tx(|tx| record_failure(tx, map, now, &error.body.message))?;
-                Err(error)
             }
         }
+        Ok(false)
     }
     /// The read path: project what is dirty, and when the map's source cannot be
     /// projected, answer from what was last projected and say so rather than fail
     /// the read.
     pub fn project_search(&self, map: &str, now: i64) -> ApiResult<Option<String>> {
-        if let Err(error) = self.refresh_search(map, false, now) {
-            if self
-                .with_conn(|conn| projection_failure(conn, map))?
-                .is_none()
-            {
-                return Err(error);
+        match self.refresh_search(map, false, now) {
+            Ok(true) => self.with_conn(|conn| projection_failure(conn, map)),
+            Ok(false) => Ok(Some(PROJECTION_DEFERRED.into())),
+            Err(error) => {
+                if self
+                    .with_conn(|conn| projection_failure(conn, map))?
+                    .is_none()
+                {
+                    return Err(error);
+                }
+                self.with_conn(|conn| projection_failure(conn, map))
             }
         }
-        self.with_conn(|conn| projection_failure(conn, map))
     }
     pub fn refresh_dirty_search(&self, now: i64) -> ApiResult<()> {
         let maps: Vec<String> = self.with_conn(|conn| {
@@ -436,6 +525,7 @@ c.fingerprint<>?2))",
             )?;
             let failed: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND attempts>=?2", params![map, MAX_ATTEMPTS], |r| r.get(0))?;
             let projection = projection_failure(conn, map)?;
+            let stale = projection.is_some() || is_dirty(conn, map)?;
             let error = match &projection {
                 Some(message) => Some(message.clone()),
                 None => conn
@@ -443,7 +533,7 @@ c.fingerprint<>?2))",
                     .optional()?,
             };
             Ok(json!({
-            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error,"projection":if projection.is_some(){"stale"}else{"current"}}
+            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error,"projection":if stale{"stale"}else{"current"}}
             ))
         })
     }
@@ -502,10 +592,14 @@ lease_until<=?1 AND fingerprint=?2 AND attempts<?3 ORDER BY due_at LIMIT 1",
         job: &EmbeddingJob,
         vectors: Result<&[Vec<f32>], &str>,
     ) -> ApiResult<bool> {
+        self.refresh_search(&job.map_id, false, now_ms())?;
         self.with_tx(|tx| {
-            let dirty: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)", [&job.map_id], |r| r.get(0))?;
-            if dirty {
-                reconcile(tx, &job.map_id, now_ms(), false)?;
+            if is_dirty(tx, &job.map_id)? {
+                tx.execute(
+                    "UPDATE embedding_jobs SET lease_until=0 WHERE map_id=?1 AND node_id=?2 AND lease_until=?3",
+                    params![job.map_id, job.node_id, job.lease],
+                )?;
+                return Ok(false);
             }
             let (c, _) = config(tx)?;
             if c.fingerprint() != job.fingerprint {
@@ -690,14 +784,31 @@ MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT ?3",
         })
     }
 }
-/// One bounded worker pass. Provider work never holds a SQLite lock.
-pub async fn process_jobs(store: &Store) -> ApiResult<()> {
-    store.refresh_dirty_search(now_ms())?;
+impl AsRef<Store> for Store {
+    fn as_ref(&self) -> &Store {
+        self
+    }
+}
+async fn off_runtime<T: Send + 'static>(
+    f: impl FnOnce() -> ApiResult<T> + Send + 'static,
+) -> ApiResult<T> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::internal(format!("search worker task failed: {e}")))?
+}
+/// One bounded worker pass. Provider work never holds a SQLite lock, and the
+/// log replay never runs on an async runtime thread.
+pub async fn process_jobs<S>(store: Arc<S>) -> ApiResult<()>
+where
+    S: AsRef<Store> + Send + Sync + 'static,
+{
+    let refresher = store.clone();
+    off_runtime(move || AsRef::<Store>::as_ref(&*refresher).refresh_dirty_search(now_ms())).await?;
     for _ in 0..8 {
-        let Some(job) = store.claim_embedding_job(now_ms())? else {
+        let Some(job) = AsRef::<Store>::as_ref(&*store).claim_embedding_job(now_ms())? else {
             break;
         };
-        let (config, key) = store.embedding_config()?;
+        let (config, key) = AsRef::<Store>::as_ref(&*store).embedding_config()?;
         let mut vectors = Vec::new();
         let mut failure = None;
         for batch in job.chunks.chunks(32) {
@@ -713,11 +824,15 @@ pub async fn process_jobs(store: &Store) -> ApiResult<()> {
                 }
             }
         }
-        if let Some(message) = failure {
-            store.finish_embedding_job(&job, Err(&message))?;
-        } else {
-            store.finish_embedding_job(&job, Ok(&vectors))?;
-        }
+        let finisher = store.clone();
+        off_runtime(move || {
+            let store: &Store = (*finisher).as_ref();
+            match failure {
+                Some(message) => store.finish_embedding_job(&job, Err(&message)),
+                None => store.finish_embedding_job(&job, Ok(&vectors)),
+            }
+        })
+        .await?;
     }
     Ok(())
 }
