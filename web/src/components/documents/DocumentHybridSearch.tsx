@@ -114,6 +114,7 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
         </div>
         {(statusError || status?.last_error) && <p className="text-xs text-destructive" role="status">{statusError || status?.last_error}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'unavailable' && status?.configured && !status.last_error && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche derzeit nicht verfügbar.' : 'Keyword results · meaning search is currently unavailable.'}</p>}
+        {response?.projection === 'stale' && <p className="text-xs text-destructive" role="status">{de ? 'Ergebnisse können veraltet sein · Quelle konnte nicht indexiert werden' : 'Results may be out of date · source could not be indexed'}{response.projection_error ? `: ${response.projection_error}` : ''}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'throttled' && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche kurz pausiert (Abfragelimit erreicht).' : 'Keyword results · meaning search paused briefly (query limit reached).'}</p>}
         <div aria-live="polite" className="text-sm text-muted-foreground">{error || (busy ? (de ? 'Suche läuft…' : 'Searching…') : !response ? ''
           : response.truncated ? (de ? `Die ${results.length} besten von ${response.candidates} passenden Abschnitten` : `Top ${results.length} of ${response.candidates} matching sections`)

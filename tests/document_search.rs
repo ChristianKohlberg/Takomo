@@ -670,3 +670,218 @@ async fn a_corrupt_map_does_not_stall_indexing_of_healthy_maps() {
     process_jobs(&store).await.unwrap();
     task.abort();
 }
+
+async fn second_map(app: &TestApp, project: &str) -> String {
+    let (s, created) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({"id": project, "name": project}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{created}");
+    let (s, m) = app
+        .post(
+            &app.admin,
+            "/v1/mindmaps",
+            json!({"project": project, "title": "Second plan"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{m}");
+    m["mindmap"]["id"].as_str().unwrap().to_owned()
+}
+fn poison(app: &TestApp, map: &str) {
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute(
+        "INSERT INTO crdt_updates(object_kind,object_id,blob,bytes,created_by,created_at)VALUES('mindmap',?1,x'FFFFFFFFFFFFFFFF',8,'test',1)",
+        [map],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn first_read_after_poison_answers_from_the_last_good_projection_and_says_so() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let (s, warm) = app
+        .get(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/search?q=invoices"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{warm}");
+    assert_eq!(warm["projection"], "current");
+    assert_eq!(warm["projection_error"], Value::Null);
+    poison(&app, &map);
+    // The very first read after the failure: not a 500, the last good projection, flagged.
+    let (s, first) = app
+        .get(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/search?q=invoices"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(first["results"][0]["node_id"], node);
+    assert_eq!(first["projection"], "stale");
+    let reason = first["projection_error"]
+        .as_str()
+        .expect("the failure is named");
+    assert!(reason.contains("source document"), "{first}");
+    let (s, status) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search/status"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{status}");
+    assert_eq!(status["projection"], "stale");
+    assert_eq!(status["last_error"], reason);
+    // A map that never projected answers empty rather than pretending, on its first read too.
+    let fresh = second_map(&app, "fresh").await;
+    poison(&app, &fresh);
+    let (s, status) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{fresh}/search/status"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{status}");
+    assert_eq!(status["projection"], "stale");
+    assert_eq!(status["total"], 0);
+    let (s, empty) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{fresh}/search?q=plan"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{empty}");
+    assert_eq!(empty["results"], json!([]));
+    assert_eq!(empty["projection"], "stale");
+    assert!(empty["projection_error"].is_string());
+}
+
+#[tokio::test]
+async fn clean_reads_take_no_write_and_signal_no_change() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let store = app.open_store();
+    let mut changes = store.changes.subscribe();
+    let now = takomo::ids::now_ms();
+    store.refresh_search(&map, false, now).unwrap();
+    assert!(
+        changes.has_changed().unwrap(),
+        "a dirty map is projected in a write"
+    );
+    changes.borrow_and_update();
+    store.refresh_search(&map, false, now).unwrap();
+    assert!(store.project_search(&map, now).unwrap().is_none());
+    let outcome = store.search_document(&map, "invoices", None).unwrap();
+    assert_eq!(outcome.hits[0].node_id, node);
+    assert_eq!(store.search_status(&map).unwrap()["projection"], "current");
+    assert!(
+        !changes.has_changed().unwrap(),
+        "a clean read neither commits nor tells open sockets to refresh"
+    );
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices are now due at once."}),
+    )
+    .await;
+    changes.borrow_and_update();
+    assert_eq!(
+        store.search_document(&map, "once", None).unwrap().hits[0].node_id,
+        node,
+        "a changed map is still projected before the read"
+    );
+    assert!(changes.has_changed().unwrap());
+}
+
+#[tokio::test]
+async fn manual_sync_on_an_archived_project_uses_the_project_archive_contract() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let (s, archived) = app
+        .post(&app.admin, "/v1/projects/tp/archive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{archived}");
+    let (s, refused) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/search/sync"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "project.archived");
+    assert_eq!(refused["details"]["project"], "tp");
+    assert!(refused["details"]["archived_at"].is_string());
+    assert!(refused["message"].as_str().unwrap().contains("unarchive"));
+    let (s, read) = app
+        .get(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/search?q=invoices"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{read}");
+    assert_eq!(read["results"][0]["node_id"], node);
+    assert_eq!(
+        app.get(&app.worker, &format!("/v1/mindmaps/{map}/search/status"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (s, restored) = app
+        .post(&app.admin, "/v1/projects/tp/unarchive", json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{restored}");
+    assert_eq!(
+        app.post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/search/sync"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn symbol_only_queries_spend_nothing_and_stay_truthful() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let (endpoint, calls, task) = mock_provider().await;
+    let mut setting = serde_json::to_value(config(&endpoint)).unwrap();
+    setting["api_key"] = json!("private-test-key");
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/search/sync"),
+        json!({}),
+    )
+    .await;
+    process_jobs(&app.open_store()).await.unwrap();
+    let indexed = calls.load(Ordering::SeqCst);
+    for symbols in ["%3F%21", "%F0%9F%9A%80", "%20%2D%2D%20"] {
+        let (s, body) = app
+            .get(
+                &app.worker,
+                &format!("/v1/mindmaps/{map}/search?q={symbols}"),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(body["results"], json!([]));
+        assert_eq!(body["mode"], "keyword");
+        assert_eq!(body["semantic_status"], "ready", "{body}");
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        indexed,
+        "nothing to embed means no provider call"
+    );
+    // ...and no budget spent: the full per-token allowance is still available.
+    let path = format!("/v1/mindmaps/{map}/search?q=invoices");
+    for _ in 0..takomo::api::search::QUERY_EMBEDDINGS_PER_MINUTE {
+        let (_, body) = app.get(&app.worker, &path).await;
+        assert_eq!(body["semantic_status"], "ready", "{body}");
+        assert_eq!(body["mode"], "hybrid");
+    }
+    task.abort();
+}

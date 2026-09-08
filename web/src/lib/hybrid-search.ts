@@ -21,6 +21,9 @@ export interface SearchResponse {
   note?: string
   mode: 'hybrid' | 'keyword'
   semantic_status: 'ready' | 'unconfigured' | 'unavailable' | 'indexing' | 'throttled'
+  /** `stale`: the source could not be projected; results are from the last good projection. */
+  projection: 'current' | 'stale'
+  projection_error: string | null
 }
 export interface SearchStatus {
   configured: boolean
@@ -30,6 +33,7 @@ export interface SearchStatus {
   indexed: number
   total: number
   last_error: string | null
+  projection: 'current' | 'stale'
 }
 export interface EmbeddingSettings {
   provider: 'voyage' | 'openai'

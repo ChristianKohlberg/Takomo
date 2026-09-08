@@ -97,10 +97,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [results, limit, candidates, truncated, mode, semantic_status]
+                required: [results, limit, candidates, truncated, mode, semantic_status, projection, projection_error]
                 properties:
                   mode: { type: string, enum: [keyword, hybrid] }
                   semantic_status: { type: string, enum: [ready, unconfigured, unavailable, indexing, throttled] }
+                  projection: { type: string, enum: [current, stale], description: "`stale` when the map's source could not be projected: results come from the last successful projection (empty if there was none) rather than failing the read. Clears on the next successful projection." }
+                  projection_error: { type: [string, 'null'], description: The recorded projection failure when stale; otherwise null. }
                   limit: { type: integer, description: The most sections one response carries (20). }
                   candidates: { type: integer, minimum: 0, description: Distinct sections among the bounded candidate set (the top 100 keyword and top 100 semantic chunks). Not a count of every section that could match. }
                   truncated: { type: boolean, description: True when candidates exceeded limit and lower-ranked sections were left out. }
@@ -142,7 +144,7 @@ paths:
       tags: [mindmaps]
       operationId: sync_specification_embeddings
       summary: Make pending embedding jobs due immediately
-      description: Requires read, write and project access to a non-archived project. Flushes pending collaboration edits; does not alter document content. Reuses unchanged compatible vectors. A durable worker performs the external requests asynchronously.
+      description: Requires read, write and project access to a non-archived project. Flushes pending collaboration edits; does not alter document content. Reuses unchanged compatible vectors and resets parked jobs. A durable worker performs the external requests asynchronously.
       requestBody:
         required: true
         content:
@@ -154,6 +156,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmbeddingStatus' }
+        '409':
+          description: "`project.archived`: the map's project is archived, the same store-level gate every other project write meets, with `details.project` and `archived_at`. Reads (search, status) keep working."
         default: { $ref: '#/components/responses/Error' }
   /projects/{project}/lane-organizer:
     parameters:
@@ -8474,9 +8478,10 @@ components:
             configured: { type: boolean }
     EmbeddingStatus:
       type: object
-      required: [configured, queued, running, failed, indexed, total, last_error]
+      required: [configured, queued, running, failed, indexed, total, last_error, projection]
       properties:
         configured: { type: boolean }
+        projection: { type: string, enum: [current, stale], description: "`stale` when the map's source could not be projected and the index reflects the last successful projection; last_error carries the reason." }
         queued: { type: integer, minimum: 0, description: Includes currently running and failed jobs. }
         running: { type: integer, minimum: 0 }
         failed: { type: integer, minimum: 0, description: "Jobs parked after 3 failed provider attempts. They stay parked until the section's content changes, the provider configuration changes, or a manual sync resets them." }

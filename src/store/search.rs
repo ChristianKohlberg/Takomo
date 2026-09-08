@@ -180,13 +180,33 @@ fn hydrate(conn: &Connection, map: &str) -> ApiResult<yrs::Doc> {
     }
     Ok(doc)
 }
-fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<()> {
-    let dirty: bool = conn.query_row(
+fn is_dirty(conn: &Connection, map: &str) -> ApiResult<bool> {
+    Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)",
         [map],
         |row| row.get(0),
-    )?;
-    if !dirty && !manual {
+    )?)
+}
+fn projection_failure(conn: &Connection, map: &str) -> ApiResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT message FROM search_failures WHERE map_id=?1",
+            [map],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+fn reconcile(conn: &Connection, map: &str, now: i64, manual: bool) -> ApiResult<()> {
+    if manual {
+        let project: Option<String> = conn
+            .query_row("SELECT project FROM mindmaps WHERE id=?1", [map], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if let Some(project) = project {
+            super::helpers::ensure_project_writable(conn, &project)?;
+        }
+    } else if !is_dirty(conn, map)? {
         return Ok(());
     }
     let (settings, _) = config(conn)?;
@@ -344,13 +364,33 @@ fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=exclu
         })
     }
     pub fn refresh_search(&self, map: &str, manual: bool, now: i64) -> ApiResult<()> {
+        if !manual && !self.with_conn(|conn| is_dirty(conn, map))? {
+            return Ok(());
+        }
         match self.with_tx(|tx| reconcile(tx, map, now, manual)) {
             Ok(()) => Ok(()),
             Err(error) => {
+                if error.status == axum::http::StatusCode::CONFLICT {
+                    return Err(error);
+                }
                 self.with_tx(|tx| record_failure(tx, map, now, &error.body.message))?;
                 Err(error)
             }
         }
+    }
+    /// The read path: project what is dirty, and when the map's source cannot be
+    /// projected, answer from what was last projected and say so rather than fail
+    /// the read.
+    pub fn project_search(&self, map: &str, now: i64) -> ApiResult<Option<String>> {
+        if let Err(error) = self.refresh_search(map, false, now) {
+            if self
+                .with_conn(|conn| projection_failure(conn, map))?
+                .is_none()
+            {
+                return Err(error);
+            }
+        }
+        self.with_conn(|conn| projection_failure(conn, map))
     }
     pub fn refresh_dirty_search(&self, now: i64) -> ApiResult<()> {
         let maps: Vec<String> = self.with_conn(|conn| {
@@ -382,17 +422,15 @@ c.fingerprint<>?2))",
                 |r| r.get(0),
             )?;
             let failed: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND attempts>=?2", params![map, MAX_ATTEMPTS], |r| r.get(0))?;
-            let error: Option<String> = conn
-                .query_row("SELECT message FROM search_failures WHERE map_id=?1", [map], |r| r.get(0))
-                .optional()?;
-            let error = match error {
-                Some(message) => Some(message),
+            let projection = projection_failure(conn, map)?;
+            let error = match &projection {
+                Some(message) => Some(message.clone()),
                 None => conn
                     .query_row("SELECT last_error FROM embedding_jobs WHERE map_id=?1 AND last_error IS NOT NULL ORDER BY attempts DESC LIMIT 1", [map], |r| r.get(0))
                     .optional()?,
             };
             Ok(json!({
-            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error}
+            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error,"projection":if projection.is_some(){"stale"}else{"current"}}
             ))
         })
     }
@@ -528,16 +566,7 @@ impl Store {
         query: &str,
         vector: Option<(&[f32], String)>,
     ) -> ApiResult<SearchOutcome> {
-        let dirty = self.with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)",
-                [map],
-                |r| r.get::<_, bool>(0),
-            )?)
-        })?;
-        if dirty {
-            self.refresh_search(map, false, now_ms())?;
-        }
+        self.project_search(map, now_ms())?;
         self.with_conn(|conn| {
             let (config, _) = config(conn)?;
             let fingerprint = config.fingerprint();

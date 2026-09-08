@@ -70,8 +70,18 @@ resets it. Keyword search remains available throughout.
 
 A map whose source log cannot be replayed is isolated: its failure is recorded
 and shown as `last_error` in its status, its projection is left as it was, and
-every other map keeps indexing. The next content change or a manual sync retries
-it.
+every other map keeps indexing. Search and status keep answering from that last
+good projection (empty, if there never was one) and say so: both carry
+`projection: stale` and the search response its `projection_error`, from the
+very first read after the failure. The next content change or a manual sync
+retries it. A manual sync on an archived project is refused with the same
+`project.archived` contract every other project write meets.
+
+A clean read costs no write: search and status take the writer only when the
+map has changed since the last projection, so a modal polling status or a
+person pausing between keystrokes does not serialise behind claims or push a
+refresh to open project sockets. A query with no word in it (punctuation, an
+emoji) has nothing to embed and spends neither budget nor provider call.
 
 API routes and permissions are described in `spec/openapi.yaml`. Search/status
 require read access to the map's project. Manual sync also requires write access

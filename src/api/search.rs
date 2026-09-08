@@ -3,7 +3,7 @@ use crate::{
     auth::{debit_shared_window, AuthCtx},
     error::{ApiError, ApiResult},
     server::AppState,
-    store::search::{EmbeddingConfig, RESULT_LIMIT},
+    store::search::{terms, EmbeddingConfig, RESULT_LIMIT},
 };
 use axum::{
     extract::{Path, RawQuery, State},
@@ -24,17 +24,6 @@ fn authorize(state: &AppState, ctx: &AuthCtx, map: &str, write: bool) -> ApiResu
         .get_mindmap(map)?
         .ok_or_else(|| ApiError::not_found("mindmap", map))?;
     ctx.require_project(&row.project)?;
-    if write
-        && state
-            .store
-            .get_project(&row.project)?
-            .is_some_and(|p| p.archived_at.is_some())
-    {
-        return Err(ApiError::conflict(
-            "conflict.project_archived",
-            "Project is archived",
-        ));
-    }
     Ok(())
 }
 fn admin(ctx: &AuthCtx) -> ApiResult<()> {
@@ -99,9 +88,7 @@ pub async fn search(
                 .remedy("Shorten the query and retry."),
         );
     }
-    state
-        .store
-        .refresh_search(&map, false, crate::ids::now_ms())?;
+    let projection_error = state.store.project_search(&map, crate::ids::now_ms())?;
     let (config, key) = state.store.embedding_config()?;
     let status = state.store.search_status(&map)?;
     let mut semantic_status = if key.is_empty() {
@@ -112,7 +99,7 @@ pub async fn search(
         "ready"
     };
     let mut vector = None;
-    if semantic_status == "ready" && !q.trim().is_empty() {
+    if semantic_status == "ready" && !terms(&q).is_empty() {
         if debit_shared_window(
             &state.search_rate,
             &ctx.token_id,
@@ -156,6 +143,8 @@ pub async fn search(
         "truncated": truncated,
         "mode": if outcome.used_vectors { "hybrid" } else { "keyword" },
         "semantic_status": semantic_status,
+        "projection": if projection_error.is_some() { "stale" } else { "current" },
+        "projection_error": projection_error,
     });
     if truncated {
         body["note"] = json!(format!(
@@ -173,9 +162,7 @@ pub async fn status(
     Path(map): Path<String>,
 ) -> ApiResult<Json<Value>> {
     authorize(&state, &ctx, &map, false)?;
-    state
-        .store
-        .refresh_search(&map, false, crate::ids::now_ms())?;
+    state.store.project_search(&map, crate::ids::now_ms())?;
     Ok(Json(state.store.search_status(&map)?))
 }
 pub async fn sync(

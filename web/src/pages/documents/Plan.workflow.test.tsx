@@ -84,8 +84,8 @@ describe('document workflow integration', () => {
     followUp.insert(0, [new Y.XmlText('Late fees apply.')])
     fragment.insert(1, [blank, spaces, followUp])
     vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/status')
-      ? { configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 1, last_error: null }
-      : { results: [{ node_id: child, title: 'Invoices', heading_path: ['Billing'], excerpt: 'Payment deadline is thirty days.', passage: 'thirty days.\nLate fees apply.', highlights: ['deadline'], match_kind: 'keyword' }], limit: 20, candidates: 1, truncated: false, mode: 'keyword', semantic_status: 'unconfigured' })))))
+      ? { configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 1, last_error: null, projection: 'current' }
+      : { results: [{ node_id: child, title: 'Invoices', heading_path: ['Billing'], excerpt: 'Payment deadline is thirty days.', passage: 'thirty days.\nLate fees apply.', highlights: ['deadline'], match_kind: 'keyword' }], limit: 20, candidates: 1, truncated: false, mode: 'keyword', semantic_status: 'unconfigured', projection: 'current', projection_error: null })))))
     render(<Plan {...props} token="test" />)
     fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
     const update = vi.fn(); doc.on('update', update)
@@ -98,6 +98,7 @@ describe('document workflow integration', () => {
       const editor = probe.editors.get('Section 1.1 prose')!
       expect(editor).toBeTruthy()
       expect(editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, '\n')).toBe('thirty days.\n\n   \nLate fees apply.')
+      expect(document.activeElement).toBe(editor.view.dom)
     })
     expect(props.onSelection).toHaveBeenLastCalledWith(child)
     expect(update).not.toHaveBeenCalled()
