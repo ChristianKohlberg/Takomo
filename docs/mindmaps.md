@@ -351,8 +351,13 @@ event.
   on the root and its first ring at a readable scale rather than fitting the
   whole tree to a thumbnail, and its controls carry **Fit all** for the overview,
   **Fit branch** for the selected subtree, the zoom percentage, and a
-  **Keep zoom and position** switch — without it, changing layout refits the
-  selected branch or the map, so nothing lands off-screen. Custom saves manual
+  **Lock zoom and position** icon. While locked, wheel/pinch zoom, background
+  panning, Fit, and automatic recentering leave the camera unchanged; node
+  editing remains available. The lock and Fit all icons have tooltips. One
+  layout button shows the current view and cycles **Custom → Tree → Radial**;
+  these view names stay English in both locales. The Trust toggle is in the
+  map's top bar. Without the lock, changing layout refits the selected branch
+  or the map, so nothing lands off-screen. Custom saves manual
   placement; Radial and Tree offer automatic views without replacing it.
   On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.

@@ -1,4 +1,5 @@
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
+import { Hint } from '@/components/Hint'
 import { type SyncConnection } from '@/hooks/useSyncConnection'
 // The live map: one Y.Doc, one socket, and everybody's edits arriving as they
 // happen.
@@ -1068,22 +1069,22 @@ function ConnectedLive({
         >
           ⌘K
         </button>
-        {/* The lens has a control on the canvas and a command on ⌘K, and a phone
-            has neither a canvas nor a keyboard — so it gets the toggle here, and
-            only here. */}
-        <button
-          type="button"
-          aria-pressed={trustLens}
-          onClick={() => {
-            setTrustLens((on) => {
-              localStorage.setItem(TRUST_KEY, on ? 'off' : 'on')
-              return !on
-            })
-          }}
-          className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650] md:hidden"
-        >
-          ◍ {labels.trustLens}
-        </button>
+        <Hint text={labels.trustLens}>
+          <button
+            type="button"
+            aria-label={labels.trustLens}
+            aria-pressed={trustLens}
+            onClick={() => {
+              setTrustLens((on) => {
+                localStorage.setItem(TRUST_KEY, on ? 'off' : 'on')
+                return !on
+              })
+            }}
+            className={`border-border text-muted-foreground hover:text-foreground flex size-8 cursor-pointer items-center justify-center rounded-md border text-[14px] ${trustLens ? 'border-ring text-foreground' : ''}`}
+          >
+            <span aria-hidden="true">◍</span>
+          </button>
+        </Hint>
         {!canWrite && (
           <span className="text-muted-foreground text-[11.5px]">{labels.readOnly}</span>
         )}
@@ -1140,10 +1141,6 @@ function ConnectedLive({
           foldSummaryOf={foldSummaryOf}
           testsFor={testsFor}
           trustLens={trustLens}
-          onTrustLens={(on) => {
-            localStorage.setItem(TRUST_KEY, on ? 'on' : 'off')
-            setTrustLens(on)
-          }}
           onCreateAt={onCreateAt}
           onCutEdge={setCutting}
         />
