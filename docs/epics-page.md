@@ -1,6 +1,6 @@
 # Epics page
 
-Open `/epics` from **Epics**, beside Board in the navigation rail. It uses the
+Open `/epics` from **Epics** in the **More pages** collection on `/settings`. It uses the
 selected project's workflow and opens the existing ticket details when an epic
 is selected. That drawer lists the epic's child tickets with completed/total
 progress, opens any of them in place, and offers **Copy link**; the open ticket
