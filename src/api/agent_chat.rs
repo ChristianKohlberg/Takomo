@@ -113,9 +113,17 @@ pub async fn result(
     ApiJson(body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require_scope("agent:run")?;
-    let result = state
-        .store
-        .finish_agent_job(&ctx, &id, &decode::<ResultInput>(body)?)?;
+    let req = decode::<ResultInput>(body)?;
+    let result = if let Some(project) = state.store.classification_job_project(&ctx, &id)? {
+        super::ticket_document::with_document(&state, &project, |doc| {
+            state
+                .store
+                .finish_agent_job_with_document(&ctx, &id, &req, doc)
+        })
+        .await?
+    } else {
+        state.store.finish_agent_job(&ctx, &id, &req)?
+    };
     state.wake();
     Ok(Json(result))
 }

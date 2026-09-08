@@ -264,3 +264,7 @@ export { DocumentAgent } from "./documents/DocumentAgent"
 export { DocumentConversation } from "./documents/DocumentConversation"
 
 export { CollaboratorPresence } from './CollaboratorPresence'
+
+export { TicketDocumentLinks } from './board/TicketDocumentLinks'
+export { DocumentClassificationPolicy } from './settings/DocumentClassificationPolicy'
+export { SectionTicketLinks } from './documents/SectionTicketLinks'

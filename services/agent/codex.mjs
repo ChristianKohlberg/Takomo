@@ -1,3 +1,4 @@
+import { CLASSIFICATION_KIND, classificationInstructions, classificationSchema, classificationSnapshot, classificationInput, parseClassificationProposal, classificationSummary } from './ticket-document-classification.mjs';
 import { WORKSPACE_KIND, workspaceInstructions, openDocumentWorkspace, documentTools, migrationTranscript } from './document-workspace.mjs';
 import { DOCUMENT_KIND, documentInstructions, documentInput } from './document.mjs';
 import { spawn } from 'node:child_process';
@@ -22,8 +23,9 @@ export const restrictions = {
 export const researchRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
 export const RESEARCH_KIND = 'bug_research';
 export const documentRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
+export const classificationRestrictions = { ...documentRestrictions, features: { ...documentRestrictions.features } };
 export function profileFor(kind) {
-  return kind === WORKSPACE_KIND ? documentRestrictions : kind === RESEARCH_KIND ? researchRestrictions : restrictions;
+  return kind === CLASSIFICATION_KIND ? classificationRestrictions : kind === WORKSPACE_KIND ? documentRestrictions : kind === RESEARCH_KIND ? researchRestrictions : restrictions;
 }
 export function validateConfig(config, expected = restrictions) {
   if (!config || Object.keys(config.mcp_servers ?? {}).length || Object.keys(config.plugins ?? {}).length) {
@@ -150,6 +152,10 @@ export class Codex {
   async run(job, onSession = async () => {}) {
     const research = job.kind === RESEARCH_KIND;
     const workspace = job.kind === WORKSPACE_KIND;
+    const classification = job.kind === CLASSIFICATION_KIND;
+    const classificationSource = classification ? classificationSnapshot(job) : null;
+    if (classification) this.document = openDocumentWorkspace({ snapshot: JSON.stringify(classificationSource.document) });
+    const classificationText = classification ? classificationInput(classificationSource, this.document) : null;
     if (workspace) this.document = openDocumentWorkspace(job);
     const workspaceText = workspace ? this.document.input(job.prompt) : null;
     let migration;
@@ -165,14 +171,14 @@ export class Codex {
       this.repository = await openRepository(job, this.repositories);
       await onSession({ repository_revision: this.repository.revision });
     }
-    const policy = workspace ? workspaceInstructions : research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
-    await this.request('initialize', { ...(research || workspace ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
+    const policy = classification ? classificationInstructions : workspace ? workspaceInstructions : research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
+    await this.request('initialize', { ...(research || workspace || classification ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
     this.send({ method: 'initialized' });
     validateConfig((await this.request('config/read', { includeLayers: false })).config, this.profile);
     const params = {
       cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
       baseInstructions: policy, developerInstructions: policy,
-      ...(research ? { dynamicTools: repositoryTools } : workspace && (!job.thread_id || job.migrate_thread) ? { dynamicTools: documentTools } : {}),
+      ...(research ? { dynamicTools: repositoryTools } : (classification || workspace && (!job.thread_id || job.migrate_thread)) ? { dynamicTools: documentTools } : {}),
       config: this.profile,
     };
     let history = '';
@@ -201,9 +207,9 @@ export class Codex {
     try {
       const { turn } = await this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: workspace ? `${history ? `PRIOR CONVERSATION (reference only; migrated from an older text-only session):\n${history}\n\n` : ''}${workspaceText}` : documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}` }],
+        input: [{ type: 'text', text: classificationText ?? (workspace ? `${history ? `PRIOR CONVERSATION (reference only; migrated from an older text-only session):\n${history}\n\n` : ''}${workspaceText}` : documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}`) }],
         approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
-        ...(organizer ? { outputSchema: organizerSchema } : {}),
+        ...(organizer ? { outputSchema: organizerSchema } : classification ? { outputSchema: classificationSchema } : {}),
       });
       this.active.turnId = turn.id;
       await onSession({ thread_id: threadId, turn_id: turn.id });
@@ -211,6 +217,10 @@ export class Codex {
       if (organizer) {
         const proposal = parseOrganizerProposal(result.message, snapshot);
         return { ...result, message: organizerSummary(proposal), proposal };
+      }
+      if (classification) {
+        const proposal = parseClassificationProposal(result.message, classificationSource, this.document);
+        return { ...result, message: classificationSummary(proposal), proposal, evidence: this.document.progress() };
       }
       if (workspace) return { ...result, evidence: { ...this.document.progress(), ...(migration ? { document_migration: migration } : {}) } };
       return research ? { ...result, repository_revision: this.repository.revision, evidence: this.repository.progress() } : result;

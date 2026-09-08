@@ -26,6 +26,7 @@ pub mod spec_history;
 pub mod speech;
 pub mod tags;
 pub mod testruns;
+pub mod ticket_document;
 pub mod tickets;
 pub mod tokens;
 pub mod transition;

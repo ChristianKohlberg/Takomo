@@ -42,6 +42,7 @@ export interface Promotion {
 }
 
 export interface Ticket {
+  document_refs?: { id: string; section_id: string; title: string; primary: boolean; provenance: 'direct' | 'manual' | 'automatic'; missing: boolean }[]
   id: string
   project: string
   type?: string

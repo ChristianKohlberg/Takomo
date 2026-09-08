@@ -27,6 +27,7 @@ mod model;
 mod moves;
 mod oauth;
 mod projects;
+pub mod ticket_document;
 mod work_lanes;
 mod writing_instructions;
 pub use writing_instructions::{WritingInstruction, WritingInstructions};
@@ -172,6 +173,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("document_chat.sql"))?;
+        conn.execute_batch(include_str!("ticket_document.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
         conn.execute_batch(include_str!("lane_organizer.sql"))?;
         bugs::migrate(&conn)?;

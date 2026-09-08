@@ -24,6 +24,16 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('Agent queue inspector', () => {
+  it('opens document classification at the ticket and omits invented section metadata', async () => {
+    const classification: AgentJob = { ...job, kind: 'ticket_document_classify', ticket_id: 'demo-ticket', mindmap: null, node: 'demo-ticket' }
+    vi.mocked(listAgentJobs).mockResolvedValue(list([classification]))
+    vi.mocked(getAgentJob).mockResolvedValue(detail(classification))
+    render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /Ticket document matching/ }))
+    const pane = await screen.findByRole('region', { name: 'Request details' })
+    expect((await within(pane).findByRole('link', { name: 'Open ticket' })).getAttribute('href')).toBe('/board#t=demo-ticket')
+    expect(within(pane).queryByText('Section ID')).toBeNull()
+  })
   it.each(['document_chat', 'document_workspace'] as const)('opens a %s discussion without inventing a section link', async kind => {
     const discussion: AgentJob = { ...job, kind, node: 'document-conversation', section_title: '' }
     vi.mocked(listAgentJobs).mockResolvedValue(list([discussion]))

@@ -70,6 +70,7 @@ export interface ProjectDetailProps {
    */
   workflowSlot?: ReactNode
   writingSlot?: ReactNode
+  classificationSlot?: ReactNode
   settings: ProjectSettings
   onChange: (patch: Partial<ProjectSettings>) => void
   /** No `admin` scope: everything is shown, nothing can be saved. */
@@ -89,6 +90,7 @@ export function ProjectDetail({
   project,
   workflowSlot,
   writingSlot,
+  classificationSlot,
   settings: s,
   onChange,
   readOnly,
@@ -150,6 +152,7 @@ export function ProjectDetail({
         disabled={readOnly || saving} labels={labels.appearance} />}
 
       {writingSlot}
+      {classificationSlot}
 
       <div className="flex flex-col gap-4">
         <Field label={labels.langLabel} hint={labels.langHelp}>

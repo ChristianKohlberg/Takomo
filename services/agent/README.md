@@ -170,6 +170,49 @@ copy, creates no Takomo jobs, and removes its state afterward. Default tests ski
 it. Protocol fields were checked against the installed Codex App Server's
 experimental JSON schema and the [official App Server documentation](https://learn.chatgpt.com/docs/app-server).
 
+## Ticket document classification
+
+`ticket_document_classify` jobs propose document sections related to a ticket.
+Each job starts a separate Codex thread and uses an immutable snapshot containing
+the ticket's content/revision and the versioned document. The worker advertises
+this distinct kind so older workers cannot consume classification jobs. Deploy
+the compatible server before upgrading the worker; the runtime module set now
+includes `ticket-document-classification.mjs`.
+
+The classifier uses the same bounded lexical document outline/search/read tools
+as the document workspace. It compares the ticket title and body to source
+content; parent and provenance information are contextual hints, not evidence of
+a relationship. It cannot read a repository, use networks, execute commands,
+write links or change workflow state. Existing manual/confirmed relationships
+are outside the worker's authority.
+
+Codex returns a schema-constrained `proposal` with up to three candidates. Each
+candidate contains a section id, source version, a verbatim notes quote (up to
+2,000 UTF-8 bytes), and a rationale (up to 4,000 bytes). `ambiguity` explicitly
+records uncertainty; an empty candidate list requires `no_match_reason`. There is
+no confidence score. The complete proposal allows 24,000 bytes. Unsupported
+fields, invented/duplicate ids, stale versions and quotes absent from notes fail
+validation. The worker also verifies the quoted text was actually delivered by
+initial context or document reads, including adjacent read pages; a search hit
+alone or an unread gap cannot authorize a quote.
+
+The response includes the proposal, a short review summary, and the existing
+document source/coverage evidence. Takomo independently validates the result and
+decides whether to store suggestions or apply an explicitly enabled deterministic
+policy. Model confidence never authorizes automatic application. The worker does
+not modify tickets or attach sections directly. Existing lease ownership,
+timeouts, final-response limits and result-delivery-only retries still apply.
+
+The opt-in provider check makes one isolated classification turn, verifies actual
+search/read calls and a grounded structured candidate, and creates no Takomo jobs:
+
+```sh
+TAKOMO_AGENT_CLASSIFICATION_LIVE_SMOKE=1 node --test services/agent/test/classification-live-smoke.test.mjs
+```
+
+It privately copies authentication into a temporary Codex home and cleans up that
+state afterward. Ordinary tests skip it.
+
 ## Lane organization
 
 Explicit organizer requests use the same queue and authenticated service with

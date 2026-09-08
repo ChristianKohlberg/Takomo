@@ -1149,16 +1149,22 @@ fn promote_seeded(store: &Store, map_id: &str, node_id: &str, target: &str) -> A
             .ok_or_else(|| crate::error::ApiError::not_found("mindmap_node", node_id))?;
         let title = branch.title.clone();
         let branch_outline = crate::store::mindmapdoc::outline(&nodes, node_id);
-        let children: Vec<(String, String)> = ordered
+        let children: Vec<(String, String, String)> = ordered
             .iter()
             .filter(|n| n.parent.as_deref() == Some(node_id))
             .map(|child| {
                 (
+                    child.id.clone(),
                     child.title.clone(),
                     crate::store::mindmapdoc::outline(&nodes, &child.id),
                 )
             })
             .collect();
+        let source_ids: Vec<&str> = std::iter::once(node_id)
+            .chain(children.iter().map(|child| child.0.as_str()))
+            .collect();
+        let source_document =
+            crate::store::BranchPromotion::capture_source(doc, map_id, &source_ids)?;
         let created = store.promote_branch(
             &crate::store::BranchPromotion {
                 map_id,
@@ -1167,6 +1173,7 @@ fn promote_seeded(store: &Store, map_id: &str, node_id: &str, target: &str) -> A
                 title: &title,
                 branch_outline: &branch_outline,
                 children: &children,
+                source_document: &source_document,
             },
             SEEDER,
         )?;

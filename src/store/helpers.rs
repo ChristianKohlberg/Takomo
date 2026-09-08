@@ -46,6 +46,7 @@ pub fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         tags: serde_json::from_str(&tags_raw).unwrap_or_default(),
         metadata: serde_json::from_str(&metadata_raw).unwrap_or(Value::Null),
         links: serde_json::from_str(&links_raw).unwrap_or(Value::Null),
+        document_refs: Vec::new(),
         blocked_by: Vec::new(), // filled by load_blocked_by
         claim_holder: row.get("claim_holder")?,
         claim_expires_at: row.get("claim_expires_at")?,

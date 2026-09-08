@@ -22,6 +22,9 @@ import { Column } from '@/components/board/Column'
 import { EPICS_STR } from '@/components/board/epics-strings'
 import { EpicsView } from '@/components/board/EpicsView'
 import { AskDrawer } from '@/components/board/AskDrawer'
+import { DOCUMENT_LINKS } from '@/components/board/document-link-strings'
+import { groupTicketsByDocument, withoutDocumentReference } from '@/lib/ticket-document-groups'
+import { TicketDocumentLinks } from '@/components/board/TicketDocumentLinks'
 import { DetailPanel } from '@/components/board/DetailPanel'
 import { InboxDrawer } from '@/components/board/InboxDrawer'
 import { AnswerGrantPage } from './AnswerGrantPage'
@@ -170,6 +173,9 @@ function Board({
   const [tagFilter, setTagFilter] = useState('')
   const [epicFilter, setEpicFilter] = useState('')
   const [labelFilter, setLabelFilter] = useState('')
+  const [unlinkedOnly, setUnlinkedOnly] = useState(false)
+  const [groupByDocument, setGroupByDocument] = useState(false)
+  const docLabels = DOCUMENT_LINKS[lang]
   const [groupByEpic, setGroupByEpic] = useState(false)
   // Which altitude the reader is at. `epics` is NOT the board grouped by epic —
   // that stays a ticket board and answers where each ticket is. This answers
@@ -203,7 +209,7 @@ function Board({
     (epicFilter ? 1 : 0) +
     (labelFilter ? 1 : 0) +
     (showArchived ? 1 : 0) +
-    (mineOnly ? 1 : 0)
+    (mineOnly ? 1 : 0) + (unlinkedOnly ? 1 : 0)
 
   const clearFilters = useCallback(() => {
     setTicketFilter('')
@@ -213,6 +219,7 @@ function Board({
     setLabelFilter('')
     setShowArchived(false)
     setMineOnly(false)
+    setUnlinkedOnly(false)
   }, [])
   const signOut = useCallback(() => {
     saveToken('')
@@ -416,6 +423,7 @@ function Board({
     // Archived tickets are hidden unless asked for — they are still real work
     // that happened, so they are excluded, not deleted.
     let out = showArchived ? tickets : tickets.filter((x) => !x.archived_at)
+    if (unlinkedOnly) out = out.filter(withoutDocumentReference)
     if (ticketFilter) out = out.filter((x) => inSubtree(x, ticketFilter, index))
     if (tagKind) out = out.filter((x) => matchesTagRefs(x.tags, tagKind, tagFilter))
     if (epicFilter) out = out.filter((x) => epicOf(x, index) === epicFilter)
@@ -429,7 +437,7 @@ function Board({
       )
     }
     return out
-  }, [tickets, ticketFilter, tagKind, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, me, index])
+  }, [tickets, ticketFilter, tagKind, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, unlinkedOnly, me, index])
 
   const stateName = (state: string) => {
     const common: Record<string, string> = lang === 'de' ? { draft: 'Entwurf', todo: 'Offen', in_progress: 'In Arbeit', blocked: 'Blockiert', done: 'Erledigt', cancelled: 'Abgebrochen' } : { draft: 'Draft', todo: 'To do', in_progress: 'In progress', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled' }
@@ -451,6 +459,7 @@ function Board({
   }, [visible, states])
 
   const epicGroups = useMemo(() => {
+    if (groupByDocument) return groupTicketsByDocument(visible)
     if (!groupByEpic) return null
     const m = new Map<string, Ticket[]>()
     for (const x of visible) {
@@ -459,7 +468,7 @@ function Board({
       m.get(e)!.push(x)
     }
     return m
-  }, [groupByEpic, visible, index])
+  }, [groupByEpic, groupByDocument, visible, index])
 
   const allTags = useMemo(
     () => [...new Set(tickets.flatMap((x) => x.tags ?? []))].sort(),
@@ -690,10 +699,12 @@ function Board({
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
           <Checkbox
             checked={groupByEpic}
-            onCheckedChange={(e) => setGroupByEpic(e === true)}
+            onCheckedChange={(e) => { setGroupByEpic(e === true); if (e === true) setGroupByDocument(false) }}
           />
           {t.groupEpic}
         </label>
+        <label className="text-muted-foreground flex items-center gap-2 text-xs"><Checkbox checked={groupByDocument} onCheckedChange={value => { setGroupByDocument(value === true); if (value === true) setGroupByEpic(false) }} />{docLabels.group}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-xs"><Checkbox checked={unlinkedOnly} onCheckedChange={value => setUnlinkedOnly(value === true)} />{docLabels.without}</label>
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
           <Checkbox
             checked={showArchived}
@@ -834,7 +845,7 @@ function Board({
             {[...epicGroups.entries()].map(([epic, ts]) => (
               <details key={epic || '(none)'} open>
                 <summary className="text-muted-foreground mb-2 cursor-pointer px-1 text-[11.5px] font-[750] tracking-[0.06em] uppercase">
-                  {epic ? (index[epic]?.title ?? epic) : t.noEpic} ({ts.length})
+                  {groupByDocument ? (epic ? ts.flatMap(ticket => ticket.document_refs ?? []).find(ref => ref.section_id === epic)?.title || epic : docLabels.ungrouped) : epic ? (index[epic]?.title ?? epic) : t.noEpic} ({ts.length})
                 </summary>
                 <div className="flex gap-3">
                   {states
@@ -905,6 +916,7 @@ function Board({
         relatedTickets={detail?.type === 'epic' ? tickets.filter(ticket => ticket.id !== detail.id && inSubtree(ticket, detail.id, index)) : undefined}
         terminalStates={workflow?.states.filter(state => state.terminal).map(state => state.id)}
         onOpenTicket={openTicket}
+        documentLinks={detail && <TicketDocumentLinks token={token} project={effectiveProject} ticket={detail.id} lang={lang} canWrite={me.scopes.includes('human') && me.scopes.includes('write') && !currentProject?.archived} onChanged={() => void load()} onError={handleErr} />}
         ticket={detail}
         questions={detail ? questionsByTicket.get(detail.id) : undefined}
         canAsk

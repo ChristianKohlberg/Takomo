@@ -309,8 +309,15 @@ pub(super) fn save_proposal(
         |r| r.get(0),
     )?;
     if !organizer {
-        if proposal.is_some() {
-            return Err(invalid("Only lane organizer jobs accept a proposal."));
+        let classifier: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM ticket_document_jobs WHERE job=?1)",
+            [jid],
+            |r| r.get(0),
+        )?;
+        if proposal.is_some() && (!classifier || !completed) {
+            return Err(invalid(
+                "Only completed classifier or lane organizer jobs accept a proposal.",
+            ));
         }
         return Ok(());
     }

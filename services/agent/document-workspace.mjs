@@ -168,6 +168,17 @@ export function openDocumentWorkspace(job) {
   return {
     progress,
     usedTools: () => [...usedTools],
+    hasReadQuote(sectionId, quote) {
+      if (!allowed.has(sectionId) || typeof quote !== 'string' || !quote.trim()) return false;
+      const normalized = text => text.trim().replace(/[\s\u0085]+/gu, ' ');
+      const intervals = [];
+      for (const [start, end] of [...(ranges.get(sectionId) ?? [])].sort((a, b) => a[0] - b[0])) {
+        const previous = intervals.at(-1);
+        if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+        else intervals.push([start, end]);
+      }
+      return intervals.some(([start, end]) => normalized(content.get(sectionId).slice(start, end)).includes(normalized(quote)));
+    },
     input(prompt) {
       const hits = search(prompt.slice(0, 1000), 5).matches;
       const first = [...new Set([...context.pinned_section_ids, ...context.section_ids, ...hits.map(hit => hit.section_id), ...sections.slice(0, 2).map(section => section.id)])].slice(0, 8);

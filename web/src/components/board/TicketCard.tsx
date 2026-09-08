@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
+import { documentMembership } from '@/lib/ticket-document-groups'
 import { Hint } from '@/components/Hint'
 
 const PRIORITY: Record<string, string> = {
@@ -74,6 +75,7 @@ export function TicketCard({
   onOpen,
   onNavigate,
 }: TicketCardProps) {
+  const documentRefs = documentMembership(t)
   const blocked = (t.blocked_by?.length ?? 0) > 0
   // An occurrence whose deadline passed has stopped counting as live work, and
   // the server transitions NOTHING when that happens — so this card is the only
@@ -138,6 +140,7 @@ export function TicketCard({
       </div>
 
       <div className={cn("mt-1 text-[13.2px] font-[650] break-words", compact && "line-clamp-2")}>{t.title}</div>
+      {!!documentRefs.length && <p className="mt-1 truncate text-xs text-muted-foreground" title={documentRefs.map(ref => ref.title || ref.section_id).join(' · ')}>§ {documentRefs.find(ref => ref.primary)?.title || documentRefs[0]!.title}{documentRefs.length > 1 ? ` +${documentRefs.length - 1}` : ''}</p>}
 
       {/* Where a scheduled ticket came from. It links to /schedules rather than
           opening the ticket, so the two pages stay one product. */}

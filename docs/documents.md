@@ -483,3 +483,87 @@ thread without document tools is migrated once to a new tool-enabled thread on
 the same worker, with retained/omitted history counts recorded visibly. Subsequent
 turns resume that thread. Preserve the worker service identity and Codex state.
 This feature does not install or restart a production worker automatically.
+
+## Ticket references to the project document
+
+In the current specification workspace, a ticket can reference several document
+sections. A reference records its captured source version and provenance:
+**Original source** for work created from a section, **Manually linked** for a
+member's selection, and **Automatically matched** for classifier output. An
+optional primary section controls board grouping. This does not change the
+ticket's epic, parent, dependencies, state or workflow rules.
+
+Open a ticket's **Document references** panel to inspect accepted links and
+suggestions separately. Suggestions include their reason and a source quote.
+Accept a suggestion, choose another section, or dismiss it. Choosing another
+section adds the manual reference before dismissing that suggestion. Manual
+selection supports multiple sections and an optional primary marker; clearing
+the primary marker keeps the link. Removed references, captured titles, source
+versions and reviewer metadata remain available in the history. A changed or
+removed source is marked explicitly; stale suggestions must be classified again
+or linked manually to current source before acceptance.
+
+New tickets and material ticket changes are queued for asynchronous document
+classification. The agent service must advertise `ticket_document_classify`;
+older services cannot claim that work. The classifier uses the same immutable,
+project-scoped document retrieval tools as document discussion and returns up to
+three candidate sections with verified source versions, quotes and reasons.
+Classification is bounded to 500 sections and 8,000,000 UTF-8 bytes. Documents
+above that limit report classification as unavailable; existing references and
+manual section linking remain usable.
+A no-match result is explicit and may indicate a documentation gap. It does not
+create a document section or move a ticket. **Find matches again** retries one
+ticket; the agent queue inspector exposes status and opens the related ticket.
+The classifier never automatically replaces existing accepted references.
+
+Project settings default to **Suggest matches for review**. An administrator can
+choose **Automatically accept unique title matches; suggest other matches**.
+Automatic acceptance is intentionally narrow: there must be exactly one
+candidate with no ambiguity, its title must uniquely equal the ticket title
+after whitespace and case normalization (not a broad semantic match), its quote
+and retrieval evidence must be verified, both ticket and document versions must
+still match, and the ticket must have no accepted references. Other matches
+remain suggestions. A project member with human and write scopes can explicitly
+schedule existing open tickets using **Find matches for tickets without
+references**. Merely opening the board or deploying the feature does not run a
+bulk backfill. No document-link workflow gate is introduced.
+
+The board's **Without a document reference** filter includes tickets whose only
+references point to removed sections or a previous project. **Group by document
+heading** uses the valid primary reference; a ticket without one appears in the
+no-primary group. Secondary memberships appear on the ticket card as `+N`,
+without duplicating the card into multiple groups. A section's **Associated
+tickets** disclosure provides the reverse lookup, with **Load more** and an
+explicit shown/total count for larger result sets.
+
+The HTTP surface is:
+
+- `GET/POST /v1/tickets/{id}/document-links`: inspect references or add a manual
+  related-section reference (`section_id`, optional `primary` and `reason`).
+- `PATCH /v1/tickets/{id}/document-links/{link}`: accept/remove or change the
+  primary marker; `DELETE` retains the removed reference in history.
+- `POST /v1/tickets/{id}/document-classification`: retry using a `request_id`.
+- `GET/PUT /v1/projects/{id}/document-classification-config`: read or set `mode`
+  (`suggest` or `auto_apply_clear`); writes require admin scope.
+- `POST /v1/projects/{id}/document-classification`: explicitly schedule pending
+  work for existing open tickets, with `request_id`.
+- `GET /v1/projects/{id}/document-links`: page accepted reverse references with
+  optional `section_id`, `limit` (1–500), and `offset` (0–100000).
+
+Read operations require read scope and project access. Reference decisions and
+classification requests require human and write scopes in a writable project.
+Ticket list/detail projections include `document_refs`; `document_section` and
+`document_linked` list filters operate on valid accepted references. Missing
+historical references remain inspectable but do not count as valid membership.
+
+### Operator rollout
+
+Deploy the compatible Takomo server first, then upgrade and restart the agent
+service with the new ticket-document classifier module and
+`ticket_document_classify` capability. Updating the server does not update an
+already installed production worker. Older workers continue their supported jobs
+but cannot claim classification requests; those requests wait for a compatible
+worker. Verify the new worker claims a disposable classification request in the
+queue inspector before relying on automatic matching. No existing-ticket bulk
+backfill is scheduled by installation; use the explicit project action when
+needed.

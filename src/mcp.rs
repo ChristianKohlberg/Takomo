@@ -2919,16 +2919,22 @@ impl TakomoMcp {
             }
             let title = branch.title.clone();
             let branch_outline = crate::store::mindmapdoc::outline(&nodes, &node_id);
-            let children: Vec<(String, String)> = ordered
+            let children: Vec<(String, String, String)> = ordered
                 .iter()
                 .filter(|n| n.parent.as_deref() == Some(node_id.as_str()))
                 .map(|child| {
                     (
+                        child.id.clone(),
                         child.title.clone(),
                         crate::store::mindmapdoc::outline(&nodes, &child.id),
                     )
                 })
                 .collect();
+
+            let source_ids: Vec<&str> = std::iter::once(node_id.as_str())
+                .chain(children.iter().map(|child| child.0.as_str()))
+                .collect();
+            let source_document = crate::store::BranchPromotion::capture_source(doc, &map_id, &source_ids)?;
 
             let created = state.store.promote_branch(
                 &crate::store::BranchPromotion {
@@ -2938,6 +2944,7 @@ impl TakomoMcp {
                     title: &title,
                     branch_outline: &branch_outline,
                     children: &children,
+                    source_document: &source_document,
                 },
                 &actor,
             )?;
@@ -3173,6 +3180,8 @@ impl TakomoMcp {
             crate::store::validate_tag_kind(kind)?;
         }
         let filter = TicketListFilter {
+            document_section: None,
+            document_linked: None,
             project: a.project,
             state: a.state,
             ty: a.r#type,

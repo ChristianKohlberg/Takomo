@@ -629,12 +629,40 @@ pub struct BranchPromotion<'a> {
     pub title: &'a str,
     /// The whole branch as indented text.
     pub branch_outline: &'a str,
-    /// Direct children only, as `(title, outline)`.
+    /// Direct children only, as `(section_id, title, outline)`.
     ///
     /// Direct children only, and that is the rule rather than a simplification:
     /// a deeper subtree would arrive as a flat pile of tickets whose shape
     /// nobody could recover, and the map keeps that shape for whoever wants it.
-    pub children: &'a [(String, String)],
+    pub children: &'a [(String, String, String)],
+    /// Exact source sections captured while the caller holds the CRDT mutation.
+    pub source_document: &'a Value,
+}
+
+impl BranchPromotion<'_> {
+    /// Capture only the sections that produce tickets, without classification's
+    /// whole-document size limits. Section hashes match classification snapshots.
+    pub fn capture_source(doc: &yrs::Doc, map: &str, ids: &[&str]) -> ApiResult<Value> {
+        use yrs::{GetString, Transact};
+        let (_, _, nodes) = super::mindmapdoc::snapshot(doc, map);
+        let mut sections = Vec::with_capacity(ids.len());
+        for id in ids {
+            let node = nodes
+                .iter()
+                .find(|node| node.id == *id)
+                .ok_or_else(|| ApiError::not_found("mindmap_node", id))?;
+            let xml = super::mindmapdoc::read_section_prose(doc, id)
+                .map(|fragment| fragment.get_string(&doc.transact()))
+                .unwrap_or_default();
+            let mut section = json!({
+                "id": node.id, "parent_id": node.parent, "title": node.title,
+                "notes": node.notes, "prose_xml": xml,
+            });
+            section["version"] = json!(crate::ids::sha256_hex(section.to_string().as_bytes()));
+            sections.push(section);
+        }
+        Ok(json!({"mindmap_id": map, "sections": sections}))
+    }
 }
 
 impl Store {
@@ -668,8 +696,15 @@ impl Store {
                         actor,
                         now,
                     )?;
+                    super::ticket_document::direct(
+                        tx,
+                        &epic,
+                        promotion.source_document,
+                        promotion.node_id,
+                        actor,
+                    )?;
                     let mut children = Vec::new();
-                    for (title, body) in promotion.children {
+                    for (section_id, title, body) in promotion.children {
                         let id = insert_ticket(
                             tx,
                             &map.project,
@@ -679,6 +714,13 @@ impl Store {
                             body,
                             actor,
                             now,
+                        )?;
+                        super::ticket_document::direct(
+                            tx,
+                            &id,
+                            promotion.source_document,
+                            section_id,
+                            actor,
                         )?;
                         children.push(id);
                     }
