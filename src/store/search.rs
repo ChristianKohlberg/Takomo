@@ -12,6 +12,9 @@ use yrs::{
     types::text::YChange, types::ToJson, updates::decoder::Decode, ReadTxn, Text, Transact,
     XmlFragment, XmlOut,
 };
+pub const MAX_ATTEMPTS: i64 = 3;
+pub const RESULT_LIMIT: usize = 20;
+pub const CANDIDATE_LIMIT: usize = 100;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EmbeddingConfig {
@@ -109,6 +112,12 @@ pub struct SearchHit {
     pub passage: String,
     pub highlights: Vec<String>,
     pub match_kind: String,
+}
+#[derive(Clone, Debug, Default)]
+pub struct SearchOutcome {
+    pub hits: Vec<SearchHit>,
+    pub used_vectors: bool,
+    pub candidates: usize,
 }
 /// Split only within a large paragraph as a last resort;
 /// Normal sections remain one chunk.
@@ -276,11 +285,21 @@ embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALU
     }
     if manual {
         conn.execute(
-            "UPDATE embedding_jobs SET due_at=?2 WHERE map_id=?1",
+            "UPDATE embedding_jobs SET due_at=?2,attempts=0 WHERE map_id=?1",
             params![map, now],
         )?;
     }
     conn.execute("DELETE FROM search_dirty_maps WHERE map_id=?1", [map])?;
+    conn.execute("DELETE FROM search_failures WHERE map_id=?1", [map])?;
+    Ok(())
+}
+fn record_failure(conn: &Connection, map: &str, now: i64, message: &str) -> ApiResult<()> {
+    conn.execute("DELETE FROM search_dirty_maps WHERE map_id=?1", [map])?;
+    conn.execute(
+        "INSERT INTO search_failures(map_id,failed_at,message)VALUES(?1,?2,?3)ON
+CONFLICT(map_id)DO UPDATE SET failed_at=excluded.failed_at,message=excluded.message",
+        params![map, now, message],
+    )?;
     Ok(())
 }
 impl Store {
@@ -325,21 +344,29 @@ fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=exclu
         })
     }
     pub fn refresh_search(&self, map: &str, manual: bool, now: i64) -> ApiResult<()> {
-        self.with_tx(|tx| reconcile(tx, map, now, manual))
+        match self.with_tx(|tx| reconcile(tx, map, now, manual)) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.with_tx(|tx| record_failure(tx, map, now, &error.body.message))?;
+                Err(error)
+            }
+        }
     }
     pub fn refresh_dirty_search(&self, now: i64) -> ApiResult<()> {
-        self.with_tx(|tx| {
+        let maps: Vec<String> = self.with_conn(|conn| {
             let mut stmt =
-                tx.prepare("SELECT map_id FROM search_dirty_maps ORDER BY changed_at LIMIT 10")?;
-            let maps: Vec<String> = stmt
+                conn.prepare("SELECT map_id FROM search_dirty_maps ORDER BY changed_at LIMIT 10")?;
+            let maps = stmt
                 .query_map([], |r| r.get(0))?
                 .collect::<Result<_, _>>()?;
-            drop(stmt);
-            for map in maps {
-                reconcile(tx, &map, now, false)?;
+            Ok(maps)
+        })?;
+        for map in maps {
+            if let Err(error) = self.refresh_search(&map, false, now) {
+                eprintln!("search projection failed for {map}: {}", error.body.message);
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
     pub fn search_status(&self, map: &str) -> ApiResult<Value> {
         self.with_conn(|conn| {
@@ -354,11 +381,18 @@ c.fingerprint<>?2))",
                 params![map, c.fingerprint()],
                 |r| r.get(0),
             )?;
+            let failed: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND attempts>=?2", params![map, MAX_ATTEMPTS], |r| r.get(0))?;
             let error: Option<String> = conn
-                .query_row("SELECT last_error FROM embedding_jobs WHERE map_id=?1 AND last_error IS NOT NULL LIMIT 1", [map], |r| r.get(0))
+                .query_row("SELECT message FROM search_failures WHERE map_id=?1", [map], |r| r.get(0))
                 .optional()?;
+            let error = match error {
+                Some(message) => Some(message),
+                None => conn
+                    .query_row("SELECT last_error FROM embedding_jobs WHERE map_id=?1 AND last_error IS NOT NULL ORDER BY attempts DESC LIMIT 1", [map], |r| r.get(0))
+                    .optional()?,
+            };
             Ok(json!({
-            "configured":!k.is_empty(),"queued":queued,"running":running,"indexed":indexed,"total":total,"last_error":error}
+            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error}
             ))
         })
     }
@@ -371,8 +405,8 @@ c.fingerprint<>?2))",
             let row: Option<(String, String, String)> = tx
                 .query_row(
                     "SELECT map_id,node_id,content_hash FROM embedding_jobs WHERE due_at<=?1 AND
-lease_until<=?1 AND fingerprint=?2 ORDER BY due_at LIMIT 1",
-                    params![now, c.fingerprint()],
+lease_until<=?1 AND fingerprint=?2 AND attempts<?3 ORDER BY due_at LIMIT 1",
+                    params![now, c.fingerprint(), MAX_ATTEMPTS],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
@@ -471,73 +505,97 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
     }
     dot / (aa * bb).sqrt()
 }
+fn excerpt_start(passage: &str, tokens: &[String]) -> usize {
+    let mut folded = String::new();
+    let mut origin = Vec::new();
+    for (index, c) in passage.chars().enumerate() {
+        for lower in c.to_lowercase() {
+            folded.push(lower);
+            origin.push(index);
+        }
+    }
+    tokens
+        .iter()
+        .filter_map(|token| folded.find(token.as_str()))
+        .min()
+        .and_then(|byte| origin.get(folded[..byte].chars().count()).copied())
+        .unwrap_or(0)
+}
 impl Store {
     pub fn search_document(
         &self,
         map: &str,
         query: &str,
         vector: Option<(&[f32], String)>,
-    ) -> ApiResult<(Vec<SearchHit>, bool)> {
-        self.with_tx(|conn| {
-            reconcile(conn, map, now_ms(), false)?;
+    ) -> ApiResult<SearchOutcome> {
+        let dirty = self.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM search_dirty_maps WHERE map_id=?1)",
+                [map],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if dirty {
+            self.refresh_search(map, false, now_ms())?;
+        }
+        self.with_conn(|conn| {
             let (config, _) = config(conn)?;
-            let vector = vector.filter(|(_, fingerprint)| fingerprint == &config.fingerprint()).map(|(v, _)| v);
+            let fingerprint = config.fingerprint();
+            let vector = vector.filter(|(_, generation)| generation == &fingerprint).map(|(v, _)| v);
             let tokens = terms(query);
             if tokens.is_empty() {
-                return Ok((vec![], false));
+                return Ok(SearchOutcome::default());
             }
             let fts = tokens.iter().map(|s| format!("\"{}\"", s.replace('"', "\"\""))).collect::<Vec<_>>().join(" OR ");
             let mut lexical = conn.prepare(
-                "SELECT c.id FROM search_fts JOIN search_chunks c ON c.id=search_fts.rowid WHERE search_fts
-MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT 100",
+                "SELECT c.id,c.node_id FROM search_fts JOIN search_chunks c ON c.id=search_fts.rowid WHERE search_fts
+MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT ?3",
             )?;
-            let ids: Vec<i64> = lexical.query_map(params![fts, map], |r| r.get(0))?.collect::<Result<_, _>>()?;
-            let mut scores: HashMap<i64, (f64, bool, bool)> = ids.iter().enumerate().map(|(rank, id)| (*id, (1.0 / (60.0 + rank as f64), true, false))).collect();
+            let lexical_hits: Vec<(i64, String)> = lexical
+                .query_map(params![fts, map, CANDIDATE_LIMIT as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            let mut scores: HashMap<i64, (String, f64, bool, bool)> = lexical_hits
+                .into_iter()
+                .enumerate()
+                .map(|(rank, (id, node))| (id, (node, 1.0 / (60.0 + rank as f64), true, false)))
+                .collect();
             if let Some(q) = vector {
-                let mut stmt = conn.prepare("SELECT id,vector FROM search_chunks WHERE map_id=?1 AND fingerprint=?2 AND vector IS NOT NULL")?;
+                let mut stmt = conn.prepare("SELECT id,node_id,vector FROM search_chunks WHERE map_id=?1 AND fingerprint=?2 AND vector IS NOT NULL")?;
                 let mut ranked = Vec::new();
-                for row in stmt.query_map(params![map, config.fingerprint()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
-                    let (id, value) = row?;
+                for row in stmt.query_map(params![map, fingerprint], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))? {
+                    let (id, node, value) = row?;
                     if let Ok(v) = serde_json::from_str::<Vec<f32>>(&value) {
                         let similarity = cosine(q, &v);
                         if similarity > 0.2 {
-                            ranked.push((id, similarity));
+                            ranked.push((id, node, similarity));
                         }
                     }
                 }
-                ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-                for (rank, (id, _)) in ranked.into_iter().take(100).enumerate() {
-                    let s = scores.entry(id).or_insert((0.0, false, false));
-                    s.0 += 1.0 / (60.0 + rank as f64);
-                    s.2 = true;
+                ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+                for (rank, (id, node, _)) in ranked.into_iter().take(CANDIDATE_LIMIT).enumerate() {
+                    let s = scores.entry(id).or_insert((node, 0.0, false, false));
+                    s.1 += 1.0 / (60.0 + rank as f64);
+                    s.3 = true;
                 }
             }
+            let candidates = scores.values().map(|(node, ..)| node.as_str()).collect::<HashSet<_>>().len();
             let mut ranked: Vec<_> = scores.into_iter().collect();
-            ranked.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0).then(a.0.cmp(&b.0)));
+            ranked.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1).then(a.0.cmp(&b.0)));
             let mut seen = HashSet::new();
             let mut hits = Vec::new();
-            for (id, (_, keyword, semantic)) in ranked {
+            for (id, (node, _, keyword, semantic)) in ranked {
+                if !seen.insert(node) {
+                    continue;
+                }
                 let (node, title, path, passage): (String, String, String, String) = conn.query_row("SELECT node_id,title,heading_path,passage FROM search_chunks WHERE id=?1", [id], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?;
-                if !seen.insert(node.clone()) {
-                    continue;
-                }
-                let chars: Vec<char> = passage.chars().collect();
-                let first = if keyword {
-                    tokens
-                        .iter()
-                        .filter_map(|token| passage.to_lowercase().find(token))
-                        .min()
-                        .map(|byte| passage.get(..byte).unwrap_or("").chars().count())
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
+                let first = if keyword { excerpt_start(&passage, &tokens) } else { 0 };
                 let start = first.saturating_sub(60);
-                let excerpt: String = chars.iter().skip(start).take(280).collect();
+                let excerpt: String = passage.chars().skip(start).take(280).collect();
                 let highlights = if keyword {
-                    tokens.iter().filter(|token| excerpt.to_lowercase().contains(token.as_str())).cloned().collect()
+                    let folded = excerpt.to_lowercase();
+                    tokens.iter().filter(|token| folded.contains(token.as_str())).cloned().collect()
                 } else {
                     vec![]
                 };
@@ -557,11 +615,11 @@ MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT 100",
                     }
                     .into(),
                 });
-                if hits.len() == 20 {
+                if hits.len() == RESULT_LIMIT {
                     break;
                 }
             }
-            Ok((hits, vector.is_some()))
+            Ok(SearchOutcome { hits, used_vectors: vector.is_some(), candidates })
         })
     }
 }

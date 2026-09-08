@@ -4,6 +4,20 @@ use crate::{
     store::search::EmbeddingConfig,
 };
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn client() -> ApiResult<&'static reqwest::Client> {
+    if let Some(client) = CLIENT.get() {
+        return Ok(client);
+    }
+    let built = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ApiError::internal("Cannot initialize embedding client"))?;
+    Ok(CLIENT.get_or_init(|| built))
+}
 
 pub async fn embed(
     config: &EmbeddingConfig,
@@ -26,13 +40,9 @@ pub async fn embed(
         body["dimensions"] = json!(config.dimensions);
         body["encoding_format"] = json!("float");
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| ApiError::internal("Cannot initialize embedding client"))?;
-    let mut response = client
+    let mut response = client()?
         .post(&config.endpoint)
+        .timeout(std::time::Duration::from_secs(10))
         .bearer_auth(key)
         .json(&body)
         .send()

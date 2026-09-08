@@ -75,10 +75,17 @@ function stubPaneWidth(width: number) {
 
 describe('document workflow integration', () => {
   it('opens a hybrid result inside a collapsed ancestor and selects its exact source without editing', async () => {
-    const { doc, child, props } = setup()
+    const { doc, child, fragment, props } = setup()
+    // Blank and whitespace-only paragraphs sit between the two lines the index stored as "thirty days.\nLate fees apply."
+    const blank = new Y.XmlElement('paragraph')
+    const spaces = new Y.XmlElement('paragraph')
+    spaces.insert(0, [new Y.XmlText('   ')])
+    const followUp = new Y.XmlElement('paragraph')
+    followUp.insert(0, [new Y.XmlText('Late fees apply.')])
+    fragment.insert(1, [blank, spaces, followUp])
     vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/status')
-      ? { configured: false, queued: 0, running: 0, indexed: 0, total: 1, last_error: null }
-      : { results: [{ node_id: child, title: 'Invoices', heading_path: ['Billing'], excerpt: 'Payment deadline is thirty days.', passage: 'deadline', highlights: ['deadline'], match_kind: 'keyword' }], mode: 'keyword', semantic_status: 'unconfigured' })))))
+      ? { configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 1, last_error: null }
+      : { results: [{ node_id: child, title: 'Invoices', heading_path: ['Billing'], excerpt: 'Payment deadline is thirty days.', passage: 'thirty days.\nLate fees apply.', highlights: ['deadline'], match_kind: 'keyword' }], limit: 20, candidates: 1, truncated: false, mode: 'keyword', semantic_status: 'unconfigured' })))))
     render(<Plan {...props} token="test" />)
     fireEvent.click(screen.getByRole('button', { name: 'Collapse section' }))
     const update = vi.fn(); doc.on('update', update)
@@ -90,7 +97,7 @@ describe('document workflow integration', () => {
     await waitFor(() => {
       const editor = probe.editors.get('Section 1.1 prose')!
       expect(editor).toBeTruthy()
-      expect(editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to)).toBe('deadline')
+      expect(editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, '\n')).toBe('thirty days.\n\n   \nLate fees apply.')
     })
     expect(props.onSelection).toHaveBeenLastCalledWith(child)
     expect(update).not.toHaveBeenCalled()
@@ -98,7 +105,7 @@ describe('document workflow integration', () => {
     fireEvent.keyDown(window, { key: 's', metaKey: true })
     fireEvent.keyDown(await screen.findByRole('combobox'), { key: 'Escape' })
     await waitFor(() => expect(document.activeElement).toBe(sourceEditor.view.dom))
-    expect(sourceEditor.state.doc.textBetween(sourceEditor.state.selection.from, sourceEditor.state.selection.to)).toBe('deadline')
+    expect(sourceEditor.state.doc.textBetween(sourceEditor.state.selection.from, sourceEditor.state.selection.to, '\n')).toBe('thirty days.\n\n   \nLate fees apply.')
     fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
     expect(screen.getByRole('searchbox', { name: 'Find in document' })).toBeTruthy()
   })

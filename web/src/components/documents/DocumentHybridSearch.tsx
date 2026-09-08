@@ -76,6 +76,7 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
   const state = statusError ? (de ? 'Indexstatus nicht verfügbar' : 'Index status unavailable')
     : !status ? (de ? 'Indexstatus wird geladen…' : 'Loading index status…')
     : !status.configured ? (de ? 'Bedeutungssuche nicht konfiguriert · Stichwortsuche verfügbar' : 'Meaning search not configured · keyword search available')
+    : status.failed > 0 ? (de ? `Indexierung für ${status.failed} ${status.failed === 1 ? 'Abschnitt' : 'Abschnitte'} aufgegeben · Stichwortsuche verfügbar` : `Indexing gave up on ${status.failed} ${status.failed === 1 ? 'section' : 'sections'} · keyword search available`)
     : status.last_error ? (de ? 'Indexfehler · Stichwortsuche verfügbar' : 'Index error · keyword search available')
     : status.running > 0 ? (de ? 'Index wird aktualisiert…' : 'Updating index…')
     : status.queued > 0 ? (de ? 'Aktualisierung vorgemerkt' : 'Update pending')
@@ -113,7 +114,10 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
         </div>
         {(statusError || status?.last_error) && <p className="text-xs text-destructive" role="status">{statusError || status?.last_error}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'unavailable' && status?.configured && !status.last_error && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche derzeit nicht verfügbar.' : 'Keyword results · meaning search is currently unavailable.'}</p>}
-        <div aria-live="polite" className="text-sm text-muted-foreground">{error || (busy ? (de ? 'Suche läuft…' : 'Searching…') : response ? `${results.length} ${de ? (results.length === 1 ? 'Ergebnis' : 'Ergebnisse') : (results.length === 1 ? 'result' : 'results')}` : '')}</div>
+        {response?.mode === 'keyword' && response.semantic_status === 'throttled' && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche kurz pausiert (Abfragelimit erreicht).' : 'Keyword results · meaning search paused briefly (query limit reached).'}</p>}
+        <div aria-live="polite" className="text-sm text-muted-foreground">{error || (busy ? (de ? 'Suche läuft…' : 'Searching…') : !response ? ''
+          : response.truncated ? (de ? `Die ${results.length} besten von ${response.candidates} passenden Abschnitten` : `Top ${results.length} of ${response.candidates} matching sections`)
+          : `${results.length} ${de ? (results.length === 1 ? 'Ergebnis' : 'Ergebnisse') : (results.length === 1 ? 'result' : 'results')}`)}</div>
         <div id={listId} role="listbox" aria-label={de ? 'Suchergebnisse' : 'Search results'} className="min-h-0 overflow-y-auto overscroll-contain rounded-lg border empty:hidden">
           {results.map((result, index) => <button key={result.node_id} id={`${listId}-${index}`} type="button" role="option" aria-selected={index === active} tabIndex={-1} onClick={() => choose(result)} onPointerMove={() => setActive(index)}
             className={`block w-full border-b p-3 text-left last:border-b-0 ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-muted'}`}>

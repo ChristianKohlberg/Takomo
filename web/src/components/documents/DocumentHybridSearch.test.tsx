@@ -5,9 +5,9 @@ import { DocumentHybridSearch, SearchExcerpt } from './DocumentHybridSearch'
 import type { SearchResponse, SearchResult } from '@/lib/hybrid-search'
 const one: SearchResult = { node_id: 'one', title: 'Delivery', heading_path: ['Operations'], excerpt: 'parcel <script>alert(1)</script>', passage: 'parcel', highlights: ['parcel'], match_kind: 'keyword' }
 const two: SearchResult = { ...one, node_id: 'two', title: 'Shipping', match_kind: 'semantic', highlights: [] }
-const response: SearchResponse = { results: [one, two], mode: 'keyword', semantic_status: 'unconfigured' }
+const response: SearchResponse = { results: [one, two], limit: 20, candidates: 2, truncated: false, mode: 'keyword', semantic_status: 'unconfigured' }
 function mockFetch(search: (url: string, init?: RequestInit) => Promise<Response> = async () => new Response(JSON.stringify(response))) {
-  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => url.endsWith('/status') ? Promise.resolve(new Response(JSON.stringify({ configured: false, queued: 0, running: 0, indexed: 0, total: 2, last_error: null }))) : search(url, init)))
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => url.endsWith('/status') ? Promise.resolve(new Response(JSON.stringify({ configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 2, last_error: null }))) : search(url, init)))
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers() })
 describe('document hybrid search', () => {
@@ -49,8 +49,8 @@ describe('document hybrid search', () => {
   })
   it('schedules a manual sync and announces running status without blocking keyword results', async () => {
     const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/sync')
-      ? { configured: true, queued: 0, running: 1, indexed: 1, total: 2, last_error: null }
-      : url.endsWith('/status') ? { configured: true, queued: 1, running: 0, indexed: 1, total: 2, last_error: null }
+      ? { configured: true, queued: 0, running: 1, failed: 0, indexed: 1, total: 2, last_error: null }
+      : url.endsWith('/status') ? { configured: true, queued: 1, running: 0, failed: 0, indexed: 1, total: 2, last_error: null }
       : response))))
     vi.stubGlobal('fetch', fetch)
     render(<DocumentHybridSearch token="test" map="m" locale="en" canSync onNavigate={vi.fn()} />)
@@ -62,6 +62,19 @@ describe('document hybrid search', () => {
     expect(call).toBeTruthy()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'parcel' } })
     await screen.findByText('Shipping')
+  })
+  it('distinguishes a truncated top list, a throttled semantic pass and parked jobs', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/status')
+      ? { configured: true, queued: 3, running: 0, failed: 3, indexed: 5, total: 8, last_error: 'Embedding provider returned HTTP 400' }
+      : { ...response, candidates: 37, truncated: true, note: 'Showing the 2 best-ranked of 37 candidate sections.', semantic_status: 'throttled' })))))
+    render(<DocumentHybridSearch token="test" map="m" locale="en" canSync onNavigate={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    await screen.findByText(/Indexing gave up on 3 sections/)
+    expect((screen.getByText('Sync document') as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'parcel' } })
+    await screen.findByText('Top 2 of 37 matching sections')
+    expect(screen.getByText(/query limit reached/)).toBeTruthy()
+    expect(screen.queryByText(/2 results/)).toBeNull()
   })
   it('ignores a superseded request even when transport ignores abort', async () => {
     let oldResolve!: (response: Response) => void

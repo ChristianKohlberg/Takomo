@@ -32,6 +32,10 @@ pub struct AppState {
     /// registration is unauthenticated by specification), and merging it would
     /// make "what has this credential spent" unanswerable.
     pub oauth_register_rate: Mutex<HashMap<String, VecDeque<i64>>>,
+    /// token id -> unix-ms timestamps of query-embedding provider calls. Its own
+    /// map for the reason `share_rate` is: a search is a read, so it must not
+    /// spend the token's write budget, yet each one is a paid provider call.
+    pub search_rate: Mutex<HashMap<String, VecDeque<i64>>>,
     /// Every collaborative document currently open, keyed by id.
     ///
     /// In-memory and deliberately not a cache: a room exists only while somebody
@@ -91,6 +95,7 @@ impl AppState {
             share_rate: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
             oauth_register_rate: Mutex::new(HashMap::new()),
+            search_rate: Mutex::new(HashMap::new()),
             rooms: crate::api::docsync::Rooms::default(),
             doc_agent: None,
             speech: None,

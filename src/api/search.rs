@@ -1,17 +1,18 @@
-use super::ApiJson;
+use super::{first, query_pairs, ApiJson};
 use crate::{
-    auth::AuthCtx,
+    auth::{debit_shared_window, AuthCtx},
     error::{ApiError, ApiResult},
     server::AppState,
-    store::search::EmbeddingConfig,
+    store::search::{EmbeddingConfig, RESULT_LIMIT},
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     Extension, Json,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+pub const QUERY_EMBEDDINGS_PER_MINUTE: i64 = 60;
 
 fn authorize(state: &AppState, ctx: &AuthCtx, map: &str, write: bool) -> ApiResult<()> {
     ctx.require_scope("read")?;
@@ -76,22 +77,27 @@ pub async fn save_settings(
         .map_err(|e| ApiError::validation("embeddings.config", e.to_string()))?;
     Ok(Json(state.store.save_embedding_config(config, key)?))
 }
-#[derive(Deserialize)]
-pub struct SearchQuery {
-    pub q: String,
-}
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AuthCtx>,
     Path(map): Path<String>,
-    Query(query): Query<SearchQuery>,
+    RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<Value>> {
     authorize(&state, &ctx, &map, false)?;
-    if query.q.chars().count() > 500 {
+    let pairs = query_pairs(raw.as_deref());
+    let Some(q) = first(&pairs, "q") else {
         return Err(ApiError::validation(
             "search.query",
-            "Use at most 500 characters",
-        ));
+            "Query parameter 'q' is required: the words or a description to search this document for, at most 500 characters.",
+        )
+        .remedy("Retry as GET /v1/mindmaps/{id}/search?q=<query>."));
+    };
+    let q = q.to_owned();
+    if q.chars().count() > 500 {
+        return Err(
+            ApiError::validation("search.query", "Use at most 500 characters")
+                .remedy("Shorten the query and retry."),
+        );
     }
     state
         .store
@@ -106,34 +112,60 @@ pub async fn search(
         "ready"
     };
     let mut vector = None;
-    if semantic_status == "ready" && !query.q.trim().is_empty() {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            crate::embeddings::embed(&config, &key, std::slice::from_ref(&query.q), true),
+    if semantic_status == "ready" && !q.trim().is_empty() {
+        if debit_shared_window(
+            &state.search_rate,
+            &ctx.token_id,
+            QUERY_EMBEDDINGS_PER_MINUTE,
         )
-        .await
+        .is_err()
         {
-            Ok(Ok(mut v)) => vector = v.pop(),
-            _ => semantic_status = "unavailable",
+            semantic_status = "throttled";
+        } else {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                crate::embeddings::embed(&config, &key, std::slice::from_ref(&q), true),
+            )
+            .await
+            {
+                Ok(Ok(mut v)) => vector = v.pop(),
+                _ => semantic_status = "unavailable",
+            }
         }
     }
     // A map can move projects while the provider request is in flight.
     authorize(&state, &ctx, &map, false)?;
-    let (results, used_vectors) = state.store.search_document(
+    let outcome = state.store.search_document(
         &map,
-        &query.q,
+        &q,
         vector.as_deref().map(|v| (v, config.fingerprint())),
     )?;
-    if vector.is_some() && !used_vectors {
+    if vector.is_some() && !outcome.used_vectors {
         semantic_status = if state.store.embedding_config()?.1.is_empty() {
             "unconfigured"
         } else {
             "indexing"
         };
     }
-    Ok(Json(
-        json!({"results":results,"mode":if used_vectors{"hybrid"}else{"keyword"},"semantic_status":semantic_status}),
-    ))
+    let shown = outcome.hits.len();
+    let truncated = outcome.candidates > shown;
+    let mut body = json!({
+        "results": outcome.hits,
+        "limit": RESULT_LIMIT,
+        "candidates": outcome.candidates,
+        "truncated": truncated,
+        "mode": if outcome.used_vectors { "hybrid" } else { "keyword" },
+        "semantic_status": semantic_status,
+    });
+    if truncated {
+        body["note"] = json!(format!(
+            "Showing the {shown} best-ranked of {} candidate sections. Candidates come from a bounded retrieval (the top {} keyword and top {} semantic chunks), not a count of every section that could match; refine the query to narrow it.",
+            outcome.candidates,
+            crate::store::search::CANDIDATE_LIMIT,
+            crate::store::search::CANDIDATE_LIMIT
+        ));
+    }
+    Ok(Json(body))
 }
 pub async fn status(
     State(state): State<Arc<AppState>>,

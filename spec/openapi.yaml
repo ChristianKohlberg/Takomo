@@ -87,20 +87,24 @@ paths:
       tags: [mindmaps]
       operationId: search_specification
       summary: Search the document using keywords and compatible embeddings
-      description: Requires read and project access. Uses authoritative saved CRDT plaintext, heading ancestry and paragraph chunks. Groups the best chunk per node. Provider unconfigured/outage falls back to FTS; no query embedding is persisted.
+      description: Requires read and project access. Uses authoritative saved CRDT plaintext, heading ancestry and paragraph chunks. Groups the best chunk per node. Provider unconfigured/outage falls back to FTS; no query embedding is persisted. Query embeddings are bounded per token (60 per minute); past that, the call answers from keywords alone with semantic_status `throttled` rather than failing. A missing `q` is refused with `search.query`.
       parameters:
         - { name: q, in: query, required: true, schema: { type: string, maxLength: 500 } }
       responses:
         '200':
-          description: Up to 20 grouped matches
+          description: The best-ranked matches, bounded, saying what was left out
           content:
             application/json:
               schema:
                 type: object
-                required: [results, mode, semantic_status]
+                required: [results, limit, candidates, truncated, mode, semantic_status]
                 properties:
                   mode: { type: string, enum: [keyword, hybrid] }
-                  semantic_status: { type: string, enum: [ready, unconfigured, unavailable, indexing] }
+                  semantic_status: { type: string, enum: [ready, unconfigured, unavailable, indexing, throttled] }
+                  limit: { type: integer, description: The most sections one response carries (20). }
+                  candidates: { type: integer, minimum: 0, description: Distinct sections among the bounded candidate set (the top 100 keyword and top 100 semantic chunks). Not a count of every section that could match. }
+                  truncated: { type: boolean, description: True when candidates exceeded limit and lower-ranked sections were left out. }
+                  note: { type: string, description: Present only when truncated; says what was left out and that candidates are a bounded retrieval. }
                   results:
                     type: array
                     maxItems: 20
@@ -8470,14 +8474,15 @@ components:
             configured: { type: boolean }
     EmbeddingStatus:
       type: object
-      required: [configured, queued, running, indexed, total, last_error]
+      required: [configured, queued, running, failed, indexed, total, last_error]
       properties:
         configured: { type: boolean }
-        queued: { type: integer, minimum: 0, description: Includes currently running jobs. }
+        queued: { type: integer, minimum: 0, description: Includes currently running and failed jobs. }
         running: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0, description: "Jobs parked after 3 failed provider attempts. They stay parked until the section's content changes, the provider configuration changes, or a manual sync resets them." }
         indexed: { type: integer, minimum: 0 }
         total: { type: integer, minimum: 0 }
-        last_error: { type: [string, 'null'], description: Sanitized provider error without credentials or provider response body. }
+        last_error: { type: [string, 'null'], description: "Sanitized provider or projection error without credentials or provider response body. A projection failure (a map whose source log cannot be replayed) is reported here too; it stops that map's indexing only, and clears on the next successful projection." }
     LaneOrganizerProposal:
       type: object
       additionalProperties: false
@@ -11756,7 +11761,7 @@ x-error-codes:
   embeddings.global: "A project-scoped token cannot manage global embeddings. Use an unrestricted administrator token."
   embeddings.key: "The supplied API key is not a string or exceeds its limit. Supply a string, omit it to retain an eligible existing key, or clear it with an empty string."
   embeddings.unconfigured: "No embedding provider key is configured. An administrator can configure it in Settings; keyword search remains available."
-  search.query: "The search query exceeds 500 characters. Shorten it and retry."
+  search.query: "The search query is missing (`q` is required) or exceeds 500 characters. Supply ?q=<query> of at most 500 characters and retry."
   validation.lane_organizer: "Organizer input, pending collection, or model proposal is invalid or oversized. Read the message; no partial organization was applied."
   conflict.lane_organizer: "An organizer request is active, request_id was reused with changed content, or its snapshot is stale. Wait or request a fresh proposal; acceptance is atomic."
   diagram.busy: "all four rendering slots are occupied; retry shortly."

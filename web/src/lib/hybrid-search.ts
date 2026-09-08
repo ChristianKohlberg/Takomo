@@ -13,13 +13,20 @@ export interface SearchResult {
 }
 export interface SearchResponse {
   results: SearchResult[]
+  /** The most sections one response carries. */
+  limit: number
+  /** Distinct sections among the bounded candidate set, not a global total. */
+  candidates: number
+  truncated: boolean
+  note?: string
   mode: 'hybrid' | 'keyword'
-  semantic_status: 'ready' | 'unconfigured' | 'unavailable' | 'indexing'
+  semantic_status: 'ready' | 'unconfigured' | 'unavailable' | 'indexing' | 'throttled'
 }
 export interface SearchStatus {
   configured: boolean
   queued: number
   running: number
+  failed: number
   indexed: number
   total: number
   last_error: string | null
@@ -55,20 +62,26 @@ export function excerptRanges(result: SearchResult): TextMatch[] {
 /** Exact passage only: synthetic block separators have no document position. */
 export function passageRange(doc: Node, passage: string): TextMatch | null {
   if (!passage) return null
-  let text = ''
-  const positions: number[] = []
+  const lines: { text: string; positions: number[] }[] = []
+  let line = { text: '', positions: [] as number[] }
+  const cut = () => { lines.push(line); line = { text: '', positions: [] } }
   doc.descendants((node, position) => {
     if (!node.isTextblock) return true
-    if (text) { text += '\n'; positions.push(-1) }
+    if (line.text) cut()
     node.descendants((child, offset) => {
       if (child.isText) {
         const value = child.text ?? ''
-        text += value
-        for (let i = 0; i < value.length; i++) positions.push(position + 1 + offset + i)
-      } else if (child.isLeaf) { text += '\n'; positions.push(-1) }
+        line.text += value
+        for (let i = 0; i < value.length; i++) line.positions.push(position + 1 + offset + i)
+      } else if (child.isLeaf) cut()
     })
     return false
   })
+  cut()
+  // The index drops blank and whitespace-only lines before storing a passage; derive the same string.
+  const kept = lines.filter(entry => entry.text.trim() !== '')
+  const text = kept.map(entry => entry.text).join('\n')
+  const positions = kept.flatMap((entry, index) => index ? [-1, ...entry.positions] : entry.positions)
   const index = text.indexOf(passage)
   if (index < 0) return null
   const from = positions[index], end = positions[index + passage.length - 1]

@@ -12,6 +12,14 @@ excerpt. Highlights identify literal query words in that excerpt; a result found
 only by its vector is labelled related meaning without invented highlights.
 Keyword search continues to work when embeddings are unconfigured or unavailable.
 
+A response carries at most 20 sections and says so: `limit`, `candidates` (the
+distinct sections among the bounded candidate set of the top 100 keyword and top
+100 semantic chunks), `truncated`, and a `note` when sections were left out. The
+candidate count is not a count of every section that could match, so the modal
+shows "top 20 of N" rather than a total. Query embeddings are bounded to 60 per
+token per minute; past that the search answers from keywords alone and reports
+`semantic_status: throttled` instead of failing or spending more.
+
 ## Provider configuration
 
 An unrestricted administrator can configure embeddings in Settings. The default
@@ -53,9 +61,17 @@ and content hashes plus provider fingerprints reject stale completions.
 
 **Sync embeddings** in Document flushes pending document saves and makes the map's
 pending jobs eligible immediately. It preserves already current embeddings, rather
-than paying to embed unchanged content again. The status reports queued, running
-and indexed sections and a sanitized failure message. Failed provider calls retry
-with bounded backoff; keyword search remains available.
+than paying to embed unchanged content again. The status reports queued, running,
+failed and indexed sections and a sanitized failure message. A failed provider
+call retries with bounded backoff at most three times; after that the job is
+parked and counted as `failed`, and is not sent to the provider again until the
+section's content changes, the provider configuration changes, or a manual sync
+resets it. Keyword search remains available throughout.
+
+A map whose source log cannot be replayed is isolated: its failure is recorded
+and shown as `last_error` in its status, its projection is left as it was, and
+every other map keeps indexing. The next content change or a manual sync retries
+it.
 
 API routes and permissions are described in `spec/openapi.yaml`. Search/status
 require read access to the map's project. Manual sync also requires write access

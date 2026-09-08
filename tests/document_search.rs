@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
-use takomo::store::search::{process_jobs, EmbeddingConfig};
+use takomo::store::search::{process_jobs, EmbeddingConfig, MAX_ATTEMPTS, RESULT_LIMIT};
 
 async fn fixture(app: &TestApp) -> (String, String) {
     let (s, m) = app
@@ -238,7 +238,7 @@ async fn additive_upgrade_preserves_source_and_is_idempotent_and_transactional()
         assert!(!upgraded
             .search_document(&map, "Invoices", None)
             .unwrap()
-            .0
+            .hits
             .is_empty());
     }
     let broken = rusqlite::Connection::open_in_memory().unwrap();
@@ -285,7 +285,7 @@ async fn unrelated_edits_do_not_starve_jobs_and_query_rechecks_source_and_config
         store
             .search_document(&map, "settlement", Some((&vector, setting.fingerprint())))
             .unwrap()
-            .1
+            .used_vectors
     );
     // Simulate content changing while a query embedding is being computed.
     app.patch(
@@ -294,25 +294,28 @@ async fn unrelated_edits_do_not_starve_jobs_and_query_rechecks_source_and_config
         json!({"notes":"New source revised"}),
     )
     .await;
-    let (hits, _) = store
+    let outcome = store
         .search_document(&map, "Invoices", Some((&vector, setting.fingerprint())))
         .unwrap();
     assert!(
-        hits.is_empty(),
+        outcome.hits.is_empty(),
         "old source chunks cannot survive query completion"
     );
     assert_eq!(
-        store.search_document(&map, "revised", None).unwrap().0[0].node_id,
+        store.search_document(&map, "revised", None).unwrap().hits[0].node_id,
         node
     );
     let mut changed = setting.clone();
     changed.model = "another-generation".into();
     store.save_embedding_config(changed, None).unwrap();
-    let (hits, used) = store
+    let outcome = store
         .search_document(&map, "revised", Some((&vector, setting.fingerprint())))
         .unwrap();
-    assert!(!used, "in-flight query generation is discarded");
-    assert_eq!(hits[0].match_kind, "keyword");
+    assert!(
+        !outcome.used_vectors,
+        "in-flight query generation is discarded"
+    );
+    assert_eq!(outcome.hits[0].match_kind, "keyword");
 }
 
 #[tokio::test]
@@ -377,4 +380,293 @@ fn chunks_keep_paragraphs_and_bound_long_unicode_text() {
         parts.iter().map(|p| p.chars().count()).collect::<Vec<_>>(),
         vec![2000, 2000, 500]
     );
+}
+
+#[tokio::test]
+async fn missing_query_is_a_structured_error_and_unicode_excerpts_stay_aligned() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let (s, body) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search"))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "search.query");
+    assert!(body["message"].as_str().unwrap().contains("'q'"));
+    assert!(body["remedy"].is_string());
+    let (s, body) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search?q="))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["results"], json!([]));
+    assert_eq!(body["truncated"], false);
+    let notes = format!("{} marker {}", "İ".repeat(100), "x".repeat(300));
+    let (s, patched) = app
+        .patch(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes/{node}"),
+            json!({"notes": notes}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{patched}");
+    let (_, body) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search?q=marker"))
+        .await;
+    let hit = &body["results"][0];
+    assert_eq!(hit["node_id"], node);
+    assert!(
+        hit["excerpt"].as_str().unwrap().contains("marker"),
+        "excerpt window is located by character, not by folded byte offset: {hit}"
+    );
+    assert_eq!(hit["highlights"], json!(["marker"]));
+    assert_eq!(hit["excerpt"].as_str().unwrap().chars().count(), 280);
+}
+
+#[tokio::test]
+async fn results_say_what_a_bounded_search_left_out() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let nodes: Vec<Value> = (0..RESULT_LIMIT + 5)
+        .map(|i| json!({"text": format!("Section {i}"), "notes": format!("Parcel {i} ships on day {i}.")}))
+        .collect();
+    let (s, added) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{map}/nodes"),
+            json!({"nodes": nodes}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{added}");
+    let (s, body) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search?q=parcel"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["results"].as_array().unwrap().len(), RESULT_LIMIT);
+    assert_eq!(body["limit"], RESULT_LIMIT);
+    assert_eq!(body["candidates"], RESULT_LIMIT + 5);
+    assert_eq!(body["truncated"], true);
+    let note = body["note"].as_str().expect("a truncated page says so");
+    assert!(
+        note.contains(&format!(
+            "{RESULT_LIMIT} best-ranked of {}",
+            RESULT_LIMIT + 5
+        )),
+        "{note}"
+    );
+    let (_, body) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{map}/search?q=receipt"))
+        .await;
+    assert_eq!(body["results"].as_array().unwrap().len(), 1);
+    assert_eq!(body["candidates"], 1);
+    assert_eq!(body["truncated"], false);
+    assert!(body.get("note").is_none());
+}
+
+#[tokio::test]
+async fn retries_are_capped_and_reset_by_content_config_or_manual_sync() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let store = app.open_store();
+    let setting = config("http://127.0.0.1:9/embeddings");
+    store
+        .save_embedding_config(setting.clone(), Some("test".into()))
+        .unwrap();
+    let mut now = takomo::ids::now_ms();
+    store.refresh_search(&map, true, now).unwrap();
+    let exhaust = |store: &takomo::store::Store, now: &mut i64| {
+        for attempt in 0..MAX_ATTEMPTS {
+            let job = store
+                .claim_embedding_job(*now)
+                .unwrap()
+                .unwrap_or_else(|| panic!("attempt {attempt} is still allowed"));
+            assert!(store
+                .finish_embedding_job(&job, Err("provider refused the batch"))
+                .unwrap());
+            *now += 3_600_000;
+        }
+        assert!(
+            store.claim_embedding_job(*now).unwrap().is_none(),
+            "a job that failed {MAX_ATTEMPTS} times is parked, not resent every backoff"
+        );
+    };
+    exhaust(&store, &mut now);
+    let status = store.search_status(&map).unwrap();
+    assert_eq!(status["failed"], 1);
+    assert_eq!(status["queued"], 1);
+    assert_eq!(status["last_error"], "provider refused the batch");
+    // Manual sync resets the cap without changing anything else.
+    store.refresh_search(&map, true, now).unwrap();
+    assert_eq!(store.search_status(&map).unwrap()["failed"], 0);
+    exhaust(&store, &mut now);
+    // A content change resets it.
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices after the outage"}),
+    )
+    .await;
+    now += 1;
+    store.refresh_search(&map, false, now).unwrap();
+    now += setting.quiet_seconds * 1000 + 1;
+    exhaust(&store, &mut now);
+    // A provider generation change resets it.
+    let mut next = setting.clone();
+    next.model = "fixture-v2".into();
+    store.save_embedding_config(next, None).unwrap();
+    assert!(store.claim_embedding_job(now).unwrap().is_some());
+    // The HTTP surface reports the same cap after the worker gives up.
+    let manual = format!("/v1/mindmaps/{map}/search/sync");
+    assert_eq!(
+        app.post(&app.worker, &manual, json!({})).await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn query_embeddings_are_bounded_per_token_with_keyword_fallback() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let (endpoint, calls, task) = mock_provider().await;
+    let mut setting = serde_json::to_value(config(&endpoint)).unwrap();
+    setting["api_key"] = json!("private-test-key");
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    app.post(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/search/sync"),
+        json!({}),
+    )
+    .await;
+    process_jobs(&app.open_store()).await.unwrap();
+    let indexed = calls.load(Ordering::SeqCst);
+    let path = format!("/v1/mindmaps/{map}/search?q=invoices");
+    let limit = takomo::api::search::QUERY_EMBEDDINGS_PER_MINUTE as usize;
+    for _ in 0..limit {
+        let (s, body) = app.get(&app.worker, &path).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(body["mode"], "hybrid");
+        assert_eq!(body["semantic_status"], "ready");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), indexed + limit);
+    let (s, body) = app.get(&app.worker, &path).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["mode"], "keyword");
+    assert_eq!(body["semantic_status"], "throttled");
+    assert_eq!(body["results"][0]["node_id"], node);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        indexed + limit,
+        "an exhausted budget answers from keywords without a provider call"
+    );
+    // The budget is per token: another credential still gets its semantic pass.
+    let (_, body) = app.get(&app.worker2, &path).await;
+    assert_eq!(body["mode"], "hybrid");
+    assert_eq!(calls.load(Ordering::SeqCst), indexed + limit + 1);
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_corrupt_map_does_not_stall_indexing_of_healthy_maps() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (broken, broken_node) = fixture(&app).await;
+    let (s, project) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({"id":"healthy","name":"Healthy"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{project}");
+    let (s, m) = app
+        .post(
+            &app.admin,
+            "/v1/mindmaps",
+            json!({"project":"healthy","title":"Healthy plan"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{m}");
+    let healthy = m["mindmap"]["id"].as_str().unwrap().to_owned();
+    let (s, n) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{healthy}/nodes"),
+            json!({"text":"Shipping","notes":"Parcels leave the warehouse daily."}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    let (endpoint, calls, task) = mock_provider().await;
+    let mut setting = serde_json::to_value(config(&endpoint)).unwrap();
+    setting["api_key"] = json!("private-test-key");
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let store = app.open_store();
+    store
+        .refresh_search(&broken, true, takomo::ids::now_ms())
+        .unwrap();
+    store
+        .refresh_search(&healthy, true, takomo::ids::now_ms())
+        .unwrap();
+    // The broken map's most recent update is garbage, and it sorts first as the oldest dirty map.
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute(
+        "INSERT INTO crdt_updates(object_kind,object_id,blob,bytes,created_by,created_at)VALUES('mindmap',?1,x'FFFFFFFFFFFFFFFF',8,'test',1)",
+        [&broken],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE search_dirty_maps SET changed_at=1 WHERE map_id=?1",
+        [&broken],
+    )
+    .unwrap();
+    app.patch(
+        &app.worker,
+        &format!(
+            "/v1/mindmaps/{healthy}/nodes/{}",
+            n["nodes"][0]["id"].as_str().unwrap()
+        ),
+        json!({"notes":"Parcels leave the warehouse twice daily."}),
+    )
+    .await;
+    store
+        .refresh_search(&healthy, true, takomo::ids::now_ms())
+        .unwrap();
+    process_jobs(&store)
+        .await
+        .expect("one poisoned map does not fail the pass");
+    assert!(
+        calls.load(Ordering::SeqCst) > 0,
+        "the healthy map's job ran"
+    );
+    let status = store.search_status(&healthy).unwrap();
+    assert_eq!(status["indexed"], status["total"], "{status}");
+    assert_eq!(status["last_error"], Value::Null);
+    let status = store.search_status(&broken).unwrap();
+    let recorded = status["last_error"]
+        .as_str()
+        .expect("the poisoned map's failure is recorded");
+    assert!(recorded.contains("source document"), "{status}");
+    // Its failure is surfaced over HTTP, and keyword search still answers from the last good projection.
+    let (s, over_http) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{broken}/search/status"))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{over_http}");
+    assert_eq!(over_http["last_error"], recorded);
+    let (s, body) = app
+        .get(
+            &app.worker,
+            &format!("/v1/mindmaps/{broken}/search?q=invoices"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["results"][0]["node_id"], broken_node);
+    // A second pass does not keep re-failing the same map: it is no longer dirty.
+    process_jobs(&store).await.unwrap();
+    task.abort();
 }
