@@ -69,6 +69,7 @@ why a held-but-idle epic is worth a surface at all.
 ```sh
 npm install
 npm run dev          # vite on :5173, /v1 proxied — NO Rust rebuild in the loop
+npm run dev:backlot  # same, but leases the backend first — see docs/development.md
 npm test             # vitest
 npm run check        # tsc --noEmit
 npm run lint         # eslint, defect rules only

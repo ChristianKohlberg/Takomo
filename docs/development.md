@@ -39,7 +39,7 @@ The integration tests start real server instances against temporary SQLite DBs, 
 
 ## A running instance for manual testing — backlot
 
-[backlot](https://github.com/ChristianKohlberg/backlot) (≥ 0.7) brokers a warm, running takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
+[backlot](https://github.com/ChristianKohlberg/backlot) (a build that accepts `backlot.yml`'s per-upkeep `timeout` and service `env_from` keys — see the end of this section) brokers a warm, running takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
 
 ```sh
 backlot up                    # build, seed a demo store, serve, print the URL + port
