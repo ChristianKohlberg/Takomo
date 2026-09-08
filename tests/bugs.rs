@@ -394,7 +394,7 @@ async fn legacy_conversation_migration_preserves_jobs_and_foreign_keys() {
     let map = v["mindmap"]["id"].as_str().unwrap();
     let conn = rusqlite::Connection::open(app.db_path()).unwrap();
     conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-    conn.execute_batch("BEGIN; CREATE TABLE agent_conversations_old(id TEXT PRIMARY KEY,mindmap TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,node TEXT NOT NULL,project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,service_id TEXT,thread_id TEXT,created_at INTEGER NOT NULL,UNIQUE(mindmap,node)); DROP TABLE agent_conversations; ALTER TABLE agent_conversations_old RENAME TO agent_conversations; COMMIT;").unwrap();
+    conn.execute_batch("DROP TRIGGER ticket_document_deleted; BEGIN; CREATE TABLE agent_conversations_old(id TEXT PRIMARY KEY,mindmap TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,node TEXT NOT NULL,project TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,service_id TEXT,thread_id TEXT,created_at INTEGER NOT NULL,UNIQUE(mindmap,node)); DROP TABLE agent_conversations; ALTER TABLE agent_conversations_old RENAME TO agent_conversations; COMMIT;").unwrap();
     conn.execute("INSERT INTO agent_conversations(id,mindmap,node,project,created_at) VALUES('old',?1,'node','tp',1)",[map]).unwrap();
     conn.execute_batch("INSERT INTO agent_jobs(id,conversation_id,requested_by,request_id,prompt,snapshot,source_revision,status,created_at) VALUES('old-job','old','human:one','once','hello','# Legacy','rev','queued',1); INSERT INTO agent_messages(id,conversation_id,job_id,role,body,created_at) VALUES('old-message','old','old-job','user','hello',1);").unwrap();
     drop(conn);
@@ -417,6 +417,14 @@ async fn legacy_conversation_migration_preserves_jobs_and_foreign_keys() {
         )
         .unwrap();
     assert_eq!(nullable, 0);
+    let cleanup_trigger: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='ticket_document_deleted')",
+        [], |r| r.get(0),
+    ).unwrap();
+    assert!(
+        cleanup_trigger,
+        "new cleanup trigger is installed after rebuilding the legacy table"
+    );
 }
 #[tokio::test]
 async fn heartbeat_evidence_survives_cancellation_without_accepting_late_success() {

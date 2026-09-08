@@ -173,11 +173,12 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("document_chat.sql"))?;
-        conn.execute_batch(include_str!("ticket_document.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
         conn.execute_batch(include_str!("lane_organizer.sql"))?;
         bugs::migrate(&conn)?;
         migrate(&conn)?;
+        // Install cross-table triggers only after legacy table rebuilds finish.
+        conn.execute_batch(include_str!("ticket_document.sql"))?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.
