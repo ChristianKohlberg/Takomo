@@ -47,12 +47,14 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
   }, [open])
   useEffect(() => {
     if (!open) return
+    setSyncNotice('')
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout>
     const refresh = () => {
       searchStatus(token, map, controller.signal).then(value => {
         if (controller.signal.aborted) return
         setStatus(value); setStatusError('')
+        if (value.projection === 'current') setSyncNotice('')
         timer = setTimeout(refresh, 3000)
       }).catch((e: Error) => { if (!controller.signal.aborted) setStatusError(e.message) })
     }

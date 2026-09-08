@@ -379,7 +379,7 @@ embedding_jobs(map_id,node_id,content_hash,fingerprint,first_changed,due_at)VALU
     }
     if manual {
         conn.execute(
-            "UPDATE embedding_jobs SET due_at=?2,attempts=0 WHERE map_id=?1",
+            "UPDATE embedding_jobs SET due_at=?2,attempts=0,last_error=NULL WHERE map_id=?1",
             params![map, now],
         )?;
     }
@@ -483,15 +483,10 @@ fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=exclu
         match self.refresh_search(map, false, now) {
             Ok(true) => self.with_conn(|conn| projection_failure(conn, map)),
             Ok(false) => Ok(Some(PROJECTION_DEFERRED.into())),
-            Err(error) => {
-                if self
-                    .with_conn(|conn| projection_failure(conn, map))?
-                    .is_none()
-                {
-                    return Err(error);
-                }
-                self.with_conn(|conn| projection_failure(conn, map))
-            }
+            Err(error) => match self.with_conn(|conn| projection_failure(conn, map))? {
+                None => Err(error),
+                recorded => Ok(recorded),
+            },
         }
     }
     pub fn refresh_dirty_search(&self, now: i64) -> ApiResult<()> {
@@ -592,16 +587,17 @@ lease_until<=?1 AND fingerprint=?2 AND attempts<?3 ORDER BY due_at LIMIT 1",
         job: &EmbeddingJob,
         vectors: Result<&[Vec<f32>], &str>,
     ) -> ApiResult<bool> {
-        self.refresh_search(&job.map_id, false, now_ms())?;
+        let now = now_ms();
+        let projected = matches!(self.refresh_search(&job.map_id, false, now), Ok(true));
         self.with_tx(|tx| {
-            if is_dirty(tx, &job.map_id)? {
+            let (c, _) = config(tx)?;
+            if !projected || is_dirty(tx, &job.map_id)? {
                 tx.execute(
-                    "UPDATE embedding_jobs SET lease_until=0 WHERE map_id=?1 AND node_id=?2 AND lease_until=?3",
-                    params![job.map_id, job.node_id, job.lease],
+                    "UPDATE embedding_jobs SET lease_until=0,due_at=?4 WHERE map_id=?1 AND node_id=?2 AND lease_until=?3",
+                    params![job.map_id, job.node_id, job.lease, now + c.quiet_seconds * 1000],
                 )?;
                 return Ok(false);
             }
-            let (c, _) = config(tx)?;
             if c.fingerprint() != job.fingerprint {
                 return Ok(false);
             }
@@ -825,14 +821,21 @@ where
             }
         }
         let finisher = store.clone();
-        off_runtime(move || {
+        let (map, node) = (job.map_id.clone(), job.node_id.clone());
+        if let Err(error) = off_runtime(move || {
             let store: &Store = (*finisher).as_ref();
             match failure {
                 Some(message) => store.finish_embedding_job(&job, Err(&message)),
                 None => store.finish_embedding_job(&job, Ok(&vectors)),
             }
         })
-        .await?;
+        .await
+        {
+            eprintln!(
+                "search indexing could not finish {map}/{node}: {}",
+                error.body.message
+            );
+        }
     }
     Ok(())
 }

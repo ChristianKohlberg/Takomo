@@ -493,9 +493,12 @@ async fn retries_are_capped_and_reset_by_content_config_or_manual_sync() {
     assert_eq!(status["failed"], 1);
     assert_eq!(status["queued"], 1);
     assert_eq!(status["last_error"], "provider refused the batch");
-    // Manual sync resets the cap without changing anything else.
+    // Manual sync resets the cap and the error it was parked with, like the other two resets.
     store.refresh_search(&map, true, now).unwrap();
-    assert_eq!(store.search_status(&map).unwrap()["failed"], 0);
+    let reset = store.search_status(&map).unwrap();
+    assert_eq!(reset["failed"], 0);
+    assert_eq!(reset["queued"], 1);
+    assert_eq!(reset["last_error"], Value::Null);
     exhaust(&store, &mut now);
     // A content change resets it.
     app.patch(
@@ -1266,4 +1269,79 @@ async fn a_projection_computed_before_the_log_grew_is_not_applied() {
         .finish_embedding_job(&job, Ok(&vec![vec![1.0, 0.0, 0.0]; job.chunks.len()]))
         .unwrap());
     assert_eq!(store.search_status(&map).unwrap()["running"], 0);
+}
+
+#[tokio::test]
+async fn a_completion_declined_at_finish_time_is_deferred_not_resent_and_the_pass_goes_on() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let healthy = second_map(&app, "healthy").await;
+    let (s, n) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{healthy}/nodes"),
+            json!({"text":"Shipping","notes":"Parcels leave the warehouse daily."}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    let (endpoint, calls, task) = mock_provider().await;
+    let setting = config(&endpoint);
+    let quiet = setting.quiet_seconds * 1000;
+    let store = Arc::new(app.open_store());
+    store
+        .save_embedding_config(setting.clone(), Some("private-test-key".into()))
+        .unwrap();
+    let now = takomo::ids::now_ms();
+    store.refresh_search(&map, true, now).unwrap();
+    store.refresh_search(&healthy, true, now).unwrap();
+    let job = store.claim_embedding_job(now).unwrap().unwrap();
+    assert_eq!(job.map_id, map);
+    // The map's log becomes unreplayable while the provider is answering.
+    poison(&app, &map);
+    let vectors = vec![vec![1.0, 0.0, 0.0]; job.chunks.len()];
+    assert!(
+        !store.finish_embedding_job(&job, Ok(&vectors)).unwrap(),
+        "a completion the projection cannot vouch for is declined, not an error"
+    );
+    let status = store.search_status(&map).unwrap();
+    assert_eq!(status["projection"], "stale");
+    assert!(status["last_error"]
+        .as_str()
+        .unwrap()
+        .contains("source document"));
+    assert_eq!(status["running"], 0, "the lease is released");
+    let next = store
+        .claim_embedding_job(now)
+        .unwrap()
+        .expect("the pass moves on");
+    assert_eq!(
+        next.map_id, healthy,
+        "the declined job is not the next claim of the same pass"
+    );
+    assert!(store
+        .finish_embedding_job(&next, Ok(&vec![vec![1.0, 0.0, 0.0]; next.chunks.len()]))
+        .unwrap());
+    let after = takomo::ids::now_ms();
+    assert!(
+        store
+            .claim_embedding_job(now + quiet - 1)
+            .unwrap()
+            .is_none(),
+        "the declined job waits a quiet period before it is sent again"
+    );
+    assert_eq!(
+        store
+            .claim_embedding_job(after + quiet)
+            .unwrap()
+            .unwrap()
+            .node_id,
+        node
+    );
+    // A whole worker pass with the poisoned map still indexes the healthy one and returns Ok.
+    let before = calls.load(Ordering::SeqCst);
+    process_jobs(store.clone()).await.unwrap();
+    let healthy_status = store.search_status(&healthy).unwrap();
+    assert_eq!(healthy_status["indexed"], healthy_status["total"]);
+    assert!(calls.load(Ordering::SeqCst) >= before);
+    task.abort();
 }

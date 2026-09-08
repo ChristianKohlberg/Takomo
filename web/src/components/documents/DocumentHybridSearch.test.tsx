@@ -91,6 +91,30 @@ describe('document hybrid search', () => {
     expect(screen.queryByText(/Updating index/)).toBeNull()
     expect(screen.getByText(/Indexing gave up on 1 section /)).toBeTruthy()
     expect((screen.getByText('Sync document') as HTMLButtonElement).disabled).toBe(false)
+    // The notice belongs to that click: closing and reopening starts clean.
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    await screen.findByRole('combobox')
+    expect(screen.queryByText(/synchronization is deferred/)).toBeNull()
+  })
+  it('drops a deferred notice once a status poll says the projection is current', async () => {
+    const stale = { configured: true, queued: 1, running: 0, failed: 0, indexed: 1, total: 2, last_error: null, projection: 'stale' }
+    let caughtUp = false
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/sync')
+      ? { ...stale, sync: 'deferred', sync_note: 'Nothing was scheduled.' }
+      : url.endsWith('/status') ? { ...stale, projection: caughtUp ? 'current' : 'stale' }
+      : response)))))
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    render(<DocumentHybridSearch token="test" map="m" locale="en" canSync onNavigate={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    await screen.findByText(/Document still changing/)
+    fireEvent.click(screen.getByText('Sync document'))
+    await screen.findByText(/synchronization is deferred/)
+    caughtUp = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100) })
+    await waitFor(() => expect(screen.queryByText(/synchronization is deferred/)).toBeNull())
+    expect(screen.getByText(/Update pending/)).toBeTruthy()
   })
   it('ignores a superseded request even when transport ignores abort', async () => {
     let oldResolve!: (response: Response) => void
