@@ -39,7 +39,14 @@ function imageFromSvg(svg: string): HTMLImageElement {
       image.width = Math.ceil(width); image.height = Math.ceil(height)
     }
   }
-  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  // Isolated SVG images can use slightly different font metrics from Kroki.
+  // Allow HTML labels to paint beyond their measured boxes instead of clipping.
+  for (const label of root.querySelectorAll('foreignObject')) {
+    label.setAttribute('overflow', 'visible')
+    label.setAttribute('style', `${label.getAttribute('style') ?? ''};overflow:visible`)
+    for (const child of label.querySelectorAll('*')) child.setAttribute('style', `${child.getAttribute('style') ?? ''};overflow:visible`)
+  }
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`
   image.style.backgroundColor = 'white'
   image.style.maxWidth = '100%'
   image.style.height = 'auto'

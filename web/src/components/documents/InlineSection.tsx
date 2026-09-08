@@ -14,10 +14,13 @@ export function InlineSection({
   const [level, setLevel] = useState<1 | 2 | 3>(1)
   const [title, setTitle] = useState('')
   const [failed, setFailed] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const de = locale === 'de'
   return (
-    <form
-      className="group my-2 flex min-w-0 flex-wrap items-center gap-2 text-sm"
+    <div className="inline-section">
+    {!expanded && <button type="button" className="inline-section-reveal" aria-label={de ? 'Abschnitt hinzufügen' : 'Add section'} onClick={() => setExpanded(true)}>+ <span>{de ? 'Abschnitt hinzufügen' : 'Add section'}</span></button>}
+    {expanded && <form
+      className="my-1 flex min-w-0 flex-wrap items-center gap-2 text-sm"
       onSubmit={(event) => {
         event.preventDefault()
         const markdown = /^(#{1,3})\s+(.*)$/.exec(title)
@@ -41,6 +44,7 @@ export function InlineSection({
         ))}
       </select>
       <input
+        autoFocus
         aria-label={de ? 'Abschnitt inline hinzufügen' : 'Add section inline'}
         placeholder={de ? 'Überschrift schreiben …' : 'Type a heading …'}
         className="min-w-0 flex-1 bg-transparent px-1 py-2 outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
@@ -49,6 +53,8 @@ export function InlineSection({
       />
       <button type="submit" className="text-muted-foreground hover:text-foreground rounded px-2 py-1" aria-label={de ? 'Abschnitt einfügen' : 'Insert section'}>↵</button>
       {failed && <p role="alert" className="text-destructive w-full text-xs">{de ? 'Abschnitt konnte nicht eingefügt werden. Prüfe die Ebene oder die maximale Abschnittsanzahl.' : 'Could not insert section. Check the heading level or section limit.'}</p>}
-    </form>
+      <button type="button" className="rounded px-2 py-1 text-xs text-muted-foreground" onClick={() => { setExpanded(false); setFailed(false) }}>{de ? 'Schließen' : 'Close'}</button>
+    </form>}
+    </div>
   )
 }

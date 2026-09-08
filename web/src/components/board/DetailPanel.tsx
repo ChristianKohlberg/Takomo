@@ -5,9 +5,10 @@
 // commit link shows a short sha with the full value on hover — the commit is the
 // proof a "done" claim rests on, so it has to stay readable rather than wrap a
 // 40-character sha across the drawer.
+import { useState } from 'react'
 import { Markdown } from '@/components/Markdown'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { fmtAge } from '@/lib/format'
 import type { Ticket } from '@/lib/board'
@@ -61,6 +62,10 @@ export interface DetailPanelLabels {
 }
 
 export interface DetailPanelProps {
+  relatedTickets?: Ticket[]
+  onOpenTicket?: (id: string) => void
+  terminalStates?: string[]
+  navigationLabels?: { copyLink: string; copiedLink: string; linkFailed: string; childTickets: string; overview: string; activity: string }
   ticket: Ticket | null
   questions?: OpenQuestions
   labels: DetailPanelLabels
@@ -72,6 +77,10 @@ export interface DetailPanelProps {
 }
 
 export function DetailPanel({
+  relatedTickets,
+  onOpenTicket,
+  terminalStates,
+  navigationLabels,
   ticket: t,
   questions,
   labels,
@@ -80,6 +89,7 @@ export function DetailPanel({
   onAsk,
   onNavigate,
 }: DetailPanelProps) {
+  const [copyStatus, setCopyStatus] = useState('')
   if (!t) return null
 
   // "Answering resumes this ticket" is a lie when every open question has been
@@ -95,15 +105,27 @@ export function DetailPanel({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         side="right"
+        showCloseButton={false}
         className="bg-card border-border gap-0 p-0 shadow-[-24px_0_60px_-30px_rgba(20,40,55,.5)]"
       >
         <DialogHeader className="bg-card border-b-border-soft sticky top-0 z-1 flex-row items-start gap-2 border-b px-6 pt-5 pb-4">
-          <DialogTitle className="m-0 flex-1 text-[20px] leading-[1.3] font-[720] tracking-[-0.02em] break-words">
+          <DialogTitle className="m-0 min-w-0 flex-1 text-[20px] leading-[1.3] font-[720] tracking-[-0.02em] break-words">
             {t.title || t.id}
           </DialogTitle>
+          <DialogClose asChild><Button variant="ghost" size="icon" aria-label={labels.close} className="-mt-2 -mr-3 shrink-0">×</Button></DialogClose>
         </DialogHeader>
 
-        <div className="flex flex-col gap-5 px-6 py-4">
+        <div className="flex min-w-0 flex-col gap-5 px-6 py-4 [overflow-wrap:anywhere]">
+          {navigationLabels && <nav className="flex flex-wrap gap-2" aria-label={t.title}>
+            <Button size="sm" variant="outline" onClick={() => document.getElementById('ticket-description')?.scrollIntoView({ block: 'start' })}>{navigationLabels.overview}</Button>
+            <Button size="sm" variant="outline" onClick={() => document.getElementById('ticket-comments')?.scrollIntoView({ block: 'start' })}>{navigationLabels.activity}</Button>
+            <Button size="sm" variant="outline" onClick={() => { const url = new URL('/board', window.location.origin); if (t.project) url.searchParams.set('project', t.project); url.hash = `t=${encodeURIComponent(t.id)}`; void navigator.clipboard.writeText(url.href).then(() => setCopyStatus(navigationLabels.copiedLink), () => setCopyStatus(navigationLabels.linkFailed)) }}>{navigationLabels.copyLink}</Button>
+            {copyStatus && <span role="status" className="text-muted-foreground text-xs">{copyStatus}</span>}
+          </nav>}
+          {t.type === 'epic' && relatedTickets && navigationLabels && <Section title={`${navigationLabels.childTickets} (${relatedTickets.filter(ticket => terminalStates?.includes(ticket.state)).length}/${relatedTickets.length})`}>
+            <progress className="w-full" max={Math.max(1, relatedTickets.length)} value={relatedTickets.filter(ticket => terminalStates?.includes(ticket.state)).length} aria-label={navigationLabels.childTickets} />
+            <ul className="max-h-64 overflow-auto">{relatedTickets.map(ticket => <li key={ticket.id}><button type="button" aria-label={ticket.title || ticket.id} onClick={() => onOpenTicket?.(ticket.id)} className="hover:bg-muted flex w-full items-start gap-2 rounded p-2 text-left text-sm"><span className="min-w-0 flex-1 break-words">{ticket.title || ticket.id}</span><span className="text-muted-foreground text-xs">{ticket.state.replaceAll('_', ' ')}</span></button></li>)}</ul>
+          </Section>}
           {questions && questions.count > 0 && (
             <div className={cn('rounded-[11px] px-4 py-3.5', convOnly ? 'bg-muted' : 'bg-secondary')}>
               <div className={cn('mb-1.5 text-[12px] font-bold', convOnly ? 'text-foreground' : 'text-primary')}>
@@ -172,7 +194,7 @@ export function DetailPanel({
             </Section>
           )}
 
-          <Section title={labels.description}>
+          <Section id="ticket-description" title={labels.description}>
             {t.body ? (
               <Markdown text={t.body} className="text-[13.5px] leading-[1.65]" />
             ) : (
@@ -266,7 +288,7 @@ export function DetailPanel({
             </Section>
           )}
 
-          <Section title={`${labels.comments} (${t.comments?.length ?? 0})`}>
+          <Section id="ticket-comments" title={`${labels.comments} (${t.comments?.length ?? 0})`}>
             {t.comments?.length ? (
               t.comments.map((c, i) => (
                 <div key={i} className="border-border mb-2.5 border-l-2 py-0.5 pl-2.5">
@@ -292,9 +314,9 @@ export function DetailPanel({
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) {
   return (
-    <section>
+    <section id={id} className="min-w-0 scroll-mt-24">
       <h3 className="text-muted-foreground m-0 mb-2 text-[12px] font-bold tracking-[0.06em] uppercase">
         {title}
       </h3>

@@ -9,6 +9,7 @@ describe('inline section entry', () => {
   it('accepts markdown heading syntax and clears the line after insertion', () => {
     const insert = vi.fn(() => true)
     render(<InlineSection locale="en" maxLevel={3} onInsert={insert} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add section' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '### Payment deadline' } })
     fireEvent.submit(input.closest('form')!)
@@ -19,6 +20,7 @@ describe('inline section entry', () => {
   it('keeps a draft when insertion cannot succeed and refuses skipped heading levels', () => {
     const insert = vi.fn(() => false)
     render(<InlineSection locale="en" maxLevel={1} onInsert={insert} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add section' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '## No parent' } })
     fireEvent.submit(input.closest('form')!)
@@ -35,6 +37,7 @@ describe('inline section entry', () => {
     const doc = new Y.Doc()
     const insert = vi.fn((level: 1 | 2 | 3, title: string) => insertPlanSection(doc, null, level, title, 'Ada') !== null)
     render(<InlineSection locale="en" maxLevel={3} onInsert={insert} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add section' }))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: draft } })
     fireEvent.submit(input.closest('form')!)

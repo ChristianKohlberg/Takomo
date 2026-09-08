@@ -124,7 +124,7 @@ export function EpicsView({ epics, laneTitles, onOpen, onCreate, canCreate = fal
             <button type="button" onClick={() => onOpen(epic.id)}
               className={cn('hover:bg-muted focus-visible:ring-ring grid w-full min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-5 gap-y-2 px-4 py-3 text-left focus-visible:ring-2 focus-visible:ring-inset focus-visible:outline-none', columns)}>
               <span className="col-span-2 min-w-0 lg:col-span-1">
-                <span className="text-foreground block truncate text-[13.5px] font-semibold" title={epic.title}>{epic.title}</span>
+                <span className="text-foreground line-clamp-3 break-words md:block md:truncate text-[13.5px] font-semibold" title={epic.title}>{epic.title}</span>
                 <span className="text-muted-foreground mt-1 flex min-w-0 gap-2 text-[11px]">
                   <span className="min-w-0 truncate" title={initiatives || t.noInitiative}>{initiatives || t.noInitiative}</span>
                   <span className="min-w-0 max-w-28 truncate font-mono opacity-75" title={epic.id}>{epic.id}</span>

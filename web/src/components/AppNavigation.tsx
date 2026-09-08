@@ -21,7 +21,7 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
       )}
       <Hint text={rail.nav.inbox}>
         <a
-          href="/inbox"
+          href={rail.project ? `/inbox?project=${encodeURIComponent(rail.project)}` : '/inbox'}
           aria-label={rail.nav.inbox}
           aria-current={active ? 'page' : undefined}
           className={cn(
@@ -31,7 +31,7 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
           onClick={(event) => {
             if (!rail.onNavigate || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
             event.preventDefault()
-            rail.onNavigate('/inbox')
+            rail.onNavigate(rail.project ? `/inbox?project=${encodeURIComponent(rail.project)}` : '/inbox')
           }}
         >
           <InboxIcon size={18} />

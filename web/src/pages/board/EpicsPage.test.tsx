@@ -34,6 +34,7 @@ function mount() { return render(<MemoryRouter><App surface="epics" /></MemoryRo
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
+  window.history.replaceState(null, '', '/epics')
   localStorage.clear()
   localStorage.setItem('takomo.token', 'tk-test')
   localStorage.setItem('takomo.project', 'first')
@@ -139,4 +140,16 @@ describe('Epics page', () => {
     expect(screen.getByRole('searchbox', { name: 'Search epics' })).toHaveProperty('value', 'First')
   })
 
+})
+
+it('opens a shared ticket in its URL project and removes its link on close', async () => {
+  window.history.replaceState(null, '', '/epics?project=second#t=second-ticket')
+  vi.mocked(fetchRoadmap).mockResolvedValue(roadmap('Second epic'))
+  vi.mocked(getTicket).mockResolvedValue({ id: 'second-ticket', title: 'Shared ticket', project: 'second', state: 'brief' })
+  mount()
+  expect(await screen.findByRole('dialog', { name: 'Epic detail' })).toHaveProperty('textContent', expect.stringContaining('Shared ticket'))
+  expect(getWorkflow).toHaveBeenCalledWith('tk-test', 'second')
+  fireEvent.click(screen.getByRole('button', { name: 'Close detail' }))
+  expect(window.location.hash).toBe('')
+  expect(window.location.search).toBe('?project=second')
 })

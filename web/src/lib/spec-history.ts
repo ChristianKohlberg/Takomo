@@ -1,3 +1,4 @@
+import { canonical } from './saved-prose'
 import { api } from './api'
 export interface SavedSection {
   id: string
@@ -91,15 +92,11 @@ export function compareVersions(before: VersionDetail, after: VersionDetail) {
       a && b
         ? fields.filter(
             (field) =>
-              JSON.stringify(
-                field === 'prose_xml'
-                  ? (a.prose_structure ?? a[field])
-                  : a[field],
+              canonical(
+                field === 'notes' && a.prose_structure ? a.prose_structure : field === 'prose_xml' ? (a.prose_structure ?? a[field]) : a[field],
               ) !==
-              JSON.stringify(
-                field === 'prose_xml'
-                  ? (b.prose_structure ?? b[field])
-                  : b[field],
+              canonical(
+                field === 'notes' && b.prose_structure ? b.prose_structure : field === 'prose_xml' ? (b.prose_structure ?? b[field]) : b[field],
               ),
           )
         : []
@@ -140,4 +137,15 @@ export function mergeHistoryPage(
         next_cursor: current.next_cursor,
       }
     : next
+}
+
+/** Group only adjacent automatic saves; checkpoints retain their own entry. */
+export function groupVersions(items: SavedVersion[]): SavedVersion[][] {
+  const groups: SavedVersion[][] = []
+  for (const item of items) {
+    const group = groups.at(-1), last = group?.at(-1)
+    if (group && last && !item.checkpoints.length && !last.checkpoints.length && item.kind === 'save' && last.kind === 'save' && Math.abs(Date.parse(last.recorded_at) - Date.parse(item.recorded_at)) <= 5 * 60_000) group.push(item)
+    else groups.push([item])
+  }
+  return groups
 }

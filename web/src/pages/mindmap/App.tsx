@@ -234,6 +234,10 @@ export function MapView() {
                 empty: t.canvasEmpty,
                 emptyHint: t.canvasEmptyHint,
                 fit: t.fit,
+                search: t.findNode,
+                noMatches: t.noNodeMatches,
+                fitBranch: t.fitBranch,
+                keepView: t.keepView,
                 tidy: t.tidy,
                 radial: t.layoutRadial,
                 tree: t.layoutTree,
@@ -258,6 +262,7 @@ export function MapView() {
                 nameHint: t.nameHint,
               }}
               outlineLabels={{
+                actions: t.nodeActions,
                 edit: t.editThought,
                 rename: t.renameThought,
                 nameField: t.nameField,
@@ -300,6 +305,9 @@ export function MapView() {
                 openAttachments: t.openAttachments,
                 notes: t.notes,
                 notesHint: t.notesHint,
+                notesPreview: t.notesPreview,
+                missingSection: t.missingSection,
+                editNotes: t.editNotes,
                 notesCount: t.notesCount,
                 kind: t.kind,
                 shape: t.shape,

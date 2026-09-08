@@ -85,17 +85,21 @@ export function sectionReferenceTitle(doc: Y.Doc, id: string): string | null {
  * card `<paragraph id="blk_x">…</paragraph>` as if it were prose. The same trap
  * `element_text` documents in `src/store/prose.rs`, and the same answer.
  */
+function xmlTextContent(text: Y.XmlText): string {
+  return text.toDelta().map((part: { insert?: unknown }) => typeof part.insert === 'string' ? part.insert : '').join('')
+}
+
 function elementText(el: Y.XmlElement | Y.XmlText): string {
-  if (el instanceof Y.XmlText) return el.toString()
+  if (el instanceof Y.XmlText) return xmlTextContent(el)
   if (el.nodeName === 'sectionReference') {
     const title = el.doc ? sectionReferenceTitle(el.doc, el.getAttribute('sectionId') ?? '') : null
     if (title !== null) return title || 'Untitled section'
-    const fallback = el.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText).map(child => child.toString()).join('')
+    const fallback = el.toArray().filter((child): child is Y.XmlText => child instanceof Y.XmlText).map(child => xmlTextContent(child)).join('')
     return `${fallback || 'Untitled section'} (Missing section)`
   }
   let out = ''
   for (const child of el.toArray()) {
-    if (child instanceof Y.XmlText) out += child.toString()
+    if (child instanceof Y.XmlText) out += xmlTextContent(child)
     else if (child instanceof Y.XmlElement) out += elementText(child)
   }
   return out
@@ -117,6 +121,15 @@ export function fragmentText(frag: Y.XmlFragment): string {
     if (text.trim().length > 0) lines.push(text)
   }
   return lines.join('\n')
+}
+
+/** Preserve element names and mark data for inert rich previews; XML serialization
+ * lowercases element names and therefore loses the Tiptap block vocabulary. */
+export function fragmentStructure(fragment: Y.XmlFragment): unknown[] {
+  const block = (item: Y.XmlElement | Y.XmlText): unknown => item instanceof Y.XmlText
+    ? { text: item.toDelta() }
+    : { tag: item.nodeName, attributes: item.getAttributes(), children: item.toArray().filter((child): child is Y.XmlElement | Y.XmlText => child instanceof Y.XmlElement || child instanceof Y.XmlText).map(block) }
+  return fragment.toArray().filter((child): child is Y.XmlElement | Y.XmlText => child instanceof Y.XmlElement || child instanceof Y.XmlText).map(block)
 }
 
 /**

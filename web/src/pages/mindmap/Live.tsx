@@ -56,6 +56,7 @@ import {
 } from '@/components/mindmap/CommandPalette'
 import { DetachDialog, type DetachDialogLabels } from '@/components/mindmap/DetachDialog'
 import type { NodeCardLabels } from '@/components/mindmap/NodeCard'
+import { SavedProse } from '@/components/documents/SavedProse'
 import { NodeDialog, type NodeDialogLabels } from '@/components/mindmap/NodeDialog'
 import type { MenuItem } from '@/components/mindmap/NodeMenu'
 import type { NameThen } from '@/components/mindmap/NodeNameInput'
@@ -84,6 +85,8 @@ import {
   nodesMap,
   place,
   readNodes,
+  readProseOf,
+  fragmentStructure,
   readRelationships,
   relationshipsMap,
   removeAttachment,
@@ -1087,6 +1090,8 @@ function ConnectedLive({
           className="flex"
           title={title}
           nodes={shown}
+          searchNodes={nodes}
+          onFindNode={goTo}
           relationships={relationships}
           collapsed={collapsed}
           descendantCounts={descendantCounts}
@@ -1188,6 +1193,7 @@ function ConnectedLive({
 
       <NodeDialog
         node={viewingNode}
+        previewContent={viewingNode && readProseOf(ydoc, viewingNode.id) ? <SavedProse node={{ ...viewingNode, prose_structure: fragmentStructure(readProseOf(ydoc, viewingNode.id)!) }} nodes={nodes} access={{ token, project: currentProject }} missing={nodeLabels.missingSection ?? 'Missing section'} /> : undefined}
         canWrite={canWrite}
         relations={viewingNode ? relationsFor(viewingNode.id) : []}
         titleOf={titleOf}

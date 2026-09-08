@@ -18,3 +18,7 @@
 .mermaid-dialog-canvas[data-fit=true] { display: flex; align-items: center; justify-content: center; }
 .mermaid-dialog-canvas[data-fit=true] img { object-fit: contain; max-width: 100%; max-height: 100%; min-width: 0; }
 .mermaid-dialog-canvas[data-fit=false] img { display: block; }
+
+/* Image-only adaptation preserves shared source and works across diagram engines. */
+.dark [data-adapt-canvas=true] img { filter: invert(0.9) hue-rotate(180deg); }
+@media (prefers-color-scheme: dark) { :root:not(.light) [data-adapt-canvas=true] img { filter: invert(0.9) hue-rotate(180deg); } }

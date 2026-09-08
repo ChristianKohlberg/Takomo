@@ -2,7 +2,10 @@
 
 Open `/epics` from **Epics**, beside Board in the navigation rail. It uses the
 selected project's workflow and opens the existing ticket details when an epic
-is selected. **New epic** creates an epic in that workflow's initial state;
+is selected. That drawer lists the epic's child tickets with completed/total
+progress, opens any of them in place, and offers **Copy link**; the open ticket
+is in the URL as `?project=<id>#t=<ticket>`, so a detail view can be shared.
+**New epic** creates an epic in that workflow's initial state;
 read-only viewers and archived projects cannot create one.
 
 The page has a compact heading with a result count and creation action. One

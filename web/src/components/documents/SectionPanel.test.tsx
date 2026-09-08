@@ -79,9 +79,9 @@ describe('SectionPanel', () => {
     expect(menu.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(menu)
     expect(menu.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.pointerDown(screen.getByText('⌖ Show it on the map'))
+    fireEvent.pointerDown(screen.getByText('Show it on the map'))
     expect(menu.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.keyDown(screen.getByText('⌖ Show it on the map'), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByText('Show it on the map'), { key: 'Escape' })
     expect(menu.getAttribute('aria-expanded')).toBe('false')
     expect(document.activeElement).toBe(menu)
     expect(pending.isConnected).toBe(true)
@@ -134,7 +134,7 @@ describe('SectionPanel', () => {
     fireEvent.blur(box)
     expect(onTitle).toHaveBeenCalledWith('versioning, decided')
     // Showing it on the map stays, for when the map is where you want to be.
-    expect(screen.getByText('⌖ Show it on the map')).toBeTruthy()
+    expect(screen.getByText('Show it on the map')).toBeTruthy()
   })
 
   it('leaves the heading static for a reader', () => {
@@ -150,7 +150,7 @@ describe('SectionPanel', () => {
   it('records a review, and refuses to offer one to a token that cannot write', () => {
     const onReview = vi.fn()
     const { rerender } = panel({ onReview })
-    screen.getByText('✓ I have read this').click()
+    screen.getByText('I have read this').click()
     expect(onReview).toHaveBeenCalled()
 
     rerender(
@@ -170,7 +170,7 @@ describe('SectionPanel', () => {
         <p>prose</p>
       </SectionPanel>,
     )
-    expect(screen.getByText('✓ I have read this').closest('button')?.disabled).toBe(true)
+    expect(screen.getByText('I have read this').closest('button')?.disabled).toBe(true)
   })
 
   it('says a proposal is waiting without anything being opened', () => {
@@ -183,12 +183,12 @@ describe('SectionPanel', () => {
 
   it('offers no proposal toggle where nothing has been offered', () => {
     panel()
-    expect(screen.queryByText('◆ Proposals')).toBeNull()
+    expect(screen.queryByText('Proposals')).toBeNull()
   })
 
   it('keeps the toggle after the last one is decided, because a decision is a record', () => {
     panel({ pending: 0, proposalCount: 1, onToggleProposals: () => {} })
-    expect(screen.getByText('◆ Proposals')).toBeTruthy()
+    expect(screen.getByText('Proposals')).toBeTruthy()
     expect(screen.queryByText(/waiting/)).toBeNull()
   })
 
@@ -201,7 +201,7 @@ describe('SectionPanel', () => {
       proposals: <p>the offer</p>,
     })
     expect(screen.queryByText('the offer')).toBeNull()
-    screen.getByText('◆ Proposals').click()
+    screen.getByText('Proposals').click()
     expect(onToggleProposals).toHaveBeenCalled()
 
     rerender(

@@ -301,8 +301,19 @@ replace text changed by another collaborator. Read-only viewers have no insertio
 
 ## Section controls, focus mode, Move and Find
 
-Section actions appear on hover or keyboard focus; a compact actions button exposes them on
-touch screens. The standing and pending-review indicators stay visible while reading.
+Section actions sit behind one compact actions button beside the heading, on every device:
+it opens a vertical menu with an icon and a descriptive label per action, keyboard navigable,
+closed by Escape or a click outside. The standing and pending-review indicators stay visible
+while reading. New sections are added through an **Add section** control at each section
+boundary, shown on hover or focus (always on touch screens) so a row of empty inputs never
+interrupts reading.
+
+The outline is a sidebar when the document pane is at least 850px wide — resizable, with
+Collapse all / Expand all, two-line titles and the full title on hover — and its open/closed
+state is remembered per browser. In a narrower pane it is a drawer over the prose: it starts
+closed and closes after each selection. Both follow the pane's width, not the viewport's,
+because a conversation beside the document narrows the pane alone. Document-wide comments
+take the same drawer form in a narrow pane.
 
 **Focus mode** hides the project rail, outline, Find, move/history controls and document-wide
 comments panel while keeping the current editor, selection, formatting, save status and view
@@ -314,6 +325,9 @@ back to a working toggle for the current visit.
 and previews the resulting level. The whole subtree, its prose and its links travel with it;
 a self or descendant destination is refused; the moved section stays selected. The toolbar
 carries separate undo/redo controls for the current section's prose and for section moves.
+In a pane narrower than 850px the formatting controls stay visible and everything else folds
+behind a **Tools** toggle; that panel stays open for repeated undo/redo and for popover
+triggers, and closes after a one-shot action.
 Move history survives switching between Doc and Map during the visit but not a reload, and
 neither history is an audit log — that is the trace. Undo preserves collaborators' prose edits
 and refuses a stale structural restore that would overwrite a conflicting move; a successful
@@ -367,14 +381,17 @@ are removed, the quote and discussion remain with a detached-text indication; th
 matched to another occurrence. This first version supports plain-text comments on a
 selection within one section, without mentions or notifications.
 
-All comments opens a document-wide panel with Open (default), Resolved and All filters. Threads
+All comments opens a document-wide panel with Open (default), Resolved and All filters, each
+carrying its count. A document with no comments at all tells a writer how to add one; a
+filter that matches nothing says so instead. Threads
 show their section title and support the same replies and status changes as section comments.
 Go to text unfolds and selects the section, mounts its editor if needed, and selects the exact
 anchored passage. Changed text produces a notice; removed sections retain their discussion
 without a misleading navigation link. Readers can filter and navigate without editing.
 
-Insert section reference searches section titles and shows their document numbers to distinguish
-duplicate titles. It inserts at the current prose selection. References store the stable section
+Insert section reference opens a **Link to section** picker that searches section titles,
+reports its result count and shows document numbers to distinguish duplicate titles. It
+inserts at the current prose selection. References store the stable section
 id and a nested fallback title; the displayed title follows renames without writing new prose.
 References are underlined links with hover and keyboard-focus feedback. Deleted targets show
 the fallback with a missing-section label. API and Map text projections resolve the current
@@ -422,7 +439,10 @@ terminal Codex sessions through this feature.
 Deploy the updated Takomo API before updating the standalone worker. The worker
 must advertise `document_chat` in `supported_kinds` when claiming jobs. Older
 workers continue consuming their existing job kinds and leave document turns
-queued until a compatible worker is available. The worker remains a separate
+queued until a compatible worker is available. A queued turn shows when it was
+requested, a Refresh status action and a link to the agent queue page; the
+document does not report worker availability, and says so rather than
+inviting a resend. The worker remains a separate
 service; bundling diagram renderers does not install a Codex worker.
 
 ### Document workspace and sources

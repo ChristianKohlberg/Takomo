@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -62,7 +62,39 @@ function setup() {
   return { doc, a, b, child, fragment, props }
 }
 
+function stubPaneWidth(width: number) {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: { width, height: 600 }, borderBoxSize: [{ inlineSize: width, blockSize: 600 }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver)
+    }
+    unobserve() {}
+    disconnect() {}
+  })
+}
+
 describe('document workflow integration', () => {
+  it('turns the outline into a drawer when the PANE is narrow, and keeps a wide pane\'s sidebar open across selections', () => {
+    const { props } = setup()
+    stubPaneWidth(600)
+    const narrow = render(<Plan {...props} />)
+    const outline = () => narrow.container.querySelector('aside.document-outline') as HTMLElement
+    expect(screen.getByRole('button', { name: 'Outline' }).getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Outline' }))
+    fireEvent.click(within(outline()).getByRole('button', { name: /Reports/ }))
+    expect(props.onSelection).toHaveBeenLastCalledWith(expect.any(String))
+    expect(screen.getByRole('button', { name: 'Outline' }).getAttribute('aria-expanded')).toBe('false')
+    expect(localStorage.getItem('takomo.plan.outline')).toBe('open')
+    narrow.unmount()
+
+    stubPaneWidth(1000)
+    const wide = render(<Plan {...props} />)
+    const sidebar = wide.container.querySelector('aside.document-outline') as HTMLElement
+    expect(screen.getByRole('button', { name: 'Outline' }).getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(within(sidebar).getByRole('button', { name: /Reports/ }))
+    expect(screen.getByRole('button', { name: 'Outline' }).getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('keeps find available to readers while withholding all structure mutations', () => {
     const { doc, props } = setup()
     render(<Plan {...props} session={{ ...props.session, can_write: false }} />)

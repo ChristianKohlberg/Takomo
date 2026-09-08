@@ -62,7 +62,7 @@ export function AppShell({ rail, children, lang, onLang, hideRail = false }: App
   const navigation = { ...rail, badges: { ...rail.badges, inbox: explicitCount ?? (inbox?.scope === scope ? inbox.count : undefined) } }
   return (
     <DiagramContext value={{ token, project }}>
-    <div className="flex h-dvh overflow-hidden">
+    <div className="flex h-dvh flex-col overflow-hidden md:flex-row">
       <div style={{ display: hideRail ? 'none' : 'contents' }}>
         <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
       </div>

@@ -1,3 +1,5 @@
+import * as Y from 'yjs'
+import { createNode, readNodes } from '@/lib/mindmap-crdt'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { Canvas, type CanvasProps } from './Canvas'
@@ -128,4 +130,35 @@ describe('the specification map root', () => {
     })
     expect(p.onAddBranch).not.toHaveBeenCalled()
   })
+})
+
+
+it('finds folded nodes through the existing reveal-and-center action', () => {
+  const doc = new Y.Doc()
+  const id = createNode(doc, { parent: null, title: 'Hidden billing section', by: 'test' })!
+  const p = props({ nodes: [], searchNodes: readNodes(doc), onFindNode: vi.fn() })
+  render(<Canvas {...p} />)
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'billing' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Hidden billing section' }))
+  expect(p.onFindNode).toHaveBeenCalledWith(id)
+  expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('')
+})
+
+it('refits layout changes unless the reader preserves the camera', () => {
+  const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
+  try {
+    const doc = new Y.Doc()
+    for (let i = 0; i < 20; i++) createNode(doc, { parent: null, title: `Branch ${i}`, by: 'test' })
+    const p = props({ nodes: readNodes(doc) })
+    const ui = render(<Canvas {...p} />)
+    const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    const manual = camera()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Keep zoom and position' }))
+    ui.rerender(<Canvas {...p} mode="tidy" />)
+    expect(camera()).toBe(manual)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Keep zoom and position' }))
+    ui.rerender(<Canvas {...p} mode="radial" />)
+    expect(camera()).not.toBe(manual)
+  } finally { rect.mockRestore() }
 })

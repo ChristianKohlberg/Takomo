@@ -46,6 +46,7 @@ function Gauge({ priority }: { priority: string }) {
 }
 
 export interface TicketCardProps {
+  compact?: boolean
   ticket: Ticket
   selected?: boolean
   /** `fromSchedule` and `notFulfilled` — see where they are used below. */
@@ -64,6 +65,7 @@ export interface TicketCardProps {
 }
 
 export function TicketCard({
+  compact,
   ticket: t,
   selected,
   blockedLabel,
@@ -102,6 +104,7 @@ export function TicketCard({
         // nothing for it. Nothing here needs the clip: the card has no image
         // children and a background is clipped by border-radius regardless.
         'overflow-visible',
+        compact && 'py-2',
         selected && 'bg-accent ring-ring',
       )}
     >
@@ -115,7 +118,7 @@ export function TicketCard({
       <div className="pointer-events-none relative">
       <div className="flex items-baseline gap-2">
         <span className="text-muted-foreground shrink-0 font-mono text-[11px]">{t.id}</span>
-        {t.priority && (
+        {t.priority && t.priority !== 'normal' && (
           <>
             <Gauge priority={t.priority} />
             <span className={cn('text-[11px] font-[680]', PRIORITY[t.priority] ?? 'text-normal')}>
@@ -134,7 +137,7 @@ export function TicketCard({
         </span>
       </div>
 
-      <div className="mt-1 text-[13.2px] font-[650] break-words">{t.title}</div>
+      <div className={cn("mt-1 text-[13.2px] font-[650] break-words", compact && "line-clamp-2")}>{t.title}</div>
 
       {/* Where a scheduled ticket came from. It links to /schedules rather than
           opening the ticket, so the two pages stay one product. */}
@@ -169,12 +172,12 @@ export function TicketCard({
           {t.claim?.holder && (
             <span className="text-muted-foreground font-mono">⚑ {t.claim.holder}</span>
           )}
-          {t.labels?.map((l) => (
+          {(compact ? [] : t.labels)?.map((l) => (
             <span key={l} className="bg-muted border-border rounded-[5px] border px-1.5">
               {l}
             </span>
           ))}
-          {t.tags?.map((tag) => (
+          {(compact ? [] : t.tags)?.map((tag) => (
             <span
               key={tag}
               className="bg-secondary text-secondary-foreground rounded-[5px] px-1.5 font-mono"

@@ -30,6 +30,8 @@
 // connected". A field commits when you leave it and when the dialog closes —
 // including on Escape, which cannot be a discard here without inventing a dirty
 // state the rest of the surface does not have.
+import type { ReactNode } from 'react'
+import { Markdown } from '@/components/Markdown'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -78,6 +80,9 @@ export interface NodeDialogLabels {
   /** Through to the manager, which is where one is added or corrected. */
   openAttachments: string
   notes: string
+  missingSection?: string
+  notesPreview?: string
+  editNotes?: string
   notesHint: string
   notesCount: string
   kind: string
@@ -105,6 +110,7 @@ export interface NodeDialogLabels {
 }
 
 export interface NodeDialogProps {
+  previewContent?: ReactNode
   /** The thought being read, or null while closed. */
   node: MapNode | null
   canWrite: boolean
@@ -129,6 +135,7 @@ const FIELD =
 
 export function NodeDialog({
   node,
+  previewContent,
   canWrite,
   relations,
   titleOf,
@@ -143,6 +150,7 @@ export function NodeDialog({
   // Every text field is a draft until it is left. Writing every keystroke into
   // the document would be correct and unkind: it is one shared history, and a
   // paragraph typed slowly would arrive at a collaborator letter by letter.
+  const [preview, setPreview] = useState(Boolean(labels.notesPreview && node?.notes))
   const [notes, setNotes] = useState(node?.notes ?? '')
   const [edgeLabel, setEdgeLabel] = useState(node?.edge_label ?? '')
   // A question's answer is never written into the document as it is typed: it is
@@ -159,6 +167,7 @@ export function NodeDialog({
   if (seeded !== (node?.id ?? null)) {
     setSeeded(node?.id ?? null)
     setNotes(node?.notes ?? '')
+    setPreview(Boolean(labels.notesPreview && node?.notes))
     setEdgeLabel(node?.edge_label ?? '')
     setAnswer('')
   }
@@ -241,9 +250,11 @@ export function NodeDialog({
             )}
           </div>
 
-          <label className="flex flex-col gap-0.5">
-            <span className="text-muted-foreground text-[10.5px] font-[650]">{labels.notes}</span>
-            <Textarea
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground text-[10.5px] font-[650]">{labels.notes}</span>
+              {labels.notesPreview && canWrite && <Button variant="ghost" size="sm" onClick={() => { commitNotes(); setPreview(value => !value) }}>{preview ? (labels.editNotes ?? labels.notes) : labels.notesPreview}</Button>}
+            </div>
+            {preview ? (previewContent ?? <Markdown text={notes} className="md min-w-0 rounded-md border p-3 text-sm [&_*]:break-words" />) : <Textarea
               ref={notesRef}
               aria-label={labels.notes}
               value={notes}
@@ -254,13 +265,13 @@ export function NodeDialog({
               onChange={(e) => setNotes(e.target.value)}
               onBlur={commitNotes}
               className="text-[12px]"
-            />
+            />}
             <span className="text-muted-foreground text-[10px]">
               {labels.notesCount
                 .replace('{n}', String(notes.length))
                 .replace('{max}', String(MAX_NOTES))}
             </span>
-          </label>
+          </div>
 
           <div className="grid grid-cols-2 gap-1.5">
             <label className="flex flex-col gap-0.5">

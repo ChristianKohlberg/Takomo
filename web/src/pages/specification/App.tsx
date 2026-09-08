@@ -1,3 +1,4 @@
+import { CollaboratorPresence } from '@/components/CollaboratorPresence'
 import { createStructureHistory } from '@/lib/plan-structure'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
@@ -129,6 +130,7 @@ function SpecificationWorkspace({
   const t = pick(DOCUMENT_STR, lang)
   const c = pick(CHECK_STR, lang)
   const w = words[lang]
+  const lastError = useRef({ message: '', at: 0 })
   const onError = useCallback(
     (error: unknown) => {
       if (isAuthError(error)) {
@@ -136,7 +138,10 @@ function SpecificationWorkspace({
         setToken('')
         return
       }
-      toast(error instanceof Error ? error.message : String(error), 'err')
+      const message = error instanceof Error ? error.message : String(error)
+      if (lastError.current.message === message && Date.now() - lastError.current.at < 4000) return
+      lastError.current = { message, at: Date.now() }
+      toast(message, 'err')
     },
     [toast],
   )
@@ -196,7 +201,7 @@ function SpecificationWorkspace({
       if (!project && items[0]) navigate(specificationLink(items[0].id), { replace: true })
     }, abort.signal).catch((error) => {
       if (cancelled) return
-      onError(error)
+      if ((error as { status?: number })?.status !== 403) onError(error)
       if (!isAuthError(error)) {
         setFailure(error instanceof Error ? error.message : String(error))
         setLoaded(true)
@@ -462,14 +467,7 @@ function SpecificationWorkspace({
             </button>}
             {session && <SaveStatus state={saveState} lang={lang} />}
             {map && <Suspense fallback={null}><History /></Suspense>}
-            {peers.length > 0 && (
-              <span
-                className="max-w-60 truncate text-xs text-muted-foreground"
-                title={peers.join(', ')}
-              >
-                {peers.join(', ')}
-              </span>
-            )}
+            <CollaboratorPresence peers={peers} lang={lang} />
           </AppHeader>
           <SpecificationViews
             current={view}
