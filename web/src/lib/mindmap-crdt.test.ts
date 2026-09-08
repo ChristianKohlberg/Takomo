@@ -11,6 +11,7 @@ import * as Y from 'yjs'
 import {
   answerQuestion,
   fragmentText,
+  fragmentStructure,
   proseOf,
   proseTextOf,
   createNode,
@@ -176,4 +177,29 @@ describe('prose', () => {
     expect(proseTextOf(doc, 'mn-old')).toBe('')
     expect(entry.get('prose')).toBeUndefined()
   })
+})
+
+it('projects formatting marks as text without stripping literal user angle brackets', () => {
+  const doc = fresh()
+  const id = createNode(doc, { parent: null, title: 'Formatting', by: 'me' })!
+  const fragment = proseOf(doc, id)!
+  const paragraph = new Y.XmlElement('paragraph')
+  const text = new Y.XmlText()
+  paragraph.insert(0, [text]); fragment.insert(0, [paragraph])
+  text.insert(0, 'Important <literal> text', { bold: {} })
+  expect(text.toString()).toContain('<bold>')
+  expect(proseTextOf(doc, id)).toBe('Important <literal> text')
+  expect(readNodes(doc).find(n => n.id === id)?.notes).toBe('Important <literal> text')
+})
+
+
+it('preserves rich preview block names and text marks without XML case loss', () => {
+  const doc = fresh()
+  const fragment = doc.getXmlFragment('preview')
+  const code = new Y.XmlElement('codeBlock')
+  code.setAttribute('language', 'mermaid')
+  const text = new Y.XmlText()
+  code.insert(0, [text]); fragment.insert(0, [code])
+  text.insert(0, 'flowchart TD; A-->B', { bold: {} })
+  expect(fragmentStructure(fragment)).toEqual([{ tag: 'codeBlock', attributes: { language: 'mermaid' }, children: [{ text: [{ insert: 'flowchart TD; A-->B', attributes: { bold: {} } }] }] }])
 })

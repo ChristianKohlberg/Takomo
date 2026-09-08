@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { SavedProse } from './SavedProse'
 import type { SavedSection } from '@/lib/spec-history'
 it('reads old XML as inert content, preserving literal text and table spans', () => {
@@ -18,4 +18,20 @@ it('resolves snapshot reference titles and blocks unsafe link navigation', () =>
   expect(container.querySelector('a')).toBeNull()
   rerender(<SavedProse node={node} nodes={[node]} access={{ token: '', project: 'demo' }} missing="Missing section" />)
   expect(screen.getByText('Old title (Missing section)')).toBeTruthy()
+})
+
+
+it('renders Yjs lowercase XML tables with valid table children and resolves references', () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    const node = { id: 'source', prose_xml: '<table>\n<tablerow>\n<tableheader colspan="2"><paragraph>Header</paragraph></tableheader>\n</tablerow><tablerow><tablecell><paragraph><sectionreference sectionId="target">Old</sectionreference></paragraph></tablecell></tablerow>\n</table><codeblock language="text">Plain code</codeblock>' } as SavedSection
+    const target = { id: 'target', title: 'Current target' } as SavedSection
+    const { container } = render(<SavedProse node={node} nodes={[node, target]} access={{ token: '', project: 'demo' }} missing="Missing section" />)
+    expect(container.querySelectorAll('tbody > tr')).toHaveLength(2)
+    expect(container.querySelector('tbody > span, tr > span')).toBeNull()
+    expect(container.querySelector('th')?.colSpan).toBe(2)
+    expect(screen.getByText('Current target')).toBeTruthy()
+    expect(container.querySelector('pre')?.textContent).toBe('Plain code')
+    expect(error).not.toHaveBeenCalled()
+  } finally { error.mockRestore() }
 })

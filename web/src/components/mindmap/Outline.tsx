@@ -26,11 +26,11 @@ import { cn } from '@/lib/utils'
 import { childrenOf } from '@/lib/mindmap-layout'
 import type { MapNode } from '@/lib/mindmap-doc'
 import { firstSentence, trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
-import { Hint } from '@/components/Hint'
 
 export interface OutlineLabels {
   /** Opens the reading-and-editing dialog on this row. */
   edit: string
+  actions?: string
   /** Opens the title caret in place — the phone's F2. */
   rename: string
   /** The caret itself: its accessible name, and its placeholder. */
@@ -151,18 +151,18 @@ export function Outline({
         <li
           key={node.id}
           className={cn(
-            'border-b-border-soft flex items-center gap-2 border-b py-2.5 pr-2',
+            'border-b-border-soft flex flex-wrap items-start gap-2 border-b py-2.5 pr-2',
             selected === node.id && 'bg-accent',
           )}
           // Indentation is inline because it is data, not a style: a depth-4 node
           // needs a depth-4 inset, and Tailwind cannot spell an arbitrary one
           // without generating a class per level.
-          style={{ paddingLeft: `${12 + depth * 16}px` }}
+          style={{ paddingLeft: `${12 + Math.min(depth, 3) * 12}px` }}
         >
           {naming === node.id && canWrite ? (
             // Named in place, for the same reason the canvas is: a modal per new
             // thought is too heavy for what a brainstorm is for.
-            <div className="min-w-0 grow">
+            <div className="min-w-0 flex-1">
               <NodeNameInput
                 value={node.title}
                 onCommit={(text, then) => onNameCommit(node.id, text, then)}
@@ -174,14 +174,14 @@ export function Outline({
           <button
             type="button"
             onClick={() => onSelect(node.id)}
-            className="min-w-0 grow cursor-pointer text-left"
+            className="min-w-0 flex-1 cursor-pointer text-left"
           >
             {node.kind === 'question' && (
               <div className="font-mono text-[9px] font-[650] tracking-wider text-violet-600 uppercase dark:text-violet-300">
                 ? {labels.question}
               </div>
             )}
-            <div className="text-foreground text-[13px] leading-snug">
+            <div className="text-foreground break-words text-[13px] leading-snug">
               {trust && (
                 <span className="mr-1.5 text-[11px]" title={trustLabel}>
                   {trust === 'confirmed' ? '✓' : trust === 'machine' ? '⌁' : '~'}
@@ -216,84 +216,30 @@ export function Outline({
             )}
           </button>
           )}
-          <div className="flex shrink-0 items-center">
-            <Hint text={labels.attachments.replace('{n}', String(node.attachments.length))}>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={labels.attachments.replace('{n}', String(node.attachments.length))}
-                onClick={() => onAttachments(node.id)}
-              >
-                ⎘{node.attachments.length > 0 ? ` ${node.attachments.length}` : ''}
-              </Button>
-            </Hint>
-            <Hint text={labels.edit}>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={labels.edit}
-                onClick={() => onEdit(node.id)}
-              >
-                ✎
-              </Button>
-            </Hint>
-            {canWrite && (
-              <>
-                <Hint text={labels.rename}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={labels.rename}
-                    onClick={() => onRename(node.id)}
-                  >
-                    Aa
-                  </Button>
-                </Hint>
-                <Hint text={labels.addSibling}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={labels.addSibling}
-                    onClick={() => onSibling(node.id)}
-                  >
-                    +
-                  </Button>
-                </Hint>
-                <Hint text={labels.addChild}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={labels.addChild}
-                    onClick={() => onChild(node.id)}
-                  >
-                    ⇥
-                  </Button>
-                </Hint>
-                {node.parent !== null && (
-                  <Hint text={labels.detach}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={labels.detach}
-                      onClick={() => onDetach(node.id)}
-                    >
-                      ⌐
-                    </Button>
-                  </Hint>
-                )}
-                <Hint text={labels.remove}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={labels.remove}
-                    onClick={() => onDelete(node.id)}
-                  >
-                    ×
-                  </Button>
-                </Hint>
-              </>
-            )}
-          </div>
+          <details className="relative shrink-0">
+            <summary className="flex size-9 cursor-pointer list-none items-center justify-center rounded-md border text-lg focus-visible:outline-2" aria-label={labels.actions ?? labels.edit}>⋯</summary>
+            <div className="bg-card border-border absolute right-0 z-20 flex w-52 flex-col items-stretch rounded-lg border p-1 shadow-lg">
+              {[
+                { label: labels.edit, action: () => onEdit(node.id) },
+                { label: labels.attachments.replace('{n}', String(node.attachments.length)), action: () => onAttachments(node.id) },
+                ...(canWrite ? [
+                  { label: labels.rename, action: () => onRename(node.id) },
+                  { label: labels.addChild, action: () => onChild(node.id) },
+                  { label: labels.addSibling, action: () => onSibling(node.id) },
+                  ...(node.parent !== null ? [{ label: labels.detach, action: () => onDetach(node.id) }] : []),
+                  { label: labels.remove, action: () => onDelete(node.id) },
+                ] : []),
+              ].map(item => <Button key={item.label} variant="ghost" size="sm" className="h-auto min-h-9 justify-start whitespace-normal text-left" onClick={event => {
+                event.currentTarget.closest('details')?.removeAttribute('open')
+                onSelect(node.id)
+                item.action()
+              }}>{item.label}</Button>)}
+            </div>
+          </details>
+          {selected === node.id && naming !== node.id && <div className="flex w-full flex-wrap gap-1" role="group" aria-label={labels.actions ?? labels.edit}>
+            <Button variant="outline" size="sm" onClick={() => onEdit(node.id)}>{labels.edit}</Button>
+            {canWrite && <Button variant="outline" size="sm" onClick={() => onChild(node.id)}>{labels.addChild}</Button>}
+          </div>}
         </li>
         )
       })}

@@ -45,10 +45,14 @@ export function sectionBlocks(node: { prose_structure?: unknown; prose_xml?: str
   if (!node.prose_xml || typeof DOMParser === 'undefined') return null
   const doc = new DOMParser().parseFromString(`<saved>${node.prose_xml}</saved>`, 'application/xml')
   if (doc.querySelector('parsererror')) return null
-  const convert = (node: Node): SavedBlock => node.nodeType === 3 ? { text: [{ insert: node.textContent ?? '' }] } : {
-    tag: (node as Element).tagName,
-    attributes: Object.fromEntries(Array.from((node as Element).attributes ?? [], a => [a.name, a.value])),
-    children: Array.from(node.childNodes, convert),
+  const tags = ['tableRow', 'tableCell', 'tableHeader', 'codeBlock', 'sectionReference', 'bulletList', 'orderedList', 'listItem', 'hardBreak', 'horizontalRule']
+  const convert = (node: Node): SavedBlock => {
+    if (node.nodeType === 3) return { text: [{ insert: node.textContent ?? '' }] }
+    const original = (node as Element).tagName
+    const tag = tags.find(value => value.toLowerCase() === original?.toLowerCase()) ?? original
+    const children = Array.from(node.childNodes).filter(child =>
+      !['table', 'tableRow'].includes(tag) || child.nodeType !== 3 || !!child.textContent?.trim())
+    return { tag, attributes: Object.fromEntries(Array.from((node as Element).attributes ?? [], a => [a.name, a.value])), children: children.map(convert) }
   }
   return Array.from(doc.documentElement.childNodes, convert)
 }

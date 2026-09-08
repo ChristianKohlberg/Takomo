@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   AFFORDANCE_WIDTH,
+  readingViewport,
+  branchBounds,
   centreOn,
   childrenOf,
   edgePath,
@@ -465,5 +467,23 @@ describe('centreOn', () => {
     const v = centreOn({ x: -50, y: 90, zoom: 0.5 }, { x: 300, y: 200 }, 800, 600)
     expect(v.zoom).toBe(0.5)
     expect(toScreen({ x: 300, y: 200 }, v)).toEqual({ x: 400, y: 300 })
+  })
+})
+
+
+describe('readable map navigation', () => {
+  it('starts a large map at readable scale while retaining fit-all overview', () => {
+    const placed = radialLayout(Array.from({ length: 60 }, (_, i) => node({ id: `n${i}`, parent: i < 10 ? null : `n${i % 10}`, position: i })))
+    expect(readingViewport(placed, 900, 700).zoom).toBeGreaterThanOrEqual(0.75)
+    expect(fit(placed.bounds, 900, 700).zoom).toBeLessThan(0.75)
+  })
+  it('fits the selected descendants without an unrelated distant branch', () => {
+    const placed = layout([node({ id: 'a' }), node({ id: 'child', parent: 'a' }), node({ id: 'other', at: { x: 10000, y: 10000 } })])
+    const bounds = branchBounds(placed, 'a')
+    expect(bounds.maxX).toBeLessThan(10000)
+    for (const item of placed.nodes.filter(p => p.node.id !== 'other')) {
+      expect(item.x).toBeGreaterThanOrEqual(bounds.minX)
+      expect(item.y + NODE_HEIGHT).toBeLessThanOrEqual(bounds.maxY)
+    }
   })
 })

@@ -552,3 +552,29 @@ export function centreOn(
     y: height / 2 - world.y * viewport.zoom,
   }
 }
+
+/** First reading favors legible titles; Fit all remains an explicit overview. */
+export function readingViewport(placed: Layout, width: number, height: number): Viewport {
+  const firstRing = placed.nodes.filter(p => p.node.parent === null)
+  const points = [placed.root, ...firstRing]
+  const view = fit({
+    minX: Math.min(...points.map(p => p.x)), minY: Math.min(...points.map(p => p.y)),
+    maxX: Math.max(...points.map(p => p.x + NODE_WIDTH)), maxY: Math.max(...points.map(p => p.y + NODE_HEIGHT)),
+  }, width, height)
+  return view.zoom >= 0.75 ? view : centreOn({ ...view, zoom: 0.75 },
+    { x: placed.root.x + NODE_WIDTH / 2, y: placed.root.y + NODE_HEIGHT / 2 }, width, height)
+}
+
+/** Fit one selected subtree without unrelated branches dominating its bounds. */
+export function branchBounds(placed: Layout, id: string): Layout['bounds'] {
+  const ids = new Set([id])
+  let previous = 0
+  while (previous !== ids.size) {
+    previous = ids.size
+    for (const p of placed.nodes) if (p.node.parent && ids.has(p.node.parent)) ids.add(p.node.id)
+  }
+  const points = placed.nodes.filter(p => ids.has(p.node.id))
+  if (!points.length) return placed.bounds
+  return { minX: Math.min(...points.map(p => p.x)), minY: Math.min(...points.map(p => p.y)),
+    maxX: Math.max(...points.map(p => p.x + NODE_WIDTH)), maxY: Math.max(...points.map(p => p.y + NODE_HEIGHT)) }
+}

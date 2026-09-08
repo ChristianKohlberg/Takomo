@@ -214,3 +214,13 @@ describe('NodeDialog', () => {
     expect(screen.getByText('This token cannot change anything here.')).toBeTruthy()
   })
 })
+
+it('reads legacy Markdown safely before opening an explicit notes edit', () => {
+  const p = mount({ node: node({ notes: '**Important** <script>alert(1)</script>' }), labels: { ...LABELS, notesPreview: 'Read preview', editNotes: 'Edit notes' } })
+  expect(screen.queryByRole('textbox', { name: 'Notes' })).toBeNull()
+  expect(['B', 'STRONG']).toContain(screen.getByText('Important').tagName)
+  expect(document.querySelector('script')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Edit notes' }))
+  expect((screen.getByRole('textbox', { name: 'Notes' }) as HTMLTextAreaElement).value).toBe('**Important** <script>alert(1)</script>')
+  expect(p.onNotes).not.toHaveBeenCalled()
+})

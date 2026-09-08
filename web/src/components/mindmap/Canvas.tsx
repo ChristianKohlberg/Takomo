@@ -33,6 +33,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   DEFAULT_VIEWPORT,
+  readingViewport,
+  branchBounds,
   centreOn,
   MAX_ZOOM,
   MIN_ZOOM,
@@ -77,6 +79,10 @@ export interface CanvasLabels {
   empty: string
   emptyHint: string
   fit: string
+  search?: string
+  noMatches?: string
+  keepView?: string
+  fitBranch?: string
   tidy: string
   radial: string
   tree: string
@@ -115,6 +121,8 @@ export interface CanvasProps {
   title: string
   /** Already filtered for this viewer's folds. */
   nodes: MapNode[]
+  searchNodes?: MapNode[]
+  onFindNode?: (id: string) => void
   relationships: Relationship[]
   /** Branches this viewer has folded, and how many thoughts sit under each node
    *  in the WHOLE tree — the fold handle needs both, and only one of them
@@ -266,6 +274,8 @@ function cornerRadius(shape: string): number {
 export function Canvas({
   title,
   nodes,
+  searchNodes = nodes,
+  onFindNode,
   relationships,
   collapsed,
   descendantCounts,
@@ -314,6 +324,9 @@ export function Canvas({
   className,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
+  const [keepView, setKeepView] = useState(false)
+  const [search, setSearch] = useState('')
+  const previousMode = useRef(mode)
   const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
   const [drag, setDrag] = useState<Drag>({ kind: 'none' })
   // The node under the pointer. Only used to reveal the `+`, and only ever set
@@ -347,10 +360,19 @@ export function Canvas({
     if (fitted.current || (nodes.length === 0 && rootFitted.current)) return
     const box = svgRef.current?.getBoundingClientRect()
     if (!box || box.width === 0) return
-    setViewport(fit(placed.bounds, box.width, box.height))
+    setViewport(readingViewport(placed, box.width, box.height))
     rootFitted.current = true
     fitted.current = nodes.length > 0
-  }, [nodes.length, placed.bounds])
+  }, [nodes.length, placed])
+
+  useLayoutEffect(() => {
+    if (previousMode.current === mode) return
+    previousMode.current = mode
+    if (keepView) return
+    const box = svgRef.current?.getBoundingClientRect()
+    if (!box?.width) return
+    setViewport(fit(selected ? branchBounds(placed, selected) : placed.bounds, box.width, box.height))
+  }, [mode, placed, selected, keepView])
 
   const pointIn = useCallback((e: { clientX: number; clientY: number }): Point => {
     const box = svgRef.current?.getBoundingClientRect()
@@ -730,7 +752,7 @@ export function Canvas({
               const from = p.node.parent ? positionOf(p.node.parent) : placed.root
               const d = edgePath(from, positionOf(p.node.id), mode === 'radial' ? 'auto' : 'right')
               const cuttable = canWrite && p.node.parent !== null
-              if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-border" d={d} />
+              if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-muted-foreground/40" d={d} />
               return (
                 <g
                   key={`e-${p.node.id}`}
@@ -744,7 +766,7 @@ export function Canvas({
                       .replace('{parent}', titleOf.get(p.node.parent as string) ?? '')}
                   </title>
                   <path d={d} stroke="transparent" strokeWidth={14} />
-                  <path className="stroke-border group-hover:stroke-destructive" d={d} />
+                  <path className="stroke-muted-foreground/40 group-hover:stroke-destructive" d={d} />
                 </g>
               )
             })}
@@ -1092,8 +1114,27 @@ export function Canvas({
         </div>
       )}
 
+      <div className="absolute top-3 left-3 w-56 max-w-[calc(100%-1.5rem)]" onKeyDown={e => e.stopPropagation()}>
+        <input type="search" aria-label={labels.search ?? 'Find a node'} placeholder={labels.search ?? 'Find a node'} value={search} onChange={e => setSearch(e.target.value)} className="bg-card border-border w-full rounded-lg border px-3 py-2 text-sm" />
+        {search.trim() && <ul className="bg-card border-border mt-1 max-h-64 overflow-y-auto rounded-lg border shadow-lg">
+          {searchNodes.filter(n => n.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).slice(0, 30).map(node => <li key={node.id}><button type="button" className="hover:bg-muted w-full break-words px-3 py-2 text-left text-sm" onClick={() => {
+            const at = byId.get(node.id)
+            const box = svgRef.current?.getBoundingClientRect()
+            if (at && box) setViewport(centreOn({ ...viewport, zoom: Math.max(viewport.zoom, 0.85) }, { x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT / 2 }, box.width, box.height))
+            if (onFindNode) onFindNode(node.id); else onSelect(node.id)
+            setSearch('')
+          }}>{node.title}</button></li>)}
+          {!searchNodes.some(n => n.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) && <li className="text-muted-foreground px-3 py-2 text-sm">{labels.noMatches ?? 'No matching nodes'}</li>}
+        </ul>}
+      </div>
       {/* Viewport controls, bottom-right — out of the way of the root. */}
-      <div className="absolute right-3 bottom-3 flex gap-1.5">
+      <div className="absolute right-3 bottom-3 flex max-w-[calc(100%-1.5rem)] flex-wrap justify-end gap-1.5">
+        <label className="bg-card border-border flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs"><input type="checkbox" checked={keepView} onChange={e => setKeepView(e.target.checked)} />{labels.keepView ?? 'Keep zoom and position'}</label>
+        {selected && <button type="button" className="bg-card border-border rounded-lg border px-2.5 py-1.5 text-xs" onClick={() => {
+          const box = svgRef.current?.getBoundingClientRect()
+          if (box) setViewport(fit(branchBounds(placed, selected), box.width, box.height))
+        }}>{labels.fitBranch ?? 'Fit branch'}</button>}
+        <output className="bg-card border-border rounded-lg border px-2 py-1.5 text-xs" aria-live="polite">{Math.round(viewport.zoom * 100)}%</output>
         <Hint text={mode === 'radial' ? labels.tree : labels.radial}>
           <button
             type="button"

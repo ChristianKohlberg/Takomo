@@ -12,20 +12,22 @@ export function CheckEditor({ token, id, onClose, onError, labels, lang }: {
   labels: { fTitle: string; fBody: string; fPrecondition: string; liveEdit: string; liveHint: string; connecting: string; live: string; reconnecting: string }
 }) {
   const { client, ready, peers, saveState } = useCollaboration(token, `/checks/${encodeURIComponent(id)}/session`, onError)
+  const [title, setTitle] = useState('')
   const [definition, setDefinition] = useState<Y.Map<unknown> | null>(null)
   useEffect(() => {
     if (!client) { setDefinition(null); return }
     const read = () => {
       const value = client.doc.getMap('nodes').get('definition')
       setDefinition(value instanceof Y.Map ? value : null)
+      setTitle(value instanceof Y.Map ? String(value.get('title') ?? '') : '')
     }
     read()
     client.doc.on('update', read)
     return () => { client.doc.off('update', read) }
   }, [client])
   return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
-    <DialogContent className="max-h-[85dvh] overflow-y-auto">
-      <DialogHeader><DialogTitle>{labels.liveEdit}</DialogTitle><DialogDescription>{labels.liveHint}</DialogDescription></DialogHeader>
+    <DialogContent className="max-h-[85dvh] w-full max-w-[calc(100%-2rem)] overflow-y-auto md:max-w-180">
+      <DialogHeader><DialogTitle className="break-words">{title || labels.liveEdit}</DialogTitle><DialogDescription>{labels.liveHint}</DialogDescription></DialogHeader>
       <SaveStatus state={saveState} lang={lang} />
       {peers.length > 0 && <p className="text-xs text-muted-foreground">{peers.map(p => p.name).join(', ')}</p>}
       {(['title', 'precondition', 'body'] as const).map(field => {
