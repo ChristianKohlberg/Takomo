@@ -69,7 +69,7 @@ function DialogContent({
   const position =
     side === "right"
       ? // A sheet: full height at the right edge, full width on a phone.
-        "inset-y-0 right-0 h-full w-[min(480px,100%)] max-w-none overflow-y-auto rounded-none border-l data-open:slide-in-from-right data-closed:slide-out-to-right"
+        "inset-y-0 right-0 h-full w-[min(480px,100%)] max-w-none content-start overflow-x-hidden overflow-y-auto [grid-template-columns:minmax(0,1fr)] rounded-none border-l data-open:slide-in-from-right data-closed:slide-out-to-right"
       : "top-1/2 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl sm:max-w-sm data-open:zoom-in-95 data-closed:zoom-out-95"
 
   return (
@@ -90,7 +90,7 @@ function DialogContent({
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-2 right-2"
+              className="absolute top-2 right-2 z-10"
               size="icon-sm"
             >
               <XIcon

@@ -48,6 +48,7 @@ import { STR } from './strings'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Hint } from '@/components/Hint'
 import { Picker } from '@/components/Picker'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 const LS_LANG = 'takomo.lang'
 const POLL_MS = 4000
@@ -58,7 +59,7 @@ export function App({ surface = 'board' }: { surface?: 'board' | 'epics' }) {
 
   // Read once: a grant is what the URL asked for at load, and re-reading it on
   // every render would fight the board's own hash writes.
-  const [mode] = useState(() => modeFor(surface === 'board' ? window.location.hash : ''))
+  const [mode] = useState(() => modeFor(surface === 'board' || window.location.hash.startsWith('#t=') ? window.location.hash : ''))
 
   if (mode.kind === 'answer') {
     return (
@@ -125,7 +126,7 @@ function Board({
 
   const [token, setToken] = useState(() => loadToken())
   const [navCollapsed, setNavCollapsed] = useNavCollapsed()
-  const [project, setProject] = useState(() => loadProject())
+  const [project, setProject] = useState(() => { const requested = new URLSearchParams(window.location.search).get('project'); return requested && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(requested) ? requested : loadProject() })
   const [projects, setProjects] = useState<Project[]>([])
   const [projectsStatus, setProjectsStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [projectRetry, setProjectRetry] = useState(0)
@@ -153,6 +154,9 @@ function Board({
   const [selectedId, setSelectedId] = useState<string | null>(deepTicket ?? null)
 
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [hideEmpty, setHideEmpty] = useState(false)
+  const [compact, setCompact] = useState(false)
+  const boardRef = useRef<HTMLElement>(null)
   // Which single column a phone is looking at.
   //
   // A kanban is horizontal by nature, and snap-scrolling eight columns through a
@@ -195,7 +199,7 @@ function Board({
   // the six did it or how many were even set.
   const activeFilterCount =
     (ticketFilter ? 1 : 0) +
-    (tagFilter ? 1 : 0) +
+    (tagKind || tagFilter ? 1 : 0) +
     (epicFilter ? 1 : 0) +
     (labelFilter ? 1 : 0) +
     (showArchived ? 1 : 0) +
@@ -204,6 +208,7 @@ function Board({
   const clearFilters = useCallback(() => {
     setTicketFilter('')
     setTagFilter('')
+    setTagKind('')
     setEpicFilter('')
     setLabelFilter('')
     setShowArchived(false)
@@ -372,16 +377,15 @@ function Board({
   // rendering its open-time snapshot. The two then disagreed on screen at the
   // same time, which is worse than either being stale alone.
   useEffect(() => {
-    if (!token || !selectedId || !detail) return
+    if (!token || !selectedId || !effectiveProject) return
     let cancelled = false
     const request = detailRequest.current
     getTicket(token, selectedId)
-      .then((ticket) => { if (!cancelled && detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject) setDetail(ticket) })
+      .then((ticket) => { if (!cancelled && detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject && ticket.project === effectiveProject) setDetail(ticket) })
       // A failed refresh leaves the drawer on what it had; the next tick retries.
       .catch(() => {})
     return () => { cancelled = true }
     // `tickets` is the signal that something changed — the poll replaces it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, effectiveProject, selectedId, tickets])
 
   // Open questions per ticket — what the detail drawer's callout counts.
@@ -443,10 +447,15 @@ function Board({
     return out
   }, [tickets, ticketFilter, tagKind, tagFilter, epicFilter, labelFilter, showArchived, mineOnly, me, index])
 
+  const stateName = (state: string) => {
+    const common: Record<string, string> = lang === 'de' ? { draft: 'Entwurf', todo: 'Offen', in_progress: 'In Arbeit', blocked: 'Blockiert', done: 'Erledigt', cancelled: 'Abgebrochen' } : { draft: 'Draft', todo: 'To do', in_progress: 'In progress', blocked: 'Blocked', done: 'Done', cancelled: 'Cancelled' }
+    const readable = state.replace(/[_-]+/g, ' ')
+    return common[state] ?? readable.charAt(0).toUpperCase() + readable.slice(1)
+  }
   const states = useMemo(() => workflow?.states?.map((s) => s.id) ?? [], [workflow])
   // The phone's column, resolved: an explicit pick if the reader made one and it
   // still exists in this project's workflow, otherwise the first state.
-  const phoneState = (mobileState && states.includes(mobileState) ? mobileState : states[0]) ?? ''
+  const phoneState = (mobileState && states.includes(mobileState) ? mobileState : states.find(state => visible.some(ticket => ticket.state === state) && !workflow?.states.find(s => s.id === state)?.terminal) ?? states.find(state => visible.some(ticket => ticket.state === state)) ?? states[0]) ?? ''
   const columns = useMemo(() => {
     const m = new Map<string, Ticket[]>()
     for (const s of states) m.set(s, [])
@@ -498,9 +507,10 @@ function Board({
     (id: string) => {
       const request = ++detailRequest.current
       setSelectedId(id)
+      window.history.replaceState(window.history.state, '', `${window.location.pathname}?project=${encodeURIComponent(effectiveProject)}#t=${encodeURIComponent(id)}`)
       const known = tickets.find((x) => x.id === id) ?? null
       setDetail(known)
-      if (token) getTicket(token, id).then((ticket) => { if (detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject) setDetail(ticket) }).catch(() => {})
+      if (token) getTicket(token, id).then((ticket) => { if (detailRequest.current === request && detailContext.current.token === token && detailContext.current.project === effectiveProject && ticket.project === effectiveProject) setDetail(ticket) }).catch(() => {})
     },
     [tickets, token, effectiveProject],
   )
@@ -602,11 +612,10 @@ function Board({
             leaving 457px of board and 1.3 of 8 columns visible. Hiding these
             behind a toggle returns roughly a third of the screen, and they are
             the controls a phone user reaches for least. */}
-        <button
+        <Popover open={filtersOpen} onOpenChange={setFiltersOpen}><PopoverTrigger asChild><button
           type="button"
-          onClick={() => setFiltersOpen((v) => !v)}
           aria-expanded={filtersOpen}
-          className="text-muted-foreground border-border cursor-pointer rounded-lg border px-3 py-2 text-[13px] font-[650] md:hidden"
+          className="text-muted-foreground border-border cursor-pointer rounded-lg border px-3 py-2 text-[13px] font-[650]"
         >
           {t.filters}
           {activeFilterCount > 0 && (
@@ -614,13 +623,8 @@ function Board({
               {activeFilterCount}
             </span>
           )}
-        </button>
-        <div
-          className={cn(
-            'flex flex-wrap items-center gap-2.5',
-            filtersOpen ? 'flex w-full md:w-auto' : 'hidden md:flex',
-          )}
-        >
+        </button></PopoverTrigger>
+        <PopoverContent align="end" onOpenAutoFocus={event => { event.preventDefault(); document.getElementById('board-filter-heading')?.focus() }} className="max-h-[70dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto"><h2 id="board-filter-heading" tabIndex={-1} className="font-semibold">{t.filters}</h2><div className="grid grid-cols-1 gap-3 md:grid-cols-2 [&_input]:max-w-full">
         <Typeahead
           id="tickfilter"
           options={tickets.map((x) => ({ id: x.id, title: x.title }))}
@@ -628,7 +632,7 @@ function Board({
           onChange={setTicketFilter}
           labels={{
             all: t.allTickets,
-            placeholder: t.taTicket,
+            placeholder: t.lookupTicket,
             clear: t.taClear,
             noMatch: t.taNoMatch,
             count: t.taCount,
@@ -722,7 +726,10 @@ function Board({
             {t.mine}
           </label>
         )}
-        </div>
+        <label className="text-muted-foreground flex items-center gap-2 text-sm"><Checkbox checked={hideEmpty} onCheckedChange={value => setHideEmpty(value === true)} />{t.hideEmpty}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-sm"><Checkbox checked={compact} onCheckedChange={value => setCompact(value === true)} />{t.compact}</label>
+        {activeFilterCount > 0 && <Button variant="outline" size="sm" onClick={clearFilters}>{t.clearFilters} ({activeFilterCount})</Button>}
+        </div></PopoverContent></Popover>
         <Button variant="outline" size="sm" onClick={() => setInboxOpen(true)}>
           {t.fullInbox}
           {questions.length > 0 && (
@@ -749,21 +756,33 @@ function Board({
             A board is for looking at tickets; the page you go to in order to
             change how a project behaves is the settings page, and half the
             settings in each place was the split worth ending. */}
-        <Hint text={t.settings}>
+        {me.scopes.includes('admin') && <Hint text={t.settings}>
           <Button
             variant="outline"
             size="icon"
+            aria-label={t.settings}
             onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
           >
             ⚙
           </Button>
-        </Hint>
+        </Hint>}
         <Hint text={t.refresh}>
-          <Button variant="outline" size="icon"onClick={() => void load()}>
+          <Button variant="outline" size="icon" aria-label={t.refresh} onClick={() => void load()}>
             ↻
           </Button>
         </Hint>
       </AppHeader>}
+
+      {view === 'board' && activeFilterCount > 0 && <div className="flex flex-wrap gap-1 px-3 py-1" aria-label={t.filters}>
+        {[
+          ...(ticketFilter ? [{ name: index[ticketFilter]?.title || ticketFilter, clear: () => setTicketFilter('') }] : []),
+          ...(tagKind || tagFilter ? [{ name: tagFilter || tagKind, clear: () => { setTagFilter(''); setTagKind('') } }] : []),
+          ...(epicFilter ? [{ name: index[epicFilter]?.title || epicFilter, clear: () => setEpicFilter('') }] : []),
+          ...(labelFilter ? [{ name: labelFilter, clear: () => setLabelFilter('') }] : []),
+          ...(showArchived ? [{ name: t.archived, clear: () => setShowArchived(false) }] : []),
+          ...(mineOnly ? [{ name: t.mine, clear: () => setMineOnly(false) }] : []),
+        ].map(filter => <button key={filter.name} type="button" onClick={filter.clear} aria-label={`${t.taClear}: ${filter.name}`} className="bg-secondary text-secondary-foreground max-w-full truncate rounded-full px-2 py-1 text-xs">{filter.name} ×</button>)}
+      </div>}
 
       {/* One state at a time on a phone. Rendered outside <main> so it does not
           scroll away with the columns. */}
@@ -778,11 +797,11 @@ function Board({
                 onClick={() => setMobileState(s)}
                 aria-current={s === phoneState}
                 className={cn(
-                  'shrink-0 cursor-pointer rounded-lg px-3 py-2 text-[12.5px] font-[650] uppercase tracking-[0.04em]',
+                  'shrink-0 cursor-pointer rounded-lg px-3 py-2 text-[12.5px] font-[650] tracking-[0.04em]',
                   s === phoneState ? 'bg-secondary text-primary' : 'text-muted-foreground',
                 )}
               >
-                {s}
+                {stateName(s)}
                 <span className="ml-1.5 tabular-nums">{n}</span>
               </button>
             )
@@ -790,7 +809,8 @@ function Board({
         </div>
       )}
 
-      <main className="min-h-0 flex-1 overflow-x-auto p-3">
+      {view === 'board' && <div className="hidden items-center justify-end gap-1 px-3 py-1 md:flex" aria-label={t.boardScroll}><Button variant="ghost" size="sm" aria-label={t.previousColumns} onClick={() => boardRef.current?.scrollBy({ left: -300, behavior: 'smooth' })}>←</Button><Button variant="ghost" size="sm" aria-label={t.nextColumns} onClick={() => boardRef.current?.scrollBy({ left: 300, behavior: 'smooth' })}>→</Button></div>}
+      <main ref={boardRef} className="min-h-0 flex-1 overflow-auto p-3">
         {/* Filtered to nothing: the board used to render its normal columns all
             reading 0, with no statement that a filter caused it and no way to
             undo them together. */}
@@ -828,16 +848,18 @@ function Board({
         ) : epicGroups ? (
           <div className="flex flex-col gap-4">
             {[...epicGroups.entries()].map(([epic, ts]) => (
-              <div key={epic || '(none)'}>
-                <div className="text-muted-foreground mb-2 px-1 text-[11.5px] font-[750] tracking-[0.06em] uppercase">
-                  {epic ? (index[epic]?.title ?? epic) : t.noEpic}
-                </div>
+              <details key={epic || '(none)'} open>
+                <summary className="text-muted-foreground mb-2 cursor-pointer px-1 text-[11.5px] font-[750] tracking-[0.06em] uppercase">
+                  {epic ? (index[epic]?.title ?? epic) : t.noEpic} ({ts.length})
+                </summary>
                 <div className="flex gap-3">
                   {states
-                    .filter((s) => !isPhone || s === phoneState)
+                    .filter((s) => (isPhone ? s === phoneState : !hideEmpty || ts.some(ticket => ticket.state === s)))
                     .map((s) => (
                     <Column
                       key={s}
+                      compact={compact}
+                      stateLabel={stateName(s)}
                       state={s}
                       tickets={ts.filter((x) => x.state === s)}
                       selectedId={selectedId}
@@ -848,7 +870,7 @@ function Board({
                     />
                   ))}
                 </div>
-              </div>
+              </details>
             ))}
           </div>
         ) : (
@@ -856,10 +878,12 @@ function Board({
             {[...columns.entries()]
               // On a phone only the selected state is mounted — not merely
               // hidden — so its cards are the only ones rendered.
-              .filter(([state]) => !isPhone || state === phoneState)
+              .filter(([state, items]) => isPhone ? state === phoneState : !hideEmpty || items.length > 0)
               .map(([state, ts]) => (
               <Column
                 key={state}
+                compact={compact}
+                stateLabel={stateName(state)}
                 state={state}
                 tickets={ts}
                 selectedId={selectedId}
@@ -892,6 +916,11 @@ function Board({
       />
 
       <DetailPanel
+        key={detail?.id}
+        navigationLabels={{ copyLink: t.copyLink, copiedLink: t.copiedLink, linkFailed: t.linkFailed, childTickets: t.childTickets, overview: t.overview, activity: t.activity }}
+        relatedTickets={detail?.type === 'epic' ? tickets.filter(ticket => ticket.id !== detail.id && inSubtree(ticket, detail.id, index)) : undefined}
+        terminalStates={workflow?.states.filter(state => state.terminal).map(state => state.id)}
+        onOpenTicket={openTicket}
         ticket={detail}
         questions={detail ? questionsByTicket.get(detail.id) : undefined}
         canAsk
@@ -924,11 +953,13 @@ function Board({
           detailRequest.current++
           setDetail(null)
           setSelectedId(null)
+          window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`)
         }}
         onAsk={() => setAsking(true)}
       />
 
       <AskDrawer
+        kindLabels={{ confirm: t.kindConfirm, choose: t.kindChoose, clarify: t.kindClarify, approve: t.kindApprove }}
         open={asking}
         onOpenChange={setAsking}
         ticket={detail?.id ?? ''}
@@ -943,16 +974,16 @@ function Board({
         }}
         labels={{
           title: t.askHuman,
-          subtitle: t.answeringResumes,
+          subtitle: t.questionIntro,
           fTicket: t.refLabel,
-          fKind: t.question1,
-          fMode: t.state,
-          fTitle: t.description,
-          fBody: t.notePlaceholder,
-          fOptions: t.allValues,
-          fOptionsHint: t.taAnyOf,
-          fExpertise: t.tagsHdr,
-          fExpertiseHint: t.taAddMore,
+          fKind: t.questionType,
+          fMode: t.questionMode,
+          fTitle: t.questionTitle,
+          fBody: t.questionNote,
+          fOptions: t.answerChoices,
+          fOptionsHint: t.answerChoicesHint,
+          fExpertise: t.expertiseLabel,
+          fExpertiseHint: t.expertiseHint,
           fAssignee: t.askAssignee,
           fAssigneeHint: t.askAssigneeHint,
           fAssigneeAnyone: t.askAssigneeAnyone,

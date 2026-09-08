@@ -36,6 +36,7 @@ export interface AskFields {
 }
 
 export interface AskDrawerProps {
+  kindLabels?: Record<QuestionKind, string>
   open: boolean
   onOpenChange: (open: boolean) => void
   ticket: string
@@ -76,6 +77,7 @@ export interface AskDrawerProps {
 const KINDS: QuestionKind[] = ['confirm', 'choose', 'clarify', 'approve']
 
 export function AskDrawer({
+  kindLabels,
   open,
   onOpenChange,
   ticket,
@@ -107,6 +109,7 @@ export function AskDrawer({
     setBody('')
     setOptions('')
     setExpertise('')
+    setAssignee('')
     setErr('')
     setBusy(false)
   }
@@ -181,14 +184,14 @@ export function AskDrawer({
                 onValueChange={(v) => setKind(v as QuestionKind)}
                 className="border-border bg-card text-foreground w-full rounded-lg border px-2.5 py-1.5 text-[13px]"
                 options={[
-                  ...KINDS.map((k) => ({ value: k, label: k })),
+                  ...KINDS.map((k) => ({ value: k, label: kindLabels?.[k] ?? k })),
                 ]}
               />
             )}
           </Field>
 
           <Field label={labels.fTitle} hint={languageHint ? labels.langHint.replace('{lang}', languageHint) : undefined}>
-            {(id) => <Input id={id} autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />}
+            {(id) => <Input id={id} required autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />}
           </Field>
 
           <Field label={labels.fBody}>
@@ -238,10 +241,10 @@ export function AskDrawer({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => { reset(); onOpenChange(false) }}>
             {labels.cancel}
           </Button>
-          <Button onClick={submit} disabled={busy}>
+          <Button onClick={submit} disabled={busy || !title.trim() || (kind === 'choose' && splitList(options).length < 2)}>
             {labels.ask}
           </Button>
         </DialogFooter>

@@ -44,7 +44,7 @@ describe('persistent rail navigation', () => {
     expect(screen.getAllByRole('link', { name: 'Inbox' })).toHaveLength(1)
     expect(header.getByText('4')).toBeTruthy()
     fireEvent.click(header.getByRole('link', { name: 'Inbox' }))
-    expect(onNavigate).toHaveBeenCalledWith('/inbox')
+    expect(onNavigate).toHaveBeenCalledWith('/inbox?project=one')
     fireEvent.click(header.getByRole('button', { name: collapsed ? 'Expand' : 'Collapse' }))
     expect(onCollapsed).toHaveBeenCalledWith(!collapsed)
     fireEvent.click(header.getByRole('button', { name: 'Project: First project' }))
@@ -77,6 +77,8 @@ describe('persistent rail navigation', () => {
     const language = screen.getByRole('menuitem', { name: /Language/ })
     expect(document.activeElement).toBe(language)
     fireEvent.click(language)
+    expect(screen.getByRole('menuitemradio', { name: 'English' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Deutsch' }))
     expect(onLang).toHaveBeenCalledWith('de')
   })
 

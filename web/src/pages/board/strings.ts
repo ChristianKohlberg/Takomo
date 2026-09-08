@@ -11,6 +11,7 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    hideEmpty: 'Hide empty columns', compact: 'Compact cards', boardScroll: 'Scroll board', previousColumns: 'Previous columns', nextColumns: 'Next columns', lookupTicket: 'Find a ticket to select', questionType: 'Answer type', questionMode: 'Impact', questionTitle: 'Question (required)', questionNote: 'Context (optional)', questionIntro: 'Ask a clear question about this ticket.', answerChoices: 'Answer choices', answerChoicesHint: 'Separate choices with commas, for example: Start now, Wait until Friday.', expertiseLabel: 'Required expertise (optional)', expertiseHint: 'Separate expertise tags with commas.', childTickets: 'Child tickets', copyLink: 'Copy link', copiedLink: 'Link copied', linkFailed: 'Could not copy link', overview: 'Overview', activity: 'Activity', kindConfirm: 'Yes or no', kindChoose: 'Choose an option', kindClarify: 'Written answer', kindApprove: 'Approval',
     // ---- added by the port: the two grant modes ----
     // The original hardcoded these in English. `#s=` and especially `#a=` are the
     // surfaces shown to people OUTSIDE the fleet — an answer link goes to an
@@ -180,8 +181,8 @@ export const STR = defineStrings({
     taCountMore: "showing {shown} of {n}",
     clearFilters: "Clear filters",
     noMatchFilters: "No tickets match these filters.",
-    taTagValue: "Filter by tag value (handle or name)",
-    taLabel: "Filter by labels (more than one allowed)",
+    taTagValue: "Tag value",
+    taLabel: "Labels",
     allLabels: "All labels",
     taAddMore: "add another…",
     taRemove: "Remove “{v}”",
@@ -189,6 +190,7 @@ export const STR = defineStrings({
     filters: "Filters",
   },
   de: {
+    hideEmpty: 'Leere Spalten ausblenden', compact: 'Kompakte Karten', boardScroll: 'Board scrollen', previousColumns: 'Vorherige Spalten', nextColumns: 'Nächste Spalten', lookupTicket: 'Ticket zum Auswählen suchen', questionType: 'Antworttyp', questionMode: 'Auswirkung', questionTitle: 'Frage (erforderlich)', questionNote: 'Kontext (optional)', questionIntro: 'Stelle eine klare Frage zu diesem Ticket.', answerChoices: 'Antwortmöglichkeiten', answerChoicesHint: 'Möglichkeiten mit Kommas trennen, zum Beispiel: Jetzt starten, Bis Freitag warten.', expertiseLabel: 'Erforderliche Expertise (optional)', expertiseHint: 'Expertise-Tags mit Kommas trennen.', childTickets: 'Untergeordnete Tickets', copyLink: 'Link kopieren', copiedLink: 'Link kopiert', linkFailed: 'Link konnte nicht kopiert werden', overview: 'Übersicht', activity: 'Aktivität', kindConfirm: 'Ja oder Nein', kindChoose: 'Option auswählen', kindClarify: 'Schriftliche Antwort', kindApprove: 'Freigabe',
     // ---- added by the port: the two grant modes ----
     shareRO: "Nur-Lesen-Freigabe",
     shareExpired: "Dieser Freigabe-Link ist abgelaufen.",
@@ -353,8 +355,8 @@ export const STR = defineStrings({
     taCountMore: "{shown} von {n} angezeigt",
     clearFilters: "Filter zurücksetzen",
     noMatchFilters: "Keine Tickets passen zu diesen Filtern.",
-    taTagValue: "Nach Tag-Wert filtern (Handle oder Name)",
-    taLabel: "Nach Labels filtern (mehrere möglich)",
+    taTagValue: "Tag-Wert",
+    taLabel: "Labels",
     allLabels: "Alle Labels",
     taAddMore: "weiteres hinzufügen…",
     taRemove: "„{v}“ entfernen",

@@ -157,3 +157,13 @@ describe('NavRail', () => {
     expect(screen.getAllByText('Account').length).toBeGreaterThan(0)
   })
 })
+
+// Project context must survive both normal navigation and copy-link/new-tab.
+it('carries the current project into Lanes and Epics destinations', () => {
+  const { onNavigate } = mount({ project: 'demo' })
+  const lanes = screen.getByRole('link', { name: 'Lanes' })
+  expect(lanes.getAttribute('href')).toBe('/lanes?project=demo')
+  fireEvent.click(lanes)
+  expect(onNavigate).toHaveBeenCalledWith('/lanes?project=demo')
+  expect(screen.getByRole('link', { name: 'Epics' }).getAttribute('href')).toBe('/epics?project=demo')
+})

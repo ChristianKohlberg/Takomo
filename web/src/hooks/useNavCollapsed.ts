@@ -12,17 +12,25 @@ const LS_KEY = 'takomo.nav.collapsed'
 
 export function useNavCollapsed(): [boolean, (collapsed: boolean) => void] {
   const isPhone = useIsPhone()
+  const [isTablet, setIsTablet] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(max-width: 1023px)').matches)
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return
+    const media = matchMedia('(max-width: 1023px)')
+    const update = () => setIsTablet(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
   const [stored, setStored] = useState(
     () => typeof localStorage !== 'undefined' && localStorage.getItem(LS_KEY) === '1',
   )
   // A phone starts collapsed whatever the stored preference says: expanded
   // there is an overlay covering the page, which is not a state to open into.
-  const [collapsed, setCollapsed] = useState(() => isPhone || stored)
+  const [collapsed, setCollapsed] = useState(() => isPhone || isTablet || stored)
 
   useEffect(() => {
-    if (isPhone) setCollapsed(true)
+    if (isPhone || isTablet) setCollapsed(true)
     else setCollapsed(stored)
-  }, [isPhone, stored])
+  }, [isPhone, isTablet, stored])
 
   const update = useCallback(
     (next: boolean) => {

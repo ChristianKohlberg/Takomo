@@ -23,6 +23,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   BugIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  MenuIcon,
   CalendarClockIcon,
   ListChecksIcon,
   LanguagesIcon,
@@ -236,11 +239,14 @@ export function NavRail({
   const accountName = actor || labels.account
 
   const [menuOpen, setMenuOpen] = useState(false)
+  const [languageOpen, setLanguageOpen] = useState(false)
   const [menuActive, setMenuActive] = useState(0)
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const settingsRef = useRef<HTMLAnchorElement>(null)
   const languageRef = useRef<HTMLButtonElement>(null)
+  const languageMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (languageOpen) languageMenuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus() }, [languageOpen])
   const signOutRef = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const settingsItemId = `${menuId}-settings`
@@ -262,6 +268,7 @@ export function NavRail({
 
   function closeMenu() {
     setMenuOpen(false)
+    setLanguageOpen(false)
     triggerRef.current?.focus()
   }
 
@@ -309,10 +316,14 @@ export function NavRail({
 
   return (
     <>
+      {isPhone && <div className="bg-card border-border flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
+        <IconButton label={labels.expand} onClick={() => onCollapsed(false)}><MenuIcon size={20} /></IconButton>
+        <AppNavigation navigation={{ nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed: false, onCollapsed, onSignOut, onNavigate }} />
+      </div>}
       {overlay && (
         <>
           {/* Keeps the content from sliding left as the rail lifts out of flow. */}
-          <div className={navigationInHeader ? "w-24 flex-none" : "w-14 flex-none"} aria-hidden />
+
           <div
             className="fixed inset-0 z-40 bg-black/40"
             aria-hidden
@@ -328,6 +339,7 @@ export function NavRail({
           // It rendered half off-screen until the scrolling moved to the nav
           // list, which is the only part long enough to need it anyway.
           'bg-card border-r-border-soft flex flex-none flex-col border-r',
+          isPhone && !overlay && 'hidden',
           expanded ? 'w-56' : navigationInHeader ? 'w-24' : 'w-14',
           overlay && 'fixed inset-y-0 left-0 z-50 shadow-[var(--shadow)]',
         )}
@@ -419,7 +431,7 @@ export function NavRail({
             ) : (
               <Hint key={key} text={label}>
                 <a
-                  href={NAV_HREF[key]}
+                  href={project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key]}
                   className={cls}
                   aria-label={label}
                   onClick={(e) => {
@@ -429,7 +441,7 @@ export function NavRail({
                     // On a phone the rail is covering the page it just navigated
                     // to, so leaving it open would hide the destination.
                     if (overlay) onCollapsed(true)
-                    onNavigate(NAV_HREF[key])
+                    onNavigate(project ? `${NAV_HREF[key]}?project=${encodeURIComponent(project)}` : NAV_HREF[key])
                   }}
                 >
                   {inner}
@@ -494,7 +506,7 @@ export function NavRail({
                   'bg-card border-border absolute z-50 min-w-44 overflow-hidden rounded-lg border py-1 shadow-[var(--shadow)]',
                   // Collapsed, beside the trigger — under it would hang off the
                   // 56px strip. Expanded, above — the block sits on the bottom edge.
-                  collapsed ? 'top-0 left-full ml-1' : 'bottom-full left-0 mb-1',
+                  collapsed ? 'bottom-0 left-full ml-1' : 'bottom-full left-0 mb-1',
                 )}
               >
                 <a
@@ -530,12 +542,22 @@ export function NavRail({
                   ref={languageRef}
                   type="button"
                   role="menuitem"
-                  onClick={() => onLang(lang === 'de' ? 'en' : 'de')}
+                  aria-haspopup="menu"
+                  aria-expanded={languageOpen}
+                  onClick={() => setLanguageOpen((open) => !open)}
                   className={cn('text-foreground hover:bg-muted flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-[13px] font-[650]', menuActive === 2 && 'bg-accent')}
                 >
                   <LanguagesIcon size={16} className="flex-none" />
-                  <span>{lang === 'de' ? 'Sprache: Deutsch → English' : 'Language: English → Deutsch'}</span>
+                  <span>{lang === 'de' ? 'Sprache' : 'Language'}</span><ChevronRightIcon size={14} className="ml-auto" />
                 </button>}
+                {languageOpen && lang && onLang && <div ref={languageMenuRef} role="menu" aria-label={lang === 'de' ? 'Sprache' : 'Language'} className="border-border border-t py-1" onKeyDown={event => {
+                  if (event.key === 'Escape' || event.key === 'ArrowLeft') { event.stopPropagation(); event.preventDefault(); setLanguageOpen(false); languageRef.current?.focus() }
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.stopPropagation(); event.preventDefault(); const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')]; const index = items.indexOf(document.activeElement as HTMLButtonElement); items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus() }
+                }}>
+                  {(['en', 'de'] as const).map(locale => <button key={locale} type="button" role="menuitemradio" aria-checked={lang === locale} className="hover:bg-muted flex w-full items-center gap-2 px-3 py-2 text-left text-sm" onClick={() => { onLang(locale); closeMenu() }}>
+                    <span className="size-4">{lang === locale && <CheckIcon size={16} />}</span>{locale === 'en' ? 'English' : 'Deutsch'}
+                  </button>)}
+                </div>}
               </div>
             )}
           </div>

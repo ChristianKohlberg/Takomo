@@ -262,3 +262,5 @@ export { DocumentSectionReferenceButton } from './documents/DocumentSectionRefer
 
 export { DocumentAgent } from "./documents/DocumentAgent"
 export { DocumentConversation } from "./documents/DocumentConversation"
+
+export { CollaboratorPresence } from './CollaboratorPresence'

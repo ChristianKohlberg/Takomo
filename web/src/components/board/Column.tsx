@@ -11,6 +11,8 @@ import type { Ticket } from '@/lib/board'
 const COLLAPSE_LIMIT = 6
 
 export interface ColumnProps {
+  compact?: boolean
+  stateLabel?: string
   state: string
   tickets: Ticket[]
   selectedId?: string | null
@@ -23,6 +25,8 @@ export interface ColumnProps {
 }
 
 export function Column({
+  compact,
+  stateLabel,
   state,
   tickets,
   selectedId,
@@ -37,14 +41,15 @@ export function Column({
 
   return (
     <section className="bg-muted/40 flex min-h-0 w-full shrink-0 flex-col rounded-[10px] md:w-72">
-      <header className="text-muted-foreground flex items-baseline gap-2 px-3 py-2 text-[11.5px] font-[750] tracking-[0.05em] uppercase">
-        <span>{state}</span>
+      <header className="bg-muted text-muted-foreground sticky top-0 z-1 flex items-baseline gap-2 px-3 py-2 text-[11.5px] font-[750] tracking-[0.05em]">
+        <span>{stateLabel ?? state.replaceAll('_', ' ')}</span>
         <span className="font-semibold tabular-nums">{tickets.length}</span>
       </header>
       <div className="flex min-h-0 flex-col gap-2 overflow-y-auto px-2 pb-2">
         {shown.map((t) => (
           <TicketCard
             key={t.id}
+            compact={compact}
             ticket={t}
             selected={t.id === selectedId}
             blockedLabel={labels.blocked}
