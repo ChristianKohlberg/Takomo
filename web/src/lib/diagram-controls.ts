@@ -2,8 +2,8 @@ import { defineStrings, detectLocale } from './i18n'
 import { mountDiagram, type DiagramEngine, type DiagramAccess } from './diagram'
 
 const strings = defineStrings({
-  en: { diagram: 'View', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Diagram' },
-  de: { diagram: 'Ansicht', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Diagramm' },
+  en: { diagram: 'View', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Diagram', canvas: 'Adapt canvas to theme' },
+  de: { diagram: 'Ansicht', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Diagramm', canvas: 'Diagramm an Farbschema anpassen' },
 })
 type View = 'diagram' | 'code'
 type Size = 'compact' | 'comfortable' | 'original'
@@ -18,9 +18,11 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
   const t = strings[detectLocale(read('takomo.lang'))]
   let view: View = 'diagram'
   let size: Size = 'compact'
+  let adaptCanvas = true
   try {
     const saved: unknown = JSON.parse(read(preferenceKey) ?? '{}')
     if (saved && typeof saved === 'object') {
+      if ('adaptCanvas' in saved && saved.adaptCanvas === false) adaptCanvas = false
       if ('view' in saved && saved.view === 'code') view = 'code'
       if ('size' in saved && sizes.includes(saved.size as Size)) size = saved.size as Size
     }
@@ -42,7 +44,7 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
     return node
   }
   const persist = () => {
-    try { localStorage.setItem(preferenceKey, JSON.stringify({ view, size })) } catch { /* Controls still work without storage. */ }
+    try { localStorage.setItem(preferenceKey, JSON.stringify({ view, size, adaptCanvas })) } catch { /* Controls still work without storage. */ }
   }
   let cancel: (() => void) | undefined
   let closeOverlay: (() => void) | undefined
@@ -54,6 +56,8 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
     diagramButton.setAttribute('aria-pressed', String(view === 'diagram'))
     codeButton.setAttribute('aria-pressed', String(view === 'code'))
     root.dataset.mermaidSize = size
+    root.dataset.adaptCanvas = String(adaptCanvas)
+    canvasToggle.setAttribute('aria-pressed', String(adaptCanvas))
     if (view === 'diagram' && renderingSource !== source) {
       cancel?.()
       renderingSource = source
@@ -81,6 +85,7 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
     if (closeOverlay) return
     const dialog = document.createElement('dialog')
     dialog.className = 'mermaid-dialog'
+    dialog.dataset.adaptCanvas = String(adaptCanvas)
     dialog.setAttribute('aria-label', t.title)
     const tools = document.createElement('div')
     tools.className = 'mermaid-toolbar'
@@ -128,7 +133,8 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
     update()
     closeButton.focus()
   })
-  toolbar.append(sizeSelect, expand, diagramButton, codeButton)
+  const canvasToggle = button(t.canvas, () => { adaptCanvas = !adaptCanvas; paint(); persist() })
+  toolbar.append(sizeSelect, expand, diagramButton, codeButton, canvasToggle)
   controls.append(toolbar, preview)
   root.classList.add('mermaid-block')
   root.prepend(controls)
@@ -143,6 +149,7 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
       controls.remove()
       root.classList.remove('mermaid-block')
       delete root.dataset.mermaidSize
+      delete root.dataset.adaptCanvas
       pre.hidden = false
     },
   }

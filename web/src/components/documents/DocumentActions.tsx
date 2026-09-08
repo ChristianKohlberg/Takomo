@@ -1,17 +1,22 @@
 import { Search, Undo2, Redo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
-export function DocumentActions({ focusMode = false, locale, findOpen, onFind, canWrite, textUndo, textRedo, moveUndo, moveRedo, onTextUndo, onTextRedo, onMoveUndo, onMoveRedo, children }: {
+export function DocumentActions({ focusMode = false, locale, findOpen, onFind, canWrite, textUndo, textRedo, moveUndo, moveRedo, onTextUndo, onTextRedo, onMoveUndo, onMoveRedo, children, primary }: {
   focusMode?: boolean
   children?: ReactNode
+  primary?: ReactNode
   locale: Locale; findOpen: boolean; onFind: () => void; canWrite: boolean
   textUndo: boolean; textRedo: boolean; moveUndo: boolean; moveRedo: boolean
   onTextUndo: () => void; onTextRedo: () => void; onMoveUndo: () => void; onMoveRedo: () => void
 }) {
   const de = locale === 'de'
-  return <div className="flex flex-none flex-wrap items-center gap-2 border-b border-border-soft bg-card px-3 py-1.5" role="toolbar" aria-label={de ? 'Dokumentwerkzeuge' : 'Document tools'}>
+  const [expanded, setExpanded] = useState(false)
+  return <div className="document-toolbar relative flex flex-none flex-wrap items-center gap-1 border-b border-border-soft bg-card px-3 py-1.5" role="toolbar" aria-label={de ? 'Dokumentwerkzeuge' : 'Document tools'}>
+    {primary}
+    <button type="button" className="document-tools-toggle rounded border px-2 py-1 text-xs" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{de ? 'Werkzeuge' : 'Tools'} {expanded ? '−' : '+'}</button>
+    <div className="document-more-tools" data-open={expanded || undefined} onClick={event => { if ((event.target as Element).closest('button')) setExpanded(false) }} onKeyDown={event => { if (event.key === 'Escape') setExpanded(false) }}>
     {children}
     {!focusMode && <Button variant="ghost" size="sm" aria-label={de ? 'Im Dokument suchen' : 'Find in document'} title={de ? 'Im Dokument suchen' : 'Find in document'} aria-expanded={findOpen} onClick={onFind}><Search className="size-3.5" aria-hidden="true" /><span className="hidden sm:inline">{de ? 'Im Dokument suchen' : 'Find in document'}</span></Button>}
     {canWrite && !focusMode && <>
@@ -26,5 +31,6 @@ export function DocumentActions({ focusMode = false, locale, findOpen, onFind, c
         <Button variant="ghost" size="icon-sm" disabled={!moveRedo} aria-label={de ? 'Verschieben wiederholen' : 'Redo section move'} title={de ? 'Verschieben wiederholen' : 'Redo section move'} onClick={onMoveRedo}><Redo2 className="size-4" /></Button>
       </div>
     </>}
+    </div>
   </div>
 }

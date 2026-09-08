@@ -24,14 +24,15 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
     editor?.on('transaction', update)
     return () => { comments.unobserveDeep(update); editor?.off('transaction', update) }
   }, [ydoc, editor])
-  const threads = readCommentThreads(ydoc, sectionId).filter(thread => !global || filter === 'all' || thread.resolved === (filter === 'resolved'))
+  const allThreads = readCommentThreads(ydoc, sectionId)
+  const threads = allThreads.filter(thread => !global || filter === 'all' || thread.resolved === (filter === 'resolved'))
   const attempt = (operation: () => void) => {
     if (!canWrite) return false
     try { operation(); setError(''); return true } catch { setError(de ? 'Kommentar konnte nicht gespeichert werden. Bitte erneut versuchen.' : 'Could not save the comment. Please try again.'); return false }
   }
   return <section className="min-w-0 border-b border-border-soft bg-card p-3" aria-label={global ? (de ? 'Dokumentkommentare' : 'Document comments') : (de ? 'Textkommentare' : 'Text comments')}>
     <div className="flex items-center justify-between gap-2"><h2 className="font-medium">{global ? (de ? 'Dokumentkommentare' : 'Document comments') : (de ? 'Textkommentare' : 'Text comments')}</h2><Button variant="ghost" size="sm" onClick={onClose}>{de ? 'Schließen' : 'Close comments'}</Button></div>
-    {global && <select aria-label={de ? 'Kommentare filtern' : 'Filter comments'} value={filter} onChange={event => setFilter(event.target.value)} className="my-2 rounded border border-border bg-background px-2 py-1 text-sm"><option value="open">{de ? 'Offen' : 'Open'}</option><option value="resolved">{de ? 'Erledigt' : 'Resolved'}</option><option value="all">{de ? 'Alle' : 'All'}</option></select>}
+    {global && <select aria-label={de ? 'Kommentare filtern' : 'Filter comments'} value={filter} onChange={event => setFilter(event.target.value)} className="my-2 rounded border border-border bg-background px-2 py-1 text-sm"><option value="open">{de ? 'Offen' : 'Open'} ({allThreads.filter(t => !t.resolved).length})</option><option value="resolved">{de ? 'Erledigt' : 'Resolved'} ({allThreads.filter(t => t.resolved).length})</option><option value="all">{de ? 'Alle' : 'All'} ({allThreads.length})</option></select>}
     {error && <p role="alert">{error}</p>}
     {draft && canWrite && sectionId && <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); attempt(() => {
       createCommentThread(ydoc, sectionId, draft, actor, text)
@@ -41,7 +42,7 @@ export function DocumentComments({ ydoc, sectionId, editor, actor, canWrite, loc
       <textarea autoFocus aria-label={de ? 'Neuer Kommentar' : 'New comment'} className="w-full min-w-0 rounded border border-border bg-background p-2 text-sm" rows={2} maxLength={MAX_COMMENT_LENGTH} value={text} onChange={event => setText(event.target.value)} />
       <div className="flex gap-2"><Button type="submit" size="sm" disabled={!text.trim()}>{de ? 'Kommentieren' : 'Post comment'}</Button><Button type="button" variant="ghost" size="sm" onClick={() => { setText(''); onDraftConsumed() }}>{de ? 'Abbrechen' : 'Cancel'}</Button></div>
     </form>}
-    {!draft && threads.length === 0 && <p className="mt-2 text-sm text-muted-foreground">{global ? (de ? 'Keine Kommentare für diesen Filter.' : 'No comments for this filter.') : canWrite ? (de ? 'Text auswählen, um einen Kommentar hinzuzufügen.' : 'Select text to add a comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')}</p>}
+    {!draft && threads.length === 0 && <p className="mt-2 text-sm text-muted-foreground">{global ? (allThreads.length ? (de ? 'Keine Kommentare für diesen Filter.' : 'No comments for this filter.') : canWrite ? (de ? 'Noch keine Kommentare. Wähle Text im Dokument und dann Kommentar hinzufügen.' : 'No comments yet. Select text in the document, then Add comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')) : canWrite ? (de ? 'Text auswählen, um einen Kommentar hinzuzufügen.' : 'Select text to add a comment.') : (de ? 'Noch keine Kommentare.' : 'No comments yet.')}</p>}
     <div className={global ? "space-y-3" : "max-h-80 space-y-3 overflow-auto"}>
       {threads.map(thread => {
         const range = editor ? resolveCommentAnchor(editor, thread.anchor) : null

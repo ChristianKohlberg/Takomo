@@ -630,7 +630,7 @@ function ConnectedPlan({
   // never needs to reach the server or another peer.
   const [outlineOpen, setOutlineOpen] = useState(() => {
     try {
-      return localStorage.getItem('takomo.plan.outline') !== 'closed'
+      return !window.matchMedia?.('(max-width: 1023px)').matches && localStorage.getItem('takomo.plan.outline') !== 'closed'
     } catch {
       return true
     }
@@ -738,9 +738,8 @@ function ConnectedPlan({
         canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
         moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
         onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
-        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} >
+        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} primary={<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />} >
         {agentTools}
-        <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />
         <DocumentSectionReferenceButton editor={activeEditor} ydoc={ydoc} locale={locale} canWrite={canWrite} />
         <DocumentCommentButton editor={activeEditor} locale={locale} canWrite={canWrite}
           onComment={draft => { if (selected) setComments({ section: selected, draft }) }} />
@@ -752,7 +751,7 @@ function ConnectedPlan({
         <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
       </div>}
       {moving && canWrite && <MoveSectionDialog sections={sections} sectionKey={moving} lang={locale} onClose={() => setMoving(null)} onMove={moveSection} />}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden @min-[650px]/document-pane:flex-row">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden @min-[850px]/document-pane:flex-row">
       {/* The outline follows the available document pane, including when the
           conversation takes half of a wide viewport. */}
       {/* Collapsible, and the state is remembered.
@@ -763,10 +762,10 @@ function ConnectedPlan({
       <aside
         style={{ display: focusMode ? 'none' : undefined }}
         className={[
-          'border-b-border-soft flex flex-none flex-col border-b bg-white @min-[650px]/document-pane:border-r @min-[650px]/document-pane:border-b-0 dark:bg-card',
+          'document-outline border-b-border-soft flex flex-none flex-col border-b bg-white @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 dark:bg-card',
           outlineOpen
-            ? 'max-h-[38vh] overflow-y-auto px-2 py-3 @min-[650px]/document-pane:max-h-none @min-[650px]/document-pane:w-full @min-[650px]/document-pane:max-w-80'
-            : 'px-2 py-2 @min-[650px]/document-pane:w-auto',
+            ? 'absolute inset-x-0 top-0 z-40 max-h-[80%] overflow-y-auto px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:shadow-none'
+            : 'px-2 py-1 @min-[850px]/document-pane:w-auto',
         ].join(' ')}
       >
         <button
@@ -784,11 +783,12 @@ function ConnectedPlan({
           />
           <span>{railLabels.outline}</span>
         </button>
+        {outlineOpen && <div className="mb-2 flex flex-wrap gap-2 px-1 text-xs"><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set(rows.filter(row => row.children.length > 0).map(row => row.key)))}>{locale === 'de' ? 'Alle einklappen' : 'Collapse all'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set())}>{locale === 'de' ? 'Alle ausklappen' : 'Expand all'}</button></div>}
         {outlineOpen && (
           <OutlineRail
             sections={sections}
             selected={selected}
-            onSelect={onSelect}
+            onSelect={key => { onSelect(key); if (window.matchMedia?.('(max-width: 1023px)').matches) setOutlineOpen(false) }}
             collapsed={effectiveCollapsed}
             onToggle={onToggleFold}
             standing={standings}
@@ -913,7 +913,7 @@ function ConnectedPlan({
                       {preview || labels.proseEmpty}
                     </p>
                   )}
-                  {conversationFor?.(row.key)}
+                  <div className="section-discussion">{conversationFor?.(row.key)}</div>
                   {comments?.section === row.key && <DocumentComments key={row.key} ydoc={ydoc} sectionId={row.key}
                     editor={commentsEditor} actor={session.display} locale={locale} canWrite={canWrite}
                     draft={comments.draft} onDraftConsumed={() => setComments(current => current?.section === row.key ? { section: row.key, draft: null } : current)}
@@ -925,7 +925,7 @@ function ConnectedPlan({
           </div>
         )}
       </div>
-      {allComments && !focusMode && <aside className="max-h-[42vh] min-w-0 flex-none overflow-y-auto border-t border-border-soft bg-card @min-[650px]/document-pane:max-h-none @min-[650px]/document-pane:w-full @min-[650px]/document-pane:max-w-80 md:border-t-0 md:border-l">
+      {allComments && !focusMode && <aside className="absolute inset-0 z-40 min-w-0 overflow-y-auto border-border-soft bg-card @min-[850px]/document-pane:static @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:flex-none @min-[850px]/document-pane:border-l">
         <DocumentComments ydoc={ydoc} editor={null} actor={session.display} locale={locale} canWrite={canWrite}
           sectionTitle={id => { const row = rows.find(item => item.key === id); return row ? row.title || railLabels.untitled : null }}
           onShowThread={thread => { pendingComment.current = thread; onSelect(thread.sectionId); setComments({ section: thread.sectionId, draft: null }); setAllComments(false) }}

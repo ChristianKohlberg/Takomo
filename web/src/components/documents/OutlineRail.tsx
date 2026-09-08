@@ -145,7 +145,7 @@ export function OutlineRail({
             )}
             // Indentation is data: a depth-4 row needs a depth-4 inset, and
             // Tailwind cannot spell an arbitrary one without a class per level.
-            style={{ paddingLeft: `${2 + section.depth * 12}px` }}
+            style={{ paddingLeft: `${2 + Math.min(section.depth, 4) * 12}px` }}
           >
             {hasChildren ? (
               <button
@@ -174,6 +174,8 @@ export function OutlineRail({
             <button
               type="button"
               onClick={() => onSelect(section.key)}
+              title={`${section.number} ${section.title || labels.untitled}`}
+              aria-current={active ? 'location' : undefined}
               className="flex min-w-0 grow items-baseline gap-1.5 py-1.5 pr-1 text-left"
             >
               <span className="text-muted-foreground flex-none font-mono text-[10.5px]">
@@ -181,7 +183,7 @@ export function OutlineRail({
               </span>
               <span
                 className={cn(
-                  'min-w-0 truncate',
+                  'min-w-0 line-clamp-2 break-words',
                   titleClass(section.depth),
                   section.title ? '' : 'italic opacity-70',
                 )}

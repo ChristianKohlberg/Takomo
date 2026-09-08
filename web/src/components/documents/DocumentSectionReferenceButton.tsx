@@ -39,8 +39,10 @@ export function DocumentSectionReferenceButton({ editor, ydoc, canWrite, locale 
     </Button></PopoverTrigger>
     <PopoverContent aria-label={de ? 'Abschnitt verknüpfen' : 'Insert section reference'} collisionPadding={12}
       className="w-72 max-w-[calc(100vw-1.5rem)]" onCloseAutoFocus={event => { event.preventDefault(); if (editor && !editor.isDestroyed) editor.commands.focus() }}>
-      <input type="search" aria-label={de ? 'Abschnitte suchen' : 'Search sections'} value={query} onChange={event => setQuery(event.target.value)}
+      <h2 className="mb-2 text-sm font-semibold">{de ? 'Abschnitt verknüpfen' : 'Link to section'}</h2>
+      <input placeholder={de ? 'Abschnittstitel suchen' : 'Search section titles'} type="search" aria-label={de ? 'Abschnitte suchen' : 'Search sections'} value={query} onChange={event => setQuery(event.target.value)}
         className="w-full rounded border bg-background px-2 py-1 text-sm" />
+      <p role="status" className="my-2 text-xs text-muted-foreground">{results.length} {de ? 'Treffer' : 'results'}</p>
       <div className="max-h-60 overflow-y-auto">
         {results.map(node => <button key={node.key} type="button" className="block w-full break-words rounded px-2 py-1 text-left text-sm hover:bg-muted focus-visible:bg-muted"
           onClick={() => {

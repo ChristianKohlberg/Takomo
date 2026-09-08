@@ -1,3 +1,5 @@
+import { SavedProse } from '@/components/documents/SavedProse'
+import { savedText, wordChanges, canonical, sectionBlocks } from '@/lib/saved-prose'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { Download, History as HistoryIcon } from 'lucide-react'
@@ -13,6 +15,7 @@ import {
 import { useProjectUpdates } from '@/hooks/useProjectUpdates'
 import {
   checkpoint,
+  groupVersions,
   compareVersions,
   historyPage,
   mergeHistoryPage,
@@ -129,6 +132,8 @@ export default function History() {
   const epoch = useRef(0)
   const selected = Number(query.get('version')) || automaticVersion
   const against = Number(query.get('compare')) || 0
+  const previousVersion = page?.items.find(item => item.version < selected)?.version ?? 0
+  const comparisonVersion = against || previousVersion
   const change = (values: Record<string, string | null>) => {
     const next = new URLSearchParams(location.search)
     for (const [key, value] of Object.entries(values)) {
@@ -178,7 +183,7 @@ export default function History() {
     setLoading(true)
     void Promise.all([
       savedVersion(token, mapId, selected),
-      against ? savedVersion(token, mapId, against) : Promise.resolve(null),
+      comparisonVersion ? savedVersion(token, mapId, comparisonVersion) : Promise.resolve(null),
     ])
       .then(([value, other]) => {
         if (!cancelled) {
@@ -195,7 +200,7 @@ export default function History() {
     return () => {
       cancelled = true
     }
-  }, [open, mapId, token, selected, against, onError])
+  }, [open, mapId, token, selected, comparisonVersion, onError])
   if (!map) return null
   const download = async () => {
     if (!detail) return
@@ -255,8 +260,8 @@ export default function History() {
     page?.head === 0 || (detail !== null && detail.version === page?.head)
   const canCheckpoint =
     page !== null && reviewingLatest && !loading && saveState === 'saved'
-  const changes =
-    detail && comparison ? compareVersions(comparison, detail) : null
+  const summaryChanges = detail && comparison ? compareVersions(comparison, detail) : null
+  const changes = against ? summaryChanges : null
   return (
     <>
       <Button
@@ -315,7 +320,7 @@ export default function History() {
                 </p>
               )}
               <ol className="max-h-48 space-y-1 overflow-y-auto md:max-h-none md:overflow-visible">
-                {page?.items.map((item) => (
+                {groupVersions(page?.items ?? []).map(group => <li key={group[0]!.version}><details open={group.some(item => item.version === selected) || group.length === 1}><summary className="cursor-pointer rounded bg-muted/40 px-2 py-2 text-xs">{new Date(group[0]!.recorded_at).toLocaleString(lang)} · {group.length} {lang === 'de' ? 'Speicherstände' : 'saves'}</summary><ol>{group.map((item) => (
                   <li key={item.version}>
                     <button
                       type="button"
@@ -325,7 +330,7 @@ export default function History() {
                     >
                       <div className="flex justify-between gap-2 font-medium">
                         <span>v{item.version}</span>
-                        {item.version === page.head && (
+                        {item.version === page?.head && (
                           <span className="text-xs text-muted-foreground">
                             {w.current}
                           </span>
@@ -341,9 +346,10 @@ export default function History() {
                       >
                         {new Date(item.recorded_at).toLocaleString(lang)}
                       </time>
+                      {item.recorded_by && <p className="text-xs text-muted-foreground">{lang === 'de' ? 'Gespeichert von' : 'Saved by'} {item.recorded_by}</p>}
                     </button>
                   </li>
-                ))}
+                ))}</ol></details></li>)}
               </ol>
               {page?.next_cursor !== null &&
                 page?.next_cursor !== undefined && (
@@ -460,6 +466,7 @@ export default function History() {
                       {w.download}
                     </Button>
                   </div>
+                  {!against && summaryChanges && <div className="rounded border bg-muted/30 p-3 text-sm"><p className="font-medium">{summaryChanges.length} {lang === 'de' ? (summaryChanges.length === 1 ? 'Abschnittsänderung seit' : 'Abschnittsänderungen seit') : (summaryChanges.length === 1 ? 'section change since' : 'section changes since')} v{comparison?.version}</p><ul className="mt-1 list-disc pl-5">{summaryChanges.slice(0, 8).map(item => <li key={item.id}>{w[item.kind as 'added' | 'removed' | 'changed']} · {item.after?.title || item.before?.title || '—'}</li>)}</ul>{summaryChanges.length > 8 && <p>+ {summaryChanges.length - 8}</p>}</div>}
                   <label className="flex flex-wrap items-center gap-2 text-sm">
                     {w.compare}
                     <select
@@ -491,8 +498,12 @@ export default function History() {
                   </label>
                   {changes ? (
                     <div className="space-y-4">
+                      <p className="text-sm font-medium">{changes.length} {lang === 'de' ? 'geänderte Abschnitte' : 'changed sections'}</p>
                       {changes.length === 0 && <p>{w.unchanged}</p>}
-                      {changes.map((item) => (
+                      {changes.map((item) => {
+                        const textOf = (node: typeof item.before, version: VersionDetail) => node && sectionBlocks(node) ? savedText(sectionBlocks(node), new Map(version.nodes.map(n => [n.id, n.title])), lang === 'de' ? 'Abschnitt fehlt' : 'Missing section', lang === 'de' ? '[Diagramm]' : '[Diagram]') : node?.notes ?? ''
+                        const difference = wordChanges(textOf(item.before, comparison!), textOf(item.after, detail))
+                        return (
                         <article
                           key={item.id}
                           className="overflow-hidden rounded-lg border"
@@ -515,11 +526,12 @@ export default function History() {
                                   {node?.title || '—'}
                                 </h3>
                                 <p className="whitespace-pre-wrap break-words">
-                                  {node?.notes || '—'}
+                                  {difference[index]?.length ? difference[index].map((part, i) => part.changed ? index ? <ins key={i} className="bg-emerald-100 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-200">{part.text}</ins> : <del key={i} className="bg-red-100 text-red-950 dark:bg-red-950 dark:text-red-200">{part.text}</del> : part.text) : '—'}
                                 </p>
                               </div>
                             ))}
                           </div>
+                          {item.changed.includes('prose_xml') && <details className="border-t p-3 text-xs"><summary className="cursor-pointer">{lang === 'de' ? 'Vollständigen Inhalt vergleichen' : 'Compare complete content'}</summary><div className="mt-3 grid gap-4 md:grid-cols-2">{[item.before, item.after].map((node, index) => node && <div key={index} className="min-w-0"><p className="mb-2 font-medium">{index ? w.after : w.before}</p><SavedProse node={node} nodes={index ? detail.nodes : comparison!.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} /></div>)}</div></details>}
                           {item.changed.some(
                             (field) =>
                               !['title', 'notes', 'prose_xml'].includes(field),
@@ -559,16 +571,15 @@ export default function History() {
                               </dl>
                             </details>
                           )}
-                          {item.changed.includes('prose_xml') &&
-                            !item.changed.includes('notes') && (
+                          {item.changed.includes('prose_xml') && textOf(item.before, comparison!) === textOf(item.after, detail) && (
                               <p className="border-t p-3 text-xs text-muted-foreground">
                                 {w.formatting}
                               </p>
                             )}
                         </article>
-                      ))}
-                      {JSON.stringify(comparison!.relationships) !==
-                        JSON.stringify(detail.relationships) && (
+                      )})}
+                      {canonical(comparison!.relationships) !==
+                        canonical(detail.relationships) && (
                         <details className="rounded-lg border p-3">
                           <summary>{w.rels}</summary>
                           <pre className="overflow-auto whitespace-pre-wrap break-all text-xs">
@@ -600,9 +611,7 @@ export default function History() {
                           <h3 className="break-words text-base font-medium">
                             {node.title || '—'}
                           </h3>
-                          <p className="whitespace-pre-wrap break-words">
-                            {node.notes}
-                          </p>
+                          <SavedProse node={node} nodes={detail.nodes} access={{ token, project }} missing={lang === 'de' ? 'Abschnitt fehlt' : 'Missing section'} />
                         </article>
                       ))}
                     </div>

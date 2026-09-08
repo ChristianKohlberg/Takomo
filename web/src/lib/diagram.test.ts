@@ -95,3 +95,16 @@ describe('Kroki rendering', () => {
     expect(diagramEngine('javascript')).toBeNull()
   })
 })
+
+it('keeps SVG isolated while allowing long foreign-object labels to paint fully', async () => {
+  render.mockResolvedValue({ svg: svg('<foreignObject width="50" height="20"><div xmlns="http://www.w3.org/1999/xhtml" style="overflow:hidden">No or unclear</div></foreignObject>') })
+  const host = document.createElement('div')
+  const stop = mountDiagram(host, 'graph', 'mermaid', access)
+  await tick()
+  const image = host.querySelector('img')!
+  const parsed = new DOMParser().parseFromString(decodeURIComponent(image.src.split(',')[1]!), 'image/svg+xml')
+  expect(parsed.querySelector('foreignObject')?.getAttribute('overflow')).toBe('visible')
+  expect(parsed.querySelector('div')?.getAttribute('style')).toContain('overflow:visible')
+  expect(host.querySelector('foreignObject')).toBeNull()
+  stop()
+})

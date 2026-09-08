@@ -1,3 +1,4 @@
+import { saveProject } from '@/lib/session'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Markdown } from '@/components/Markdown'
 import { Button } from '@/components/ui/button'
@@ -200,7 +201,12 @@ function Conversation({ token, project, map, lang, nodes, canAsk, open, onOpenCh
             })}
           </div>
           {view.jobs.filter(job => job.migration && !view.messages.some(message => message.role === 'assistant' && message.job_id === job.id)).map(job => <div key={job.id}>{migrationNotice(job)}</div>)}
-          {active && <p role="status" className="my-3 text-sm text-muted-foreground">{active.status === 'running' ? t.running : t.queued}</p>}
+          {active && <div className="my-3 space-y-2 rounded border border-border-soft bg-muted/30 p-3 text-sm">
+            <p role="status">{active.status === 'running' ? t.running : t.queued}</p>
+            <p className="text-xs text-muted-foreground">{lang === 'de' ? 'Angefragt am' : 'Requested at'} <time dateTime={new Date(active.created_at).toISOString()}>{new Date(active.created_at).toLocaleString(lang)}</time></p>
+            {active.status === 'queued' && <p className="text-xs text-muted-foreground">{lang === 'de' ? 'Die Verfügbarkeit des Agentendienstes ist hier nicht bekannt. Die Anfrage bleibt in der Warteschlange; erneutes Senden ist nicht nötig.' : 'Agent service availability is not reported here. Your request stays queued; you do not need to send it again.'}</p>}
+            <div className="flex flex-wrap items-center gap-3 text-xs"><button type="button" className="underline" onClick={() => setRefresh(value => value + 1)}>{lang === 'de' ? 'Status aktualisieren' : 'Refresh status'}</button><a className="underline" href={`/agent-queues?project=${encodeURIComponent(project)}`} onClick={() => saveProject(project)}>{lang === 'de' ? 'Agent-Warteschlange öffnen' : 'Open agent queue'}</a></div>
+          </div>}
           {!active && latest?.status === 'failed' && <p role="alert" className="my-3 text-sm text-destructive">{t.failed} {latest.error}</p>}
           {atTurnLimit && !pendingRetry ? <p className="mt-3 text-xs text-muted-foreground">{t.turnLimit}</p> : canAsk ? <form className="mt-4 shrink-0 space-y-3 border-t border-border-soft pt-3" onSubmit={event => { event.preventDefault(); void send() }}>
             <fieldset disabled={locked} className="space-y-2">

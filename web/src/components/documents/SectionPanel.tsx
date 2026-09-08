@@ -29,7 +29,7 @@
 // what "better diffs" actually comes from, and it is why the review button is
 // beside the prose rather than in a panel somewhere else.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { MoreHorizontal } from 'lucide-react'
+import { MoreHorizontal, Check, GitBranch, History, ShieldCheck, MessageSquare }  from 'lucide-react'
 
 import { EditableText } from '@/components/EditableText'
 import { Hint } from '@/components/Hint'
@@ -251,7 +251,7 @@ export function SectionPanel({
 
       <div ref={actionsRef} id={actionsId} role="group" aria-label={labels.actions ?? 'Section actions'}
         data-open={actionsOpen || historyOpen || proposalsOpen || undefined}
-        className="section-actions mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+        className="section-actions mb-2 flex flex-col items-stretch gap-1 text-sm">
         {headingActions}
         <Hint text={canWrite ? labels.reviewHint : labels.needWrite}>
           <button
@@ -260,7 +260,7 @@ export function SectionPanel({
             onClick={onReview}
             className="text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
-            ✓ {labels.review}
+            <Check className="size-4" aria-hidden="true" /> {labels.review}
           </button>
         </Hint>
         <button
@@ -268,7 +268,7 @@ export function SectionPanel({
           onClick={onShowOnMap}
           className="text-muted-foreground hover:text-foreground"
         >
-          ⌖ {labels.showOnMap}
+          <GitBranch className="size-4" aria-hidden="true" /> {labels.showOnMap}
         </button>
         {onShowTests && (
           <button
@@ -276,7 +276,7 @@ export function SectionPanel({
             onClick={onShowTests}
             className={`cursor-pointer text-xs hover:underline ${failingTests ? 'text-destructive' : 'text-muted-foreground'}`}
           >
-            {testsLabel}
+            <ShieldCheck className="size-4" aria-hidden="true" /> {testsLabel}
           </button>
         )}
         {proposalCount > 0 && onToggleProposals && (
@@ -289,7 +289,7 @@ export function SectionPanel({
               pending > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
             )}
           >
-            ◆ {proposalsOpen ? labels.hideProposals : labels.proposals}
+            <MessageSquare className="size-4" aria-hidden="true" /> {proposalsOpen ? labels.hideProposals : labels.proposals}
           </button>
         )}
         <button
@@ -298,7 +298,7 @@ export function SectionPanel({
           aria-expanded={historyOpen}
           className="text-muted-foreground hover:text-foreground"
         >
-          ≡ {historyOpen ? labels.hideHistory : labels.history}
+          <History className="size-4" aria-hidden="true" /> {historyOpen ? labels.hideHistory : labels.history}
         </button>
       </div>
 

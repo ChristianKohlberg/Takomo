@@ -225,17 +225,23 @@
 .document-page .ProseMirror blockquote { margin-block: 1em; padding-inline: 1em; }
 .document-page .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { line-height: 1.25; margin-bottom: 0.45em; }
 
-/* Reserve the action row on pointer devices so revealing it never reflows prose. */
+/* Contextual controls stay outside the document's reading flow. */
 .document-section { position: relative; }
-.section-actions { opacity: 0; pointer-events: none; }
-.document-section:hover > .section-actions,
-.document-section:focus-within > .section-actions,
-.section-actions[data-open="true"] { opacity: 1; pointer-events: auto; }
-@media (hover: none), (pointer: coarse) {
-  .document-section > .section-actions { display: none; }
-  .document-section > .section-actions[data-open="true"] {
-    display: flex; position: absolute; top: 3rem; right: 0; z-index: 40;
-    max-width: min(22rem, 100%); padding: 12px; border: 1px solid var(--border);
-    border-radius: 8px; background: var(--panel); box-shadow: 0 4px 16px #0002;
-  }
-}
+.section-actions { display: none; }
+.section-actions[data-open="true"] { display: flex; position: absolute; top: 3rem; right: 0; z-index: 40; width: min(19rem, 100%); padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 4px 16px #0002; }
+.section-actions button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 6px 8px; text-align: left; border-radius: 4px; }
+.section-actions button:hover, .section-actions button:focus-visible { background: var(--muted); }
+.section-actions > [data-state] { width: 100%; }
+.inline-section { min-height: 24px; margin-block: 4px; }
+.inline-section-reveal { color: var(--muted-foreground); font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.inline-section-reveal:hover, .inline-section-reveal:focus-visible { background: var(--muted); color: var(--foreground); }
+@media (hover: hover) { .inline-section-reveal { opacity: 0; } .inline-section:hover .inline-section-reveal, .inline-section-reveal:focus-visible { opacity: 1; } }
+.document-toolbar > * { flex-shrink: 0; }
+.document-toolbar { scrollbar-width: thin; }
+.document-outline { min-width: 0; }
+@media (min-width: 1024px) { .document-outline[style] { max-width: 440px; } }
+
+.document-more-tools { display: none; }
+.document-more-tools[data-open=true] { display: flex; position: absolute; top: 100%; right: 0; left: 0; z-index: 50; flex-wrap: wrap; gap: 8px; padding: 10px; background: var(--panel); border: 1px solid var(--border); box-shadow: 0 4px 12px #0002; }
+@container document-pane (min-width: 850px) { .document-tools-toggle { display: none; } .document-more-tools, .document-more-tools[data-open=true] { position: static; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; border: 0; box-shadow: none; } }
+@media (hover: hover) { .section-discussion:not(:focus-within) { opacity: 0.35; } .document-section:hover .section-discussion { opacity: 1; } }
