@@ -1162,14 +1162,10 @@ async fn a_projection_computed_before_the_log_grew_is_not_applied() {
             .unwrap(),
         "the apply step rechecks the log sequence and declines a stale projection"
     );
-    assert!(
-        store
-            .search_document(&map, "grew", None)
-            .unwrap()
-            .hits
-            .is_empty()
-            || true,
-        "search projects the current log itself"
+    assert_eq!(
+        store.search_document(&map, "grew", None).unwrap().hits[0].node_id,
+        node,
+        "a declined projection leaves the map dirty, so the next search projects the grown log itself"
     );
     let fresh = store.compute_projection(&map).unwrap();
     assert!(fresh.seq() > projection.seq());
