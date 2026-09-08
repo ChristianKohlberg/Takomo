@@ -360,3 +360,22 @@ it('disables stale prose tools while editing a title and restores them on return
   expect(comment.disabled).toBe(false)
   expect(fragment.toString()).toContain('Payment deadline is thirty days.')
 })
+
+it('fully hides the outline without replacing the selected editor or changing shared content', async () => {
+  stubPaneWidth(1100)
+  const { props, doc } = setup()
+  const mounted = render(<Plan {...props} />)
+  const toggle = screen.getByRole('button', { name: 'Outline' })
+  const aside = mounted.container.querySelector('aside.document-outline') as HTMLElement
+  const editor = await screen.findByLabelText('Section 1 prose')
+  const before = Y.encodeStateAsUpdate(doc)
+  fireEvent.click(toggle)
+  expect(getComputedStyle(aside).display).toBe('none')
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  expect(localStorage.getItem('takomo.plan.outline')).toBe('closed')
+  expect(screen.getByLabelText('Section 1 prose')).toBe(editor)
+  fireEvent.click(toggle)
+  expect(getComputedStyle(aside).display).not.toBe('none')
+  expect(screen.getByLabelText('Section 1 prose')).toBe(editor)
+  expect(Y.encodeStateAsUpdate(doc)).toEqual(before)
+})

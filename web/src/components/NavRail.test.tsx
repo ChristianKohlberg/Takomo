@@ -56,34 +56,25 @@ describe('NavRail', () => {
     expect(screen.getByText('Board')).toBeTruthy()
   })
 
-  it('makes Bugs, Lanes and Epics dedicated destinations beside Board', () => {
-    const { onNavigate } = mount({ current: 'inbox' })
-    const epic = screen.getByRole('link', { name: 'Epics' })
-    expect(epic).toHaveProperty('pathname', '/epics')
-    expect(epic.previousElementSibling).toHaveProperty('pathname', '/lanes')
-    expect(screen.getByRole('link', { name: 'Lanes' }).previousElementSibling).toHaveProperty('pathname', '/bugs')
-    expect(screen.getByRole('link', { name: 'Bugs' }).previousElementSibling).toHaveProperty('pathname', '/board')
-    fireEvent.click(epic)
-    expect(onNavigate).toHaveBeenCalledWith('/epics')
-  })
-
-  it('does not list settings among the surface links', () => {
-    mount()
-    expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull()
+  it('keeps only primary destinations in the main navigation', () => {
+    mount({ current: 'inbox' })
+    for (const name of ['Specification', 'Document', 'Map', 'Tests', 'Board', 'Lanes']) expect(screen.getByRole('link', { name })).toBeTruthy()
+    for (const name of ['Bugs', 'Epics', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) expect(screen.queryByRole('link', { name })).toBeNull()
   })
 
   it('keeps every destination reachable by name when collapsed', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Specification', 'Lanes', 'Epics', 'Inbox', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) {
+    for (const name of ['Specification', 'Document', 'Map', 'Tests', 'Lanes', 'Inbox']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })
 
-  it('localizes the queue destination and keeps a real URL', () => {
+  it('localizes the specification children', () => {
     mount({ lang: 'de', collapsed: true })
-    expect(screen.getByRole('link', { name: 'Agenten-Queue' }).getAttribute('href')).toBe('/agent-queues')
+    expect(screen.getByRole('link', { name: 'Dokument' }).getAttribute('href')).toBe('/specification?view=document')
+    expect(screen.getByRole('link', { name: 'Karte' }).getAttribute('href')).toBe('/specification?view=map')
   })
 
   it('renders the count when expanded', () => {
@@ -91,11 +82,11 @@ describe('NavRail', () => {
     expect(screen.getByText('4')).toBeTruthy()
   })
 
-  it('drops the number when collapsed — there is nowhere to put it', () => {
+  it('keeps the Inbox count when collapsed', () => {
     // The dot that replaces it is presentational, so the assertion is the
     // absence of the number rather than the presence of the dot.
     mount({ collapsed: true, badges: { inbox: 4 } })
-    expect(screen.queryByText('4')).toBeNull()
+    expect(screen.getByText('4')).toBeTruthy()
   })
 
   it('renders nothing for a zero badge', () => {
@@ -159,11 +150,36 @@ describe('NavRail', () => {
 })
 
 // Project context must survive both normal navigation and copy-link/new-tab.
-it('carries the current project into Lanes and Epics destinations', () => {
+it('carries the current project into Lanes destinations', () => {
   const { onNavigate } = mount({ project: 'demo' })
   const lanes = screen.getByRole('link', { name: 'Lanes' })
   expect(lanes.getAttribute('href')).toBe('/lanes?project=demo')
   fireEvent.click(lanes)
   expect(onNavigate).toHaveBeenCalledWith('/lanes?project=demo')
-  expect(screen.getByRole('link', { name: 'Epics' }).getAttribute('href')).toBe('/epics?project=demo')
+})
+
+it('preserves project and selected section across all child views and modified clicks', () => {
+  const { onNavigate } = mount({ current: 'specification', project: 'project / one', specificationView: 'map', specificationSection: 'node/one' })
+  for (const [name, view] of [['Document', 'document'], ['Map', 'map'], ['Tests', 'tests']]) {
+    const link = screen.getByRole('link', { name })
+    expect(link.getAttribute('href')).toBe(`/projects/project%20%2F%20one/specification?view=${view}&section=node%2Fone`)
+    fireEvent.click(link)
+    expect(onNavigate).toHaveBeenLastCalledWith(link.getAttribute('href'))
+  }
+  expect(screen.getByRole('link', { name: 'Map' }).getAttribute('aria-current')).toBe('page')
+  onNavigate.mockClear()
+  fireEvent.click(screen.getByRole('link', { name: 'Tests' }), { ctrlKey: true })
+  expect(onNavigate).not.toHaveBeenCalled()
+})
+
+it('places one Inbox link above Profile and keeps scoped Settings in its menu', () => {
+  mount({ project: 'demo', navigationInHeader: true })
+  const inbox = screen.getByRole('link', { name: 'Inbox' })
+  expect(screen.queryByRole('link', { name: 'Settings' })).toBeNull()
+  fireEvent.click(accountTrigger())
+  const settings = screen.getByRole('menuitem', { name: 'Settings' })
+  expect(screen.getAllByRole('link', { name: 'Inbox' })).toHaveLength(1)
+  expect(settings.getAttribute('href')).toBe('/settings?scope=demo')
+  expect(inbox.compareDocumentPosition(accountTrigger()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(inbox.closest('nav')).toBeNull()
 })

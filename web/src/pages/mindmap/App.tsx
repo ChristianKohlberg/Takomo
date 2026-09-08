@@ -25,7 +25,7 @@ import { useToast } from '@/components/Toaster'
 import { Button } from '@/components/ui/button'
 import { pick } from '@/lib/i18n'
 import { fuzzyRank, isTextEntry } from '@/lib/mindmap-commands'
-import { createMindmap, deleteMindmap, patchMindmap, promoteNode } from '@/lib/mindmaps'
+import { createMindmap, deleteMindmap, patchMindmap } from '@/lib/mindmaps'
 import { planLink } from '@/lib/plan-url'
 import { saveProject } from '@/lib/session'
 import Live from './Live'
@@ -51,7 +51,6 @@ export function MapView() {
   const navigate = useWorkspaceNavigate()
   const { toast } = useToast()
   const [focusNode, selectSection] = useWorkspaceSection()
-  const openId = open?.id ?? null
   const selectedProject = project
   const refreshList = refreshMap
   const canWrite = scopes.includes('write')
@@ -62,25 +61,6 @@ export function MapView() {
 
   const t = useMemo(() => pick(STR, lang), [lang])
   const onLiveError = useCallback((message: string) => toast(message, 'err'), [toast])
-  const promote = useCallback(
-    (node: string, target: 'epic' | 'initiative') => {
-      if (!openId) return
-      // Promotion goes over REST on purpose: it creates an epic or an initiative,
-      // which is work in the store rather than a change to this document. The
-      // server writes the node's link into the same room, so it arrives here over
-      // the socket like any other edit.
-      promoteNode(token, openId, node, target)
-        .then(({ created }) => {
-          toast(
-            (target === 'epic' ? t.promotedEpic : t.promotedInitiative).replace('{id}', created.id),
-            'success',
-          )
-        })
-        .catch(handleErr)
-    },
-    [openId, token, toast, t, handleErr],
-  )
-
   const newMap = useCallback(
     async (forProject?: string) => {
       if (!canWrite) {
@@ -213,7 +193,6 @@ export function MapView() {
               focusNode={focusNode}
               onSelection={selectSection}
               onDeleteMap={removeMap}
-              onPromote={promote}
               labels={{
                 branch: t.branch,
                 readOnly: t.readOnlyBanner,
@@ -404,8 +383,6 @@ export function MapView() {
                 'node.relate': t.cmdRelate,
                 'node.attach': t.cmdAttach,
                 'node.ask': t.cmdAsk,
-                'node.promoteEpic': t.cmdPromoteEpic,
-                'node.promoteInitiative': t.cmdPromoteInitiative,
                 'node.collapse': t.cmdCollapse,
                 'node.expand': t.cmdExpand,
                 'node.delete': t.cmdDelete,
@@ -424,8 +401,6 @@ export function MapView() {
                 'node.relate': t.cmdRelateHint,
                 'node.ask': t.cmdAskHint,
                 'map.trust': t.trustLensHint,
-                'node.promoteEpic': t.promoteEpicHint,
-                'node.promoteInitiative': t.promoteIniHint,
                 'node.delete': t.cmdDeleteHint,
                 'map.plan': t.cmdPlanHint,
                 'map.tests': t.cmdTestsHint,
