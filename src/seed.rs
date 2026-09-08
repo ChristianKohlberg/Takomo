@@ -537,7 +537,7 @@ fn environments(store: &Store) -> ApiResult<()> {
             name: Some("Local (backlot)".to_string()),
             kind: Some("local".to_string()),
             base_url: Some("http://127.0.0.1:8080".to_string()),
-            bring_up: Some("backlot up --ttl 900   # agents: --ttl, not $$".to_string()),
+            bring_up: Some("backlot up --ttl 15   # agents: --ttl, not $$".to_string()),
             teardown: Some("backlot release".to_string()),
             data_state: Some("seeded".to_string()),
             notes: Some("Yours to break. Reseeded on every lease.".to_string()),
