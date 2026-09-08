@@ -3,6 +3,7 @@ import { createNode, readNodes } from '@/lib/mindmap-crdt'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { Canvas, type CanvasProps } from './Canvas'
+import { layoutForMode } from '@/lib/mindmap-custom-layout'
 import { NODE_HEIGHT, NODE_WIDTH, radialLayout } from '@/lib/mindmap-layout'
 
 function props(over: Partial<CanvasProps> = {}): CanvasProps {
@@ -26,7 +27,6 @@ function props(over: Partial<CanvasProps> = {}): CanvasProps {
     onDelete: vi.fn(),
     onReparent: vi.fn(),
     onPlace: vi.fn(),
-    onTidy: vi.fn(),
     mode: 'radial',
     onMode: vi.fn(),
     relationFrom: null,
@@ -37,7 +37,7 @@ function props(over: Partial<CanvasProps> = {}): CanvasProps {
       empty: 'Nothing here yet',
       emptyHint: 'Create a thought',
       fit: 'Fit',
-      tidy: 'Tidy',
+      custom: 'Custom',
       radial: 'Radial',
       tree: 'Tree',
       zoomIn: 'Zoom in',
@@ -161,4 +161,61 @@ it('refits layout changes unless the reader preserves the camera', () => {
     ui.rerender(<Canvas {...p} mode="radial" />)
     expect(camera()).not.toBe(manual)
   } finally { rect.mockRestore() }
+})
+
+
+describe('layout views', () => {
+  it('offers all three modes with the active view announced and no destructive Tidy action', () => {
+    const p = props({ mode: 'custom' })
+    const ui = render(<Canvas {...p} />)
+    for (const [name, mode] of [['Custom', 'custom'], ['Radial', 'radial'], ['Tree', 'tidy']] as const) {
+      const button = screen.getByRole('button', { name })
+      expect(button.getAttribute('aria-pressed')).toBe(String(mode === 'custom'))
+      fireEvent.click(button)
+      expect(p.onMode).toHaveBeenLastCalledWith(mode)
+    }
+    expect(screen.queryByRole('button', { name: 'Tidy' })).toBeNull()
+    ui.rerender(<Canvas {...p} mode="tidy" />)
+    expect(screen.getByRole('button', { name: 'Tree' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it.each(['radial', 'tidy'] as const)('creates an unplaced branch on blank double-click in %s', mode => {
+    const p = props({ mode })
+    render(<Canvas {...p} />)
+    fireEvent.doubleClick(screen.getByRole('application'), { clientX: 1500, clientY: 1200 })
+    expect(p.onAddBranch).toHaveBeenCalledOnce()
+    expect(p.onCreateAt).not.toHaveBeenCalled()
+  })
+
+  it('creates a positioned thought on blank double-click in Custom', () => {
+    const p = props({ mode: 'custom' })
+    render(<Canvas {...p} />)
+    fireEvent.doubleClick(screen.getByRole('application'), { clientX: 1500, clientY: 1200 })
+    expect(p.onCreateAt).toHaveBeenCalledWith({ x: 1500 - NODE_WIDTH / 2, y: 1200 - NODE_HEIGHT / 2 })
+    expect(p.onAddBranch).not.toHaveBeenCalled()
+  })
+})
+
+
+it.each(['custom', 'radial', 'tidy'] as const)('only permits node dragging in Custom (%s)', mode => {
+  // jsdom lacks PointerEvent on some supported versions; a MouseEvent carries
+  // the coordinate/button fields used by the canvas gesture handlers.
+  const pointer = (target: Element, type: string, x: number, y: number) =>
+    fireEvent(target, new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: y }))
+  const doc = new Y.Doc()
+  const id = createNode(doc, { parent: null, title: 'Planning', by: 'test' })!
+  const nodes = readNodes(doc)
+  const p = props({ nodes, mode })
+  render(<Canvas {...p} />)
+  const node = layoutForMode(nodes, mode).nodes.find(n => n.node.id === id)!
+  const canvas = screen.getByRole('application')
+  const x = node.x + NODE_WIDTH / 2
+  const y = node.y + NODE_HEIGHT / 2
+  pointer(canvas, 'pointerdown', x, y)
+  pointer(canvas, 'pointermove', x + 900, y + 800)
+  pointer(canvas, 'pointerup', x + 900, y + 800)
+  expect(p.onSelect).toHaveBeenCalledWith(id)
+  if (mode === 'custom') expect(p.onPlace).toHaveBeenCalledWith(id, { x: node.x + 900, y: node.y + 800 })
+  else expect(p.onPlace).not.toHaveBeenCalled()
+  expect(p.onReparent).not.toHaveBeenCalled()
 })

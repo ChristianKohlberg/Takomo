@@ -79,6 +79,7 @@ export const STR = defineStrings({
     collapseBranch: 'Fold this branch',
     layoutRadial: 'Radial',
     layoutTree: 'Tree',
+    layoutCustom: 'Custom',
 
     editThought: 'Open this thought',
     renameThought: 'Rename this thought',
@@ -167,7 +168,7 @@ export const STR = defineStrings({
     nodeTestsFailing: '{n} tests, {m} not passing',
     cmdGoto: 'Go to a thought…',
     cmdFit: 'Fit the whole map',
-    cmdTidy: 'Tidy up',
+    cmdTidy: 'Show tree layout',
     cmdRenameMap: 'Rename this map',
     cmdProject: 'Switch project…',
     cmdDeleteMap: 'Delete this map',
@@ -303,6 +304,7 @@ export const STR = defineStrings({
     collapseBranch: 'Ast einklappen',
     layoutRadial: 'Radial',
     layoutTree: 'Baum',
+    layoutCustom: 'Benutzerdefiniert',
 
     editThought: 'Diesen Gedanken öffnen',
     renameThought: 'Diesen Gedanken umbenennen',
@@ -392,7 +394,7 @@ export const STR = defineStrings({
     nodeTestsFailing: '{n} Tests, {m} nicht bestanden',
     cmdGoto: 'Zu einem Gedanken springen…',
     cmdFit: 'Ganze Map einpassen',
-    cmdTidy: 'Aufräumen',
+    cmdTidy: 'Baumlayout anzeigen',
     cmdRenameMap: 'Diese Map umbenennen',
     cmdProject: 'Projekt wechseln…',
     cmdDeleteMap: 'Diese Map löschen',
