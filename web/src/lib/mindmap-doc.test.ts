@@ -36,7 +36,6 @@ import {
   reparent,
   setNotes,
   setTitle,
-  tidyAll,
 } from './mindmap-crdt'
 import { first, between } from './fracdex'
 
@@ -429,14 +428,6 @@ describe('writing', () => {
     const moved = readNodes(doc).find((n) => n.id === b)!
     expect(moved.parent).toBe(a)
     expect(moved.at).toBeNull()
-  })
-
-  it('hands every node back to the layout on tidy', () => {
-    const doc = new Y.Doc()
-    const a = createNode(doc, { parent: null, title: 'a', by: 'x' })!
-    place(doc, a, { x: 10, y: 10 })
-    tidyAll(doc)
-    expect(readNodes(doc)[0]!.at).toBeNull()
   })
 
   it('stores an attachment as a pointer, never as bytes', () => {

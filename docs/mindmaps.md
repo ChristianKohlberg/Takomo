@@ -203,11 +203,23 @@ key actually stored is a fractional index (see above); it never leaves the
 server, because it is an opaque string that has to stay free to change shape.
 Writing `position` means "put it at this index in its ring".
 
-`at` is hand placement — `{x, y}` or `null` to let the layout place it. Null by
-default, which keeps a map growing at typing speed tidy; a map that *has* been
-arranged stays exactly where it was left, and `at: null` hands one node back to
-the layout ("tidy up" clears them all). The pair is one field rather than two
-nullable numbers, because half a coordinate places nothing.
+`at` is the saved **Custom** placement — `{x, y}` or `null` until the canvas
+assigns a position. The pair is one field rather than two nullable numbers,
+because half a coordinate places nothing.
+
+The canvas has **Custom**, **Radial**, and **Tree** views. Custom is one shared,
+automatically saved arrangement per map. On the first writable, synced visit,
+the canvas preserves the existing arrangement, including hand placement, as
+Custom. Coordinates use the existing node `x`/`y` fields; `layout.customRoot`
+in the shared document preserves the root's initial coordinate frame. New nodes
+receive vacant positions near their saved parent, while existing positions stay
+fixed. The current layout choice is remembered per map in this browser.
+
+Radial and Tree calculate positions without writing to the shared document or
+overwriting Custom. Dragging is available only in Custom; switching back restores
+its positions across reloads. Deleted nodes stay deleted. The former Tidy command
+now selects Tree instead of clearing saved positions. No Save button or additional
+saved layouts are needed.
 
 Hanging a node off its own descendant is refused (`mindmap.cycle`). It would cut
 that branch off the map, and it is exactly what a drag makes easy to try. Two
@@ -330,7 +342,7 @@ event.
 
   **⌘K is how you reach the rest**, scoped to the selected node or to the map
   and saying which. Add, rename, write notes, relate, attach, fold, prune; fit,
-  tidy, rename the map, switch project. Promoting a branch to an epic or an
+  show tree layout, rename the map, switch project. Promoting a branch to an epic or an
   initiative is not a canvas command — it is the CLI, MCP and REST call above,
   and a promoted node still shows its `→ epic` mark. And **go to a thought…**,
   which fuzzy-matches titles, unfolds whatever was hiding the match and centres
@@ -340,10 +352,9 @@ event.
   whole tree to a thumbnail, and its controls carry **Fit all** for the overview,
   **Fit branch** for the selected subtree, the zoom percentage, and a
   **Keep zoom and position** switch — without it, changing layout refits the
-  selected branch or the map, so nothing lands off-screen. A node with no hand
-  placement is laid out automatically, which
-  keeps a map growing at typing speed tidy, and "tidy up" hands every pinned node
-  back to the layout. On a phone the same tree is an indented list — a better
+  selected branch or the map, so nothing lands off-screen. Custom saves manual
+  placement; Radial and Tree offer automatic views without replacing it.
+  On a phone the same tree is an indented list — a better
   shape for the screen than a pinch-zoom canvas, not a consolation prize.
 
 ## Dictation

@@ -94,7 +94,6 @@ import {
   setFields,
   setNotes,
   setTitle,
-  tidyAll,
   updateAttachment,
 } from '@/lib/mindmap-crdt'
 import {
@@ -110,6 +109,7 @@ import {
   type Relationship,
 } from '@/lib/mindmap-doc'
 import type { Point } from '@/lib/mindmap-layout'
+import { ensureCustomLayout, readCustomRoot } from '@/lib/mindmap-custom-layout'
 import { cutTarget, foldSummary } from '@/lib/mindmap-lens'
 import { resolveName } from '@/lib/mindmap-naming'
 import { recordTrace, type MindmapSession } from '@/lib/mindmaps'
@@ -143,6 +143,7 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected'
  *  it under somebody else mid-conversation, so none of this is in the document. */
 const foldKey = (id: string) => `takomo.mindmap.fold.${id}`
 const MODE_KEY = 'takomo.mindmap.mode'
+const modeKey = (id: string) => `${MODE_KEY}.${id}`
 /** The trust lens is a lens, so it is off by default and remembered per viewer. */
 const TRUST_KEY = 'takomo.mindmap.trust'
 
@@ -298,9 +299,16 @@ function ConnectedLive({
 
   const [peers, setPeers] = useState<CanvasPeer[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
-  const [mode, setMode] = useState<CanvasMode>(() =>
-    localStorage.getItem(MODE_KEY) === 'tidy' ? 'tidy' : 'radial',
-  )
+  const [initialMode] = useState<'radial' | 'tidy'>(() => localStorage.getItem(MODE_KEY) === 'tidy' ? 'tidy' : 'radial')
+  const [mode, setMode] = useState<CanvasMode>(() => {
+    const saved = localStorage.getItem(modeKey(session.mindmap))
+    return saved === 'radial' || saved === 'tidy' ? saved : 'custom'
+  })
+  const [customRoot, setCustomRoot] = useState<Point>()
+  const onMode = useCallback((next: CanvasMode) => {
+    setMode(next)
+    localStorage.setItem(modeKey(session.mindmap), next)
+  }, [session.mindmap])
   const [relationFrom, setRelationFrom] = useState<string | null>(null)
   const [pruning, setPruning] = useState<string | null>(null)
   /** The child whose line to its parent is being cut, or null. */
@@ -352,17 +360,28 @@ function ConnectedLive({
       const next = readNodes(ydoc)
       setNodes(next)
       setRelationships(readRelationships(ydoc, next))
+      setCustomRoot(readCustomRoot(ydoc))
     }
     read()
     const nm = nodesMap(ydoc)
     const rm = relationshipsMap(ydoc)
     nm.observeDeep(read)
     rm.observeDeep(read)
+    const lm = ydoc.getMap('layout')
+    lm.observe(read)
+    provider.on('sync', read)
     return () => {
       nm.unobserveDeep(read)
       rm.unobserveDeep(read)
+      lm.unobserve(read)
+      provider.off('sync', read)
     }
-  }, [ydoc])
+  }, [ydoc, provider])
+
+  useEffect(() => {
+    // Never freeze a partial document while the initial server sync is pending.
+    if (provider.synced && canWrite) ensureCustomLayout(ydoc, initialMode)
+  }, [nodes, ydoc, provider, canWrite, initialMode])
 
   useEffect(() => {
     const onAwareness = () => {
@@ -580,14 +599,10 @@ function ConnectedLive({
   )
   const onPlace = useCallback(
     (id: string, at: Point) => {
-      if (guard()) place(ydoc, id, at)
+      if (mode === 'custom' && guard()) place(ydoc, id, at)
     },
-    [guard, ydoc],
+    [guard, ydoc, mode],
   )
-  const onTidy = useCallback(() => {
-    if (guard()) tidyAll(ydoc)
-  }, [guard, ydoc])
-
   const onFields = useCallback(
     (id: string, fields: Partial<NodeFields>) => {
       if (!guard()) return
@@ -964,7 +979,7 @@ function ConnectedLive({
           })
           break
         case 'map.tidy':
-          onTidy()
+          onMode('tidy')
           break
         case 'map.rename':
           onRenameMap()
@@ -989,7 +1004,7 @@ function ConnectedLive({
       onRenameNode,
       onAsk,
       onToggleCollapse,
-      onTidy,
+      onMode,
       onRenameMap,
       onDeleteMap,
     ],
@@ -1100,12 +1115,9 @@ function ConnectedLive({
           onDelete={setPruning}
           onReparent={onReparent}
           onPlace={onPlace}
-          onTidy={onTidy}
           mode={mode}
-          onMode={(m) => {
-            setMode(m)
-            localStorage.setItem(MODE_KEY, m)
-          }}
+          customRoot={customRoot}
+          onMode={onMode}
           relationFrom={relationFrom}
           onRelationTarget={onRelationTarget}
           onCancelRelation={() => setRelationFrom(null)}

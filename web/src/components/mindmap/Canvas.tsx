@@ -43,9 +43,7 @@ import {
   NODE_WIDTH,
   edgePath,
   fit,
-  layout,
   nodeAt,
-  radialLayout,
   resolveDrop,
   toScreen,
   toWorld,
@@ -65,7 +63,8 @@ import { NodeMenu, type MenuItem } from '@/components/mindmap/NodeMenu'
 import { NodePill, type PillVerb } from '@/components/mindmap/NodePill'
 
 /** How the first ring is arranged. Per-viewer, like pan and zoom. */
-export type CanvasMode = 'radial' | 'tidy'
+export type { CanvasMode } from '@/lib/mindmap-custom-layout'
+import { layoutForMode, type CanvasMode } from '@/lib/mindmap-custom-layout'
 
 /** Somebody else in the same map, and the node they have selected. */
 export interface CanvasPeer {
@@ -83,9 +82,9 @@ export interface CanvasLabels {
   noMatches?: string
   keepView?: string
   fitBranch?: string
-  tidy: string
   radial: string
   tree: string
+  custom: string
   zoomIn: string
   zoomOut: string
   expand: string
@@ -156,8 +155,8 @@ export interface CanvasProps {
   onReparent: (id: string, parent: string) => void
   onPlace: (id: string, at: Point) => void
   /** Clear every hand placement and let the layout take over again. */
-  onTidy: () => void
   mode: CanvasMode
+  customRoot?: Point
   onMode: (mode: CanvasMode) => void
   /** The node a relation is being drawn FROM, or null. */
   relationFrom: string | null
@@ -293,8 +292,8 @@ export function Canvas({
   onDelete,
   onReparent,
   onPlace,
-  onTidy,
   mode,
+  customRoot,
   onMode,
   relationFrom,
   onRelationTarget,
@@ -342,7 +341,7 @@ export function Canvas({
   const fitted = useRef(false)
   const rootFitted = useRef(false)
 
-  const placed = mode === 'radial' ? radialLayout(nodes) : layout(nodes)
+  const placed = layoutForMode(nodes, mode, customRoot)
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
   // The node being named is drawn LAST. Every card is the same size now, so
   // nothing overlaps by design — but a hand-placed thought can sit on top of
@@ -368,6 +367,7 @@ export function Canvas({
   useLayoutEffect(() => {
     if (previousMode.current === mode) return
     previousMode.current = mode
+    setDrag({ kind: 'none' })
     if (keepView) return
     const box = svgRef.current?.getBoundingClientRect()
     if (!box?.width) return
@@ -408,6 +408,7 @@ export function Canvas({
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     if (hit) {
       onSelect(hit.node.id)
+      if (mode !== 'custom' || !canWrite) return
       setDrag({
         kind: 'node',
         id: hit.node.id,
@@ -451,7 +452,7 @@ export function Canvas({
   }
 
   const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (drag.kind === 'node' && drag.moved && canWrite) {
+    if (drag.kind === 'node' && drag.moved && canWrite && mode === 'custom') {
       const node = nodes.find((n) => n.id === drag.id)
       if (node) {
         // The pointer decides the drop, not the node's own box: dropping is aimed
@@ -490,7 +491,7 @@ export function Canvas({
   useEffect(() => {
     if (!centreNode) return
     const box = svgRef.current?.getBoundingClientRect()
-    const at = (mode === 'radial' ? radialLayout(nodes) : layout(nodes)).nodes.find(
+    const at = layoutForMode(nodes, mode, customRoot).nodes.find(
       (p) => p.node.id === centreNode,
     )
     if (box && at) {
@@ -504,15 +505,15 @@ export function Canvas({
       )
     }
     onCentred()
-  }, [centreNode, onCentred, nodes, mode])
+  }, [centreNode, onCentred, nodes, mode, customRoot])
 
   useEffect(() => {
     if (fitRequest === null) return
     const box = svgRef.current?.getBoundingClientRect()
-    const bounds = (mode === 'radial' ? radialLayout(nodes) : layout(nodes)).bounds
+    const bounds = layoutForMode(nodes, mode, customRoot).bounds
     if (box) setViewport(fit(bounds, box.width, box.height))
     onFitted()
-  }, [fitRequest, onFitted, nodes, mode])
+  }, [fitRequest, onFitted, nodes, mode, customRoot])
 
   // The dialog took the focus with it when it opened; this is how it comes back,
   // so the map keyboard works again without a click into the canvas first.
@@ -735,7 +736,8 @@ export function Canvas({
             onAddBranch()
             return
           }
-          onCreateAt({ x: world.x - NODE_WIDTH / 2, y: world.y - NODE_HEIGHT / 2 })
+          if (mode === 'custom') onCreateAt({ x: world.x - NODE_WIDTH / 2, y: world.y - NODE_HEIGHT / 2 })
+          else onAddBranch()
         }}
       >
         <g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
@@ -750,7 +752,7 @@ export function Canvas({
           <g fill="none" strokeWidth={1.5}>
             {placed.nodes.map((p) => {
               const from = p.node.parent ? positionOf(p.node.parent) : placed.root
-              const d = edgePath(from, positionOf(p.node.id), mode === 'radial' ? 'auto' : 'right')
+              const d = edgePath(from, positionOf(p.node.id), mode === 'tidy' ? 'right' : 'auto')
               const cuttable = canWrite && p.node.parent !== null
               if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-muted-foreground/40" d={d} />
               return (
@@ -1135,15 +1137,17 @@ export function Canvas({
           if (box) setViewport(fit(branchBounds(placed, selected), box.width, box.height))
         }}>{labels.fitBranch ?? 'Fit branch'}</button>}
         <output className="bg-card border-border rounded-lg border px-2 py-1.5 text-xs" aria-live="polite">{Math.round(viewport.zoom * 100)}%</output>
-        <Hint text={mode === 'radial' ? labels.tree : labels.radial}>
+        {(['custom', 'radial', 'tidy'] as const).map(option => (
           <button
+            key={option}
             type="button"
-            onClick={() => onMode(mode === 'radial' ? 'tidy' : 'radial')}
-            className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
+            aria-pressed={mode === option}
+            onClick={() => onMode(option)}
+            className={cn('bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]', mode === option && 'border-ring text-foreground')}
           >
-            {mode === 'radial' ? labels.tree : labels.radial}
+            {option === 'custom' ? labels.custom : option === 'radial' ? labels.radial : labels.tree}
           </button>
-        </Hint>
+        ))}
         <Hint text={labels.trustLens}>
           <button
             type="button"
@@ -1155,15 +1159,6 @@ export function Canvas({
             )}
           >
             ◍
-          </button>
-        </Hint>
-        <Hint text={labels.tidy}>
-          <button
-            type="button"
-            onClick={onTidy}
-            className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
-          >
-            {labels.tidy}
           </button>
         </Hint>
         <Hint text={labels.fit}>
