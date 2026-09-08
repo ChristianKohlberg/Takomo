@@ -26,6 +26,7 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
   const [statusError, setStatusError] = useState('')
   const [busy, setBusy] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [syncNotice, setSyncNotice] = useState('')
   const [active, setActive] = useState(0)
   const trigger = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -78,6 +79,7 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
     : !status.configured ? (de ? 'Bedeutungssuche nicht konfiguriert · Stichwortsuche verfügbar' : 'Meaning search not configured · keyword search available')
     : status.failed > 0 ? (de ? `Indexierung für ${status.failed} ${status.failed === 1 ? 'Abschnitt' : 'Abschnitte'} aufgegeben · Stichwortsuche verfügbar` : `Indexing gave up on ${status.failed} ${status.failed === 1 ? 'section' : 'sections'} · keyword search available`)
     : status.last_error ? (de ? 'Indexfehler · Stichwortsuche verfügbar' : 'Index error · keyword search available')
+    : status.projection === 'stale' ? (de ? 'Dokument ändert sich noch · Index holt auf' : 'Document still changing · index catching up')
     : status.running > 0 ? (de ? 'Index wird aktualisiert…' : 'Updating index…')
     : status.queued > 0 ? (de ? 'Aktualisierung vorgemerkt' : 'Update pending')
     : status.indexed < status.total ? (de ? 'Index unvollständig' : 'Index incomplete')
@@ -107,12 +109,16 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span role="status">{state}{status?.configured ? ` · ${status.indexed}/${status.total}` : ''}</span>
           {canSync && <button type="button" disabled={syncing || !status?.configured} className="min-h-9 rounded border px-2 text-foreground disabled:opacity-50" onClick={() => {
-            setSyncing(true); setStatusError('')
-            void syncSearch(token, map).then(setStatus).catch((e: Error) => setStatusError(e.message)).finally(() => setSyncing(false))
+            setSyncing(true); setStatusError(''); setSyncNotice('')
+            void syncSearch(token, map).then(value => {
+              setStatus(value)
+              setSyncNotice(value.sync === 'deferred' ? (de ? 'Das Dokument ändert sich noch; die Synchronisierung wurde zurückgestellt. Nichts wurde vorgemerkt – bitte erneut versuchen, sobald das Tippen pausiert.' : 'Document is still changing; synchronization is deferred. Nothing was scheduled, so try again once typing pauses.') : '')
+            }).catch((e: Error) => setStatusError(e.message)).finally(() => setSyncing(false))
           }}>{syncing ? (de ? 'Wird vorgemerkt…' : 'Scheduling…') : (de ? 'Dokument synchronisieren' : 'Sync document')}</button>}
           {!status?.configured && <a className="underline" href="/settings?section=search">{de ? 'Suche konfigurieren' : 'Configure search'}</a>}
         </div>
         {(statusError || status?.last_error) && <p className="text-xs text-destructive" role="status">{statusError || status?.last_error}</p>}
+        {syncNotice && <p className="text-xs text-muted-foreground" role="status">{syncNotice}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'unavailable' && status?.configured && !status.last_error && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche derzeit nicht verfügbar.' : 'Keyword results · meaning search is currently unavailable.'}</p>}
         {response?.projection === 'stale' && <p className="text-xs text-destructive" role="status">{de ? 'Ergebnisse können veraltet sein · Quelle konnte nicht indexiert werden' : 'Results may be out of date · source could not be indexed'}{response.projection_error ? `: ${response.projection_error}` : ''}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'throttled' && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche kurz pausiert (Abfragelimit erreicht).' : 'Keyword results · meaning search paused briefly (query limit reached).'}</p>}

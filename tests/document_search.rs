@@ -947,6 +947,20 @@ async fn key_only_put_is_refused_before_anything_changes() {
         indexed_calls,
         "nothing was sent anywhere"
     );
+    // The documented remedy works as written: GET, edit one field, PUT the whole object back.
+    let (_, mut edited) = app.get(&app.admin, "/v1/settings/embeddings").await;
+    assert_eq!(edited["configured"], true);
+    edited["model"] = json!("fixture-v1b");
+    let (s, saved) = app.put(&app.admin, "/v1/settings/embeddings", edited).await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    assert_eq!(saved["model"], "fixture-v1b");
+    assert_eq!(saved["configured"], true);
+    assert!(saved.get("api_key").is_none());
+    assert_eq!(
+        store.embedding_config().unwrap().1,
+        before_key,
+        "the key survived a round trip that did not mention it"
+    );
     // A complete replacement still works, and rotates the key with it.
     let mut full = serde_json::to_value(config(&endpoint)).unwrap();
     full["model"] = json!("fixture-v2");
@@ -957,6 +971,66 @@ async fn key_only_put_is_refused_before_anything_changes() {
     assert_eq!(saved["configured"], true);
     assert_eq!(store.embedding_config().unwrap().1, "rotated");
     task.abort();
+}
+
+#[tokio::test]
+async fn manual_sync_says_whether_its_bypass_was_applied() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let store = app.open_store();
+    let setting = config("http://127.0.0.1:9/embeddings");
+    store
+        .save_embedding_config(setting.clone(), Some("test".into()))
+        .unwrap();
+    let path = format!("/v1/mindmaps/{map}/search/sync");
+    let (s, body) = app.post(&app.worker, &path, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"], "scheduled");
+    assert!(body.get("sync_note").is_none());
+    assert_eq!(body["projection"], "current");
+    // Park the node, then let an edit outrun a manual projection.
+    let mut now = takomo::ids::now_ms();
+    for _ in 0..MAX_ATTEMPTS {
+        let job = store.claim_embedding_job(now).unwrap().unwrap();
+        assert!(store.finish_embedding_job(&job, Err("outage")).unwrap());
+        now += 3_600_000;
+    }
+    assert_eq!(store.search_status(&map).unwrap()["failed"], 1);
+    let projection = store.compute_projection(&map).unwrap();
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Invoices, typed while syncing"}),
+    )
+    .await;
+    assert!(
+        !store
+            .apply_projection(&map, &projection, now, true)
+            .unwrap(),
+        "a manual projection outrun by an edit is declined like any other"
+    );
+    let status = store.search_status(&map).unwrap();
+    assert_eq!(
+        status["failed"], 1,
+        "a declined manual projection applies no bypass: parked stays parked"
+    );
+    assert_eq!(status["projection"], "stale");
+    let deferred = takomo::api::search::sync_response(status, false);
+    assert_eq!(deferred["sync"], "deferred");
+    assert!(deferred["sync_note"]
+        .as_str()
+        .unwrap()
+        .starts_with("Nothing was scheduled"));
+    // Once editing pauses the same call schedules the bypass and un-parks the node.
+    let (s, body) = app.post(&app.worker, &path, json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"], "scheduled");
+    assert_eq!(body["failed"], 0);
+    assert_eq!(body["projection"], "current");
+    assert!(store
+        .claim_embedding_job(takomo::ids::now_ms())
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]

@@ -53,6 +53,7 @@ pub async fn save_settings(
     ApiJson(mut body): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     admin(&ctx)?;
+    body.as_object_mut().map(|b| b.remove("configured"));
     let key = body
         .as_object_mut()
         .and_then(|b| b.remove("api_key"))
@@ -192,12 +193,25 @@ pub async fn sync(
     authorize(&state, &ctx, &map, true)?;
     let room = crate::api::docsync::open_room(&state, &map).await?;
     crate::api::docsync::flush(&state, &room, &ctx.actor).await;
-    let status = super::blocking_read(move || {
-        state
+    let (scheduled, status) = super::blocking_read(move || {
+        let scheduled = state
             .store
             .refresh_search(&map, true, crate::ids::now_ms())?;
-        state.store.search_status(&map)
+        Ok((scheduled, state.store.search_status(&map)?))
     })
     .await?;
-    Ok(Json(status))
+    Ok(Json(sync_response(status, scheduled)))
+}
+/// The sync route's body: the status plus whether the manual bypass was applied.
+/// A projection that kept being outrun by edits schedules nothing, and saying
+/// "scheduled" then would promise work the store never queued.
+pub fn sync_response(mut status: Value, scheduled: bool) -> Value {
+    status["sync"] = json!(if scheduled { "scheduled" } else { "deferred" });
+    if !scheduled {
+        status["sync_note"] = json!(format!(
+            "Nothing was scheduled: {}. Pending changes still follow the normal quiet delay; sync again once editing pauses to bypass it.",
+            crate::store::search::PROJECTION_DEFERRED
+        ));
+    }
+    status
 }

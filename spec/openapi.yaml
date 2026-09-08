@@ -62,7 +62,7 @@ paths:
       tags: [admin]
       operationId: put_embedding_settings
       summary: Configure the global embedding provider
-      description: "Requires unrestricted admin. Replaces the configuration whole: all six fields are required and an omission is refused with `embeddings.config` before anything changes (a key-only body is not a key rotation; GET, edit, and PUT everything back). Only `api_key` may be omitted, which retains the stored key. Changed provider/endpoint clears a retained key unless a replacement is supplied. Changed provider/model/dimensions selects a new index generation; keyword search remains available while rebuilding."
+      description: "Requires unrestricted admin. Replaces the configuration whole: all six fields are required and an omission is refused with `embeddings.config` before anything changes (a key-only body is not a key rotation; GET, edit, and PUT everything back, the read-only `configured` flag included or not). Only `api_key` may be omitted, which retains the stored key. Changed provider/endpoint clears a retained key unless a replacement is supplied. Changed provider/model/dimensions selects a new index generation; keyword search remains available while rebuilding."
       requestBody:
         required: true
         content:
@@ -144,7 +144,7 @@ paths:
       tags: [mindmaps]
       operationId: sync_specification_embeddings
       summary: Make pending embedding jobs due immediately
-      description: Requires read, write and project access to a non-archived project. Flushes pending collaboration edits; does not alter document content. Reuses unchanged compatible vectors and resets parked jobs. A durable worker performs the external requests asynchronously.
+      description: "Requires read, write and project access to a non-archived project. Flushes pending collaboration edits; does not alter document content. Reuses unchanged compatible vectors and resets parked jobs. A durable worker performs the external requests asynchronously. `sync` says whether the bypass was applied: `deferred` means the document kept changing under the projection, nothing was scheduled, pending changes keep their normal quiet delay, and the caller should sync again once editing pauses."
       requestBody:
         required: true
         content:
@@ -152,10 +152,17 @@ paths:
             schema: { type: object }
       responses:
         '200':
-          description: Queued status
+          description: Status plus whether the bypass was applied
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/EmbeddingStatus' }
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/EmbeddingStatus' }
+                  - type: object
+                    required: [sync]
+                    properties:
+                      sync: { type: string, enum: [scheduled, deferred] }
+                      sync_note: { type: string, description: Present only when deferred; says nothing was scheduled and what to do. }
         '409':
           description: "`project.archived`: the map's project is archived, the same store-level gate every other project write meets, with `details.project` and `archived_at`. Reads (search, status) keep working."
         default: { $ref: '#/components/responses/Error' }

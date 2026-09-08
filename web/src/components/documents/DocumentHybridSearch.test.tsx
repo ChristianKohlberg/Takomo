@@ -49,7 +49,7 @@ describe('document hybrid search', () => {
   })
   it('schedules a manual sync and announces running status without blocking keyword results', async () => {
     const fetch = vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/sync')
-      ? { configured: true, queued: 0, running: 1, failed: 0, indexed: 1, total: 2, last_error: null, projection: 'current' }
+      ? { configured: true, queued: 0, running: 1, failed: 0, indexed: 1, total: 2, last_error: null, projection: 'current', sync: 'scheduled' }
       : url.endsWith('/status') ? { configured: true, queued: 1, running: 0, failed: 0, indexed: 1, total: 2, last_error: null, projection: 'current' }
       : response))))
     vi.stubGlobal('fetch', fetch)
@@ -76,6 +76,21 @@ describe('document hybrid search', () => {
     expect(screen.getByText(/query limit reached/)).toBeTruthy()
     expect(screen.getByText(/Results may be out of date .*: Cannot decode source document/)).toBeTruthy()
     expect(screen.queryByText(/2 results/)).toBeNull()
+  })
+  it('says a sync was deferred instead of claiming success while the document is still changing', async () => {
+    const stale = { configured: true, queued: 1, running: 0, failed: 1, indexed: 1, total: 2, last_error: null, projection: 'stale' }
+    vi.stubGlobal('fetch', vi.fn((url: string) => Promise.resolve(new Response(JSON.stringify(url.endsWith('/sync')
+      ? { ...stale, sync: 'deferred', sync_note: 'Nothing was scheduled: the document changed while it was being indexed, repeatedly.' }
+      : url.endsWith('/status') ? { ...stale, failed: 0 }
+      : response)))))
+    render(<DocumentHybridSearch token="test" map="m" locale="en" canSync onNavigate={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    await screen.findByText(/Document still changing · index catching up/)
+    fireEvent.click(screen.getByText('Sync document'))
+    await screen.findByText(/synchronization is deferred\. Nothing was scheduled/)
+    expect(screen.queryByText(/Updating index/)).toBeNull()
+    expect(screen.getByText(/Indexing gave up on 1 section /)).toBeTruthy()
+    expect((screen.getByText('Sync document') as HTMLButtonElement).disabled).toBe(false)
   })
   it('ignores a superseded request even when transport ignores abort', async () => {
     let oldResolve!: (response: Response) => void

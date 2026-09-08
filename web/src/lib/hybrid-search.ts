@@ -48,8 +48,13 @@ export const searchDocument = (token: string, map: string, query: string, signal
   api<SearchResponse>(token, `/mindmaps/${encodeURIComponent(map)}/search?q=${encodeURIComponent(query)}`, { signal })
 export const searchStatus = (token: string, map: string, signal?: AbortSignal) =>
   api<SearchStatus>(token, `/mindmaps/${encodeURIComponent(map)}/search/status`, { signal })
+export interface SyncResponse extends SearchStatus {
+  /** `deferred`: the document kept changing under the projection; nothing was scheduled. */
+  sync: 'scheduled' | 'deferred'
+  sync_note?: string
+}
 export const syncSearch = (token: string, map: string) =>
-  api<SearchStatus>(token, `/mindmaps/${encodeURIComponent(map)}/search/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+  api<SyncResponse>(token, `/mindmaps/${encodeURIComponent(map)}/search/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
 
 /** Highlight original UTF-16 ranges, including overlapping literal tokens. */
 export function excerptRanges(result: SearchResult): TextMatch[] {
