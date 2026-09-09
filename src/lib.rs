@@ -21,3 +21,4 @@ pub mod store;
 pub mod workflow;
 
 pub mod embeddings;
+pub mod query_embeddings;

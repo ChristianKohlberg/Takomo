@@ -14,6 +14,7 @@ export interface SpecificationState {
   project: string
   projects: Project[]
   actor: string
+  userId?: string
   scopes: string[]
   voice: boolean
   map: Mindmap | null

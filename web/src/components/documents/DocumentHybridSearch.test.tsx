@@ -1,4 +1,5 @@
 import { Activity } from 'react'
+import { searchHistoryKey } from '@/lib/search-history'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DocumentHybridSearch, SearchExcerpt } from './DocumentHybridSearch'
@@ -9,7 +10,7 @@ const response: SearchResponse = { results: [one, two], limit: 20, candidates: 2
 function mockFetch(search: (url: string, init?: RequestInit) => Promise<Response> = async () => new Response(JSON.stringify(response))) {
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => url.endsWith('/status') ? Promise.resolve(new Response(JSON.stringify({ configured: false, queued: 0, running: 0, failed: 0, indexed: 0, total: 2, last_error: null, projection: 'current' }))) : search(url, init)))
 }
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers() })
+afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); vi.useRealTimers() })
 describe('document hybrid search', () => {
   it('escapes excerpts and never highlights semantic-only results', () => {
     const { container } = render(<SearchExcerpt result={one} />)
@@ -131,4 +132,52 @@ describe('document hybrid search', () => {
     expect(screen.getByText('Shipping')).toBeTruthy()
     expect(screen.queryByText('Sync document')).toBeNull()
   })
+  it('remembers explicit submissions and selections, not typing, and reuses history with the keyboard', async () => {
+    mockFetch()
+    const key = searchHistoryKey('person-a', 'project-a')!
+    localStorage.setItem(key, JSON.stringify(['older query', 'parcel']))
+    render(<DocumentHybridSearch token="private-token" userId="person-a" project="project-a" map="m" locale="en" canSync={false} onNavigate={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    const input = await screen.findByRole('combobox')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect((input as HTMLInputElement).value).toBe('parcel')
+    expect(document.activeElement).toBe(input)
+    await screen.findByText('Shipping')
+    fireEvent.change(input, { target: { value: ' Unsubmitted draft ' } })
+    await screen.findByText('Shipping')
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(['parcel', 'older query'])
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(JSON.parse(localStorage.getItem(key)!)).toEqual(['Unsubmitted draft', 'parcel', 'older query'])
+    expect(localStorage.getItem(key)).not.toContain('Delivery')
+    expect(Object.keys(localStorage).join()).not.toContain('private-token')
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Clear history' }))
+    expect(localStorage.getItem(key)).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('combobox'))
+    expect(screen.getByText(/No recent searches/)).toBeTruthy()
+  })
+  it('stores Enter with no results and never shows another user or project history', async () => {
+    mockFetch(async () => new Response(JSON.stringify({ ...response, results: [] })))
+    const props = { token: 'test', map: 'm', locale: 'en' as const, canSync: false, onNavigate: vi.fn() }
+    const view = render(<DocumentHybridSearch {...props} userId="a" project="one" />)
+    fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '  no match  ' } })
+    await screen.findByText('0 results')
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+    expect(JSON.parse(localStorage.getItem(searchHistoryKey('a', 'one')!)!)).toEqual(['no match'])
+    for (const scope of [{ userId: 'b', project: 'one' }, { userId: 'a', project: 'two' }, { project: 'one' }]) {
+      view.rerender(<DocumentHybridSearch {...props} {...scope} />)
+      fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
+      await screen.findByRole('combobox')
+      expect(screen.getByText(/No recent searches/)).toBeTruthy()
+      expect(screen.queryByRole('option')).toBeNull()
+    }
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'machine query' } })
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+    expect(localStorage.length).toBe(1)
+  })
+
 })

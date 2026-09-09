@@ -551,8 +551,9 @@ async fn query_embeddings_are_bounded_per_token_with_keyword_fallback() {
     let indexed = calls.load(Ordering::SeqCst);
     let path = format!("/v1/mindmaps/{map}/search?q=invoices");
     let limit = takomo::api::search::QUERY_EMBEDDINGS_PER_MINUTE as usize;
-    for _ in 0..limit {
-        let (s, body) = app.get(&app.worker, &path).await;
+    for i in 0..limit {
+        let distinct = format!("{path}%20{i}");
+        let (s, body) = app.get(&app.worker, &distinct).await;
         assert_eq!(s, StatusCode::OK, "{body}");
         assert_eq!(body["mode"], "hybrid");
         assert_eq!(body["semantic_status"], "ready");
@@ -568,6 +569,12 @@ async fn query_embeddings_are_bounded_per_token_with_keyword_fallback() {
         indexed + limit,
         "an exhausted budget answers from keywords without a provider call"
     );
+    let (_, cached) = app.get(&app.worker, &format!("{path}%200")).await;
+    assert_eq!(
+        cached["mode"], "hybrid",
+        "cache hits bypass exhausted outbound budget"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), indexed + limit);
     // The budget is per token: another credential still gets its semantic pass.
     let (_, body) = app.get(&app.worker2, &path).await;
     assert_eq!(body["mode"], "hybrid");
@@ -1477,4 +1484,280 @@ async fn embedding_history_upgrade_preserves_vectors_and_does_not_invent_a_times
         .refresh_search(&empty_id, true, takomo::ids::now_ms())
         .unwrap();
     assert!(store.search_status(&empty_id).unwrap()["last_synced_at"].is_null());
+}
+
+#[tokio::test]
+async fn query_cache_identity_expiration_capacity_and_failure_retry() {
+    use std::time::Duration;
+    use takomo::query_embeddings::{QueryCache, QueryEmbedding};
+    let (endpoint, calls, task) = mock_provider().await;
+    let cache = QueryCache::new(2, Duration::from_secs(1));
+    let cfg = config(&endpoint);
+    let (generation, first) = cache.get(&cfg, "secret", "alice", " Query ").await;
+    assert!(matches!(first, QueryEmbedding::Ready(_)));
+    cache.get(&cfg, "secret", "alice", "Query").await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "trimmed cache hit");
+    cache.get(&cfg, "secret", "alice", "query").await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "case is meaningful");
+    cache.get(&cfg, "secret", "bob", "Query").await;
+    cache.get(&cfg, "secret", "alice", "Query").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "token isolation and LRU capacity"
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    cache.get(&cfg, "secret", "alice", "Query").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        5,
+        "expired vector is recomputed"
+    );
+    cache.get(&cfg, "replacement", "alice", "Query").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        6,
+        "credential changes cannot reuse old entries"
+    );
+    let mut changed = cfg.clone();
+    changed.model = "fixture-v2".into();
+    cache.get(&changed, "replacement", "alice", "Query").await;
+    assert_eq!(calls.load(Ordering::SeqCst), 7);
+    cache.invalidate();
+    assert!(!cache.is_current(generation));
+    cache.get(&changed, "replacement", "alice", "Query").await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        8,
+        "config save invalidates even compatible vectors"
+    );
+    task.abort();
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let count = attempts.clone();
+    let router = axum::Router::new().route(
+        "/embeddings",
+        axum::routing::post(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bad = config(&format!(
+        "http://{}/embeddings",
+        listener.local_addr().unwrap()
+    ));
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    for _ in 0..2 {
+        assert!(matches!(
+            cache.get(&bad, "secret", "alice", "Query").await.1,
+            QueryEmbedding::Unavailable
+        ));
+    }
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "failures are never cached"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn query_cache_deduplicates_and_completes_after_initiator_cancels() {
+    use takomo::query_embeddings::{QueryCache, QueryEmbedding};
+    let calls = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (c, s, r) = (calls.clone(), started.clone(), release.clone());
+    let router = axum::Router::new().route(
+        "/embeddings",
+        axum::routing::post(move || {
+            let (c, s, r) = (c.clone(), s.clone(), r.clone());
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                s.notify_one();
+                r.notified().await;
+                axum::Json(json!({"data":[{"index":0,"embedding":[1.,0.,0.]}]}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cfg = config(&format!(
+        "http://{}/embeddings",
+        listener.local_addr().unwrap()
+    ));
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let cache = QueryCache::new(1, std::time::Duration::from_secs(600));
+    let (owned, config) = (cache.clone(), cfg.clone());
+    let first = tokio::spawn(async move { owned.get(&config, "key", "user", "query").await });
+    started.notified().await;
+    assert!(matches!(
+        cache.get(&cfg, "key", "user", "another").await.1,
+        QueryEmbedding::Throttled
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "pending capacity is bounded"
+    );
+    first.abort();
+    let (owned, config) = (cache.clone(), cfg.clone());
+    let second = tokio::spawn(async move { owned.get(&config, "key", "user", "query").await });
+    release.notify_one();
+    let (old_generation, result) = second.await.unwrap();
+    assert!(matches!(result, QueryEmbedding::Ready(_)));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    cache.invalidate();
+    let (owned, config) = (cache.clone(), cfg.clone());
+    let pending = tokio::spawn(async move { owned.get(&config, "key", "user", "query").await });
+    started.notified().await;
+    cache.invalidate();
+    release.notify_one();
+    let (generation, _) = pending.await.unwrap();
+    assert!(!cache.is_current(generation));
+    assert!(!cache.is_current(old_generation));
+    let (owned, config) = (cache.clone(), cfg.clone());
+    let final_request =
+        tokio::spawn(async move { owned.get(&config, "key", "user", "query").await });
+    started.notified().await;
+    release.notify_one();
+    assert!(cache.is_current(final_request.await.unwrap().0));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "old completion never repopulates new generation"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn cached_query_still_authorizes_and_retrieves_current_document() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let (endpoint, calls, task) = mock_provider().await;
+    let mut setting = serde_json::to_value(config(&endpoint)).unwrap();
+    setting["api_key"] = json!("local-mock");
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let manual = format!("/v1/mindmaps/{map}/search/sync");
+    app.post(&app.worker, &manual, json!({})).await;
+    process_jobs(Arc::new(app.open_store())).await.unwrap();
+    let path = format!("/v1/mindmaps/{map}/search?q=payment");
+    assert_eq!(app.get(&app.worker, &path).await.1["mode"], "hybrid");
+    let before = calls.load(Ordering::SeqCst);
+    assert_eq!(app.get(&app.worker, &path).await.1["mode"], "hybrid");
+    assert_eq!(calls.load(Ordering::SeqCst), before);
+    let forbidden = app.mint("forbidden", &["read"], Some(&["other"]));
+    assert_eq!(app.get(&forbidden, &path).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(calls.load(Ordering::SeqCst), before);
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"New payment passage replaces the old receipt."}),
+    )
+    .await;
+    app.post(&app.worker, &manual, json!({})).await;
+    process_jobs(Arc::new(app.open_store())).await.unwrap();
+    let reindexed = calls.load(Ordering::SeqCst);
+    let (_, body) = app.get(&app.worker, &path).await;
+    assert_eq!(body["mode"], "hybrid");
+    assert!(
+        body["results"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("New payment passage"),
+        "{body}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        reindexed,
+        "only query vector is cached, never source results"
+    );
+    assert_eq!(
+        app.put(&app.admin, "/v1/settings/embeddings", setting)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(app.get(&app.worker, &path).await.1["mode"], "hybrid");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        reindexed + 1,
+        "settings route invalidates cached vectors"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn query_cache_inflight_config_change_cannot_return_an_old_generation() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (s, r) = (started.clone(), release.clone());
+    let router = axum::Router::new().route(
+        "/embeddings",
+        axum::routing::post(move || {
+            let (s, r) = (s.clone(), r.clone());
+            async move {
+                s.notify_one();
+                r.notified().await;
+                axum::Json(json!({"data":[{"index":0,"embedding":[1.,0.,0.]}]}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let cfg = config(&format!(
+        "http://{}/embeddings",
+        listener.local_addr().unwrap()
+    ));
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut body = serde_json::to_value(&cfg).unwrap();
+    body["api_key"] = json!("key");
+    app.put(&app.admin, "/v1/settings/embeddings", body.clone())
+        .await;
+    let store = app.open_store();
+    store
+        .refresh_search(&map, true, takomo::ids::now_ms())
+        .unwrap();
+    let job = store
+        .claim_embedding_job(takomo::ids::now_ms())
+        .unwrap()
+        .unwrap();
+    assert!(store
+        .finish_embedding_job(&job, Ok(&vec![vec![1., 0., 0.]; job.chunks.len()]))
+        .unwrap());
+    for disabled in [false, true] {
+        let request = app
+            .client
+            .get(format!("{}/v1/mindmaps/{map}/search?q=Invoices", app.base))
+            .bearer_auth(&app.worker);
+        let pending =
+            tokio::spawn(
+                async move { request.send().await.unwrap().json::<Value>().await.unwrap() },
+            );
+        started.notified().await;
+        // Even an otherwise identical full settings save starts a fresh cache generation.
+        if disabled {
+            body["api_key"] = json!("");
+        }
+        app.put(&app.admin, "/v1/settings/embeddings", body.clone())
+            .await;
+        release.notify_one();
+        let response = pending.await.unwrap();
+        assert_eq!(response["mode"], "keyword", "{response}");
+        assert_eq!(
+            response["semantic_status"],
+            if disabled { "unconfigured" } else { "indexing" }
+        );
+        assert!(!response["results"].as_array().unwrap().is_empty());
+    }
+    task.abort();
 }
