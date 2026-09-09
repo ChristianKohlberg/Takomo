@@ -930,6 +930,10 @@ export function Canvas({
                   // A question is squarer than a thought: it is a different kind
                   // of thing on the map, and shape says so before colour does.
                   rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
+                  // The resting border is a presentation attribute, not a class:
+                  // an attribute loses to ANY class rule, so the state strokes
+                  // below (trust, question, selected, drop target) win without
+                  // depending on the order Tailwind emits same-property utilities.
                   stroke="var(--mindmap-node-border)"
                   className={cn(
                     'fill-card',
