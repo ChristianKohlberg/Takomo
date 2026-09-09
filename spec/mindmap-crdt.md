@@ -150,7 +150,11 @@ relationships: Y.Map<relId,  Y.Map>
 ```
 
 The document surface adds two more beside them, `proposals` and `documentComments`,
-also keyed by id; `docs/documents.md` owns both.
+also keyed by id; `docs/documents.md` owns both. A fifth, `document_control`, renders
+nowhere: an admin reset (`Store::reset_collab_content`) writes a fresh `reset` key
+into it in the same update that clears the others, and an open editor observing the
+map drops its structural undo stack (`createStructureHistory` in
+`web/src/lib/plan-structure.ts`), so cleared content cannot return through Undo.
 
 ### 3.1 Node
 
@@ -363,9 +367,8 @@ with ids alongside, because that is the cheapest shape for a model to read.
 
 ## 8. Events
 
-The current set stands and fires from the API paths: `mindmap_created`,
-`mindmap_grown`, `mindmap_moved`, `mindmap_pruned`, `mindmap_promoted`,
-`mindmap_updated`, `mindmap_deleted`.
+The current set stands and fires from the API paths; `docs/mindmaps.md`
+("What reaches the event log") owns the list.
 
 Socket edits emit nothing, which is the rule documents already follow and which
 the current mindmap doc already states for text and placement: an event per

@@ -147,9 +147,11 @@ draws. What the CLI has instead are the two things a shell does better than a te
 already on disk, named after the file unless `--filename` overrides it. `--origin` marks the words an
 idea arrived in, which is often a transcript you already have in a file.
 
-Note what the page cannot do: **edit or delete an entry**. Entries are append-only, and no route
-exposes otherwise — revising a pane appends a new `view`, it does not rewrite the old one. The
-accumulated record is the point.
+Note what the page cannot do: **edit or delete an entry**. Entries are append-only — revising a
+pane appends a new `view`, it does not rewrite the old one. The accumulated record is the point.
+The one exception is the admin-only reset (`POST /v1/initiatives/{id}/reset`), which clears every
+entry and the summary at once while keeping the initiative itself; see
+[Reset a document](documents.md#reset-a-document).
 
 One browser detail worth knowing if you touch the page: the attachment route needs the bearer token,
 so a plain `<a href>` cannot fetch it — the browser would send an unauthenticated request and get a

@@ -553,7 +553,7 @@ queue inspector before relying on automatic matching. No existing-ticket bulk
 backfill is scheduled by installation; use the explicit project action when
 needed.
 
-### Reset a document
+## Reset a document
 
 In **Settings → Projects → Open → Reset a document**, an administrator can select
 that project's specification or an initiative document and clear its current
@@ -575,7 +575,8 @@ transaction that nothing was appended meanwhile (retrying from a fresh read when
 it was), commits before replying, and broadcasts the deletion to connected
 editors. The plan's trace (`GET /v1/mindmaps/{id}/trace`) gains one `pruned` act
 with no section, noting the reset; every earlier act stays. Existing synced text cannot be revived by
-replaying an old replica, and open editors clear their undo/redo stacks. New edits,
+replaying an old replica, and an open editor drops its structural (outline) undo
+history, so the cleared sections cannot come back through Undo. New edits,
 including previously unsynced concurrent changes, still merge normally. Reset is
 not a storage purge or a barrier against new edits. It emits `mindmap_reset`.
 

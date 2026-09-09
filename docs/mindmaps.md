@@ -312,7 +312,8 @@ slower to open for everybody, forever.
 
 `mindmap_created`, `mindmap_grown` (one event per batch, not per node — ten nodes
 from an agent turn are one act of brainstorming), `mindmap_moved` (a reparent
-only), `mindmap_pruned`, `mindmap_promoted`, `mindmap_updated`, `mindmap_deleted`.
+only), `mindmap_pruned`, `mindmap_promoted`, `mindmap_updated`, `mindmap_reset` (the
+admin-only clear, see `docs/documents.md`), `mindmap_deleted`.
 
 Text and placement edits reach nothing. They change constantly while somebody is
 thinking, and an event per keystroke-batch would bury every other event in the
