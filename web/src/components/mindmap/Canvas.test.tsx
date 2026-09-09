@@ -280,3 +280,45 @@ it('highlights matches without selecting nodes or moving the camera', () => {
   ui.rerender(<Canvas {...p} searchMatches={new Set()} />)
   expect(ui.container.querySelector('[data-search-match]')).toBeNull()
 })
+
+it.each(['custom', 'radial', 'tidy'] as const)('fits %s focus once and restores the full-map camera after nested focus', mode => {
+  const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
+  try {
+    const doc = new Y.Doc()
+    const root = createNode(doc, { parent: null, title: 'Payments', by: 'test' })!
+    const child = createNode(doc, { parent: root, title: 'Retry', by: 'test' })!
+    const nodes = readNodes(doc), p = props({ nodes, mode })
+    const ui = render(<Canvas {...p} />)
+    const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    const before = camera()
+    ui.rerender(<Canvas {...p} focusRoot={root} />)
+    expect(screen.queryByText(p.title)).toBeNull()
+    expect(camera()).not.toBe(before)
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    const zoomed = camera()
+    ui.rerender(<Canvas {...p} focusRoot={root} searchMatches={new Set([child])} />)
+    expect(camera()).toBe(zoomed)
+    ui.rerender(<Canvas {...p} focusRoot={child} nodes={[{ ...nodes[1]!, parent: null }]} />)
+    ui.rerender(<Canvas {...p} focusRoot={null} />)
+    expect(camera()).toBe(before)
+    expect(p.onPlace).not.toHaveBeenCalled()
+    expect(p.onReparent).not.toHaveBeenCalled()
+  } finally { rect.mockRestore() }
+})
+
+it('respects the camera lock while entering and leaving focus', () => {
+  const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
+  try {
+    const doc = new Y.Doc()
+    const id = createNode(doc, { parent: null, title: 'Payments', by: 'test' })!
+    const p = props({ nodes: readNodes(doc) })
+    const ui = render(<Canvas {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Lock zoom and position' }))
+    const before = ui.container.querySelector('svg > g')?.getAttribute('transform')
+    ui.rerender(<Canvas {...p} focusRoot={id} />)
+    expect(ui.container.querySelector('svg > g')?.getAttribute('transform')).toBe(before)
+    ui.rerender(<Canvas {...p} focusRoot={null} />)
+    expect(ui.container.querySelector('svg > g')?.getAttribute('transform')).toBe(before)
+  } finally { rect.mockRestore() }
+})

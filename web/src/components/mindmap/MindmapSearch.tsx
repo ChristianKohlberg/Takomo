@@ -36,8 +36,8 @@ export function useMindmapSearch(token: string, map: string, nodes: MapNode[]) {
   return { query, setQuery: (value: string) => { setResult(null); setQuery(value) }, response, matches, error: current?.error, busy: Boolean(query.trim() && !current) }
 }
 
-type Props = ReturnType<typeof useMindmapSearch> & { locale: Locale; onNavigate: (id: string) => void }
-export function MindmapSearch({ query, setQuery, response, matches, error, busy, locale, onNavigate }: Props) {
+type Props = ReturnType<typeof useMindmapSearch> & { outsideMatches?: number; onShowAll?: () => void; locale: Locale; onNavigate: (id: string) => void }
+export function MindmapSearch({ query, setQuery, response, matches, error, busy, locale, onNavigate, outsideMatches = 0, onShowAll }: Props) {
   const de = locale === 'de'
   const input = useRef<HTMLInputElement>(null)
   const [active, setActive] = useState<string | null>(null)
@@ -70,6 +70,7 @@ export function MindmapSearch({ query, setQuery, response, matches, error, busy,
       <button type="button" aria-label={de ? 'Vorheriger Treffer' : 'Previous match'} className="hover:bg-muted flex size-9 items-center justify-center rounded" onClick={() => move(-1)}><ArrowUpIcon aria-hidden="true" className="size-4" /></button>
       <button type="button" aria-label={de ? 'Nächster Treffer' : 'Next match'} className="hover:bg-muted flex size-9 items-center justify-center rounded" onClick={() => move(1)}><ArrowDownIcon aria-hidden="true" className="size-4" /></button>
     </>}
+    {outsideMatches > 0 && <button type="button" className="hover:bg-muted min-h-9 rounded px-2 text-xs underline" onClick={onShowAll}>{outsideMatches} {de ? 'Treffer außerhalb dieses Zweigs · Gesamte Mindmap' : 'matches outside this branch · Show full map'}</button>}
     <span role="status" className="text-muted-foreground text-xs">{error || (busy ? (de ? 'Suche läuft…' : 'Searching…') : response ? `${index >= 0 ? `${index + 1} / ` : ''}${ids.length} ${de ? 'Treffer' : 'matches'}${response.truncated ? (de ? ' · Beste Ergebnisse' : ' · Top results') : ''}` : '')}
       {response?.projection === 'stale' && (de ? ' · Ergebnisse möglicherweise veraltet' : ' · Results may be out of date')}
       {response?.mode === 'keyword' && (de ? ' · Stichwortsuche' : ' · Keyword search')}

@@ -61,3 +61,11 @@ it('highlights matches and scrolls the selected search result into view', () => 
     expect(ui.container.querySelector('[data-search-match]')).toBeNull()
   } finally { HTMLElement.prototype.scrollIntoView = previous }
 })
+
+it('offers focus from the phone menu even for readers', () => {
+  const { id, props } = setup(), focus = vi.fn()
+  render(<Outline {...props} canWrite={false} onFocusBranch={focus} />)
+  fireEvent.click(screen.getAllByLabelText('Section actions')[0]!)
+  fireEvent.click(screen.getByRole('button', { name: 'Focus branch' }))
+  expect(focus).toHaveBeenCalledWith(id)
+})
