@@ -12,7 +12,7 @@ export const STR = defineStrings({
     initiatives: 'Initiatives',
     mindmaps: 'Mindmaps',
     schedules: 'Schedules',
-    verification: 'Verification',
+    verification: 'Verification and Evidence',
     environments: 'Environments',
     settings: 'Settings',
 
@@ -100,7 +100,7 @@ export const STR = defineStrings({
     initiatives: 'Initiativen',
     mindmaps: 'Mindmaps',
     schedules: 'Zeitpläne',
-    verification: 'Verifizierung',
+    verification: 'Verifizierung und Nachweise',
     environments: 'Umgebungen',
     settings: 'Einstellungen',
 

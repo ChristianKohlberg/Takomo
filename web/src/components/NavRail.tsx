@@ -405,7 +405,7 @@ export function NavRail({
             )
             return <div key={key}>{destination}{key === 'specification' && <div role="group" aria-label={nav.specification} className={cn('mt-1 flex flex-col gap-1', expanded && 'ml-4 border-l border-border-soft pl-2')}>
               {(['document', 'map', 'tests'] as const).map(view => {
-                const name = view === 'document' ? (lang === 'de' ? 'Dokument' : 'Document') : view === 'map' ? (lang === 'de' ? 'Karte' : 'Map') : 'Tests'
+                const name = view === 'document' ? (lang === 'de' ? 'Dokument' : 'Document') : view === 'map' ? (lang === 'de' ? 'Karte' : 'Map') : (lang === 'de' ? 'Verifizierung und Nachweise' : 'Verification and Evidence')
                 const ViewIcon = view === 'document' ? FileTextIcon : view === 'map' ? NetworkIcon : ListChecksIcon
                 const href = specificationLink(project, view, current === 'specification' ? specificationSection : undefined)
                 return <Hint key={view} text={name}><a href={href} aria-label={name} aria-current={current === 'specification' && specificationView === view ? 'page' : undefined}

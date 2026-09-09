@@ -58,7 +58,7 @@ describe('NavRail', () => {
 
   it('keeps only primary destinations in the main navigation', () => {
     mount({ current: 'inbox' })
-    for (const name of ['Specification', 'Document', 'Map', 'Tests', 'Board', 'Lanes']) expect(screen.getByRole('link', { name })).toBeTruthy()
+    for (const name of ['Specification', 'Document', 'Map', 'Verification and Evidence', 'Board', 'Lanes']) expect(screen.getByRole('link', { name })).toBeTruthy()
     for (const name of ['Bugs', 'Epics', 'Initiatives', 'Schedules', 'Environments', 'Agent queue']) expect(screen.queryByRole('link', { name })).toBeNull()
   })
 
@@ -66,7 +66,7 @@ describe('NavRail', () => {
     // The label is hidden, so `title`/`aria-label` is the only thing left — lose
     // it and a collapsed rail is a column of unlabelled glyphs to a screen reader.
     mount({ collapsed: true })
-    for (const name of ['Specification', 'Document', 'Map', 'Tests', 'Lanes', 'Inbox']) {
+    for (const name of ['Specification', 'Document', 'Map', 'Verification and Evidence', 'Lanes', 'Inbox']) {
       expect(screen.getByRole('link', { name })).toBeTruthy()
     }
   })
@@ -160,7 +160,7 @@ it('carries the current project into Lanes destinations', () => {
 
 it('preserves project and selected section across all child views and modified clicks', () => {
   const { onNavigate } = mount({ current: 'specification', project: 'project / one', specificationView: 'map', specificationSection: 'node/one' })
-  for (const [name, view] of [['Document', 'document'], ['Map', 'map'], ['Tests', 'tests']]) {
+  for (const [name, view] of [['Document', 'document'], ['Map', 'map'], ['Verification and Evidence', 'tests']]) {
     const link = screen.getByRole('link', { name })
     expect(link.getAttribute('href')).toBe(`/projects/project%20%2F%20one/specification?view=${view}&section=node%2Fone`)
     fireEvent.click(link)
@@ -168,7 +168,7 @@ it('preserves project and selected section across all child views and modified c
   }
   expect(screen.getByRole('link', { name: 'Map' }).getAttribute('aria-current')).toBe('page')
   onNavigate.mockClear()
-  fireEvent.click(screen.getByRole('link', { name: 'Tests' }), { ctrlKey: true })
+  fireEvent.click(screen.getByRole('link', { name: 'Verification and Evidence' }), { ctrlKey: true })
   expect(onNavigate).not.toHaveBeenCalled()
 })
 
