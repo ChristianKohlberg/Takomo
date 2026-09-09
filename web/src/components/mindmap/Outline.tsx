@@ -16,7 +16,7 @@
 // are pointer-driven — a badge, a `+` on hover, a right-click menu — and a phone
 // has no hover and no right button. Rather than give the list a worse version of
 // each, every row carries the same four verbs as plain buttons.
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
@@ -61,6 +61,7 @@ export interface OutlineLabels {
 }
 
 export interface OutlineProps {
+  searchMatches?: ReadonlySet<string>
   nodes: MapNode[]
   selected: string | null
   canWrite: boolean
@@ -92,6 +93,7 @@ export interface OutlineProps {
 }
 
 export function Outline({
+  searchMatches,
   nodes,
   selected,
   canWrite,
@@ -111,6 +113,9 @@ export function Outline({
   labels,
   className,
 }: OutlineProps) {
+  const activeMatch = useRef<HTMLLIElement>(null)
+  const selectedMatch = selected && searchMatches?.has(selected) ? selected : null
+  useEffect(() => { if (selectedMatch) activeMatch.current?.scrollIntoView?.({ block: 'nearest' }) }, [selectedMatch])
   const kids = childrenOf(nodes)
   const [menuFor, setMenuFor] = useState<string | null>(null)
   const chose = useRef(false)
@@ -154,8 +159,11 @@ export function Outline({
         return (
         <li
           key={node.id}
+          ref={node.id === selectedMatch ? activeMatch : undefined}
+          data-search-match={searchMatches?.has(node.id) || undefined}
           className={cn(
             'border-b-border-soft flex flex-wrap items-start gap-2 border-b py-2.5 pr-2',
+            searchMatches?.has(node.id) && 'ring-2 ring-inset ring-amber-500',
             selected === node.id && 'bg-accent',
           )}
           // Indentation is inline because it is data, not a style: a depth-4 node

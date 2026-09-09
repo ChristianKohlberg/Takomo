@@ -347,7 +347,13 @@ event.
   and a promoted node still shows its `→ epic` mark. And **go to a thought…**,
   which fuzzy-matches titles, unfolds whatever was hiding the match and centres
   it — with no rail, that is how you move around a map that has outgrown the
-  screen; a **Find a node** field on the canvas does the same. The canvas opens
+  screen. **Search document** above the map uses the document's keyword and
+  semantic search, including section content. It highlights matching nodes
+  directly, with no results modal. Matching folded branches open temporarily;
+  clearing the query restores their folds. Search does not move the camera or
+  save layout changes. Enter / Shift+Enter and the previous/next buttons navigate
+  matches while respecting the camera lock; ⌘/Ctrl S focuses the search field.
+  The phone outline highlights the same matches. The canvas opens
   on the root and its first ring at a readable scale rather than fitting the
   whole tree to a thumbnail, and its controls carry **Fit all** for the overview,
   **Fit branch** for the selected subtree, the zoom percentage, and a
