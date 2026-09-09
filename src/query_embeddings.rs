@@ -43,6 +43,13 @@ impl Default for QueryCache {
         Self::new(CAPACITY, TTL)
     }
 }
+/// Hash the complete identity: no raw credential or query in map keys or diagnostics.
+fn cache_key(config: &EmbeddingConfig, credential: &str, token_id: &str, query: &str) -> String {
+    let identity =
+        serde_json::to_vec(&(config.fingerprint(), credential, token_id, query.trim())).unwrap();
+    format!("{:x}", Sha256::digest(identity))
+}
+
 impl QueryCache {
     /// Explicit bounds also permit short, deterministic expiration tests.
     pub fn new(capacity: usize, ttl: Duration) -> Self {
@@ -70,19 +77,15 @@ impl QueryCache {
         token_id: &str,
         query: &str,
     ) -> (u64, QueryEmbedding) {
-        // Hash the complete identity: no raw credential or query in map keys or diagnostics.
-        let identity =
-            serde_json::to_vec(&(config.fingerprint(), credential, token_id, query.trim()))
-                .unwrap();
-        let key = format!("{:x}", Sha256::digest(identity));
+        let key = cache_key(config, credential, token_id, query);
         let (generation, mut receiver, sender) = {
             let mut entries = self.entries.lock().unwrap();
             entries.items.retain(|_, entry| {
-                entry
-                    .result
-                    .borrow()
-                    .as_ref()
-                    .is_none_or(|(at, _)| at.elapsed() < self.ttl)
+                let alive = entry.result.has_changed().is_ok();
+                match entry.result.borrow().as_ref() {
+                    Some((at, _)) => at.elapsed() < self.ttl,
+                    None => alive,
+                }
             });
             entries.clock = entries.clock.wrapping_add(1);
             let clock = entries.clock;
@@ -121,6 +124,7 @@ impl QueryCache {
             let credential = credential.to_owned();
             let token_id = token_id.to_owned();
             let query = query.trim().to_owned();
+            let key = key.clone();
             // The bounded operation owns completion even if its first HTTP client leaves.
             tokio::spawn(async move {
                 let result = match cache.pending.clone().try_acquire_owned() {
@@ -159,8 +163,102 @@ impl QueryCache {
                 return (generation, result.clone());
             }
             if receiver.changed().await.is_err() {
+                let mut entries = self.entries.lock().unwrap();
+                let dead = entries.items.get(&key).is_some_and(|entry| {
+                    entry.result.same_channel(&receiver) && entry.result.borrow().is_none()
+                });
+                if dead {
+                    entries.items.remove(&key);
+                }
                 return (generation, QueryEmbedding::Unavailable);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn mock_provider() -> (EmbeddingConfig, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let router = axum::Router::new().route(
+            "/embeddings",
+            axum::routing::post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({"data":[{"index":0,"embedding":[1.0,0.0,0.0]}]}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = EmbeddingConfig {
+            provider: "openai".into(),
+            endpoint: format!("http://{}/embeddings", listener.local_addr().unwrap()),
+            model: "fixture-v1".into(),
+            dimensions: 3,
+            ..Default::default()
+        };
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (config, calls)
+    }
+
+    fn insert_inflight(cache: &QueryCache, key: &str) -> watch::Sender<Completion> {
+        let (sender, receiver) = watch::channel(None);
+        let mut entries = cache.entries.lock().unwrap();
+        entries.items.insert(
+            key.to_owned(),
+            Entry {
+                result: receiver,
+                touched: 0,
+            },
+        );
+        sender
+    }
+
+    #[tokio::test]
+    async fn dead_inflight_entries_release_capacity_and_retry() {
+        let (config, calls) = mock_provider().await;
+        let cache = QueryCache::new(1, TTL);
+        let key = cache_key(&config, "secret", "alice", "query");
+
+        let (owned, cfg) = (cache.clone(), config.clone());
+        let waiter = tokio::spawn(async move { owned.get(&cfg, "secret", "alice", "query").await });
+        let sender = insert_inflight(&cache, &key);
+        tokio::task::yield_now().await;
+        drop(sender);
+        assert!(matches!(
+            waiter.await.unwrap().1,
+            QueryEmbedding::Unavailable
+        ));
+        assert!(
+            cache.entries.lock().unwrap().items.is_empty(),
+            "a waiter whose sender vanished frees the slot at once"
+        );
+
+        drop(insert_inflight(&cache, &key));
+        assert!(matches!(
+            cache.get(&config, "secret", "alice", "other").await.1,
+            QueryEmbedding::Ready(_)
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a dead slot is not capacity"
+        );
+
+        drop(insert_inflight(&cache, &key));
+        assert!(matches!(
+            cache.get(&config, "secret", "alice", "query").await.1,
+            QueryEmbedding::Ready(_)
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the dead identity is recomputed"
+        );
     }
 }

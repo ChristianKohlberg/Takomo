@@ -19,8 +19,15 @@ export function SearchExcerpt({ result }: { result: SearchResult }) {
 type Props = { userId?: string; project?: string; token: string; map: string; locale: Locale; canSync: boolean; onNavigate: (result: SearchResult) => void }
 export function DocumentHybridSearch(props: Props) {
   const shared = useEmbeddingStatus()
-  const scope = JSON.stringify([props.userId, props.project, props.map, props.token])
-  return shared ? <SearchDialog key={scope} {...props} /> : <EmbeddingStatusProvider key={`${props.map}:${props.token}`} token={props.token} map={props.map}><SearchDialog key={scope} {...props} /></EmbeddingStatusProvider>
+  const scope = `${props.map}:${props.token}`
+  return shared ? <SearchDialog key={scope} {...props} /> : <EmbeddingStatusProvider key={scope} token={props.token} map={props.map}><SearchDialog key={scope} {...props} /></EmbeddingStatusProvider>
+}
+type ScopedHistory = { key: string | null; history: string[] }
+/** Identity resolves after mount, so the scope moves while the dialog is open; a pending
+ *  (session-only) scope carries its entries into the resolved one, any other move reads fresh. */
+function rescopeHistory(current: ScopedHistory, key: string | null): ScopedHistory {
+  const carried = current.key === null && key !== null ? current.history : []
+  return { key, history: carried.reduceRight((history, item) => rememberSearch(history, item), readSearchHistory(key)) }
 }
 function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate }: Props) {
   const { status, error: statusError, syncing, deferred, localPending, awaitingFreshStatus, embed, clearNotice, watch } = useEmbeddingStatus()!
@@ -29,12 +36,13 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
   useEffect(() => { if (open) clearNotice() }, [open, clearNotice])
   useEffect(() => open ? watch() : undefined, [open, watch])
   const historyKey = searchHistoryKey(userId, project)
-  const [history, setHistory] = useState(() => readSearchHistory(historyKey))
+  const [scoped, setScoped] = useState<ScopedHistory>(() => rescopeHistory({ key: null, history: [] }, historyKey))
+  if (scoped.key !== historyKey) setScoped(rescopeHistory(scoped, historyKey))
+  const history = scoped.key === historyKey ? scoped.history : []
+  const setHistory = (history: string[]) => setScoped({ key: historyKey, history })
+  useEffect(() => writeSearchHistory(scoped.key, scoped.history), [scoped])
   const [query, setQuery] = useState('')
-  const remember = (value: string) => {
-    const next = rememberSearch(history, value)
-    setHistory(next); writeSearchHistory(historyKey, next)
-  }
+  const remember = (value: string) => setHistory(rememberSearch(history, value))
   const [response, setResponse] = useState<SearchResponse | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -130,7 +138,7 @@ function SearchDialog({ token, map, userId, project, locale, canSync, onNavigate
           : `${results.length} ${de ? (results.length === 1 ? 'Ergebnis' : 'Ergebnisse') : (results.length === 1 ? 'result' : 'results')}`)}</div>
         {showingHistory && <div className="flex items-center justify-between gap-2 text-sm">
           <span>{de ? 'Letzte Suchen' : 'Recent searches'}</span>
-          {history.length > 0 && <button type="button" className="min-h-9 rounded px-2 underline hover:bg-muted" onClick={() => { setHistory([]); writeSearchHistory(historyKey, []); setActive(0); input.current?.focus() }}>{de ? 'Verlauf löschen' : 'Clear history'}</button>}
+          {history.length > 0 && <button type="button" className="min-h-9 rounded px-2 underline hover:bg-muted" onClick={() => { setHistory([]); setActive(0); input.current?.focus() }}>{de ? 'Verlauf löschen' : 'Clear history'}</button>}
         </div>}
         {showingHistory && history.length === 0 && <p className="text-sm text-muted-foreground">{de ? 'Noch keine Suchen. Eine Suche eingeben, um zu beginnen.' : 'No recent searches. Type a query to begin.'}</p>}
         <div id={listId} role="listbox" aria-label={showingHistory ? (de ? 'Letzte Suchen' : 'Recent searches') : (de ? 'Suchergebnisse' : 'Search results')} className="min-h-0 overflow-y-auto overscroll-contain rounded-lg border empty:hidden">
