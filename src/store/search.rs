@@ -508,8 +508,9 @@ fingerprint=excluded.fingerprint,content_hash=excluded.content_hash,due_at=exclu
     pub fn search_status(&self, map: &str) -> ApiResult<Value> {
         self.with_conn(|conn| {
             let (c, k) = config(conn)?;
+            let now = now_ms();
             let queued: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1", [map], |r| r.get(0))?;
-            let running: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND lease_until>?2", params![map, now_ms()], |r| r.get(0))?;
+            let running: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND lease_until>?2", params![map, now], |r| r.get(0))?;
             let total: i64 = conn.query_row("SELECT count(*) FROM search_nodes WHERE map_id=?1", [map], |r| r.get(0))?;
             let indexed: i64 = conn.query_row(
                 "SELECT count(*) FROM search_nodes n WHERE map_id=?1 AND NOT EXISTS(SELECT 1 FROM
@@ -519,6 +520,15 @@ c.fingerprint<>?2))",
                 |r| r.get(0),
             )?;
             let failed: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND attempts>=?2", params![map, MAX_ATTEMPTS], |r| r.get(0))?;
+            let pending: i64 = conn.query_row("SELECT count(*) FROM embedding_jobs WHERE map_id=?1 AND attempts<?2 AND lease_until<=?3", params![map, MAX_ATTEMPTS, now], |r| r.get(0))?;
+            let (passages_total, passages_indexed): (i64, i64) = conn.query_row(
+                "SELECT count(*),coalesce(sum(CASE WHEN vector IS NOT NULL AND fingerprint=?2 THEN 1 ELSE 0 END),0) FROM search_chunks WHERE map_id=?1",
+                params![map, c.fingerprint()], |r| Ok((r.get(0)?,r.get(1)?)),
+            )?;
+            let last_synced_at: Option<i64> = conn.query_row(
+                "SELECT last_synced_at FROM embedding_sync_history WHERE map_id=?1 AND fingerprint=?2",
+                params![map, c.fingerprint()], |r| r.get(0),
+            ).optional()?;
             let projection = projection_failure(conn, map)?;
             let stale = projection.is_some() || is_dirty(conn, map)?;
             let error = match &projection {
@@ -528,7 +538,8 @@ c.fingerprint<>?2))",
                     .optional()?,
             };
             Ok(json!({
-            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error,"projection":if stale{"stale"}else{"current"}}
+            "configured":!k.is_empty(),"queued":queued,"running":running,"failed":failed,"indexed":indexed,"total":total,"last_error":error,"projection":if stale{"stale"}else{"current"},
+            "pending":pending,"passages_total":passages_total,"passages_indexed":passages_indexed,"last_synced_at":last_synced_at}
             ))
         })
     }
@@ -622,6 +633,18 @@ content_hash=?3 AND fingerprint=?4 AND lease_until=?5)",
                         )?;
                     }
                     tx.execute("DELETE FROM embedding_jobs WHERE map_id=?1 AND node_id=?2", params![job.map_id, job.node_id])?;
+                    // Only an accepted provider completion can establish a timestamp.
+                    // In particular, legacy vectors and an unchanged manual sync do not.
+                    tx.execute(
+                        "INSERT INTO embedding_sync_history(map_id,fingerprint,last_synced_at)
+SELECT ?1,?2,?3 WHERE
+EXISTS(SELECT 1 FROM search_chunks WHERE map_id=?1) AND
+NOT EXISTS(SELECT 1 FROM embedding_jobs WHERE map_id=?1) AND
+NOT EXISTS(SELECT 1 FROM search_failures WHERE map_id=?1) AND
+NOT EXISTS(SELECT 1 FROM search_chunks WHERE map_id=?1 AND (vector IS NULL OR fingerprint<>?2))
+ON CONFLICT(map_id,fingerprint) DO UPDATE SET last_synced_at=excluded.last_synced_at",
+                        params![job.map_id, job.fingerprint, now],
+                    )?;
                 }
                 Err(error) => {
                     tx.execute(

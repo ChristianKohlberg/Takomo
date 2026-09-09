@@ -19,6 +19,7 @@ export interface SpecificationState {
   map: Mindmap | null
   session: MindmapSession | null
   saveState?: import('@/lib/save-status').SaveState
+  serverSync?: import('@/lib/save-status').ServerSync
   connection: SyncConnection | null
   nodes: PlanNode[]
   checks: Check[]

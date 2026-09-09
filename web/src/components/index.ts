@@ -272,3 +272,5 @@ export { DocumentClassificationPolicy } from './settings/DocumentClassificationP
 export { SectionTicketLinks } from './documents/SectionTicketLinks'
 
 export { DocumentNumberingControls, useDocumentNumbering } from './documents/DocumentNumberingControls'
+export { DocumentEmbeddingStatus } from './documents/DocumentEmbeddingStatus'
+export { EmbeddingStatusProvider } from '../hooks/useEmbeddingStatus'

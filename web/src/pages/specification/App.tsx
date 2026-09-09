@@ -37,7 +37,7 @@ import { listDefinitions, type TestDefinition } from '@/lib/test-runs'
 import { readPlanTree, nodesMap } from '@/lib/mindmap-crdt'
 import { sameTree, type PlanNode } from '@/lib/plan-sections'
 import { retryConnection } from '@/lib/retry-connection'
-import type { SaveState } from '@/lib/save-status'
+import type { SaveState, ServerSync } from '@/lib/save-status'
 import { STR as DOCUMENT_STR } from '../documents/strings'
 import { STR as CHECK_STR } from '../verification/strings'
 import { SpecificationContext } from './context'
@@ -122,6 +122,7 @@ function SpecificationWorkspace({
   const [checks, setChecks] = useState<Check[]>([])
   const [testDefinitions, setTestDefinitions] = useState<TestDefinition[]>([])
   const [saveState, setSaveState] = useState<SaveState>('connecting')
+  const [serverSync, setServerSync] = useState<ServerSync>('unknown')
   const [peers, setPeers] = useState<string[]>([])
   const [nodes, setNodes] = useState<PlanNode[]>([])
   const access = useRef({ canWrite: false, title: project })
@@ -235,7 +236,7 @@ function SpecificationWorkspace({
       abort.abort()
     }
   }, [token, mapId, onError])
-  const connection = useSyncConnection(session, onError, setSaveState)
+  const connection = useSyncConnection(session, onError, (state, server) => { setSaveState(state); setServerSync(server) })
   const [structureHistory, setStructureHistory] = useState<ReturnType<typeof createStructureHistory> | null>(null)
   useEffect(() => {
     if (!connection) { setStructureHistory(null); return }
@@ -338,6 +339,7 @@ function SpecificationWorkspace({
       session,
       connection,
       saveState,
+      serverSync,
       checks,
       setChecks,
       refreshMap,
@@ -362,6 +364,7 @@ function SpecificationWorkspace({
       session,
       connection,
       saveState,
+      serverSync,
       checks,
       refreshMap,
       refreshChecks,

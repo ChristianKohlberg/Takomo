@@ -1,7 +1,8 @@
+import { EmbeddingStatusProvider, useEmbeddingStatus } from '@/hooks/useEmbeddingStatus'
 import { useEffect, useId, useRef, useState } from 'react'
 import { SearchIcon, XIcon } from 'lucide-react'
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { excerptRanges, searchDocument, searchStatus, syncSearch, type SearchResult, type SearchResponse, type SearchStatus } from '@/lib/hybrid-search'
+import { excerptRanges, searchDocument, type SearchResult, type SearchResponse } from '@/lib/hybrid-search'
 import type { Locale } from '@/lib/i18n'
 
 export function SearchExcerpt({ result }: { result: SearchResult }) {
@@ -14,19 +15,21 @@ export function SearchExcerpt({ result }: { result: SearchResult }) {
   })}{result.excerpt.slice(end)}</>
 }
 
-export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }: {
-  token: string; map: string; locale: Locale; canSync: boolean; onNavigate: (result: SearchResult) => void
-}) {
+type Props = { token: string; map: string; locale: Locale; canSync: boolean; onNavigate: (result: SearchResult) => void }
+export function DocumentHybridSearch(props: Props) {
+  const shared = useEmbeddingStatus()
+  return shared ? <SearchDialog {...props} /> : <EmbeddingStatusProvider key={`${props.map}:${props.token}`} token={props.token} map={props.map}><SearchDialog {...props} /></EmbeddingStatusProvider>
+}
+function SearchDialog({ token, map, locale, canSync, onNavigate }: Props) {
+  const { status, error: statusError, syncing, deferred, localPending, awaitingFreshStatus, embed, clearNotice, watch } = useEmbeddingStatus()!
   const de = locale === 'de'
   const [open, setOpen] = useState(false)
+  useEffect(() => { if (open) clearNotice() }, [open, clearNotice])
+  useEffect(() => open ? watch() : undefined, [open, watch])
   const [query, setQuery] = useState('')
   const [response, setResponse] = useState<SearchResponse | null>(null)
-  const [status, setStatus] = useState<SearchStatus | null>(null)
   const [error, setError] = useState('')
-  const [statusError, setStatusError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [syncNotice, setSyncNotice] = useState('')
   const [active, setActive] = useState(0)
   const trigger = useRef<HTMLButtonElement>(null)
   const input = useRef<HTMLInputElement>(null)
@@ -45,22 +48,6 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
     window.addEventListener('keydown', key)
     return () => window.removeEventListener('keydown', key)
   }, [open])
-  useEffect(() => {
-    if (!open) return
-    setSyncNotice('')
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout>
-    const refresh = () => {
-      searchStatus(token, map, controller.signal).then(value => {
-        if (controller.signal.aborted) return
-        setStatus(value); setStatusError('')
-        if (value.projection === 'current') setSyncNotice('')
-        timer = setTimeout(refresh, 3000)
-      }).catch((e: Error) => { if (!controller.signal.aborted) setStatusError(e.message) })
-    }
-    refresh()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [open, token, map])
   useEffect(() => {
     if (!open || !query.trim()) return
     const controller = new AbortController()
@@ -82,9 +69,11 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
     : status.failed > 0 ? (de ? `Indexierung für ${status.failed} ${status.failed === 1 ? 'Abschnitt' : 'Abschnitte'} aufgegeben · Stichwortsuche verfügbar` : `Indexing gave up on ${status.failed} ${status.failed === 1 ? 'section' : 'sections'} · keyword search available`)
     : status.last_error ? (de ? 'Indexfehler · Stichwortsuche verfügbar' : 'Index error · keyword search available')
     : status.projection === 'stale' ? (de ? 'Dokument ändert sich noch · Index holt auf' : 'Document still changing · index catching up')
+    : localPending ? (de ? 'Änderungen werden gespeichert · Embeddings ausstehend' : 'Saving changes · embeddings pending')
     : status.running > 0 ? (de ? 'Index wird aktualisiert…' : 'Updating index…')
     : status.queued > 0 ? (de ? 'Aktualisierung vorgemerkt' : 'Update pending')
-    : status.indexed < status.total ? (de ? 'Index unvollständig' : 'Index incomplete')
+    : awaitingFreshStatus ? (de ? 'Indexstatus wird geprüft…' : 'Checking index status…')
+    : status.passages_indexed !== status.passages_total || !Number.isFinite(status.passages_total) ? (de ? 'Index unvollständig' : 'Index incomplete')
     : (de ? 'Index aktuell' : 'Index current')
   return <>
     <button ref={trigger} type="button" aria-haspopup="dialog" className="flex min-h-9 items-center gap-1.5 rounded px-2 py-1 text-sm hover:bg-muted" onClick={() => { previousFocus.current = trigger.current; setOpen(true) }}>
@@ -110,17 +99,11 @@ export function DocumentHybridSearch({ token, map, locale, canSync, onNavigate }
           }} />
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span role="status">{state}{status?.configured ? ` · ${status.indexed}/${status.total}` : ''}</span>
-          {canSync && <button type="button" disabled={syncing || !status?.configured} className="min-h-9 rounded border px-2 text-foreground disabled:opacity-50" onClick={() => {
-            setSyncing(true); setStatusError(''); setSyncNotice('')
-            void syncSearch(token, map).then(value => {
-              setStatus(value)
-              setSyncNotice(value.sync === 'deferred' ? (de ? 'Das Dokument ändert sich noch; die Synchronisierung wurde zurückgestellt. Nichts wurde vorgemerkt – bitte erneut versuchen, sobald das Tippen pausiert.' : 'Document is still changing; synchronization is deferred. Nothing was scheduled, so try again once typing pauses.') : '')
-            }).catch((e: Error) => setStatusError(e.message)).finally(() => setSyncing(false))
-          }}>{syncing ? (de ? 'Wird vorgemerkt…' : 'Scheduling…') : (de ? 'Dokument synchronisieren' : 'Sync document')}</button>}
+          {canSync && <button type="button" disabled={syncing || !status?.configured || localPending} className="min-h-9 rounded border px-2 text-foreground disabled:opacity-50" onClick={() => { void embed() }}>{syncing ? (de ? 'Wird vorgemerkt…' : 'Scheduling…') : (de ? 'Dokument synchronisieren' : 'Sync document')}</button>}
           {!status?.configured && <a className="underline" href="/settings?section=search">{de ? 'Suche konfigurieren' : 'Configure search'}</a>}
         </div>
         {(statusError || status?.last_error) && <p className="text-xs text-destructive" role="status">{statusError || status?.last_error}</p>}
-        {syncNotice && <p className="text-xs text-muted-foreground" role="status">{syncNotice}</p>}
+        {deferred && <p className="text-xs text-muted-foreground" role="status">{de ? 'Das Dokument ändert sich noch; die Synchronisierung wurde zurückgestellt. Nichts wurde vorgemerkt – bitte erneut versuchen, sobald das Tippen pausiert.' : 'Document is still changing; synchronization is deferred. Nothing was scheduled, so try again once typing pauses.'}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'unavailable' && status?.configured && !status.last_error && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche derzeit nicht verfügbar.' : 'Keyword results · meaning search is currently unavailable.'}</p>}
         {response?.projection === 'stale' && <p className="text-xs text-destructive" role="status">{de ? 'Ergebnisse können veraltet sein · Quelle konnte nicht indexiert werden' : 'Results may be out of date · source could not be indexed'}{response.projection_error ? `: ${response.projection_error}` : ''}</p>}
         {response?.mode === 'keyword' && response.semantic_status === 'throttled' && <p className="text-xs text-muted-foreground">{de ? 'Stichwortergebnisse · Bedeutungssuche kurz pausiert (Abfragelimit erreicht).' : 'Keyword results · meaning search paused briefly (query limit reached).'}</p>}

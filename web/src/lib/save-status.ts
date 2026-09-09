@@ -5,23 +5,27 @@ import type { WebsocketProvider } from 'y-websocket'
 import { persistReplica, type LocalSave } from './durable-replica'
 
 export type SaveState = 'connecting' | 'syncing' | 'saved' | 'offline' | 'local-error' | 'server-error' | 'read-only'
+/** What the server holds, judged by its durability replies alone: the local replica has no say here. */
+export type ServerSync = 'unknown' | 'current' | 'behind'
 export interface SaveSession { object: string; actor?: string; display?: string; can_write?: boolean; durability_ack?: boolean }
 
 /** A socket handshake is not a save. Only an ordered server durability reply is. */
-export function trackSave(doc: Y.Doc, provider: WebsocketProvider, session: SaveSession, changed: (state: SaveState) => void) {
+export function trackSave(doc: Y.Doc, provider: WebsocketProvider, session: SaveSession, changed: (state: SaveState, server: ServerSync) => void) {
   let local: LocalSave = 'loading'
   let revision = 0
   let acknowledged = -1
+  let settled = 0
   let refused = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
   let recovering = true
   const writable = session.can_write !== false
+  const server = (): ServerSync => !writable ? 'current' : revision > settled ? 'behind' : acknowledged === revision ? 'current' : 'unknown'
   const report = () => {
     if (stopped) return
     changed(!writable ? 'read-only' : local === 'error' ? 'local-error' :
       !provider.wsconnected ? (local === 'saved' ? 'offline' : 'connecting') :
-      refused ? 'server-error' : provider.synced && local === 'saved' && acknowledged === revision ? 'saved' : 'syncing')
+      refused ? 'server-error' : provider.synced && local === 'saved' && acknowledged === revision ? 'saved' : 'syncing', server())
   }
   const request = () => {
     clearTimeout(timer)
@@ -43,6 +47,7 @@ export function trackSave(doc: Y.Doc, provider: WebsocketProvider, session: Save
     const saved = decoding.readVarUint(decoder) === 1
     if (seen === revision) {
       acknowledged = saved ? seen : -1
+      if (saved) settled = seen
       refused = !saved
       if (!saved) { clearTimeout(timer); timer = setTimeout(request, 5000) }
     }
