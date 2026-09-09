@@ -96,7 +96,7 @@ describe('personal document search', () => {
         expect(editor.view.dom.querySelector('[data-document-search-active="true"]')?.textContent).toBe('details')
       }
       expect(editor.view.dom.querySelectorAll('.document-search-match')).toHaveLength(2)
-      expect(editor.view.dom.querySelector('a')?.textContent).toBe('Billing rules')
+      expect(editor.view.dom.querySelector('a')?.textContent).toBe('2 Billing rules')
     } finally { editor.destroy() }
   })
   it('does not match across blocks or include deleted sections from a stale outline', () => {
