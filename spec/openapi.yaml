@@ -129,7 +129,7 @@ paths:
       tags: [mindmaps]
       operationId: specification_search_status
       summary: Inspect search indexing status for this document
-      description: Requires read and project access. Counts nodes, not chunks.
+      description: "Requires read and project access. Section counts (`indexed`, `total`, job counts) are nodes; `passages_indexed`/`passages_total` count chunks, and a long section holds several."
       responses:
         '200':
           description: Current generation status
