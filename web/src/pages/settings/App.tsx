@@ -79,8 +79,7 @@ const LS_LANG = 'takomo.lang'
 
 export function App({ legacy = false }: { legacy?: boolean }) {
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
-  const location = useLocation()
-  return <SettingsDrafts lang={lang}><SettingsApp key={`${location.pathname}:${location.search}`} legacy={legacy} lang={lang} setLang={setLang} /></SettingsDrafts>
+  return <SettingsDrafts lang={lang}><SettingsApp legacy={legacy} lang={lang} setLang={setLang} /></SettingsDrafts>
 }
 
 /** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
@@ -98,7 +97,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   const section = settingsSection(location.search)
   const params = new URLSearchParams(location.search)
   const navProject = params.get('scope') ?? params.get('project') ?? loadProject()
-  const selectedId = isProjectSection(section) ? navProject : null
+  const selectedId = navProject || null
   useEffect(() => { if (navProject) saveProject(navProject) }, [navProject])
 
   const [who, setWho] = useState<Whoami | null>(null)
@@ -151,9 +150,9 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
     navigate(settingsHref(id ? 'general' : 'projects', id ?? navProject))
   }, [navigate, navProject])
 
-  // A route change remounts the form, and discarding a blocked navigation also
-  // discards its parent-owned draft. Refetching the same route keeps edits.
-  // Load a project's saved values into the form when the OPEN project changes.
+  // Load a project's saved values into the form when the OPEN project or the
+  // section changes; a route change within the console does not remount it, so
+  // the admin lists fetched once stay put and only the form resets.
   //
   // The ref guard is what makes this safe rather than the dependency list.
   // `refresh()` replaces the whole projects array after every write, so an
@@ -170,6 +169,8 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
     const p = projects.find((x) => x.id === selectedKey)
     setSettings(settingsFrom(p))
     setOrigSettings(settingsFrom(p))
+    setSaved(false)
+    setSaveErr('')
   }, [selectedKey, projects, formKey])
 
   // The open project's workflow and the shared library, for the editor below the
@@ -395,7 +396,10 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
     <SettingsLayout lang={lang} legacy={legacy} section={section}
       onLang={l => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       project={navProject} projects={projects} onSignOut={signOut}
-      onProject={id => navigate(legacy ? `/legacy?scope=${encodeURIComponent(id)}` : settingsHref(section, id))}>
+      onProject={id => {
+        if (!id) saveProject('')
+        navigate(legacy ? (id ? `/legacy?scope=${encodeURIComponent(id)}` : '/legacy') : settingsHref(section, id))
+      }}>
       {legacy ? <PageCollection lang={lang} project={navProject} /> :
         <div className="min-w-0 pb-10">
           {!isAdmin ? (
@@ -900,7 +904,10 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             await deleteProject(token, deleting.id)
             // Deleting the project whose detail is open would otherwise leave
             // the panel showing a project that no longer exists.
-            if (deleting.id === selectedId) selectProject(null)
+            if (deleting.id === navProject) {
+              saveProject('')
+              navigate(settingsHref('projects', ''))
+            }
             await refresh()
           } catch (e) {
             handleErr(e)

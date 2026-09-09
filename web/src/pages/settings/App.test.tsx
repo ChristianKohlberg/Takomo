@@ -3,8 +3,9 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@/components/Toaster'
 import { App } from './App'
-let scopes: string[], failSave: boolean, style: string
+let scopes: string[], failSave: boolean, style: string, deleted: string[]
 const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
+  if (opts?.method === 'DELETE') { deleted.push(url); return new Response('{}') }
   if (opts?.method === 'PUT') {
     if (failSave) return new Response(JSON.stringify({ message: 'Save refused' }), { status: 422 })
     if (url.endsWith('/style')) style = JSON.parse(String(opts.body)).style_guide
@@ -12,7 +13,7 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
   }
   if (url.endsWith('/workflow')) return new Response('{}', { status: 404 })
   const data = url === '/v1/whoami' ? { actor: 'test:admin', scopes, token_id: 'test', projects: null }
-    : url === '/v1/projects' ? [{ id: 'takomo', name: 'Takomo', style_guide: style }, { id: 'second', name: 'Second project' }]
+    : url === '/v1/projects' ? [{ id: 'takomo', name: 'Takomo', style_guide: style }, { id: 'second', name: 'Second project' }].filter(p => !deleted.includes(`/v1/projects/${p.id}`))
     : url.includes('/users') ? { items: [], total: 0 }
     : url.endsWith('/writing-instructions') ? { templates: [], default_id: null }
     : url.endsWith('/document-classification-policy') ? { mode: 'suggest' } : []
@@ -25,7 +26,7 @@ function open(path: string) {
 }
 beforeEach(() => {
   localStorage.clear(); localStorage.setItem('takomo.token', 'test-only'); localStorage.setItem('takomo.lang', 'en')
-  scopes = ['read', 'write', 'human', 'admin']; failSave = false; style = 'Original style'
+  scopes = ['read', 'write', 'human', 'admin']; failSave = false; style = 'Original style'; deleted = []
   fetcher.mockClear(); vi.stubGlobal('fetch', fetcher)
 })
 describe('Settings navigation and save boundaries', () => {
@@ -81,6 +82,41 @@ describe('Settings navigation and save boundaries', () => {
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'second' } })
     await waitFor(() => expect(router.state.location.search).toBe('?section=people&scope=second'))
     expect(screen.getByText('Instance-wide')).toBeTruthy()
+  })
+  it('switches sections without refetching the admin lists', async () => {
+    const reads = () => fetcher.mock.calls.filter(([, opts]) => !opts?.method || opts.method === 'GET').map(([url]) => url)
+    open('/settings?scope=takomo&section=writing')
+    await screen.findByLabelText('Style guide')
+    await waitFor(() => expect(reads()).toContain('/v1/tokens'))
+    const loaded = reads()
+    fireEvent.click(screen.getByRole('link', { name: 'People' }))
+    await screen.findByRole('button', { name: /Add person/ })
+    fireEvent.click(screen.getByRole('link', { name: 'Workflow & timing' }))
+    await screen.findByLabelText(/Answer-link lifetime/)
+    expect(reads()).toEqual(loaded)
+  })
+  it('lets the blank project choice clear the remembered project', async () => {
+    const router = open('/settings?section=people&scope=takomo')
+    await screen.findByRole('button', { name: /Add person/ })
+    fireEvent.change(screen.getByLabelText('Project'), { target: { value: '' } })
+    await waitFor(() => expect(router.state.location.search).toBe('?section=people'))
+    expect(localStorage.getItem('takomo.project')).toBe('')
+    await waitFor(() => expect((screen.getByLabelText('Project') as HTMLSelectElement).value).toBe(''))
+    fireEvent.click(screen.getByRole('link', { name: 'General' }))
+    await screen.findByText('Select a project in the navigation.')
+  })
+  it('drops the scope of a project deleted from its own General page', async () => {
+    const router = open('/settings?scope=takomo&section=general')
+    await screen.findByText('Project name')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete project' }))
+    await waitFor(() => expect(deleted).toEqual(['/v1/projects/takomo']))
+    await waitFor(() => expect(router.state.location.search).toBe('?section=projects'))
+    expect(localStorage.getItem('takomo.project')).toBe('')
+    await waitFor(() => expect(screen.queryByText('Takomo')).toBeNull())
+    await waitFor(() => expect((screen.getByLabelText('Project') as HTMLSelectElement).value).toBe(''))
+    expect(screen.getByRole('option', { name: 'Select project' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'takomo' })).toBeNull()
   })
   it('allows non-admins into Legacy but preserves administrative permissions', async () => {
     scopes = ['read']; open('/legacy?scope=takomo')
