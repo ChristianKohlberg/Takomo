@@ -51,7 +51,7 @@ import {
   type Point,
   type Viewport,
 } from '@/lib/mindmap-layout'
-import { PlusIcon } from 'lucide-react'
+import { LockKeyholeIcon, UnlockKeyholeIcon, MaximizeIcon, PlusIcon, Repeat2Icon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { trustOf, type FoldSummary, type Trust } from '@/lib/mindmap-lens'
 import type { MapNode, Relationship } from '@/lib/mindmap-doc'
@@ -80,11 +80,13 @@ export interface CanvasLabels {
   fit: string
   search?: string
   noMatches?: string
-  keepView?: string
+  lockView?: string
+  unlockView?: string
   fitBranch?: string
   radial: string
   tree: string
   custom: string
+  nextLayout?: string
   zoomIn: string
   zoomOut: string
   expand: string
@@ -103,8 +105,7 @@ export interface CanvasLabels {
   nodeMenu: string
   /** Said on the node a file or link is about to be dropped onto. */
   dropHere: string
-  /** The trust lens: its toggle, its legend, and its three readings. */
-  trustLens: string
+  /** The trust lens legend and its three readings; the toggle lives in the top bar. */
   trustLegend: string
   trustConfirmed: string
   trustMachine: string
@@ -215,7 +216,6 @@ export interface CanvasProps {
   testsFor?: (id: string) => { total: number; failing: number } | null
   /** Tint every node by how confident we are in it. A lens, off by default. */
   trustLens: boolean
-  onTrustLens: (on: boolean) => void
   /** A double-click into empty space: a thought that does not know where it goes
    *  yet, pinned where it was dropped. World coordinates. */
   onCreateAt: (at: Point) => void
@@ -317,16 +317,20 @@ export function Canvas({
   foldSummaryOf,
   testsFor,
   trustLens,
-  onTrustLens,
   onCreateAt,
   onCutEdge,
   className,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const [keepView, setKeepView] = useState(false)
+  const [viewportLocked, setViewportLocked] = useState(false)
   const [search, setSearch] = useState('')
   const previousMode = useRef(mode)
-  const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
+  const [viewport, setViewportState] = useState<Viewport>(DEFAULT_VIEWPORT)
+  // Every camera movement, including effects and commands, goes through this
+  // guard. Locking only the layout-switch effect left the other paths unlocked.
+  const setViewport = useCallback((next: React.SetStateAction<Viewport>) => {
+    if (!viewportLocked) setViewportState(next)
+  }, [viewportLocked])
   const [drag, setDrag] = useState<Drag>({ kind: 'none' })
   // The node under the pointer. Only used to reveal the `+`, and only ever set
   // when it CHANGES — a 500-node map re-rendering on every mousemove is the one
@@ -342,6 +346,9 @@ export function Canvas({
   const rootFitted = useRef(false)
 
   const placed = layoutForMode(nodes, mode, customRoot)
+  const nextMode: CanvasMode = mode === 'custom' ? 'tidy' : mode === 'tidy' ? 'radial' : 'custom'
+  const modeLabel = mode === 'custom' ? labels.custom : mode === 'tidy' ? labels.tree : labels.radial
+  const nextModeLabel = nextMode === 'custom' ? labels.custom : nextMode === 'tidy' ? labels.tree : labels.radial
   const byId = new Map(placed.nodes.map((p) => [p.node.id, p]))
   // The node being named is drawn LAST. Every card is the same size now, so
   // nothing overlaps by design — but a hand-placed thought can sit on top of
@@ -362,21 +369,29 @@ export function Canvas({
     setViewport(readingViewport(placed, box.width, box.height))
     rootFitted.current = true
     fitted.current = nodes.length > 0
-  }, [nodes.length, placed])
+  }, [nodes.length, placed, setViewport])
 
   useLayoutEffect(() => {
     if (previousMode.current === mode) return
     previousMode.current = mode
     setDrag({ kind: 'none' })
-    if (keepView) return
     const box = svgRef.current?.getBoundingClientRect()
     if (!box?.width) return
     setViewport(fit(selected ? branchBounds(placed, selected) : placed.bounds, box.width, box.height))
-  }, [mode, placed, selected, keepView])
+  }, [mode, placed, selected, setViewport])
 
   const pointIn = useCallback((e: { clientX: number; clientY: number }): Point => {
     const box = svgRef.current?.getBoundingClientRect()
     return { x: e.clientX - (box?.left ?? 0), y: e.clientY - (box?.top ?? 0) }
+  }, [])
+
+  useEffect(() => {
+    const svg = svgRef.current
+    // React's wheel listener is passive. Cancel natively so a trackpad pinch
+    // cannot zoom the browser (or scroll the page) behind a locked canvas.
+    const preventPageMovement = (event: WheelEvent) => event.preventDefault()
+    svg?.addEventListener('wheel', preventPageMovement, { passive: false })
+    return () => svg?.removeEventListener('wheel', preventPageMovement)
   }, [])
 
   /**
@@ -418,7 +433,7 @@ export function Canvas({
       })
     } else {
       onSelect(null)
-      setDrag({ kind: 'pan', from: screen, viewport })
+      if (!viewportLocked) setDrag({ kind: 'pan', from: screen, viewport })
     }
   }
 
@@ -467,9 +482,7 @@ export function Canvas({
   }
 
   const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    // A trackpad pinch arrives as a wheel event with ctrlKey; both mean zoom here,
-    // and neither should scroll the page behind the canvas.
-    e.preventDefault()
+    // Native browser scrolling/zooming is prevented by the non-passive listener.
     setViewport((v) => zoomAt(v, pointIn(e), e.deltaY < 0 ? 1.1 : 1 / 1.1))
   }
 
@@ -505,7 +518,7 @@ export function Canvas({
       )
     }
     onCentred()
-  }, [centreNode, onCentred, nodes, mode, customRoot])
+  }, [centreNode, onCentred, nodes, mode, customRoot, setViewport])
 
   useEffect(() => {
     if (fitRequest === null) return
@@ -513,7 +526,7 @@ export function Canvas({
     const bounds = layoutForMode(nodes, mode, customRoot).bounds
     if (box) setViewport(fit(bounds, box.width, box.height))
     onFitted()
-  }, [fitRequest, onFitted, nodes, mode, customRoot])
+  }, [fitRequest, onFitted, nodes, mode, customRoot, setViewport])
 
   // The dialog took the focus with it when it opened; this is how it comes back,
   // so the map keyboard works again without a click into the canvas first.
@@ -685,7 +698,7 @@ export function Canvas({
         tabIndex={0}
         className={cn(
           'bg-muted h-full w-full touch-none outline-none',
-          relationFrom ? 'cursor-crosshair' : drag.kind === 'pan' ? 'cursor-grabbing' : 'cursor-grab',
+          relationFrom ? 'cursor-crosshair' : viewportLocked ? 'cursor-default' : drag.kind === 'pan' ? 'cursor-grabbing' : 'cursor-grab',
         )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -1131,50 +1144,51 @@ export function Canvas({
       </div>
       {/* Viewport controls, bottom-right — out of the way of the root. */}
       <div className="absolute right-3 bottom-3 flex max-w-[calc(100%-1.5rem)] flex-wrap justify-end gap-1.5">
-        <label className="bg-card border-border flex items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs"><input type="checkbox" checked={keepView} onChange={e => setKeepView(e.target.checked)} />{labels.keepView ?? 'Keep zoom and position'}</label>
-        {selected && <button type="button" className="bg-card border-border rounded-lg border px-2.5 py-1.5 text-xs" onClick={() => {
+        <Hint text={viewportLocked ? (labels.unlockView ?? 'Unlock zoom and position') : (labels.lockView ?? 'Lock zoom and position')}>
+          <button
+            type="button"
+            aria-label={labels.lockView ?? 'Lock zoom and position'}
+            aria-pressed={viewportLocked}
+            onClick={() => {
+              setDrag({ kind: 'none' })
+              setViewportLocked(locked => !locked)
+            }}
+            className={cn('bg-card border-border text-muted-foreground hover:text-foreground flex size-8 cursor-pointer items-center justify-center rounded-lg border', viewportLocked && 'border-ring bg-accent text-foreground')}
+          >
+            {viewportLocked ? <LockKeyholeIcon className="size-4" aria-hidden="true" /> : <UnlockKeyholeIcon className="size-4" aria-hidden="true" />}
+          </button>
+        </Hint>
+        {selected && <button type="button" disabled={viewportLocked} className="bg-card border-border rounded-lg border px-2.5 py-1.5 text-xs disabled:opacity-40" onClick={() => {
           const box = svgRef.current?.getBoundingClientRect()
           if (box) setViewport(fit(branchBounds(placed, selected), box.width, box.height))
         }}>{labels.fitBranch ?? 'Fit branch'}</button>}
         <output className="bg-card border-border rounded-lg border px-2 py-1.5 text-xs" aria-live="polite">{Math.round(viewport.zoom * 100)}%</output>
-        {(['custom', 'radial', 'tidy'] as const).map(option => (
-          <button
-            key={option}
-            type="button"
-            aria-pressed={mode === option}
-            onClick={() => onMode(option)}
-            className={cn('bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]', mode === option && 'border-ring text-foreground')}
-          >
-            {option === 'custom' ? labels.custom : option === 'radial' ? labels.radial : labels.tree}
-          </button>
-        ))}
-        <Hint text={labels.trustLens}>
+        <Hint text={(labels.nextLayout ?? 'Switch to {layout}').replace('{layout}', nextModeLabel)}>
           <button
             type="button"
-            aria-pressed={trustLens}
-            onClick={() => onTrustLens(!trustLens)}
-            className={cn(
-              'bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]',
-              trustLens && 'border-ring text-foreground',
-            )}
+            onClick={() => onMode(nextMode)}
+            className="bg-card border-border text-muted-foreground hover:text-foreground flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
           >
-            ◍
+            <Repeat2Icon className="size-3.5" aria-hidden="true" />
+            {modeLabel}
           </button>
         </Hint>
         <Hint text={labels.fit}>
           <button
             type="button"
+            aria-label={labels.fit}
             onClick={fitAll}
-            className="bg-card border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-lg border px-2.5 py-1.5 text-[12px] font-[650]"
+            disabled={viewportLocked}
+            className="bg-card border-border text-muted-foreground hover:text-foreground flex size-8 cursor-pointer items-center justify-center rounded-lg border disabled:opacity-40"
           >
-            {labels.fit}
+            <MaximizeIcon className="size-4" aria-hidden="true" />
           </button>
         </Hint>
         <button
           type="button"
           aria-label={labels.zoomOut}
           onClick={() => zoomBy(1 / 1.2)}
-          disabled={viewport.zoom <= MIN_ZOOM}
+          disabled={viewportLocked || viewport.zoom <= MIN_ZOOM}
           className="bg-card border-border text-muted-foreground hover:text-foreground w-8 cursor-pointer rounded-lg border py-1.5 text-[13px] font-[650] disabled:opacity-40"
         >
           −
@@ -1183,7 +1197,7 @@ export function Canvas({
           type="button"
           aria-label={labels.zoomIn}
           onClick={() => zoomBy(1.2)}
-          disabled={viewport.zoom >= MAX_ZOOM}
+          disabled={viewportLocked || viewport.zoom >= MAX_ZOOM}
           className="bg-card border-border text-muted-foreground hover:text-foreground w-8 cursor-pointer rounded-lg border py-1.5 text-[13px] font-[650] disabled:opacity-40"
         >
           +

@@ -51,7 +51,6 @@ function props(over: Partial<CanvasProps> = {}): CanvasProps {
       nodeActions: 'Actions',
       nodeMenu: 'Menu',
       dropHere: 'Drop here',
-      trustLens: 'Trust',
       trustLegend: 'Trust legend',
       trustConfirmed: 'Confirmed',
       trustMachine: 'Machine',
@@ -88,7 +87,6 @@ function props(over: Partial<CanvasProps> = {}): CanvasProps {
     onFocused: vi.fn(),
     foldSummaryOf: () => null,
     trustLens: false,
-    onTrustLens: vi.fn(),
     onCreateAt: vi.fn(),
     onCutEdge: vi.fn(),
     ...over,
@@ -154,10 +152,10 @@ it('refits layout changes unless the reader preserves the camera', () => {
     const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
     const manual = camera()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Keep zoom and position' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lock zoom and position' }))
     ui.rerender(<Canvas {...p} mode="tidy" />)
     expect(camera()).toBe(manual)
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Keep zoom and position' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lock zoom and position' }))
     ui.rerender(<Canvas {...p} mode="radial" />)
     expect(camera()).not.toBe(manual)
   } finally { rect.mockRestore() }
@@ -165,18 +163,19 @@ it('refits layout changes unless the reader preserves the camera', () => {
 
 
 describe('layout views', () => {
-  it('offers all three modes with the active view announced and no destructive Tidy action', () => {
+  it('cycles Custom, Tree, and Radial using one button showing the current layout', () => {
     const p = props({ mode: 'custom' })
     const ui = render(<Canvas {...p} />)
-    for (const [name, mode] of [['Custom', 'custom'], ['Radial', 'radial'], ['Tree', 'tidy']] as const) {
+    for (const [name, current, next] of [['Custom', 'custom', 'tidy'], ['Tree', 'tidy', 'radial'], ['Radial', 'radial', 'custom']] as const) {
+      ui.rerender(<Canvas {...p} mode={current} />)
       const button = screen.getByRole('button', { name })
-      expect(button.getAttribute('aria-pressed')).toBe(String(mode === 'custom'))
+      expect(screen.getAllByRole('button', { name: /^(Custom|Tree|Radial)$/ })).toHaveLength(1)
       fireEvent.click(button)
-      expect(p.onMode).toHaveBeenLastCalledWith(mode)
+      expect(p.onMode).toHaveBeenLastCalledWith(next)
     }
     expect(screen.queryByRole('button', { name: 'Tidy' })).toBeNull()
-    ui.rerender(<Canvas {...p} mode="tidy" />)
-    expect(screen.getByRole('button', { name: 'Tree' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByRole('button', { name: 'Trust' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Fit' }).textContent).toBe('')
   })
 
   it.each(['radial', 'tidy'] as const)('creates an unplaced branch on blank double-click in %s', mode => {
@@ -196,8 +195,69 @@ describe('layout views', () => {
   })
 })
 
+it('locks every camera movement and resumes navigation when unlocked', () => {
+  const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
+  try {
+    const doc = new Y.Doc()
+    for (let i = 0; i < 20; i++) createNode(doc, { parent: null, title: `Branch ${i}`, by: 'test' })
+    const nodes = readNodes(doc)
+    const p = props({ nodes, searchNodes: nodes, selected: nodes[0]!.id })
+    const ui = render(<Canvas {...p} />)
+    const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
+    const canvas = screen.getByRole('application')
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }))
+    const lock = screen.getByRole('button', { name: 'Lock zoom and position' })
+    fireEvent.click(lock)
+    expect(lock.getAttribute('aria-pressed')).toBe('true')
+    const frozen = camera()
+    fireEvent.wheel(canvas, { deltaY: -100, clientX: 450, clientY: 350 })
+    const pinch = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100, ctrlKey: true, clientX: 450, clientY: 350 })
+    fireEvent(canvas, pinch)
+    expect(pinch.defaultPrevented).toBe(true)
+    for (const type of ['pointerdown', 'pointermove', 'pointerup']) {
+      fireEvent(canvas, new MouseEvent(type, { bubbles: true, button: 0, clientX: type === 'pointerdown' ? -1000 : -800, clientY: -1000 }))
+    }
+    for (const name of ['Zoom in', 'Zoom out', 'Fit', 'Fit branch']) {
+      const button = screen.getByRole('button', { name }) as HTMLButtonElement
+      expect(button.disabled).toBe(true)
+      fireEvent.click(button)
+    }
+    expect(camera()).toBe(frozen)
+    ui.rerender(<Canvas {...p} mode="tidy" fitRequest={1} centreNode={nodes[10]!.id} />)
+    expect(p.onFitted).toHaveBeenCalled()
+    expect(p.onCentred).toHaveBeenCalled()
+    expect(camera()).toBe(frozen)
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Branch 12' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Branch 12' }))
+    expect(p.onSelect).toHaveBeenCalledWith(nodes.find(n => n.title === 'Branch 12')!.id)
+    expect(camera()).toBe(frozen)
+    ui.rerender(<Canvas {...p} mode="tidy" fitRequest={null} centreNode={null} />)
+    fireEvent.click(lock)
+    expect(lock.getAttribute('aria-pressed')).toBe('false')
+    expect(camera()).toBe(frozen)
+    fireEvent.wheel(canvas, { deltaY: -100, clientX: 450, clientY: 350 })
+    expect(camera()).not.toBe(frozen)
+    fireEvent.click(screen.getByRole('button', { name: 'Fit' }))
+    expect((screen.getByRole('button', { name: 'Fit' }) as HTMLButtonElement).disabled).toBe(false)
+  } finally { rect.mockRestore() }
+})
 
-it.each(['custom', 'radial', 'tidy'] as const)('only permits node dragging in Custom (%s)', mode => {
+it('keeps the camera locked when the first synced nodes arrive', () => {
+  const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
+  try {
+    const p = props()
+    const ui = render(<Canvas {...p} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Lock zoom and position' }))
+    const frozen = ui.container.querySelector('svg > g')?.getAttribute('transform')
+    const doc = new Y.Doc()
+    for (let i = 0; i < 20; i++) createNode(doc, { parent: null, title: `Branch ${i}`, by: 'test' })
+    ui.rerender(<Canvas {...p} nodes={readNodes(doc)} />)
+    expect(ui.container.querySelector('svg > g')?.getAttribute('transform')).toBe(frozen)
+  } finally { rect.mockRestore() }
+})
+
+
+it.each(['custom', 'radial', 'tidy'] as const)('only permits node dragging in Custom, even with the camera locked (%s)', mode => {
   // jsdom lacks PointerEvent on some supported versions; a MouseEvent carries
   // the coordinate/button fields used by the canvas gesture handlers.
   const pointer = (target: Element, type: string, x: number, y: number) =>
@@ -208,6 +268,7 @@ it.each(['custom', 'radial', 'tidy'] as const)('only permits node dragging in Cu
   const p = props({ nodes, mode })
   render(<Canvas {...p} />)
   const node = layoutForMode(nodes, mode).nodes.find(n => n.node.id === id)!
+  fireEvent.click(screen.getByRole('button', { name: 'Lock zoom and position' }))
   const canvas = screen.getByRole('application')
   const x = node.x + NODE_WIDTH / 2
   const y = node.y + NODE_HEIGHT / 2
