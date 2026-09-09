@@ -930,8 +930,9 @@ export function Canvas({
                   // A question is squarer than a thought: it is a different kind
                   // of thing on the map, and shape says so before colour does.
                   rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
+                  stroke="var(--mindmap-node-border)"
                   className={cn(
-                    'fill-card stroke-mindmap-node-border',
+                    'fill-card',
                     trust && TRUST_FILL[trust],
                     isQuestion && 'fill-violet-50 stroke-violet-400 dark:fill-violet-950',
                     isSelected && 'stroke-ring',
