@@ -1,3 +1,5 @@
+import { MindmapSearch, useMindmapSearch, searchFolds } from '@/components/mindmap/MindmapSearch'
+import type { Locale } from '@/lib/i18n'
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
 import { Hint } from '@/components/Hint'
 import { type SyncConnection } from '@/hooks/useSyncConnection'
@@ -189,6 +191,7 @@ export interface LiveLabels {
 }
 
 export interface LiveProps {
+  locale?: Locale
   session: MindmapSession
   /** The map's title. The root box is the map, not a node. */
   title: string
@@ -261,6 +264,7 @@ export default function Live(props: LiveProps) {
 }
 
 function ConnectedLive({
+  locale = 'en',
   connection,
   session,
   title,
@@ -416,7 +420,9 @@ function ConnectedLive({
     [nodes, selected],
   )
 
-  const shown = useMemo(() => visibleNodes(nodes, collapsed), [nodes, collapsed])
+  const search = useMindmapSearch(token, session.mindmap, nodes)
+  const displayedFolds = useMemo(() => searchFolds(nodes, collapsed, search.matches), [nodes, collapsed, search.matches])
+  const shown = useMemo(() => visibleNodes(nodes, displayedFolds), [nodes, displayedFolds])
   // One post-order pass, not one full index rebuild per node — this recomputes
   // on every remote keystroke.
   const descendantCounts = useMemo(() => allDescendantCounts(nodes), [nodes])
@@ -436,9 +442,9 @@ function ConnectedLive({
    */
   const foldSummaries = useMemo(() => {
     const out = new Map<string, ReturnType<typeof foldSummary>>()
-    for (const id of collapsed) out.set(id, foldSummary(nodes, id))
+    for (const id of displayedFolds) out.set(id, foldSummary(nodes, id))
     return out
-  }, [nodes, collapsed])
+  }, [nodes, displayedFolds])
   const foldSummaryOf = useCallback((id: string) => foldSummaries.get(id) ?? null, [foldSummaries])
 
   const guard = useCallback((): boolean => {
@@ -1090,6 +1096,8 @@ function ConnectedLive({
         )}
       </div>
 
+      <MindmapSearch {...search} locale={locale} onNavigate={id => { setSelected(id); setCentreNode(id) }} />
+
       {/* The canvas is the desktop surface; a phone gets the same tree as a list,
           which is a better shape for the screen rather than a consolation prize. */}
       <div className="hidden min-h-0 flex-1 md:flex">
@@ -1097,10 +1105,9 @@ function ConnectedLive({
           className="flex"
           title={title}
           nodes={shown}
-          searchNodes={nodes}
-          onFindNode={goTo}
+          searchMatches={search.matches}
           relationships={relationships}
-          collapsed={collapsed}
+          collapsed={displayedFolds}
           descendantCounts={descendantCounts}
           onToggleCollapse={onToggleCollapse}
           peers={peers}
@@ -1148,6 +1155,7 @@ function ConnectedLive({
 
       <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
         <Outline
+          searchMatches={search.matches}
           nodes={shown}
           selected={selected}
           canWrite={canWrite}

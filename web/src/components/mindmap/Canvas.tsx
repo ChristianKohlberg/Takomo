@@ -121,8 +121,7 @@ export interface CanvasProps {
   title: string
   /** Already filtered for this viewer's folds. */
   nodes: MapNode[]
-  searchNodes?: MapNode[]
-  onFindNode?: (id: string) => void
+  searchMatches?: ReadonlySet<string>
   relationships: Relationship[]
   /** Branches this viewer has folded, and how many thoughts sit under each node
    *  in the WHOLE tree — the fold handle needs both, and only one of them
@@ -273,8 +272,7 @@ function cornerRadius(shape: string): number {
 export function Canvas({
   title,
   nodes,
-  searchNodes = nodes,
-  onFindNode,
+  searchMatches,
   relationships,
   collapsed,
   descendantCounts,
@@ -323,7 +321,6 @@ export function Canvas({
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [viewportLocked, setViewportLocked] = useState(false)
-  const [search, setSearch] = useState('')
   const previousMode = useRef(mode)
   const [viewport, setViewportState] = useState<Viewport>(DEFAULT_VIEWPORT)
   // Every camera movement, including effects and commands, goes through this
@@ -898,7 +895,8 @@ export function Canvas({
             const trust = trustLens && !isQuestion ? trustOf(p.node) : null
             const fold = folded ? foldSummaryOf(p.node.id) : null
             return (
-              <g key={p.node.id} transform={`translate(${at.x} ${at.y})`}>
+              <g key={p.node.id} data-search-match={searchMatches?.has(p.node.id) || undefined} transform={`translate(${at.x} ${at.y})`}>
+                {searchMatches?.has(p.node.id) && <rect x={-5} y={-5} width={NODE_WIDTH + 10} height={NODE_HEIGHT + 10} rx={14} fill="none" className="stroke-amber-500 dark:stroke-amber-300" strokeWidth={3} pointerEvents="none"><title>Search match</title></rect>}
                 {/* A collaborator's ring sits OUTSIDE the box, so it never fights
                     with the selection stroke or hides the text. */}
                 {watchers.map((w, i) => (
@@ -1134,19 +1132,6 @@ export function Canvas({
         </div>
       )}
 
-      <div className="absolute top-3 left-3 w-56 max-w-[calc(100%-1.5rem)]" onKeyDown={e => e.stopPropagation()}>
-        <input type="search" aria-label={labels.search ?? 'Find a node'} placeholder={labels.search ?? 'Find a node'} value={search} onChange={e => setSearch(e.target.value)} className="bg-card border-border w-full rounded-lg border px-3 py-2 text-sm" />
-        {search.trim() && <ul className="bg-card border-border mt-1 max-h-64 overflow-y-auto rounded-lg border shadow-lg">
-          {searchNodes.filter(n => n.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).slice(0, 30).map(node => <li key={node.id}><button type="button" className="hover:bg-muted w-full break-words px-3 py-2 text-left text-sm" onClick={() => {
-            const at = byId.get(node.id)
-            const box = svgRef.current?.getBoundingClientRect()
-            if (at && box) setViewport(centreOn({ ...viewport, zoom: Math.max(viewport.zoom, 0.85) }, { x: at.x + NODE_WIDTH / 2, y: at.y + NODE_HEIGHT / 2 }, box.width, box.height))
-            if (onFindNode) onFindNode(node.id); else onSelect(node.id)
-            setSearch('')
-          }}>{node.title}</button></li>)}
-          {!searchNodes.some(n => n.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) && <li className="text-muted-foreground px-3 py-2 text-sm">{labels.noMatches ?? 'No matching nodes'}</li>}
-        </ul>}
-      </div>
       {/* Viewport controls, bottom-right — out of the way of the root. */}
       <div className="absolute right-3 bottom-3 flex max-w-[calc(100%-1.5rem)] flex-wrap justify-end gap-1.5">
         <Hint text={viewportLocked ? (labels.unlockView ?? 'Unlock zoom and position') : (labels.lockView ?? 'Lock zoom and position')}>

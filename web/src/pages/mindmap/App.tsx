@@ -167,6 +167,7 @@ export function MapView() {
         {open ? (
           session ? (
             <Live
+              locale={lang}
               key={session.session}
               session={session}
               connection={connection!}

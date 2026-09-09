@@ -131,17 +131,6 @@ describe('the specification map root', () => {
 })
 
 
-it('finds folded nodes through the existing reveal-and-center action', () => {
-  const doc = new Y.Doc()
-  const id = createNode(doc, { parent: null, title: 'Hidden billing section', by: 'test' })!
-  const p = props({ nodes: [], searchNodes: readNodes(doc), onFindNode: vi.fn() })
-  render(<Canvas {...p} />)
-  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'billing' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Hidden billing section' }))
-  expect(p.onFindNode).toHaveBeenCalledWith(id)
-  expect((screen.getByRole('searchbox') as HTMLInputElement).value).toBe('')
-})
-
 it('refits layout changes unless the reader preserves the camera', () => {
   const rect = vi.spyOn(SVGSVGElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}) })
   try {
@@ -201,7 +190,7 @@ it('locks every camera movement and resumes navigation when unlocked', () => {
     const doc = new Y.Doc()
     for (let i = 0; i < 20; i++) createNode(doc, { parent: null, title: `Branch ${i}`, by: 'test' })
     const nodes = readNodes(doc)
-    const p = props({ nodes, searchNodes: nodes, selected: nodes[0]!.id })
+    const p = props({ nodes, selected: nodes[0]!.id })
     const ui = render(<Canvas {...p} />)
     const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
     const canvas = screen.getByRole('application')
@@ -226,10 +215,6 @@ it('locks every camera movement and resumes navigation when unlocked', () => {
     ui.rerender(<Canvas {...p} mode="tidy" fitRequest={1} centreNode={nodes[10]!.id} />)
     expect(p.onFitted).toHaveBeenCalled()
     expect(p.onCentred).toHaveBeenCalled()
-    expect(camera()).toBe(frozen)
-    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'Branch 12' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Branch 12' }))
-    expect(p.onSelect).toHaveBeenCalledWith(nodes.find(n => n.title === 'Branch 12')!.id)
     expect(camera()).toBe(frozen)
     ui.rerender(<Canvas {...p} mode="tidy" fitRequest={null} centreNode={null} />)
     fireEvent.click(lock)
@@ -279,4 +264,19 @@ it.each(['custom', 'radial', 'tidy'] as const)('only permits node dragging in Cu
   if (mode === 'custom') expect(p.onPlace).toHaveBeenCalledWith(id, { x: node.x + 900, y: node.y + 800 })
   else expect(p.onPlace).not.toHaveBeenCalled()
   expect(p.onReparent).not.toHaveBeenCalled()
+})
+
+it('highlights matches without selecting nodes or moving the camera', () => {
+  const doc = new Y.Doc()
+  const id = createNode(doc, { parent: null, title: 'Delivery', by: 'test' })!
+  const p = props({ nodes: readNodes(doc) })
+  const ui = render(<Canvas {...p} />)
+  const camera = () => ui.container.querySelector('svg > g')?.getAttribute('transform')
+  const before = camera()
+  ui.rerender(<Canvas {...p} searchMatches={new Set([id])} trustLens />)
+  expect(ui.container.querySelectorAll('[data-search-match="true"]')).toHaveLength(1)
+  expect(camera()).toBe(before)
+  expect(p.onSelect).not.toHaveBeenCalled()
+  ui.rerender(<Canvas {...p} searchMatches={new Set()} />)
+  expect(ui.container.querySelector('[data-search-match]')).toBeNull()
 })

@@ -45,3 +45,19 @@ it('opens one row menu at a time and dismisses it on Escape, returning focus to 
   await waitFor(() => expect(document.activeElement).toBe(other))
   expect(props.onDetach).not.toHaveBeenCalled()
 })
+
+it('highlights matches and scrolls the selected search result into view', () => {
+  const { id, second, props } = setup()
+  const scroll = vi.fn()
+  const previous = HTMLElement.prototype.scrollIntoView
+  HTMLElement.prototype.scrollIntoView = scroll
+  try {
+    const ui = render(<Outline {...props} searchMatches={new Set([id, second])} />)
+    expect(ui.container.querySelectorAll('[data-search-match]')).toHaveLength(2)
+    expect(scroll).not.toHaveBeenCalled()
+    ui.rerender(<Outline {...props} selected={second} searchMatches={new Set([id, second])} />)
+    expect(scroll).toHaveBeenCalledWith({ block: 'nearest' })
+    ui.rerender(<Outline {...props} selected={second} searchMatches={new Set()} />)
+    expect(ui.container.querySelector('[data-search-match]')).toBeNull()
+  } finally { HTMLElement.prototype.scrollIntoView = previous }
+})
