@@ -72,7 +72,7 @@ import { STR, DOCUMENT_APPEARANCE_STRINGS } from './strings'
 import { Hint } from '@/components/Hint'
 
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
-import { SettingsDrafts, useSettingsDraft } from '@/components/settings/SettingsDrafts'
+import { SettingsDrafts, useDiscardDrafts, useSettingsDraft } from '@/components/settings/SettingsDrafts'
 import { isProjectSection, settingsHref, settingsSection } from '@/components/settings/settings-navigation'
 
 const LS_LANG = 'takomo.lang'
@@ -90,6 +90,7 @@ function fill(template: string, values: Record<string, string>): string {
 function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale; setLang: (lang: Locale) => void }) {
   const navigate = useNavigate()
   const { toast } = useToast()
+  const discardDrafts = useDiscardDrafts()
 
   const [token, setToken] = useState(() => loadToken())
   const [gateError, setGateError] = useState('')
@@ -411,8 +412,8 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             </Section>
           ) : (
             <>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="search" className="mt-0"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="overview" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="search"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="overview">
                 <Section title={t.overviewTitle} description={t.overviewSub}>
                   <dl className="border-border-soft bg-card rounded-xl border px-4">
                     <FactRow label={t.factActor}>
@@ -448,7 +449,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   </dl>
                 </Section>
               </SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="data" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="data">
                 <Section title={t.dataTitle} description={t.dataSub}>
                   <p className="text-muted-foreground max-w-prose text-[13px] leading-relaxed">
                     {t.dataHow}
@@ -472,7 +473,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   )}
                 </Section>
               </SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="access" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="access">
                 <Section
                   title={t.accessTitle}
                   description={t.accessSub}
@@ -502,7 +503,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   )}
                 </Section>
               </SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="people" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="people">
                 <Section
                   title={t.peopleTitle}
                   description={t.peopleSub}
@@ -540,7 +541,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   )}
                 </Section>
               </SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="library" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="library">
                 <Section title={t.libTitle} description={t.libSub}>
                   {library.length === 0 ? (
                     <EmptyState>{t.libEmpty}</EmptyState>
@@ -600,7 +601,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   )}
                 </Section>
               </SettingsPanel>
-              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="project" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="project">
                 {projectsLoadErr && selectedId && !selected ? (
                 <Section title={t.projTitle} description={t.projLoadErr}>
                   <p className="text-destructive text-[13px]">{projectsLoadErr}</p>
@@ -736,7 +737,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                 ? (lang === 'de' ? 'Projekt nicht verfügbar.' : 'Project unavailable.')
                 : (lang === 'de' ? 'Wähle links ein Projekt aus.' : 'Select a project in the navigation.'))}</EmptyState>}
               </SettingsPanel>
-              <SettingsPanel current={section} value="projects" className="mt-0">
+              <SettingsPanel current={section} value="projects">
                 <Section
                   title={t.projTitle}
                   description={t.projSub}
@@ -906,6 +907,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             // Deleting the project whose detail is open would otherwise leave
             // the panel showing a project that no longer exists.
             if (deleting.id === navProject) {
+              discardDrafts()
               saveProject('')
               navigate(settingsHref('projects', ''))
             }
@@ -1034,6 +1036,6 @@ function Callout({
   )
 }
 
-function SettingsPanel({ current, value, children }: { current: string; value: string; children: React.ReactNode; className?: string }) {
+function SettingsPanel({ current, value, children }: { current: string; value: string; children: React.ReactNode }) {
   return current === value ? <>{children}</> : null
 }

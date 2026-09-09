@@ -3,9 +3,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@/components/Toaster'
 import { App } from './App'
-let scopes: string[], failSave: boolean, style: string, deleted: string[], holdProjects: Promise<void> | null
+let scopes: string[], failSave: boolean, failDelete: boolean, style: string, deleted: string[], holdProjects: Promise<void> | null
 const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
-  if (opts?.method === 'DELETE') { deleted.push(url); return new Response('{}') }
+  if (opts?.method === 'DELETE') {
+    if (failDelete) return new Response(JSON.stringify({ message: 'Delete refused' }), { status: 409 })
+    deleted.push(url); return new Response('{}')
+  }
   if (url === '/v1/projects' && holdProjects) await holdProjects
   if (opts?.method === 'PUT') {
     if (failSave) return new Response(JSON.stringify({ message: 'Save refused' }), { status: 422 })
@@ -27,7 +30,7 @@ function open(path: string) {
 }
 beforeEach(() => {
   localStorage.clear(); localStorage.setItem('takomo.token', 'test-only'); localStorage.setItem('takomo.lang', 'en')
-  scopes = ['read', 'write', 'human', 'admin']; failSave = false; style = 'Original style'; deleted = []; holdProjects = null
+  scopes = ['read', 'write', 'human', 'admin']; failSave = false; failDelete = false; style = 'Original style'; deleted = []; holdProjects = null
   fetcher.mockClear(); vi.stubGlobal('fetch', fetcher)
 })
 describe('Settings navigation and save boundaries', () => {
@@ -137,6 +140,35 @@ describe('Settings navigation and save boundaries', () => {
     release()
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(deleted).toEqual(['/v1/projects/takomo'])
+  })
+  it('deletes a project with an unsaved classification draft without asking about it', async () => {
+    const router = open('/settings?scope=takomo&section=general')
+    const policy = await screen.findByRole('combobox', { name: 'Document classification' })
+    await waitFor(() => expect((policy as HTMLSelectElement).disabled).toBe(false))
+    fireEvent.change(policy, { target: { value: 'auto_apply_clear' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete project' }))
+    await waitFor(() => expect(router.state.location.search).toBe('?section=projects'))
+    expect(screen.queryByText('Discard unsaved changes?')).toBeNull()
+    expect(localStorage.getItem('takomo.project')).toBe('')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(deleted).toEqual(['/v1/projects/takomo'])
+  })
+  it('keeps guarding an unsaved classification draft when deletion fails', async () => {
+    failDelete = true
+    const router = open('/settings?scope=takomo&section=general')
+    const policy = await screen.findByRole('combobox', { name: 'Document classification' })
+    await waitFor(() => expect((policy as HTMLSelectElement).disabled).toBe(false))
+    fireEvent.change(policy, { target: { value: 'auto_apply_clear' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete project' }))
+    await screen.findByText('Delete refused')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(screen.getByRole('link', { name: 'People' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stay here' }))
+    expect(router.state.location.search).toBe('?scope=takomo&section=general')
+    expect((screen.getByRole('combobox', { name: 'Document classification' }) as HTMLSelectElement).value).toBe('auto_apply_clear')
+    expect(deleted).toEqual([])
   })
   it('allows non-admins into Legacy but preserves administrative permissions', async () => {
     scopes = ['read']; open('/legacy?scope=takomo')
