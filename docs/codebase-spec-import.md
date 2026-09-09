@@ -1,11 +1,62 @@
 # Codebase specification import: development status
 
-The import is being built in milestones; see the [implementation plan](plans/codebase-spec-import.md).
-The first slice provides the shared scoped repository reader and an inventory-only
-preflight command. It does **not** generate specification prose, create import jobs,
-or change documents yet. The scope contract is enforced by the same repository
-module used by the agent service, ready for the forthcoming import job kind.
-The existing research HTTP API has not gained new scope fields in this slice.
+The local MVP generates a bounded draft with our existing Codex App Server
+adapter, then imports it as ordinary, unreviewed sections into an empty Takomo
+specification. The **existing document and mindmap are the review UI**: read,
+edit, move and confirm sections using their normal controls. There is no separate
+staging dashboard and no new review data model.
+
+## Generate a small draft, then review it in Takomo
+
+Use the agent service's dedicated authenticated Codex home (see
+`services/agent/README.md`). This command makes **one real App Server turn**, with
+a three-minute turn deadline, at most 100 files / 1 MB / 50 repository calls /
+12 sections. Defaults are 30 calls and 6 sections. No code is executed.
+
+```sh
+node services/agent/spec-import-cli.mjs generate \
+  --repo . \
+  --include services/agent/repository-scope.mjs \
+  --max-files 1 --max-bytes 20000 --max-tool-calls 8 --max-sections 3 \
+  --out /tmp/scope-spec-draft.json
+```
+
+The file is reserved before inference and records status, pinned scope/revision,
+thread/turn IDs, the draft and inspected source ranges. Existing output files are
+refused. Failed runs stay failed; rerunning generation requires a new output file
+and is a new model call. Source ranges must have been read within this run, but
+that mechanical check does not prove the prose is correct. This is an as-built
+review draft, not validated product intent or a claim that tests passed.
+
+To load a ready draft, set `TAKOMO_URL` and `TAKOMO_IMPORT_TOKEN` with a
+project-restricted human/write token, then pass the ID of an empty specification:
+
+```sh
+node services/agent/spec-import-cli.mjs publish \
+  --file /tmp/scope-spec-draft.json --mindmap mm-YOURID
+```
+
+Publication makes **no model call**. It creates a root describing scope and open
+questions, plus the generated parent/child sections with plain paragraphs and
+source references. All remain unconfirmed. Open the project's normal Document or
+Map view to review them. Existing text is never replaced. Retry the identical
+artifact against the same target and actor after a lost response: the stored
+receipt returns the original node mapping without duplicating content or undoing
+human edits. Changed payloads with the same request ID conflict.
+
+`POST /v1/mindmaps/{id}/codebase-import` requires human/write and project access.
+It checks shape, source scope and an empty target under the room lock, builds on
+a private replica, and commits the tree plus receipt as one CRDT update before
+exposing it to peers. A persistence failure leaves the live tree unchanged. The
+receipt is part of the document, so saved versions include it. The server does
+not independently inspect the repository; direct API callers are responsible for
+their source claims, as with other human-authorized document edits.
+
+MVP limits: plain paragraphs, a single bounded generation turn, local artifacts,
+and explicit publication. No background import job kind, multi-task resume,
+progressive per-section generation, semantic index, or refresh of existing content
+is shipped yet. The broader [implementation plan](plans/codebase-spec-import.md)
+remains the roadmap, amended to reuse the document/map instead of a staging UI.
 
 ## Test a small part before spending inference
 
@@ -68,7 +119,7 @@ or generated-file classification is implemented yet; explicitly exclude those pa
    the ordinary development loop. No paid inference is involved.
 2. Run preflight on one real package/file with small ceilings before opting into
    a real provider smoke. Reuse its exact commit and scope in that smoke so the
-   tested input is reproducible. Actual scoped import inference is a later milestone.
+   tested input is reproducible. Use the generation command above for a deliberately small real run.
 3. Expand to representative services and monorepos only for quality/scale
    evaluation. Full-repository runs are not a prerequisite for editing the importer.
 
@@ -87,9 +138,16 @@ output preservation. Existing live-provider tests remain opt-in.
 
 ## Next milestones
 
-The scope and preflight foundation is implemented. Still pending: canonical
-publication transaction proof; durable import/task/evidence storage and APIs;
-job capability and budget integration; structured outline/draft/verification
-stages; review UI and atomic acceptance; quality evaluation and rollout. A scoped
+MVP preview validation: the full debug Rust suite passed (657 tests), the agent
+suite passed (83 tests; five provider tests skipped), Clippy and formatting passed,
+and the frontend built. A disposable HTTP import was opened in both existing
+Document and Map views, showing the same nested sections and source notes. The
+browser content was an explicitly labeled fixture, not real model output. A real
+provider quality check and the integration/release validation gate remain pending;
+this branch has not been merged or deployed.
+
+The local generation and durable empty-document import MVP is implemented. Still
+pending: background job orchestration, durable multi-task progress, separate
+verification/reconciliation stages, quality evaluation and rollout. A scoped
 run must retain its scope and limits in every task snapshot and display partial
 coverage in the final draft. Neither an agent tool call nor a retry may expand it.

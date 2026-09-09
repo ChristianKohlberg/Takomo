@@ -5690,6 +5690,46 @@ paths:
         "409": { description: 'The project is archived, the resulting CRDT state exceeds the object storage cap, or the log kept growing under three consecutive attempts (`conflict.collab_reset_stale`; retry).' }
         "422": { description: Confirmation does not match the mindmap ID. }
 
+  /mindmaps/{id}/codebase-import:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: importCodebaseDraft
+      summary: Populate an empty specification with unreviewed codebase sections
+      description: |
+        Requires write, human and project access. Local MVP importer generates
+        the draft using a scoped Codex App Server turn; this endpoint makes no
+        model call. Creates ordinary mindmap nodes and paragraph prose visible
+        in both existing review views. Sources are checked against declared scope;
+        this server does not independently inspect the repository or verify claims.
+        The tree and retry receipt persist together before broadcast. Reusing the
+        same request_id and payload under the same actor returns the original node
+        mapping without rewriting human edits. Another payload or a nonempty target
+        conflicts. The body is limited to 64000 bytes. No section is confirmed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodebaseImport' }
+      responses:
+        '200':
+          description: Imported draft, or the original result of an identical retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mindmap, root, sections, reviewed, revision]
+                properties:
+                  mindmap: { type: string }
+                  root: { type: string }
+                  sections: { type: object, additionalProperties: { type: string } }
+                  reviewed: { type: boolean, const: false }
+                  revision: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Nonempty target, archived object, or conflicting retry }
+        '422': { description: Invalid hierarchy, scope, source range, or content limits }
+
   /mindmaps/{id}/nodes:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -10747,6 +10787,55 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
+    CodebaseImport:
+      type: object
+      additionalProperties: false
+      required: [request_id, revision, scope, draft]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 120 }
+        revision: { type: string, pattern: '^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$' }
+        scope:
+          type: object
+          additionalProperties: false
+          required: [include, exclude]
+          properties:
+            include: { type: array, minItems: 1, maxItems: 64, items: { type: string, minLength: 1, maxLength: 1024 } }
+            exclude: { type: array, maxItems: 64, items: { type: string, minLength: 1, maxLength: 1024 } }
+        draft:
+          type: object
+          additionalProperties: false
+          required: [title, summary, sections, gaps]
+          properties:
+            title: { type: string, minLength: 1, maxLength: 280 }
+            summary: { type: string, maxLength: 2000 }
+            gaps: { type: array, maxItems: 12, items: { type: string, maxLength: 1000 } }
+            sections:
+              type: array
+              minItems: 1
+              maxItems: 12
+              description: Parent-before-child order, with at most four levels beneath the generated root.
+              items:
+                type: object
+                additionalProperties: false
+                required: [key, parent, title, notes, sources]
+                properties:
+                  key: { type: string, minLength: 1, maxLength: 40 }
+                  parent: { type: [string, 'null'] }
+                  title: { type: string, minLength: 1, maxLength: 280 }
+                  notes: { type: string, minLength: 1, maxLength: 4000 }
+                  sources:
+                    type: array
+                    minItems: 1
+                    maxItems: 5
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [path, start_line, end_line]
+                      properties:
+                        path: { type: string, minLength: 1, maxLength: 1024 }
+                        start_line: { type: integer, minimum: 1 }
+                        end_line: { type: integer, minimum: 1 }
+
     MindmapNodeAdd:
       type: object
       description: |
@@ -11915,6 +12004,8 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  validation.spec_import: "The import draft has invalid fields, limits, hierarchy, or source scope."
+  conflict.spec_import: "The target is not empty or the import request conflicts with a recorded retry receipt. Preserve the document and inspect the original draft."
   validation.ticket_document: "Invalid document-reference, classification, policy or pagination input. Read the returned message and use current sections from the ticket project."
   conflict.ticket_document: "The suggestion or source is stale, the section is unavailable, or classification conflicts with current state. Retry classification or manually link a current section."
   notfound.ticket_document_link: "No document reference has this ID for the ticket. Read its document-links history."

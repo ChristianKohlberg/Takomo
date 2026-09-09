@@ -555,6 +555,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(crate::api::mindmaps::project_nodes),
         )
         .route("/v1/mindmaps/{id}/nodes", post(crate::api::mindmaps::add_nodes))
+        .route("/v1/mindmaps/{id}/codebase-import", post(crate::api::spec_import::publish))
         .route(
             "/v1/mindmaps/{id}/nodes/{node}",
             patch(crate::api::mindmaps::patch_node)

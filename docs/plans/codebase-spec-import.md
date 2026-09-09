@@ -2,6 +2,16 @@
 
 Status: implementation started; the scope/preflight foundation is available (see `docs/codebase-spec-import.md`). The rest of this document is the implementation contract, not a claim of completed features. Original planning baseline: agent-service branch commit `a5f8aae`, in `/tmp/takomo-codebase-spec-approach`. The original checkout was `eb3a9dc` and did not contain this service. Before implementation, reconcile this plan against the actual integration base; do not merge another session’s branch implicitly.
 
+## MVP amendment: reuse the existing review surfaces
+
+The user requested a collaborative MVP and explicitly required the document and
+mindmap as the review UI. The implemented local MVP uses one scoped App Server
+turn, a saved draft artifact, and a retry-safe import into an empty specification.
+Generated sections are ordinary unconfirmed nodes/prose, reviewed with existing
+controls. A separate staging/review workspace from the original plan is superseded.
+Background orchestration, progressive multi-task drafting, and quality calibration
+remain later milestones. The prototype has not been merged or deployed.
+
 ## Development scope amendment (9 September 2026)
 
 The user approved starting implementation and requested partial-codebase runs to

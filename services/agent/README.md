@@ -370,3 +370,14 @@ search and direct read stays within it. Tool arguments can narrow it further but
 cannot widen it. Legacy research jobs without scope retain whole-repository access
 within the eligible-file limits. No new research HTTP fields, import jobs, model
 runs or document writes are introduced by preflight.
+
+
+## Local specification import MVP
+
+`spec-import-cli.mjs generate` uses the same authenticated App Server adapter and
+restricted repository tools to produce a small structured draft. `publish` sends
+that saved draft to an empty specification; the existing Document/Map views are
+its review surface. No `spec_import_preview` kind is advertised to the worker
+queue yet. See [the MVP guide](../../docs/codebase-spec-import.md) for the commands,
+budgets, token scopes and retry behavior. The preflight command above remains
+free of inference.

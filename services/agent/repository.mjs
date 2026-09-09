@@ -175,7 +175,7 @@ export async function openRepository(job, repositories, options = {}) {
         usedBytes += Buffer.byteLength(numbered) + (page.length > 1 ? 1 : 0);
       }
       const end = page.length ? start + page.length - 1 : null;
-      if (end !== null) record({ path: args.path, start_line: start, end_line: end, revision });
+      if (end !== null) record({ path: args.path, start_line: start, end_line: end, revision, ...(clipped ? { line_truncated: true } : {}) });
       return JSON.stringify({ revision, path: args.path, total_lines: lines.length, content: page.join('\n'),
         end_line: end, next_start_line: end !== null && end < lines.length ? end + 1 : null,
         line_truncated: clipped, truncated: clipped || (end !== null && end < lines.length) });
