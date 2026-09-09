@@ -16,7 +16,7 @@ GET /v1/projects/{project}/environments
 { "slug": "staging",
   "kind": "staging",
   "base_url": "https://staging.example.com",
-  "bring_up": "backlot up --ttl 900",
+  "bring_up": "backlot up --ttl 15",
   "teardown": "backlot release",
   "data_state": "production_like",
   "writable": true,
@@ -33,7 +33,7 @@ Nothing here is executed, polled, deployed or health-checked.
 spec. The server never runs them, so structure would be a promise it cannot
 keep — and the real answer differs per caller anyway
 (`BACKLOT_HOLDER_PID=$$ backlot up` for a person at a terminal,
-`backlot up --ttl 900` for an agent). Prose is the only honest container.
+`backlot up --ttl 15` for an agent). Prose is the only honest container.
 
 `teardown` earns its own field because "who gives the lease back" is the thing
 runners actually get wrong.
@@ -98,7 +98,7 @@ someone else's notes.
 ```sh
 takomo env ls
 takomo env new staging --kind staging --base-url https://staging.example.com \
-  --bring-up 'backlot up --ttl 900' --teardown 'backlot release' \
+  --bring-up 'backlot up --ttl 15' --teardown 'backlot release' \
   --credentials-hint env:STAGING_TOKEN
 takomo env show ID   ·   takomo env set ID --read-only   ·   takomo env rm ID
 ```

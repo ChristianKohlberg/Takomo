@@ -39,7 +39,7 @@ The integration tests start real server instances against temporary SQLite DBs, 
 
 ## A running instance for manual testing — backlot
 
-[backlot](https://github.com/ChristianKohlberg/backlot) (≥ 0.7) brokers a warm, running takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
+[backlot](https://github.com/ChristianKohlberg/backlot) (a build that accepts `backlot.yml`'s per-upkeep `timeout` and service `env_from` keys — see the end of this section) brokers a warm, running takomo for inspection or manual testing, so you don't hand-roll build/seed/serve. With `backlot` installed, from the repo root:
 
 ```sh
 backlot up                    # build, seed a demo store, serve, print the URL + port
@@ -77,3 +77,34 @@ The Vite `/v1` proxy forwards WebSocket upgrades as well as HTTP requests, so
 specification collaboration and project updates work against `TAKOMO_DEV_API`
 during local development. A connected preview should show the normal save state
 and collaborators rather than appear offline merely because it uses Vite.
+
+## Fast frontend iteration and leased browser verification
+
+Run `npm run dev:backlot` in `web/`. The helper finds the repository root,
+leases only `server` for **15 minutes**, then starts local Vite with its API and
+WebSocket proxy aimed at that lease. Open Vite's URL. Frontend saves are watched
+locally and do not require `backlot sync` or a Rust rebuild. The local Vite process
+ends with Ctrl-C; explicitly `backlot release` from the repository when finished.
+The helper preserves an existing repository lease; it does not release it on exit.
+Refresh a long session with `backlot up server --ttl 15`.
+
+Ordinary `backlot up` and `sync` build frontend assets before Rust embeds them.
+The build helper fingerprints frontend inputs and generated output, caches npm
+installation in `node_modules`, and checks Cargo's own incremental cache. The declared
+`target`, `node_modules` and generated `dist` directories survive `reset-data` cleanup. `--pristine` and
+recycling discard the environment tree, including those caches. A first build
+may take up to the manifest's 1800-second upkeep budget; warm frontend iteration
+uses Vite instead.
+
+`backlot run web` runs TypeScript, lint and component tests. For a real browser
+against the leased application, install Chromium once with
+`cd web && npx playwright install chromium`, then run `backlot run browser` from
+the repository root. This check seeds its own run lease, mints a human token,
+checks authenticated API data, and waits for a seeded ticket to render on the
+board. It does not touch a separately held session. `backlot run api` still runs
+the complete Rust suite, whose tests spawn their own servers.
+
+The optional document-agent credential is allowlisted by `services.server.env_from`.
+Export `TAKOMO_TENSORX_API_KEY` before `backlot up`; the caller supplies it only to
+that lease. No daemon restart is needed. These manifest fields require a Backlot
+build supporting per-upkeep `timeout` and service `env_from`.

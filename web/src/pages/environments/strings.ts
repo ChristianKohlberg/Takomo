@@ -61,7 +61,7 @@ export const STR = defineStrings({
     fBaseUrl: 'Base URL',
     fBaseUrlPh: 'https://staging.example.com',
     fBringUp: 'How to bring it up',
-    fBringUpPh: 'backlot up --ttl 900',
+    fBringUpPh: 'backlot up --ttl 15',
     fBringUpHint: 'Prose or a command. Takomo never runs it — it hands it to whoever needs it next.',
     fTeardown: 'How to give it back',
     fTeardownPh: 'backlot release',
@@ -152,7 +152,7 @@ export const STR = defineStrings({
     fBaseUrl: 'Basis-URL',
     fBaseUrlPh: 'https://staging.example.com',
     fBringUp: 'Wie man sie hochfährt',
-    fBringUpPh: 'backlot up --ttl 900',
+    fBringUpPh: 'backlot up --ttl 15',
     fBringUpHint:
       'Text oder ein Befehl. Takomo führt ihn nie aus — er wird an den nächsten weitergereicht.',
     fTeardown: 'Wie man sie zurückgibt',

@@ -12,11 +12,10 @@
 #   backlot release               return the environment to the pool, warm
 name: takomo
 
-# `reset-data` and `--pristine` binds sweep every untracked env-side file that
-# is not declared here, which for a Rust repo means deleting the whole cargo
-# build directory and paying a cold LTO release build on the next bind. Worse,
-# a sweep also invalidates the upkeep ledger, so it re-runs everything. The bare
-# name matches at any depth and short-circuits the walk into it.
+# `reset-data` sweeps untracked env-side files unless declared here. Preserve
+# Cargo and npm caches so restoring a database does not force a cold rebuild.
+# Bare names match at any depth and skip traversal into those directories.
+# `--pristine` and recycling discard the whole environment tree, caches included.
 caches:
   - target
   - node_modules
@@ -27,22 +26,17 @@ caches:
 # build is declared here as well as on the service: a service `build:` runs
 # AFTER the datastore step and would be too late to seed with.
 upkeep:
-  # Generate assets once; subsequent Rust steps reuse them without rebuilding JS.
-  - when: glob(web/**)
-    run: ./scripts/build.sh
-  - when: glob(src/**)
-    run: cargo build --release
-  - when: Cargo.lock
-    run: cargo build --release
-  # workflows/factory-default.yaml is include_str!'d by src/workflow.rs, so it
-  # is a build input living outside src/. Without this rule a change to the
-  # built-in state machine would leave a stale binary behind.
-  - when: glob(workflows/**)
-    run: cargo build --release
+  # One build entry point orders web assets before Rust embeds them. Its own
+  # content ledger skips npm work on non-web edits and survives pooled binds.
+  - when: glob(**)
+    run: node scripts/backlot-build.mjs
+    timeout: 1800
   # Content-derived template identity. The baked SQLite template is keyed on the
   # hash of these files, so a branch that changes the schema or the seed content
   # gets its own template instead of silently restoring a stale one.
   - when: glob(src/store/**)
+    run: "@rebake-template main"
+  - when: src/seed.rs
     run: "@rebake-template main"
   - when: src/main.rs
     run: "@rebake-template main"
@@ -63,18 +57,14 @@ services:
   server:
     # Gated on this service's own build fingerprint; a no-op when the upkeep
     # rule above already built this tree.
-    build: cargo build --release
+    build: node scripts/backlot-build.mjs
     # {{datastores.main.url}} is the SQLite file path (for sqlite the namespace
     # IS the file); {{ports.http}} is the engine-allocated port.
     run: ./target/release/takomo --db {{datastores.main.url}} serve --bind 127.0.0.1:{{ports.http}}
-    # NOTE: the /documents prompt bar needs TAKOMO_TENSORX_API_KEY, and it is
-    # deliberately NOT set here — this file is committed, so a key in it would be
-    # a key in the repository. `env:` interpolates only {{ports.*}} and
-    # {{datastores.*}}, not the host environment, so it cannot be passed through
-    # from your shell either. Services inherit the DAEMON's environment: export
-    # the variable, `backlot daemon stop`, then `backlot up`. Unset is the
-    # ordinary case — the server prints "doc agent: off" and /documents explains
-    # the missing bar rather than offering one that 503s.
+    # Optional caller-side secret; export it before `backlot up`. Backlot
+    # forwards only this allowlisted key to this lease, without daemon restart.
+    env_from:
+      TAKOMO_TENSORX_API_KEY: optional
     port: http
     ready:
       http: /healthz
@@ -109,3 +99,10 @@ checks:
   api:
     run: cargo test --release
     timeout: 1800
+  web:
+    run: node --test scripts/backlot-build.test.mjs && npm --prefix web run check && npm --prefix web run lint && npm --prefix web test
+    timeout: 300
+  browser:
+    # Runs against THIS leased service, unlike the API suite's own servers.
+    run: node web/scripts/backlot-smoke.mjs http://127.0.0.1:{{ports.http}} {{datastores.main.url}}
+    timeout: 120
