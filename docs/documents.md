@@ -569,9 +569,12 @@ both views are cleared.** The map keeps its identity, title, status and metadata
 existing revision and review history and linked tickets/checks remain. This reset
 cannot be reversed with Undo. Copy anything you need before confirming.
 
-The server requires `admin` and access to the project, merges live and persisted
-CRDT state inside the reset transaction, commits before replying, and broadcasts
-the deletion to connected editors. Existing synced text cannot be revived by
+The server requires `admin` and access to the project, merges the live replica
+with every persisted update it has not replayed, verifies inside the reset
+transaction that nothing was appended meanwhile (retrying from a fresh read when
+it was), commits before replying, and broadcasts the deletion to connected
+editors. The plan's trace (`GET /v1/mindmaps/{id}/trace`) gains one `pruned` act
+with no section, noting the reset; every earlier act stays. Existing synced text cannot be revived by
 replaying an old replica, and open editors clear their undo/redo stacks. New edits,
 including previously unsynced concurrent changes, still merge normally. Reset is
 not a storage purge or a barrier against new edits. It emits `mindmap_reset`.

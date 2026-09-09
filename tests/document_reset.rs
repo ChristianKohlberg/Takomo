@@ -76,7 +76,39 @@ async fn document_reset_persists_and_broadcasts_tombstones_preserving_identity()
         app.base.replace("http://", "ws://"),
         session["token"].as_str().unwrap()
     );
-    let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(url.clone()).await.unwrap();
+    let (mut witness, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+
+    // A peer's edit the room has applied but not yet flushed. It reaches the
+    // replica before the queue, so the reset must carry its tombstone rather
+    // than drop it from the queue and leave it revivable.
+    let live_update = {
+        let mut txn = replica.transact_mut();
+        replica
+            .get_or_insert_map("proposals")
+            .insert(&mut txn, "live-proposal", "typed just now");
+        txn.encode_update_v1()
+    };
+    socket
+        .send(Message::Binary(frame(&live_update).into()))
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Message::Binary(bytes) = witness.next().await.unwrap().unwrap() {
+                let mut reader = Cursor::new(bytes.as_ref());
+                if reader.read_var::<u64>().unwrap() != 0 {
+                    continue;
+                }
+                let sync_kind: u64 = reader.read_var().unwrap();
+                if sync_kind == 2 && reader.read_buf().unwrap() == live_update.as_slice() {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .expect("the room relays the live edit, so it has applied it");
 
     let (status, after) = app
         .post(
@@ -120,6 +152,17 @@ async fn document_reset_persists_and_broadcasts_tombstones_preserving_identity()
         .get_or_insert_map("document_control")
         .get(&saved.transact(), "reset")
         .is_some());
+    // The unflushed edit is tombstoned in the committed state: the log holds
+    // exactly the reset row, and replaying the edit's own update revives nothing.
+    assert_eq!(app.open_store().load_collab_updates(id).unwrap().len(), 1);
+    saved
+        .transact_mut()
+        .apply_update(Update::decode_v1(&live_update).unwrap())
+        .unwrap();
+    assert_eq!(
+        saved.get_or_insert_map("proposals").len(&saved.transact()),
+        0
+    );
     let other_doc = persisted(&app, other["id"].as_str().unwrap());
     assert_eq!(
         other_doc
@@ -180,6 +223,7 @@ async fn document_reset_persists_and_broadcasts_tombstones_preserving_identity()
         .await
         .unwrap();
     socket.close(None).await.unwrap();
+    witness.close(None).await.unwrap();
     // A second reset sees the same empty live room; stale content is not revived.
     let (status, _) = app
         .post(
@@ -228,6 +272,10 @@ async fn document_reset_requires_admin_project_access_confirmation_and_active_do
     ] {
         assert_eq!(app.post(&app.admin, &path, body).await.0, expected);
     }
+    let (_, mismatch) = app
+        .post(&app.admin, &path, json!({"confirm_id": "wrong"}))
+        .await;
+    assert_eq!(mismatch["code"], "validation.confirm_id", "{mismatch}");
     assert_eq!(
         app.post(&app.admin, "/v1/projects/tp/archive", json!({}))
             .await
@@ -379,6 +427,26 @@ async fn specification_reset_clears_shared_content_and_preserves_history_and_lin
         0
     );
     assert_eq!(app.get(&app.admin, &version_path).await.1, historical);
+    // The plan's own history says so: one plan-wide act for the reset, beside
+    // the section's earlier authoring rather than instead of it.
+    let (_, trace) = app
+        .get(&app.admin, &format!("/v1/mindmaps/{id}/trace"))
+        .await;
+    let entries = trace["items"].as_array().unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e["kind"] == "pruned" && e["node"].is_null())
+            .count(),
+        1,
+        "{trace}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["kind"] == "authored" && e["node"] == node_id),
+        "{trace}"
+    );
     assert_eq!(
         app.get(&app.admin, &format!("/v1/tickets/{ticket_id}"))
             .await
@@ -427,12 +495,11 @@ async fn specification_reset_rejects_wrong_identity_scope_and_archived_project()
         app.post(&limited, &path, json!({"confirm_id":id})).await.0,
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
-        app.post(&app.admin, &path, json!({"confirm_id":"wrong"}))
-            .await
-            .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    let (status, mismatch) = app
+        .post(&app.admin, &path, json!({"confirm_id":"wrong"}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(mismatch["code"], "validation.confirm_id", "{mismatch}");
     assert_eq!(
         app.post(&app.admin, &path, json!({})).await.0,
         StatusCode::BAD_REQUEST

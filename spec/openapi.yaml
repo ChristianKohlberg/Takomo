@@ -5680,7 +5680,7 @@ paths:
         "400": { description: Missing confirmation or invalid fields. }
         "403": { description: Admin scope and project access are required. }
         "404": { description: Mindmap not found. }
-        "409": { description: The project is archived or the resulting CRDT state exceeds the object storage cap. }
+        "409": { description: 'The project is archived, the resulting CRDT state exceeds the object storage cap, or the log kept growing under three consecutive attempts (`conflict.collab_reset_stale`; retry).' }
         "422": { description: Confirmation does not match the mindmap ID. }
 
   /mindmaps/{id}/nodes:
@@ -6633,7 +6633,7 @@ paths:
   /initiatives/{id}/reset:
     post:
       tags: [initiatives]
-      summary: Reset a specification document
+      summary: Clear an initiative document's content (admin scope)
       description: |
         Requires admin scope and access to the initiative's project. The confirmation
         must exactly match its ID. Clears summary and all entries, including
@@ -6658,6 +6658,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Initiative" }
+        "400": { description: Missing confirmation or invalid fields. }
         "403": { description: Admin scope or project access missing. }
         "404": { description: Initiative not found. }
         "409": { description: Project archived. }
@@ -7375,7 +7376,7 @@ paths:
         "400": { description: Missing confirmation or invalid fields. }
         "403": { description: Admin scope and access to the document's project are required. }
         "404": { description: Document not found. }
-        "409": { description: The document or project is archived. }
+        "409": { description: 'The document or project is archived, or the log kept growing under three consecutive attempts (`conflict.collab_reset_stale`; retry).' }
         "422": { description: Mismatched confirmation. }
 
   /documents/{id}/run:
@@ -12214,6 +12215,7 @@ x-error-codes:
   validation.check_node: "the `node` on a check names no section of this project's plan. A check says which part of the plan it verifies, so the id has to be one of them \u2014 read the plan and use a section's node id, or leave `node` out for a check about no part in particular."
   conflict.collab_busy: "the project's archive state changed while this document was being opened, so the answer to \"may this be written\" could not be settled. Nothing is wrong with the document: open it again. Rare by construction \u2014 it takes three archive or unarchive commits during one open."
   conflict.collab_compaction_size: "compaction would not free anything, or would write a single row over the cap for one object. The document's content is simply that large \u2014 there is nothing to retry, and the flusher stops attempting it until an append succeeds or a minute passes. Never returned to an HTTP caller; compaction runs on the flusher, and this is a named contract rather than a silent skip."
+  conflict.collab_reset_stale: "a reset prepares its cleared state from the log outside the write transaction and checks the log's highest seq inside it; this is returned only after three consecutive attempts each found a row appended in that window. Retry the reset — it re-reads the log on every attempt, and nothing was changed."
   conflict.collab_compaction: "compaction was built from a log that has since grown, so replacing it would drop whatever was appended meanwhile. Nothing to do: the next flush compacts from a replica that has seen the new row. Never returned to an HTTP caller \u2014 compaction runs on the flusher, and this code exists so the refusal is a named contract rather than a silent skip."
   conflict.mindmap_archived: "the map is archived and cannot be written to. Not reachable today — a mindmap has no archive state, because throwing one away is ordinary and there is nothing between 'here' and 'gone' to freeze — but the code is published so adding that gate later stays a schema change and not a new error vocabulary."
   mindmap.too_many_peers: "that map already has the maximum number of live editors on its sync socket. Wait for somebody to close the map, then reconnect."
@@ -12254,7 +12256,6 @@ x-error-codes:
   # -- collaborative documents -------------------------------------------------
   notfound.document: "no document with that id. List them with GET /v1/projects/{project}/documents."
   validation.confirm_id: "`confirm_id` must exactly match the ID in the reset request path. Confirm the selected document before retrying."
-  validation.document_reset_confirmation: "`confirm_id` must exactly match the document ID in the reset request path. Confirm the selected document before retrying."
   validation.document_title: "`title` must be 1-200 characters. It names the document; the prose belongs in the document itself, which is edited over the WebSocket session rather than through any JSON route."
   validation.document_path: "`path` is not a drawable folder. Use `/`-separated segments with no leading or trailing slash, no empty segment and no `.` or `..` — those shapes render as a folder nobody can name or navigate out of. Send \"\" for the top level."
   validation.document_status: "`status` must be `draft`, `review`, `settled` or `archived`. It is a label, not a state machine: nothing enforces an order between them."

@@ -208,13 +208,14 @@ pub async fn reset(
     reject_unknown(obj, &["confirm_id"])?;
     if require_str(obj, "confirm_id")? != id {
         return Err(ApiError::validation(
-            "validation.document_reset_confirmation",
+            "validation.confirm_id",
             "confirm_id must exactly match the document id being reset.".to_string(),
         ));
     }
     state.store.ensure_collab_writable(&id)?;
     let room = super::docsync::open_room(&state, &id).await?;
-    room.reset_content(&state, &ctx.actor).await?;
+    room.reset_content(&state, &ctx.actor, ctx.user.as_deref())
+        .await?;
     let doc = state.store.get_document(&id)?;
     Ok(Json(doc.to_json()))
 }

@@ -55,6 +55,13 @@ pub const MAX_UPDATE_BYTES: usize = 8 * 1024 * 1024;
 /// UI one.
 pub const MAX_OBJECT_BYTES: i64 = 32 * 1024 * 1024;
 
+/// How many times a reset re-reads the log after finding it grew under it.
+///
+/// Each attempt is a stale check that failed, which takes a writer appending to
+/// the same object in the window between the read and the transaction; three
+/// in a row is not something an idle admin action meets.
+pub const RESET_ATTEMPTS: usize = 3;
+
 /// Rows in the log that trigger a compaction on the next flush.
 pub const COMPACT_AFTER_UPDATES: i64 = 256;
 
@@ -404,36 +411,62 @@ impl Store {
     }
 
     /// Clear the current content while retaining its CRDT identity and history.
-    /// The live snapshot and every persisted update are merged INSIDE the write
-    /// transaction, so an external append cannot disappear between the read and
-    /// replacement. The returned state includes deletion tombstones for peers.
+    ///
+    /// `live` is the room's replica and `base_seq` is where that replica
+    /// started, so the rows it cannot vouch for are the ones above `base_seq`
+    /// (the same accounting [`Store::compact_collab`] uses). The replay — the
+    /// live snapshot plus those rows — and the deletions are computed OUTSIDE
+    /// the write transaction; inside it the log's highest `seq` is checked
+    /// against the one the replay saw, and a row that landed in between makes
+    /// the attempt retry from a fresh read rather than replace a log it never
+    /// merged. Returns the update that turns `live` into the reset state
+    /// (deletion tombstones included, so a peer's stale replica cannot revive
+    /// anything) and the `seq` of the one row the log now holds.
     pub fn reset_collab_content(
         &self,
         id: &str,
         live: &[u8],
+        base_seq: i64,
         actor: &str,
+        user: Option<&str>,
     ) -> ApiResult<(Vec<u8>, i64)> {
         use yrs::updates::decoder::Decode;
         use yrs::{Doc, Map, ReadTxn, StateVector, Transact, Update, XmlFragment};
-        let now = now_ms();
-        self.with_tx(|tx| {
-            let object = resolve(tx, id)?;
-            ensure_project_writable(tx, &object.project)?;
-            if object.archived { return Err(archived_error(&object)); }
-            if !matches!(object.kind, CollabKind::Document | CollabKind::Mindmap) {
-                return Err(ApiError::not_found("document", id));
-            }
+        let kind = CollabKind::from_id(id).ok_or_else(|| unknown_kind(id))?;
+        if !matches!(kind, CollabKind::Document | CollabKind::Mindmap) {
+            return Err(ApiError::not_found("document", id));
+        }
+        let decode =
+            |blob: &[u8]| Update::decode_v1(blob).map_err(|e| ApiError::internal(e.to_string()));
+        let mut attempt = 0;
+        loop {
+            let (unseen, seen) = self.with_conn(|conn| {
+                resolve(conn, id)?;
+                let mut stmt = conn.prepare(
+                    "SELECT seq, blob FROM crdt_updates WHERE object_id = ?1 AND seq > ?2 ORDER BY seq ASC",
+                )?;
+                let rows = stmt
+                    .query_map(params![id, base_seq], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let seen: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM crdt_updates WHERE object_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                Ok((rows, seen))
+            })?;
             let doc = Doc::new();
-            {
+            let live_vector = {
                 let mut txn = doc.transact_mut();
-                let mut stmt = tx.prepare("SELECT blob FROM crdt_updates WHERE object_id = ?1 ORDER BY seq")?;
-                for blob in stmt.query_map([id], |row| row.get::<_, Vec<u8>>(0))? {
-                    txn.apply_update(Update::decode_v1(&blob?).map_err(|e| ApiError::internal(e.to_string()))?)
+                txn.apply_update(decode(live)?)
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                let vector = txn.state_vector();
+                for (_, blob) in &unseen {
+                    txn.apply_update(decode(blob)?)
                         .map_err(|e| ApiError::internal(e.to_string()))?;
                 }
-                txn.apply_update(Update::decode_v1(live).map_err(|e| ApiError::internal(e.to_string()))?)
-                    .map_err(|e| ApiError::internal(e.to_string()))?;
-            }
+                vector
+            };
             let prose = doc.get_or_insert_xml_fragment("prose");
             let proposals = doc.get_or_insert_map("proposals");
             let nodes = doc.get_or_insert_map("nodes");
@@ -443,31 +476,77 @@ impl Store {
             {
                 let mut txn = doc.transact_mut();
                 let len = prose.len(&txn);
-                if len > 0 { prose.remove_range(&mut txn, 0, len); }
+                if len > 0 {
+                    prose.remove_range(&mut txn, 0, len);
+                }
                 proposals.clear(&mut txn);
-                if object.kind == CollabKind::Mindmap {
+                if kind == CollabKind::Mindmap {
                     nodes.clear(&mut txn);
                     relationships.clear(&mut txn);
                     comments.clear(&mut txn);
                 }
                 control.insert(&mut txn, "reset", crate::ids::ticket_suffix(24));
             }
-            let state = doc.transact().encode_state_as_update_v1(&StateVector::default());
+            let delta = doc.transact().encode_state_as_update_v1(&live_vector);
+            let state = doc
+                .transact()
+                .encode_state_as_update_v1(&StateVector::default());
             if state.len() as i64 > MAX_OBJECT_BYTES {
-                return Err(ApiError::conflict("conflict.collab_compaction_size", "Reset state exceeds the object storage limit."));
+                return Err(ApiError::conflict(
+                    "conflict.collab_compaction_size",
+                    "Reset state exceeds the object storage limit.",
+                ));
             }
-            if object.kind == CollabKind::Mindmap {
-                super::spec_history::record(tx, id, &state, actor, now)?;
-                tx.execute("UPDATE mindmaps SET summary = '', nodes = 0, version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
-                super::helpers::emit_event(tx, None, Some(&object.project), actor, "mindmap_reset", serde_json::json!({"mindmap": id}), now)?;
-            } else {
-                tx.execute("UPDATE documents SET version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
-                super::helpers::emit_event(tx, None, Some(&object.project), actor, "document.reset", serde_json::json!({"document": id}), now)?;
+            let now = now_ms();
+            let written = self.with_tx(|tx| {
+                let object = resolve(tx, id)?;
+                ensure_project_writable(tx, &object.project)?;
+                if object.archived { return Err(archived_error(&object)); }
+                let highest: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM crdt_updates WHERE object_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                if highest != seen {
+                    return Err(ApiError::conflict(
+                        "conflict.collab_reset_stale",
+                        format!("The log gained rows (seq {seen} -> {highest}) while the reset was being prepared, so the prepared state does not cover them."),
+                    )
+                    .remedy("Retry the reset; the next attempt reads the log again."));
+                }
+                if object.kind == CollabKind::Mindmap {
+                    super::spec_history::record(tx, id, &delta, actor, now)?;
+                    tx.execute("UPDATE mindmaps SET summary = '', nodes = 0, version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
+                    super::trace::record(tx, &super::trace::Record {
+                        project: &object.project,
+                        mindmap: id,
+                        node: None,
+                        kind: "pruned",
+                        actor,
+                        user,
+                        note: Some("Document reset: every section and its prose cleared."),
+                        text: None,
+                    })?;
+                    super::helpers::emit_event(tx, None, Some(&object.project), actor, "mindmap_reset", serde_json::json!({"mindmap": id}), now)?;
+                } else {
+                    tx.execute("UPDATE documents SET version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
+                    super::helpers::emit_event(tx, None, Some(&object.project), actor, "document.reset", serde_json::json!({"document": id}), now)?;
+                }
+                tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
+                tx.execute("INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) VALUES (?1,?2,?3,?4,?5,?6)", params![object.kind.as_str(), id, &state, state.len() as i64, actor, now])?;
+                Ok(tx.last_insert_rowid())
+            });
+            match written {
+                Ok(seq) => return Ok((delta, seq)),
+                Err(e)
+                    if e.body.code == "conflict.collab_reset_stale"
+                        && attempt + 1 < RESET_ATTEMPTS =>
+                {
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
             }
-            tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
-            tx.execute("INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) VALUES (?1,?2,?3,?4,?5,?6)", params![object.kind.as_str(), id, &state, state.len() as i64, actor, now])?;
-            Ok((state, tx.last_insert_rowid()))
-        })
+        }
     }
 
     /// Replace the whole log with one update carrying the same state.

@@ -179,7 +179,8 @@ pub async fn reset(
     }
     state.store.ensure_collab_writable(&id)?;
     let room = open_room(&state, &id).await?;
-    room.reset_content(&state, &ctx.actor).await?;
+    room.reset_content(&state, &ctx.actor, ctx.user.as_deref())
+        .await?;
     let map = state
         .store
         .get_mindmap(&id)?
