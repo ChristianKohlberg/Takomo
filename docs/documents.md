@@ -376,11 +376,17 @@ Go to text unfolds and selects the section, mounts its editor if needed, and sel
 anchored passage. Changed text produces a notice; removed sections retain their discussion
 without a misleading navigation link. Readers can filter and navigate without editing.
 
-Insert section reference opens a **Link to section** picker that searches section titles,
+Type `@` in normal prose to search section titles or numbers. Use Up/Down to choose, Enter to
+insert, and Escape to keep the typed text. This works mid-paragraph, in lists and in table cells;
+email addresses and code keep a literal `@`. The picker shows up to 50 matches and reports when
+more are available; narrow the query to find them. Inserting a chip is one undoable action.
+
+Insert section reference also opens a **Link to section** picker that searches titles and numbers,
 reports its result count and shows document numbers to distinguish duplicate titles. It
 inserts at the current prose selection. References store the stable section
-id and a nested fallback title; the displayed title follows renames without writing new prose.
-References are underlined links with hover and keyboard-focus feedback. Deleted targets show
+id and a nested fallback title. Compact reference chips show the current number and title,
+following local or remote renames/reorders without writing new prose. Their numbers remain
+visible when heading numbers are hidden. Chips have hover and keyboard-focus feedback. Deleted targets show
 the fallback with a missing-section label. API and Map text projections resolve the current
 target title on every read too; empty titles use “Untitled section”. These reads never modify
 the stored fallback or prose. Table exports render references as escaped inline spans, preserving

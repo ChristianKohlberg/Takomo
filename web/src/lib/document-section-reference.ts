@@ -1,7 +1,7 @@
 import { Node, type Editor } from '@tiptap/react'
 import { Fragment } from '@tiptap/pm/model'
 import * as Y from 'yjs'
-import { nodesMap, sectionReferenceTitle } from './mindmap-crdt'
+import { referenceLabel, sectionReferenceIndex } from './section-reference-index'
 import { specificationLink } from './specification-url'
 
 export { sectionReferenceTitle } from './mindmap-crdt'
@@ -35,14 +35,14 @@ export const DocumentSectionReference = Node.create<{
     }]
   },
   renderHTML({ node }) {
-    const title = this.options.ydoc ? sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId) : null
+    const title = this.options.ydoc ? referenceLabel(this.options.ydoc, node.attrs.sectionId, this.options.untitledLabel()) : null
     return ['a', { class: 'document-section-reference', 'data-section-id': node.attrs.sectionId, 'data-reference-project': this.options.project(),
       'data-reference-fallback': node.textContent,
       ...(title === null ? { 'aria-disabled': 'true' } : { href: specificationLink(this.options.project(), 'document', node.attrs.sectionId) }) },
       title === null ? `${node.textContent || this.options.untitledLabel()} (${this.options.missingLabel()})` : title || this.options.untitledLabel()]
   },
   renderText({ node }) {
-    const title = this.options.ydoc ? sectionReferenceTitle(this.options.ydoc, node.attrs.sectionId) : null
+    const title = this.options.ydoc ? referenceLabel(this.options.ydoc, node.attrs.sectionId, this.options.untitledLabel()) : null
     return title === null ? `${node.textContent || this.options.untitledLabel()} (${this.options.missingLabel()})` : title || this.options.untitledLabel()
   },
   addNodeView() {
@@ -54,7 +54,7 @@ export const DocumentSectionReference = Node.create<{
       dom.contentEditable = 'false'
       dom.className = 'document-section-reference'
       const refresh = () => {
-        const title = options.ydoc ? sectionReferenceTitle(options.ydoc, current.attrs.sectionId) : null
+        const title = options.ydoc ? referenceLabel(options.ydoc, current.attrs.sectionId, options.untitledLabel()) : null
         dom.dataset.sectionId = current.attrs.sectionId
         dom.dataset.referenceProject = options.project()
         dom.dataset.referenceFallback = current.textContent
@@ -77,18 +77,13 @@ export const DocumentSectionReference = Node.create<{
       })
       refresh()
       storage.refresh.add(refresh)
-      const nodes = options.ydoc ? nodesMap(options.ydoc) : null
-      const changed = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
-        if (events.some(event => event.path[0] === current.attrs.sectionId ||
-          (event instanceof Y.YMapEvent && event.target === nodes && event.keysChanged.has(current.attrs.sectionId)))) refresh()
-      }
-      nodes?.observeDeep(changed)
+      const unsubscribe = options.ydoc ? sectionReferenceIndex(options.ydoc).subscribe(refresh) : null
       return {
         dom,
         update(next) { if (next.type !== current.type) return false; current = next; refresh(); return true },
         stopEvent: event => event.type === 'click' || event.type === 'mousedown',
         ignoreMutation: () => true,
-        destroy: () => { storage.refresh.delete(refresh); nodes?.unobserveDeep(changed) },
+        destroy: () => { storage.refresh.delete(refresh); unsubscribe?.() },
       }
     }
   },

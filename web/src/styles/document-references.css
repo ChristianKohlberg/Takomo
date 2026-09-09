@@ -1,9 +1,14 @@
 .prose a.document-section-reference {
   color: var(--accent);
-  text-decoration: underline;
+  text-decoration: none;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  padding: 1px 5px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
-  border-radius: 3px;
+  border-radius: 5px;
   cursor: pointer;
   overflow-wrap: anywhere;
 }
@@ -17,6 +22,6 @@
 }
 .prose a.document-section-reference[aria-disabled='true'] {
   color: var(--muted);
-  text-decoration-style: dashed;
+  border-style: dashed;
   cursor: default;
 }

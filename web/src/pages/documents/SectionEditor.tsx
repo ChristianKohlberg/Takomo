@@ -31,6 +31,8 @@ import { EditorContent, useEditor } from '@tiptap/react'
 import { TableKit } from '@tiptap/extension-table'
 import { SlashInsert, slashMatch, type SlashMatch } from '@/lib/slash-insert'
 import { SlashMenu } from './SlashMenu'
+import { SectionReferenceMenu } from './SectionReferenceMenu'
+import { SectionReferenceTrigger, referenceMatch, type ReferenceMatch } from '@/lib/section-reference-trigger'
 import { TableToolbar } from './TableToolbar'
 import { STR } from './strings'
 import type { Locale } from '@/lib/i18n'
@@ -137,6 +139,9 @@ export default function SectionEditor({
   const [slash, setSlash] = useState<SlashMatch | null>(null)
   const slashKeys = useRef<((event: KeyboardEvent) => boolean) | null>(null)
   const slashId = useId()
+  const referenceId = useId()
+  const [reference, setReference] = useState<ReferenceMatch | null>(null)
+  const referenceKeys = useRef<((event: KeyboardEvent) => boolean) | null>(null)
   const insertSection = useRef(onInsertSection)
   insertSection.current = onInsertSection
   const navigate = useRef(onNavigate)
@@ -204,6 +209,7 @@ export default function SectionEditor({
         StarterKit.configure({ undoRedo: false, codeBlock: false }),
         CleanPaste,
         DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
+        SectionReferenceTrigger.configure({ menuId: referenceId, onMatch: setReference, onKey: event => referenceKeys.current?.(event) ?? false }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
         TableKit.configure({ table: { resizable: true } }),
         collaboration,
@@ -230,7 +236,7 @@ export default function SectionEditor({
             return true
           }
           if (!canWrite || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey ||
-              event.isComposing || view.composing || slashMatch(view.state)) return false
+              event.isComposing || view.composing || slashMatch(view.state) || referenceMatch(view.state)) return false
           const { $from, empty } = view.state.selection
           // Only cross section boundaries from plain top-level paragraphs.
           // Nested lists, tables and code retain their own keyboard navigation.
@@ -344,6 +350,7 @@ export default function SectionEditor({
   return <>
     {canWrite && <TableToolbar editor={editor} labels={STR[locale]} disabled={false} />}
     <EditorContent editor={editor} />
+    {canWrite && reference && <SectionReferenceMenu key={reference.query} editor={editor} ydoc={ydoc} match={reference} locale={locale} menuId={referenceId} keys={referenceKeys} boundary={() => history?.manager.stopCapturing()} />}
     {canWrite && slash && <SlashMenu key={slash.query} editor={editor} match={slash} locale={locale} menuId={slashId} keys={slashKeys} onInsertSection={onInsertSection} maxSectionLevel={maxSectionLevel} />}
   </>
 }

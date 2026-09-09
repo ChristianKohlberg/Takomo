@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useState, useSyncExternalStore } from 'react'
 import type { Editor } from '@tiptap/react'
 import type * as Y from 'yjs'
 import { Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { flattenSections, planSections } from '@/lib/plan-sections'
-import { nodesMap, readPlanTree } from '@/lib/mindmap-crdt'
+import { sectionReferenceIndex, searchReferenceSections } from '@/lib/section-reference-index'
+import { nodesMap } from '@/lib/mindmap-crdt'
 import type { Locale } from '@/lib/i18n'
 
 /** Opening the picker keeps the editor's selection; incoming edits map it as usual. */
@@ -14,7 +14,8 @@ export function DocumentSectionReferenceButton({ editor, ydoc, canWrite, locale 
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [, refresh] = useState(0)
+  const index = sectionReferenceIndex(ydoc)
+  const sections = useSyncExternalStore(index.subscribe, index.getSnapshot, index.getSnapshot)
   const de = locale === 'de'
   const subscribe = useCallback((notify: () => void) => {
     editor?.on('selectionUpdate', notify).on('transaction', notify).on('destroy', notify)
@@ -23,15 +24,8 @@ export function DocumentSectionReferenceButton({ editor, ydoc, canWrite, locale 
   const snapshot = useCallback(() => !!editor && !editor.isDestroyed && editor.isEditable && !!editor.schema.nodes.sectionReference &&
     editor.can().insertContent({ type: 'sectionReference', attrs: { sectionId: 'preview' } }), [editor])
   const available = useSyncExternalStore(subscribe, snapshot, () => false)
-  useEffect(() => {
-    if (!open) return
-    const nodes = nodesMap(ydoc)
-    const update = () => refresh(value => value + 1)
-    nodes.observeDeep(update)
-    return () => nodes.unobserveDeep(update)
-  }, [open, ydoc])
   if (!canWrite) return null
-  const results = open ? flattenSections(planSections(readPlanTree(ydoc))).filter(node => node.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())) : []
+  const results = open ? searchReferenceSections(sections, query) : []
   return <Popover open={open && available} onOpenChange={value => { setQuery(''); setOpen(value) }}>
     <PopoverTrigger asChild><Button variant="ghost" size="icon-sm" disabled={!available} aria-label={de ? 'Abschnitt verknüpfen' : 'Insert section reference'}
       title={de ? 'Abschnitt verknüpfen' : 'Insert section reference'} onMouseDown={event => event.preventDefault()}>
@@ -40,7 +34,7 @@ export function DocumentSectionReferenceButton({ editor, ydoc, canWrite, locale 
     <PopoverContent aria-label={de ? 'Abschnitt verknüpfen' : 'Insert section reference'} collisionPadding={12}
       className="w-72 max-w-[calc(100vw-1.5rem)]" onCloseAutoFocus={event => { event.preventDefault(); if (editor && !editor.isDestroyed) editor.commands.focus() }}>
       <h2 className="mb-2 text-sm font-semibold">{de ? 'Abschnitt verknüpfen' : 'Link to section'}</h2>
-      <input placeholder={de ? 'Abschnittstitel suchen' : 'Search section titles'} type="search" aria-label={de ? 'Abschnitte suchen' : 'Search sections'} value={query} onChange={event => setQuery(event.target.value)}
+      <input placeholder={de ? 'Titel oder Nummer suchen' : 'Search titles or numbers'} type="search" aria-label={de ? 'Abschnitte suchen' : 'Search sections'} value={query} onChange={event => setQuery(event.target.value)}
         className="w-full rounded border bg-background px-2 py-1 text-sm" />
       <p role="status" className="my-2 text-xs text-muted-foreground">{results.length} {de ? 'Treffer' : 'results'}</p>
       <div className="max-h-60 overflow-y-auto">
