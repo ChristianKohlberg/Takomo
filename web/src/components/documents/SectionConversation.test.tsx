@@ -43,7 +43,9 @@ describe('SectionConversation', () => {
     const first = render(<SectionConversation {...props} />)
     expect(get).not.toHaveBeenCalled()
     await open()
-    expect(screen.getByText('after expiry').tagName).toBe('B')
+    // Markdown fills its host in a passive effect, which React may flush a tick
+    // after the textbox appeared; wait for the rendered text rather than the form.
+    expect((await screen.findByText('after expiry')).tagName).toBe('B')
     expect(post).not.toHaveBeenCalled()
     first.unmount()
     render(<SectionConversation {...props} />)
