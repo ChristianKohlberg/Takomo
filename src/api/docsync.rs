@@ -235,19 +235,33 @@ impl Room {
     /// flush, so a proposal appears in an open browser immediately rather than on
     /// the next reload.
     ///
-    /// The state vector is taken BEFORE `f` runs and the diff after, which is
-    /// what makes this correct under concurrency: whatever else landed while `f`
-    /// was working is simply part of the diff, and Yjs deduplicates it at the
-    /// far end.
+    /// Capture only updates emitted by this operation's transactions. A state
+    /// vector diff is not a change detector: even a no-op encodes framing bytes,
+    /// and it can replay historical deletions. Persisting that diff made a
+    /// writer's GET -> migration check -> flush -> project refresh loop forever.
+    /// Transaction events retain new deletion-only edits without replaying old
+    /// delete sets. The room mutex excludes concurrent operations while captured.
     pub fn mutate<T>(&self, f: impl FnOnce(&Doc) -> ApiResult<T>) -> ApiResult<T> {
-        let (out, update) = {
+        let (out, updates) = {
             let doc = self.doc.lock().expect("room doc mutex");
-            let before = doc.transact().state_vector();
+            let captured = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+            let updates = captured.clone();
+            let subscription = doc
+                .observe_update_v1(move |_, event| {
+                    updates
+                        .lock()
+                        .expect("captured updates mutex")
+                        .push(event.update.clone());
+                })
+                .map_err(|error| {
+                    ApiError::internal(format!("Cannot observe document mutation: {error}"))
+                })?;
             let out = f(&doc)?;
-            let update = doc.transact().encode_state_as_update_v1(&before);
-            (out, update)
+            drop(subscription);
+            let updates = std::mem::take(&mut *captured.lock().expect("captured updates mutex"));
+            (out, updates)
         };
-        if !update.is_empty() {
+        for update in updates {
             self.pending
                 .lock()
                 .expect("pending mutex")
@@ -1399,5 +1413,106 @@ async fn project_loop(socket: WebSocket, state: Arc<AppState>, session: CollabSe
          },
          incoming=stream.next()=>{if !matches!(incoming,Some(Ok(Message::Ping(_)))|Some(Ok(Message::Pong(_)))){break;}}
         }
+    }
+}
+
+#[cfg(test)]
+mod mutation_update_tests {
+    use super::*;
+    use yrs::{GetString, Text};
+
+    fn room() -> Room {
+        Room {
+            id: "mutation-test".into(),
+            doc: Mutex::new(Doc::new()),
+            pending: Mutex::new(Vec::new()),
+            tx: tokio::sync::broadcast::channel(16).0,
+            peers: AtomicUsize::new(0),
+            rows: AtomicU64::new(0),
+            frozen: AtomicBool::new(false),
+            escape_refused: AtomicBool::new(false),
+            overloaded: AtomicBool::new(false),
+            base_seq: AtomicI64::new(0),
+            own_appends: AtomicI64::new(0),
+            flushing: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    #[test]
+    fn no_op_mutations_do_not_queue_or_broadcast_historical_deletions() {
+        let room = room();
+        let mut broadcasts = room.tx.subscribe();
+        room.mutate(|doc| {
+            let text = doc.get_or_insert_text("text");
+            text.insert(&mut doc.transact_mut(), 0, "abc");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(room.pending.lock().unwrap().len(), 1);
+        let mirror = Doc::new();
+        for update in room.pending.lock().unwrap().drain(..) {
+            mirror
+                .transact_mut()
+                .apply_update(Update::decode_v1(&update).unwrap())
+                .unwrap();
+        }
+        broadcasts.try_recv().unwrap();
+        let before = room.state_vector();
+        room.mutate(|doc| {
+            let text = doc.get_or_insert_text("text");
+            text.remove_range(&mut doc.transact_mut(), 0, 3);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            room.state_vector(),
+            before,
+            "a deletion does not advance its insertion clock"
+        );
+        assert_eq!(
+            room.pending.lock().unwrap().len(),
+            1,
+            "new deletion-only edits must persist"
+        );
+        for update in room.pending.lock().unwrap().drain(..) {
+            mirror
+                .transact_mut()
+                .apply_update(Update::decode_v1(&update).unwrap())
+                .unwrap();
+        }
+        assert_eq!(
+            mirror
+                .get_or_insert_text("text")
+                .get_string(&mirror.transact()),
+            ""
+        );
+        broadcasts.try_recv().unwrap();
+        for _ in 0..3 {
+            room.mutate(|doc| {
+                let _unchanged = doc.transact_mut();
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert!(
+            room.pending.lock().unwrap().is_empty(),
+            "a no-op must not replay tombstones"
+        );
+        assert!(matches!(
+            broadcasts.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        room.mutate(|doc| {
+            let text = doc.get_or_insert_text("text");
+            text.insert(&mut doc.transact_mut(), 0, "x");
+            text.insert(&mut doc.transact_mut(), 1, "y");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            room.pending.lock().unwrap().len(),
+            2,
+            "capture all transactions in an operation"
+        );
     }
 }

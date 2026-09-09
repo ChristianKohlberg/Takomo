@@ -37,6 +37,12 @@ notification channel still coalesces real writes across projects; it is not a
 project-filtered event stream. Status polling for active agent work and embedding
 progress has its own cadence and remains enabled.
 
+Opening or refreshing an already-migrated document does not append a CRDT update,
+even with write access. Server-side document operations persist only newly emitted
+transaction updates, including deletion-only edits. Encoded state diffs can contain
+framing bytes and old deletions without a new change; these are not treated as
+writes. This prevents a document read from starting a flush/refresh/read loop.
+
 The project picker sits at the top of the shared navigation rail, not in the
 page header — on a phone, in the compact top bar that stands in for the rail.
 Inbox is the rail's footer entry, directly above the profile block; it carries
