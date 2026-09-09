@@ -1040,7 +1040,7 @@ function ConnectedLive({
     <>
       {/* A first branch has to come from somewhere: an empty map has no node to
           press Enter on, and the phone list has no keyboard shortcuts at all. */}
-      <div className="border-b-border-soft flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
+      <div className="border-b-border-soft bg-card flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
         <button
           type="button"
           disabled={!canWrite}
