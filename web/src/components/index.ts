@@ -270,3 +270,5 @@ export { CollaboratorPresence } from './CollaboratorPresence'
 export { TicketDocumentLinks } from './board/TicketDocumentLinks'
 export { DocumentClassificationPolicy } from './settings/DocumentClassificationPolicy'
 export { SectionTicketLinks } from './documents/SectionTicketLinks'
+
+export { DocumentNumberingControls, useDocumentNumbering } from './documents/DocumentNumberingControls'

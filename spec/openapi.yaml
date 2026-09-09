@@ -9685,6 +9685,14 @@ components:
       description: Defaults to balanced with empty overrides for both existing and new projects.
       properties:
         template: { type: string, enum: [balanced, strong] }
+        numbering:
+          type: [object, "null"]
+          additionalProperties: false
+          description: Optional project defaults. H1 and H2 numbers are visible by default; size defaults to 100 percent of each heading. Numbers inherit heading color. Readers may override visibility locally without changing these defaults. Omit this object or send null to reset all number settings; omit individual fields or send null to inherit.
+          properties:
+            h1: { type: [boolean, "null"] }
+            h2: { type: [boolean, "null"] }
+            size: { type: [number, "null"], minimum: 50, maximum: 150 }
         overrides:
           type: object
           additionalProperties: false
@@ -11793,7 +11801,7 @@ x-error-codes:
   notfound.bug_research: No bug research run has this ID; inspect the ticket research history and use a returned job ID.
   validation.bug: Invalid bug triage, filter, configuration or request; use the documented enums and field limits.
   conflict.bug_research: Research is disabled, unavailable, archived, already finished or at a bounded capacity; configure, wait, restore or explicitly retry as instructed.
-  project.document_appearance: "Invalid document appearance: template must be balanced or strong, overrides may only name the documented typography fields, and each override must be a finite number inside its documented range (heading_weight in steps of 100). Omit a field or send null to inherit it from the template."
+  project.document_appearance: "Invalid document appearance: template must be balanced or strong, overrides may only name the documented typography fields, and each override must be a finite number inside its documented range (heading_weight in steps of 100). Optional numbering accepts h1/h2 booleans and size from 50 to 150 percent. Omit a field or send null to inherit it from the template."
   project.writing_instructions: "Invalid project writing instructions: use at most 20 templates with unique 1–80 character ASCII ids, nonblank names up to 80 characters, and nonblank instructions up to 4000 characters. default_id must name an included template or be null."
   validation.document_chat: "The document action or explicit section context is invalid; source snapshots cannot be supplied by callers."
   validation.agent_chat: "The request is malformed or exceeds a documented size bound."

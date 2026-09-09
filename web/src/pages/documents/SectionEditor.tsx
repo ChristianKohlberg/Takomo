@@ -1,5 +1,6 @@
+import { defaultDeleteFilter, defaultProtectedNodes, yUndoPluginKey } from '@tiptap/y-tiptap'
 import { CollaborationHistorySelection } from '@/lib/collaboration-history-selection'
-import { useContext } from 'react'
+import { useContext, useMemo } from 'react'
 import { DiagramContext } from '@/lib/diagram'
 // One section's prose, bound to that section's own fragment.
 //
@@ -58,6 +59,7 @@ import '@/styles/document-references.css'
 const SETTLE_MS = 2500
 
 export interface SectionEditorProps {
+  history?: ReturnType<typeof import('@/lib/plan-structure').createStructureHistory>
   ydoc: Y.Doc
   sectionId?: string
   onOpenComments?: () => void
@@ -118,6 +120,7 @@ export default function SectionEditor({
   canWrite,
   onSettled,
   highlight = '',
+  history,
   onEditor,
   label,
   onInsertSection,
@@ -153,9 +156,30 @@ export default function SectionEditor({
   const localeRef = useRef(locale)
   localeRef.current = locale
 
+  const collaboration = useMemo(() => history ? Collaboration.extend({
+    addCommands() {
+      return { ...this.parent?.(),
+        undo: () => ({ dispatch }) => dispatch ? history.undo().ok : history.canUndo,
+        redo: () => ({ dispatch }) => dispatch ? history.redo().ok : history.canRedo,
+      }
+    },
+    addProseMirrorPlugins() {
+      const plugins = this.parent?.() ?? []
+      // The document owns the shared manager; virtualized editor views only own
+      // their selection listener lifecycle (CollaborationHistorySelection).
+      for (const plugin of plugins) if (plugin.spec.key === yUndoPluginKey) plugin.spec.view = () => ({})
+      return plugins
+    },
+  }).configure({ document: ydoc, fragment, yUndoOptions: { undoManager: history.manager } }) : Collaboration.configure({ document: ydoc, fragment }), [history, ydoc, fragment])
+  if (history) {
+    history.manager.trackedOrigins.add(ySyncPluginKey)
+    history.manager.addToScope(fragment)
+    history.manager.deleteFilter = item => defaultDeleteFilter(item, defaultProtectedNodes)
+  }
   const editor = useEditor(
     {
       editable: canWrite,
+      onFocus: () => history?.manager.stopCapturing(),
       extensions: [
         // Collaboration owns the document, so StarterKit's own history has to
         // go: an undo stack that does not know about remote edits would undo
@@ -165,7 +189,7 @@ export default function SectionEditor({
         DiagramCodeBlock.configure({ access: () => accessRef.current, accessChanges: diagramAccessEvents }),
         SlashInsert.configure({ menuId: slashId, onMatch: setSlash, onKey: event => slashKeys.current?.(event) ?? false }),
         TableKit.configure({ table: { resizable: true } }),
-        Collaboration.configure({ document: ydoc, fragment }),
+        collaboration,
         CollaborationCaret.configure({ provider, user: { name: display, color } }),
         CollaborationHistorySelection,
         // Only a writer mints block ids — an `appendTransaction` runs regardless
@@ -184,6 +208,10 @@ export default function SectionEditor({
       ],
       editorProps: {
         handleKeyDown: (view, event) => {
+          if (history && canWrite && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'z') {
+            history[event.shiftKey ? 'redo' : 'undo']()
+            return true
+          }
           if (!canWrite || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey ||
               event.isComposing || view.composing || slashMatch(view.state)) return false
           const { $from, empty } = view.state.selection
@@ -223,7 +251,7 @@ export default function SectionEditor({
       // warns without it when an editor mounts during an SSR-shaped render.
       immediatelyRender: false,
     },
-    [ydoc, fragment, provider, canWrite, sectionId],
+    [ydoc, fragment, provider, canWrite, sectionId, history],
   )
 
   // The page keeps a handle on this editor while it is mounted, and loses it the

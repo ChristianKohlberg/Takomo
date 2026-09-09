@@ -299,52 +299,37 @@ replaces it, and insertion uses the current section's normal collaboration and u
 If the trigger is removed or the caret leaves it, the menu closes. A stale choice cannot
 replace text changed by another collaborator. Read-only viewers have no insertion menu.
 
-## Section controls, focus mode, Move and Find
+## Section controls, focus mode and history
 
-Section actions sit behind one compact actions button beside the heading, on every device:
-it opens a vertical menu with an icon and a descriptive label per action, keyboard navigable,
-closed by Escape or a click outside. The standing and pending-review indicators stay visible
-while reading. New sections are added through an **Add section** control at each section
-boundary, shown on hover or focus (always on touch screens) so a row of empty inputs never
-interrupts reading.
+Section actions sit behind the ellipsis beside each heading. The menu contains the accessible
+colored trust indicator and review/history actions; pending proposals remain visible. The copy
+link icon sits directly beside the heading, visible on hover or keyboard focus and always on
+touch screens. Clicking prose sets the current section without navigating or scrolling.
 
-The outline is a sidebar when the document pane is at least 850px wide — resizable, with
-Collapse all / Expand all, two-line titles and the full title on hover. The **Outline** toggle
-sits in the document toolbar; hiding the outline gives its whole column to the prose rather
-than folding it to a strip, keeps the selected section and editor state, and the open/closed
-state is remembered per browser. In a narrower pane it is a drawer over the prose: it starts
-closed and closes after each selection. Both follow the pane's width, not the viewport's,
-because a conversation beside the document narrows the pane alone. Document-wide comments
-take the same drawer form in a narrow pane.
+The outline is a resizable sidebar when the document pane is at least 850px wide, and a drawer
+in a narrower pane. Its toolbar toggle remembers whether it is open. Icon controls fold and
+unfold branches. Arrow keys move focus or fold branches; Enter/Space activates a section.
+Dragging a row previews a before/after/inside destination. The keyboard/context-menu Move
+dialog provides the same operation without dragging. Subtrees keep their prose, links and
+identities; cycles and missing destinations are refused.
 
-**Focus mode** hides the project rail, outline, Find, move/history controls and document-wide
-comments panel while keeping the current editor, selection, formatting, save status and view
-switcher. The header toggle remains available to exit. The browser remembers the preference
-across visits; it does not affect Map or other collaborators. Unavailable browser storage falls
-back to a working toggle for the current visit.
+The document toolbar has one chronological Undo/Redo pair for local prose, formatting,
+heading changes, insertions and section moves. History survives section editor virtualization
+and the shared session's Doc/Map switch, but not a reload. It is not the audit trace. Yjs selective
+undo preserves remote prose; stale structural reversals are refused. Selection uses CRDT
+relative anchors that survive editor remounts. New document edits clear the redo branch.
 
-**Move**, offered on each outline section, places it before, after or inside another section
-and previews the resulting level. The whole subtree, its prose and its links travel with it;
-a self or descendant destination is refused; the moved section stays selected. The toolbar
-carries separate undo/redo controls for the current section's prose and for section moves.
-In a pane narrower than 850px the formatting controls stay visible and everything else folds
-behind a **Tools** toggle; that panel stays open for repeated undo/redo and for popover
-triggers, and closes after a one-shot action.
-Move history survives switching between Doc and Map during the visit but not a reload, and
-neither history is an audit log — that is the trace. Undo preserves collaborators' prose edits
-and refuses a stale structural restore that would overwrite a conflicting move; a successful
-move also offers Undo in a six-second confirmation. Enter and multi-block paste are undoable
-as single prose edits, with their generated block ids restored on redo. Automatic id repairs
-when opening or receiving a remote update do not add undo entries. History captures the
-selection before the original edit, including before Yjs rebuilds its position mapping, and
-restores it from CRDT relative anchors immediately after undo/redo. This also avoids stale
-absolute offsets leaking into the next transaction after a multi-block paste.
+**Focus mode** hides the project rail, outline, history controls and document-wide comments
+while keeping the current editor, selection, formatting, save status and view switcher. The
+header toggle remains available to exit; the preference is local to the browser. Narrow panes
+keep formatting visible and fold secondary tools into **Tools**. **Search document** is the
+single document search control, available to readers as well as writers.
 
-**Find** searches section titles and prose, including collapsed and unmounted sections.
-Matches are literal and case-insensitive; Enter and Shift+Enter visit the next and previous
-result. Opening a result temporarily expands its outline ancestors, and closing Find restores
-the saved folds. Search works for read-only viewers, edits nothing, and leaves the browser's
-own find shortcut alone.
+H1 and H2 numbering can be hidden independently from the toolbar, with personal preferences
+remembered per project and a reset to project defaults. Appearance settings define default
+visibility and number size; numbers follow heading typography and color. `/grill` remains
+available in the Codex conversation. The outline supports Up/Down/Home/End for focus,
+Right/Left for hierarchy navigation, and Shift+F10 or the context menu for Move.
 
 ## Formatting, continuous writing, text comments, section references and paste
 

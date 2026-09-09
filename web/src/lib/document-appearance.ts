@@ -10,8 +10,15 @@ export interface DocumentTypography {
   line_height: number
   heading_spacing: number
 }
+export interface DocumentNumbering { h1: boolean; h2: boolean; size: number }
+export const DEFAULT_DOCUMENT_NUMBERING: Readonly<DocumentNumbering> = { h1: true, h2: true, size: 100 }
+export function resolveDocumentNumbering(config?: DocumentAppearance | null): DocumentNumbering {
+  return { ...DEFAULT_DOCUMENT_NUMBERING, ...config?.numbering }
+}
+
 export interface DocumentAppearance {
   template: DocumentTemplate
+  numbering?: Partial<DocumentNumbering>
   overrides: Partial<DocumentTypography>
 }
 
@@ -39,6 +46,7 @@ export function validDocumentValue(key: string, value: unknown): value is number
 
 export function validDocumentAppearance(config: DocumentAppearance): boolean {
   if (!Object.hasOwn(DOCUMENT_TEMPLATES, config.template)) return false
+  if (Object.entries(config.numbering ?? {}).some(([key, value]) => key === 'size' ? typeof value !== 'number' || !Number.isFinite(value) || value < 50 || value > 150 : !['h1', 'h2'].includes(key) || typeof value !== 'boolean')) return false
   return Object.entries(config.overrides).every(([key, value]) => validDocumentValue(key, value))
 }
 
@@ -57,14 +65,14 @@ export function resolveDocumentAppearance(config?: DocumentAppearance | null): D
 
 export function documentAppearanceStyle(config?: DocumentAppearance | null): CSSProperties {
   const values = resolveDocumentAppearance(config)
-  return Object.fromEntries(DOCUMENT_APPEARANCE_FIELDS.map((key) => [
+  return { '--doc-number-size': `${resolveDocumentNumbering(config).size}%`, '--doc-number-scale': resolveDocumentNumbering(config).size / 100, ...Object.fromEntries(DOCUMENT_APPEARANCE_FIELDS.map((key) => [
     `--doc-${key.replaceAll('_', '-')}`,
     key === 'heading_weight' || key === 'line_height' ? values[key] : `${values[key]}px`,
-  ])) as CSSProperties
+  ])) } as CSSProperties
 }
 
 export function sameDocumentAppearance(a?: DocumentAppearance, b?: DocumentAppearance): boolean {
   a ??= DEFAULT_DOCUMENT_APPEARANCE
   b ??= DEFAULT_DOCUMENT_APPEARANCE
-  return a.template === b.template && DOCUMENT_APPEARANCE_FIELDS.every((key) => a.overrides[key] === b.overrides[key])
+  return a.template === b.template && (['h1', 'h2', 'size'] as const).every(key => a.numbering?.[key] === b.numbering?.[key]) && DOCUMENT_APPEARANCE_FIELDS.every((key) => a.overrides[key] === b.overrides[key])
 }
