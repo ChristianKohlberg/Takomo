@@ -1,3 +1,4 @@
+import { useSettingsDraft } from '@/components/settings/SettingsDrafts'
 import { useEffect, useState } from 'react'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
@@ -67,6 +68,7 @@ function Editor({ token, project, readOnly, lang }: { token: string; project: st
   const dirty = JSON.stringify(value) !== JSON.stringify(original)
   const invalid = value?.templates.some((item) => !item.name.trim() || !item.instruction.trim()
     || charCount(item.name.trim()) > NAME_LIMIT || charCount(item.instruction.trim()) > INSTRUCTION_LIMIT)
+  useSettingsDraft(dirty || saving)
   const disabled = readOnly || saving
 
   function change(next: Settings) {

@@ -1,33 +1,11 @@
 import { EmbeddingSettings } from '@/components/settings/EmbeddingSettings'
-// /settings — the admin console.
-//
-// The page is new; almost nothing behind it is. Tokens and projects have had
-// endpoints since long before this page existed, and an operator reached them
-// through the CLI or curl. `GET /v1/export/sqlite` is the one thing that had to
-// be built for it, because "download the database" was the only admin capability
-// with no HTTP surface at all.
-//
-// Laid out as four SWITCHED sections rather than four stacked cards. Stacked,
-// everything sat at one weight — "download the entire database, which contains
-// every secret in this deployment" read exactly like "here is a list of project
-// names" — and the page needed scrolling before it had any content. Switching
-// gives each section the whole panel and makes the page's shape legible without
-// scrolling it.
-//
-// The switcher is a TAB STRIP along the top, not a left sidebar. It was a
-// sidebar until #132 gave the whole app a left nav rail, and two left rails side
-// by side leave the reader unable to tell which one moves between surfaces and
-// which one moves within this page.
+// Project settings and instance administration share one routed settings frame.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { PageCollection } from '@/components/settings/PageCollection'
-import { AppHeader } from '@/components/AppHeader'
-import { AppShell } from '@/components/AppShell'
-import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { TokenGate } from '@/components/TokenGate'
 import { useToast } from '@/components/Toaster'
-import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ConfirmDialog } from '@/components/settings/ConfirmDialog'
@@ -56,8 +34,6 @@ import {
   EmptyState,
   FactRow,
   Section,
-  SectionTabs,
-  type SectionDef,
 } from '@/components/settings/SettingsShell'
 
 import { isAuthError, loadToken, saveToken, loadProject, saveProject } from '@/lib/session'
@@ -95,41 +71,35 @@ import {
 import { STR, DOCUMENT_APPEARANCE_STRINGS } from './strings'
 import { Hint } from '@/components/Hint'
 
-const LS_LANG = 'takomo.lang'
-const LS_SECTION = 'takomo.settings.section'
+import { SettingsLayout } from '@/components/settings/SettingsLayout'
+import { SettingsDrafts, useSettingsDraft } from '@/components/settings/SettingsDrafts'
+import { isProjectSection, settingsHref, settingsSection } from '@/components/settings/settings-navigation'
 
-type SectionKey = 'overview' | 'data' | 'access' | 'people' | 'projects' | 'library' | 'search'
+const LS_LANG = 'takomo.lang'
+
+export function App({ legacy = false }: { legacy?: boolean }) {
+  const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
+  const location = useLocation()
+  return <SettingsDrafts lang={lang}><SettingsApp key={`${location.pathname}:${location.search}`} legacy={legacy} lang={lang} setLang={setLang} /></SettingsDrafts>
+}
 
 /** `{name}`/`{size}`/`{id}`/`{actor}` substitution. */
 function fill(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, k: string) => values[k] ?? m)
 }
 
-export function App() {
+function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale; setLang: (lang: Locale) => void }) {
   const navigate = useNavigate()
   const { toast } = useToast()
 
   const [token, setToken] = useState(() => loadToken())
-  const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
   const [gateError, setGateError] = useState('')
-  // Remembered, because the reason someone opens /settings twice in a row is
-  // usually the same reason — EXCEPT when a `?project=` deep link says otherwise.
-  // The board's gear sends the reader here to configure one project, and honouring
-  // the remembered tab over that landed them on Tokens with the project silently
-  // selected behind it.
-  const [section, setSection] = useState<SectionKey>(() => {
-    if (new URLSearchParams(window.location.search).get('section') === 'search') return 'search'
-    if (new URLSearchParams(window.location.search).get('project')) return 'projects'
-    const stored = localStorage.getItem(LS_SECTION)
-    return stored === 'data' ||
-      stored === 'access' ||
-      stored === 'projects' ||
-      stored === 'library' || stored === 'search'
-      ? stored
-      : 'overview'
-  })
-
-  const [navProject, setNavProject] = useState(() => new URLSearchParams(window.location.search).get('scope') ?? new URLSearchParams(window.location.search).get('project') ?? loadProject())
+  const location = useLocation()
+  const section = settingsSection(location.search)
+  const params = new URLSearchParams(location.search)
+  const navProject = params.get('scope') ?? params.get('project') ?? loadProject()
+  const selectedId = isProjectSection(section) ? navProject : null
+  useEffect(() => { if (navProject) saveProject(navProject) }, [navProject])
 
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
@@ -143,12 +113,6 @@ export function App() {
   // them. One piece of state, so the two flows cannot both be open.
   const [editingPerson, setEditingPerson] = useState<User | 'new' | null>(null)
 
-  // Which project's detail is open, and its editable settings. `?project=<id>`
-  // is what the board's gear links to, so a deep link opens straight on the
-  // project the reader was already looking at.
-  const [selectedId, setSelectedId] = useState<string | null>(
-    () => new URLSearchParams(window.location.search).get('project'),
-  )
   const [settings, setSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
   const [origSettings, setOrigSettings] = useState<ProjectSettings>(() => settingsFrom(undefined))
   const [saving, setSaving] = useState(false)
@@ -157,7 +121,6 @@ export function App() {
   const [projectWorkflow, setProjectWorkflow] = useState<WorkflowDoc | null>(null)
   const [library, setLibrary] = useState<WorkflowEntry[]>([])
 
-  const [navCollapsed, setNavCollapsed] = useNavCollapsed()
   const [exporting, setExporting] = useState(false)
   const [newToken, setNewToken] = useState(false)
   const [minted, setMinted] = useState<CreatedToken | null>(null)
@@ -184,23 +147,12 @@ export function App() {
 
   const selected = projects.find((p) => p.id === selectedId) ?? null
 
-  /**
-   * Open or close a project's detail, loading its saved values into the form.
-   *
-   * The URL is rewritten with `replaceState` rather than a router navigation:
-   * the section is page state, not a route, and pushing a history entry per
-   * project would make Back walk through them instead of leaving /settings.
-   */
   const selectProject = useCallback((id: string | null) => {
-    setSelectedId(id)
-    setSaved(false)
-    setSaveErr('')
-    const url = new URL(window.location.href)
-    if (id) url.searchParams.set('project', id)
-    else url.searchParams.delete('project')
-    window.history.replaceState(null, '', url)
-  }, [])
+    navigate(settingsHref(id ? 'general' : 'projects', id ?? navProject))
+  }, [navigate, navProject])
 
+  // A route change remounts the form, and discarding a blocked navigation also
+  // discards its parent-owned draft. Refetching the same route keeps edits.
   // Load a project's saved values into the form when the OPEN project changes.
   //
   // The ref guard is what makes this safe rather than the dependency list.
@@ -210,14 +162,15 @@ export function App() {
   // also covers the `?project=` deep link, where the selection exists before the
   // fetch that resolves it.
   const selectedKey = selected?.id ?? ''
+  const formKey = `${selectedKey}:${section}`
   const loadedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (loadedFor.current === selectedKey) return
-    loadedFor.current = selectedKey
+    if (loadedFor.current === formKey) return
+    loadedFor.current = formKey
     const p = projects.find((x) => x.id === selectedKey)
     setSettings(settingsFrom(p))
     setOrigSettings(settingsFrom(p))
-  }, [selectedKey, projects])
+  }, [selectedKey, projects, formKey])
 
   // The open project's workflow and the shared library, for the editor below the
   // conventions. Both are fetched only when a project is actually open — the
@@ -247,8 +200,10 @@ export function App() {
     void reloadLibrary()
   }, [isAdmin, reloadLibrary])
 
+  useSettingsDraft(isProjectSection(section) && (saving || JSON.stringify(settings) !== JSON.stringify(origSettings)))
+
   const onSaveProject = () => {
-    if (!selected) return
+    if (!selected || saving || selected.archived) return
     setSaving(true)
     setSaveErr('')
     saveProjectSettings(token, selected.id, settings, origSettings)
@@ -263,16 +218,6 @@ export function App() {
       .catch((e: Error) => setSaveErr(e.message))
       .finally(() => setSaving(false))
   }
-
-  const SECTIONS: readonly SectionDef<SectionKey>[] = [
-    { key: 'overview', label: t.navOverview, hint: t.navOverviewHint },
-    { key: 'data', label: t.navData, hint: t.navDataHint },
-    { key: 'access', label: t.navAccess, hint: t.navAccessHint },
-    { key: 'people', label: t.navPeople, hint: t.navPeopleHint },
-    { key: 'projects', label: t.navProjects, hint: t.navProjectsHint },
-    { key: 'library', label: t.navLibrary, hint: t.navLibraryHint },
-    { key: 'search', label: lang === 'de' ? 'Suche' : 'Search', hint: lang === 'de' ? 'Bedeutungssuche konfigurieren' : 'Configure meaning search' },
-  ]
 
   /**
    * Save the dialog: the person, then their memberships.
@@ -431,8 +376,8 @@ export function App() {
   if (!token) {
     return (
       <TokenGate
-        title="takomo · settings"
-        subtitle={t.gateTokenSub}
+        title={legacy ? "takomo · legacy" : "takomo · settings"}
+        subtitle={legacy ? (lang === 'de' ? 'Mit deinem API-Token anmelden.' : 'Sign in with your API token.') : t.gateTokenSub}
         tokenLabel={t.gateLabel}
         openLabel={t.gateOpen}
         emptyMessage={t.gateEmpty}
@@ -447,62 +392,12 @@ export function App() {
   }
 
   return (
-    <AppShell
-      lang={lang}
-      onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
-      rail={{
-        onNavigate: navigate,
-        current: 'account',
-        projects,
-        project: navProject,
-        onProject: id => { setNavProject(id); saveProject(id); const url = new URL(window.location.href); url.searchParams.set('scope', id); window.history.replaceState(null, '', url) },
-        projectLabels: { project: lang === 'de' ? 'Projekt' : 'Project', search: lang === 'de' ? 'Projekte suchen' : 'Search projects', noMatch: lang === 'de' ? 'Keine Treffer' : 'No matches' },
-        nav: {
-          board: t.board,
-          epics: t.epics,
-          inbox: t.inbox,
-          specification: t.specification,
-          initiatives: t.initiatives,
-          schedules: t.schedules,
-          environments: t.environments,
-        },
-        labels: {
-          expand: t.navExpand,
-          collapse: t.navCollapse,
-          signOut: t.signOut,
-          account: t.navAccount,
-          settings: t.settings,
-        },
-        collapsed: navCollapsed,
-        onCollapsed: setNavCollapsed,
-        actor: who?.actor,
-        scopes: who?.scopes,
-        onSignOut: signOut,
-      }}
-    >
-      <AppHeader
-        title={t.settings}
-      />
-
-      {/* max-w-3xl, not the wider column this used with a sidebar: the global
-          nav rail now takes the left edge, so the panel starts further in and a
-          5xl column pushed the content off-centre on a laptop. */}
-      {/* The Tabs root spans BOTH the strip and the panel, because that is the
-          relationship Radix encodes: a trigger points at its content by id, so a
-          strip mounted outside the root would announce controls for panels the
-          assistive tree cannot find. */}
-      <Tabs
-        value={section}
-        onValueChange={(k) => {
-          setSection(k as SectionKey)
-          localStorage.setItem(LS_SECTION, k)
-        }}
-        className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 overflow-y-auto px-5 py-6"
-      >
-        <PageCollection lang={lang} project={navProject} />
-        {isAdmin && <SectionTabs sections={SECTIONS} />}
-
-        <div className="min-w-0 flex-1 pb-10">
+    <SettingsLayout lang={lang} legacy={legacy} section={section}
+      onLang={l => { setLang(l); localStorage.setItem(LS_LANG, l) }}
+      project={navProject} projects={projects} onSignOut={signOut}
+      onProject={id => navigate(legacy ? `/legacy?scope=${encodeURIComponent(id)}` : settingsHref(section, id))}>
+      {legacy ? <PageCollection lang={lang} project={navProject} /> :
+        <div className="min-w-0 pb-10">
           {!isAdmin ? (
             <Section title={t.notAdminTitle} description={t.notAdmin}>
               <code className="bg-muted block overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12.5px] whitespace-pre">
@@ -511,8 +406,8 @@ export function App() {
             </Section>
           ) : (
             <>
-              <TabsContent value="search" className="mt-0"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></TabsContent>
-              <TabsContent value="overview" className="mt-0">
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="search" className="mt-0"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="overview" className="mt-0">
                 <Section title={t.overviewTitle} description={t.overviewSub}>
                   <dl className="border-border-soft bg-card rounded-xl border px-4">
                     <FactRow label={t.factActor}>
@@ -547,8 +442,8 @@ export function App() {
                     </FactRow>
                   </dl>
                 </Section>
-              </TabsContent>
-              <TabsContent value="data" className="mt-0">
+              </SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="data" className="mt-0">
                 <Section title={t.dataTitle} description={t.dataSub}>
                   <p className="text-muted-foreground max-w-prose text-[13px] leading-relaxed">
                     {t.dataHow}
@@ -571,8 +466,8 @@ export function App() {
                     </>
                   )}
                 </Section>
-              </TabsContent>
-              <TabsContent value="access" className="mt-0">
+              </SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="access" className="mt-0">
                 <Section
                   title={t.accessTitle}
                   description={t.accessSub}
@@ -601,8 +496,8 @@ export function App() {
                     />
                   )}
                 </Section>
-              </TabsContent>
-              <TabsContent value="people" className="mt-0">
+              </SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="people" className="mt-0">
                 <Section
                   title={t.peopleTitle}
                   description={t.peopleSub}
@@ -639,8 +534,8 @@ export function App() {
                     />
                   )}
                 </Section>
-              </TabsContent>
-              <TabsContent value="library" className="mt-0">
+              </SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="library" className="mt-0">
                 <Section title={t.libTitle} description={t.libSub}>
                   {library.length === 0 ? (
                     <EmptyState>{t.libEmpty}</EmptyState>
@@ -699,8 +594,8 @@ export function App() {
                     </ul>
                   )}
                 </Section>
-              </TabsContent>
-              <TabsContent value="projects" className="mt-0">
+              </SettingsPanel>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="project" className="mt-0">
                 {projectsLoadErr && selectedId && !selected ? (
                 <Section title={t.projTitle} description={t.projLoadErr}>
                   <p className="text-destructive text-[13px]">{projectsLoadErr}</p>
@@ -709,7 +604,11 @@ export function App() {
                   </Button>
                 </Section>
               ) : selected ? (
-                <ProjectDetail
+                <ProjectDetail key={`${selected.id}:${section}`} page={isProjectSection(section) ? section : 'general'}
+                  dirty={JSON.stringify(settings) !== JSON.stringify(origSettings)}
+                  onDiscard={() => { setSettings(origSettings); setSaved(false); setSaveErr('') }}
+                  discardLabel={lang === 'de' ? 'Verwerfen' : 'Discard'}
+                  generalLabels={{ name: lang === 'de' ? 'Projektname' : 'Project name', id: lang === 'de' ? 'Projekt-ID' : 'Project ID' }}
                   project={selected}
                   documentResetSlot={isAdmin && !selected.archived && (
                     <DocumentReset key={`${token}:${selected.id}`} token={token} project={selected.id} lang={lang} />
@@ -724,7 +623,7 @@ export function App() {
                         project={selected.id}
                         workflow={projectWorkflow}
                         library={library}
-                        readOnly={!isAdmin}
+                        readOnly={!isAdmin || !!selected.archived}
                         onApplied={(wf) => {
                           setProjectWorkflow(wf)
                           void refresh()
@@ -828,7 +727,11 @@ export function App() {
                     delete: t.projDelete,
                   }}
                 />
-              ) : (
+              ) : <EmptyState>{projectsLoadErr || (navProject
+                ? (lang === 'de' ? 'Projekt nicht verfügbar.' : 'Project unavailable.')
+                : (lang === 'de' ? 'Wähle links ein Projekt aus.' : 'Select a project in the navigation.'))}</EmptyState>}
+              </SettingsPanel>
+              <SettingsPanel current={section} value="projects" className="mt-0">
                 <Section
                   title={t.projTitle}
                   description={t.projSub}
@@ -859,12 +762,11 @@ export function App() {
                     </ul>
                   )}
                 </Section>
-                )}
-              </TabsContent>
+              </SettingsPanel>
             </>
           )}
-        </div>
-      </Tabs>
+        </div>}
+
 
       <PersonDialog
         open={editingPerson !== null}
@@ -1088,7 +990,7 @@ export function App() {
           }
         }}
       />
-    </AppShell>
+    </SettingsLayout>
   )
 }
 
@@ -1122,4 +1024,8 @@ function Callout({
       </div>
     </div>
   )
+}
+
+function SettingsPanel({ current, value, children }: { current: string; value: string; children: React.ReactNode; className?: string }) {
+  return current === value ? <>{children}</> : null
 }

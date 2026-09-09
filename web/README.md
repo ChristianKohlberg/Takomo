@@ -584,3 +584,22 @@ preferences retain the existing browser storage key
 `takomo.mermaid.preferences.v1`, separately from the collaborative document;
 controls work when storage is blocked. Preferences apply to newly mounted
 diagrams, while each open diagram can be adjusted independently.
+
+## Settings and Legacy navigation
+
+`/settings?scope=<project>&section=general` opens the selected project's settings.
+The settings sidebar replaces the workspace rail. Project pages are `general`,
+`writing`, `documents`, and `workflow`; instance administration uses `people`,
+`access` (API tokens), `projects`, `library`, `search`, and `data`. The current
+credential is under `overview`. URLs drive selection and browser history; older
+`?project=<id>` links still open that project, and `?section=search` still works.
+Unsaved editor changes block navigation with Stay / Discard, and warn on reload.
+Each existing editor retains its own save endpoint and permissions.
+
+Settings use the light Takomo palette on a white background, including when the
+OS requests dark mode. This is scoped to settings and its dialogs.
+
+`/legacy?scope=<project>` is the separate, deliberately simple directory formerly
+shown as “More pages” in settings. It remains available to signed-in non-admins.
+Agent queue, Bugs, Epics, Initiatives, Schedules, and Environments keep their
+existing routes and permissions; outgoing links carry `project=<project>`.

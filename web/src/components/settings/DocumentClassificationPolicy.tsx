@@ -1,3 +1,4 @@
+import { useSettingsDraft } from './SettingsDrafts'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
@@ -9,19 +10,21 @@ function Policy({ token, project, lang, readOnly, canClassify }: Props) {
   const t = DOCUMENT_LINKS[lang]
   const retryId = useRef<string | null>(null)
   const [scheduled, setScheduled] = useState<number | null>(null)
+  const [original, setOriginal] = useState<ClassificationPolicy>('suggest')
   const [mode, setMode] = useState<ClassificationPolicy>('suggest')
   const [ready, setReady] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [saved, setSaved] = useState(false)
   const [refresh, setRefresh] = useState(0); const writer = useRef<AbortController | null>(null)
+  useSettingsDraft((ready && mode !== original) || busy)
   useEffect(() => () => writer.current?.abort(), [])
   useEffect(() => {
     const controller = new AbortController()
-    getClassificationPolicy(token, project, controller.signal).then(value => { if (!controller.signal.aborted) { setMode(value.mode); setReady(true) } }).catch(cause => { if (!controller.signal.aborted) setError(String(cause)) })
+    getClassificationPolicy(token, project, controller.signal).then(value => { if (!controller.signal.aborted) { setMode(value.mode); setOriginal(value.mode); setReady(true) } }).catch(cause => { if (!controller.signal.aborted) setError(String(cause)) })
     return () => controller.abort()
   }, [token, project, refresh])
   async function save() {
     if (readOnly || writer.current || !ready) return
     const controller = new AbortController(); writer.current = controller; setBusy(true); setError(''); setSaved(false)
-    try { await saveClassificationPolicy(token, project, mode, controller.signal); if (!controller.signal.aborted) setSaved(true) }
+    try { await saveClassificationPolicy(token, project, mode, controller.signal); if (!controller.signal.aborted) { setSaved(true); setOriginal(mode) } }
     catch (cause) { if (!controller.signal.aborted) setError(String(cause)) }
     finally { if (!controller.signal.aborted) { setBusy(false); writer.current = null } }
   }

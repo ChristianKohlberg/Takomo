@@ -346,6 +346,7 @@ const PAGE_ROUTES: &[&str] = &[
     "/initiatives",
     "/schedules",
     "/settings",
+    "/legacy?scope=demo",
 ];
 
 /// Assert a response is the app shell: the React mount point, and references to
@@ -15350,6 +15351,7 @@ async fn every_spa_links_to_the_schedules_page() {
         "/initiatives",
         "/schedules",
         "/settings",
+        "/legacy?scope=demo",
         "/verification",
         "/environments",
     ] {

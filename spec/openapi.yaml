@@ -6950,6 +6950,25 @@ paths:
       responses:
         "200": { description: HTML page }
 
+  /legacy:
+    servers: [{ url: / }]
+    get:
+      operationId: legacyPage
+      tags: [admin]
+      summary: Legacy workspace directory (app shell)
+      description: |
+        Unauthenticated HTML shell. After sign-in, lists Agent queue, Bugs,
+        Epics, Initiatives, Schedules and Environments. The optional scope query
+        selects project context; each destination retains its own permissions.
+      security: []
+      parameters:
+        - in: query
+          name: scope
+          schema: { type: string }
+          description: Selected project for outgoing workspace links.
+      responses:
+        "200": { description: HTML page }
+
   /settings-page:
     servers: [{ url: / }]
     get:

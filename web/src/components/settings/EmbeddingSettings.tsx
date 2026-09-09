@@ -1,3 +1,4 @@
+import { useSettingsDraft } from '@/components/settings/SettingsDrafts'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import type { EmbeddingSettings as Config } from '@/lib/hybrid-search'
@@ -20,6 +21,7 @@ export function EmbeddingSettings({ token, locale, allowed }: { token: string; l
     }).catch((e: Error) => { if (!controller.signal.aborted) setError(e.message) })
     return () => controller.abort()
   }, [token, allowed])
+  useSettingsDraft(busy || JSON.stringify(saved) !== JSON.stringify(draft) || !!key || clearKey)
   if (!allowed) return <p>{de ? 'Nur uneingeschränkte Administratoren können die globale Suche konfigurieren.' : 'Only unrestricted administrators can configure global search.'}</p>
   const changedDestination = saved && draft && (saved.provider !== draft.provider || saved.endpoint !== draft.endpoint)
   const fieldClass = 'mt-1 block min-h-10 w-full rounded-md border bg-background px-3 py-2 text-sm'

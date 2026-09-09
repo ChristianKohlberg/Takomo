@@ -1,0 +1,26 @@
+/* Settings deliberately stay light, including when the OS is dark. All surfaces,
+   controls and portalled dialogs inherit the existing light Takomo palette. */
+.settings-surface, body:has(.settings-surface) [data-slot] {
+  color-scheme: light;
+  --bg: #fff; --panel: #fff; --col-bg: #f7fafc; --text: #14202a;
+  --muted: #6e7c88; --cap: #5b6b78; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
+  --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
+  --crit: #b4543f; --ok: #3f7a5f; --warn: #c99a3a;
+  --chip-bg: #eaf2f9; --chip-text: #2f6ba0; --sel: #eef5fb; --sel-border: #cfe0ee; --hover: #f2f6fa;
+}
+.settings-surface { height: 100dvh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+.settings-header { min-height: 64px; padding: 12px 24px; display: flex; gap: 16px; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
+.settings-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.settings-sidebar { display: none; padding: 24px; gap: 24px; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.settings-sidebar.is-open { display: flex; flex-direction: column; max-height: 65dvh; flex-shrink: 0; }
+.settings-caption { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; color: var(--cap); margin-bottom: 8px; }
+.settings-link { display: block; border-radius: 6px; padding: 8px 10px; font-size: 13px; color: var(--ink2); }
+.settings-link:hover { background: var(--hover); }
+.settings-link[aria-current=page] { color: var(--accent); background: var(--sel); font-weight: 650; }
+.settings-main { flex: 1; min-width: 0; overflow-y: auto; padding: 28px 20px 64px; }
+.settings-content { max-width: 880px; margin: 0 auto; }
+@media (min-width: 768px) {
+  .settings-body { flex-direction: row; }
+  .settings-sidebar, .settings-sidebar.is-open { display: flex; flex-direction: column; width: 246px; flex-shrink: 0; border-right: 1px solid var(--border); border-bottom: 0; max-height: none; }
+  .settings-main { padding: 40px clamp(28px, 5vw, 80px) 80px; }
+}
