@@ -5,6 +5,7 @@ import type { Locale } from '@/lib/i18n'
 import type { Project } from '@/lib/initiatives'
 import { Button } from '@/components/ui/button'
 import { isProjectSection, projectSections, settingsHref, settingsLabels, type SettingsSection } from './settings-navigation'
+import { useDiscardEpoch } from './SettingsDrafts'
 import './settings.css'
 
 export function SettingsLayout({ lang, onLang, project, projects, onProject, section, legacy, onSignOut, children }: {
@@ -12,6 +13,7 @@ export function SettingsLayout({ lang, onLang, project, projects, onProject, sec
   section: SettingsSection; legacy: boolean; onSignOut: () => void; children: ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  const epoch = useDiscardEpoch()
   const de = lang === 'de'
   const labels = settingsLabels(lang)
   const nav = (keys: readonly SettingsSection[]) => keys.map(key => <Link key={key}
@@ -44,7 +46,7 @@ export function SettingsLayout({ lang, onLang, project, projects, onProject, sec
           {nav(['overview'])}
         </nav>
       </aside>
-      <main className="settings-main" key={`${legacy}:${section}:${project}`}>
+      <main className="settings-main" key={`${legacy}:${section}:${project}:${epoch}`}>
         <div className="settings-content">
           <p className="mb-5 text-xs text-muted-foreground">{legacy ? 'Legacy' : `${de ? 'Einstellungen' : 'Settings'} / ${isProjectSection(section) ? project || (de ? 'Projekt' : 'Project') : section === 'overview' ? (de ? 'Konto' : 'Account') : (de ? 'Instanz' : 'Instance')}`}</p>
           <div className="mb-8 flex flex-wrap items-center justify-between gap-3"><h2 className="text-3xl font-semibold tracking-tight">{legacy ? 'Legacy' : labels[section]}</h2>{!legacy && !isProjectSection(section) && section !== 'overview' && <span className="rounded bg-secondary px-2 py-1 text-xs text-primary">{de ? 'Instanzweit' : 'Instance-wide'}</span>}</div>

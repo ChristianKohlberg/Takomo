@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { useBlocker } from 'react-router'
 import type { Locale } from '@/lib/i18n'
 import { ConfirmDialog } from './ConfirmDialog'
-interface Drafts { register: (id: string, dirty: boolean) => void; discard: () => void }
+interface Drafts { register: (id: string, dirty: boolean) => void; discard: () => void; epoch: number }
 const DraftContext = createContext<Drafts | null>(null)
 const noop = () => {}
 /** Existing editors also render outside settings; no provider means no route guard. */
@@ -15,9 +15,14 @@ export function useSettingsDraft(dirty: boolean) {
 export function useDiscardDrafts() {
   return useContext(DraftContext)?.discard ?? noop
 }
+/** Changes on every discard; key the editors on it so a discarded draft always leaves the screen. */
+export function useDiscardEpoch() {
+  return useContext(DraftContext)?.epoch ?? 0
+}
 export function SettingsDrafts({ children, lang }: { children: ReactNode; lang: Locale }) {
   const live = useRef<Record<string, boolean>>({})
   const [drafts, setDrafts] = useState<Record<string, boolean>>({})
+  const [epoch, setEpoch] = useState(0)
   const register = useCallback((id: string, dirty: boolean) => {
     if (dirty) live.current[id] = true
     else delete live.current[id]
@@ -29,8 +34,8 @@ export function SettingsDrafts({ children, lang }: { children: ReactNode; lang: 
       return next
     })
   }, [])
-  const discard = useCallback(() => { live.current = {}; setDrafts({}) }, [])
-  const context = useMemo(() => ({ register, discard }), [register, discard])
+  const discard = useCallback(() => { live.current = {}; setDrafts({}); setEpoch(current => current + 1) }, [])
+  const context = useMemo(() => ({ register, discard, epoch }), [register, discard, epoch])
   const proceeding = useRef(false)
   const dirty = Object.values(drafts).some(Boolean)
   const shouldBlock = useCallback(({ currentLocation, nextLocation }: { currentLocation: { pathname: string; search: string }; nextLocation: { pathname: string; search: string } }) =>

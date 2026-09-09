@@ -72,7 +72,7 @@ import { STR, DOCUMENT_APPEARANCE_STRINGS } from './strings'
 import { Hint } from '@/components/Hint'
 
 import { SettingsLayout } from '@/components/settings/SettingsLayout'
-import { SettingsDrafts, useDiscardDrafts, useSettingsDraft } from '@/components/settings/SettingsDrafts'
+import { SettingsDrafts, useDiscardDrafts, useDiscardEpoch, useSettingsDraft } from '@/components/settings/SettingsDrafts'
 import { isProjectSection, settingsHref, settingsSection } from '@/components/settings/settings-navigation'
 
 const LS_LANG = 'takomo.lang'
@@ -91,6 +91,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   const navigate = useNavigate()
   const { toast } = useToast()
   const discardDrafts = useDiscardDrafts()
+  const discardEpoch = useDiscardEpoch()
 
   const [token, setToken] = useState(() => loadToken())
   const [gateError, setGateError] = useState('')
@@ -162,7 +163,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   // also covers the `?project=` deep link, where the selection exists before the
   // fetch that resolves it.
   const selectedKey = selected?.id ?? ''
-  const formKey = `${selectedKey}:${section}`
+  const formKey = `${selectedKey}:${section}:${discardEpoch}`
   const loadedFor = useRef<string | null>(null)
   useEffect(() => {
     if (loadedFor.current === formKey) return
