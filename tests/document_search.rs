@@ -492,12 +492,16 @@ async fn retries_are_capped_and_reset_by_content_config_or_manual_sync() {
     let status = store.search_status(&map).unwrap();
     assert_eq!(status["failed"], 1);
     assert_eq!(status["queued"], 1);
+    assert_eq!(status["pending"], 0);
+    assert_eq!(status["running"], 0);
+    assert!(status["last_synced_at"].is_null());
     assert_eq!(status["last_error"], "provider refused the batch");
     // Manual sync resets the cap and the error it was parked with, like the other two resets.
     store.refresh_search(&map, true, now).unwrap();
     let reset = store.search_status(&map).unwrap();
     assert_eq!(reset["failed"], 0);
     assert_eq!(reset["queued"], 1);
+    assert_eq!(reset["pending"], 1);
     assert_eq!(reset["last_error"], Value::Null);
     exhaust(&store, &mut now);
     // A content change resets it.
@@ -1344,4 +1348,133 @@ async fn a_completion_declined_at_finish_time_is_deferred_not_resent_and_the_pas
     assert_eq!(healthy_status["indexed"], healthy_status["total"]);
     assert!(calls.load(Ordering::SeqCst) >= before);
     task.abort();
+}
+
+#[tokio::test]
+async fn embedding_status_counts_passages_and_records_only_full_success() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, node) = fixture(&app).await;
+    let long = format!(
+        "{}\n{}\n{}",
+        "alpha ".repeat(220),
+        "beta ".repeat(250),
+        "gamma ".repeat(230)
+    );
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":long}),
+    )
+    .await;
+    let store = app.open_store();
+    store
+        .save_embedding_config(config("http://127.0.0.1:9/embeddings"), Some("test".into()))
+        .unwrap();
+    store
+        .refresh_search(&map, true, takomo::ids::now_ms())
+        .unwrap();
+    let path = format!("/v1/mindmaps/{map}/search/status");
+    let (code, before) = app.get(&app.worker, &path).await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(before["passages_total"].as_i64().unwrap() > before["total"].as_i64().unwrap());
+    assert_eq!(before["passages_indexed"], 0);
+    assert!(before["last_synced_at"].is_null());
+    assert_eq!(before["pending"], before["queued"]);
+    let mut successes = 0;
+    while let Some(job) = store.claim_embedding_job(takomo::ids::now_ms()).unwrap() {
+        let running = store.search_status(&map).unwrap();
+        assert_eq!(running["running"], 1);
+        assert_eq!(
+            running["pending"].as_i64().unwrap() + 1,
+            running["queued"].as_i64().unwrap()
+        );
+        let vectors = vec![vec![1.0, 0.0, 0.0]; job.chunks.len()];
+        assert!(store.finish_embedding_job(&job, Ok(&vectors)).unwrap());
+        successes += 1;
+        let state = store.search_status(&map).unwrap();
+        if state["queued"].as_i64().unwrap() > 0 {
+            assert!(state["last_synced_at"].is_null());
+        }
+    }
+    assert!(successes > 0);
+    let done = store.search_status(&map).unwrap();
+    let stamp = done["last_synced_at"].as_i64().unwrap();
+    assert_eq!(done["passages_indexed"], done["passages_total"]);
+    assert_eq!(done["pending"], 0);
+    assert_eq!(done["running"], 0);
+    assert_eq!(done["failed"], 0);
+    store.refresh_search(&map, true, stamp + 10000).unwrap();
+    assert_eq!(store.search_status(&map).unwrap()["last_synced_at"], stamp);
+    assert_eq!(app.get(&app.worker, &path).await.1["last_synced_at"], stamp);
+    assert_eq!(
+        app.open_store().search_status(&map).unwrap()["last_synced_at"],
+        stamp
+    );
+
+    app.patch(
+        &app.worker,
+        &format!("/v1/mindmaps/{map}/nodes/{node}"),
+        json!({"notes":"Updated passage"}),
+    )
+    .await;
+    let changed = app.get(&app.worker, &path).await.1;
+    assert_eq!(changed["last_synced_at"], stamp);
+    assert!(changed["pending"].as_i64().unwrap() > 0);
+    store
+        .refresh_search(&map, true, takomo::ids::now_ms())
+        .unwrap();
+    let job = store
+        .claim_embedding_job(takomo::ids::now_ms())
+        .unwrap()
+        .unwrap();
+    store
+        .finish_embedding_job(&job, Err("mock failure"))
+        .unwrap();
+    assert_eq!(store.search_status(&map).unwrap()["last_synced_at"], stamp);
+    let mut replacement = config("http://127.0.0.1:9/embeddings");
+    replacement.model = "another-model".into();
+    store.save_embedding_config(replacement, None).unwrap();
+    assert!(store.search_status(&map).unwrap()["last_synced_at"].is_null());
+    assert_eq!(store.search_status(&map).unwrap()["passages_indexed"], 0);
+}
+
+#[tokio::test]
+async fn embedding_history_upgrade_preserves_vectors_and_does_not_invent_a_timestamp() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let store = app.open_store();
+    store
+        .save_embedding_config(config("http://127.0.0.1:9/embeddings"), Some("test".into()))
+        .unwrap();
+    store
+        .refresh_search(&map, true, takomo::ids::now_ms())
+        .unwrap();
+    while let Some(job) = store.claim_embedding_job(takomo::ids::now_ms()).unwrap() {
+        store
+            .finish_embedding_job(&job, Ok(&vec![vec![1.0, 0.0, 0.0]; job.chunks.len()]))
+            .unwrap();
+    }
+    let source = store.load_collab_updates(&map).unwrap();
+    let before = store.search_status(&map).unwrap();
+    assert!(before["last_synced_at"].is_number());
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute_batch("DROP TABLE embedding_sync_history")
+        .unwrap();
+    for _ in 0..2 {
+        let upgraded = app.open_store();
+        assert_eq!(upgraded.load_collab_updates(&map).unwrap(), source);
+        let status = upgraded.search_status(&map).unwrap();
+        assert_eq!(status["passages_indexed"], before["passages_indexed"]);
+        assert_eq!(status["queued"], 0);
+        assert!(status["last_synced_at"].is_null());
+        upgraded
+            .refresh_search(&map, true, takomo::ids::now_ms())
+            .unwrap();
+        assert!(upgraded.search_status(&map).unwrap()["last_synced_at"].is_null());
+    }
+    let empty_id = second_map(&app, "empty-history").await;
+    store
+        .refresh_search(&empty_id, true, takomo::ids::now_ms())
+        .unwrap();
+    assert!(store.search_status(&empty_id).unwrap()["last_synced_at"].is_null());
 }

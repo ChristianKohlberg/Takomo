@@ -26,6 +26,11 @@ export interface SearchResponse {
   projection_error: string | null
 }
 export interface SearchStatus {
+  passages_indexed: number
+  passages_total: number
+  pending: number
+  /** Last actual full completion for this provider fingerprint; Unix milliseconds. */
+  last_synced_at: number | null
   configured: boolean
   queued: number
   running: number

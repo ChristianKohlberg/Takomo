@@ -8486,15 +8486,19 @@ components:
             configured: { type: boolean }
     EmbeddingStatus:
       type: object
-      required: [configured, queued, running, failed, indexed, total, last_error, projection]
+      required: [configured, queued, running, failed, indexed, total, last_error, projection, pending, passages_indexed, passages_total, last_synced_at]
       properties:
         configured: { type: boolean }
         projection: { type: string, enum: [current, stale], description: "`stale` when the map's source could not be projected and the index reflects the last successful projection; last_error carries the reason." }
         queued: { type: integer, minimum: 0, description: Includes currently running and failed jobs. }
-        running: { type: integer, minimum: 0 }
+        running: { type: integer, minimum: 0, description: Section jobs with an active worker lease. }
+        pending: { type: integer, minimum: 0, description: Section jobs waiting without an active lease and below the failure cap; excludes running and failed jobs. }
         failed: { type: integer, minimum: 0, description: "Jobs parked after 3 failed provider attempts. They stay parked until the section's content changes, the provider configuration changes, or a manual sync resets them." }
-        indexed: { type: integer, minimum: 0 }
-        total: { type: integer, minimum: 0 }
+        indexed: { type: integer, minimum: 0, description: Sections whose passages all have current-provider embeddings. }
+        total: { type: integer, minimum: 0, description: Projected sections. }
+        passages_indexed: { type: integer, minimum: 0, description: Passages with stored embeddings matching the current provider fingerprint. }
+        passages_total: { type: integer, minimum: 0, description: Projected passages; long sections may contain multiple passages. }
+        last_synced_at: { type: [integer, 'null'], description: "Unix milliseconds of the last accepted embedding completion that left this map fully indexed for the current provider fingerprint. Historical after subsequent edits. Null when no completion has been recorded, including previously indexed databases and empty maps. Polling, attempts and unchanged manual sync never advance it." }
         last_error: { type: [string, 'null'], description: "Sanitized provider or projection error without credentials or provider response body. A projection failure (a map whose source log cannot be replayed) is reported here too; it stops that map's indexing only, and clears on the next successful projection." }
     LaneOrganizerProposal:
       type: object

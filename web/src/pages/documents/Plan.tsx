@@ -1,4 +1,7 @@
 import { DocumentNumberingControls, useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
+import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
+import { DocumentEmbeddingStatus } from '@/components/documents/DocumentEmbeddingStatus'
+import type { SaveState } from '@/lib/save-status'
 import { DocumentHybridSearch } from '@/components/documents/DocumentHybridSearch'
 import { passageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
@@ -135,6 +138,7 @@ export interface PlanLabels {
 
 export interface PlanProps {
   token?: string
+  saveState?: SaveState
   agentTools?: ReactNode
   ticketLinksFor?: (section: string) => ReactNode
   project?: string
@@ -174,7 +178,8 @@ export interface PlanProps {
 }
 
 export default function Plan(props: PlanProps) {
-  return <ConnectedPlan {...props} />
+  const content = <ConnectedPlan {...props} />
+  return props.token ? <EmbeddingStatusProvider key={`${props.session.mindmap}:${props.token}`} token={props.token} map={props.session.mindmap} localPending={props.saveState !== undefined && props.saveState !== 'saved' && props.saveState !== 'read-only'}>{content}</EmbeddingStatusProvider> : content
 }
 
 function ConnectedPlan({
@@ -777,7 +782,7 @@ function ConnectedPlan({
           <span>{railLabels.outline}</span>
         </button>
 <DocumentNumberingControls {...numbering} locale={locale} />
-<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} /></>} >
+<DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />{token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
         {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
             setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })

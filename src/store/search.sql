@@ -35,3 +35,9 @@ END;
 CREATE TABLE IF NOT EXISTS search_failures (
  map_id TEXT PRIMARY KEY REFERENCES mindmaps(id) ON DELETE CASCADE, failed_at INTEGER NOT NULL, message TEXT NOT NULL
 );
+-- Historical successful completion, never inferred from polling or source timestamps.
+CREATE TABLE IF NOT EXISTS embedding_sync_history (
+ map_id TEXT NOT NULL REFERENCES mindmaps(id) ON DELETE CASCADE,
+ fingerprint TEXT NOT NULL, last_synced_at INTEGER NOT NULL,
+ PRIMARY KEY(map_id,fingerprint)
+);

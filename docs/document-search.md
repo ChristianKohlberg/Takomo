@@ -75,7 +75,21 @@ discarded and its job waits one more quiet period, so the same text is not sent
 to the provider again in the same pass; a projection failure at that point is
 treated the same way and the other jobs in the pass continue.
 
-**Sync document** in the search modal flushes pending document saves and makes the map's
+The embedding-status icon in the Document ribbon opens a compact status dialog. It
+shows stored/current passage embeddings separately from pending, running and failed
+section jobs; long sections can contain several passages. Completion requires a
+current projection, no pending jobs/errors, and every passage embedded for the
+configured provider. Local unsaved changes also prevent the completed indicator.
+
+**Last successful sync** is historical: it records the last actual accepted provider
+completion that left this map fully indexed for the current provider fingerprint.
+Status polling and unchanged manual sync never advance it. Existing databases and
+empty maps show no recorded time until an actual full completion; changes may make
+the index pending while the previous successful time remains visible. The metadata
+is additive and preserved across restart. Changing provider identity does not
+borrow another model's completion time.
+
+**Embed now** in this dialog (or **Sync document** in search) flushes pending document saves and makes the map's
 pending jobs eligible immediately. It preserves already current embeddings, rather
 than paying to embed unchanged content again. The response says whether that
 happened: `sync: scheduled`, or `sync: deferred` with a `sync_note` when the

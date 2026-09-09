@@ -59,6 +59,7 @@ export function DocumentView() {
     map,
     session,
     connection,
+    saveState,
     onError: handleErr,
     openTests,
     testsFor,
@@ -194,7 +195,7 @@ export function DocumentView() {
     <DiagramContext value={{ token, project: map?.project ?? project }}>
     <DocumentAgent token={token} project={map?.project ?? project} map={session.mindmap} lang={lang} nodes={nodes}
         selected={focusSection} canAsk={session.can_write && scopes.includes('human') && scopes.includes('write')} onError={handleErr} onNavigate={selectSection}>
-    {tools => <Plan token={token}
+    {tools => <Plan token={token} saveState={saveState}
       project={project}
       agentTools={tools}
       ticketLinksFor={section => <SectionTicketLinks token={token} project={project} section={section} lang={lang} />}
