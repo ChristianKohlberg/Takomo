@@ -30,7 +30,12 @@ Section test counts and failures open a side panel without leaving the document
 or map; the Tests view provides the full catalog and can clear the section
 filter. Check editors keep their own CRDT sessions. A shared project notification
 socket refreshes server-owned metadata and verdicts for the workspace and its
-visible views.
+visible views. Empty worker claims and maintenance sweeps do not send refreshes:
+notifications require a committed row change, including changes made by SQLite
+triggers. Failed or rolled-back writes do not notify readers. The current
+notification channel still coalesces real writes across projects; it is not a
+project-filtered event stream. Status polling for active agent work and embedding
+progress has its own cadence and remains enabled.
 
 The project picker sits at the top of the shared navigation rail, not in the
 page header — on a phone, in the compact top bar that stands in for the rail.

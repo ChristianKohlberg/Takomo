@@ -233,12 +233,19 @@ impl Store {
             .conn
             .lock()
             .map_err(|_| ApiError::internal("store lock poisoned"))?;
+        let before = conn.total_changes();
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(ApiError::from)?;
         let out = f(&tx)?;
         tx.commit().map_err(ApiError::from)?;
-        self.changes.send_modify(|v| *v = v.wrapping_add(1));
+        // Empty claims and maintenance sweeps also use IMMEDIATE transactions.
+        // They must not invalidate every open project's server-owned lists.
+        // total_changes includes trigger/cascade writes; compare per committed
+        // transaction because SQLite's lifetime counter also counts rollbacks.
+        if conn.total_changes() != before {
+            self.changes.send_modify(|v| *v = v.wrapping_add(1));
+        }
         Ok(out)
     }
 
@@ -2388,5 +2395,74 @@ mod read_connection_tests {
             })
             .expect("read via the writer");
         assert_eq!(n, 0);
+    }
+}
+
+#[cfg(test)]
+mod change_notification_tests {
+    use super::*;
+
+    #[test]
+    fn transaction_notifications_include_trigger_writes_but_not_empty_or_rolled_back_work() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .with_tx(|tx| {
+                tx.execute_batch(
+                    "CREATE TABLE notification_probe(id INTEGER PRIMARY KEY);
+                CREATE VIEW notification_view AS SELECT id FROM notification_probe;
+                CREATE TRIGGER notification_insert INSTEAD OF INSERT ON notification_view
+                BEGIN INSERT INTO notification_probe(id) VALUES(NEW.id); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let mut changes = store.changes.subscribe();
+        store
+            .with_tx(|tx| {
+                tx.execute("DELETE FROM notification_probe", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!changes.has_changed().unwrap());
+        store
+            .with_tx(|tx| {
+                // The outer statement reports no directly changed rows. Its trigger
+                // still writes durable data and must notify live readers.
+                assert_eq!(
+                    tx.execute("INSERT INTO notification_view(id) VALUES(1)", [])?,
+                    0
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        let failed: ApiResult<()> = store.with_tx(|tx| {
+            tx.execute("INSERT INTO notification_probe(id) VALUES(2)", [])?;
+            Err(ApiError::internal("rollback fixture"))
+        });
+        assert!(failed.is_err());
+        assert!(!changes.has_changed().unwrap());
+        store
+            .with_tx(|tx| {
+                assert_eq!(
+                    tx.query_row("SELECT COUNT(*) FROM notification_probe", [], |row| row
+                        .get::<_, i64>(0))?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            !changes.has_changed().unwrap(),
+            "a prior rollback must not leak into the next empty transaction"
+        );
+        store
+            .with_tx(|tx| {
+                tx.execute("DELETE FROM notification_probe WHERE id=1", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
     }
 }
