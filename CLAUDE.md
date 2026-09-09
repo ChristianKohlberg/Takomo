@@ -447,7 +447,8 @@ an agent in a conversation is what produces one, with POST/PATCH added for `/ini
 SPA that writes (a browser cannot call an MCP tool). `takomo initiative new|append|ls|show|set` is a
 third caller of those routes, minus pane writing — prose through shell flags is what the pane editor
 exists to avoid, so the CLI carries what a shell is better at instead (`--text-file`, `--attach`).
-Entries stay append-only on every surface.
+Entries stay append-only on every surface; the one exception is the admin-only reset
+(`POST /v1/initiatives/{id}/reset`, `docs/documents.md`), which clears them all at once.
 Entries hold binary blobs, which is why they carry byte caps — an unbounded upload would hold the
 write mutex every claim waits on. They are no longer the *only* such place: `crdt_updates` stores
 Yjs updates as blobs too, and for the same reason the sync socket caps a single message

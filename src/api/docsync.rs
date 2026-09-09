@@ -275,6 +275,60 @@ impl Room {
         Ok(out)
     }
 
+    /// Reset through the same room as editors, with a durable commit before
+    /// broadcast. Failure leaves the live replica and pending edits untouched.
+    ///
+    /// The replica lock is taken twice, each time for a short burst: once to
+    /// snapshot what it holds, once to apply the reset. The store call between
+    /// them runs without it, so peers keep editing while the log is rewritten;
+    /// whatever they write in that window stays in `pending` and is flushed
+    /// after the reset row like any other edit. The queue is taken BEFORE the
+    /// snapshot because a peer's update reaches the replica before it reaches
+    /// the queue, so every entry taken is in the snapshot the store commits.
+    pub async fn reset_content(
+        self: &Arc<Self>,
+        state: &Arc<AppState>,
+        actor: &str,
+        user: Option<&str>,
+    ) -> ApiResult<()> {
+        let _flushing = self.flushing.lock().await;
+        let room = self.clone();
+        let state = state.clone();
+        let actor = actor.to_string();
+        let user = user.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            let queued = std::mem::take(&mut *room.pending.lock().expect("pending mutex"));
+            let snapshot = room.full_state();
+            let base = room.base_seq.load(Ordering::SeqCst);
+            let (delta, seq) = match state.store.reset_collab_content(
+                &room.id,
+                &snapshot,
+                base,
+                &actor,
+                user.as_deref(),
+            ) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    requeue_all(&room, &queued);
+                    return Err(e);
+                }
+            };
+            room.apply(&delta).map_err(ApiError::internal)?;
+            room.rows.store(1, Ordering::SeqCst);
+            room.base_seq.store(seq, Ordering::SeqCst);
+            room.own_appends.store(0, Ordering::SeqCst);
+            room.escape_refused.store(false, Ordering::SeqCst);
+            room.overloaded.store(false, Ordering::SeqCst);
+            let _ = room
+                .tx
+                .send((0, Arc::new(sync_message(SYNC_UPDATE, &delta))));
+            state.wake();
+            Ok(())
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    }
+
     /// Read the replica without changing it.
     pub fn read<T>(&self, f: impl FnOnce(&Doc) -> T) -> T {
         let doc = self.doc.lock().expect("room doc mutex");

@@ -772,6 +772,37 @@ impl Store {
         })
     }
 
+    /// Clear the document and its accumulated contributions while preserving its
+    /// identity, filing, and linked work. This is the explicit admin recovery
+    /// exception to the ordinary append-only entry log.
+    pub fn reset_initiative(&self, id: &str, actor: &str) -> ApiResult<Initiative> {
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let ini =
+                get_initiative_row(tx, id)?.ok_or_else(|| ApiError::not_found("initiative", id))?;
+            ensure_project_writable(tx, &ini.project)?;
+            let entries = tx.execute(
+                "DELETE FROM initiative_entries WHERE initiative = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "UPDATE initiatives SET summary = '', updated_at = ?2, \
+                 version = version + 1 WHERE id = ?1",
+                params![id, now],
+            )?;
+            emit_event(
+                tx,
+                None,
+                Some(&ini.project),
+                actor,
+                "initiative_reset",
+                json!({ "initiative": id, "entries": entries }),
+                now,
+            )?;
+            get_initiative_row(tx, id)?.ok_or_else(|| ApiError::not_found("initiative", id))
+        })
+    }
+
     /// List initiatives, newest first, with cursor pagination. Returns
     /// (initiatives, next_cursor).
     pub fn list_initiatives(

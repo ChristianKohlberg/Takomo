@@ -193,6 +193,33 @@ pub async fn unarchive(
     Ok(Json(doc.to_json()))
 }
 
+/// POST /v1/documents/{id}/reset (admin). Clear content without replacing
+/// the document's identity or breaking connected CRDT replicas.
+pub async fn reset(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    let existing = state.store.get_document(&id)?;
+    ctx.require_project(&existing.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["confirm_id"])?;
+    if require_str(obj, "confirm_id")? != id {
+        return Err(ApiError::validation(
+            "validation.confirm_id",
+            "confirm_id must exactly match the document id being reset.".to_string(),
+        ));
+    }
+    state.store.ensure_collab_writable(&id)?;
+    let room = super::docsync::open_room(&state, &id).await?;
+    room.reset_content(&state, &ctx.actor, ctx.user.as_deref())
+        .await?;
+    let doc = state.store.get_document(&id)?;
+    Ok(Json(doc.to_json()))
+}
+
 /// POST /v1/documents/{id}/run (write) — the prompt bar.
 ///
 /// The one route in this server that calls a language model. `src/docagent.rs`

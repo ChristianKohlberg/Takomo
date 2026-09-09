@@ -99,3 +99,23 @@ describe('document structure moves and local history', () => {
     expect(h.redo()).toEqual({ ok: false, error: 'changed' })
   })
 })
+
+
+it('clears local undo and redo when a remote document reset arrives', () => {
+  const { doc, a } = setup()
+  const history = createStructureHistory(doc)
+  history.record(() => setTitle(doc, a, 'Local change'))
+  expect(history.canUndo).toBe(true)
+  const server = new Y.Doc()
+  Y.applyUpdate(server, Y.encodeStateAsUpdate(doc))
+  server.transact(() => {
+    nodesMap(server).clear()
+    server.getMap('document_control').set('reset', 'reset-id')
+  })
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(server))
+  expect(readPlanTree(doc)).toEqual([])
+  expect(history.canUndo).toBe(false)
+  expect(history.canRedo).toBe(false)
+  expect(history.undo()).toEqual({ ok: false, error: 'empty' })
+  history.destroy()
+})

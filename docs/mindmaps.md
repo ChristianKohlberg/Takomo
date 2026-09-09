@@ -284,7 +284,10 @@ blob by design.
 
 A caller may record only `edited`, `reviewed`, `accepted` and `rejected` — the
 four the server cannot observe. It records what it performs itself, so nobody
-can claim to have moved a node they did not move.
+can claim to have moved a node they did not move. An entry whose `node` is null
+is an act against the plan as a whole: a reset (`POST /v1/mindmaps/{id}/reset`)
+records one `pruned` act with no section, in the same transaction that clears
+them, and leaves every earlier entry in place.
 
 ### An agent proposes; a person accepts
 
@@ -309,7 +312,8 @@ slower to open for everybody, forever.
 
 `mindmap_created`, `mindmap_grown` (one event per batch, not per node — ten nodes
 from an agent turn are one act of brainstorming), `mindmap_moved` (a reparent
-only), `mindmap_pruned`, `mindmap_promoted`, `mindmap_updated`, `mindmap_deleted`.
+only), `mindmap_pruned`, `mindmap_promoted`, `mindmap_updated`, `mindmap_reset` (the
+admin-only clear, see `docs/documents.md`), `mindmap_deleted`.
 
 Text and placement edits reach nothing. They change constantly while somebody is
 thinking, and an event per keystroke-batch would bury every other event in the
