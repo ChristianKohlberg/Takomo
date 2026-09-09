@@ -61,6 +61,8 @@ export interface OutlineLabels {
 }
 
 export interface OutlineProps {
+  onFocusBranch?: (id: string) => void
+  focusLabel?: string
   searchMatches?: ReadonlySet<string>
   nodes: MapNode[]
   selected: string | null
@@ -93,6 +95,8 @@ export interface OutlineProps {
 }
 
 export function Outline({
+  onFocusBranch,
+  focusLabel = 'Focus branch',
   searchMatches,
   nodes,
   selected,
@@ -235,6 +239,7 @@ export function Outline({
             <PopoverContent align="end" className="w-52 gap-0 p-1" onCloseAutoFocus={event => { if (chose.current) event.preventDefault() }}>
               {[
                 { label: labels.edit, action: () => onEdit(node.id) },
+                ...(onFocusBranch ? [{ label: focusLabel, action: () => onFocusBranch(node.id) }] : []),
                 { label: labels.attachments.replace('{n}', String(node.attachments.length)), action: () => onAttachments(node.id) },
                 ...(canWrite ? [
                   { label: labels.rename, action: () => onRename(node.id) },

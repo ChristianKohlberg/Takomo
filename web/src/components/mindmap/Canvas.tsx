@@ -1,3 +1,4 @@
+import { focusedLayout } from '@/lib/mindmap-focus'
 // The mindmap canvas: pan, zoom, drag, relations, and a keyboard that keeps up
 // with talking — now with other people drawing on it at the same time.
 //
@@ -64,7 +65,7 @@ import { NodePill, type PillVerb } from '@/components/mindmap/NodePill'
 
 /** How the first ring is arranged. Per-viewer, like pan and zoom. */
 export type { CanvasMode } from '@/lib/mindmap-custom-layout'
-import { layoutForMode, type CanvasMode } from '@/lib/mindmap-custom-layout'
+import { type CanvasMode } from '@/lib/mindmap-custom-layout'
 
 /** Somebody else in the same map, and the node they have selected. */
 export interface CanvasPeer {
@@ -121,6 +122,7 @@ export interface CanvasProps {
   title: string
   /** Already filtered for this viewer's folds. */
   nodes: MapNode[]
+  focusRoot?: string | null
   searchMatches?: ReadonlySet<string>
   relationships: Relationship[]
   /** Branches this viewer has folded, and how many thoughts sit under each node
@@ -272,6 +274,7 @@ function cornerRadius(shape: string): number {
 export function Canvas({
   title,
   nodes,
+  focusRoot = null,
   searchMatches,
   relationships,
   collapsed,
@@ -342,7 +345,9 @@ export function Canvas({
   const fitted = useRef(false)
   const rootFitted = useRef(false)
 
-  const placed = layoutForMode(nodes, mode, customRoot)
+  const savedCamera = useRef<Viewport | null>(null)
+  const previousFocusRoot = useRef<string | null>(null)
+  const placed = focusedLayout(nodes, mode, customRoot, focusRoot)
   const nextMode: CanvasMode = mode === 'custom' ? 'tidy' : mode === 'tidy' ? 'radial' : 'custom'
   const modeLabel = mode === 'custom' ? labels.custom : mode === 'tidy' ? labels.tree : labels.radial
   const nextModeLabel = nextMode === 'custom' ? labels.custom : nextMode === 'tidy' ? labels.tree : labels.radial
@@ -390,6 +395,22 @@ export function Canvas({
     svg?.addEventListener('wheel', preventPageMovement, { passive: false })
     return () => svg?.removeEventListener('wheel', preventPageMovement)
   }, [])
+
+  useLayoutEffect(() => {
+    if (previousFocusRoot.current === focusRoot) return
+    const wasFocused = previousFocusRoot.current !== null
+    previousFocusRoot.current = focusRoot
+    setDrag({ kind: 'none' })
+    setMenu(null)
+    if (focusRoot) {
+      if (!wasFocused) savedCamera.current = viewport
+      const box = svgRef.current?.getBoundingClientRect()
+      if (box?.width) setViewport(fit(placed.bounds, box.width, box.height))
+    } else {
+      if (savedCamera.current) setViewport(savedCamera.current)
+      savedCamera.current = null
+    }
+  }, [focusRoot, placed.bounds, setViewport, viewport])
 
   /**
    * The node under a point.
@@ -501,7 +522,7 @@ export function Canvas({
   useEffect(() => {
     if (!centreNode) return
     const box = svgRef.current?.getBoundingClientRect()
-    const at = layoutForMode(nodes, mode, customRoot).nodes.find(
+    const at = focusedLayout(nodes, mode, customRoot, focusRoot).nodes.find(
       (p) => p.node.id === centreNode,
     )
     if (box && at) {
@@ -515,15 +536,15 @@ export function Canvas({
       )
     }
     onCentred()
-  }, [centreNode, onCentred, nodes, mode, customRoot, setViewport])
+  }, [centreNode, onCentred, nodes, mode, customRoot, focusRoot, setViewport])
 
   useEffect(() => {
     if (fitRequest === null) return
     const box = svgRef.current?.getBoundingClientRect()
-    const bounds = layoutForMode(nodes, mode, customRoot).bounds
+    const bounds = focusedLayout(nodes, mode, customRoot, focusRoot).bounds
     if (box) setViewport(fit(bounds, box.width, box.height))
     onFitted()
-  }, [fitRequest, onFitted, nodes, mode, customRoot, setViewport])
+  }, [fitRequest, onFitted, nodes, mode, customRoot, focusRoot, setViewport])
 
   // The dialog took the focus with it when it opened; this is how it comes back,
   // so the map keyboard works again without a click into the canvas first.
@@ -738,7 +759,7 @@ export function Canvas({
           // The root is outside `placed.nodes`. Grow a top-level section when
           // it is double-clicked instead of placing a loose thought over it.
           const onRoot =
-            world.x >= placed.root.x &&
+            !focusRoot && world.x >= placed.root.x &&
             world.x <= placed.root.x + NODE_WIDTH &&
             world.y >= placed.root.y &&
             world.y <= placed.root.y + NODE_HEIGHT
@@ -761,6 +782,7 @@ export function Canvas({
               to a node, so there is nothing there to cut. */}
           <g fill="none" strokeWidth={1.5}>
             {placed.nodes.map((p) => {
+              if (p.node.id === focusRoot) return null
               const from = p.node.parent ? positionOf(p.node.parent) : placed.root
               const d = edgePath(from, positionOf(p.node.id), mode === 'tidy' ? 'right' : 'auto')
               const cuttable = canWrite && p.node.parent !== null
@@ -787,7 +809,7 @@ export function Canvas({
           {/* What a hierarchy edge is called, when somebody named it. */}
           <g className="fill-muted-foreground" fontSize={10} textAnchor="middle">
             {placed.nodes
-              .filter((p) => p.node.edge_label)
+              .filter((p) => p.node.edge_label && p.node.id !== focusRoot)
               .map((p) => {
                 const from = p.node.parent
                   ? centreOf(p.node.parent)
@@ -837,7 +859,7 @@ export function Canvas({
           </g>
 
           {/* The map root is always present. Its children are top-level sections. */}
-          <g transform={`translate(${placed.root.x} ${placed.root.y})`}>
+          {!focusRoot && <g transform={`translate(${placed.root.x} ${placed.root.y})`}>
             <rect
               width={NODE_WIDTH}
               height={NODE_HEIGHT}
@@ -867,7 +889,7 @@ export function Canvas({
                 </div>
               </foreignObject>
             )}
-          </g>
+          </g>}
 
           {ordered.map((p) => {
             const at = positionOf(p.node.id)

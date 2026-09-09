@@ -1,3 +1,4 @@
+import { focusBranch } from '@/lib/mindmap-focus'
 import { MindmapSearch, useMindmapSearch, searchFolds } from '@/components/mindmap/MindmapSearch'
 import type { Locale } from '@/lib/i18n'
 import { usePersonalSelection } from '@/hooks/usePersonalSelection'
@@ -420,9 +421,33 @@ function ConnectedLive({
     [nodes, selected],
   )
 
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const focusRoot = nodes.some(node => node.id === focusId) ? focusId : null
+  const branchNodes = useMemo(() => focusBranch(nodes, focusRoot), [nodes, focusRoot])
+  useEffect(() => {
+    if (focusId && !focusRoot) setFocusId(null)
+    else if (focusRoot && selected && nodes.some(node => node.id === selected) && !branchNodes.some(node => node.id === selected)) setFocusId(null)
+  }, [focusId, focusRoot, selected, nodes, branchNodes])
+  const focusLabel = locale === 'de' ? 'Zweig fokussieren' : 'Focus branch'
+  const exitFocus = useCallback(() => { setFocusId(null); setSelected(null); setCentreNode(null) }, [setSelected])
+  const enterFocus = useCallback((id: string) => { setFocusId(id); setSelected(id); setCentreNode(null); setFitRequest(null); setRelationFrom(null) }, [setSelected])
+  useEffect(() => {
+    if (!focusRoot) return
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || naming || relationFrom || paletteOpen || isTextEntry(document.activeElement) || document.querySelector('[role="dialog"], [role="menu"], [data-slot="popover-content"]')) return
+      event.preventDefault()
+      exitFocus()
+    }
+    window.addEventListener('keydown', escape, true)
+    return () => window.removeEventListener('keydown', escape, true)
+  }, [focusRoot, exitFocus, naming, relationFrom, paletteOpen])
   const search = useMindmapSearch(token, session.mindmap, nodes)
-  const displayedFolds = useMemo(() => searchFolds(nodes, collapsed, search.matches), [nodes, collapsed, search.matches])
-  const shown = useMemo(() => visibleNodes(nodes, displayedFolds), [nodes, displayedFolds])
+  const scopedMatches = useMemo(() => {
+    const ids = new Set(branchNodes.map(node => node.id))
+    return new Set([...search.matches].filter(id => ids.has(id)))
+  }, [branchNodes, search.matches])
+  const displayedFolds = useMemo(() => searchFolds(branchNodes, collapsed, scopedMatches), [branchNodes, collapsed, scopedMatches])
+  const shown = useMemo(() => visibleNodes(branchNodes, displayedFolds), [branchNodes, displayedFolds])
   // One post-order pass, not one full index rebuild per node — this recomputes
   // on every remote keystroke.
   const descendantCounts = useMemo(() => allDescendantCounts(nodes), [nodes])
@@ -696,7 +721,7 @@ function ConnectedLive({
     (at: Point) => {
       if (!guard()) return
       const id = createNode(ydoc, {
-        parent: null,
+        parent: focusRoot,
         after: null,
         // A placeholder rather than nothing: the dialog opens with it selected so
         // it is typed over, and a thought left unnamed is still a legible box on
@@ -712,7 +737,7 @@ function ConnectedLive({
       setSelected(id)
       setNaming({ id, fresh: true, previous: '', from: null })
     },
-    [guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
+    [focusRoot, guard, ydoc, labels.newThought, labels.capNodes, session.display, setSelected, onError],
   )
 
   /** Pose a question about the selected thought, and open its title to type it. */
@@ -839,22 +864,22 @@ function ConnectedLive({
 
   const pillVerbs: PillVerb[] = useMemo(
     () =>
-      pillVerbsFor(commandContext).map((id) => ({
+      pillVerbsFor(commandContext).map<PillVerb>((id) => ({
         id,
         glyph: VERB_GLYPH[id] ?? '·',
         label: commandLabels[id],
-      })),
-    [commandContext, commandLabels],
+      })).concat(commandContext.node && commandContext.node.id !== focusRoot ? [{ id: 'node.focus', glyph: '⊙', label: focusLabel }] : []),
+    [commandContext, commandLabels, focusRoot, focusLabel],
   )
 
   const menuItemsFor = useCallback(
     (id: string): MenuItem[] =>
-      menuVerbsFor(contextFor(id)).map((verb) => ({
+      menuVerbsFor(contextFor(id)).map<MenuItem>((verb) => ({
         id: verb,
         label: commandLabels[verb],
         danger: verb === 'node.delete',
-      })),
-    [contextFor, commandLabels],
+      })).concat(id !== focusRoot ? [{ id: 'node.focus', label: focusLabel, danger: false }] : []),
+    [contextFor, commandLabels, focusRoot, focusLabel],
   )
 
   const items: PaletteItem[] = useMemo(() => {
@@ -898,10 +923,11 @@ function ConnectedLive({
         for (const parent of ancestorsOf(nodes, id)) next.delete(parent)
         return next
       })
+      if (focusRoot && !branchNodes.some(node => node.id === id)) setFocusId(null)
       setSelected(id)
       setCentreNode(id)
     },
-    [nodes, setSelected],
+    [nodes, setSelected, focusRoot, branchNodes],
   )
 
   // A section handed over from the document view. Waits for the node to exist:
@@ -941,6 +967,7 @@ function ConnectedLive({
         return
       }
       closePalette()
+      if (id === 'node.focus') { if (node) enterFocus(node); return }
       switch (id as CommandId) {
         case 'node.child':
           if (node) onChild(node)
@@ -1000,6 +1027,7 @@ function ConnectedLive({
     },
     [
       stage,
+      enterFocus,
       closePalette,
       goTo,
       onProject,
@@ -1050,7 +1078,7 @@ function ConnectedLive({
         <button
           type="button"
           disabled={!canWrite}
-          onClick={() => add(null, null)}
+          onClick={() => add(focusRoot, null)}
           className="border-border text-muted-foreground hover:text-foreground cursor-pointer rounded-md border px-2.5 py-1 text-[12px] font-[650] disabled:opacity-40"
         >
           + {labels.branch}
@@ -1096,7 +1124,13 @@ function ConnectedLive({
         )}
       </div>
 
-      <MindmapSearch {...search} locale={locale} onNavigate={id => { setSelected(id); setCentreNode(id) }} />
+      <MindmapSearch {...search} matches={scopedMatches} outsideMatches={search.matches.size - scopedMatches.size} onShowAll={exitFocus} locale={locale} onNavigate={id => { setSelected(id); setCentreNode(id) }} />
+
+      {focusRoot && <nav aria-label={locale === 'de' ? 'Fokussierter Zweig' : 'Focused branch'} className="border-border flex shrink-0 flex-wrap items-center gap-1 border-b px-4 py-1 text-sm">
+        <button type="button" className="hover:bg-muted min-h-9 rounded px-2 underline" onClick={exitFocus}>{locale === 'de' ? 'Gesamte Mindmap' : 'Full map'}</button>
+        {ancestorsOf(nodes, focusRoot).concat(focusRoot).map(id => <span key={id} className="flex min-w-0 max-w-full items-center gap-1"><span aria-hidden="true">›</span><button type="button" aria-current={id === focusRoot ? 'page' : undefined} className="hover:bg-muted min-h-9 truncate rounded px-2 aria-[current=page]:font-semibold" onClick={() => enterFocus(id)}>{titleOf.get(id)}</button></span>)}
+        <button type="button" className="hover:bg-muted ml-auto min-h-9 shrink-0 rounded px-2" onClick={exitFocus}>{locale === 'de' ? 'Fokus verlassen' : 'Exit focus'} ×</button>
+      </nav>}
 
       {/* The canvas is the desktop surface; a phone gets the same tree as a list,
           which is a better shape for the screen rather than a consolation prize. */}
@@ -1104,8 +1138,9 @@ function ConnectedLive({
         <Canvas
           className="flex"
           title={title}
+          focusRoot={focusRoot}
           nodes={shown}
-          searchMatches={search.matches}
+          searchMatches={scopedMatches}
           relationships={relationships}
           collapsed={displayedFolds}
           descendantCounts={descendantCounts}
@@ -1119,7 +1154,7 @@ function ConnectedLive({
           onRenameNode={onRenameNode}
           onSibling={onSibling}
           onChild={onChild}
-          onAddBranch={() => add(null, null)}
+          onAddBranch={() => add(focusRoot, null)}
           onDelete={setPruning}
           onReparent={onReparent}
           onPlace={onPlace}
@@ -1155,7 +1190,9 @@ function ConnectedLive({
 
       <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
         <Outline
-          searchMatches={search.matches}
+          onFocusBranch={enterFocus}
+          focusLabel={focusLabel}
+          searchMatches={scopedMatches}
           nodes={shown}
           selected={selected}
           canWrite={canWrite}

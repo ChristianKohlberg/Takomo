@@ -353,7 +353,22 @@ event.
   clearing the query restores their folds. Search does not move the camera or
   save layout changes. Enter / Shift+Enter and the previous/next buttons navigate
   matches while respecting the camera lock; ⌘/Ctrl S focuses the search field.
-  The phone outline highlights the same matches. The canvas opens
+  The phone outline highlights the same matches.
+
+  **Focus branch** in a node's floating toolbar, right-click menu, or phone menu
+  shows only that node and its descendants. Existing folds remain in effect;
+  connections to nodes outside the branch are hidden. A breadcrumb lets you focus
+  an ancestor, and **Full map**, **Exit focus ×**, or Escape returns to the full
+  map. Escape first belongs to an open editor, menu, or dialog. Focus fits the
+  branch once and remembers the previous camera for exit; the camera lock takes
+  precedence over either movement. Focus is personal and temporary, and never
+  changes shared parents or saved Custom positions. Normal editing stays
+  available; adding a branch or double-clicking blank canvas adds under the
+  focused node. Selecting a node outside the branch returns to the full map.
+  Search highlights and navigates matches within the branch, with a separate
+  **matches outside this branch · Show full map** action for other results.
+
+  The canvas opens
   on the root and its first ring at a readable scale rather than fitting the
   whole tree to a thumbnail, and its controls carry **Fit all** for the overview,
   **Fit branch** for the selected subtree, the zoom percentage, and a

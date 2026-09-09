@@ -61,3 +61,13 @@ it('focuses inline with Ctrl S and steps through matches without opening a dialo
   fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Escape' })
   expect(setQuery).toHaveBeenCalledWith('')
 })
+
+it('keeps outside matches separate and only exits focus on request', () => {
+  const onShowAll = vi.fn(), onNavigate = vi.fn()
+  render(<MindmapSearch query="parcel" setQuery={vi.fn()} response={response('one')} matches={new Set(['one'])} error={undefined} busy={false} locale="en" onNavigate={onNavigate} outsideMatches={3} onShowAll={onShowAll} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
+  expect(onNavigate).toHaveBeenCalledWith('one')
+  expect(onShowAll).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: '3 matches outside this branch · Show full map' }))
+  expect(onShowAll).toHaveBeenCalledOnce()
+})
