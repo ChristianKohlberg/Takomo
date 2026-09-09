@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
@@ -107,8 +108,31 @@ describe('document workflow integration', () => {
     fireEvent.keyDown(await screen.findByRole('combobox'), { key: 'Escape' })
     await waitFor(() => expect(document.activeElement).toBe(sourceEditor.view.dom))
     expect(sourceEditor.state.doc.textBetween(sourceEditor.state.selection.from, sourceEditor.state.selection.to, '\n')).toBe('thirty days.\n\n   \nLate fees apply.')
-    fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
-    expect(screen.getByRole('searchbox', { name: 'Find in document' })).toBeTruthy()
+  })
+
+  it('keeps prose activation and arrow focus stationary through URL selection feedback', async () => {
+    const { props } = setup()
+    function Connected() {
+      const [focusSection, setFocusSection] = useState<string | null>(null)
+      return <Plan {...props} focusSection={focusSection} onSelection={setFocusSection} />
+    }
+    render(<Connected />)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
+    const scroll = vi.mocked(Element.prototype.scrollIntoView)
+    scroll.mockClear()
+    fireEvent.pointerDown(screen.getByLabelText('Section 1.1 prose'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
+    expect(scroll).not.toHaveBeenCalled()
+    expect(screen.getByRole('treeitem', { name: '1.1 Invoices' }).getAttribute('aria-selected')).toBe('true')
+    const billing = screen.getByRole('treeitem', { name: '1 Billing' })
+    act(() => billing.focus())
+    fireEvent.keyDown(billing, { key: 'End' })
+    expect(document.activeElement).toBe(screen.getByRole('treeitem', { name: '2 Reports' }))
+    expect(scroll).not.toHaveBeenCalled()
+    expect(screen.getByRole('treeitem', { name: '1.1 Invoices' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
+    await waitFor(() => expect(scroll).toHaveBeenCalled())
+    expect(screen.getByRole('treeitem', { name: '2 Reports' }).getAttribute('aria-selected')).toBe('true')
   })
 
   it('turns the outline into a drawer when the PANE is narrow, and keeps a wide pane\'s sidebar open across selections', () => {
@@ -132,19 +156,15 @@ describe('document workflow integration', () => {
     expect(screen.getByRole('button', { name: 'Outline' }).getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('keeps find available to readers while withholding all structure mutations', () => {
+  it('keeps document search available to readers without mutations', () => {
     const { doc, props } = setup()
-    render(<Plan {...props} session={{ ...props.session, can_write: false }} />)
-    expect(screen.queryByRole('button', { name: 'Move section 1' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Undo section move' })).toBeNull()
-    const update = vi.fn()
-    doc.on('update', update)
-    fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in document' }), { target: { value: 'deadline' } })
-    expect(screen.getByText('1 / 1')).toBeTruthy()
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in document' }), { target: { value: 'Billing' } })
-    expect(screen.getByText('1 / 1')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Close search' }))
+    render(<Plan {...props} token="reader" session={{ ...props.session, can_write: false }} />)
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
+    expect(screen.getByRole('treeitem', { name: '1 Billing' }).draggable).toBe(false)
+    const update = vi.fn(); doc.on('update', update)
+    fireEvent.click(screen.getByRole('button', { name: /^Search document/ }))
+    expect(screen.getByRole('combobox')).toBeTruthy()
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' })
     expect(update).not.toHaveBeenCalled()
   })
 
@@ -177,16 +197,16 @@ describe('document workflow integration', () => {
   it('moves a section through the outline, then undoes and redoes without replacing its subtree', async () => {
     const { doc, a, b, child, fragment, props } = setup()
     render(<Plan {...props} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Move section 1' }))
+    fireEvent.keyDown(screen.getByRole('treeitem', { name: '1 Billing' }), { key: 'F10', shiftKey: true })
     fireEvent.change(screen.getByLabelText('Destination section'), { target: { value: b } })
     fireEvent.change(screen.getByLabelText('Position'), { target: { value: 'child' } })
     fireEvent.click(screen.getByRole('button', { name: 'Move' }))
     expect(readPlanTree(doc).find(n => n.id === a)?.parent).toBe(b)
     expect(props.onSelection).toHaveBeenLastCalledWith(a)
     expect(screen.queryByRole('dialog')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Undo section move' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Undo' })[0]!)
     expect(readPlanTree(doc).find(n => n.id === a)?.parent).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Redo section move' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
     expect(readPlanTree(doc).find(n => n.id === a)?.parent).toBe(b)
     expect(nodesMap(doc).get(child)!.get('parent')).toBe(a)
     expect(nodesMap(doc).get(child)!.get('prose')).toBe(fragment)
@@ -195,56 +215,29 @@ describe('document workflow integration', () => {
     await waitFor(() => expect(screen.getByLabelText('Section 1.1.1 prose')).toBeTruthy())
   })
 
-  it('reveals matching prose inside a collapsed section temporarily and preserves the stored fold', async () => {
-    const { a, props } = setup()
-    localStorage.setItem('takomo.plan.fold.mm-workflow', JSON.stringify([a]))
-    render(<Plan {...props} />)
-    expect(screen.queryByLabelText('Section 1.1 prose')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in document' }), { target: { value: 'deadline' } })
-    await waitFor(() => expect(screen.getByLabelText('Section 1.1 prose').textContent).toContain('Payment deadline'))
-    expect(localStorage.getItem('takomo.plan.fold.mm-workflow')).toBe(JSON.stringify([a]))
-    fireEvent.click(screen.getByRole('button', { name: 'Close search' }))
-    await waitFor(() => expect(screen.queryByLabelText('Section 1.1 prose')).toBeNull())
-    expect(localStorage.getItem('takomo.plan.fold.mm-workflow')).toBe(JSON.stringify([a]))
-  })
-
-  it('searches unmounted prose and mounts only the active match without repeating selection on edits', async () => {
-    vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} })
-    const { fragment, props } = setup()
-    render(<Plan {...props} />)
-    expect(screen.queryByLabelText('Section 1.1 prose')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in document' }), { target: { value: 'deadline' } })
-    await waitFor(() => expect(screen.getByLabelText('Section 1.1 prose')).toBeTruthy())
-    const count = vi.mocked(props.onSelection!).mock.calls.length
-    act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' More prose.')]) })
-    expect(screen.getByLabelText('Section 1.1 prose').textContent).toContain('More prose.')
-    expect(vi.mocked(props.onSelection!).mock.calls.length).toBe(count)
-  })
-
-  it('enables text undo for the selected section only, without re-rendering the plan on every keystroke', () => {
-    const { props } = setup()
-    render(<Plan {...props} />)
-    const undo = screen.getByRole('button', { name: 'Undo section text' }) as HTMLButtonElement
+  it('undoes edits chronologically across sections without rendering on every keystroke', () => {
+    const { doc, props } = setup()
+    const history = createStructureHistory(doc)
+    render(<Plan {...props} structureHistory={history} />)
+    const undo = screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement
     const invoices = probe.editors.get('Section 1.1 prose')!
     const billing = probe.editors.get('Section 1 prose')!
-    expect(undo.disabled).toBe(true)
-    act(() => { billing.commands.insertContentAt(1, 'Unselected. ') })
-    expect(undo.disabled).toBe(true)
-    fireEvent.pointerDown(screen.getByLabelText('Section 1.1 prose'))
     expect(undo.disabled).toBe(true)
     act(() => { invoices.commands.insertContentAt(1, 'First. ') })
     expect(undo.disabled).toBe(false)
     const settled = probe.panelRenders
     act(() => { invoices.commands.insertContentAt(1, 'Second. ') })
-    act(() => { invoices.commands.insertContentAt(1, 'Third. ') })
-    act(() => { billing.commands.insertContentAt(1, 'Elsewhere. ') })
     expect(probe.panelRenders).toBe(settled)
-    expect(undo.disabled).toBe(false)
+    history.manager.stopCapturing()
+    act(() => { billing.commands.insertContentAt(1, 'Elsewhere. ') })
     fireEvent.click(undo)
-    expect(screen.getByLabelText('Section 1.1 prose').textContent).not.toContain('Third. ')
-    expect(screen.getByLabelText('Section 1 prose').textContent).toContain('Elsewhere. ')
+    expect(screen.getByLabelText('Section 1 prose').textContent).not.toContain('Elsewhere. ')
+    expect(screen.getByLabelText('Section 1.1 prose').textContent).toContain('Second. ')
+    fireEvent.click(undo)
+    expect(screen.getByLabelText('Section 1.1 prose').textContent).not.toContain('First. ')
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+    expect(screen.getByLabelText('Section 1.1 prose').textContent).toContain('First. ')
+    history.destroy()
   })
 
   it('retains workspace move history when the document view remounts', () => {
@@ -254,7 +247,7 @@ describe('document workflow integration', () => {
     act(() => { history.move(a, b, 'child') })
     first.unmount()
     render(<Plan {...props} structureHistory={history} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Undo section move' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Undo' })[0]!)
     expect(readPlanTree(doc).find(n => n.id === a)?.parent).toBeNull()
     history.destroy()
   })
@@ -266,7 +259,7 @@ describe('document workflow integration', () => {
     view.rerender(<Plan {...props} focusMode />)
     expect(screen.getByLabelText('Section 1.1 prose')).toBe(editor)
     expect(view.container.querySelector('aside')?.style.display).toBe('none')
-    expect(screen.queryByRole('button', { name: 'Undo section move' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'All comments' })).toBeNull()
     act(() => { (fragment.get(0) as Y.XmlElement).insert(1, [new Y.XmlText(' Extra detail.')]) })
     expect(editor.textContent).toContain('Extra detail.')

@@ -24,7 +24,6 @@ import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { SectionTicketLinks } from '@/components/documents/SectionTicketLinks'
 import { DocumentAgent } from '@/components/documents/DocumentAgent'
-import { SectionConversation } from '@/components/documents/SectionConversation'
 import { useToast } from '@/components/Toaster'
 import { pick } from '@/lib/i18n'
 import {
@@ -200,10 +199,6 @@ export function DocumentView() {
       agentTools={tools}
       ticketLinksFor={section => <SectionTicketLinks token={token} project={project} section={section} lang={lang} />}
       key={session.session}
-      conversationFor={(node) => (
-        <SectionConversation token={token} map={session.mindmap} node={node} lang={lang}
-          canAsk={scopes.includes('human') && scopes.includes('write')} onError={handleErr} />
-      )}
       focusMode={focusMode}
       structureHistory={structureHistory}
       appearance={projects.find((item) => item.id === project)?.document_appearance}

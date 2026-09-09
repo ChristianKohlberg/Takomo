@@ -29,7 +29,7 @@
 // what "better diffs" actually comes from, and it is why the review button is
 // beside the prose rather than in a panel somewhere else.
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { MoreHorizontal, Check, GitBranch, History, ShieldCheck, MessageSquare }  from 'lucide-react'
+import { MoreHorizontal, Check, GitBranch, History, ShieldCheck, ShieldAlert, Shield, MessageSquare }  from 'lucide-react'
 
 import { EditableText } from '@/components/EditableText'
 import { Hint } from '@/components/Hint'
@@ -70,6 +70,7 @@ export interface SectionPanelLabels {
 export interface SectionPanelProps {
   /** `2.1.3`. The shared address of this part of the plan. */
   number: string
+  showNumber?: boolean
   /** 0 for a first-ring node. Heading level, indent and quiet all read it. */
   depth: number
   title: string
@@ -79,6 +80,7 @@ export interface SectionPanelProps {
   onHeadingDown?: () => boolean
   onHeadingFocus?: () => void
   headingActions?: ReactNode
+  headingLink?: ReactNode
   onTitle?: (text: string) => Promise<unknown> | void
   standing: Standing
   /** This section's history, newest first. */
@@ -132,6 +134,7 @@ const STANDING_CLASS: Record<Standing, string> = {
 
 export function SectionPanel({
   number,
+  showNumber = true,
   depth,
   title,
   onTitle,
@@ -140,6 +143,7 @@ export function SectionPanel({
   onHeadingDown,
   onHeadingFocus,
   headingActions,
+  headingLink,
   standing,
   entries,
   historyOpen,
@@ -152,7 +156,7 @@ export function SectionPanel({
   onToggleProposals,
   proposals,
   canWrite,
-  active = false,
+  active: _active = false,
   onActivate,
   onShowTests,
   testsLabel,
@@ -202,7 +206,6 @@ export function SectionPanel({
       onPointerDown={onActivate}
       className={cn(
         'document-section border-border-soft border-t first:border-t-0',
-        active ? 'bg-accent/30' : '',
         className,
       )}
       style={{ paddingLeft: `${sectionInset(depth)}px` }}
@@ -213,7 +216,7 @@ export function SectionPanel({
           onMouseDown={(event) => event.preventDefault()} onClick={() => setActionsOpen((value) => !value)}>
           <MoreHorizontal className="size-4" aria-hidden="true" />
         </button>
-        <span className="text-muted-foreground flex-none font-mono text-[11px]">{number}</span>
+        {showNumber && <span className={`document-section-number document-section-number-${Math.min(depth + 1, 6)} flex-none`}>{number}</span>}
         {canWrite && onTitle ? (
           <EditableText
             value={title}
@@ -234,14 +237,7 @@ export function SectionPanel({
             {title || labels.untitled}
           </Heading>
         )}
-        <span
-          className={cn(
-            'flex-none rounded-sm border px-1.5 py-0.5 text-[10.5px] font-[650]',
-            STANDING_CLASS[standing],
-          )}
-        >
-          {standingLabel[standing]}
-        </span>
+        {headingLink}
         {pending > 0 && (
           <span className="flex-none rounded-sm border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10.5px] font-[650] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
             ◆ {labels.pendingBadge.replace('{n}', String(pending))}
@@ -252,6 +248,9 @@ export function SectionPanel({
       <div ref={actionsRef} id={actionsId} role="group" aria-label={labels.actions ?? 'Section actions'}
         data-open={actionsOpen || historyOpen || proposalsOpen || undefined}
         className="section-actions mb-2 flex flex-col items-stretch gap-1 text-sm">
+        <span className={cn('inline-flex items-center gap-1.5 text-xs', STANDING_CLASS[standing])} role="img" aria-label={standingLabel[standing]} title={standingLabel[standing]}>
+          {standing === 'confirmed' ? <ShieldCheck className="size-4" aria-hidden="true" /> : standing === 'changed' ? <ShieldAlert className="size-4" aria-hidden="true" /> : <Shield className="size-4" aria-hidden="true" />}
+        </span>
         {headingActions}
         <Hint text={canWrite ? labels.reviewHint : labels.needWrite}>
           <button

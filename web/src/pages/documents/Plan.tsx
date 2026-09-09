@@ -1,3 +1,4 @@
+import { DocumentNumberingControls, useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
 import { DocumentHybridSearch } from '@/components/documents/DocumentHybridSearch'
 import { passageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
@@ -8,7 +9,6 @@ import { DocumentComments } from '@/components/documents/DocumentComments'
 import { DocumentCommentButton } from '@/components/documents/DocumentCommentButton'
 import { resolveCommentAnchor, type CommentThread, type CommentAnchor } from '@/lib/document-comments'
 import { specificationLink } from '@/lib/specification-url'
-import { DocumentSearchToolbar } from '@/components/documents/DocumentSearchToolbar'
 import { useDocumentSearch } from '@/hooks/useDocumentSearch'
 import { highlightDocumentHeadings } from '@/lib/document-search-headings'
 import { createStructureHistory, type SectionPlacement } from '@/lib/plan-structure'
@@ -214,7 +214,7 @@ function ConnectedPlan({
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadFold(session.mindmap))
   const [selected, setSelected] = usePersonalSelection(onSelection)
   const focused = useRef<string | null>(null)
-  const [findOpen, setFindOpen] = useState(false)
+  const numbering = useDocumentNumbering(project, appearance)
   const [moving, setMoving] = useState<string | null>(null)
   const [comments, setComments] = useState<{ section: string; draft: CommentAnchor | null } | null>(null)
   const [allComments, setAllComments] = useState(false)
@@ -416,18 +416,10 @@ function ConnectedPlan({
         return next
       })
       setSelected(key)
+      requestAnimationFrame(() => elements.current.get(key)?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
     },
     [sections, setSelected],
   )
-
-  const scrolledSelection = useRef<string | null>(null)
-  useEffect(() => {
-    if (selected === scrolledSelection.current) return
-    scrolledSelection.current = selected
-    if (!selected) return
-    const el = elements.current.get(selected)
-    if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
-  }, [selected])
 
   // A section handed over by link. Waits for the section to exist: the ask
   // arrives with the URL and the document is still syncing.
@@ -480,7 +472,8 @@ function ConnectedPlan({
   const pendingEditorFocus = useRef<string | null>(null)
   const insertSection = (after: string | null, level: 1 | 2 | 3, title: string): boolean => {
     if (!canWrite) return false
-    const key = insertPlanSection(ydoc, after, level, title, session.display)
+    const create = () => insertPlanSection(ydoc, after, level, title, session.display)
+    const key = history ? history.insert(create) : create()
     if (!key) return false
     pendingEditorFocus.current = key
     setCollapsed(new Set())
@@ -522,13 +515,9 @@ function ConnectedPlan({
     if (range) { commentsEditor.commands.setTextSelection(range); commentsEditor.commands.focus(); commentsEditor.commands.scrollIntoView() }
     else setNotice({ text: locale === 'de' ? 'Text geändert oder entfernt · Zitat im Kommentar erhalten' : 'Text changed or removed · quote retained in the comment' })
   }, [commentsEditor, commentsSection, comments, locale])
-  const [textTools, setTextTools] = useState({ undo: false, redo: false })
   const syncTextTools = useCallback(() => {
     const editor = !editingTitle.current && selectedRef.current ? editors.current.get(selectedRef.current) : undefined
     setActiveEditor(editor ?? null)
-    const undo = editor?.can().undo() ?? false
-    const redo = editor?.can().redo() ?? false
-    setTextTools(current => (current.undo === undo && current.redo === redo ? current : { undo, redo }))
   }, [])
   useEffect(() => { syncTextTools() }, [selected, syncTextTools])
   const editorRefFor = useCallback((key: string) => {
@@ -620,10 +609,11 @@ function ConnectedPlan({
   const onTitle = useCallback(
     (key: string, text: string) => {
       if (!canWrite) return
-      setTitle(ydoc, key, text)
+      if (history) history.record(() => setTitle(ydoc, key, text))
+      else setTitle(ydoc, key, text)
       onEdited(key)
     },
-    [canWrite, ydoc, onEdited],
+    [canWrite, ydoc, onEdited, history],
   )
 
   const onReject = useCallback(
@@ -720,7 +710,6 @@ function ConnectedPlan({
     })
     return () => cancelAnimationFrame(frame)
   }, [activeSearchSection, activeSearchKind, activeSearchKey, activeSearchFragment])
-  const closeFind = () => { setFindOpen(false); search.clear() }
   const moveSection = (id: string, target: string, placement: SectionPlacement) => {
     if (!canWrite || !history) return { ok: false as const, error: 'changed' as const }
     const result = history.move(id, target, placement)
@@ -743,13 +732,7 @@ function ConnectedPlan({
       setSelected(key)
       onMoved?.(key)
       setNotice({ text: locale === 'de' ? 'Verschiebung aktualisiert' : 'Section move updated' })
-    } else setNotice({ text: locale === 'de' ? 'Die Abschnittsstruktur wurde inzwischen geändert. Diese Aktion ist nicht mehr verfügbar.' : 'The section structure has changed. This action is no longer available.' })
-  }
-  const textHistory = (direction: 'undo' | 'redo') => {
-    const editor = selected ? editors.current.get(selected) : undefined
-    if (!canWrite || !editor) return
-    editor.commands[direction]()
-    editor.commands.focus()
+    } else if (!result.ok) setNotice({ text: locale === 'de' ? 'Die Abschnittsstruktur wurde inzwischen geändert. Diese Aktion ist nicht mehr verfügbar.' : 'The section structure has changed. This action is no longer available.' })
   }
   const focusProse = (key: string, position: 'start' | 'end'): boolean => {
     if (!canWrite) return false
@@ -773,11 +756,9 @@ function ConnectedPlan({
   }
   return (
     <main ref={paneRef} className="@container/document-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <DocumentActions focusMode={focusMode} locale={locale} findOpen={findOpen} onFind={() => findOpen ? closeFind() : setFindOpen(true)}
-        canWrite={canWrite} textUndo={textTools.undo} textRedo={textTools.redo}
-        moveUndo={history?.canUndo ?? false} moveRedo={history?.canRedo ?? false}
-        onTextUndo={() => textHistory('undo')} onTextRedo={() => textHistory('redo')}
-        onMoveUndo={() => moveHistory('undo')} onMoveRedo={() => moveHistory('redo')} primary={<>        <button
+      <DocumentActions focusMode={focusMode} locale={locale} canWrite={canWrite}
+        canUndo={history?.canUndo ?? false} canRedo={history?.canRedo ?? false}
+        onUndo={() => moveHistory('undo')} onRedo={() => moveHistory('redo')} primary={<>        <button
           type="button"
           onClick={toggleOutline}
           hidden={focusMode}
@@ -795,6 +776,7 @@ function ConnectedPlan({
           />
           <span>{railLabels.outline}</span>
         </button>
+<DocumentNumberingControls {...numbering} locale={locale} />
 <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} /></>} >
         {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
@@ -814,8 +796,6 @@ function ConnectedPlan({
           onComment={draft => { if (selected) setComments({ section: selected, draft }) }} />
         <button type="button" hidden={focusMode} className="rounded px-2 py-1 text-sm hover:bg-muted" aria-expanded={allComments} onClick={() => setAllComments(value => !value)}>{locale === 'de' ? 'Alle Kommentare' : 'All comments'}</button>
       </DocumentActions>
-      {findOpen && !focusMode && <DocumentSearchToolbar query={search.query} onQuery={search.setQuery} count={search.matches.length}
-        activeIndex={search.activeIndex} onNext={search.next} onPrevious={search.previous} onClose={closeFind} locale={locale} />}
       {notice && <div role="status" className="flex flex-none items-center gap-3 bg-muted px-4 py-2 text-sm">
         <span>{notice.text}</span>{notice.undo && <button type="button" className="underline" onClick={() => moveHistory('undo')}>{locale === 'de' ? 'Rückgängig' : 'Undo'}</button>}
       </div>}
@@ -833,9 +813,8 @@ function ConnectedPlan({
         style={{ display: focusMode || !outlineOpen ? 'none' : undefined }}
         className="document-outline border-b-border-soft absolute inset-x-0 top-0 z-40 flex max-h-[80%] flex-none flex-col overflow-y-auto border-b bg-white px-2 py-2 shadow-lg @min-[850px]/document-pane:static @min-[850px]/document-pane:max-h-none @min-[850px]/document-pane:w-80 @min-[850px]/document-pane:flex-none @min-[850px]/document-pane:resize-x @min-[850px]/document-pane:border-r @min-[850px]/document-pane:border-b-0 @min-[850px]/document-pane:shadow-none dark:bg-card"
       >
-        {outlineOpen && <div className="mb-2 flex flex-wrap gap-2 px-1 text-xs"><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set(rows.filter(row => row.children.length > 0).map(row => row.key)))}>{locale === 'de' ? 'Alle einklappen' : 'Collapse all'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => setCollapsed(new Set())}>{locale === 'de' ? 'Alle ausklappen' : 'Expand all'}</button></div>}
         {outlineOpen && (
-          <OutlineRail
+          <OutlineRail numbering={numbering.value} locale={locale} onReorder={canWrite ? moveSection : undefined}
             sections={sections}
             selected={selected}
             onSelect={key => { onSelect(key); if (paneNarrow) setOutlineDrawer(false) }}
@@ -888,15 +867,16 @@ function ConnectedPlan({
                   key={row.key}
                   number={row.number}
                   depth={row.depth}
+                  showNumber={row.depth === 0 ? numbering.value.h1 : row.depth === 1 ? numbering.value.h2 : true}
                   title={row.title}
                   onTitle={(text) => onTitle(row.key, text)}
                   onHeadingEnter={() => { focusProse(row.key, 'start') }}
                   onHeadingDown={() => focusProse(row.key, 'start')}
                   onHeadingFocus={() => { editingTitle.current = true; syncTextTools() }}
                   onHeadingUp={() => rowIndex > 0 && focusProse(visible[rowIndex - 1]!.key, 'end')}
+                  headingLink={<CopySectionLink href={new URL(specificationLink(project, 'document', row.key), window.location.origin).href} locale={locale} />}
                   headingActions={<>
                     {ticketLinksFor?.(row.key)}
-                    <CopySectionLink href={new URL(specificationLink(project, 'document', row.key), window.location.origin).href} locale={locale} />
                     <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setSelected(row.key); setComments({ section: row.key, draft: null }) }}>
                       {locale === 'de' ? 'Kommentare' : 'Comments'}
                     </button>
@@ -929,13 +909,14 @@ function ConnectedPlan({
                   }
                   canWrite={canWrite}
                   active={selected === row.key}
-                  onActivate={() => setSelected(row.key)}
+                  onActivate={() => { focused.current = row.key; setSelected(row.key) }}
                   sectionRef={refFor(row.key)}
                   labels={sectionLabels}
                 >
                   {fragment ? (
                     <SectionEditor
                       locale={locale}
+                      history={history ?? undefined}
                       ydoc={ydoc}
                       sectionId={row.key}
                       onFollowReference={id => { onSelect(id); if (selected === id) elements.current.get(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }}

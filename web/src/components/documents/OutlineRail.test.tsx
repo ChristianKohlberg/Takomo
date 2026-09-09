@@ -2,7 +2,7 @@
 // the model is a pure module with its own tests. What IS testable here is the
 // wiring: which rows exist, what a fold hides, and that a section's standing is
 // readable rather than only coloured.
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { OutlineRail } from './OutlineRail'
@@ -32,14 +32,15 @@ const sections = planSections([
 ])
 
 describe('OutlineRail', () => {
-  it('offers moving only when allowed, without selecting a different section', () => {
+  it('offers a keyboard destination picker without a move icon or selecting another section', () => {
     const onMove = vi.fn()
     const onSelect = vi.fn()
     const props = { sections, selected: null, onSelect, collapsed: new Set<string>(), onToggle: () => {}, labels }
     const view = render(<OutlineRail {...props} />)
     expect(screen.queryByRole('button', { name: 'Move 1' })).toBeNull()
     view.rerender(<OutlineRail {...props} onMove={onMove} />)
-    screen.getByRole('button', { name: 'Move 1' }).click()
+    expect(screen.queryByRole('button', { name: 'Move 1' })).toBeNull()
+    fireEvent.keyDown(screen.getByRole('treeitem', { name: '1 Payments rebuild' }), { key: 'F10', shiftKey: true })
     expect(onMove).toHaveBeenCalledWith('a')
     expect(onSelect).not.toHaveBeenCalled()
   })
@@ -87,7 +88,7 @@ describe('OutlineRail', () => {
         labels={labels}
       />,
     )
-    screen.getByText('Loose').click()
+    fireEvent.click(screen.getByText('Loose'))
     expect(onSelect).toHaveBeenCalledWith('d')
   })
 
@@ -105,7 +106,7 @@ describe('OutlineRail', () => {
     expect(screen.getByText('Untitled section')).toBeTruthy()
   })
 
-  it('says where a section stands in words, not only in colour', () => {
+  it('keeps trust decoration out of the outline', () => {
     render(
       <OutlineRail
         sections={sections}
@@ -117,8 +118,8 @@ describe('OutlineRail', () => {
         labels={labels}
       />,
     )
-    expect(screen.getByTitle('agreed')).toBeTruthy()
-    expect(screen.getByTitle('changed since')).toBeTruthy()
+    expect(screen.queryByTitle('agreed')).toBeNull()
+    expect(screen.queryByTitle('changed since')).toBeNull()
     // A section with no history at all carries no mark, rather than a wrong one.
     expect(screen.queryByTitle('unread')).toBeNull()
   })

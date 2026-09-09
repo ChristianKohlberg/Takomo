@@ -34,13 +34,37 @@ pub struct DocumentAppearanceOverrides {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct DocumentNumbering {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h1: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h2: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct DocumentAppearance {
     pub template: DocumentTemplate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numbering: Option<DocumentNumbering>,
     pub overrides: DocumentAppearanceOverrides,
 }
 
 impl DocumentAppearance {
     fn validate(&self) -> ApiResult<()> {
+        if self
+            .numbering
+            .as_ref()
+            .and_then(|n| n.size)
+            .is_some_and(|size| !size.is_finite() || !(50.0..=150.0).contains(&size))
+        {
+            return Err(ApiError::validation(
+                "project.document_appearance",
+                "Number size must be a finite percentage between 50 and 150.",
+            ));
+        }
         let o = &self.overrides;
         for (name, value, min, max) in [
             ("h1_size", o.h1_size, 12.0, 64.0),

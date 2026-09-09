@@ -151,3 +151,78 @@ fn existing_database_gains_balanced_default_without_changing_project_content() {
         .set_document_appearance("old", invalid, "test")
         .is_err());
 }
+
+#[tokio::test]
+async fn document_numbering_defaults_persist_validate_and_reset() {
+    let app = TestApp::spawn().await;
+    let path = "/v1/projects/tp/document-appearance";
+    let selected = json!({"template":"strong","overrides":{"h1_size":36.0},"numbering":{"h1":false,"h2":true,"size":125.0}});
+    assert_eq!(
+        app.put(&app.admin, path, selected.clone()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.open_store()
+            .get_project("tp")
+            .unwrap()
+            .unwrap()
+            .to_json()["document_appearance"],
+        selected
+    );
+    for numbering in [
+        json!({"h1":1}),
+        json!({"h2":"false"}),
+        json!({"size":"100"}),
+        json!({"h3":false}),
+    ] {
+        assert_eq!(
+            app.put(
+                &app.admin,
+                path,
+                json!({"template":"balanced","overrides":{},"numbering":numbering})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for size in [49, 151] {
+        assert_eq!(
+            app.put(
+                &app.admin,
+                path,
+                json!({"template":"balanced","overrides":{},"numbering":{"size":size}})
+            )
+            .await
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    // Invalid writes leave the last accepted configuration intact.
+    assert_eq!(
+        app.open_store()
+            .get_project("tp")
+            .unwrap()
+            .unwrap()
+            .to_json()["document_appearance"],
+        selected
+    );
+    let partial=app.put(&app.admin,path,json!({"template":"strong","overrides":{"h1_size":36},"numbering":{"h1":null,"h2":false,"size":null}})).await;
+    assert_eq!(partial.0, StatusCode::OK);
+    assert_eq!(
+        partial.1["document_appearance"]["numbering"],
+        json!({"h2":false})
+    );
+    let reset = app
+        .put(
+            &app.admin,
+            path,
+            json!({"template":"balanced","overrides":{},"numbering":null}),
+        )
+        .await;
+    assert_eq!(reset.0, StatusCode::OK);
+    assert_eq!(
+        reset.1["document_appearance"],
+        json!({"template":"balanced","overrides":{}})
+    );
+}

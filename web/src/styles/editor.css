@@ -245,3 +245,15 @@
 .document-more-tools[data-open=true] { display: flex; position: absolute; top: 100%; right: 0; left: 0; z-index: 50; flex-wrap: wrap; gap: 8px; padding: 10px; background: var(--panel); border: 1px solid var(--border); box-shadow: 0 4px 12px #0002; }
 @container document-pane (min-width: 850px) { .document-tools-toggle { display: none; } .document-more-tools, .document-more-tools[data-open=true] { position: static; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0; border: 0; box-shadow: none; } }
 @media (hover: hover) { .section-discussion:not(:focus-within) { opacity: 0.35; } .document-section:hover .section-discussion { opacity: 1; } }
+
+/* Section links stay available on touch and keyboard, quiet on pointer hover. */
+@media (hover: hover) {
+  .section-copy-link { opacity: 0; }
+  .document-section:hover .section-copy-link,
+  .document-section:focus-within .section-copy-link { opacity: 1; }
+}
+.document-section-number { color: inherit; font-family: var(--font-heading); font-weight: var(--doc-heading-weight, 600); line-height: 1.25; }
+.document-section-number-1 { font-size: calc(var(--doc-h1-size, 28px) * var(--doc-number-scale, 1)); }
+.document-section-number-2 { font-size: calc(var(--doc-h2-size, 22px) * var(--doc-number-scale, 1)); }
+.document-section-number-3 { font-size: calc(var(--doc-h3-size, 18px) * var(--doc-number-scale, 1)); }
+.document-section-number-4, .document-section-number-5, .document-section-number-6 { font-size: calc(var(--doc-body-size, 16px) * var(--doc-number-scale, 1)); }

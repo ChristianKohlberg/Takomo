@@ -7,9 +7,9 @@ function panel(container: HTMLElement) {
 }
 
 it('keeps the overflow panel open for popover triggers and repeated undo, closing for one-shot actions', () => {
-  const onTextUndo = vi.fn(), onFind = vi.fn()
-  const { container } = render(<DocumentActions locale="en" findOpen={false} onFind={onFind} canWrite textUndo textRedo={false} moveUndo={false} moveRedo={false}
-    onTextUndo={onTextUndo} onTextRedo={vi.fn()} onMoveUndo={vi.fn()} onMoveRedo={vi.fn()}>
+  const onUndo = vi.fn(), onAction = vi.fn()
+  const { container } = render(<DocumentActions locale="en" canWrite canUndo canRedo={false} onUndo={onUndo} onRedo={vi.fn()}>
+    <button type="button" onClick={onAction}>One-shot action</button>
     <button type="button" aria-haspopup="dialog" aria-label="Insert section reference">Link</button>
   </DocumentActions>)
   expect(panel(container)).toBe(false)
@@ -17,11 +17,11 @@ it('keeps the overflow panel open for popover triggers and repeated undo, closin
   expect(panel(container)).toBe(true)
   fireEvent.click(screen.getByRole('button', { name: 'Insert section reference' }))
   expect(panel(container)).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: 'Undo section text' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Undo section text' }))
-  expect(onTextUndo).toHaveBeenCalledTimes(2)
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  expect(onUndo).toHaveBeenCalledTimes(2)
   expect(panel(container)).toBe(true)
-  fireEvent.click(screen.getByRole('button', { name: 'Find in document' }))
-  expect(onFind).toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'One-shot action' }))
+  expect(onAction).toHaveBeenCalled()
   expect(panel(container)).toBe(false)
 })

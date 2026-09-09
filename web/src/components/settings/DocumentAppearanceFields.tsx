@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   DEFAULT_DOCUMENT_APPEARANCE, DOCUMENT_APPEARANCE_BOUNDS, DOCUMENT_APPEARANCE_FIELDS,
-  resolveDocumentAppearance, validDocumentValue,
+  resolveDocumentAppearance, resolveDocumentNumbering, validDocumentValue,
   type DocumentAppearance, type DocumentTemplate, type DocumentTypography,
 } from '@/lib/document-appearance'
 
@@ -20,6 +20,7 @@ export interface DocumentAppearanceLabels {
   h2: string
   h3: string
   body: string
+  numbering: { title: string; h1: string; h2: string; size: string; help: string }
   fields: Record<keyof DocumentTypography, string>
 }
 
@@ -32,6 +33,16 @@ export function DocumentAppearanceFields({ value = DEFAULT_DOCUMENT_APPEARANCE, 
   labels: DocumentAppearanceLabels
 }) {
   const effective = resolveDocumentAppearance(value)
+  const numbering = resolveDocumentNumbering(value)
+  const [numberDraft, setNumberDraft] = useState<string | undefined>()
+  const updateNumbering = (key: 'h1' | 'h2' | 'size', next?: boolean | number) => {
+    const updated = { ...value.numbering }
+    if (next === undefined) delete updated[key]
+    else Object.assign(updated, { [key]: next })
+    const rest = { ...value }
+    delete rest.numbering
+    onChange(Object.keys(updated).length ? { ...rest, numbering: updated } : rest)
+  }
   const [drafts, setDrafts] = useState<Drafts>({})
   const setDraft = (key: keyof DocumentTypography, draft?: string) =>
     setDrafts((prev) => {
@@ -94,12 +105,32 @@ export function DocumentAppearanceFields({ value = DEFAULT_DOCUMENT_APPEARANCE, 
           </Field>
         })}
       </div>
+      <fieldset className="flex flex-col gap-3 rounded-md border p-3">
+        <legend className="px-1 text-sm font-medium">{labels.numbering.title}</legend>
+        <p className="text-muted-foreground text-xs">{labels.numbering.help}</p>
+        {(['h1', 'h2'] as const).map(level => <div key={level} className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={numbering[level]} disabled={disabled}
+            onChange={event => updateNumbering(level, event.target.checked)} />{labels.numbering[level]}</label>
+          {value.numbering?.[level] !== undefined && <Button type="button" variant="ghost" size="sm" disabled={disabled}
+            aria-label={`${labels.reset}: ${labels.numbering[level]}`} onClick={() => updateNumbering(level)}>{labels.reset}</Button>}
+        </div>)}
+        <Field label={labels.numbering.size}>{id => <div className="flex min-w-0 items-center gap-1">
+          <Input id={id} type="number" min={50} max={150} step={5} disabled={disabled}
+            value={numberDraft ?? (Number.isFinite(numbering.size) ? numbering.size : 100)}
+            aria-invalid={!Number.isFinite(numbering.size) || numbering.size < 50 || numbering.size > 150 || undefined}
+            onChange={event => { setNumberDraft(event.target.value); updateNumbering('size', event.target.value.trim() ? Number(event.target.value) : NaN) }}
+            onBlur={() => { if (numberDraft !== undefined && (!numberDraft.trim() || !Number.isFinite(Number(numberDraft)))) updateNumbering('size'); setNumberDraft(undefined) }} />
+          {value.numbering?.size !== undefined && <Button type="button" variant="ghost" size="sm" disabled={disabled}
+            aria-label={`${labels.reset}: ${labels.numbering.size}`} onClick={() => { setNumberDraft(undefined); updateNumbering('size') }}>{labels.reset}</Button>}
+        </div>}</Field>
+      </fieldset>
       <div className="border-border-soft bg-card min-w-0 rounded-lg border p-5" aria-label={labels.preview}>
         <div className="text-muted-foreground mb-3 text-xs">{labels.preview}</div>
         <div className="break-words" style={{ fontSize: effective.body_size, lineHeight: effective.line_height }}>
           {(['h1', 'h2', 'h3'] as const).map((level, index) => <div key={level}>
             <div style={{ fontSize: effective[`${level}_size`], fontWeight: effective.heading_weight, fontFamily: 'var(--font-heading)', lineHeight: 1.25,
-              marginTop: index ? effective.heading_spacing : 0, marginBottom: 8 }}>{labels[level]}</div>
+              marginTop: index ? effective.heading_spacing : 0, marginBottom: 8 }}>
+              {(level === 'h3' || numbering[level]) && <span aria-hidden="true" data-number-preview={level} style={{ color: 'inherit', fontSize: `${Number.isFinite(numbering.size) ? numbering.size : 100}%` }}>{['1', '1.1', '1.1.1'][index]} </span>}{labels[level]}</div>
             {index === 2 && <p>{labels.body}</p>}
           </div>)}
         </div>

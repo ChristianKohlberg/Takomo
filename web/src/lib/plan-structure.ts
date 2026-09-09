@@ -46,15 +46,26 @@ export function movePlanSection(doc: Y.Doc, id: string, target: string, placemen
 type Position = { parent: string | null; order: string }
 type Move = { id: string; before: Position; after: Position }
 
-/** Session-local history. A unique origin excludes both remote writes and prose.
+/** Session-local chronological history. Explicit local origins include moves,
+ * heading edits and collaborating prose; provider transactions are excluded.
  * Validate the live hierarchy before Yjs restores individual fields; never
  * replace the document with a snapshot or resurrect a deleted destination. */
 export function createStructureHistory(doc: Y.Doc) {
   const origin = {}
-  const manager = new Y.UndoManager(nodesMap(doc), { trackedOrigins: new Set([origin]), captureTimeout: 0 })
+  const manager = new Y.UndoManager(nodesMap(doc), { trackedOrigins: new Set([origin]), captureTimeout: 500, captureTransaction: transaction => transaction.local && transaction.meta.get('addToHistory') !== false })
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach(listener => listener())
   const key = Symbol('move')
+  const insertionKey = Symbol('insert')
+  type Insertion = { id: string; parent: string | null; remoteChanged: boolean }
+  const observeRemote = (transaction: Y.Transaction) => {
+    if (transaction.local) return
+    for (const item of [...manager.undoStack, ...manager.redoStack]) {
+      const inserted = item.meta.get(insertionKey) as Insertion | undefined
+      if (inserted && ([...transaction.changedParentTypes.keys()].some(type => type === (nodesMap(doc).get(inserted.id) as unknown)) || [...transaction.changed].some(([type, keys]) => type === (nodesMap(doc) as unknown) && keys.has(inserted.id)))) inserted.remoteChanged = true
+    }
+  }
+  doc.on('afterTransaction', observeRemote)
   manager.on('stack-item-added', notify)
   manager.on('stack-item-popped', notify)
   const run = (direction: 'undo' | 'redo'): StructureResult => {
@@ -62,7 +73,14 @@ export function createStructureHistory(doc: Y.Doc) {
     const item = stack.at(-1)
     if (!item) return { ok: false, error: 'empty' }
     const move = item.meta.get(key) as Move | undefined
-    if (!move) return { ok: false, error: 'changed' }
+    if (!move) {
+      const inserted = item.meta.get(insertionKey) as Insertion | undefined
+      if (inserted && direction === 'undo' && (inserted.remoteChanged || readPlanTree(doc).some(node => node.parent === inserted.id))) return { ok: false, error: 'changed' }
+      if (inserted && direction === 'redo' && (nodesMap(doc).has(inserted.id) || inserted.parent !== null && !nodesMap(doc).has(inserted.parent))) return { ok: false, error: 'changed' }
+      manager[direction]()
+      if (inserted) (direction === 'undo' ? manager.redoStack : manager.undoStack).at(-1)?.meta.set(insertionKey, inserted)
+      notify(); return { ok: true }
+    }
     const tree = readPlanTree(doc)
     const current = tree.find(n => n.id === move.id)
     if (!current) return { ok: false, error: 'missing' }
@@ -79,11 +97,22 @@ export function createStructureHistory(doc: Y.Doc) {
     return { ok: true }
   }
   return {
+    manager,
+    insert(create: () => string | null): string | null {
+      manager.stopCapturing()
+      let id: string | null = null
+      doc.transact(() => { id = create() }, origin)
+      if (id) manager.undoStack.at(-1)?.meta.set(insertionKey, { id, remoteChanged: false, parent: readPlanTree(doc).find(node => node.id === id)?.parent ?? null })
+      manager.stopCapturing()
+      return id
+    },
+    record(change: () => void) { manager.stopCapturing(); doc.transact(change, origin); manager.stopCapturing() },
     get undoSection(): string | undefined { return (manager.undoStack.at(-1)?.meta.get(key) as Move | undefined)?.id },
     get redoSection(): string | undefined { return (manager.redoStack.at(-1)?.meta.get(key) as Move | undefined)?.id },
     get canUndo() { return manager.undoStack.length > 0 },
     get canRedo() { return manager.redoStack.length > 0 },
     move(id: string, target: string, placement: SectionPlacement): StructureResult {
+      manager.stopCapturing()
       const before = readPlanTree(doc).find(n => n.id === id)
       const result = movePlanSection(doc, id, target, placement, origin)
       if (result.ok && before) {
@@ -91,11 +120,12 @@ export function createStructureHistory(doc: Y.Doc) {
         manager.undoStack.at(-1)?.meta.set(key, { id, before: { parent: before.parent, order: before.order }, after: { parent: after.parent, order: after.order } } satisfies Move)
         notify()
       }
+      manager.stopCapturing()
       return result
     },
     undo: () => run('undo'),
     redo: () => run('redo'),
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } },
-    destroy() { manager.destroy(); listeners.clear() },
+    destroy() { doc.off('afterTransaction', observeRemote); manager.destroy(); listeners.clear() },
   }
 }

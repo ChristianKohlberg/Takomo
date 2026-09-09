@@ -142,9 +142,11 @@ describe('SectionPanel', () => {
     expect(screen.queryByLabelText('Rename section')).toBeNull()
   })
 
-  it('says where the section stands in words', () => {
+  it('keeps an accessible trust icon inside section actions', () => {
     panel({ standing: 'changed' })
-    expect(screen.getByText('changed since')).toBeTruthy()
+    expect(screen.queryByText('changed since')).toBeNull()
+    fireEvent.click(screen.getByRole('button', {name:'Section actions'}))
+    expect(screen.getByRole('img', {name:'changed since'})).toBeTruthy()
   })
 
   it('records a review, and refuses to offer one to a token that cannot write', () => {

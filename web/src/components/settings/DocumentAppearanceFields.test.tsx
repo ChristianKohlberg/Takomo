@@ -68,6 +68,39 @@ describe('document appearance controls', () => {
   it('disables template and numeric controls for read-only projects', () => {
     render(<Form disabled />)
     expect((screen.getByLabelText('Template') as HTMLSelectElement).disabled).toBe(true)
+    for (const input of screen.getAllByRole('checkbox')) expect((input as HTMLInputElement).disabled).toBe(true)
     for (const input of screen.getAllByRole('spinbutton')) expect((input as HTMLInputElement).disabled).toBe(true)
   })
+})
+
+
+it('previews heading-relative number size and visibility, and resets defaults', () => {
+  let latest: DocumentAppearance | undefined
+  const ui = render(<Form onValue={value => { latest = value }} />)
+  const number = () => ui.container.querySelector('[data-number-preview="h1"]') as HTMLElement | null
+  expect(number()?.style.fontSize).toBe('100%')
+  expect(number()?.style.color).toBe('inherit')
+  fireEvent.change(screen.getByLabelText('Number size (% of heading)'), { target: { value: '125' } })
+  expect(number()?.style.fontSize).toBe('125%')
+  expect(latest?.numbering?.size).toBe(125)
+  fireEvent.click(screen.getByLabelText('Show H1 numbers'))
+  expect(number()).toBeNull()
+  expect(latest?.numbering?.h1).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Reset: Show H1 numbers' }))
+  expect(number()).not.toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Reset: Number size (% of heading)' }))
+  expect(number()?.style.fontSize).toBe('100%')
+  expect(latest?.numbering).toBeUndefined()
+})
+it('does not allow invalid number size to be saved and restores a cleared value on blur', () => {
+  let latest: DocumentAppearance | undefined
+  render(<Form onValue={value => { latest = value }} />)
+  const input = screen.getByLabelText('Number size (% of heading)') as HTMLInputElement
+  fireEvent.change(input, { target: { value: '151' } })
+  expect(latest && validDocumentAppearance(latest)).toBe(false)
+  fireEvent.change(input, { target: { value: '' } })
+  expect(input.value).toBe('')
+  fireEvent.blur(input)
+  expect(input.value).toBe('100')
+  expect(latest?.numbering).toBeUndefined()
 })

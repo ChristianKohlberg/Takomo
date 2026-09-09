@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import { describe, expect, it } from 'vitest'
 import {
-  documentAppearanceStyle, resolveDocumentAppearance, sameDocumentAppearance, validDocumentAppearance,
+  documentAppearanceStyle, resolveDocumentNumbering, resolveDocumentAppearance, sameDocumentAppearance, validDocumentAppearance,
 } from './document-appearance'
 
 describe('document appearance inheritance', () => {
@@ -32,5 +32,20 @@ describe('document appearance inheritance', () => {
     expect(resolved.h1_size).toBe(32)
     expect(resolved.h2_size).toBe(30)
     expect(documentAppearanceStyle({ template: 'strong', overrides: { h1_size: NaN } })['--doc-h1-size' as keyof CSSProperties]).toBe('32px')
+  })
+})
+
+
+describe('document numbering defaults', () => {
+  it('inherits visibility and relative size for older projects and resets individual fields', () => {
+    expect(resolveDocumentNumbering()).toEqual({ h1: true, h2: true, size: 100 })
+    expect(resolveDocumentNumbering({ template: 'strong', overrides: {}, numbering: { h2: false } })).toEqual({ h1: true, h2: false, size: 100 })
+    expect(documentAppearanceStyle({ template: 'balanced', overrides: {}, numbering: { size: 125 } })).toMatchObject({ '--doc-number-scale': 1.25, '--doc-number-size': '125%' })
+  })
+  it('validates number bounds and includes numbering in dirty checks', () => {
+    for (const size of [49, 151, NaN, Infinity]) expect(validDocumentAppearance({ template: 'balanced', overrides: {}, numbering: { size } })).toBe(false)
+    expect(validDocumentAppearance({ template: 'balanced', overrides: {}, numbering: { h1: false, size: 50 } })).toBe(true)
+    expect(sameDocumentAppearance({ template: 'balanced', overrides: {} }, { template: 'balanced', overrides: {}, numbering: { h1: false } })).toBe(false)
+    expect(sameDocumentAppearance({ template: 'balanced', overrides: {} }, { template: 'balanced', overrides: {}, numbering: {} })).toBe(true)
   })
 })
