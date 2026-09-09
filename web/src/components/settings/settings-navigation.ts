@@ -9,10 +9,9 @@ export function settingsSection(search: string): SettingsSection {
   return key && (isProjectSection(key) || ['overview', 'data', 'access', 'people', 'projects', 'library', 'search'].includes(key))
     ? key as SettingsSection : 'general'
 }
+/** `scope=` with no value is an explicit "no project"; an absent `scope` falls back to the remembered one. */
 export function settingsHref(section: SettingsSection, project: string) {
-  const params = new URLSearchParams({ section })
-  if (project) params.set('scope', project)
-  return `/settings?${params}`
+  return `/settings?${new URLSearchParams({ section, scope: project })}`
 }
 export const settingsLabels = (lang: Locale): Record<SettingsSection, string> => lang === 'de' ? {
   general: 'Allgemein', writing: 'Schreibanweisungen', documents: 'Dokumentdarstellung', workflow: 'Workflow & Laufzeiten',

@@ -98,9 +98,10 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   const location = useLocation()
   const section = settingsSection(location.search)
   const params = new URLSearchParams(location.search)
-  const navProject = params.get('scope') ?? params.get('project') ?? loadProject()
+  const urlProject = params.get('scope') ?? params.get('project')
+  const navProject = urlProject ?? loadProject()
   const selectedId = navProject || null
-  useEffect(() => { if (navProject) saveProject(navProject) }, [navProject])
+  useEffect(() => { if (urlProject !== null) saveProject(urlProject) }, [urlProject])
 
   const [who, setWho] = useState<Whoami | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
@@ -399,10 +400,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
     <SettingsLayout lang={lang} legacy={legacy} section={section}
       onLang={l => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       project={navProject} projects={projects} onSignOut={signOut}
-      onProject={id => {
-        if (!id) saveProject('')
-        navigate(legacy ? (id ? `/legacy?scope=${encodeURIComponent(id)}` : '/legacy') : settingsHref(section, id))
-      }}>
+      onProject={id => navigate(legacy ? `/legacy?scope=${encodeURIComponent(id)}` : settingsHref(section, id))}>
       {legacy ? <PageCollection lang={lang} project={navProject} /> :
         <div className="min-w-0 pb-10">
           {!isAdmin ? (
@@ -909,7 +907,6 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             // the panel showing a project that no longer exists.
             if (deleting.id === navProject) {
               discardDrafts()
-              saveProject('')
               navigate(settingsHref('projects', ''))
             }
             await refresh()
