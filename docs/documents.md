@@ -552,3 +552,38 @@ worker. Verify the new worker claims a disposable classification request in the
 queue inspector before relying on automatic matching. No existing-ticket bulk
 backfill is scheduled by installation; use the explicit project action when
 needed.
+
+### Reset a document
+
+In **Settings → Projects → Open → Reset a document**, an administrator can select
+that project's specification or an initiative document and clear its current
+contents. The first confirmation names the document and explains what will be
+removed; the second requires typing its exact ID before **Clear document** becomes
+available. Canceling either step makes no changes. Archived projects must be
+restored first.
+
+`POST /v1/mindmaps/{id}/reset` with `{"confirm_id":"<mindmap id>"}` clears the
+specification summary and all sections, prose, node attachments, relationships,
+comments and agent proposals. **The document and mindmap share this content, so
+both views are cleared.** The map keeps its identity, title, status and metadata;
+existing revision and review history and linked tickets/checks remain. This reset
+cannot be reversed with Undo. Copy anything you need before confirming.
+
+The server requires `admin` and access to the project, merges live and persisted
+CRDT state inside the reset transaction, commits before replying, and broadcasts
+the deletion to connected editors. Existing synced text cannot be revived by
+replaying an old replica, and open editors clear their undo/redo stacks. New edits,
+including previously unsynced concurrent changes, still merge normally. Reset is
+not a storage purge or a barrier against new edits. It emits `mindmap_reset`.
+
+The same settings control supports initiative documents:
+`POST /v1/initiatives/{id}/reset` with the exact `confirm_id` clears their summary
+and entries (including views, notes, amendments, discussions, proposals and
+attachments), preserving identity, filing metadata and linked work. It emits
+`initiative_reset`.
+
+Legacy collaborative-document API clients can use
+`POST /v1/documents/{id}/reset` with the same confirmation shape. It clears prose
+and proposals while preserving document filing and metadata, emits `document.reset`,
+and refuses archived documents. The current specification UI uses the mindmap
+endpoint above.

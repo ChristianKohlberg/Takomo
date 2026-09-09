@@ -403,6 +403,73 @@ impl Store {
         })
     }
 
+    /// Clear the current content while retaining its CRDT identity and history.
+    /// The live snapshot and every persisted update are merged INSIDE the write
+    /// transaction, so an external append cannot disappear between the read and
+    /// replacement. The returned state includes deletion tombstones for peers.
+    pub fn reset_collab_content(
+        &self,
+        id: &str,
+        live: &[u8],
+        actor: &str,
+    ) -> ApiResult<(Vec<u8>, i64)> {
+        use yrs::updates::decoder::Decode;
+        use yrs::{Doc, Map, ReadTxn, StateVector, Transact, Update, XmlFragment};
+        let now = now_ms();
+        self.with_tx(|tx| {
+            let object = resolve(tx, id)?;
+            ensure_project_writable(tx, &object.project)?;
+            if object.archived { return Err(archived_error(&object)); }
+            if !matches!(object.kind, CollabKind::Document | CollabKind::Mindmap) {
+                return Err(ApiError::not_found("document", id));
+            }
+            let doc = Doc::new();
+            {
+                let mut txn = doc.transact_mut();
+                let mut stmt = tx.prepare("SELECT blob FROM crdt_updates WHERE object_id = ?1 ORDER BY seq")?;
+                for blob in stmt.query_map([id], |row| row.get::<_, Vec<u8>>(0))? {
+                    txn.apply_update(Update::decode_v1(&blob?).map_err(|e| ApiError::internal(e.to_string()))?)
+                        .map_err(|e| ApiError::internal(e.to_string()))?;
+                }
+                txn.apply_update(Update::decode_v1(live).map_err(|e| ApiError::internal(e.to_string()))?)
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            }
+            let prose = doc.get_or_insert_xml_fragment("prose");
+            let proposals = doc.get_or_insert_map("proposals");
+            let nodes = doc.get_or_insert_map("nodes");
+            let relationships = doc.get_or_insert_map("relationships");
+            let comments = doc.get_or_insert_map("documentComments");
+            let control = doc.get_or_insert_map("document_control");
+            {
+                let mut txn = doc.transact_mut();
+                let len = prose.len(&txn);
+                if len > 0 { prose.remove_range(&mut txn, 0, len); }
+                proposals.clear(&mut txn);
+                if object.kind == CollabKind::Mindmap {
+                    nodes.clear(&mut txn);
+                    relationships.clear(&mut txn);
+                    comments.clear(&mut txn);
+                }
+                control.insert(&mut txn, "reset", crate::ids::ticket_suffix(24));
+            }
+            let state = doc.transact().encode_state_as_update_v1(&StateVector::default());
+            if state.len() as i64 > MAX_OBJECT_BYTES {
+                return Err(ApiError::conflict("conflict.collab_compaction_size", "Reset state exceeds the object storage limit."));
+            }
+            if object.kind == CollabKind::Mindmap {
+                super::spec_history::record(tx, id, &state, actor, now)?;
+                tx.execute("UPDATE mindmaps SET summary = '', nodes = 0, version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
+                super::helpers::emit_event(tx, None, Some(&object.project), actor, "mindmap_reset", serde_json::json!({"mindmap": id}), now)?;
+            } else {
+                tx.execute("UPDATE documents SET version = version + 1, updated_at = ?2 WHERE id = ?1", params![id, now])?;
+                super::helpers::emit_event(tx, None, Some(&object.project), actor, "document.reset", serde_json::json!({"document": id}), now)?;
+            }
+            tx.execute("DELETE FROM crdt_updates WHERE object_id = ?1", params![id])?;
+            tx.execute("INSERT INTO crdt_updates (object_kind, object_id, blob, bytes, created_by, created_at) VALUES (?1,?2,?3,?4,?5,?6)", params![object.kind.as_str(), id, &state, state.len() as i64, actor, now])?;
+            Ok((state, tx.last_insert_rowid()))
+        })
+    }
+
     /// Replace the whole log with one update carrying the same state.
     ///
     /// No snapshot table is involved, and that is a property of Yjs rather than

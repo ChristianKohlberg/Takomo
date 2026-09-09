@@ -246,6 +246,32 @@ pub async fn delete(
     })))
 }
 
+/// POST /v1/initiatives/{id}/reset (admin) — clear document contents.
+pub async fn reset(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    let existing = state
+        .store
+        .get_initiative(&id)?
+        .ok_or_else(|| ApiError::not_found("initiative", &id))?;
+    ctx.require_project(&existing.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["confirm_id"])?;
+    if require_str(obj, "confirm_id")? != id {
+        return Err(ApiError::validation(
+            "validation.confirm_id",
+            "Type the document ID exactly to confirm resetting this document.",
+        ));
+    }
+    let updated = state.store.reset_initiative(&id, &ctx.actor)?;
+    state.wake();
+    Ok(Json(updated.to_json()))
+}
+
 /// POST /v1/initiatives/{id}/entries (write) — append one contribution: a note,
 /// a research finding, a colleague's feedback, a transcript, a document.
 ///

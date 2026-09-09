@@ -316,6 +316,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // exists and what keeps it contained. Off unless a key is configured;
         // everything else on /documents works without it.
         .route("/v1/documents/{id}/run", post(crate::api::docs::run_agent))
+        .route("/v1/documents/{id}/reset", post(crate::api::docs::reset))
+        .route("/v1/mindmaps/{id}/reset", post(crate::api::mindmaps::reset))
+        .route("/v1/initiatives/{id}/reset", post(crate::api::initiatives::reset))
         .route("/v1/projects/{project}/test-definitions", get(crate::api::testruns::definitions))
         .route("/v1/checks/{id}/definition", get(crate::api::testruns::definition))
         .route("/v1/projects/{project}/test-runs", get(crate::api::testruns::list).post(crate::api::testruns::create))

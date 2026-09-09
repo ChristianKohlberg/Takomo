@@ -55,6 +55,9 @@ export function createStructureHistory(doc: Y.Doc) {
   const manager = new Y.UndoManager(nodesMap(doc), { trackedOrigins: new Set([origin]), captureTimeout: 500, captureTransaction: transaction => transaction.local && transaction.meta.get('addToHistory') !== false })
   const listeners = new Set<() => void>()
   const notify = () => listeners.forEach(listener => listener())
+  const control = doc.getMap('document_control')
+  const clearOnReset = () => { manager.clear(); notify() }
+  control.observe(clearOnReset)
   const key = Symbol('move')
   const insertionKey = Symbol('insert')
   type Insertion = { id: string; parent: string | null; remoteChanged: boolean }
@@ -126,6 +129,6 @@ export function createStructureHistory(doc: Y.Doc) {
     undo: () => run('undo'),
     redo: () => run('redo'),
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener) } },
-    destroy() { doc.off('afterTransaction', observeRemote); manager.destroy(); listeners.clear() },
+    destroy() { control.unobserve(clearOnReset); doc.off('afterTransaction', observeRemote); manager.destroy(); listeners.clear() },
   }
 }

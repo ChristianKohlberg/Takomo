@@ -155,6 +155,38 @@ pub async fn patch(
     Ok(Json(json!({ "mindmap": map.to_json() })))
 }
 
+/// POST /v1/mindmaps/{id}/reset (admin). The document and canvas share this
+/// content: clearing sections clears the corresponding map nodes as well.
+pub async fn reset(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    ctx.require_scope("admin")?;
+    let map = state
+        .store
+        .get_mindmap(&id)?
+        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
+    ctx.require_project(&map.project)?;
+    let obj = body_object(&body)?;
+    reject_unknown(obj, &["confirm_id"])?;
+    if require_str(obj, "confirm_id")? != id {
+        return Err(ApiError::validation(
+            "validation.confirm_id",
+            "confirm_id must exactly match the document id being reset.".to_string(),
+        ));
+    }
+    state.store.ensure_collab_writable(&id)?;
+    let room = open_room(&state, &id).await?;
+    room.reset_content(&state, &ctx.actor).await?;
+    let map = state
+        .store
+        .get_mindmap(&id)?
+        .ok_or_else(|| ApiError::not_found("mindmap", &id))?;
+    Ok(Json(json!({ "mindmap": map.to_json() })))
+}
+
 /// DELETE /v1/mindmaps/{id} (write) — throw it away, nodes and all.
 ///
 /// An ordinary thing to do, and the clearest statement of what a mindmap is. What

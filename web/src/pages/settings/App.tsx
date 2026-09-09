@@ -46,6 +46,7 @@ import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { DocumentClassificationPolicy } from '@/components/settings/DocumentClassificationPolicy'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
+import { DocumentReset } from '@/components/settings/DocumentReset'
 import { WritingInstructions } from '@/components/settings/WritingInstructions'
 import { PromptDialog } from '@/components/settings/PromptDialog'
 import { WorkflowEditor } from '@/components/settings/workflow/WorkflowEditor'
@@ -710,6 +711,9 @@ export function App() {
               ) : selected ? (
                 <ProjectDetail
                   project={selected}
+                  documentResetSlot={isAdmin && !selected.archived && (
+                    <DocumentReset key={`${token}:${selected.id}`} token={token} project={selected.id} lang={lang} />
+                  )}
                   classificationSlot={<DocumentClassificationPolicy token={token} project={selected.id} lang={lang} readOnly={!isAdmin || !!selected.archived} canClassify={!!who?.scopes.includes('human') && !!who?.scopes.includes('write') && !selected.archived} />}
                   writingSlot={<WritingInstructions token={token} project={selected.id}
                     readOnly={!isAdmin || selected.archived === true} lang={lang} />}

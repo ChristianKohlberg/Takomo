@@ -261,6 +261,46 @@ impl Room {
         Ok(out)
     }
 
+    /// Reset through the same room as editors, with a durable commit before
+    /// broadcast. Failure leaves the live replica and pending edits untouched.
+    pub async fn reset_content(
+        self: &Arc<Self>,
+        state: &Arc<AppState>,
+        actor: &str,
+    ) -> ApiResult<()> {
+        let _flushing = self.flushing.lock().await;
+        let room = self.clone();
+        let state = state.clone();
+        let actor = actor.to_string();
+        tokio::task::spawn_blocking(move || {
+            let live = room.doc.lock().expect("room doc mutex");
+            let snapshot = live
+                .transact()
+                .encode_state_as_update_v1(&StateVector::default());
+            let (reset, seq) = state
+                .store
+                .reset_collab_content(&room.id, &snapshot, &actor)?;
+            live.transact_mut()
+                .apply_update(
+                    Update::decode_v1(&reset).map_err(|e| ApiError::internal(e.to_string()))?,
+                )
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            room.pending.lock().expect("pending mutex").clear();
+            room.rows.store(1, Ordering::SeqCst);
+            room.base_seq.store(seq, Ordering::SeqCst);
+            room.own_appends.store(0, Ordering::SeqCst);
+            room.escape_refused.store(false, Ordering::SeqCst);
+            room.overloaded.store(false, Ordering::SeqCst);
+            let _ = room
+                .tx
+                .send((0, Arc::new(sync_message(SYNC_UPDATE, &reset))));
+            state.wake();
+            Ok(())
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    }
+
     /// Read the replica without changing it.
     pub fn read<T>(&self, f: impl FnOnce(&Doc) -> T) -> T {
         let doc = self.doc.lock().expect("room doc mutex");

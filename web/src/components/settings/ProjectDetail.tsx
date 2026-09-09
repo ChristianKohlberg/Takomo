@@ -69,6 +69,7 @@ export interface ProjectDetailProps {
    * component would make it the editor's controller instead of a form.
    */
   workflowSlot?: ReactNode
+  documentResetSlot?: ReactNode
   writingSlot?: ReactNode
   classificationSlot?: ReactNode
   settings: ProjectSettings
@@ -89,6 +90,7 @@ export interface ProjectDetailProps {
 export function ProjectDetail({
   project,
   workflowSlot,
+  documentResetSlot,
   writingSlot,
   classificationSlot,
   settings: s,
@@ -278,6 +280,8 @@ export function ProjectDetail({
           )}
         </div>
       </div>
+
+      {documentResetSlot}
 
       {workflowSlot && (
         <>
