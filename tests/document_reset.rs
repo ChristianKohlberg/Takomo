@@ -83,10 +83,11 @@ async fn document_reset_persists_and_broadcasts_tombstones_preserving_identity()
     // replica before the queue, so the reset must carry its tombstone rather
     // than drop it from the queue and leave it revivable.
     let live_update = {
+        // The root is fetched BEFORE the write transaction opens: `get_or_insert_map`
+        // takes the document's own lock, and taking it under `transact_mut` deadlocks.
+        let proposals = replica.get_or_insert_map("proposals");
         let mut txn = replica.transact_mut();
-        replica
-            .get_or_insert_map("proposals")
-            .insert(&mut txn, "live-proposal", "typed just now");
+        proposals.insert(&mut txn, "live-proposal", "typed just now");
         txn.encode_update_v1()
     };
     socket
