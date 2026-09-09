@@ -35,7 +35,7 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
   const watchers = useRef(0)
   const refresh = useRef<() => void>(() => {})
   const localPending = server === 'behind'
-  useEffect(() => { if (localPending) revision.current++ }, [localPending])
+  const pending = useRef(localPending)
   useEffect(() => {
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -51,7 +51,7 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
       request.current = controller
       searchStatus(token, map, controller.signal).then(value => {
         if (controller.signal.aborted) return
-        setStatus(value); setError(''); setFreshAfterSave(!localPending)
+        setStatus(value); setError(''); setFreshAfterSave(!pending.current)
         if (value.projection === 'current') setDeferred(false)
       }).catch((reason: Error) => {
         if (!controller.signal.aborted) { setError(reason.message); setFreshAfterSave(false) }
@@ -69,7 +69,13 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [token, map, localPending])
+  }, [token, map])
+  useEffect(() => {
+    const was = pending.current
+    pending.current = localPending
+    if (localPending) revision.current++
+    else if (was) refresh.current()
+  }, [localPending])
   const watch = useCallback(() => {
     watchers.current++
     refresh.current()
