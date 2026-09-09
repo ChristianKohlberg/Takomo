@@ -167,7 +167,24 @@ export default function SectionEditor({
       const plugins = this.parent?.() ?? []
       // The document owns the shared manager; virtualized editor views only own
       // their selection listener lifecycle (CollaborationHistorySelection).
-      for (const plugin of plugins) if (plugin.spec.key === yUndoPluginKey) plugin.spec.view = () => ({})
+      for (const plugin of plugins) {
+        if (plugin.spec.key === yUndoPluginKey) plugin.spec.view = () => ({})
+        if (plugin.spec.key === ySyncPluginKey && plugin.spec.view) {
+          const createView = plugin.spec.view
+          plugin.spec.view = view => {
+            const original = createView(view)
+            return { ...original, update(current, previous) {
+              const unchanged = current.state.doc.eq(previous.doc)
+              const captured = history.manager.lastChange
+              const lastItem = history.manager.undoStack.at(-1)
+              original.update?.(current, previous)
+              // y-tiptap stops capture for addToHistory=false even when only
+              // decorations changed. A sibling view must not split typing.
+              if (unchanged && captured > 0 && history.manager.lastChange === 0 && history.manager.undoStack.at(-1) === lastItem) history.manager.lastChange = captured
+            } }
+          }
+        }
+      }
       return plugins
     },
   }).configure({ document: ydoc, fragment, yUndoOptions: { undoManager: history.manager } }) : Collaboration.configure({ document: ydoc, fragment }), [history, ydoc, fragment])

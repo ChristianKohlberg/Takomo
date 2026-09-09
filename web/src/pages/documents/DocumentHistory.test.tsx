@@ -111,4 +111,24 @@ describe('one local document undo history', () => {
     view.unmount(); history.destroy(); provider.awareness.destroy(); doc.destroy(); peer.destroy()
   })
 
+  it('groups per-character typing despite sibling decoration-only transactions', () => {
+    const {doc,a,b,history,provider,editors,mount}=setup()
+    const paragraph=new Y.XmlElement('paragraph'); paragraph.insert(0,[new Y.XmlText('Existing sibling')]); proseOf(doc,b)!.insert(0,[paragraph])
+    const first=mount(a), second=mount(b)
+    history.manager.clear()
+    act(() => {
+      fireEvent.focus(editors.get(a)!.view.dom)
+      for (const character of 'Typing') {
+        editors.get(a)!.commands.insertContent(character)
+        const sibling=editors.get(b)!
+        sibling.view.dispatch(sibling.state.tr.setMeta('addToHistory',false))
+      }
+    })
+    expect(history.manager.undoStack).toHaveLength(1)
+    act(() => { history.undo() })
+    expect(editors.get(a)!.getText()).toBe('')
+    expect(editors.get(b)!.getText()).toBe('Existing sibling')
+    first.unmount(); second.unmount(); history.destroy(); provider.awareness.destroy(); doc.destroy()
+  })
+
 })
