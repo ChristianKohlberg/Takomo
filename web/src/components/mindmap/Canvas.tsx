@@ -697,7 +697,7 @@ export function Canvas({
         aria-label={title}
         tabIndex={0}
         className={cn(
-          'bg-muted h-full w-full touch-none outline-none',
+          'bg-mindmap-canvas h-full w-full touch-none outline-none',
           relationFrom ? 'cursor-crosshair' : viewportLocked ? 'cursor-default' : drag.kind === 'pan' ? 'cursor-grabbing' : 'cursor-grab',
         )}
         onPointerDown={onPointerDown}
@@ -767,7 +767,7 @@ export function Canvas({
               const from = p.node.parent ? positionOf(p.node.parent) : placed.root
               const d = edgePath(from, positionOf(p.node.id), mode === 'tidy' ? 'right' : 'auto')
               const cuttable = canWrite && p.node.parent !== null
-              if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-muted-foreground/40" d={d} />
+              if (!cuttable) return <path key={`e-${p.node.id}`} className="stroke-muted-foreground/65" d={d} />
               return (
                 <g
                   key={`e-${p.node.id}`}
@@ -781,7 +781,7 @@ export function Canvas({
                       .replace('{parent}', titleOf.get(p.node.parent as string) ?? '')}
                   </title>
                   <path d={d} stroke="transparent" strokeWidth={14} />
-                  <path className="stroke-muted-foreground/40 group-hover:stroke-destructive" d={d} />
+                  <path className="stroke-muted-foreground/65 group-hover:stroke-destructive" d={d} />
                 </g>
               )
             })}
@@ -930,8 +930,13 @@ export function Canvas({
                   // A question is squarer than a thought: it is a different kind
                   // of thing on the map, and shape says so before colour does.
                   rx={isQuestion ? 4 : cornerRadius(p.node.shape)}
+                  // The resting border is a presentation attribute, not a class:
+                  // an attribute loses to ANY class rule, so the state strokes
+                  // below (trust, question, selected, drop target) win without
+                  // depending on the order Tailwind emits same-property utilities.
+                  stroke="var(--mindmap-node-border)"
                   className={cn(
-                    'fill-card stroke-border',
+                    'fill-card',
                     trust && TRUST_FILL[trust],
                     isQuestion && 'fill-violet-50 stroke-violet-400 dark:fill-violet-950',
                     isSelected && 'stroke-ring',
@@ -1067,7 +1072,7 @@ export function Canvas({
                       cx={NODE_WIDTH}
                       cy={NODE_HEIGHT}
                       r={9}
-                      className="fill-card stroke-border"
+                      className="fill-card stroke-mindmap-node-border"
                       strokeWidth={1}
                     />
                     <text
