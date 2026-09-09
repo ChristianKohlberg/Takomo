@@ -111,6 +111,8 @@ function SpecificationWorkspace({
   const [token, setToken] = useState(loadToken)
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem('takomo.lang')))
   const [actor, setActor] = useState('')
+  const [identity, setIdentity] = useState<{ token: string; id?: string } | null>(null)
+  const userId = identity?.token === token ? identity.id : undefined
   const [scopes, setScopes] = useState<string[]>([])
   const [voice, setVoice] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
@@ -191,6 +193,7 @@ function SpecificationWorkspace({
       const [who, items] = await Promise.all([whoami(token), listProjects(token)])
       if (cancelled) return
       setActor(who.actor ?? '')
+      setIdentity({ token, id: who.user?.id })
       setScopes(who.scopes ?? [])
       setVoice(who.features?.voice === true)
       setProjects(items)
@@ -333,6 +336,7 @@ function SpecificationWorkspace({
       project,
       projects,
       actor,
+      userId,
       scopes,
       voice,
       map,
@@ -358,6 +362,7 @@ function SpecificationWorkspace({
       project,
       projects,
       actor,
+      userId,
       scopes,
       voice,
       map,

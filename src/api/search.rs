@@ -1,7 +1,8 @@
 use super::{first, query_pairs, ApiJson};
 use crate::{
-    auth::{debit_shared_window, AuthCtx},
+    auth::AuthCtx,
     error::{ApiError, ApiResult},
+    query_embeddings::QueryEmbedding,
     server::AppState,
     store::search::{terms, EmbeddingConfig, RESULT_LIMIT},
 };
@@ -12,7 +13,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-pub const QUERY_EMBEDDINGS_PER_MINUTE: i64 = 60;
+pub use crate::query_embeddings::QUERY_EMBEDDINGS_PER_MINUTE;
 
 fn authorize(state: &AppState, ctx: &AuthCtx, map: &str, write: bool) -> ApiResult<()> {
     ctx.require_scope("read")?;
@@ -72,7 +73,9 @@ pub async fn save_settings(
         )
         .remedy("GET /v1/settings/embeddings, edit the fields you want, and PUT all six back.")
     })?;
-    Ok(Json(state.store.save_embedding_config(config, key)?))
+    let saved = state.store.save_embedding_config(config, key)?;
+    state.query_embeddings.invalidate();
+    Ok(Json(saved))
 }
 pub async fn search(
     State(state): State<Arc<AppState>>,
@@ -107,23 +110,27 @@ pub async fn search(
     };
     let mut vector = None;
     if semantic_status == "ready" && !terms(&q).is_empty() {
-        if debit_shared_window(
-            &state.search_rate,
-            &ctx.token_id,
-            QUERY_EMBEDDINGS_PER_MINUTE,
-        )
-        .is_err()
+        let (generation, result) = state
+            .query_embeddings
+            .get(&config, &key, &ctx.token_id, &q)
+            .await;
+        // A configuration change cannot make an older request current, including
+        // switching away and back to the same provider while it was running.
+        let (current, current_key) = state.store.embedding_config()?;
+        if !state.query_embeddings.is_current(generation)
+            || current.fingerprint() != config.fingerprint()
+            || current_key != key
         {
-            semantic_status = "throttled";
+            semantic_status = if current_key.is_empty() {
+                "unconfigured"
+            } else {
+                "indexing"
+            };
         } else {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                crate::embeddings::embed(&config, &key, std::slice::from_ref(&q), true),
-            )
-            .await
-            {
-                Ok(Ok(mut v)) => vector = v.pop(),
-                _ => semantic_status = "unavailable",
+            match result {
+                QueryEmbedding::Ready(v) => vector = Some(v),
+                QueryEmbedding::Throttled => semantic_status = "throttled",
+                QueryEmbedding::Unavailable => semantic_status = "unavailable",
             }
         }
     }
@@ -136,9 +143,11 @@ pub async fn search(
         let q = q.clone();
         let fingerprint = config.fingerprint();
         super::blocking_read(move || {
-            state
-                .store
-                .search_document(&map, &q, vector.as_deref().map(|v| (v, fingerprint)))
+            state.store.search_document(
+                &map,
+                &q,
+                vector.as_deref().map(|v| (v.as_slice(), fingerprint)),
+            )
         })
         .await?
     };

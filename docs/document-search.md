@@ -7,6 +7,14 @@ section and selects the original passage when it is still present. Escape closes
 the modal. The separate Find command remains literal next/previous occurrence
 search, and browser Cmd+F is unchanged.
 
+An empty search input offers up to eight recent queries. Only deliberately
+submitted queries and queries used to open a result are remembered; typing alone
+does not add history. Choose a recent query with the keyboard or pointer, or use
+Clear to remove this history. It is stored in this browser for the signed-in
+directory user and project; machine credentials without a user keep only
+session history. No results or credentials are stored. The modal reserves a
+scrolling body so history, loading, results and errors do not move the input.
+
 Results are grouped by section and show the heading path and an original text
 excerpt. Highlights identify literal query words in that excerpt; a result found
 only by its vector is labelled related meaning without invented highlights.
@@ -17,8 +25,19 @@ distinct sections among the bounded candidate set of the top 100 keyword and top
 100 semantic chunks), `truncated`, and a `note` when sections were left out. The
 candidate count is not a count of every section that could match, so the modal
 shows "top 20 of N" rather than a total. Query embeddings are bounded to 60 per
-token per minute; past that the search answers from keywords alone and reports
+token per minute for outbound calls; cache hits do not spend that budget. Past
+that, an uncached search answers from keywords alone and reports
 `semantic_status: throttled` instead of failing or spending more.
+
+The server keeps at most 256 query vectors in memory for ten minutes after each
+successful computation. Identity includes the provider protocol, endpoint, model,
+dimensions, credential and authenticated token ID, plus the trimmed query with
+its case preserved. Concurrent identical requests share one bounded provider
+call, even if the first client closes its modal. Failures are not cached. Saving
+provider settings invalidates cached and in-flight generations. Authorization
+and retrieval of current document content still run for every search; results,
+source snapshots and document embeddings are not part of this cache. Restarting
+the server empties it.
 
 ## Provider configuration
 

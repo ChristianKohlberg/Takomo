@@ -19,9 +19,11 @@ describe('Lane organizer', () => {
     await waitFor(() => expect(api.requestOrganization).toHaveBeenCalledWith('secret', 'demo', { message: 'Group recovery work', request_id: expect.any(String) }))
     expect(api.acceptOrganization).not.toHaveBeenCalled(); expect(await screen.findByText('A configured agent service must pick up this request.')).toBeTruthy(); expect(screen.getByRole('link', { name: 'Open agent queue' })).toHaveProperty('pathname', '/agent-queues'); expect(screen.getByRole('button', { name: 'Organize pending work' })).toHaveProperty('disabled', true)
   })
+  // Markdown fills its mount point in a passive effect, which React flushes on a separate task from the
+  // commit findBy* observes — so Markdown-rendered text is awaited, never read synchronously after a findBy*.
   it('shows frozen ticket context, readiness and unassigned work before explicit acceptance', async () => {
     vi.mocked(api.getOrganizer).mockResolvedValue(proposal); mount(); await screen.findByRole('heading', { name: 'Reliable editing' })
-    expect(screen.getByText('Needs clarification')).toBeTruthy(); expect(screen.getByText(group.reason)).toBeTruthy(); expect(screen.getByText('Recover after reconnect')).toBeTruthy(); expect(screen.getByText('https://example.test/spec')).toBeTruthy(); expect(screen.getByRole('link', { name: 'Release branding' })).toBeTruthy(); expect(api.acceptOrganization).not.toHaveBeenCalled()
+    expect(screen.getByText('Needs clarification')).toBeTruthy(); expect(screen.getByText(group.reason)).toBeTruthy(); expect(await screen.findByText('Recover after reconnect')).toBeTruthy(); expect(screen.getByText('https://example.test/spec')).toBeTruthy(); expect(screen.getByRole('link', { name: 'Release branding' })).toBeTruthy(); expect(api.acceptOrganization).not.toHaveBeenCalled()
     const applied = { ...proposal, jobs: [{ ...job, accepted_at: '2026-09-07T12:05:00Z' }] }; vi.mocked(api.acceptOrganization).mockResolvedValue(applied); vi.mocked(api.getOrganizer).mockResolvedValue(applied); fireEvent.click(screen.getByRole('button', { name: 'Accept all proposed changes' })); await waitFor(() => expect(api.acceptOrganization).toHaveBeenCalledWith('secret', 'demo', 'job-1')); expect(props.onAccepted).toHaveBeenCalledTimes(1); expect(await screen.findByText('Proposal applied')).toBeTruthy()
   })
   it('preserves proposals after a stale-snapshot rejection', async () => {
@@ -53,6 +55,6 @@ describe('Lane organizer', () => {
     expect(screen.getByRole('button', { name: 'Organize pending work' })).toHaveProperty('disabled', true)
   })
   it('shows existing-lane context for comparison and never enables acceptance for an accepted proposal', async () => {
-    vi.mocked(api.getOrganizer).mockResolvedValue({ ...proposal, jobs: [{ ...job, accepted_at: '2026-09-07T12:05:00Z', proposal: { groups: [{ ...group, lane_id: 'wl-1' }], unassigned: [] }, snapshot: { ...job.snapshot, lanes: [{ id: 'wl-1', title: group.title, purpose: group.purpose, context: 'Earlier decision', tickets: [] }] } }] }); mount(); fireEvent.click(await screen.findByRole('button', { name: 'Review proposal' })); expect(screen.getByText('Existing lane')).toBeTruthy(); expect(screen.getByText('Earlier decision')).toBeTruthy(); expect(screen.queryByRole('button', { name: 'Accept all proposed changes' })).toBeNull()
+    vi.mocked(api.getOrganizer).mockResolvedValue({ ...proposal, jobs: [{ ...job, accepted_at: '2026-09-07T12:05:00Z', proposal: { groups: [{ ...group, lane_id: 'wl-1' }], unassigned: [] }, snapshot: { ...job.snapshot, lanes: [{ id: 'wl-1', title: group.title, purpose: group.purpose, context: 'Earlier decision', tickets: [] }] } }] }); mount(); fireEvent.click(await screen.findByRole('button', { name: 'Review proposal' })); expect(screen.getByText('Existing lane')).toBeTruthy(); expect(await screen.findByText('Earlier decision')).toBeTruthy(); expect(screen.queryByRole('button', { name: 'Accept all proposed changes' })).toBeNull()
   })
 })

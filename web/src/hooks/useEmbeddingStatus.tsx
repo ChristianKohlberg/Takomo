@@ -34,6 +34,7 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
   const revision = useRef(0)
   const watchers = useRef(0)
   const refresh = useRef<() => void>(() => {})
+  const schedule = useRef<() => void>(() => {})
   const localPending = server === 'behind'
   const pending = useRef(localPending)
   useEffect(() => {
@@ -42,6 +43,7 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
     setFreshAfterSave(false)
     const later = () => {
       clearTimeout(timer)
+      if (stopped || document.visibilityState === 'hidden') return
       timer = setTimeout(read, watchers.current > 0 ? STATUS_POLL_OPEN_MS : STATUS_POLL_IDLE_MS)
     }
     const read = () => {
@@ -49,22 +51,32 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
       if (syncingRef.current) { later(); return }
       const controller = new AbortController()
       request.current = controller
+      const ownsRequest = () => !stopped && !controller.signal.aborted && request.current === controller
       searchStatus(token, map, controller.signal).then(value => {
-        if (controller.signal.aborted) return
+        if (!ownsRequest()) return
         setStatus(value); setError(''); setFreshAfterSave(!pending.current)
         if (value.projection === 'current') setDeferred(false)
       }).catch((reason: Error) => {
-        if (!controller.signal.aborted) { setError(reason.message); setFreshAfterSave(false) }
-      }).finally(() => { if (!stopped) later() })
+        if (ownsRequest()) { setError(reason.message); setFreshAfterSave(false) }
+      }).finally(() => {
+        // An aborted read may settle after its replacement. Only the current
+        // owner may release the slot or schedule the next poll.
+        if (ownsRequest()) { request.current = null; later() }
+      })
     }
     const now = () => { clearTimeout(timer); setFreshAfterSave(false); request.current?.abort(); read() }
-    const visibility = () => { if (document.visibilityState === 'visible') now() }
+    const visibility = () => {
+      if (document.visibilityState === 'visible') now()
+      else { clearTimeout(timer); request.current?.abort(); request.current = null }
+    }
     refresh.current = now
+    schedule.current = later
     document.addEventListener('visibilitychange', visibility)
     read()
     return () => {
       stopped = true
       refresh.current = () => {}
+      schedule.current = () => {}
       request.current?.abort()
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', visibility)
@@ -88,13 +100,14 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
     setSyncing(true); setError(''); setDeferred(false)
     // A poll begun before this action cannot overwrite the action's response.
     request.current?.abort()
+    request.current = null
     const startedAt = revision.current
     try {
       const value = await syncSearch(token, map)
       setStatus(value); setDeferred(value.sync === 'deferred')
       setFreshAfterSave(startedAt === revision.current)
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
-    finally { syncingRef.current = false; setSyncing(false) }
+    finally { syncingRef.current = false; setSyncing(false); schedule.current() }
   }, [token, map, localPending, status?.configured])
   return <EmbeddingStatusContext value={{ status, error, syncing, deferred, localPending, awaitingFreshStatus: !freshAfterSave || server === 'unknown', embed, clearNotice, watch }}>{children}</EmbeddingStatusContext>
 }

@@ -138,6 +138,7 @@ export interface PlanLabels {
 
 export interface PlanProps {
   token?: string
+  userId?: string
   serverSync?: ServerSync
   agentTools?: ReactNode
   ticketLinksFor?: (section: string) => ReactNode
@@ -185,6 +186,7 @@ export default function Plan(props: PlanProps) {
 function ConnectedPlan({
   token,
   project = '',
+  userId,
   focusMode = false,
   structureHistory,
   appearance,
@@ -783,7 +785,7 @@ function ConnectedPlan({
         </button>
 <DocumentNumberingControls {...numbering} locale={locale} />
 <DocumentFormattingToolbar editor={activeEditor} locale={locale} canWrite={canWrite} />{token && <DocumentEmbeddingStatus locale={locale} canSync={canWrite} />}</>} >
-        {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} locale={locale} canSync={canWrite} onNavigate={result => {
+        {token && <DocumentHybridSearch key={`${session.mindmap}:${token}`} token={token} map={session.mindmap} userId={userId} project={project} locale={locale} canSync={canWrite} onNavigate={result => {
           if (!rows.some(section => section.key === result.node_id)) {
             setNotice({ text: locale === 'de' ? 'Dieser Abschnitt wurde entfernt. Bitte erneut suchen.' : 'This section was removed. Search again.' })
             return

@@ -87,7 +87,7 @@ paths:
       tags: [mindmaps]
       operationId: search_specification
       summary: Search the document using keywords and compatible embeddings
-      description: Requires read and project access. Uses authoritative saved CRDT plaintext, heading ancestry and paragraph chunks. Groups the best chunk per node. Provider unconfigured/outage falls back to FTS; no query embedding is persisted. Query embeddings are bounded per token (60 per minute); past that, the call answers from keywords alone with semantic_status `throttled` rather than failing. A missing `q` is refused with `search.query`.
+      description: Requires read and project access. Uses authoritative saved CRDT plaintext, heading ancestry and paragraph chunks. Groups the best chunk per node. Provider unconfigured/outage falls back to FTS; no query embedding is persisted. Outbound query embeddings are bounded per token (60 per minute); cache hits do not consume that budget. A process-local cache keeps up to 256 successful query vectors for ten minutes, keyed by token identity, provider and credential identity, and the trimmed case-preserving query. Identical in-flight calls are shared; failures are not cached and configuration saves invalidate generations. Authorization and current document retrieval run on every call. Past the outbound budget, an uncached call answers from keywords alone with semantic_status `throttled` rather than failing. A missing `q` is refused with `search.query`.
       parameters:
         - { name: q, in: query, required: true, schema: { type: string, maxLength: 500 } }
       responses:

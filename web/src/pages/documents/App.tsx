@@ -49,6 +49,7 @@ const TRACE_LIMIT = 500
 export function DocumentView() {
   const {
     token,
+    userId,
     scopes,
     nodes,
     lang,
@@ -196,7 +197,7 @@ export function DocumentView() {
     <DocumentAgent token={token} project={map?.project ?? project} map={session.mindmap} lang={lang} nodes={nodes}
         selected={focusSection} canAsk={session.can_write && scopes.includes('human') && scopes.includes('write')} onError={handleErr} onNavigate={selectSection}>
     {tools => <Plan token={token} serverSync={serverSync}
-      project={project}
+      project={project} userId={userId}
       agentTools={tools}
       ticketLinksFor={section => <SectionTicketLinks token={token} project={project} section={section} lang={lang} />}
       key={session.session}
