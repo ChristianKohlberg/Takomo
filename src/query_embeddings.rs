@@ -33,6 +33,10 @@ struct Entries {
 #[derive(Clone)]
 pub struct QueryCache {
     entries: Arc<Mutex<Entries>>,
+    /// token id -> unix-ms timestamps of outbound provider calls. Its own map
+    /// rather than the token's `rate`: a search is a read, so it must not spend
+    /// the write budget, yet each uncached query is a paid provider call. Hits
+    /// and coalesced waiters never reach it.
     rate: Arc<Mutex<HashMap<String, VecDeque<i64>>>>,
     pending: Arc<Semaphore>,
     capacity: usize,

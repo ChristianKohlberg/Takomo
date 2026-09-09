@@ -298,13 +298,15 @@ fn debit_window(
     Ok(())
 }
 
-/// Charge one event to a sliding window that is **not** keyed by a credential.
+/// Charge one event to a sliding window that lives outside the auth middleware.
 ///
-/// The one caller is dynamic client registration (`POST /oauth/register`), which
+/// Two callers. Dynamic client registration (`POST /oauth/register`), which
 /// RFC 7591 requires to be unauthenticated: there is no token to charge and no
-/// caller identity to key by, so the budget is global. Exposed here rather than
-/// reimplemented there so all three budgets in this codebase share the one
-/// window implementation whose arithmetic is easy to get subtly wrong.
+/// caller identity to key by, so that budget is global. And the query-embedding
+/// cache (`query_embeddings::QueryCache`), which charges outbound provider calls
+/// to a token id in its own map. Exposed here rather than reimplemented there so
+/// every budget in this codebase shares the one window implementation whose
+/// arithmetic is easy to get subtly wrong.
 ///
 /// `Err(secs)` is how long the caller must wait; nothing was charged.
 pub fn debit_shared_window(
