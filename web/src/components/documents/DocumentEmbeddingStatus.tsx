@@ -1,5 +1,5 @@
 import { CheckCircle2, Clock3, LoaderCircle, TriangleAlert, Unplug, RefreshCw, XIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Dialog, DialogTrigger, DialogContent, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip'
 import { useEmbeddingStatus } from '@/hooks/useEmbeddingStatus'
@@ -9,6 +9,8 @@ import type { Locale } from '@/lib/i18n'
 export function DocumentEmbeddingStatus({ locale, canSync }: { locale: Locale; canSync: boolean }) {
   const store = useEmbeddingStatus()
   const [open, setOpen] = useState(false)
+  const watch = store?.watch
+  useEffect(() => open && watch ? watch() : undefined, [open, watch])
   if (!store) return null
   const { status, error, syncing, deferred, localPending, awaitingFreshStatus, embed } = store
   const de = locale === 'de'

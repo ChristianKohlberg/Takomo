@@ -1,6 +1,6 @@
 import { syncBase } from '@/lib/collab-session'
 import { renewSession } from '@/lib/renew-session'
-import { trackSave, type SaveSession, type SaveState } from '@/lib/save-status'
+import { trackSave, type SaveSession, type SaveState, type ServerSync } from '@/lib/save-status'
 import { loadToken } from '@/lib/session'
 import { useEffect, useEffectEvent, useState } from 'react'
 import { WebsocketProvider } from 'y-websocket'
@@ -9,10 +9,10 @@ export type SyncConnection = { ydoc: Y.Doc; provider: WebsocketProvider }
 export function useSyncConnection(
   session: (SaveSession & { room: string; token: string; expires_at: string; url: string }) | null,
   onError: (error: unknown) => void,
-  onSave?: (state: SaveState) => void,
+  onSave?: (state: SaveState, server: ServerSync) => void,
 ) {
   const reportError = useEffectEvent(onError)
-  const reportSave = useEffectEvent((state: SaveState) => onSave?.(state))
+  const reportSave = useEffectEvent((state: SaveState, server: ServerSync) => onSave?.(state, server))
   const [connection, setConnection] = useState<SyncConnection | null>(null)
   useEffect(() => {
     let disposed = false
@@ -24,7 +24,7 @@ export function useSyncConnection(
       connect: false,
       disableBc: true,
     })
-    const tracker = trackSave(ydoc, provider, session, (state) => reportSave(state))
+    const tracker = trackSave(ydoc, provider, session, (state, server) => reportSave(state, server))
     void tracker.ready.then(() => {
       if (!disposed) setConnection({ ydoc, provider })
     })

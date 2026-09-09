@@ -21,10 +21,11 @@ export function DocumentHybridSearch(props: Props) {
   return shared ? <SearchDialog {...props} /> : <EmbeddingStatusProvider key={`${props.map}:${props.token}`} token={props.token} map={props.map}><SearchDialog {...props} /></EmbeddingStatusProvider>
 }
 function SearchDialog({ token, map, locale, canSync, onNavigate }: Props) {
-  const { status, error: statusError, syncing, deferred, localPending, awaitingFreshStatus, embed, clearNotice } = useEmbeddingStatus()!
+  const { status, error: statusError, syncing, deferred, localPending, awaitingFreshStatus, embed, clearNotice, watch } = useEmbeddingStatus()!
   const de = locale === 'de'
   const [open, setOpen] = useState(false)
   useEffect(() => { if (open) clearNotice() }, [open, clearNotice])
+  useEffect(() => open ? watch() : undefined, [open, watch])
   const [query, setQuery] = useState('')
   const [response, setResponse] = useState<SearchResponse | null>(null)
   const [error, setError] = useState('')

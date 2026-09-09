@@ -1,14 +1,20 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
+import { EmbeddingStatusProvider, STATUS_POLL_IDLE_MS, STATUS_POLL_OPEN_MS } from '@/hooks/useEmbeddingStatus'
+import type { ServerSync } from '@/lib/save-status'
 import { DocumentEmbeddingStatus } from './DocumentEmbeddingStatus'
 import { DocumentHybridSearch } from './DocumentHybridSearch'
 import type { SearchStatus } from '@/lib/hybrid-search'
 const current: SearchStatus = { configured: true, indexed: 2, total: 2, passages_indexed: 7, passages_total: 7, queued: 0, pending: 0, running: 0, failed: 0, last_error: null, projection: 'current', last_synced_at: 1750000000000 }
 const reply = (value: unknown) => new Response(JSON.stringify(value))
-afterEach(() => { cleanup(); vi.unstubAllGlobals() })
-function Fixture({ pending = false, canSync = true, search = false }: { pending?: boolean; canSync?: boolean; search?: boolean }) {
-  return <EmbeddingStatusProvider token="test" map="map" localPending={pending}><DocumentEmbeddingStatus locale="en" canSync={canSync} />{search && <DocumentHybridSearch token="test" map="map" locale="en" canSync={canSync} onNavigate={() => {}} />}</EmbeddingStatusProvider>
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); visibility('visible') })
+function visibility(value: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+const tick = (ms = 0) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+function Fixture({ pending = false, server = pending ? 'behind' : 'current', canSync = true, search = false }: { pending?: boolean; server?: ServerSync; canSync?: boolean; search?: boolean }) {
+  return <EmbeddingStatusProvider token="test" map="map" server={server}><DocumentEmbeddingStatus locale="en" canSync={canSync} />{search && <DocumentHybridSearch token="test" map="map" locale="en" canSync={canSync} onNavigate={() => {}} />}</EmbeddingStatusProvider>
 }
 describe('document embedding status', () => {
   it('shows passage counts separately from nonoverlapping section jobs and keeps historical sync time', async () => {
@@ -24,7 +30,7 @@ describe('document embedding status', () => {
     expect(screen.getByRole('button', { name: 'Embed now' })).toBeTruthy()
   })
   it('uses one reader for ribbon and search, and returns keyboard focus on Escape', async () => {
-    const fetch = vi.fn(async () => reply(current)); vi.stubGlobal('fetch', fetch)
+    const fetch = vi.fn(async (_url: string) => reply(current)); vi.stubGlobal('fetch', fetch)
     render(<Fixture search />)
     const button = await screen.findByRole('button', { name: 'Embeddings current' })
     button.focus(); fireEvent.click(button)
@@ -33,7 +39,9 @@ describe('document embedding status', () => {
     await waitFor(() => expect(document.activeElement).toBe(button))
     fireEvent.click(screen.getByRole('button', { name: /Search document/ }))
     await screen.findByRole('combobox')
-    expect(fetch.mock.calls).toHaveLength(1)
+    await waitFor(() => expect(fetch.mock.calls).toHaveLength(3))
+    expect(new Set(fetch.mock.calls.map(([url]) => String(url))).size).toBe(1)
+    expect(screen.getByRole('status').textContent).toMatch(/^Index current/)
   })
   it('withholds completion until a fresh read after local edits are saved', async () => {
     let resolveFresh!: (value: Response) => void
@@ -45,7 +53,7 @@ describe('document embedding status', () => {
     const pending = await screen.findByRole('button', { name: 'Embeddings pending' })
     fireEvent.click(pending)
     expect((screen.getByRole('button', { name: 'Embed now' }) as HTMLButtonElement).disabled).toBe(true)
-    await waitFor(() => expect(requests).toBe(2))
+    await waitFor(() => expect(requests).toBe(3))
     view.rerender(<Fixture />)
     expect(screen.queryByRole('button', { name: 'Embeddings current' })).toBeNull()
     await waitFor(() => expect(resolveFresh).toBeTypeOf('function'))
@@ -87,5 +95,57 @@ describe('document embedding status', () => {
     expect(document.querySelector('time')).toBeNull()
     expect(screen.getByRole('link', { name: 'Configure meaning search' })).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Embed now' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+  it('trusts the server acknowledgement rather than the local replica for pending', async () => {
+    let requests = 0
+    vi.stubGlobal('fetch', vi.fn(async () => { requests++; return reply(current) }))
+    const view = render(<Fixture server="unknown" />)
+    await waitFor(() => expect(requests).toBe(1))
+    expect(screen.getByRole('button', { name: 'Checking embeddings…' })).toBeTruthy()
+    view.rerender(<Fixture server="current" />)
+    const button = await screen.findByRole('button', { name: 'Embeddings current' })
+    expect(requests).toBe(1)
+    fireEvent.click(button)
+    expect((screen.getByRole('button', { name: 'Embed now' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByText(/have not reached the server/)).toBeNull()
+    view.rerender(<Fixture server="behind" />)
+    expect(screen.getByText('Embeddings pending')).toBeTruthy()
+    expect(screen.getByText(/have not reached the server/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Embed now' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+  it('polls slowly while closed, every few seconds while a dialog is open, and only on return while hidden', async () => {
+    vi.useFakeTimers()
+    let hold: ((value: Response) => void) | null = null
+    const fetch = vi.fn(() => hold ? new Promise<Response>(resolve => { hold = resolve }) : Promise.resolve(reply(current)))
+    vi.stubGlobal('fetch', fetch)
+    render(<Fixture />)
+    await tick()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await tick(STATUS_POLL_IDLE_MS - 1)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    await tick(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    hold = () => {}
+    fireEvent.click(screen.getByRole('button', { name: 'Embeddings current' }))
+    await tick()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('status').textContent).toBe('Checking embeddings…')
+    await act(async () => { hold!(reply(current)); hold = null })
+    expect(screen.getByRole('status').textContent).toBe('Embeddings current')
+    await tick(STATUS_POLL_OPEN_MS)
+    expect(fetch).toHaveBeenCalledTimes(4)
+    act(() => visibility('hidden'))
+    await tick(STATUS_POLL_IDLE_MS * 3)
+    expect(fetch).toHaveBeenCalledTimes(4)
+    act(() => visibility('visible'))
+    await tick()
+    expect(fetch).toHaveBeenCalledTimes(5)
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Close' }), { key: 'Escape' })
+    await tick(STATUS_POLL_OPEN_MS)
+    expect(fetch).toHaveBeenCalledTimes(6)
+    await tick(STATUS_POLL_OPEN_MS)
+    expect(fetch).toHaveBeenCalledTimes(6)
+    await tick(STATUS_POLL_IDLE_MS - STATUS_POLL_OPEN_MS)
+    expect(fetch).toHaveBeenCalledTimes(7)
   })
 })

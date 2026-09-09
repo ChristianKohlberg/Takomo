@@ -1,7 +1,7 @@
 import { DocumentNumberingControls, useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
 import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
 import { DocumentEmbeddingStatus } from '@/components/documents/DocumentEmbeddingStatus'
-import type { SaveState } from '@/lib/save-status'
+import type { ServerSync } from '@/lib/save-status'
 import { DocumentHybridSearch } from '@/components/documents/DocumentHybridSearch'
 import { passageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
@@ -138,7 +138,7 @@ export interface PlanLabels {
 
 export interface PlanProps {
   token?: string
-  saveState?: SaveState
+  serverSync?: ServerSync
   agentTools?: ReactNode
   ticketLinksFor?: (section: string) => ReactNode
   project?: string
@@ -179,7 +179,7 @@ export interface PlanProps {
 
 export default function Plan(props: PlanProps) {
   const content = <ConnectedPlan {...props} />
-  return props.token ? <EmbeddingStatusProvider key={`${props.session.mindmap}:${props.token}`} token={props.token} map={props.session.mindmap} localPending={props.saveState !== undefined && props.saveState !== 'saved' && props.saveState !== 'read-only'}>{content}</EmbeddingStatusProvider> : content
+  return props.token ? <EmbeddingStatusProvider key={`${props.session.mindmap}:${props.token}`} token={props.token} map={props.session.mindmap} server={props.serverSync}>{content}</EmbeddingStatusProvider> : content
 }
 
 function ConnectedPlan({

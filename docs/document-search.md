@@ -79,7 +79,12 @@ The embedding-status icon in the Document ribbon opens a compact status dialog. 
 shows stored/current passage embeddings separately from pending, running and failed
 section jobs; long sections can contain several passages. Completion requires a
 current projection, no pending jobs/errors, and every passage embedded for the
-configured provider. Local unsaved changes also prevent the completed indicator.
+configured provider. Edits the server has not yet acknowledged over the sync socket
+also prevent the completed indicator; that judgement comes from the durability
+reply alone, so a failed local draft replica does not pin the icon on pending. The
+page reads status every 20 s while no dialog is open, every 3 s while one is, not
+at all while the tab is hidden, and once immediately when a dialog opens or the tab
+returns.
 
 **Last successful sync** is historical: it records the last actual accepted provider
 completion that left this map fully indexed for the current provider fingerprint.
