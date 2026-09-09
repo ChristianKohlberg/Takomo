@@ -3,9 +3,10 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@/components/Toaster'
 import { App } from './App'
-let scopes: string[], failSave: boolean, style: string, deleted: string[]
+let scopes: string[], failSave: boolean, style: string, deleted: string[], holdProjects: Promise<void> | null
 const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
   if (opts?.method === 'DELETE') { deleted.push(url); return new Response('{}') }
+  if (url === '/v1/projects' && holdProjects) await holdProjects
   if (opts?.method === 'PUT') {
     if (failSave) return new Response(JSON.stringify({ message: 'Save refused' }), { status: 422 })
     if (url.endsWith('/style')) style = JSON.parse(String(opts.body)).style_guide
@@ -26,7 +27,7 @@ function open(path: string) {
 }
 beforeEach(() => {
   localStorage.clear(); localStorage.setItem('takomo.token', 'test-only'); localStorage.setItem('takomo.lang', 'en')
-  scopes = ['read', 'write', 'human', 'admin']; failSave = false; style = 'Original style'; deleted = []
+  scopes = ['read', 'write', 'human', 'admin']; failSave = false; style = 'Original style'; deleted = []; holdProjects = null
   fetcher.mockClear(); vi.stubGlobal('fetch', fetcher)
 })
 describe('Settings navigation and save boundaries', () => {
@@ -117,6 +118,25 @@ describe('Settings navigation and save boundaries', () => {
     await waitFor(() => expect((screen.getByLabelText('Project') as HTMLSelectElement).value).toBe(''))
     expect(screen.getByRole('option', { name: 'Select project' })).toBeTruthy()
     expect(screen.queryByRole('option', { name: 'takomo' })).toBeNull()
+  })
+  it('keeps the delete dialog busy and single-shot while the refresh is still in flight', async () => {
+    const router = open('/settings?scope=takomo&section=general')
+    await screen.findByText('Project name')
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    let release = () => {}
+    holdProjects = new Promise<void>(resolve => { release = resolve })
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete project' }))
+    await waitFor(() => expect(deleted).toEqual(['/v1/projects/takomo']))
+    await waitFor(() => expect(router.state.location.search).toBe('?section=projects'))
+    const confirm = screen.getByRole('button', { name: 'Delete project' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+    fireEvent.click(confirm)
+    await act(async () => { await Promise.resolve() })
+    expect(deleted).toEqual(['/v1/projects/takomo'])
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+    release()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(deleted).toEqual(['/v1/projects/takomo'])
   })
   it('allows non-admins into Legacy but preserves administrative permissions', async () => {
     scopes = ['read']; open('/legacy?scope=takomo')

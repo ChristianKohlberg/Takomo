@@ -393,6 +393,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   }
 
   return (
+    <>
     <SettingsLayout lang={lang} legacy={legacy} section={section}
       onLang={l => { setLang(l); localStorage.setItem(LS_LANG, l) }}
       project={navProject} projects={projects} onSignOut={signOut}
@@ -770,7 +771,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             </>
           )}
         </div>}
-
+    </SettingsLayout>
 
       <PersonDialog
         open={editingPerson !== null}
@@ -997,7 +998,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
           }
         }}
       />
-    </SettingsLayout>
+    </>
   )
 }
 
