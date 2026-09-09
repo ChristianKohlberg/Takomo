@@ -89,6 +89,8 @@
 
 @theme inline {
   --color-background: var(--bg);
+  --color-mindmap-canvas: var(--mindmap-canvas);
+  --color-mindmap-node-border: var(--mindmap-node-border);
   --color-foreground: var(--text);
 
   /* Panels and popovers are the raised surface. */

@@ -10,6 +10,8 @@
    themselves with `var(--*)` in their own *.module.css; nothing hardcodes a hex. */
 :root {
   --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
+  /* Mindmaps have a quieter canvas than the surrounding app shell. */
+  --mindmap-canvas: #fafafa; --mindmap-node-border: #cfd9e2;
   --muted: #6e7c88; --cap: #5b6b78; --ink2: #3a4a56; --border: #e6ecf0; --border-soft: #eef2f5;
   --accent: #1f4e78; --accent2: #2f6ba0; --accent-ink: #173d5e;
   --shadow: 0 18px 50px -26px rgba(20, 40, 55, .28);
@@ -29,6 +31,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0e141b; --panel: #141d27; --col-bg: #101821; --text: #e6eef5;
+    --mindmap-canvas: #0e141b; --mindmap-node-border: #33414f;
     --muted: #8ba0b0; --cap: #9aabb8; --ink2: #c3d2de; --border: #26313d; --border-soft: #1e2833;
     --accent: #4c8dff; --accent2: #6ea8ff; --accent-ink: #7fb2ff;
     --shadow: 0 18px 50px -26px rgba(0, 0, 0, .6);
