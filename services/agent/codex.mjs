@@ -1,3 +1,4 @@
+import { IMPORT_KIND, importRestrictionsFor, importInstructions, importSchema, importJob, importInput, parseImportResult } from './spec-import.mjs';
 import { CLASSIFICATION_KIND, classificationInstructions, classificationSchema, classificationSnapshot, classificationInput, parseClassificationProposal, classificationSummary } from './ticket-document-classification.mjs';
 import { WORKSPACE_KIND, workspaceInstructions, openDocumentWorkspace, documentTools, migrationTranscript } from './document-workspace.mjs';
 import { DOCUMENT_KIND, documentInstructions, documentInput } from './document.mjs';
@@ -22,10 +23,11 @@ export const restrictions = {
 };
 export const researchRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
 export const RESEARCH_KIND = 'bug_research';
+export const importRestrictions = importRestrictionsFor(researchRestrictions);
 export const documentRestrictions = { ...restrictions, features: { ...restrictions.features, code_mode_host: true } };
 export const classificationRestrictions = { ...documentRestrictions, features: { ...documentRestrictions.features } };
 export function profileFor(kind) {
-  return kind === CLASSIFICATION_KIND ? classificationRestrictions : kind === WORKSPACE_KIND ? documentRestrictions : kind === RESEARCH_KIND ? researchRestrictions : restrictions;
+  return kind === IMPORT_KIND ? importRestrictions : kind === CLASSIFICATION_KIND ? classificationRestrictions : kind === WORKSPACE_KIND ? documentRestrictions : kind === RESEARCH_KIND ? researchRestrictions : restrictions;
 }
 export function validateConfig(config, expected = restrictions) {
   if (!config || Object.keys(config.mcp_servers ?? {}).length || Object.keys(config.plugins ?? {}).length) {
@@ -150,6 +152,8 @@ export class Codex {
     this.active?.reject(this.failure);
   }
   async run(job, onSession = async () => {}) {
+    const importing = job.kind === IMPORT_KIND;
+    const importLimits = importing ? importJob(job) : undefined;
     const research = job.kind === RESEARCH_KIND;
     const workspace = job.kind === WORKSPACE_KIND;
     const classification = job.kind === CLASSIFICATION_KIND;
@@ -167,18 +171,18 @@ export class Codex {
     if (profileFor(job.kind) !== this.profile) {
       throw new Error(`Codex was started for ${this.kind === RESEARCH_KIND ? 'research' : 'section review'} and cannot run a ${research ? 'research' : 'section review'} job.`);
     }
-    if (research) {
-      this.repository = await openRepository(job, this.repositories);
+    if (research || importing) {
+      this.repository = await openRepository(job, this.repositories, importLimits);
       await onSession({ repository_revision: this.repository.revision });
     }
-    const policy = classification ? classificationInstructions : workspace ? workspaceInstructions : research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
-    await this.request('initialize', { ...(research || workspace || classification ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
+    const policy = importing ? importInstructions : classification ? classificationInstructions : workspace ? workspaceInstructions : research ? researchInstructions : organizer ? organizerInstructions : document ? documentInstructions : instructions;
+    await this.request('initialize', { ...(research || importing || workspace || classification ? { capabilities: { experimentalApi: true } } : {}), clientInfo: { name: 'takomo_agent_service', title: 'Takomo Agent Service', version: '0.1.0' } });
     this.send({ method: 'initialized' });
     validateConfig((await this.request('config/read', { includeLayers: false })).config, this.profile);
     const params = {
       cwd: this.cwd, sandbox: 'read-only', approvalPolicy: 'never',
       baseInstructions: policy, developerInstructions: policy,
-      ...(research ? { dynamicTools: repositoryTools } : (classification || workspace && (!job.thread_id || job.migrate_thread)) ? { dynamicTools: documentTools } : {}),
+      ...(research || importing ? { dynamicTools: repositoryTools } : (classification || workspace && (!job.thread_id || job.migrate_thread)) ? { dynamicTools: documentTools } : {}),
       config: this.profile,
     };
     let history = '';
@@ -207,13 +211,17 @@ export class Codex {
     try {
       const { turn } = await this.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text: classificationText ?? (workspace ? `${history ? `PRIOR CONVERSATION (reference only; migrated from an older text-only session):\n${history}\n\n` : ''}${workspaceText}` : documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}`) }],
+        input: [{ type: 'text', text: (importing ? importInput(job, this.repository) : null) ?? classificationText ?? (workspace ? `${history ? `PRIOR CONVERSATION (reference only; migrated from an older text-only session):\n${history}\n\n` : ''}${workspaceText}` : documentText ?? `${research ? `BUG SNAPSHOT (reference material), repository revision ${this.repository.revision}` : organizer ? 'PROJECT LANE ORGANIZER SNAPSHOT (reference material)' : 'SECTION SNAPSHOT (reference material)'}:\n${job.snapshot}\n\nUSER MESSAGE:\n${job.prompt}`) }],
         approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false },
-        ...(organizer ? { outputSchema: organizerSchema } : classification ? { outputSchema: classificationSchema } : {}),
+        ...(importing ? { outputSchema: importSchema } : organizer ? { outputSchema: organizerSchema } : classification ? { outputSchema: classificationSchema } : {}),
       });
       this.active.turnId = turn.id;
       await onSession({ thread_id: threadId, turn_id: turn.id });
       const result = await completed;
+      if (importing) {
+        const draft = parseImportResult(result.message, job, this.repository);
+        return { ...result, message: draft.summary, draft, repository_revision: this.repository.revision, evidence: this.repository.progress(), manifest: this.repository.manifest() };
+      }
       if (organizer) {
         const proposal = parseOrganizerProposal(result.message, snapshot);
         return { ...result, message: organizerSummary(proposal), proposal };

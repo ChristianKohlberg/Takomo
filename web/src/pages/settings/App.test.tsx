@@ -20,7 +20,11 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
     : url === '/v1/projects' ? [{ id: 'takomo', name: 'Takomo', style_guide: style }, { id: 'second', name: 'Second project' }].filter(p => !deleted.includes(`/v1/projects/${p.id}`))
     : url.includes('/users') ? { items: [], total: 0 }
     : url.endsWith('/writing-instructions') ? { templates: [], default_id: null }
-    : url.endsWith('/document-classification-policy') ? { mode: 'suggest' } : []
+    : url.endsWith('/document-classification-policy') ? { mode: 'suggest' }
+    : url.includes('/integrations/github/installations/') ? { items: [{ id: 2, full_name: 'example/Takomo', private: false }], total: 1 }
+    : url.endsWith('/repository') ? { repository: url.includes('/takomo/') ? { installation: 1, repository: 2, full_name: 'example/Takomo', scope: { include: ['src'], exclude: [] } } : null }
+    : url.endsWith('/integrations/github') ? { configured: false, app_slug: null, connections: [] }
+    : url.endsWith('/codebase-imports') ? { items: [] } : []
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 })
 function open(path: string) {
@@ -41,6 +45,16 @@ describe('Settings navigation and save boundaries', () => {
     expect(screen.queryByRole('link', { name: /Agent queue/ })).toBeNull()
     expect(screen.getByRole('link', { name: 'Legacy' }).getAttribute('href')).toBe('/legacy?scope=takomo')
     expect(screen.getByRole('link', { name: 'General' }).getAttribute('aria-current')).toBe('page')
+  })
+  it('shows the saved GitHub connection in project General and isolates it when switching projects', async () => {
+    open('/settings?scope=takomo&section=general')
+    await screen.findByRole('heading', { name: 'GitHub repository and extraction' })
+    await screen.findByText('Connected to example/Takomo · src')
+    expect(screen.getByText(/apply only to this project/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'second' } })
+    await screen.findByText('No GitHub repository connected to this project.')
+    expect(screen.queryByText('Connected to example/Takomo · src')).toBeNull()
+    expect(fetcher.mock.calls.some(([url]) => url === '/v1/projects/second/repository')).toBe(true)
   })
   it('honors section URLs and Back, separating writing from appearance and timing', async () => {
     const router = open('/settings?scope=takomo&section=writing')

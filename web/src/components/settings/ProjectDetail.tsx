@@ -77,6 +77,7 @@ export interface ProjectDetailProps {
    */
   workflowSlot?: ReactNode
   documentResetSlot?: ReactNode
+  repositorySlot?: ReactNode
   writingSlot?: ReactNode
   classificationSlot?: ReactNode
   settings: ProjectSettings
@@ -100,6 +101,7 @@ export function ProjectDetail({
   project,
   workflowSlot,
   documentResetSlot,
+  repositorySlot,
   writingSlot,
   classificationSlot,
   settings: s,
@@ -171,6 +173,7 @@ export function ProjectDetail({
         <div><dt className="text-xs text-muted-foreground">{generalLabels?.name}</dt><dd className="mt-1 font-medium">{project.name || project.id}</dd></div>
         <div><dt className="text-xs text-muted-foreground">{generalLabels?.id}</dt><dd className="mt-1 font-mono text-sm">{project.id}</dd></div>
       </dl>}
+      {general && repositorySlot}
       {general && classificationSlot}
 
       <div className="flex flex-col gap-4">

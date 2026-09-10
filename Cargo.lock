@@ -1853,6 +1853,7 @@ dependencies = [
  "quick-xml",
  "rand 0.9.5",
  "reqwest",
+ "ring",
  "rmcp",
  "rusqlite",
  "serde",

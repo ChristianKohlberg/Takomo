@@ -27,6 +27,7 @@ serde_json = "1"
 serde_norway = "0.9"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
+ring = "0.17"
 # Attachment transport for initiative entries. JSON cannot carry bytes, so an
 # uploaded document arrives as `content_base64` and is decoded before it ever
 # reaches the store — the store's byte caps then bound the real payload, not its

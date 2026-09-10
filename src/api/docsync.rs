@@ -329,6 +329,60 @@ impl Room {
         .map_err(|e| ApiError::internal(e.to_string()))?
     }
 
+    /// Build a bounded change on a private replica, persist it, then expose it.
+    /// Full state includes any earlier debounced edits; duplicate log updates
+    /// merge harmlessly. A failed store commit leaves the live replica untouched.
+    pub(crate) async fn mutate_durable<T>(
+        &self,
+        store: &crate::store::Store,
+        actor: &str,
+        f: impl FnOnce(&Doc) -> ApiResult<T>,
+    ) -> ApiResult<T> {
+        // Import commits must not race a reset or compaction rewriting the log.
+        let _flushing = self.flushing.lock().await;
+        let mut live = self.doc.lock().expect("room doc mutex");
+        let before = live.transact().state_vector();
+        let initial = live
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let candidate = Doc::new();
+        candidate
+            .transact_mut()
+            .apply_update(Update::decode_v1(&initial).map_err(|_| {
+                ApiError::validation(
+                    "validation.collab_state",
+                    "Cannot copy the document for import.",
+                )
+            })?)
+            .map_err(|_| {
+                ApiError::validation(
+                    "validation.collab_state",
+                    "Cannot hydrate the import replica.",
+                )
+            })?;
+        let result = f(&candidate)?;
+        let update = candidate.transact().encode_state_as_update_v1(&before);
+        // A retry whose receipt already exists needs no additional log row.
+        if Update::decode_v1(&update)
+            .map_err(|_| ApiError::validation("validation.collab_state", "Invalid import update."))?
+            .is_empty()
+        {
+            return Ok(result);
+        }
+        let full = candidate
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let (rows, _) = store.append_collab_update(&self.id, &full, actor)?;
+        *live = candidate;
+        self.rows.store(rows as u64, Ordering::SeqCst);
+        self.own_appends.fetch_add(1, Ordering::SeqCst);
+        drop(live);
+        let _ = self
+            .tx
+            .send((0, Arc::new(sync_message(SYNC_UPDATE, &update))));
+        Ok(result)
+    }
+
     /// Read the replica without changing it.
     pub fn read<T>(&self, f: impl FnOnce(&Doc) -> T) -> T {
         let doc = self.doc.lock().expect("room doc mutex");

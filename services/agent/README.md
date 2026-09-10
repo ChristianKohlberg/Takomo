@@ -38,6 +38,7 @@ Use `--once` to claim at most one immediately available job and exit after its r
 | `TAKOMO_AGENT_STATE_DIR` | `~/.takomo-agent` |
 | `TAKOMO_AGENT_SERVICE_ID` | Random stable ID saved in the state directory |
 | `TAKOMO_CODEX_BIN` | `codex` on PATH |
+| `TAKOMO_GITHUB_IMPORTS` | Unset; `1` also claims the GitHub extraction queue (see [below](#github-extraction-from-project-setup)) |
 
 The service's persisted ID and Codex state belong together. Run only one service process against a state directory. Changing the identity/home does not migrate existing conversations. A system supervisor can start this command, provide the environment, and restart it after a crash; no inbound worker port is needed.
 
@@ -316,9 +317,17 @@ Research uses **one lead, zero helpers**, with a **15-minute turn deadline**, a
 100-call tool budget, and the existing 64 KB answer limit. It exposes three Codex
 App Server dynamic tools: `repository_files`, `repository_search`, and
 `repository_read`. They perform bounded Git object reads at the pinned revision:
-file lists cap at 200, literal search matches at 100, file reads at 200 lines / 24 KB,
-and files at 1 MB. Totals/truncation are explicit. Symlinks and submodules cannot
-be followed. Git subprocesses have a 10-second timeout and 2 MB output limit.
+file lists return 200 per page and literal searches return 100 matches per page,
+both with `next_cursor` and optional literal `path_prefix` narrowing. File reads
+return at most 200 lines / 24 KB and `next_start_line`; `line_truncated` explicitly
+identifies a clipped oversized line. Long search snippets set `text_truncated`.
+Files over 1 MB and unsupported paths are omitted from the eligible inventory and
+counted in its manifest. Symlinks and submodules cannot be followed. Git subprocesses
+have a 10-second timeout: inventory streams up to 32 MB and search streams up to
+16 MB across its regular-file batches, while individual object reads cap at 2 MB.
+Inventory also caps at 100,000 eligible files / 1 GB of source metadata. Exceeding
+a limit fails visibly rather than silently sampling. Continuation cursors must be
+used with the same tool, query, scope and revision.
 No checkout is created and no repository scripts, tests, shell commands, network
 requests, or modifications can be requested by the model. Repository content is
 research material, including any instruction files. Section conversation jobs keep
@@ -345,3 +354,40 @@ They do not call a paid model or require credentials. An opt-in smoke
 (`TAKOMO_AGENT_LIVE_SMOKE=1 node --test services/agent/test/live-smoke.test.mjs`)
 runs the installed, authenticated Codex against a disposable committed fixture and
 fails unless source was actually retrieved through the repository tools.
+
+## Codebase import preflight (development)
+
+The initial import foundation can inventory just a file, package or directory
+without invoking Codex. Start with an explicit scope and small limits:
+
+```sh
+node services/agent/spec-import-preflight.mjs --repo . --include services/agent --exclude services/agent/test --max-files 20 --max-bytes 150000
+```
+
+See [the development guide](../../docs/codebase-spec-import.md) for commands,
+limits, test strategy and what remains unimplemented. The repository reader now
+accepts host-owned `repository_ref.scope: { include, exclude }`; every listing,
+search and direct read stays within it. Tool arguments can narrow it further but
+cannot widen it. Legacy research jobs without scope retain whole-repository access
+within the eligible-file limits. No new research HTTP fields, import jobs, model
+runs or document writes are introduced by preflight.
+
+
+## Local specification import MVP
+
+`spec-import-cli.mjs generate` uses the same authenticated App Server adapter and
+restricted repository tools to produce a small structured draft. `publish` sends
+that saved draft to an empty specification; the existing Document/Map views are
+its review surface. No `spec_import_preview` kind is advertised to the worker
+queue yet. See [the MVP guide](../../docs/codebase-spec-import.md) for the commands,
+budgets, token scopes and retry behavior. The preflight command above remains
+free of inference.
+
+### GitHub extraction from project setup
+
+The project wizard and project settings can queue an explicit, bounded extraction.
+Set `TAKOMO_GITHUB_IMPORTS=1` on this worker to consume that queue alongside its
+existing jobs. GitHub credentials are supplied per attempt by the server as a
+short-lived, repository-restricted read token; do not put the App private key in
+the worker environment. See [GitHub setup and extraction](../../docs/github-extraction.md)
+for server configuration, access management, limits and the small test fixture.

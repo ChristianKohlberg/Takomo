@@ -273,7 +273,7 @@ export function NavRail({
     <>
       {isPhone && <div className="bg-card border-border flex shrink-0 items-center gap-2 border-b px-3 py-1.5">
         <IconButton label={labels.expand} onClick={() => onCollapsed(false)}><MenuIcon size={20} /></IconButton>
-        <AppNavigation navigation={{ nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed: false, onCollapsed, onSignOut, onNavigate }} />
+        <AppNavigation navigation={{ scopes, lang, nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed: false, onCollapsed, onSignOut, onNavigate }} />
       </div>}
       {overlay && (
         <>
@@ -306,7 +306,7 @@ export function NavRail({
             navigationInHeader && collapsed && 'px-1',
           )}
         >
-          {navigationInHeader ? <AppNavigation navigation={{ nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed, onCollapsed, onSignOut, onNavigate }} /> : expanded && (
+          {navigationInHeader ? <AppNavigation navigation={{ scopes, lang, nav, current, badges, labels, projects, project, onProject, projectLabels, collapsed, onCollapsed, onSignOut, onNavigate }} /> : expanded && (
             <div className="flex min-w-0 items-center gap-2.5 text-[color:var(--accent2)]">
               <Logo />
               <span className="text-foreground truncate text-base font-[750] tracking-[-0.02em]">
@@ -339,6 +339,12 @@ export function NavRail({
               projects={projects}
               value={project}
               onChange={(id) => onProject?.(id)}
+              onCreate={scopes?.includes('admin') ? (query) => {
+                const href = `/settings?section=projects&create=1&name=${encodeURIComponent(query)}`
+                if (onNavigate) onNavigate(href)
+                else window.location.assign(href)
+              } : undefined}
+              createLabel={lang === 'de' ? 'Neues Projekt erstellen' : 'Create new project'}
               labels={projectLabels}
               collapsed={collapsed}
             />

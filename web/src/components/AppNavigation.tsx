@@ -13,6 +13,12 @@ export function AppNavigation({ navigation: rail }: { navigation: NavRailProps }
           projects={rail.projects}
           value={rail.project ?? ''}
           onChange={(id) => rail.onProject?.(id)}
+          onCreate={rail.scopes?.includes('admin') ? (query) => {
+            const href = `/settings?section=projects&create=1&name=${encodeURIComponent(query)}`
+            if (rail.onNavigate) rail.onNavigate(href)
+            else window.location.assign(href)
+          } : undefined}
+          createLabel={rail.lang === 'de' ? 'Neues Projekt erstellen' : 'Create new project'}
           labels={rail.projectLabels}
           collapsed={rail.collapsed}
         /></div>
