@@ -32,3 +32,8 @@ inbox uses live `inbox` notifications while connected, with polling recovery whe
 the socket is unavailable. Initial connection and reconnection resync prevent
 missed offline changes. These changes reduce unrelated requests; they do not
 promise that an open page makes no background requests.
+
+Document sockets echo awareness frames to the sending peer as well as relaying
+them to other peers. This is the y-websocket idle keepalive: without the echo a
+sole reader reconnects after 30 seconds and repeats synchronization. Equal-clock
+awareness does not trigger another client update, and presence is never persisted.

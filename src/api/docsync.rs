@@ -1410,7 +1410,10 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
             let _ = room
                 .tx
                 .send((me, Arc::new(message(MSG_AWARENESS, payload))));
-            None
+            // y-websocket uses received awareness as its idle keepalive. Without
+            // an echo a sole peer reconnects every 30s, replaying sync state.
+            // Same-clock awareness is idempotent on the originating client.
+            Some(message(MSG_AWARENESS, payload))
         }
         _ => None,
     }
