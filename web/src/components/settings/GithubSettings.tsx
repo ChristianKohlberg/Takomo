@@ -30,7 +30,7 @@ export function GithubSettings({ token, locale, allowed, onChanged }: { token: s
       {installations.filter(i => !status.connections.some(c => c.id === i.id)).map(i => <div key={i.id} className="flex flex-wrap items-center gap-3"><span>{i.account}</span><Button disabled={busy || i.suspended} onClick={() => void act(() => connectGithub(token, i.id))}>{de ? 'Verbinden' : 'Connect'}</Button></div>)}
       {status.connections.map(i => <div key={i.id} className="border-border flex flex-wrap items-center gap-3 rounded-lg border p-3">
         <span className="font-medium">{i.account}</span>
-        <a className="text-primary underline" href={`https://github.com/settings/installations/${i.id}`} target="_blank" rel="noreferrer">{de ? 'Repositorys und Berechtigungen verwalten' : 'Manage repositories and permissions'} ↗</a>
+        <a className="text-primary underline" href={i.management_url || `https://github.com/apps/${status.app_slug}/installations/new`} target="_blank" rel="noreferrer">{de ? 'Repositorys und Berechtigungen verwalten' : 'Manage repositories and permissions'} ↗</a>
         <Button variant="ghost" disabled={busy} onClick={() => void act(() => disconnectGithub(token, i.id))}>{de ? 'Trennen' : 'Disconnect'}</Button>
       </div>)}
       <p className="text-muted-foreground text-xs">{de ? 'Trennen entfernt die Verbindung in Takomo und stoppt ausstehende Extraktionen. Den Zugriff der App widerrufst du auf GitHub. Bestehende Dokumente bleiben erhalten.' : 'Disconnecting removes the Takomo connection and stops pending extractions. Revoke the app’s access on GitHub. Existing documents are kept.'}</p>

@@ -232,7 +232,7 @@ pub async fn publish(
         let result = json!({"mindmap":id,"root":root,"sections":ids,"reviewed":false,"revision":request.revision});
         receipts.insert(&mut doc.transact_mut(),receipt_key.clone(),json!({"digest":digest,"result":result}).to_string());
         Ok(result)
-    })?;
+    }).await?;
     let size = room.read(|doc| mindmapdoc::snapshot(doc, &id).2.len() as i64);
     state.store.note_mindmap_size(&id, size)?;
     state.wake();

@@ -1,5 +1,5 @@
 import { api } from './api'
-export interface Installation { id: number; account: string; suspended?: boolean }
+export interface Installation { id: number; account: string; management_url?: string; suspended?: boolean }
 export interface GithubStatus { configured: boolean; app_slug: string | null; connections: Installation[] }
 export interface Repository { id: number; full_name: string; private: boolean }
 export interface RepositorySelection { installation: number; repository: number; full_name: string; scope: { include: string[]; exclude: string[] } }

@@ -208,3 +208,27 @@ pub fn valid_repository(name: &str) -> bool {
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
         })
 }
+
+/// Account-specific URL derived from verified installation metadata, never caller input.
+pub fn installation_management_url(installation: &Value) -> ApiResult<String> {
+    let id = installation["id"]
+        .as_u64()
+        .ok_or_else(|| error("Invalid GitHub installation ID."))?;
+    match installation["account"]["type"].as_str() {
+        Some("User") => Ok(format!("https://github.com/settings/installations/{id}")),
+        Some("Organization") => {
+            let account = installation["account"]["login"]
+                .as_str()
+                .filter(|s| {
+                    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+                .ok_or_else(|| error("Invalid GitHub organization name."))?;
+            Ok(format!(
+                "https://github.com/organizations/{account}/settings/installations/{id}"
+            ))
+        }
+        _ => Err(error(
+            "Only personal and organization GitHub installations are supported.",
+        )),
+    }
+}

@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS github_connections (
  installation INTEGER PRIMARY KEY,
  account TEXT NOT NULL,
+ management_url TEXT NOT NULL DEFAULT '',
  updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS project_repositories (

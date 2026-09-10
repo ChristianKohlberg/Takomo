@@ -26,7 +26,13 @@ async fn fixture(app: &TestApp) -> (String, String) {
         .await;
     let map = map["mindmap"]["id"].as_str().unwrap().to_owned();
     let store = app.open_store();
-    store.github_connect(123, "test-account").unwrap();
+    store
+        .github_connect(
+            123,
+            "test-account",
+            "https://github.com/settings/installations/123",
+        )
+        .unwrap();
     let source = json!({"installation":123,"repository":456,"full_name":"test/repo","scope":{"include":["src"],"exclude":[]},"revision":"a".repeat(40),"limits":{"max_files":20,"max_source_bytes":100000,"max_tool_calls":12},"max_sections":3});
     store.set_project_repository("tp", &source).unwrap();
     let job = store
@@ -156,4 +162,45 @@ async fn workers_cannot_choose_sources_or_write_outside_the_job_scope() {
     );
     let (_, view) = app.get(&app.human, &format!("/v1/mindmaps/{map}")).await;
     assert_eq!(view["nodes"], json!([]));
+}
+
+#[test]
+fn installation_settings_resolve_to_the_correct_account_and_reject_invalid_metadata() {
+    use takomo::github::installation_management_url;
+    assert_eq!(
+        installation_management_url(&json!({"id":123,"account":{"type":"User","login":"person"}}))
+            .unwrap(),
+        "https://github.com/settings/installations/123"
+    );
+    assert_eq!(
+        installation_management_url(
+            &json!({"id":456,"account":{"type":"Organization","login":"team-name"}})
+        )
+        .unwrap(),
+        "https://github.com/organizations/team-name/settings/installations/456"
+    );
+    assert!(installation_management_url(
+        &json!({"id":456,"account":{"type":"Organization","login":"../attacker"}})
+    )
+    .is_err());
+}
+
+#[tokio::test]
+async fn existing_preview_connections_gain_management_metadata_without_losing_project_links() {
+    let app = TestApp::spawn().await;
+    fixture(&app).await;
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute(
+        "ALTER TABLE github_connections DROP COLUMN management_url",
+        [],
+    )
+    .unwrap();
+    let restored = app.open_store();
+    let connections = restored.github_connections().unwrap();
+    assert_eq!(connections[0]["id"], 123);
+    assert_eq!(connections[0]["management_url"], "");
+    assert_eq!(
+        restored.project_repository("tp").unwrap().unwrap()["repository"],
+        456
+    );
 }

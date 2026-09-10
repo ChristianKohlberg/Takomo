@@ -16,22 +16,22 @@ impl Store {
     pub fn github_connections(&self) -> ApiResult<Vec<Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT installation,account FROM github_connections ORDER BY account LIMIT 100",
+            "SELECT installation,account,management_url FROM github_connections ORDER BY account LIMIT 100",
         )?;
         let rows = stmt
             .query_map([], |r| {
-                Ok(json!({"id":r.get::<_,u64>(0)?,"account":r.get::<_,String>(1)?}))
+                Ok(json!({"id":r.get::<_,u64>(0)?,"account":r.get::<_,String>(1)?,"management_url":r.get::<_,String>(2)?}))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
-    pub fn github_connect(&self, id: u64, account: &str) -> ApiResult<()> {
+    pub fn github_connect(&self, id: u64, account: &str, management_url: &str) -> ApiResult<()> {
         let conn = self.conn.lock().unwrap();
         let full:bool=conn.query_row("SELECT (SELECT count(*) FROM github_connections)>=100 AND NOT EXISTS(SELECT 1 FROM github_connections WHERE installation=?1)",[id],|r|r.get(0))?;
         if full {
             return Err(ApiError::validation("validation.github","This deployment supports at most 100 connected installations. Disconnect an unused account before adding another."));
         }
-        conn.execute("INSERT INTO github_connections VALUES(?1,?2,?3) ON CONFLICT(installation) DO UPDATE SET account=excluded.account,updated_at=excluded.updated_at",params![id,account,now_ms()])?;
+        conn.execute("INSERT INTO github_connections(installation,account,updated_at,management_url) VALUES(?1,?2,?3,?4) ON CONFLICT(installation) DO UPDATE SET account=excluded.account,updated_at=excluded.updated_at,management_url=excluded.management_url",params![id,account,now_ms(),management_url])?;
         Ok(())
     }
     pub fn github_disconnect(&self, id: u64) -> ApiResult<()> {

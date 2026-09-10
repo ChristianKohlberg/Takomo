@@ -77,6 +77,7 @@ pub async fn connect(
     state.store.github_connect(
         req.installation,
         found["account"]["login"].as_str().ok_or_else(invalid)?,
+        &crate::github::installation_management_url(found)?,
     )?;
     Ok(Json(json!({"connected":true})))
 }

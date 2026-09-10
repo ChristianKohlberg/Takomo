@@ -177,6 +177,12 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("codebase_import.sql"))?;
+        if !has_column(&conn, "github_connections", "management_url")? {
+            conn.execute(
+                "ALTER TABLE github_connections ADD COLUMN management_url TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
         conn.execute_batch(include_str!("document_chat.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
         conn.execute_batch(include_str!("lane_organizer.sql"))?;

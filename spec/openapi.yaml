@@ -9117,6 +9117,9 @@ components:
           minimum: 1
         account:
           type: string
+        management_url:
+          type: string
+          description: Account-specific GitHub installation settings URL. Empty only for connections from an older preview.
         suspended:
           type: boolean
         permissions:

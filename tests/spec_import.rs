@@ -168,3 +168,33 @@ async fn persistence_failure_rolls_back_the_tree_and_receipt_then_retry_succeeds
         3
     );
 }
+
+#[tokio::test]
+async fn concurrent_reset_and_import_leave_the_live_and_durable_tree_in_agreement() {
+    for _ in 0..3 {
+        let app = TestApp::spawn().await;
+        let map = fixture(&app).await;
+        let reset_path = format!("/v1/mindmaps/{map}/reset");
+        let import_path = format!("/v1/mindmaps/{map}/codebase-import");
+        let (reset, import) = tokio::join!(
+            app.post(&app.admin, &reset_path, json!({"confirm_id":map})),
+            app.post(&app.human, &import_path, draft()),
+        );
+        assert_eq!(reset.0, StatusCode::OK, "{}", reset.1);
+        assert_eq!(import.0, StatusCode::OK, "{}", import.1);
+        let (_, view) = app.get(&app.human, &format!("/v1/mindmaps/{map}")).await;
+        let count = view["nodes"].as_array().unwrap().len();
+        assert!([0, 3].contains(&count));
+        let restored = Doc::new();
+        for blob in app.open_store().load_collab_updates(&map).unwrap() {
+            restored
+                .transact_mut()
+                .apply_update(Update::decode_v1(&blob).unwrap())
+                .unwrap();
+        }
+        assert_eq!(
+            takomo::store::mindmapdoc::snapshot(&restored, &map).2.len(),
+            count
+        );
+    }
+}

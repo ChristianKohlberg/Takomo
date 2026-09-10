@@ -332,12 +332,14 @@ impl Room {
     /// Build a bounded change on a private replica, persist it, then expose it.
     /// Full state includes any earlier debounced edits; duplicate log updates
     /// merge harmlessly. A failed store commit leaves the live replica untouched.
-    pub(crate) fn mutate_durable<T>(
+    pub(crate) async fn mutate_durable<T>(
         &self,
         store: &crate::store::Store,
         actor: &str,
         f: impl FnOnce(&Doc) -> ApiResult<T>,
     ) -> ApiResult<T> {
+        // Import commits must not race a reset or compaction rewriting the log.
+        let _flushing = self.flushing.lock().await;
         let mut live = self.doc.lock().expect("room doc mutex");
         let before = live.transact().state_vector();
         let initial = live
