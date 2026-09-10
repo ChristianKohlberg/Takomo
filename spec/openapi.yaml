@@ -5705,7 +5705,10 @@ paths:
         The tree and retry receipt persist together before broadcast. Reusing the
         same request_id and payload under the same actor returns the original node
         mapping without rewriting human edits. Another payload or a nonempty target
-        conflicts. The body is limited to 64000 bytes. No section is confirmed.
+        conflicts. If the imported root has since been reset or deleted, the retry
+        conflicts (conflict.spec_import_stale) rather than restoring it; a new
+        request_id imports again deliberately. The body is limited to 64000 bytes.
+        No section is confirmed.
       requestBody:
         required: true
         content:
@@ -5727,7 +5730,7 @@ paths:
                   revision: { type: string }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: "Nonempty target, archived object, or conflicting retry" }
+        '409': { description: "Nonempty target, archived object, conflicting retry, or a receipt whose imported content was reset or deleted" }
         '422': { description: "Invalid hierarchy, scope, source range, or content limits" }
 
   /mindmaps/{id}/nodes:
@@ -12611,6 +12614,7 @@ x-error-codes:
   conflict.codebase_import: "Extraction changed, is already active or has expired. Refresh status before an explicit retry."
   validation.spec_import: "The import draft has invalid fields, limits, hierarchy, or source scope."
   conflict.spec_import: "The target is not empty or the import request conflicts with a recorded retry receipt. Preserve the document and inspect the original draft."
+  conflict.spec_import_stale: "A retry matched a receipt whose imported content a person has since reset or deleted. A retry never restores it; import again deliberately with a new request_id."
   validation.ticket_document: "Invalid document-reference, classification, policy or pagination input. Read the returned message and use current sections from the ticket project."
   conflict.ticket_document: "The suggestion or source is stale, the section is unavailable, or classification conflicts with current state. Retry classification or manually link a current section."
   notfound.ticket_document_link: "No document reference has this ID for the ticket. Read its document-links history."

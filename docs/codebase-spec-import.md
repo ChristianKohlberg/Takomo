@@ -42,7 +42,10 @@ source references. All remain unconfirmed. Open the project's normal Document or
 Map view to review them. Existing text is never replaced. Retry the identical
 artifact against the same target and actor after a lost response: the stored
 receipt returns the original node mapping without duplicating content or undoing
-human edits. Changed payloads with the same request ID conflict.
+human edits. Changed payloads with the same request ID conflict. So does a retry
+after a person reset the map or deleted the imported root: the receipt outlives
+the content on purpose, so a transport retry can never quietly put back what
+somebody removed. Import again with a new request ID if that is what you want.
 
 `POST /v1/mindmaps/{id}/codebase-import` requires human/write and project access.
 It checks shape, source scope and an empty target under the room lock, builds on

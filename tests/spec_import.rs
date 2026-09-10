@@ -198,3 +198,47 @@ async fn concurrent_reset_and_import_leave_the_live_and_durable_tree_in_agreemen
         );
     }
 }
+
+#[tokio::test]
+async fn retry_after_reset_or_deletion_refuses_instead_of_restoring_content() {
+    let app = TestApp::spawn().await;
+    let map = fixture(&app).await;
+    let path = format!("/v1/mindmaps/{map}/codebase-import");
+    let view = format!("/v1/mindmaps/{map}");
+    let (status, result) = app.post(&app.human, &path, draft()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        app.post(
+            &app.admin,
+            &format!("/v1/mindmaps/{map}/reset"),
+            json!({"confirm_id":map})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(app.get(&app.human, &view).await.1["total"], 0);
+    let (status, body) = app.post(&app.human, &path, draft()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "conflict.spec_import_stale");
+    assert_eq!(app.get(&app.human, &view).await.1["total"], 0);
+    let mut fresh = draft();
+    fresh["request_id"] = json!("preview-2");
+    let (status, again) = app.post(&app.human, &path, fresh.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_ne!(again["root"], result["root"]);
+    assert_eq!(app.get(&app.human, &view).await.1["total"], 3);
+    assert_eq!(app.post(&app.human, &path, fresh.clone()).await.1, again);
+    let root = again["root"].as_str().unwrap();
+    assert_eq!(
+        app.delete(&app.human, &format!("/v1/mindmaps/{map}/nodes/{root}"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(app.get(&app.human, &view).await.1["total"], 0);
+    let (status, body) = app.post(&app.human, &path, fresh).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "conflict.spec_import_stale");
+    assert_eq!(app.get(&app.human, &view).await.1["total"], 0);
+}

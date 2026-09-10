@@ -214,12 +214,20 @@ pub async fn publish(
     let room = super::docsync::open_room(&state, &id).await?;
     let result = room.mutate_durable(&state.store, &ctx.actor, |doc| {
         let receipts = doc.get_or_insert_map("spec_import_receipts");
+        let nodes = mindmapdoc::snapshot(doc, &id).2;
         if let Some(yrs::Out::Any(yrs::Any::String(raw))) = receipts.get(&doc.transact(), &receipt_key) {
             let receipt: Value = serde_json::from_str(&raw).map_err(|_| conflict("Import receipt is invalid; inspect the document before retrying."))?;
             if receipt["digest"] != digest { return Err(conflict("This request_id was used with another draft. Use a new request_id.")); }
+            let root = receipt["result"]["root"].as_str().unwrap_or_default();
+            if !nodes.iter().any(|n| n.id == root) {
+                return Err(ApiError::conflict(
+                    "conflict.spec_import_stale",
+                    "The content this request_id imported was reset or deleted by a person and is not restored by a retry. To import again deliberately, send the draft with a new request_id.",
+                ));
+            }
             return Ok(receipt["result"].clone());
         }
-        if !mindmapdoc::snapshot(doc, &id).2.is_empty() { return Err(conflict("Import requires an empty specification. Existing sections are never replaced.")); }
+        if !nodes.is_empty() { return Err(conflict("Import requires an empty specification. Existing sections are never replaced.")); }
         let root_notes = format!("Unreviewed codebase draft.\n{}\nSource commit: {}\nIncluded paths: {}\nExcluded paths: {}\nCoverage is limited to the selected code; runtime behavior was not tested.\n{}", request.draft.summary, request.revision, request.scope.include.join(", "), request.scope.exclude.join(", "), request.draft.gaps.iter().map(|g| format!("Open question: {g}")).collect::<Vec<_>>().join("\n"));
         let root = add(doc, None, request.draft.title.clone(), root_notes, &ctx.actor)?;
         let mut ids = HashMap::new();
