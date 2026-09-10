@@ -21,19 +21,6 @@ export const STR = defineStrings({
     gateOpen: 'Open',
     gateEmpty: 'Paste a token to continue.',
 
-    // Section rail
-    navOverview: 'Overview',
-    navOverviewHint: 'The token you are signed in with',
-    navData: 'Data',
-    navDataHint: 'Back up the whole store',
-    navAccess: 'Access',
-    navAccessHint: 'Tokens that can reach the API',
-    navProjects: 'Projects',
-    navProjectsHint: 'Create and remove projects',
-    navLibrary: 'Workflows',
-    navLibraryHint: 'Reusable state machines',
-    navPeople: 'People',
-    navPeopleHint: 'Who work can be addressed to',
     peopleTitle: 'People',
     peopleSub:
       'Who a decision can be addressed to. A person is not a login and grants no access — what a credential may do is its scopes. Adding someone is how a question stops going to "whoever has the expertise" and starts waiting on them.',
@@ -316,18 +303,6 @@ export const STR = defineStrings({
     gateOpen: 'Öffnen',
     gateEmpty: 'Zum Fortfahren ein Token einfügen.',
 
-    navOverview: 'Übersicht',
-    navOverviewHint: 'Das Token, mit dem du angemeldet bist',
-    navData: 'Daten',
-    navDataHint: 'Den gesamten Speicher sichern',
-    navAccess: 'Zugriff',
-    navAccessHint: 'Tokens, die die API erreichen',
-    navProjects: 'Projekte',
-    navProjectsHint: 'Projekte anlegen und entfernen',
-    navLibrary: 'Workflows',
-    navLibraryHint: 'Wiederverwendbare Zustandsautomaten',
-    navPeople: 'Personen',
-    navPeopleHint: 'An wen Arbeit gerichtet werden kann',
     peopleTitle: 'Personen',
     peopleSub:
       'An wen eine Entscheidung gerichtet werden kann. Eine Person ist kein Login und gew\u00e4hrt keinen Zugriff — was eine Zugangsberechtigung darf, sind ihre Scopes. Mit einer Person h\u00f6rt eine Frage auf, an \u201eirgendwen mit der Expertise\u201c zu gehen, und wartet auf sie.',

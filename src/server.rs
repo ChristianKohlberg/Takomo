@@ -727,6 +727,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/verification", get(crate::api::verification_page))
         .route("/environments", get(crate::api::environments_page))
         .route("/settings", get(crate::api::settings_page))
+        .route("/legacy", get(crate::api::settings_page))
         // The app's assets. Still not a static-file handler: `build.rs` bakes the
         // generated `web/dist/assets/` into a compile-time name → bytes table and
         // this route is an exact lookup in it, so there is no directory to

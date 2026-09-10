@@ -44,6 +44,7 @@ const TITLES: Record<string, string> = {
   '/verification': 'takomo · verification',
   '/environments': 'takomo · environments',
   '/settings': 'takomo · settings',
+  '/legacy': 'takomo · legacy',
   '/agent-queues': 'takomo · agent queue',
 }
 
@@ -93,6 +94,7 @@ const router = createBrowserRouter([
       { path: '/verification', element: <LegacySpecificationRedirect /> },
       { path: '/environments', element: <EnvironmentsApp /> },
       { path: '/settings', element: <SettingsApp /> },
+      { path: '/legacy', element: <SettingsApp legacy /> },
       { path: '/agent-queues', element: <AgentQueuesApp /> },
       // Anything else the server handed this document for. The server serves it
       // only on the five routes, so this is a safety net rather than a real path.

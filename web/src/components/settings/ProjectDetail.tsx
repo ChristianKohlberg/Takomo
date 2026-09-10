@@ -12,6 +12,7 @@
 // and a save that changed nothing closes without claiming "Saved" — a small lie
 // over an untouched form teaches the reader to distrust every later message.
 import { useState, type ReactNode } from 'react'
+import type { ProjectSection } from './settings-navigation'
 import { ArrowLeft } from 'lucide-react'
 
 import { Field } from '@/components/Field'
@@ -60,6 +61,12 @@ export interface ProjectDetailLabels {
 }
 
 export interface ProjectDetailProps {
+  page?: ProjectSection
+  dirty?: boolean
+  onDiscard?: () => void
+  discardLabel?: string
+  generalLabels?: { name: string; id: string }
+
   project: { id: string; name?: string; workflow?: string; archived?: boolean }
   /**
    * The workflow editor, rendered below the conventions.
@@ -88,6 +95,8 @@ export interface ProjectDetailProps {
 }
 
 export function ProjectDetail({
+  page, dirty = true, onDiscard, discardLabel = 'Discard', generalLabels,
+
   project,
   workflowSlot,
   documentResetSlot,
@@ -121,6 +130,11 @@ export function ProjectDetail({
     appearanceInvalid: labels.appearanceInvalid,
   })
   const used = charCount(s.style.trim())
+  const writing = !page || page === 'writing'
+  const timing = !page || page === 'workflow'
+  const general = !page || page === 'general'
+  const editable = !page || page !== 'general'
+
 
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -149,21 +163,25 @@ export function ProjectDetail({
         </div>
       )}
 
-      {labels.appearance && <DocumentAppearanceFields value={s.documentAppearance}
+      {(!page || page === 'documents') && labels.appearance && <DocumentAppearanceFields value={s.documentAppearance}
         onChange={(documentAppearance) => onChange({ documentAppearance })}
         disabled={readOnly || saving} labels={labels.appearance} />}
 
-      {writingSlot}
-      {classificationSlot}
+      {page === 'general' && <dl className="grid gap-4 border-t py-6">
+        <div><dt className="text-xs text-muted-foreground">{generalLabels?.name}</dt><dd className="mt-1 font-medium">{project.name || project.id}</dd></div>
+        <div><dt className="text-xs text-muted-foreground">{generalLabels?.id}</dt><dd className="mt-1 font-mono text-sm">{project.id}</dd></div>
+      </dl>}
+      {general && classificationSlot}
 
       <div className="flex flex-col gap-4">
+        {writing && <>
         <Field label={labels.langLabel} hint={labels.langHelp}>
           {(id) => (
             <Input
               id={id}
               placeholder={labels.langPh}
               value={s.language}
-              readOnly={readOnly}
+              readOnly={readOnly || saving}
               onChange={(e) => onChange({ language: e.target.value })}
             />
           )}
@@ -177,7 +195,7 @@ export function ProjectDetail({
                 className="min-h-28"
                 placeholder={labels.stylePh}
                 value={s.style}
-                readOnly={readOnly}
+                readOnly={readOnly || saving}
                 onChange={(e) => onChange({ style: e.target.value })}
               />
               <div
@@ -192,6 +210,8 @@ export function ProjectDetail({
           )}
         </Field>
 
+        </>}
+        {timing && <>
         <Field label={labels.ttlLabel} hint={labels.ttlHelp}>
           {(id) => (
             <Input
@@ -199,7 +219,7 @@ export function ProjectDetail({
               type="number"
               min={0}
               value={s.ttl}
-              readOnly={readOnly}
+              readOnly={readOnly || saving}
               onChange={(e) => onChange({ ttl: e.target.value })}
             />
           )}
@@ -216,7 +236,7 @@ export function ProjectDetail({
                 type="number"
                 min={0}
                 value={s.claimTtl}
-                readOnly={readOnly}
+                readOnly={readOnly || saving}
                 onChange={(e) => onChange({ claimTtl: e.target.value })}
               />
             )}
@@ -228,14 +248,15 @@ export function ProjectDetail({
                 type="number"
                 min={0}
                 value={s.maxClaimTtl}
-                readOnly={readOnly}
+                readOnly={readOnly || saving}
                 onChange={(e) => onChange({ maxClaimTtl: e.target.value })}
               />
             )}
           </Field>
         </div>
 
-        <div className="min-h-4 text-[12.5px]">
+        </>}
+        <div role="status" className="min-h-4 text-[12.5px]">
           {error ? (
             <span className="text-destructive">{error}</span>
           ) : saved ? (
@@ -251,7 +272,8 @@ export function ProjectDetail({
           {/* aria-disabled, not disabled: a control that is silently inert
               explains nothing. This one stays focusable, carries its reason, and
               re-states it when pressed. */}
-          <Button
+          {editable && <Button
+            disabled={saving || !dirty}
             aria-disabled={reason ? 'true' : 'false'}
             className={cn(reason && 'opacity-55')}
             onClick={() => {
@@ -263,17 +285,18 @@ export function ProjectDetail({
             }}
           >
             {saving ? labels.saving : labels.save}
-          </Button>
+          </Button>}
+          {editable && onDiscard && <Button variant="ghost" disabled={saving || !dirty} onClick={onDiscard}>{discardLabel}</Button>}
           <span className="grow" />
           {/* Archive sits BEFORE delete and stays available on a frozen project
               — it is the undo. Delete is hidden while archived: reaching for the
               irreversible one should mean leaving the gate first, deliberately. */}
-          {canAdmin && (
+          {general && canAdmin && (
             <Button variant="secondary" size="sm" onClick={onToggleArchive}>
               {frozen ? labels.unarchive : labels.archive}
             </Button>
           )}
-          {canAdmin && !frozen && (
+          {general && canAdmin && !frozen && (
             <Button variant="destructive" size="sm" onClick={onDelete}>
               {labels.delete}
             </Button>
@@ -281,9 +304,11 @@ export function ProjectDetail({
         </div>
       </div>
 
-      {documentResetSlot}
+      {(!page || page === 'documents') && documentResetSlot}
 
-      {workflowSlot && (
+      {writing && writingSlot}
+
+      {timing && workflowSlot && (
         <>
           <hr className="border-border-soft" />
           {workflowSlot}

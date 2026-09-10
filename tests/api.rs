@@ -346,6 +346,7 @@ const PAGE_ROUTES: &[&str] = &[
     "/initiatives",
     "/schedules",
     "/settings",
+    "/legacy?scope=demo",
 ];
 
 /// Assert a response is the app shell: the React mount point, and references to

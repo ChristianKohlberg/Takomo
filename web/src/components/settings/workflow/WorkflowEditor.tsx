@@ -1,3 +1,4 @@
+import { useSettingsDraft } from '@/components/settings/SettingsDrafts'
 // The workflow editor: canvas, inspector, preflight, apply.
 //
 // Everything is a DRAFT until Apply. Nothing here writes the project's workflow
@@ -109,6 +110,8 @@ export function WorkflowEditor({
     () => JSON.stringify(draft) !== JSON.stringify(workflow),
     [draft, workflow],
   )
+
+  useSettingsDraft(dirty || applying)
 
   // The positions the canvas draws with, derived from the DRAFT rather than
   // stored alongside it.
