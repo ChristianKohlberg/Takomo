@@ -119,6 +119,13 @@ paths:
                         heading_path: { type: array, items: { type: string } }
                         excerpt: { type: string }
                         passage: { type: string, description: Exact plaintext chunk for best-effort source navigation; fall back to section if edited. }
+                        location:
+                          type: object
+                          description: Optional backward-compatible source locator. Verify the current normalized section chunk sequence before selecting this ordinal; otherwise focus the section safely.
+                          required: [ordinal, source_hash]
+                          properties:
+                            ordinal: { type: integer, minimum: 0 }
+                            source_hash: { type: string, description: SHA-256 hex of the ordered section chunks joined with a NUL separator. }
                         highlights: { type: array, items: { type: string }, description: Actual literal query terms occurring in the excerpt; empty for semantic-only results. }
                         match_kind: { type: string, enum: [keyword, semantic, both] }
         default: { $ref: '#/components/responses/Error' }

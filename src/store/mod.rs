@@ -229,6 +229,22 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
     ) -> ApiResult<T> {
+        self.transaction(true, f)
+    }
+
+    /// Rebuildable query-cache bookkeeping does not invalidate application lists.
+    pub(crate) fn cache_transaction<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
+    ) -> ApiResult<T> {
+        self.transaction(false, f)
+    }
+
+    fn transaction<T>(
+        &self,
+        notify: bool,
+        f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
+    ) -> ApiResult<T> {
         let mut conn = self
             .conn
             .lock()
@@ -243,7 +259,7 @@ impl Store {
         // They must not invalidate every open project's server-owned lists.
         // total_changes includes trigger/cascade writes; compare per committed
         // transaction because SQLite's lifetime counter also counts rollbacks.
-        if conn.total_changes() != before {
+        if notify && conn.total_changes() != before {
             self.changes.send_modify(|v| *v = v.wrapping_add(1));
         }
         Ok(out)
@@ -2466,3 +2482,5 @@ mod change_notification_tests {
         assert!(changes.has_changed().unwrap());
     }
 }
+
+pub mod query_cache;

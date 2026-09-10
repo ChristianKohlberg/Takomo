@@ -1,10 +1,12 @@
-//! Bounded, process-local query vectors. Never caches document results or errors.
-use crate::{auth::debit_shared_window, store::search::EmbeddingConfig};
+//! Bounded query vectors with optional restart-persistent storage. Never caches document results or errors.
+use crate::{
+    auth::debit_shared_window, ids::now_ms, server::AppState, store::search::EmbeddingConfig,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::{watch, Semaphore};
 
@@ -19,7 +21,7 @@ pub enum QueryEmbedding {
     Unavailable,
 }
 
-type Completion = Option<(Instant, QueryEmbedding)>;
+type Completion = Option<(i64, QueryEmbedding)>;
 struct Entry {
     result: watch::Receiver<Completion>,
     touched: u64,
@@ -71,6 +73,31 @@ impl QueryCache {
         entries.generation = entries.generation.wrapping_add(1);
         entries.items.clear();
     }
+    pub fn synchronize_generation(&self, generation: u64) {
+        let mut entries = self.entries.lock().unwrap();
+        if generation > entries.generation {
+            entries.generation = generation;
+            entries.items.clear();
+        }
+    }
+    pub async fn get_persistent(
+        &self,
+        state: Arc<AppState>,
+        config: &EmbeddingConfig,
+        credential: &str,
+        token_id: &str,
+        query: &str,
+    ) -> (u64, QueryEmbedding) {
+        let reader = state.clone();
+        let generation =
+            match crate::api::blocking_read(move || reader.store.query_cache_generation()).await {
+                Ok(generation) => generation,
+                Err(_) => return (0, QueryEmbedding::Unavailable),
+            };
+        self.synchronize_generation(generation);
+        self.get_inner(config, credential, token_id, query, Some(state))
+            .await
+    }
     pub fn is_current(&self, generation: u64) -> bool {
         self.entries.lock().unwrap().generation == generation
     }
@@ -81,13 +108,24 @@ impl QueryCache {
         token_id: &str,
         query: &str,
     ) -> (u64, QueryEmbedding) {
+        self.get_inner(config, credential, token_id, query, None)
+            .await
+    }
+    async fn get_inner(
+        &self,
+        config: &EmbeddingConfig,
+        credential: &str,
+        token_id: &str,
+        query: &str,
+        persistent: Option<Arc<AppState>>,
+    ) -> (u64, QueryEmbedding) {
         let key = cache_key(config, credential, token_id, query);
         let (generation, mut receiver, sender) = {
             let mut entries = self.entries.lock().unwrap();
             entries.items.retain(|_, entry| {
                 let alive = entry.result.has_changed().is_ok();
                 match entry.result.borrow().as_ref() {
-                    Some((at, _)) => at.elapsed() < self.ttl,
+                    Some((expiry, _)) => *expiry > now_ms(),
                     None => alive,
                 }
             });
@@ -131,35 +169,79 @@ impl QueryCache {
             let key = key.clone();
             // The bounded operation owns completion even if its first HTTP client leaves.
             tokio::spawn(async move {
-                let result = match cache.pending.clone().try_acquire_owned() {
-                    Ok(_permit) => {
-                        if debit_shared_window(&cache.rate, &token_id, QUERY_EMBEDDINGS_PER_MINUTE)
-                            .is_err()
-                        {
-                            QueryEmbedding::Throttled
-                        } else {
-                            match tokio::time::timeout(
-                                Duration::from_secs(3),
-                                crate::embeddings::embed(&config, &credential, &[query], true),
+                let stored = if let Some(state) = persistent.clone() {
+                    let stored_key = key.clone();
+                    crate::api::blocking_read(move || {
+                        state.store.cached_query_vector(
+                            &stored_key,
+                            generation,
+                            config.dimensions,
+                            now_ms(),
+                        )
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                } else {
+                    None
+                };
+                let (expiry, result) = if let Some((expiry, vector)) = stored {
+                    (expiry, QueryEmbedding::Ready(Arc::new(vector)))
+                } else {
+                    let result = match cache.pending.clone().try_acquire_owned() {
+                        Ok(_permit) => {
+                            if debit_shared_window(
+                                &cache.rate,
+                                &token_id,
+                                QUERY_EMBEDDINGS_PER_MINUTE,
                             )
-                            .await
+                            .is_err()
                             {
-                                Ok(Ok(mut vectors)) => vectors
-                                    .pop()
-                                    .map(|v| QueryEmbedding::Ready(Arc::new(v)))
-                                    .unwrap_or(QueryEmbedding::Unavailable),
-                                _ => QueryEmbedding::Unavailable,
+                                QueryEmbedding::Throttled
+                            } else {
+                                match tokio::time::timeout(
+                                    Duration::from_secs(3),
+                                    crate::embeddings::embed(&config, &credential, &[query], true),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(mut vectors)) => vectors
+                                        .pop()
+                                        .map(|v| QueryEmbedding::Ready(Arc::new(v)))
+                                        .unwrap_or(QueryEmbedding::Unavailable),
+                                    _ => QueryEmbedding::Unavailable,
+                                }
                             }
                         }
+                        Err(_) => QueryEmbedding::Throttled,
+                    };
+                    let expiry =
+                        now_ms().saturating_add(cache.ttl.as_millis().min(i64::MAX as u128) as i64);
+                    if let (Some(state), QueryEmbedding::Ready(vector)) = (persistent, &result) {
+                        let stored_key = key.clone();
+                        let vector = vector.clone();
+                        let capacity = cache.capacity;
+                        // Best-effort persistence: cache failure never blocks keyword fallback.
+                        let _ = crate::api::blocking_read(move || {
+                            state.store.cache_query_vector(
+                                &stored_key,
+                                generation,
+                                &vector,
+                                expiry,
+                                now_ms(),
+                                capacity,
+                            )
+                        })
+                        .await;
                     }
-                    Err(_) => QueryEmbedding::Throttled,
+                    (expiry, result)
                 };
                 let mut entries = cache.entries.lock().unwrap();
                 if entries.generation == generation && !matches!(result, QueryEmbedding::Ready(_)) {
                     entries.items.remove(&key);
                 }
                 // Old generations only finish their existing waiters; never reinsert entries.
-                sender.send_replace(Some((Instant::now(), result)));
+                sender.send_replace(Some((expiry, result)));
             });
         }
         loop {

@@ -30,3 +30,44 @@ export const DocumentSearchHighlight = Extension.create({
     })]
   },
 })
+
+const passageKey = new PluginKey<{ from: number; to: number } | null>('searchPassage')
+/** Local decoration only: never enters document content or Yjs. */
+export function highlightSearchPassage(view: EditorView, range: { from: number; to: number }): void {
+  view.dispatch(view.state.tr.setMeta(passageKey, range))
+}
+export const SearchPassageHighlight = Extension.create({
+  name: 'searchPassageHighlight',
+  addProseMirrorPlugins() {
+    return [new Plugin<{ from: number; to: number } | null>({
+      key: passageKey,
+      state: {
+        init: () => null,
+        apply: (transaction, state) => transaction.docChanged ? null : transaction.getMeta(passageKey) !== undefined ? transaction.getMeta(passageKey) as typeof state : state,
+      },
+      view(view) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let previous = passageKey.getState(view.state)
+        return {
+          update() {
+            const next = passageKey.getState(view.state)
+            if (next !== previous) {
+              previous = next
+              clearTimeout(timer)
+              if (next) timer = setTimeout(() => {
+                if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta(passageKey, null))
+              }, 3000)
+            }
+          },
+          destroy() { clearTimeout(timer) },
+        }
+      },
+      props: {
+        decorations(state) {
+          const range = passageKey.getState(state)
+          return range ? DecorationSet.create(state.doc, [Decoration.inline(range.from, range.to, { class: 'document-search-match document-search-active', 'data-search-passage': 'true' })]) : DecorationSet.empty
+        },
+      },
+    })]
+  },
+})

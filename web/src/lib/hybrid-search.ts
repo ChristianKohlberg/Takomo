@@ -8,6 +8,7 @@ export interface SearchResult {
   heading_path: string[]
   excerpt: string
   passage: string
+  location?: { ordinal: number; source_hash: string }
   highlights: string[]
   match_kind: 'keyword' | 'semantic' | 'both'
 }
@@ -74,8 +75,7 @@ export function excerptRanges(result: SearchResult): TextMatch[] {
 }
 
 /** Exact passage only: synthetic block separators have no document position. */
-export function passageRange(doc: Node, passage: string): TextMatch | null {
-  if (!passage) return null
+function passageText(doc: Node): { text: string; positions: number[] } {
   const lines: { text: string; positions: number[] }[] = []
   let line = { text: '', positions: [] as number[] }
   const cut = () => { lines.push(line); line = { text: '', positions: [] } }
@@ -96,8 +96,50 @@ export function passageRange(doc: Node, passage: string): TextMatch | null {
   const kept = lines.filter(entry => entry.text.trim() !== '')
   const text = kept.map(entry => entry.text).join('\n')
   const positions = kept.flatMap((entry, index) => index ? [-1, ...entry.positions] : entry.positions)
-  const index = text.indexOf(passage)
-  if (index < 0) return null
+  return { text, positions }
+}
+function rangeAt(positions: number[], index: number, passage: string): TextMatch | null {
+  if (index < 0 || !passage) return null
   const from = positions[index], end = positions[index + passage.length - 1]
   return from !== undefined && end !== undefined && from >= 0 && end >= from ? { from, to: end + 1 } : null
+}
+/** Older servers have no locator. Only a unique exact match is safe. */
+export function passageRange(doc: Node, passage: string): TextMatch | null {
+  const { text, positions } = passageText(doc)
+  const index = text.indexOf(passage)
+  if (index < 0 || text.indexOf(passage, index + 1) >= 0) return null
+  return rangeAt(positions, index, passage)
+}
+/** Mirrors the existing server paragraph chunking; Unicode scalars, not UTF-16 units. */
+export function passageChunks(text: string): string[] {
+  const result: string[] = []
+  let current = ''
+  for (const paragraph of text.split('\n').filter(value => value.trim())) {
+    const chars = Array.from(paragraph)
+    if (Array.from(current).length + chars.length + 1 > 2000 && current) { result.push(current); current = '' }
+    if (chars.length > 2000) {
+      for (let offset = 0; offset < chars.length; offset += 2000) result.push(chars.slice(offset, offset + 2000).join(''))
+    } else current += (current ? '\n' : '') + paragraph
+  }
+  if (current) result.push(current)
+  return result.length ? result : ['']
+}
+export async function locatedPassageRange(doc: Node, result: SearchResult): Promise<TextMatch | null> {
+  if (!result.location) return passageRange(doc, result.passage)
+  const { text, positions } = passageText(doc)
+  const chunks = passageChunks(text)
+  const { ordinal, source_hash } = result.location
+  if (!Number.isInteger(ordinal) || ordinal < 0 || chunks[ordinal] !== result.passage) return null
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(chunks.join('\0')))
+  const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+  if (hash !== source_hash) return null
+  let cursor = 0, index = -1
+  for (let i = 0; i <= ordinal; i++) {
+    const chunk = chunks[i]
+    if (chunk === undefined) return null
+    index = text.indexOf(chunk, cursor)
+    if (index < 0) return null
+    cursor = index + chunk.length
+  }
+  return rangeAt(positions, index, result.passage)
 }
