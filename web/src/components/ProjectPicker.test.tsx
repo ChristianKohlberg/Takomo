@@ -134,3 +134,15 @@ describe('ProjectPicker', () => {
     expect(screen.getByText('12 / 13')).toBeTruthy()
   })
 })
+
+it('offers project creation with the search text and supports keyboard selection', () => {
+  const onCreate = vi.fn()
+  const { onChange } = mount({ onCreate, labels: { ...LABELS, all: undefined } })
+  fireEvent.click(trigger())
+  fireEvent.change(search(), { target: { value: 'My new workspace' } })
+  expect(screen.getByRole('option', { name: 'Create new project' })).toBeTruthy()
+  fireEvent.keyDown(search(), { key: 'Enter' })
+  expect(onCreate).toHaveBeenCalledWith('My new workspace')
+  expect(onChange).not.toHaveBeenCalled()
+  expect(screen.queryByRole('combobox')).toBeNull()
+})

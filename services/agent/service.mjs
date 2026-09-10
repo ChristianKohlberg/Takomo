@@ -1,3 +1,4 @@
+import { executeGithubImport } from './github-import.mjs';
 import { CLASSIFICATION_KIND } from './ticket-document-classification.mjs';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
@@ -123,6 +124,14 @@ export async function main() {
   try {
     while (!signal.aborted) {
       try {
+        if (env.TAKOMO_GITHUB_IMPORTS === '1') {
+          const { job: importing } = await api('/v1/codebase-import-jobs/claim', { service_id: serviceId });
+          if (importing) {
+            await executeGithubImport(importing, { api, serviceId, state, signal });
+            if (process.argv.includes('--once')) return;
+            continue;
+          }
+        }
         const { job } = await api('/v1/agent-jobs/claim', { service_id: serviceId, supported_kinds: supportedKinds, wait_seconds: process.argv.includes('--once') ? 0 : 25 });
         if (job) {
           console.log(`Running job ${job.id}.`);

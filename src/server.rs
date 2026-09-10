@@ -2,7 +2,7 @@
 
 use crate::auth::{answer_auth_middleware, auth_middleware, share_auth_middleware};
 use crate::store::Store;
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
@@ -153,6 +153,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/projects/{id}/bug-research-config", get(crate::api::bugs::config).put(crate::api::bugs::set_config))
         .route("/v1/agent-jobs/{id}/steer", post(crate::api::bugs::steer))
         .route("/v1/agent-jobs/{id}/cancel", post(crate::api::bugs::cancel))
+        .route("/v1/integrations/github", get(crate::api::github::status))
+        .route("/v1/integrations/github/installations", get(crate::api::github::installations).post(crate::api::github::connect))
+        .route("/v1/integrations/github/installations/{id}", delete(crate::api::github::disconnect))
+        .route("/v1/integrations/github/installations/{id}/repositories", get(crate::api::github::repositories))
+        .route("/v1/projects/{project}/repository", get(crate::api::github::project_repository).put(crate::api::github::set_repository))
+        .route("/v1/projects/{project}/codebase-imports", get(crate::api::codebase_import::list).post(crate::api::codebase_import::start))
+        .route("/v1/codebase-import-jobs/claim", post(crate::api::codebase_import::claim))
+        .route("/v1/codebase-import-jobs/{id}/heartbeat", post(crate::api::codebase_import::heartbeat))
+        .route("/v1/codebase-import-jobs/{id}/source-token", post(crate::api::codebase_import::source_token))
+        .route("/v1/codebase-import-jobs/{id}/result", post(crate::api::codebase_import::result))
         .route("/v1/agent-jobs", get(crate::api::agent_chat::list))
         .route("/v1/agent-jobs/{id}", get(crate::api::agent_chat::detail))
         .route("/v1/agent-jobs/claim", post(crate::api::agent_chat::claim))

@@ -5727,8 +5727,8 @@ paths:
                   revision: { type: string }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: Nonempty target, archived object, or conflicting retry }
-        '422': { description: Invalid hierarchy, scope, source range, or content limits }
+        '409': { description: "Nonempty target, archived object, or conflicting retry" }
+        '422': { description: "Invalid hierarchy, scope, source range, or content limits" }
 
   /mindmaps/{id}/nodes:
     parameters:
@@ -8581,6 +8581,470 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
 
 
+  /integrations/github:
+    get:
+      operationId: githubStatus
+      tags:
+      - GitHub
+      summary: GitHub App setup status and connected installations; unrestricted human/admin
+        only.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GithubStatus'
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /integrations/github/installations:
+    get:
+      operationId: githubInstallations
+      tags:
+      - GitHub
+      summary: First 100 installations of the deployment-owned App; unrestricted human/admin
+        only.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GithubInstallation'
+                  limit:
+                    type: integer
+                    minimum: 1
+                  has_more:
+                    type: boolean
+                  note:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: githubConnect
+      tags:
+      - GitHub
+      summary: Connect an installation verified against this App with Contents read
+        access.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  connected:
+                    type: boolean
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                installation:
+                  type: integer
+                  minimum: 1
+              required:
+              - installation
+  /integrations/github/installations/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    delete:
+      operationId: githubDisconnect
+      tags:
+      - GitHub
+      summary: Disconnect locally and fail pending extractions; revoke App access separately
+        on GitHub.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  connected:
+                    type: boolean
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /integrations/github/installations/{id}/repositories:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    - name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 1
+    get:
+      operationId: githubRepositories
+      tags:
+      - GitHub
+      summary: Page currently accessible repositories for a connected installation;
+        100 per page.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        id:
+                          type: integer
+                          minimum: 1
+                        full_name:
+                          type: string
+                        private:
+                          type: boolean
+                  total:
+                    type: integer
+                    minimum: 0
+                  page:
+                    type: integer
+                    minimum: 1
+                  limit:
+                    type: integer
+                    minimum: 1
+                  note:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /projects/{project}/repository:
+    parameters:
+    - name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: projectRepository
+      tags:
+      - GitHub
+      summary: Read the connected repository and literal extraction scope; project read
+        access.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  repository:
+                    anyOf:
+                    - $ref: '#/components/schemas/GithubRepositorySelection'
+                    - type: 'null'
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: setProjectRepository
+      tags:
+      - GitHub
+      summary: Verify and save repository identity and scope; unrestricted human/admin
+        only. Does not start extraction.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  saved:
+                    type: boolean
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GithubRepositorySelection'
+  /projects/{project}/codebase-imports:
+    parameters:
+    - name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    get:
+      operationId: listCodebaseImports
+      tags:
+      - GitHub
+      summary: Latest 20 extraction runs; requires project read access.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CodebaseImportRun'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                    minimum: 1
+                  note:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: startCodebaseImport
+      tags:
+      - GitHub
+      summary: Explicitly authorize one bounded extraction into an empty specification;
+        unrestricted human/admin/write only.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                request_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                mindmap:
+                  type: string
+              required:
+              - request_id
+              - mindmap
+  /codebase-import-jobs/claim:
+    post:
+      operationId: claimCodebaseImport
+      tags:
+      - GitHub
+      summary: Lease one extraction for 60 seconds; agent:run and project scope. No
+        automatic model retries.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  job:
+                    anyOf:
+                    - $ref: '#/components/schemas/ClaimedCodebaseImport'
+                    - type: 'null'
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                service_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+              required:
+              - service_id
+  /codebase-import-jobs/{id}/heartbeat:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: heartbeatCodebaseImport
+      tags:
+      - GitHub
+      summary: Renew a matching running attempt, bounded by its five-minute deadline;
+        agent:run.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodebaseImportAttempt'
+  /codebase-import-jobs/{id}/source-token:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: codebaseImportSourceToken
+      tags:
+      - GitHub
+      summary: Issue short-lived Contents read token for the running job repository
+        only; agent:run. Never send this credential to a model. Response is Cache-Control
+        no-store.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  token:
+                    type: string
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodebaseImportAttempt'
+  /codebase-import-jobs/{id}/result:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    post:
+      operationId: finishCodebaseImport
+      tags:
+      - GitHub
+      summary: Publish up to three unreviewed sections using the job target, actor,
+        scope and revision; or record failure. Matching agent:run attempt only. Completed
+        deliveries are idempotent.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodebaseImportResult'
+
 components:
   securitySchemes:
     bearer:
@@ -8644,6 +9108,140 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    GithubInstallation:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        account:
+          type: string
+        suspended:
+          type: boolean
+        permissions:
+          type: object
+    GithubStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        configured:
+          type: boolean
+        app_slug:
+          type:
+          - string
+          - 'null'
+        connections:
+          type: array
+          items:
+            $ref: '#/components/schemas/GithubInstallation'
+        permissions:
+          type: object
+        note:
+          type: string
+    GithubRepositorySelection:
+      type: object
+      additionalProperties: false
+      properties:
+        installation:
+          type: integer
+          minimum: 1
+        repository:
+          type: integer
+          minimum: 1
+        full_name:
+          type: string
+          pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+        scope:
+          type: object
+          additionalProperties: false
+          properties:
+            include:
+              type: array
+              minItems: 1
+              maxItems: 8
+              items:
+                type: string
+                maxLength: 512
+            exclude:
+              type: array
+              maxItems: 8
+              items:
+                type: string
+                maxLength: 512
+          required:
+          - include
+          - exclude
+      required:
+      - installation
+      - repository
+      - full_name
+      - scope
+    CodebaseImportRun:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        mindmap:
+          type: string
+        status:
+          type: string
+          enum:
+          - queued
+          - running
+          - completed
+          - failed
+        error:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type: integer
+    ClaimedCodebaseImport:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+        project:
+          type: string
+        mindmap:
+          type: string
+        attempt_id:
+          type: string
+        source:
+          type: object
+          description: 'Immutable repository selection, exact revision, max_sections=3
+            and limits: 20 files, 100000 bytes, 12 repository tool calls.'
+    CodebaseImportAttempt:
+      type: object
+      additionalProperties: false
+      properties:
+        service_id:
+          type: string
+        attempt_id:
+          type: string
+      required:
+      - service_id
+      - attempt_id
+    CodebaseImportResult:
+      type: object
+      additionalProperties: false
+      properties:
+        service_id:
+          type: string
+        attempt_id:
+          type: string
+        draft:
+          type: object
+          description: Same draft shape as CodebaseImport.draft; maximum three sections.
+        error:
+          type: string
+          maxLength: 2000
+      required:
+      - service_id
+      - attempt_id
     EmbeddingConfig:
       type: object
       required: [provider, endpoint, model, dimensions, quiet_seconds, max_wait_seconds]
@@ -12004,6 +12602,10 @@ x-error-code-families:
         routes: "POST /tickets/{id}/release"
 
 x-error-codes:
+  integration.github: "GitHub setup, access or transport failed. Inspect the installation and retry explicitly."
+  validation.github: "Invalid GitHub repository, installation or literal scope."
+  validation.codebase_import: "Invalid extraction request, attempt or target."
+  conflict.codebase_import: "Extraction changed, is already active or has expired. Refresh status before an explicit retry."
   validation.spec_import: "The import draft has invalid fields, limits, hierarchy, or source scope."
   conflict.spec_import: "The target is not empty or the import request conflicts with a recorded retry receipt. Preserve the document and inspect the original draft."
   validation.ticket_document: "Invalid document-reference, classification, policy or pagination input. Read the returned message and use current sections from the ticket project."

@@ -14,6 +14,7 @@ mod docs;
 mod document_appearance;
 pub mod search;
 pub use document_appearance::{DocumentAppearance, DocumentAppearanceOverrides, DocumentTemplate};
+mod codebase_import;
 pub mod document_chat;
 mod environments;
 mod events;
@@ -175,6 +176,7 @@ impl Store {
         add_check_node(&conn)?;
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
+        conn.execute_batch(include_str!("codebase_import.sql"))?;
         conn.execute_batch(include_str!("document_chat.sql"))?;
         conn.execute_batch(include_str!("work_lanes.sql"))?;
         conn.execute_batch(include_str!("lane_organizer.sql"))?;

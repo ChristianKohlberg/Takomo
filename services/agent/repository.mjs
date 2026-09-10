@@ -53,7 +53,7 @@ export async function openRepository(job, repositories, options = {}) {
         const raw = pending.subarray(0, end);
         pending = pending.subarray(end + 1);
         const entry = raw.toString('utf8');
-        const match = /^(\d+) (\w+) ([a-f0-9]+)\s+(\d+|-)\t([\s\S]+)$/.exec(entry);
+        const match = /^(\d+) (\w+) ([a-f0-9]+)\s+(\d+|-|BAD)\t([\s\S]+)$/.exec(entry);
         if (!match) throw new Error('Malformed repository inventory.');
         const [, mode, type, blob, sizeText, path] = match;
         if (!scope.include.some(prefix => underPath(path, prefix))) continue;
@@ -63,6 +63,7 @@ export async function openRepository(job, repositories, options = {}) {
         if (!['100644', '100755'].includes(mode) || type !== 'blob') { counts.non_regular++; continue; }
         try { repositoryPath(path); if (!raw.equals(Buffer.from(entry))) throw new Error(); }
         catch { counts.unsupported_path++; continue; }
+        if (sizeText === '-' || sizeText === 'BAD') throw new Error('Selected source object is unavailable locally. Prepare the pinned source before analysis.');
         const bytes = Number(sizeText);
         if (bytes > FILE_BYTES) { counts.oversized++; continue; }
         counts.selected_files++;

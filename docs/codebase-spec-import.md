@@ -1,8 +1,8 @@
 # Codebase specification import: development status
 
-The local MVP generates a bounded draft with our existing Codex App Server
-adapter, then imports it as ordinary, unreviewed sections into an empty Takomo
-specification. The **existing document and mindmap are the review UI**: read,
+The MVP generates a bounded draft with our existing Codex App Server adapter,
+then imports it as ordinary, unreviewed sections into an empty Takomo specification.
+Start through the project wizard with GitHub or through the local CLI below. The **existing document and mindmap are the review UI**: read,
 edit, move and confirm sections using their normal controls. There is no separate
 staging dashboard and no new review data model.
 
@@ -52,10 +52,10 @@ receipt is part of the document, so saved versions include it. The server does
 not independently inspect the repository; direct API callers are responsible for
 their source claims, as with other human-authorized document edits.
 
-MVP limits: plain paragraphs, a single bounded generation turn, local artifacts,
-and explicit publication. No background import job kind, multi-task resume,
-progressive per-section generation, semantic index, or refresh of existing content
-is shipped yet. The broader [implementation plan](plans/codebase-spec-import.md)
+MVP limits: plain paragraphs and a single bounded generation turn. The CLI uses
+local artifacts and explicit publication; the GitHub wizard queues one explicitly
+authorized run and publishes its result. Multi-task resume, progressive per-section
+generation, semantic indexing and refresh of existing content are not shipped yet. The broader [implementation plan](plans/codebase-spec-import.md)
 remains the roadmap, amended to reuse the document/map instead of a staging UI.
 
 ## Test a small part before spending inference
@@ -138,7 +138,7 @@ output preservation. Existing live-provider tests remain opt-in.
 
 ## Next milestones
 
-MVP preview validation: the full debug Rust suite passed (657 tests), the agent
+Earlier local-CLI preview validation: the full debug Rust suite passed (657 tests), the agent
 suite passed (83 tests; five provider tests skipped), Clippy and formatting passed,
 and the frontend built. A disposable HTTP import was opened in both existing
 Document and Map views, showing the same nested sections and source notes. The
@@ -147,7 +147,15 @@ provider quality check and the integration/release validation gate remain pendin
 this branch has not been merged or deployed.
 
 The local generation and durable empty-document import MVP is implemented. Still
-pending: background job orchestration, durable multi-task progress, separate
-verification/reconciliation stages, quality evaluation and rollout. A scoped
+pending: durable multi-task progress, separate verification/reconciliation stages,
+quality evaluation and rollout. The GitHub wizard has a durable single-turn queue. A scoped
 run must retain its scope and limits in every task snapshot and display partial
 coverage in the final draft. Neither an agent tool call nor a retry may expand it.
+
+## Project wizard and GitHub follow-up
+
+The worktree now also contains project creation from the nav search, GitHub App
+connection settings, project repository settings and a bounded extraction queue.
+See [GitHub setup and extraction](github-extraction.md). This extends the earlier
+local-CLI milestone; GitHub setup and live provider validation remain separate
+from the fixture-backed local checks described above.

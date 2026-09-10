@@ -381,3 +381,12 @@ its review surface. No `spec_import_preview` kind is advertised to the worker
 queue yet. See [the MVP guide](../../docs/codebase-spec-import.md) for the commands,
 budgets, token scopes and retry behavior. The preflight command above remains
 free of inference.
+
+### GitHub extraction from project setup
+
+The project wizard and project settings can queue an explicit, bounded extraction.
+Set `TAKOMO_GITHUB_IMPORTS=1` on this worker to consume that queue alongside its
+existing jobs. GitHub credentials are supplied per attempt by the server as a
+short-lived, repository-restricted read token; do not put the App private key in
+the worker environment. See [GitHub setup and extraction](../../docs/github-extraction.md)
+for server configuration, access management, limits and the small test fixture.

@@ -276,3 +276,7 @@ export { DocumentEmbeddingStatus } from './documents/DocumentEmbeddingStatus'
 export { EmbeddingStatusProvider } from '../hooks/useEmbeddingStatus'
 
 export { SettingsLayout } from './settings/SettingsLayout'
+export { GithubSettings } from './settings/GithubSettings'
+export { RepositoryFields } from './settings/RepositoryFields'
+export { NewProjectWizard } from './settings/NewProjectWizard'
+export { ProjectRepository } from './settings/ProjectRepository'

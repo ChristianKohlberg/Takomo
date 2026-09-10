@@ -8,7 +8,7 @@ import { Codex } from './codex.mjs';
 import { preflightImport, developmentLimits } from './spec-import-preflight.mjs';
 import { IMPORT_KIND, importJob } from './spec-import.mjs';
 
-export async function generateImport({ repository, scope, revision = 'HEAD', limits = developmentLimits, maxSections = 6, output, stateDir, prompt = 'Describe the implemented behavior.' }, createCodex) {
+export async function generateImport({ repository, scope, revision = 'HEAD', limits = developmentLimits, maxSections = 6, output, stateDir, prompt = 'Describe the implemented behavior.', signal }, createCodex) {
   if (!output) throw new Error('Choose --out for the recoverable draft artifact.');
   if (!Number.isInteger(maxSections) || maxSections < 1 || maxSections > 12) throw new Error('Choose 1–12 sections.');
   if (typeof prompt !== 'string' || prompt.length > 4000) throw new Error('Keep the request under 4000 characters.');
@@ -31,6 +31,8 @@ export async function generateImport({ repository, scope, revision = 'HEAD', lim
   let interrupted = false;
   const stop = () => { interrupted = true; codex?.close(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
+  signal?.addEventListener('abort', stop, { once: true });
+  if (signal?.aborted) stop();
   try {
     await save();
     if (interrupted) throw new Error('Import interrupted before inference.');
@@ -49,6 +51,7 @@ export async function generateImport({ repository, scope, revision = 'HEAD', lim
   } finally {
     codex?.close(); await file.close();
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
+    signal?.removeEventListener('abort', stop);
   }
 }
 

@@ -20,7 +20,9 @@ import {
   setUserDisabled,
   type User,
 } from '@/lib/users'
-import { NewProjectDialog } from '@/components/settings/NewProjectDialog'
+import { NewProjectWizard } from '@/components/settings/NewProjectWizard'
+import { GithubSettings } from '@/components/settings/GithubSettings'
+import { ProjectRepository } from '@/components/settings/ProjectRepository'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
 import { DocumentClassificationPolicy } from '@/components/settings/DocumentClassificationPolicy'
 import { ProjectDetail } from '@/components/settings/ProjectDetail'
@@ -56,7 +58,6 @@ import {
 } from '@/lib/workflows'
 import {
   archiveProject,
-  createProject,
   createToken,
   deleteProject,
   downloadDatabase,
@@ -89,13 +90,13 @@ function fill(template: string, values: Record<string, string>): string {
 
 function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale; setLang: (lang: Locale) => void }) {
   const navigate = useNavigate()
+  const location = useLocation()
   const { toast } = useToast()
   const discardDrafts = useDiscardDrafts()
   const discardEpoch = useDiscardEpoch()
 
   const [token, setToken] = useState(() => loadToken())
   const [gateError, setGateError] = useState('')
-  const location = useLocation()
   const section = settingsSection(location.search)
   const params = new URLSearchParams(location.search)
   const urlProject = params.get('scope') ?? params.get('project')
@@ -126,7 +127,18 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
   const [exporting, setExporting] = useState(false)
   const [newToken, setNewToken] = useState(false)
   const [minted, setMinted] = useState<CreatedToken | null>(null)
-  const [newProject, setNewProject] = useState(false)
+  const [newProject, setNewProject] = useState(() => new URLSearchParams(window.location.search).get('create') === '1')
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('create') === '1') setNewProject(true)
+  }, [location.search])
+  function closeProjectWizard(open: boolean) {
+    setNewProject(open)
+    if (!open && new URLSearchParams(location.search).has('create')) {
+      const params = new URLSearchParams(location.search); params.delete('create'); params.delete('name')
+      navigate(`/settings?${params}`, { replace: true })
+    }
+  }
   const [revoking, setRevoking] = useState<TokenRow | null>(null)
   const [deleting, setDeleting] = useState<Project | null>(null)
   // Two archive dialogs, not one with a flag: the second is a DIFFERENT question
@@ -411,6 +423,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             </Section>
           ) : (
             <>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="github"><GithubSettings token={token} locale={lang} allowed={!!who?.scopes.includes('admin') && !!who?.scopes.includes('human') && !scopedToProjects} /></SettingsPanel>
               <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="search"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></SettingsPanel>
               <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="overview">
                 <Section title={t.overviewTitle} description={t.overviewSub}>
@@ -618,6 +631,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
                   documentResetSlot={isAdmin && !selected.archived && (
                     <DocumentReset key={`${token}:${selected.id}`} token={token} project={selected.id} lang={lang} />
                   )}
+                  repositorySlot={<ProjectRepository key={selected.id} token={token} project={selected.id} locale={lang} allowed={isAdmin && !scopedToProjects && !!who?.scopes.includes('human') && !!who?.scopes.includes('write') && !selected.archived} />}
                   classificationSlot={<DocumentClassificationPolicy token={token} project={selected.id} lang={lang} readOnly={!isAdmin || !!selected.archived} canClassify={!!who?.scopes.includes('human') && !!who?.scopes.includes('write') && !selected.archived} />}
                   writingSlot={<WritingInstructions token={token} project={selected.id}
                     readOnly={!isAdmin || selected.archived === true} lang={lang} />}
@@ -851,28 +865,11 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
         onClose={() => setMinted(null)}
       />
 
-      <NewProjectDialog
-        open={newProject}
-        onOpenChange={setNewProject}
-        labels={{
-          title: t.newProjTitle,
-          subtitle: t.newProjSub,
-          id: t.newProjId,
-          idPh: t.newProjIdPh,
-          idHint: t.newProjIdHint,
-          idInvalid: t.newProjIdInvalid,
-          name: t.newProjName,
-          namePh: t.newProjNamePh,
-          nameHint: t.newProjNameHint,
-          create: t.newProjCreate,
-          cancel: t.newProjCancel,
-        }}
-        onCreate={async (fields) => {
-          await createProject(token, fields)
-          setNewProject(false)
-          await refresh()
-        }}
-      />
+      {newProject && <NewProjectWizard open token={token} locale={lang}
+        initialName={new URLSearchParams(window.location.search).get('name') ?? ''}
+        canConnect={!!who?.scopes.includes('admin') && !!who?.scopes.includes('human') && !!who?.scopes.includes('write') && !scopedToProjects}
+        onOpenChange={closeProjectWizard}
+        onCreated={(id) => { saveProject(id); void refresh(); navigate(settingsHref('general', id)) }} />}
 
       <ConfirmDialog
         open={revoking !== null}

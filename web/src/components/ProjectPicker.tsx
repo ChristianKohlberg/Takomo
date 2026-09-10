@@ -44,6 +44,8 @@ export interface ProjectPickerProps {
   onChange: (id: string) => void
   labels: ProjectPickerLabels
   /** Icon-only, for a collapsed rail. */
+  onCreate?: (query: string) => void
+  createLabel?: string
   collapsed?: boolean
   /** Responsive header trigger with its popover below. */
   header?: boolean
@@ -57,6 +59,8 @@ export function ProjectPicker({
   value,
   onChange,
   labels,
+  onCreate,
+  createLabel = 'Create new project',
   collapsed = false,
   header = false,
 }: ProjectPickerProps) {
@@ -83,8 +87,8 @@ export function ProjectPicker({
   // reach it. Without that it would be clickable but not keyboard-reachable,
   // which is the classic half-accessible combobox.
   const rows = useMemo(
-    () => (labels.all != null ? [{ id: '', title: labels.all }, ...shown] : shown),
-    [labels.all, shown],
+    () => [...(labels.all != null ? [{ id: '', title: labels.all }, ...shown] : shown), ...(onCreate ? [{ id: ' create', title: createLabel }] : [])],
+    [labels.all, shown, onCreate, createLabel],
   )
 
   useEffect(() => setActive(0), [query])
@@ -109,7 +113,8 @@ export function ProjectPicker({
   const initial = (value ? currentLabel : '').trim().charAt(0).toUpperCase()
 
   function take(id: string) {
-    onChange(id)
+    if (id === ' create') onCreate?.(query.trim())
+    else onChange(id)
     setQuery('')
     setOpen(false)
   }
@@ -214,7 +219,7 @@ export function ProjectPicker({
                 <span className="truncate text-[13px]">{row.title ?? row.id}</span>
                 {/* The id is what every API call and every ticket prefix
                     uses, so it stays visible even when a name exists. */}
-                {row.id !== '' && row.title && (
+                {row.id !== '' && row.id !== ' create' && row.title && (
                   <span className="text-muted-foreground font-mono text-[11px]">{row.id}</span>
                 )}
               </button>

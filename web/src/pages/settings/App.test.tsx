@@ -20,7 +20,10 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
     : url === '/v1/projects' ? [{ id: 'takomo', name: 'Takomo', style_guide: style }, { id: 'second', name: 'Second project' }].filter(p => !deleted.includes(`/v1/projects/${p.id}`))
     : url.includes('/users') ? { items: [], total: 0 }
     : url.endsWith('/writing-instructions') ? { templates: [], default_id: null }
-    : url.endsWith('/document-classification-policy') ? { mode: 'suggest' } : []
+    : url.endsWith('/document-classification-policy') ? { mode: 'suggest' }
+    : url.endsWith('/repository') ? { repository: null }
+    : url.endsWith('/integrations/github') ? { configured: false, app_slug: null, connections: [] }
+    : url.endsWith('/codebase-imports') ? { items: [] } : []
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
 })
 function open(path: string) {

@@ -22,3 +22,5 @@ pub mod workflow;
 
 pub mod embeddings;
 pub mod query_embeddings;
+
+pub mod github;
