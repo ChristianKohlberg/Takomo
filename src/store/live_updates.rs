@@ -132,16 +132,16 @@ pub fn install(conn: &Connection) -> rusqlite::Result<()> {
                 let project = owner.replace('@', row);
                 for topic in topics.split(',') {
                     let guard = if action == "DELETE" && cascade_owner(&table) {
-                        format!(" WHERE ({project}) IS NOT NULL")
+                        format!(" AND ({project}) IS NOT NULL")
                     } else {
                         String::new()
                     };
-                    body.push_str(&format!("INSERT OR IGNORE INTO live_changes SELECT COALESCE({project},''), '{topic}'{guard};"));
+                    body.push_str(&format!("INSERT INTO live_changes SELECT COALESCE({project},''), '{topic}' WHERE NOT EXISTS (SELECT 1 FROM live_changes WHERE project=COALESCE({project},'') AND topic='{topic}'){guard};"));
                 }
                 // Archive/delete and workflow settings can invalidate the whole view.
                 if table == "projects" {
                     body.push_str(&format!(
-                        "INSERT OR IGNORE INTO live_changes VALUES ({row}.id,'');"
+                        "INSERT INTO live_changes SELECT {row}.id,'' WHERE NOT EXISTS (SELECT 1 FROM live_changes WHERE project={row}.id AND topic='');"
                     ));
                 }
             }
@@ -226,6 +226,29 @@ mod tests {
             })
             .unwrap();
         assert!(rx.try_recv().is_err(), "ignored UPDATE must not notify");
+        store
+            .with_tx(|tx| {
+                // Outer conflict policies override a trigger's OR IGNORE policy.
+                // Deduplication must avoid attempting a duplicate insert at all.
+                tx.execute(
+                    "UPDATE OR ABORT mindmaps SET title='first' WHERE id='m'",
+                    [],
+                )?;
+                tx.execute(
+                    "UPDATE OR ABORT mindmaps SET title='second' WHERE id='m'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let batch = rx.try_recv().unwrap();
+        assert_eq!(
+            batch
+                .iter()
+                .filter(|c| c.project == "aa" && c.topic == "document")
+                .count(),
+            1
+        );
         let failed: crate::error::ApiResult<()> = store.with_tx(|tx| {
             tx.execute("UPDATE mindmaps SET title='rolled back' WHERE id='m'", [])?;
             Err(ApiError::internal("fixture rollback"))
