@@ -21,6 +21,7 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
     : url.includes('/users') ? { items: [], total: 0 }
     : url.endsWith('/writing-instructions') ? { templates: [], default_id: null }
     : url.endsWith('/document-classification-policy') ? { mode: 'suggest' }
+    : url.includes('/integrations/github/installations/') ? { items: [{ id: 2, full_name: 'example/Takomo', private: false }], total: 1 }
     : url.endsWith('/repository') ? { repository: url.includes('/takomo/') ? { installation: 1, repository: 2, full_name: 'example/Takomo', scope: { include: ['src'], exclude: [] } } : null }
     : url.endsWith('/integrations/github') ? { configured: false, app_slug: null, connections: [] }
     : url.endsWith('/codebase-imports') ? { items: [] } : []
