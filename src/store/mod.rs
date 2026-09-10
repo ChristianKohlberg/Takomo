@@ -21,6 +21,7 @@ mod helpers;
 mod impact;
 mod initiatives;
 pub mod lane_organizer;
+pub mod live_updates;
 mod metrics;
 pub mod mindmapdoc;
 mod mindmaps;
@@ -123,6 +124,7 @@ const READ_CONNECTIONS: usize = 4;
 pub struct Store {
     pub check_updates: tokio::sync::broadcast::Sender<(String, Vec<u8>)>,
     pub changes: tokio::sync::watch::Sender<u64>,
+    pub live_changes: tokio::sync::broadcast::Sender<Vec<live_updates::Change>>,
     /// **The** writer. Every mutation goes through `with_tx` and this mutex, and
     /// that serialization is the exactly-one-claimant guarantee for the ready
     /// queue. There is deliberately never a second writer: no call site in this
@@ -190,6 +192,7 @@ impl Store {
         // schema must exist, and a reader that saw the table without them would
         // report an empty library on a fresh database.
         Store::seed_builtin_workflows(&conn, crate::ids::now_ms())?;
+        live_updates::install(&conn)?;
 
         // A second connection to `:memory:` (or to a private temp database) is a
         // *different, empty* database, not a second view of this one. Nothing in
@@ -210,6 +213,7 @@ impl Store {
         Ok(Store {
             check_updates: tokio::sync::broadcast::channel(256).0,
             changes: tokio::sync::watch::channel(0).0,
+            live_changes: tokio::sync::broadcast::channel(256).0,
             conn: Mutex::new(conn),
             readers,
             next_reader: AtomicUsize::new(0),
@@ -238,6 +242,7 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(ApiError::from)?;
         let out = f(&tx)?;
+        let updates = live_updates::drain(&tx).map_err(ApiError::from)?;
         tx.commit().map_err(ApiError::from)?;
         // Empty claims and maintenance sweeps also use IMMEDIATE transactions.
         // They must not invalidate every open project's server-owned lists.
@@ -245,6 +250,9 @@ impl Store {
         // transaction because SQLite's lifetime counter also counts rollbacks.
         if conn.total_changes() != before {
             self.changes.send_modify(|v| *v = v.wrapping_add(1));
+        }
+        if !updates.is_empty() {
+            let _ = self.live_changes.send(updates);
         }
         Ok(out)
     }

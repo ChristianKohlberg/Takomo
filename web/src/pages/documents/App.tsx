@@ -1,5 +1,6 @@
 import { DiagramContext } from '@/lib/diagram'
-import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { useSectionTrace } from '@/hooks/useSectionTrace'
+import { affectsProjectTopic, useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { useWorkspaceNavigate } from '@/hooks/useWorkspace'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { useSpecification } from '../specification/context'
@@ -28,12 +29,9 @@ import { useToast } from '@/components/Toaster'
 import { pick } from '@/lib/i18n'
 import {
   getMindmap,
-  getTrace,
   recordTrace,
   type PlanStanding,
-  type TraceEntry,
 } from '@/lib/mindmaps'
-import { traceByNode } from '@/lib/plan-trace'
 import { mapLink } from '@/lib/plan-url'
 import { STR } from './strings'
 
@@ -42,9 +40,6 @@ import { STR } from './strings'
 // lazy import.
 const Plan = lazy(() => import('./Plan'))
 
-/** How much of the plan's history one read brings back. The server's ceiling is
- *  500; a plan is capped at 500 sections, so this is a page, not everything. */
-const TRACE_LIMIT = 500
 
 export function DocumentView() {
   const {
@@ -76,26 +71,25 @@ export function DocumentView() {
     }
   }, [])
   const [standing, setStanding] = useState<PlanStanding>({})
-  const [entries, setEntries] = useState<TraceEntry[]>([])
 
   const t = useMemo(() => pick(STR, lang), [lang])
 
   const mapId = map?.id ?? null
-  const refreshHistory = useCallback(async () => {
+  const sectionTrace = useSectionTrace(token, mapId)
+  const invalidateTrace = sectionTrace.invalidate
+  const refreshStanding = useCallback(async () => {
     if (!mapId) return
     const epoch = ++historyEpoch.current
-    const [detail, page] = await Promise.all([
-      getMindmap(token, mapId),
-      getTrace(token, mapId, { limit: TRACE_LIMIT }),
-    ])
+    const detail = await getMindmap(token, mapId)
     if (epoch !== historyEpoch.current) return
     setStanding(detail.standing ?? {})
-    setEntries(page.items)
   }, [token, mapId])
 
-  useProjectUpdates(token, project, async () => {
+  useProjectUpdates(token, project, async event => {
+    if (!affectsProjectTopic(event, 'document', 'trace')) return
+    if (affectsProjectTopic(event, 'trace')) invalidateTrace()
     try {
-      await refreshHistory()
+      await refreshStanding()
     } catch (error) {
       handleErr(error)
     }
@@ -103,30 +97,25 @@ export function DocumentView() {
 
   useEffect(() => {
     if (!token || !mapId) return
-    refreshHistory().catch(handleErr)
-  }, [token, mapId, refreshHistory, handleErr])
+    refreshStanding().catch(handleErr)
+  }, [token, mapId, refreshStanding, handleErr])
 
-  /**
-   * Bring the history back in line, once, after a burst of writes.
-   *
-   * Somebody typing in three sections files three `edited` entries, and each of
-   * them would otherwise refetch the whole plan's history. The trace is sparse
-   * by contract; the reads of it should be too.
-   */
+  /** Debounce standing reads after local edits; disclosed history refreshes separately. */
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleRefresh = useCallback(() => {
+    invalidateTrace()
     if (pending.current) clearTimeout(pending.current)
     pending.current = setTimeout(() => {
       pending.current = null
-      refreshHistory().catch(handleErr)
+      refreshStanding().catch(handleErr)
     }, 1500)
-  }, [refreshHistory, handleErr])
+  }, [refreshStanding, handleErr, invalidateTrace])
 
   useEffect(
     () => () => {
       if (pending.current) clearTimeout(pending.current)
     },
-    [],
+    [token, mapId],
   )
 
   const onReview = useCallback(
@@ -189,7 +178,7 @@ export function DocumentView() {
     [toast, t],
   )
 
-  const trace = useMemo(() => traceByNode(entries), [entries])
+  const trace = useMemo(() => new Map(Object.entries(sectionTrace.cache).map(([id, value]) => [id, value.entries])), [sectionTrace.cache])
 
   if (!session || !connection) return null
   return (
@@ -200,7 +189,7 @@ export function DocumentView() {
       project={project} userId={userId}
       agentTools={tools}
       ticketLinksFor={section => <SectionTicketLinks token={token} project={project} section={section} lang={lang} />}
-      key={session.session}
+      key={`${token}:${session.session}`}
       focusMode={focusMode}
       structureHistory={structureHistory}
       appearance={projects.find((item) => item.id === project)?.document_appearance}
@@ -214,6 +203,9 @@ export function DocumentView() {
       onError={handleErr}
       standing={standing}
       trace={trace}
+      traceState={sectionTrace.cache}
+      onHistoryOpen={sectionTrace.setOpen}
+      onHistoryRetry={sectionTrace.retry}
       onReview={onReview}
       onEdited={onEdited}
       onMoved={scheduleRefresh}
@@ -253,6 +245,9 @@ export function DocumentView() {
         history: t.history,
         hideHistory: t.hideHistory,
         historyEmpty: t.historyEmpty,
+        historyLoading: t.historyLoading,
+        historyError: t.historyError,
+        historyRetry: t.historyRetry,
         historyMore: t.historyMore,
         proposals: t.proposals,
         hideProposals: t.hideProposals,

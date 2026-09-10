@@ -96,3 +96,147 @@ async fn idle_maintenance_does_not_invalidate_project_lists() {
         "Six idle seconds caused {refreshes} document refresh batches"
     );
 }
+
+#[tokio::test]
+async fn project_socket_filters_topics_and_other_projects_but_resyncs_on_connect() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (status, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({"id":"other","name":"Other"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Mint before subscribing; first use still updates token usage after subscription.
+    let reader = app.mint("reader:scope", &["read"], Some(&["tp"]));
+    let (_, session) = app
+        .post(&app.worker, "/v1/projects/tp/session", json!({}))
+        .await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/sync/project:tp?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let initial = socket.next().await.unwrap().unwrap();
+    assert!(
+        matches!(initial,Message::Text(text) if serde_json::from_str::<serde_json::Value>(&text).unwrap()==json!({"type":"refresh"}))
+    );
+    assert_eq!(app.get(&reader, "/v1/projects").await.0, StatusCode::OK);
+    let (status, _) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"other","title":"Unrelated"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(700), socket.next())
+            .await
+            .is_err(),
+        "Unrelated document or token usage invalidated this project"
+    );
+    let (status, _) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Relevant"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let msg = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = msg else {
+        panic!("expected refresh")
+    };
+    let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(payload["type"], "refresh");
+    let topics = payload["topics"].as_array().expect("specific topics");
+    assert!(topics.contains(&json!("document")));
+    assert!(!topics.contains(&json!("inbox")));
+    assert!(!topics.contains(&json!("projects")));
+}
+
+#[tokio::test]
+async fn awareness_echo_keeps_a_single_peer_alive_without_persisting_presence() {
+    use futures::SinkExt;
+    let app = TestApp::spawn_without_sweeper().await;
+    let (_, map) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Presence"}),
+        )
+        .await;
+    let id = map["mindmap"]["id"].as_str().unwrap();
+    let (_, session) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{id}/session"),
+            json!({}),
+        )
+        .await;
+    let url = format!(
+        "{}/v1/sync/{id}?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    );
+    let (mut sender, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let (_, session) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{id}/session"),
+            json!({}),
+        )
+        .await;
+    let (mut peer, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/sync/{id}?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    // A valid awareness payload: one client, clock one, empty JSON state.
+    let frame = vec![1, 6, 1, 7, 1, 2, b'{', b'}'];
+    let count = || {
+        rusqlite::Connection::open(app.db_path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM crdt_updates WHERE object_kind='mindmap' AND object_id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let before = count();
+    sender
+        .send(Message::Binary(frame.clone().into()))
+        .await
+        .unwrap();
+    for socket in [&mut sender, &mut peer] {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match socket
+                    .next()
+                    .await
+                    .expect("socket open")
+                    .expect("valid frame")
+                {
+                    Message::Binary(bytes) if bytes.as_ref() == frame.as_slice() => break,
+                    Message::Close(_) => panic!("socket closed before awareness echo"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("sender echo and peer relay");
+    }
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    assert_eq!(count(), before);
+}

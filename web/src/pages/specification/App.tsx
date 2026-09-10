@@ -19,7 +19,7 @@ import { CheckEditor } from '@/components/verification/CheckEditor'
 import { useToast } from '@/components/Toaster'
 import { useNavCollapsed } from '@/hooks/useNavCollapsed'
 import { useSyncConnection } from '@/hooks/useSyncConnection'
-import { ProjectUpdatesContext, useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { ProjectUpdatesContext, useProjectUpdates, affectsProjectTopic, type ProjectUpdate } from '@/hooks/useProjectUpdates'
 import { useWorkspaceProject } from '@/hooks/useWorkspace'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { specificationLink, specificationProject, specificationView } from '@/lib/specification-url'
@@ -280,23 +280,29 @@ function SpecificationWorkspace({
   useEffect(() => {
     connection?.provider.awareness.setLocalStateField('mm', { selected: section })
   }, [connection, section])
-  const listeners = useRef(new Set<() => Promise<unknown>>())
+  const listeners = useRef(new Set<(event?: ProjectUpdate) => Promise<unknown>>())
+  const [updatesConnected, setUpdatesConnected] = useState(false)
   const updates = useMemo(
     () => ({
-      project,
-      subscribe: (callback: () => Promise<unknown>) => {
+      project, connected: updatesConnected,
+      subscribe: (callback: (event?: ProjectUpdate) => Promise<unknown>) => {
         listeners.current.add(callback)
         return () => {
           listeners.current.delete(callback)
         }
       },
     }),
-    [project],
+    [project, updatesConnected],
   )
-  useProjectUpdates(token, project, async () => {
-    await Promise.allSettled([refreshMap(), refreshChecks(), refreshProjects()])
-    await Promise.allSettled([...listeners.current].map((callback) => callback()))
+  const liveConnected = useProjectUpdates(token, project, async event => {
+    await Promise.allSettled([
+      ...(affectsProjectTopic(event, 'document') ? [refreshMap()] : []),
+      ...(affectsProjectTopic(event, 'checks') ? [refreshChecks()] : []),
+      ...(affectsProjectTopic(event, 'projects') ? [refreshProjects()] : []),
+    ])
+    await Promise.allSettled([...listeners.current].map(callback => callback(event)))
   })
+  useEffect(() => { setUpdatesConnected(liveConnected) }, [liveConnected])
   const changeQuery = useCallback(
     (changes: Record<string, string | null>) => {
       const search = new URLSearchParams(location.search)

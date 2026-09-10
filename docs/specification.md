@@ -29,13 +29,19 @@ rules are specified in `spec/one-model-two-views.md`.
 Section test counts and failures open a side panel without leaving the document
 or map; the Tests view provides the full catalog and can clear the section
 filter. Check editors keep their own CRDT sessions. A shared project notification
-socket refreshes server-owned metadata and verdicts for the workspace and its
-visible views. Empty worker claims and maintenance sweeps do not send refreshes:
-notifications require a committed row change, including changes made by SQLite
-triggers. Failed or rolled-back writes do not notify readers. The current
-notification channel still coalesces real writes across projects; it is not a
-project-filtered event stream. Status polling for active agent work and embedding
-progress has its own cadence and remains enabled.
+socket refreshes only the relevant server-owned data: project-scoped topic messages
+separate documents, trace, checks, inbox, tickets, agent activity, history, search,
+and project settings. Empty claims, ignored writes, usage timestamps and lease-only
+bookkeeping do not notify. Committed trigger/cascade changes do; rollback does not.
+Initial connection, reconnect and lost broadcast history request a full resync.
+Unknown data and authorization changes retain a conservative full-refresh fallback;
+cross-project dependency readiness uses a global tickets notification.
+
+Section trace loads when its history is opened. The inbox refreshes from live inbox
+notifications and polls every 30 seconds only while live updates are unavailable;
+focus and reconnect recover missed changes. Status polling for active agent work
+and embedding progress keeps its own cadence. See [live update inventory and
+compatibility](live-updates.md) for the backend contract.
 
 Opening or refreshing an already-migrated document does not append a CRDT update,
 even with write access. Server-side document operations persist only newly emitted

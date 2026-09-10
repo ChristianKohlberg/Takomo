@@ -1410,7 +1410,10 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
             let _ = room
                 .tx
                 .send((me, Arc::new(message(MSG_AWARENESS, payload))));
-            None
+            // y-websocket uses received awareness as its idle keepalive. Without
+            // an echo a sole peer reconnects every 30s, replaying sync state.
+            // Same-clock awareness is idempotent on the originating client.
+            Some(message(MSG_AWARENESS, payload))
         }
         _ => None,
     }
@@ -1443,7 +1446,7 @@ fn spawn_check_changes(
     });
 }
 async fn project_loop(socket: WebSocket, state: Arc<AppState>, session: CollabSession) {
-    let mut changes = state.store.changes.subscribe();
+    let mut changes = state.store.live_changes.subscribe();
     let (mut sink, mut stream) = socket.split();
     let mut validity = tokio::time::interval(SESSION_RECHECK_INTERVAL);
     if sink
@@ -1455,11 +1458,24 @@ async fn project_loop(socket: WebSocket, state: Arc<AppState>, session: CollabSe
     }
     loop {
         tokio::select! {
-         changed=changes.changed()=>{
-          if changed.is_err(){break;}
+         changed=changes.recv()=>{
+          let mut topics=std::collections::BTreeSet::new();
+          match changed {
+           Ok(batch)=>crate::store::live_updates::topics(&batch,&session.project,&mut topics),
+           Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{topics.insert(String::new());},
+           Err(tokio::sync::broadcast::error::RecvError::Closed)=>break,
+          }
+          if topics.is_empty(){continue;}
           tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-          changes.borrow_and_update();
-          if sink.send(Message::Text("{\"type\":\"refresh\"}".into())).await.is_err(){break;}
+          loop {
+           match changes.try_recv() {
+            Ok(batch)=>crate::store::live_updates::topics(&batch,&session.project,&mut topics),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))=>{topics.insert(String::new());},
+            Err(_)=>break,
+           }
+          }
+          let payload=if topics.contains(""){serde_json::json!({"type":"refresh"})}else{serde_json::json!({"type":"refresh","topics":topics})};
+          if sink.send(Message::Text(payload.to_string().into())).await.is_err(){break;}
          },
          _=validity.tick()=>{
           let state=state.clone();let id=session.id.clone();

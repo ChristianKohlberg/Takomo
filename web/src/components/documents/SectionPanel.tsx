@@ -54,6 +54,9 @@ export interface SectionPanelLabels {
   showOnMap: string
   history: string
   hideHistory: string
+  historyLoading?: string
+  historyError?: string
+  historyRetry?: string
   historyEmpty: string
   /** `{n}` more entries than are shown. */
   historyMore: string
@@ -85,6 +88,9 @@ export interface SectionPanelProps {
   standing: Standing
   /** This section's history, newest first. */
   entries: readonly TraceEntry[]
+  historyLoading?: boolean
+  historyError?: boolean
+  onHistoryRetry?: () => void
   historyOpen: boolean
   onToggleHistory: () => void
   onReview: () => void
@@ -146,7 +152,7 @@ export function SectionPanel({
   headingLink,
   standing,
   entries,
-  historyOpen,
+  historyOpen, historyLoading, historyError, onHistoryRetry,
   onToggleHistory,
   onReview,
   onShowOnMap,
@@ -303,7 +309,9 @@ export function SectionPanel({
 
       {historyOpen && (
         <ul className="text-muted-foreground border-border-soft mb-3 flex flex-col gap-0.5 border-l pl-3 text-[11.5px]">
-          {shown.length === 0 && <li>{labels.historyEmpty}</li>}
+          {historyLoading && <li role="status">{labels.historyLoading ?? 'Loading history…'}</li>}
+          {historyError && <li role="alert">{labels.historyError ?? 'Could not load history.'} <button type="button" className="underline" onClick={onHistoryRetry}>{labels.historyRetry ?? 'Retry'}</button></li>}
+          {!historyLoading && !historyError && shown.length === 0 && <li>{labels.historyEmpty}</li>}
           {shown.map((entry) => (
             <li key={entry.id} className="flex flex-wrap gap-x-2">
               <span className="text-foreground font-medium">
