@@ -385,13 +385,15 @@ function Board({
     // `tickets` is the signal that something changed — the poll replaces it.
   }, [token, effectiveProject, selectedId, tickets])
 
-  // Open questions per ticket — what the detail drawer's callout counts.
-  useEffect(() => {
-    if (!token || !effectiveProject) return
-    listQuestions(token, { project: effectiveProject, status: 'open' })
-      .then(setQuestions)
-      .catch(() => setQuestions([]))
-  }, [token, effectiveProject, tickets])
+  // Questions have their own live topic: ticket edits do not invalidate the inbox.
+  useLiveRefresh({
+    token, project: effectiveProject, scope: 'questions', topics: ['inbox'], enabled: !!effectiveProject,
+    onError: error => { setQuestions([]); if (isAuthError(error)) handleErr(error) },
+    load: async signal => {
+      const value = await listQuestions(token, { project: effectiveProject, status: 'open' })
+      if (!signal.aborted) setQuestions(value)
+    },
+  })
 
   const questionsByTicket = useMemo(() => {
     const m = new Map<string, { count: number; blocking: number; advisory: number; conv: number }>()
