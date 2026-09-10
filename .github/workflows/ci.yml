@@ -284,6 +284,9 @@ jobs:
       - name: Build the image
         run: docker build -t takomo-ci .
 
+      - name: Render secret files remain isolated from renderers
+        run: python3 scripts/test-container-secrets.py takomo-ci
+
       # Test the actual default entrypoint, bundled renderers and volume lifecycle.
       # A passing app health endpoint alone does not prove diagrams can render.
       - name: Default container serves pages and diagrams, persists, and shuts down

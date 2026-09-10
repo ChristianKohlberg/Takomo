@@ -35,6 +35,14 @@ Register a dedicated GitHub App for this Takomo deployment:
   `TAKOMO_GITHUB_PRIVATE_KEY_FILE`. Restart the server after changing its environment.
   The key is never stored in the database, browser, job payload or model context.
 
+On Render, add the PEM as a Secret File and set `TAKOMO_GITHUB_PRIVATE_KEY_FILE`
+to `/etc/secrets/<exact-filename>`. The bundled container grants supplementary
+group 1000 to the Takomo application (including admin commands), which permits
+reading Render's runtime secret mounts. Kroki and Mermaid receive no supplementary
+groups and cannot read these files. Do not make the key world-readable or change
+the mounted file's ownership. Redeploy after updating the file or configuration.
+See [Render secret-file permissions](https://render.com/docs/docker-secrets#accessing-secret-files-at-runtime).
+
 Settings → GitHub shows whether configuration is present, opens the App's GitHub
 installation page, refreshes installations and connects the selected account.
 After granting access, return to Takomo and refresh. No inbound tunnel is required
