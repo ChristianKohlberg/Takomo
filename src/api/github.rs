@@ -183,9 +183,14 @@ pub async fn set_repository(
     state.store.codebase_project_writable(&project)?;
     req.scope.validate()?;
     connected(&state, req.installation)?;
-    // Verify the exact repository identity and current read permission before saving.
+    // Verify identity, read permission and literal source paths before saving.
     Github::load()?
-        .revision(req.installation, req.repository, &req.full_name)
+        .revision(
+            req.installation,
+            req.repository,
+            &req.full_name,
+            &req.scope.include,
+        )
         .await?;
     state
         .store

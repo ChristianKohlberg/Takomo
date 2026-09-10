@@ -5728,7 +5728,7 @@ paths:
                   sections: { type: object, additionalProperties: { type: string } }
                   reviewed: { type: boolean, const: false }
                   revision: { type: string }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { description: 'Missing human/write scope or project access' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: "Nonempty target, archived object, conflicting retry, or a receipt whose imported content was reset or deleted" }
         '422': { description: "Invalid hierarchy, scope, source range, or content limits" }
@@ -8800,6 +8800,9 @@ paths:
       - GitHub
       summary: Verify and save repository identity and scope; unrestricted human/admin
         only. Does not start extraction.
+      description: Verifies included literal paths on the default branch using bounded
+        Git tree metadata before saving. Missing paths, symlinks, submodules and
+        incomplete directory listings are refused. Source file contents are not read.
       responses:
         '200':
           description: Success
@@ -8813,6 +8816,18 @@ paths:
                     type: boolean
         '403':
           description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Invalid or unverifiable source path; no connection update or job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: GitHub request failed or source path verification timed out
           content:
             application/json:
               schema:
@@ -8867,6 +8882,8 @@ paths:
       - GitHub
       summary: Explicitly authorize one bounded extraction into an empty specification;
         unrestricted human/admin/write only.
+      description: Revalidates included paths at the exact commit pinned for this job
+        before enqueueing. Path validation does not start a model or scan all source files.
       responses:
         '200':
           description: Success
@@ -8880,6 +8897,18 @@ paths:
                     type: string
         '403':
           description: Insufficient scope or project access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Invalid or unverifiable source path; no connection update or job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: GitHub request failed or source path verification timed out
           content:
             application/json:
               schema:

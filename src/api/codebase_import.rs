@@ -68,9 +68,15 @@ pub async fn start(
         .project_repository(&project)?
         .ok_or_else(invalid)?;
     let repo: Repository = serde_json::from_value(repository.clone()).map_err(|_| invalid())?;
+    repo.scope.validate()?;
     connected(&state, repo.installation)?;
     let revision = Github::load()?
-        .revision(repo.installation, repo.repository, &repo.full_name)
+        .revision(
+            repo.installation,
+            repo.repository,
+            &repo.full_name,
+            &repo.scope.include,
+        )
         .await?;
     let mut source = repository;
     source["revision"] = json!(revision);

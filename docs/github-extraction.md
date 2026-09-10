@@ -53,6 +53,21 @@ withdraw the App's underlying access.
 Reference: [GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app),
 [installation access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 
+## Source path checks
+
+Saving a repository connection checks that each included file or folder exists
+on the repository's default branch. Starting extraction repeats that check against
+the exact commit captured in the job, so a saved path deleted later cannot queue a
+model run. Missing paths, symlinks and submodules receive an error before saving
+or enqueueing. Paths are literal and case-sensitive; spaces are not trimmed.
+
+The check uses non-recursive [GitHub tree metadata](https://docs.github.com/en/rest/git/trees),
+reads only ancestor directories, and caches shared ancestors within the request.
+It permits at most 16 directory requests, a 15-second path-check deadline and the
+existing 2 MB per-response limit. Incomplete listings are refused. This confirms
+path existence and type; file counts, exclusions, binary content and source-byte
+budgets are still checked by the worker before inference.
+
 ## Worker setup and bounded development
 
 Run the existing agent service with its dedicated authenticated Codex home and

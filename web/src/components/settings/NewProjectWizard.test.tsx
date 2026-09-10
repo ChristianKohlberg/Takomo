@@ -23,6 +23,15 @@ it('connecting a repository does not authorize extraction by itself', async () =
  await waitFor(() => expect(done).toHaveBeenCalled())
  expect(setRepository).toHaveBeenCalled(); expect(startExtraction).not.toHaveBeenCalled()
 })
+it('shows a missing source path and starts no extraction when verification fails', async () => {
+ vi.mocked(setRepository).mockRejectedValueOnce(new Error("Source path 'src/checkout' was not found on the selected repository's default branch."))
+ mount(); next(); fireEvent.click(screen.getByLabelText('Connect a GitHub repository')); fireEvent.click(screen.getByText('Select fixture repository')); next();
+ fireEvent.click(screen.getByLabelText('Start extraction after creating the project'))
+ fireEvent.click(screen.getByRole('button', { name: 'Create and start extraction' }))
+ expect((await screen.findByRole('alert')).textContent).toContain("Source path 'src/checkout' was not found")
+ expect(startExtraction).not.toHaveBeenCalled()
+ expect(githubWrite).not.toHaveBeenCalled()
+})
 it('starts one extraction only after explicit opt-in and reuses the project after a connection failure', async () => {
  vi.mocked(setRepository).mockRejectedValueOnce(new Error('GitHub access changed'))
  const done = mount(); next(); fireEvent.click(screen.getByLabelText('Connect a GitHub repository')); fireEvent.click(screen.getByText('Select fixture repository')); next();

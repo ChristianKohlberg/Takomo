@@ -163,6 +163,7 @@ impl Github {
         installation: u64,
         repository: u64,
         full_name: &str,
+        include: &[String],
     ) -> ApiResult<String> {
         if !valid_repository(full_name) {
             return Err(error("Choose a valid GitHub repository."));
@@ -189,11 +190,27 @@ impl Github {
                 None,
             )
             .await?;
-        commit["sha"]
+        let revision = commit["sha"]
             .as_str()
             .filter(|s| s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit()))
             .map(str::to_owned)
-            .ok_or_else(|| error("Repository has no readable commit."))
+            .ok_or_else(|| error("Repository has no readable commit."))?;
+        let root = commit["commit"]["tree"]["sha"]
+            .as_str()
+            .ok_or_else(|| error("Repository commit has no readable tree."))?;
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            crate::github_scope::verify_paths(root, include, |sha| {
+                let token = &token;
+                async move {
+                    self.request(&format!("/repos/{full_name}/git/trees/{sha}"), token, None)
+                        .await
+                }
+            }),
+        )
+        .await
+        .map_err(|_| error("Source path verification timed out. Retry with a smaller scope."))??;
+        Ok(revision)
     }
 }
 pub fn valid_repository(name: &str) -> bool {
