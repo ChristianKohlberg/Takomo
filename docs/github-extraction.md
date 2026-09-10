@@ -92,16 +92,35 @@ Use fake App Server responses and disposable repositories for ordinary tests.
 GitHub credentials, a live provider call and a public tunnel are not needed to run
 the local suites. Live GitHub installation/token exchange and provider quality
 must be tested with a deliberately selected repository before rollout. This change
-adds authentication, persistence and source retrieval; run the full integration
-validation gate before merging or exposing it to users.
+adds authentication, persistence and source retrieval; run the required integration and release
+checks before merging or exposing it to users.
 
-Local preview evidence: the full debug Rust suite passed (661 tests), the full
-frontend suite passed (1,263 tests), and the agent suite passed (87 tests; five
-provider tests skipped). Later focused checks covered the real rail mount,
-project-scope navigation and partial Git object hydration. Clippy, frontend
-lint/typecheck/build and OpenAPI validation passed during iteration. Browser
-checks exercised keyboard project creation, all three empty-project wizard steps,
-the selected project after creation and the unconfigured GitHub explainer. No
-extraction was queued when GitHub was skipped. Both loopback preview servers were
-stopped afterward. Live GitHub authentication and real-provider quality are not
-claimed by these tests.
+## Repeatable local smoke
+
+Run the complete fixture path without GitHub credentials or paid inference:
+
+```sh
+CARGO_TARGET_DIR="$HOME/.cache/takomo-import-smoke" cargo test --locked --test spec_import fixture_app_server_to_document_smoke -- --nocapture
+```
+
+This uses Node 22 and a disposable committed copy of the checkout sample. The
+real Codex adapter talks to a deterministic App Server protocol fixture, reads
+only `examples/extraction-fixture/checkout.mjs`, and saves a simulated draft.
+The test publishes through the real HTTP API into a temporary database, retries
+the same artifact, and verifies the hierarchy and prose used by Document and
+Mindmap. Its loopback server ends with the test process. It does not connect to
+GitHub, run a live model, or evaluate specification quality.
+
+To generate an inspectable artifact without starting any HTTP server:
+
+```sh
+node services/agent/test/import-fixture-smoke.mjs --out /tmp/checkout-simulated-draft.json
+```
+
+Choose a new output path for each attempt; existing artifacts are never overwritten.
+In the wizard or project repository settings, **Use sample file** selects the same
+single source file. Select Takomo (or a fork containing the fixture) first. The
+shortcut does not save a connection or authorize extraction; launch remains an
+explicit choice. GitHub-backed tests require the fixture to exist on the selected
+repository's default branch. Live installation access and model quality remain
+separate rollout checks.

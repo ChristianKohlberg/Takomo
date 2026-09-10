@@ -141,14 +141,6 @@ output preservation. Existing live-provider tests remain opt-in.
 
 ## Next milestones
 
-Earlier local-CLI preview validation: the full debug Rust suite passed (657 tests), the agent
-suite passed (83 tests; five provider tests skipped), Clippy and formatting passed,
-and the frontend built. A disposable HTTP import was opened in both existing
-Document and Map views, showing the same nested sections and source notes. The
-browser content was an explicitly labeled fixture, not real model output. A real
-provider quality check and the integration/release validation gate remain pending;
-this branch has not been merged or deployed.
-
 The local generation and durable empty-document import MVP is implemented. Still
 pending: durable multi-task progress, separate verification/reconciliation stages,
 quality evaluation and rollout. The GitHub wizard has a durable single-turn queue. A scoped
@@ -157,7 +149,7 @@ coverage in the final draft. Neither an agent tool call nor a retry may expand i
 
 ## Project wizard and GitHub follow-up
 
-The worktree now also contains project creation from the nav search, GitHub App
+Project setup includes project creation from the nav search, GitHub App
 connection settings, project repository settings and a bounded extraction queue.
 See [GitHub setup and extraction](github-extraction.md). This extends the earlier
 local-CLI milestone; GitHub setup and live provider validation remain separate

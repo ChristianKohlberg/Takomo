@@ -22,6 +22,72 @@ fn draft() -> Value {
                 {"key":"errors","parent":"checkout","title":"Rejected orders","notes":"An empty order is refused.","sources":[{"path":"src/order.rs","start_line":4,"end_line":5}]}]}})
 }
 #[tokio::test]
+async fn fixture_app_server_to_document_smoke() {
+    let app = TestApp::spawn().await;
+    let map = fixture(&app).await;
+    let output = app.tmp.path().join("simulated-draft.json");
+    let mut child = std::process::Command::new("node");
+    child
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["services/agent/test/import-fixture-smoke.mjs", "--out"])
+        .arg(&output)
+        .args(["--mindmap", &map])
+        .env("TAKOMO_URL", &app.base)
+        .env("TAKOMO_IMPORT_TOKEN", &app.human)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let result = tokio::task::spawn_blocking(move || {
+        let mut process = child
+            .spawn()
+            .expect("Node 22 is required for the fixture smoke");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while process.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = process.kill();
+                let _ = process.wait();
+                panic!("fixture smoke deadline");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        process.wait_with_output().unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let artifact: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(artifact["status"], "ready");
+    assert_eq!(artifact["manifest"]["counts"]["selected_files"], 1);
+    let (_, view) = app.get(&app.human, &format!("/v1/mindmaps/{map}")).await;
+    let nodes = view["nodes"].as_array().unwrap();
+    assert_eq!(
+        nodes.len(),
+        4,
+        "retry must not duplicate the root or three sections"
+    );
+    assert!(nodes.iter().all(|node| node["origin"] == "agent"));
+    let quote = nodes
+        .iter()
+        .find(|node| node["title"] == "Order quotes")
+        .unwrap();
+    let pricing = nodes
+        .iter()
+        .find(|node| node["title"] == "Discounts and shipping")
+        .unwrap();
+    assert_eq!(pricing["parent"], quote["id"]);
+    let (_, prose) = app
+        .get(&app.human, &format!("/v1/mindmaps/{map}/prose"))
+        .await;
+    let text = prose["markdown"].as_str().unwrap();
+    assert!(text.contains("simulated draft"));
+    assert!(text.contains("examples/extraction-fixture/checkout.mjs:10–12"));
+    assert!(text.contains("Cancellation"));
+    assert!(!text.contains("outside.txt"));
+}
+#[tokio::test]
 async fn imported_sections_are_real_unreviewed_document_and_mindmap_content() {
     let app = TestApp::spawn().await;
     let map = fixture(&app).await;
