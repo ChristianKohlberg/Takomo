@@ -1761,3 +1761,208 @@ async fn query_cache_inflight_config_change_cannot_return_an_old_generation() {
     }
     task.abort();
 }
+
+#[tokio::test]
+async fn durable_query_cache_survives_reopen_without_renewing_expiry() {
+    use std::time::Duration;
+    use takomo::{
+        query_embeddings::{QueryCache, QueryEmbedding},
+        server::AppState,
+    };
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let original = app.open_store().load_collab_updates(&map).unwrap();
+    let (endpoint, calls, provider) = mock_provider().await;
+    let settings = config(&endpoint);
+    app.open_store()
+        .save_embedding_config(settings.clone(), Some("secret".into()))
+        .unwrap();
+    let cache = QueryCache::new(256, Duration::from_millis(500));
+    let state = AppState::new(app.open_store());
+    assert!(matches!(
+        cache
+            .get_persistent(state.clone(), &settings, "secret", "alice", "persist me")
+            .await
+            .1,
+        QueryEmbedding::Ready(_)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    let (key, expiry): (String, i64) = conn
+        .query_row(
+            "SELECT cache_key,expires_at FROM query_embedding_cache",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(key.len(), 64);
+    assert!(!key.contains("persist"));
+    drop(state);
+    drop(cache);
+    let reopened = AppState::new(app.open_store());
+    let cache = QueryCache::new(256, Duration::from_secs(600));
+    assert!(matches!(
+        cache
+            .get_persistent(
+                reopened.clone(),
+                &settings,
+                "secret",
+                "alice",
+                " persist me "
+            )
+            .await
+            .1,
+        QueryEmbedding::Ready(_)
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "restart hit avoids outbound call"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT expires_at FROM query_embedding_cache WHERE cache_key=?1",
+            [&key],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        expiry,
+        "restart and hit retain original expiry"
+    );
+    tokio::time::sleep(Duration::from_millis(
+        (expiry - takomo::ids::now_ms()).max(0) as u64 + 10,
+    ))
+    .await;
+    cache
+        .get_persistent(reopened.clone(), &settings, "secret", "alice", "persist me")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "original expiry still expires memory-loaded vector"
+    );
+    cache
+        .get_persistent(reopened.clone(), &settings, "secret", "bob", "persist me")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "token identities remain isolated"
+    );
+    reopened
+        .store
+        .save_embedding_config(settings.clone(), Some("secret".into()))
+        .unwrap();
+    cache
+        .get_persistent(reopened.clone(), &settings, "secret", "alice", "persist me")
+        .await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "same-config saves invalidate durable and memory generations"
+    );
+    assert_eq!(
+        reopened.store.load_collab_updates(&map).unwrap(),
+        original,
+        "cache-only upgrade preserves authoritative Yjs"
+    );
+    provider.abort();
+}
+
+#[tokio::test]
+async fn durable_query_cache_bounds_expiry_generation_and_notifications() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let store = app.open_store();
+    let generation = store.query_cache_generation().unwrap();
+    let changes = store.changes.subscribe();
+    store
+        .cache_query_vector("one", generation, &[1.0, 0.0], 200, 100, 2)
+        .unwrap();
+    store
+        .cache_query_vector("two", generation, &[1.0, 0.0], 200, 101, 2)
+        .unwrap();
+    assert!(store
+        .cached_query_vector("one", generation, 2, 102)
+        .unwrap()
+        .is_some());
+    store
+        .cache_query_vector("three", generation, &[1.0, 0.0], 200, 103, 2)
+        .unwrap();
+    assert!(store
+        .cached_query_vector("two", generation, 2, 104)
+        .unwrap()
+        .is_none());
+    assert!(
+        store
+            .cached_query_vector("one", generation, 3, 104)
+            .unwrap()
+            .is_none(),
+        "dimension mismatch is never used"
+    );
+    assert!(store
+        .cached_query_vector("one", generation, 2, 200)
+        .unwrap()
+        .is_none());
+    assert!(
+        !changes.has_changed().unwrap(),
+        "cache bookkeeping does not invalidate project lists"
+    );
+    store
+        .save_embedding_config(EmbeddingConfig::default(), None)
+        .unwrap();
+    store
+        .cache_query_vector("old-flight", generation, &[1.0, 0.0], 300, 210, 2)
+        .unwrap();
+    assert!(
+        store
+            .cached_query_vector("old-flight", generation, 2, 211)
+            .unwrap()
+            .is_none(),
+        "old in-flight completion cannot repopulate changed configuration"
+    );
+}
+
+#[tokio::test]
+async fn query_cache_upgrade_preserves_populated_store_and_rolls_back_failure() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (map, _) = fixture(&app).await;
+    let original = app.open_store().load_collab_updates(&map).unwrap();
+    let conn = rusqlite::Connection::open(app.db_path()).unwrap();
+    conn.execute_batch("DROP TABLE query_embedding_cache;DROP TABLE query_cache_generation;")
+        .unwrap();
+    for _ in 0..2 {
+        let upgraded = app.open_store();
+        assert_eq!(upgraded.query_cache_generation().unwrap(), 0);
+        assert_eq!(upgraded.load_collab_updates(&map).unwrap(), original);
+        upgraded
+            .refresh_search(&map, false, takomo::ids::now_ms())
+            .unwrap();
+        let hit = upgraded
+            .search_document(&map, "Invoices", None)
+            .unwrap()
+            .hits
+            .remove(0);
+        assert_eq!(hit.location.ordinal, 0);
+        assert_eq!(
+            hit.location.source_hash,
+            takomo::ids::sha256_hex(hit.passage.as_bytes())
+        );
+    }
+    conn.execute_batch("DROP TABLE query_embedding_cache;DROP TABLE query_cache_generation;CREATE VIEW query_embedding_cache AS SELECT 1;").unwrap();
+    assert!(takomo::store::search::migrate(&conn).is_err());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='query_cache_generation'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    conn.execute_batch("DROP VIEW query_embedding_cache;")
+        .unwrap();
+    assert_eq!(
+        app.open_store().load_collab_updates(&map).unwrap(),
+        original
+    );
+}

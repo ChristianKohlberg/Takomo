@@ -41,3 +41,17 @@ CREATE TABLE IF NOT EXISTS embedding_sync_history (
  fingerprint TEXT NOT NULL, last_synced_at INTEGER NOT NULL,
  PRIMARY KEY(map_id,fingerprint)
 );
+
+-- Rebuildable query vectors only; keys contain no plaintext query or credentials.
+CREATE TABLE IF NOT EXISTS query_cache_generation (
+ id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO query_cache_generation(id,generation) VALUES(1,0);
+CREATE TABLE IF NOT EXISTS query_embedding_cache (
+ cache_key TEXT PRIMARY KEY,
+ generation INTEGER NOT NULL,
+ vector TEXT NOT NULL,
+ expires_at INTEGER NOT NULL,
+ last_used INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS query_embedding_cache_expiry ON query_embedding_cache(expires_at);

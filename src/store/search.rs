@@ -116,12 +116,18 @@ pub struct EmbeddingJob {
     pub chunks: Vec<(i64, String)>,
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct PassageLocation {
+    pub ordinal: usize,
+    pub source_hash: String,
+}
+#[derive(Clone, Debug, Serialize)]
 pub struct SearchHit {
     pub node_id: String,
     pub title: String,
     pub heading_path: Vec<String>,
     pub excerpt: String,
     pub passage: String,
+    pub location: PassageLocation,
     pub highlights: Vec<String>,
     pub match_kind: String,
 }
@@ -414,6 +420,8 @@ impl Store {
         }
         self.with_tx(|tx| {
             let (old, old_key) = config(tx)?;
+            tx.execute("DELETE FROM query_embedding_cache", [])?;
+            tx.execute("UPDATE query_cache_generation SET generation=generation+1 WHERE id=1", [])?;
             let key = key.unwrap_or_else(|| if old.provider == next.provider && old.endpoint == next.endpoint { old_key } else { String::new() });
             let fingerprint = next.fingerprint();
             tx.execute(
@@ -762,9 +770,11 @@ MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT ?3",
                 if !seen.insert(node) {
                     continue;
                 }
-                let (node, title, path, passage): (String, String, String, String) = conn.query_row("SELECT node_id,title,heading_path,passage FROM search_chunks WHERE id=?1", [id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                let (node, title, path, passage, ordinal): (String, String, String, String, usize) = conn.query_row("SELECT node_id,title,heading_path,passage,ordinal FROM search_chunks WHERE id=?1", [id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
                 })?;
+                let section_chunks: Vec<String> = conn.prepare("SELECT passage FROM search_chunks WHERE map_id=?1 AND node_id=?2 ORDER BY ordinal")?.query_map(params![map,node], |r| r.get(0))?.collect::<Result<_,_>>()?;
+                let location = PassageLocation { ordinal, source_hash: sha256_hex(section_chunks.join("\0").as_bytes()) };
                 let first = if keyword { excerpt_start(&passage, &tokens) } else { 0 };
                 let start = first.saturating_sub(60);
                 let excerpt: String = passage.chars().skip(start).take(280).collect();
@@ -780,6 +790,7 @@ MATCH ?1 AND c.map_id=?2 ORDER BY bm25(search_fts,4,2,1) LIMIT ?3",
                     heading_path: serde_json::from_str(&path).unwrap_or_default(),
                     excerpt,
                     passage,
+                    location,
                     highlights,
                     match_kind: if keyword && semantic {
                         "both"

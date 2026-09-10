@@ -7,7 +7,7 @@ import { prosemirrorToYXmlFragment } from 'y-prosemirror'
 import Collaboration from '@tiptap/extension-collaboration'
 import { Editor } from '@tiptap/react'
 import { findDocumentMatches, fragmentMatches, literalMatches, proseMatches } from './document-search'
-import { DocumentSearchHighlight, setDocumentSearchHighlight } from './document-search-highlight'
+import { DocumentSearchHighlight, setDocumentSearchHighlight, SearchPassageHighlight, highlightSearchPassage } from './document-search-highlight'
 import { DocumentSectionReference } from './document-section-reference'
 
 const schema = getSchema([StarterKit, TableKit, DocumentSectionReference])
@@ -109,4 +109,22 @@ describe('personal document search', () => {
     doc.getMap('nodes').delete('section')
     expect(findDocumentMatches([{ id: 'section', title: 'find' }], doc, 'find')).toEqual([])
   })
+})
+
+it('expires passage decoration without changing source and clears it immediately on edit', () => {
+  vi.useFakeTimers()
+  const editor = new Editor({ extensions: [StarterKit, SearchPassageHighlight], content: '<p>Exact passage</p>' })
+  try {
+    const before = editor.getJSON()
+    highlightSearchPassage(editor.view, { from: 1, to: 6 })
+    expect(editor.view.dom.querySelector('[data-search-passage]')?.textContent).toBe('Exact')
+    vi.advanceTimersByTime(2999)
+    expect(editor.view.dom.querySelector('[data-search-passage]')).not.toBeNull()
+    vi.advanceTimersByTime(1)
+    expect(editor.view.dom.querySelector('[data-search-passage]')).toBeNull()
+    expect(editor.getJSON()).toEqual(before)
+    highlightSearchPassage(editor.view, { from: 1, to: 6 })
+    editor.commands.insertContentAt(1, 'New ')
+    expect(editor.view.dom.querySelector('[data-search-passage]')).toBeNull()
+  } finally { editor.destroy(); vi.useRealTimers() }
 })

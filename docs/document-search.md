@@ -3,7 +3,11 @@
 In Document, use **Search** or **Cmd+S / Ctrl+S** to search the current project's
 specification. The modal combines keyword matches and related meaning when an
 embedding provider is configured. Arrow keys select a result; Enter opens its
-section and selects the original passage when it is still present. Escape closes
+section, expands collapsed ancestors, and selects the original passage. A verified
+passage receives a three-second local highlight that clears on editing and never
+changes document content. The optional source locator checks the complete normalized
+section chunk sequence and identifies its ordinal, including repeated passages.
+Changed or ambiguous text falls back to section focus; removed sections show a notice. Escape closes
 the modal. The separate Find command remains literal next/previous occurrence
 search, and browser Cmd+F is unchanged.
 
@@ -29,12 +33,19 @@ token per minute for outbound calls; cache hits do not spend that budget. Past
 that, an uncached search answers from keywords alone and reports
 `semantic_status: throttled` instead of failing or spending more.
 
-The server keeps at most 256 query vectors in memory for ten minutes after each
-successful computation. Identity includes the provider protocol, endpoint, model,
+The server keeps at most 256 query vectors in memory and a rebuildable SQLite cache
+for ten minutes after each successful computation. Absolute expiration is preserved
+across restart: a cache hit or restart never extends it. SQLite stores only vectors,
+hashed cache identities, expiration and bounded LRU/generation metadata, not query
+plaintext or credentials. The additive transactional migration preserves all existing
+source, configuration and document embeddings. Reverting the application leaves this
+optional cache table harmlessly unused; no source rollback or data deletion is needed.
+Identity includes the provider protocol, endpoint, model,
 dimensions, credential and authenticated token ID, plus the trimmed query with
 its case preserved. Concurrent identical requests share one bounded provider
 call, even if the first client closes its modal. Failures are not cached. Saving
-provider settings invalidates cached and in-flight generations. Authorization
+provider settings transactionally clears durable entries and advances their generation,
+also invalidating in-memory and in-flight work across restart. Authorization
 and retrieval of current document content still run for every search; results,
 source snapshots and document embeddings are not part of this cache. Restarting
 the server empties it.

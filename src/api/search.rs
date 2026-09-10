@@ -74,7 +74,9 @@ pub async fn save_settings(
         .remedy("GET /v1/settings/embeddings, edit the fields you want, and PUT all six back.")
     })?;
     let saved = state.store.save_embedding_config(config, key)?;
-    state.query_embeddings.invalidate();
+    state
+        .query_embeddings
+        .synchronize_generation(state.store.query_cache_generation()?);
     Ok(Json(saved))
 }
 pub async fn search(
@@ -112,12 +114,13 @@ pub async fn search(
     if semantic_status == "ready" && !terms(&q).is_empty() {
         let (generation, result) = state
             .query_embeddings
-            .get(&config, &key, &ctx.token_id, &q)
+            .get_persistent(state.clone(), &config, &key, &ctx.token_id, &q)
             .await;
         // A configuration change cannot make an older request current, including
         // switching away and back to the same provider while it was running.
         let (current, current_key) = state.store.embedding_config()?;
-        if !state.query_embeddings.is_current(generation)
+        if state.store.query_cache_generation()? != generation
+            || !state.query_embeddings.is_current(generation)
             || current.fingerprint() != config.fingerprint()
             || current_key != key
         {

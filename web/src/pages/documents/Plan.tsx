@@ -1,9 +1,10 @@
+import { highlightSearchPassage } from '@/lib/document-search-highlight'
 import { DocumentNumberingControls, useDocumentNumbering } from '@/components/documents/DocumentNumberingControls'
 import { EmbeddingStatusProvider } from '@/hooks/useEmbeddingStatus'
 import { DocumentEmbeddingStatus } from '@/components/documents/DocumentEmbeddingStatus'
 import type { ServerSync } from '@/lib/save-status'
 import { DocumentHybridSearch } from '@/components/documents/DocumentHybridSearch'
-import { passageRange, type SearchResult } from '@/lib/hybrid-search'
+import { locatedPassageRange, type SearchResult } from '@/lib/hybrid-search'
 import { DocumentSectionReferenceButton } from '@/components/documents/DocumentSectionReferenceButton'
 import { DocumentActions } from '@/components/documents/DocumentActions'
 import { CopySectionLink } from '@/components/documents/CopySectionLink'
@@ -492,11 +493,26 @@ function ConnectedPlan({
   }
 
   const pendingPassage = useRef<SearchResult | null>(null)
-  const revealPassage = useCallback((editor: Editor, result: SearchResult) => {
-    const range = passageRange(editor.state.doc, result.passage)
-    if (range) editor.chain().setTextSelection(range).focus().scrollIntoView().run()
-    else editor.commands.focus('start')
-  }, [])
+  const passageRequest = useRef(0)
+  const passageNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => { clearTimeout(passageNoticeTimer.current); passageRequest.current++ }, [])
+  const revealPassage = useCallback(async (editor: Editor, result: SearchResult) => {
+    const request = ++passageRequest.current
+    const source = editor.state.doc
+    const range = await locatedPassageRange(source, result).catch(() => null)
+    if (editor.isDestroyed || request !== passageRequest.current || selectedRef.current !== result.node_id) return
+    if (range && editor.state.doc.eq(source)) {
+      editor.chain().setTextSelection(range).focus().scrollIntoView().run()
+      highlightSearchPassage(editor.view, range)
+      const notice = { text: locale === 'de' ? 'Textstelle hervorgehoben.' : 'Passage highlighted.' }
+      setNotice(notice)
+      clearTimeout(passageNoticeTimer.current)
+      passageNoticeTimer.current = setTimeout(() => setNotice(current => current === notice ? null : current), 3000)
+    } else {
+      editor.commands.focus('start')
+      setNotice({ text: locale === 'de' ? 'Abschnitt geöffnet. Die Textstelle hat sich geändert oder ist nicht eindeutig.' : 'Section opened. The passage has changed or is ambiguous.' })
+    }
+  }, [locale])
   const editors = useRef(new Map<string, Editor>())
   const pendingBoundaryFocus = useRef<{ key: string; position: 'start' | 'end' } | null>(null)
   const [activeEditor, setActiveEditor] = useState<Editor | null>(null)

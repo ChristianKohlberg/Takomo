@@ -51,7 +51,7 @@ const EDITOR_ATTRIBUTES = { class: 'prose prose-neutral dark:prose-invert max-w-
 import { DiagramCodeBlock } from '@/lib/diagram-code-block'
 import { BlockId } from '@/lib/block-id'
 import { HighlightBlocks, setHighlightedBlocks } from '@/lib/block-highlight'
-import { DocumentSearchHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
+import { DocumentSearchHighlight, SearchPassageHighlight, setDocumentSearchHighlight } from '@/lib/document-search-highlight'
 import { DocumentSectionReference, refreshSectionReferenceLabels } from '@/lib/document-section-reference'
 import { DocumentCommentHighlight } from '@/lib/document-comment-highlight'
 import '@/styles/document-comments.css'
@@ -224,6 +224,7 @@ export default function SectionEditor({
         // rule the highlight illustrates. See `lib/block-highlight.ts`.
         HighlightBlocks,
         DocumentSearchHighlight,
+        SearchPassageHighlight,
         DocumentSectionReference.configure({ ydoc, onNavigate: onFollowReference ? id => followReference.current?.(id) : null, project: () => accessRef.current?.project ?? '',
           missingLabel: () => localeRef.current === 'de' ? 'Abschnitt fehlt' : 'Missing section',
           untitledLabel: () => localeRef.current === 'de' ? 'Unbenannter Abschnitt' : 'Untitled section' }),
