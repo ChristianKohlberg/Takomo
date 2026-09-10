@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { saveProject } from '@/lib/session'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Markdown } from '@/components/Markdown'
@@ -12,7 +13,7 @@ import { DOCUMENT_CHAT } from './document-conversation-strings'
 export interface DocumentIntent extends DocumentScope { action: DocumentAction; nonce: number; mode?: DocumentContext['mode']; quote?: DocumentContext['quote'] }
 interface Props {
   token: string; project: string; map: string; lang: Locale; nodes: PlanNode[]; canAsk: boolean
-  open: boolean; onOpenChange: (open: boolean) => void; restoreFocus: () => void
+  open: boolean; visible?: boolean; onOpenChange: (open: boolean) => void; restoreFocus: () => void
   intent: DocumentIntent; onNavigate?: (section: string) => void; onError?: (error: unknown) => void
 }
 export function DocumentConversation(props: Props) {
@@ -24,7 +25,7 @@ function presetDraft(current: string, next: DocumentAction, t: (typeof DOCUMENT_
     return !current.trim() || preset ? t[`${next}Prompt`] : current
   }
 
-function Conversation({ token, project, map, lang, nodes, canAsk, open, onOpenChange, restoreFocus, intent, onNavigate, onError }: Props) {
+function Conversation({ token, project, map, lang, nodes, canAsk, open, visible = true, onOpenChange, restoreFocus, intent, onNavigate, onError }: Props) {
   const t = DOCUMENT_CHAT[lang]
   const [view, setView] = useState<DocumentConversationView | null>(null)
   const [action, setAction] = useState<DocumentAction>(intent.action)
@@ -77,29 +78,22 @@ function Conversation({ token, project, map, lang, nodes, canAsk, open, onOpenCh
   useEffect(() => {
     if (open && followTail.current && history.current) history.current.scrollTop = history.current.scrollHeight
   }, [open, view?.messages.length])
-  useEffect(() => {
-    if (!open || sending) return
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    async function load() {
+  useLiveRefresh({
+    token, project, scope: `${map}:${refresh}`, topics: ['agent'],
+    enabled: open && visible, paused: sending, activeMs: active ? 1000 : false,
+    onError: cause => {
+      setError(cause instanceof Error ? cause.message : t.loadFailed)
+      if ((cause as ApiErrorShape)?.auth) onErrorRef.current?.(cause)
+    },
+    load: async signal => {
       const epoch = generation.current
-      try {
-        const next = await getDocumentConversation(token, map, controller.signal)
-        if (controller.signal.aborted || epoch !== generation.current || inFlight.current) return
-        setView(next)
-        if (!pinsDirty.current) setPins(next.pinned_section_ids ?? [])
-        if (!submissionError.current) setError('')
-        timer = setTimeout(load, next.jobs.some(job => job.status === 'queued' || job.status === 'running') ? 1000 : 4000)
-      } catch (cause) {
-        if (controller.signal.aborted || epoch !== generation.current) return
-        setError(cause instanceof Error ? cause.message : t.loadFailed)
-        if ((cause as ApiErrorShape)?.auth) onErrorRef.current?.(cause)
-        timer = setTimeout(load, 4000)
-      }
-    }
-    void load()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [open, sending, refresh, token, map, t.loadFailed])
+      const next = await getDocumentConversation(token, map, signal)
+      if (signal.aborted || epoch !== generation.current || inFlight.current) return
+      setView(next)
+      if (!pinsDirty.current) setPins(next.pinned_section_ids ?? [])
+      if (!submissionError.current) setError('')
+    },
+  })
 
   async function send(retry = false) {
     if (!canAsk || inFlight.current || !view) return

@@ -34,6 +34,31 @@ use crate::ids::now_ms;
 
 use super::Store;
 
+/// Apply an incoming frame and decide whether it needs retention and relay.
+/// A pending dependency (including a pending delete set) is conservatively kept,
+/// even for repeated frames; dropping it would lose out-of-order recovery.
+/// The caller must exclude concurrent mutations while observation is installed.
+pub(crate) fn apply_retained(doc: &yrs::Doc, update: yrs::Update) -> Result<bool, String> {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yrs::{ReadTxn, Transact};
+    let changed = Arc::new(AtomicBool::new(false));
+    let observed = changed.clone();
+    let subscription = doc
+        .observe_update_v1(move |_, _| {
+            observed.store(true, Ordering::SeqCst);
+        })
+        .map_err(|e| e.to_string())?;
+    let mut txn = doc.transact_mut();
+    txn.apply_update(update).map_err(|e| e.to_string())?;
+    let unresolved = txn.has_missing_updates();
+    drop(txn); // Committing emits the update event, including fresh deletions.
+    drop(subscription);
+    Ok(unresolved || changed.load(Ordering::SeqCst))
+}
+
 /// The largest single flush, in decoded bytes.
 ///
 /// EQUAL to the socket's `MAX_SYNC_MESSAGE` on purpose, and the two must move

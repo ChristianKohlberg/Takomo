@@ -1,3 +1,4 @@
+import { affectsProjectTopic, ProjectUpdatesContext, useProjectUpdates } from './useProjectUpdates'
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { searchStatus, syncSearch, type SearchStatus } from '@/lib/hybrid-search'
 import type { ServerSync } from '@/lib/save-status'
@@ -37,13 +38,27 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
   const schedule = useRef<() => void>(() => {})
   const localPending = server === 'behind'
   const pending = useRef(localPending)
+  const shared = useContext(ProjectUpdatesContext)
+  const liveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const connected = useProjectUpdates(token, shared?.project ?? '', async event => {
+    if (!affectsProjectTopic(event, 'search')) return
+    if (!liveTimer.current) liveTimer.current = setTimeout(() => {
+      liveTimer.current = undefined
+      refresh.current()
+    }, 1000)
+  })
+  const live = useRef(connected)
+  live.current = connected
+  useEffect(() => { schedule.current() }, [connected])
+  useEffect(() => () => { clearTimeout(liveTimer.current); liveTimer.current = undefined }, [token, map])
   useEffect(() => {
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | undefined
     setFreshAfterSave(false)
+    let failed = false
     const later = () => {
       clearTimeout(timer)
-      if (stopped || document.visibilityState === 'hidden') return
+      if (stopped || document.visibilityState === 'hidden' || (watchers.current === 0 && live.current && !failed)) return
       timer = setTimeout(read, watchers.current > 0 ? STATUS_POLL_OPEN_MS : STATUS_POLL_IDLE_MS)
     }
     const read = () => {
@@ -54,10 +69,11 @@ export function EmbeddingStatusProvider({ token, map, server = 'current', childr
       const ownsRequest = () => !stopped && !controller.signal.aborted && request.current === controller
       searchStatus(token, map, controller.signal).then(value => {
         if (!ownsRequest()) return
+        failed = false
         setStatus(value); setError(''); setFreshAfterSave(!pending.current)
         if (value.projection === 'current') setDeferred(false)
       }).catch((reason: Error) => {
-        if (ownsRequest()) { setError(reason.message); setFreshAfterSave(false) }
+        if (ownsRequest()) { failed = true; setError(reason.message); setFreshAfterSave(false) }
       }).finally(() => {
         // An aborted read may settle after its replacement. Only the current
         // owner may release the slot or schedule the next poll.

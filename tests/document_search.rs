@@ -1777,7 +1777,7 @@ async fn durable_query_cache_survives_reopen_without_renewing_expiry() {
     app.open_store()
         .save_embedding_config(settings.clone(), Some("secret".into()))
         .unwrap();
-    let cache = QueryCache::new(256, Duration::from_millis(500));
+    let cache = QueryCache::new(256, Duration::from_secs(10));
     let state = AppState::new(app.open_store());
     assert!(matches!(
         cache
@@ -1829,6 +1829,18 @@ async fn durable_query_cache_survives_reopen_without_renewing_expiry() {
         expiry,
         "restart and hit retain original expiry"
     );
+    // Reopening installs connection-local triggers; allow parallel CI enough
+    // time for that before testing expiry, and also verify the exact boundary.
+    assert!(reopened
+        .store
+        .cached_query_vector(
+            &key,
+            reopened.store.query_cache_generation().unwrap(),
+            settings.dimensions,
+            expiry + 1
+        )
+        .unwrap()
+        .is_none());
     tokio::time::sleep(Duration::from_millis(
         (expiry - takomo::ids::now_ms()).max(0) as u64 + 10,
     ))

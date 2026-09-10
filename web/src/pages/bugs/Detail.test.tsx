@@ -19,10 +19,10 @@ describe('explicit bug research', () => {
   it('does not start on display; shows repository before the explicit request', async () => {
     mount()
     await screen.findByText('Repository: takomo · Revision: main')
-    expect(vi.mocked(api).mock.calls.filter(([, , opts]) => opts?.method)).toHaveLength(0)
+    expect(vi.mocked(api).mock.calls.filter(([, path, opts]) => opts?.method && !path.endsWith('/session'))).toHaveLength(0)
     fireEvent.click(screen.getByRole('button', {name: 'Research with Codex'}))
     await waitFor(() => expect(vi.mocked(api).mock.calls.find(([, path, opts]) => path === '/bugs/demo-1/research' && opts?.method === 'POST')).toBeTruthy())
-    const request = vi.mocked(api).mock.calls.find(([, , opts]) => opts?.method === 'POST')!
+    const request = vi.mocked(api).mock.calls.find(([, path, opts]) => path === '/bugs/demo-1/research' && opts?.method === 'POST')!
     expect(JSON.parse(request[2]!.body as string).request_id).toBeTruthy()
   })
   it('offers steering and cancellation for active research instead of a second start', async () => {

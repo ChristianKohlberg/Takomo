@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -18,8 +19,8 @@ function Status({ status, t }: { status: AgentJobStatus; t: Labels }) {
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${status === 'failed' ? 'bg-destructive/10 text-destructive' : status === 'running' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>{t[status]}</span>
 }
 
-function Details({ token, id, automatic, refresh, lang, onAuthError }: {
-  token: string; id: string; automatic: boolean; refresh: number; lang: Locale; onAuthError: () => void
+function Details({ token, project, id, automatic, refresh, lang, onAuthError }: {
+  token: string; project: string; id: string; automatic: boolean; refresh: number; lang: Locale; onAuthError: () => void
 }) {
   const t = pick(STR, lang)
   const sectionRef = useRef<HTMLElement>(null)
@@ -31,25 +32,15 @@ function Details({ token, id, automatic, refresh, lang, onAuthError }: {
   }, [])
   const [data, setData] = useState<AgentJobDetail | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => {
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    async function load() {
-      try {
-        const result = await getAgentJob(token, id, controller.signal)
-        if (controller.signal.aborted) return
-        setData(result)
-        setError('')
-      } catch (e) {
-        if (controller.signal.aborted) return
-        if (isAuthError(e)) { onAuthError(); return }
-        setError(errorText(e, t.detailUnavailable))
-      }
-      if (automatic && !controller.signal.aborted) timer = setTimeout(() => { void load() }, 3000)
-    }
-    void load()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [token, id, automatic, refresh, onAuthError, t.detailUnavailable])
+  useLiveRefresh({
+    token, project, scope: `${id}:${refresh}`, topics: ['agent'], automatic,
+    activeMs: data && ['queued', 'running'].includes(data.job.status) ? 3000 : false,
+    onError: e => { if (isAuthError(e)) onAuthError(); else setError(errorText(e, t.detailUnavailable)) },
+    load: async signal => {
+      const result = await getAgentJob(token, id, signal)
+      if (!signal.aborted) { setData(result); setError('') }
+    },
+  })
   const j = data?.job
   const fields: [string, string | number | null][] = j ? [
     [t.job, j.id], [t.status, t[j.status]], [t.requestedBy, j.requested_by],
@@ -102,26 +93,15 @@ export function Inspector({ token, project, lang, onAuthError }: { token: string
   const [selected, setSelected] = useState('')
   const [error, setError] = useState('')
   const [updated, setUpdated] = useState<number | null>(null)
-  useEffect(() => {
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    async function load() {
-      try {
-        const result = await listAgentJobs(token, project, status, controller.signal)
-        if (controller.signal.aborted) return
-        setData(result)
-        setError('')
-        setUpdated(Date.now())
-      } catch (e) {
-        if (controller.signal.aborted) return
-        if (isAuthError(e)) { onAuthError(); return }
-        setError(errorText(e, t.unavailable))
-      }
-      if (automatic && !controller.signal.aborted) timer = setTimeout(() => { void load() }, 3000)
-    }
-    void load()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [token, project, status, automatic, refresh, onAuthError, t.unavailable])
+  useLiveRefresh({
+    token, project, scope: `${status}:${refresh}`, topics: ['agent'], automatic,
+    activeMs: data?.items.some(job => ['queued', 'running'].includes(job.status)) ? 3000 : false,
+    onError: e => { if (isAuthError(e)) onAuthError(); else setError(errorText(e, t.unavailable)) },
+    load: async signal => {
+      const result = await listAgentJobs(token, project, status, signal)
+      if (!signal.aborted) { setData(result); setError(''); setUpdated(Date.now()) }
+    },
+  })
   return <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
     <p className="text-muted-foreground text-sm">{t.description}</p>
     <div className="flex flex-wrap items-center gap-3">
@@ -152,7 +132,7 @@ export function Inspector({ token, project, lang, onAuthError }: { token: string
           </li>)}</ul>}
         </>}
       </section>
-      {selected ? <Details key={selected} token={token} id={selected} automatic={automatic} refresh={refresh} lang={lang} onAuthError={onAuthError} /> : <p className="text-muted-foreground border-border rounded-xl border border-dashed p-5 text-sm">{t.select}</p>}
+      {selected ? <Details project={project} key={selected} token={token} id={selected} automatic={automatic} refresh={refresh} lang={lang} onAuthError={onAuthError} /> : <p className="text-muted-foreground border-border rounded-xl border border-dashed p-5 text-sm">{t.select}</p>}
     </div>
     <p className="text-muted-foreground text-xs">{t.readOnly}</p>
   </div>

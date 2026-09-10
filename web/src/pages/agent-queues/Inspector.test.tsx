@@ -114,7 +114,7 @@ describe('Agent queue inspector', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(listAgentJobs).toHaveBeenCalledTimes(2)
     expect(getAgentJob).toHaveBeenCalledTimes(2)
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Refresh every 3 seconds' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Automatic updates' }))
     await act(async () => {})
     const calls = vi.mocked(listAgentJobs).mock.calls.length
     await act(async () => { await vi.advanceTimersByTimeAsync(6000) })

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { affectsProjectTopic, useProjectUpdates } from '@/hooks/useProjectUpdates'
 import { useWorkspaceSection } from '@/hooks/useWorkspaceSection'
 import { useSpecification } from '../specification/context'
 import { Button } from '@/components/ui/button'
@@ -67,7 +67,7 @@ export function TestsView({ compact = false }: { compact?: boolean }) {
     finally { if (attempt === epoch.current) setLoading(false) }
   }, [token, project, selectedRun, onError])
   useEffect(() => { const counter = epoch; void refresh(); return () => { counter.current++ } }, [refresh])
-  useProjectUpdates(token, project, refresh)
+  useProjectUpdates(token, project, async event => { if (affectsProjectTopic(event, 'checks', 'projects')) await refresh() })
   const navigateTab = (next: string, id?: string) => setParams(current => {
     const nextParams = new URLSearchParams(current)
     nextParams.set('tests', next)

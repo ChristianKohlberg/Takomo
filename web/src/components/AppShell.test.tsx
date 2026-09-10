@@ -9,7 +9,7 @@ import { api } from '@/lib/api'
 import { ProjectUpdatesContext } from '@/hooks/useProjectUpdates'
 
 vi.mock('@/lib/questions', () => ({ listQuestions: vi.fn() }))
-vi.mock('@/lib/session', () => ({ loadToken: vi.fn(() => '') }))
+vi.mock('@/lib/session', () => ({ loadToken: vi.fn(() => ''), isAuthError: (error: { auth?: boolean }) => !!error?.auth }))
 vi.mock('@/lib/api', () => ({ api: vi.fn() }))
 beforeEach(() => { vi.mocked(loadToken).mockReturnValue(''); vi.mocked(listQuestions).mockReset(); vi.mocked(api).mockReset() })
 
@@ -95,10 +95,10 @@ describe('persistent rail navigation', () => {
     expect(screen.getByRole('img', { name: 'Inbox: 0' })).toBeTruthy()
   })
 
-  it('never opens a project socket of its own for the badge', async () => {
+  it('reuses an existing project socket for the badge', async () => {
     vi.mocked(loadToken).mockReturnValue('token')
     vi.mocked(listQuestions).mockResolvedValue([])
-    mount(false, false, null)
+    mount(false, false, null, { project: 'one', connected: true, subscribe: () => () => {} })
     await screen.findByRole('img', { name: 'Inbox: 0' })
     expect(api).not.toHaveBeenCalled()
   })
@@ -112,7 +112,7 @@ describe('persistent rail navigation', () => {
     await screen.findByRole('img', { name: 'Inbox: 0' })
     expect(subscribe).toHaveBeenCalledOnce()
     await act(async () => { await callback!() })
-    expect(within(screen.getByRole('complementary')).getByText('1')).toBeTruthy()
+    await waitFor(() => expect(within(screen.getByRole('complementary')).getByText('1')).toBeTruthy(), { timeout: 2000 })
     expect(api).not.toHaveBeenCalled()
   })
 
@@ -146,6 +146,7 @@ it('does not poll while connected and ignores unrelated topics', async () => {
   await act(() => callback({ type: 'refresh', topics: ['trace'] }))
   expect(listQuestions).toHaveBeenCalledTimes(1)
   await act(() => callback({ type: 'refresh', topics: ['inbox'] }))
+  await act(async () => { await vi.advanceTimersByTimeAsync(0) })
   expect(listQuestions).toHaveBeenCalledTimes(2)
   vi.useRealTimers()
 })
@@ -158,8 +159,8 @@ it('queues one follow-up if live invalidation arrives during an older inbox requ
   await waitFor(() => expect(listQuestions).toHaveBeenCalledTimes(1))
   act(() => { void callback({ type: 'refresh', topics: ['inbox'] }); void callback({ type: 'refresh', topics: ['inbox'] }) })
   await act(async () => finish([]))
-  expect(listQuestions).toHaveBeenCalledTimes(2)
-  expect(within(screen.getByRole('complementary')).getByText('1')).toBeTruthy()
+  await waitFor(() => expect(listQuestions).toHaveBeenCalledTimes(2), { timeout: 2000 })
+  await waitFor(() => expect(within(screen.getByRole('complementary')).getByText('1')).toBeTruthy(), { timeout: 2000 })
 })
 it('does not reuse an invalidated in-flight request after StrictMode effect cleanup', async () => {
   vi.mocked(loadToken).mockReturnValue('token')

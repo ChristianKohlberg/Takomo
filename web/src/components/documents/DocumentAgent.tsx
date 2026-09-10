@@ -23,6 +23,16 @@ function Agent({ selected, children, onNavigate, ...props }: Props) {
   const [mobile, setMobile] = useState<'document' | 'chat'>('document')
   const [width, setWidth] = useState(420)
   const workspace = useRef<HTMLDivElement>(null)
+  const [wide, setWide] = useState(true)
+  useEffect(() => {
+    if (!workspace.current || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[0]
+      if (entry) setWide(entry.contentRect.width >= 720)
+    })
+    observer.observe(workspace.current)
+    return () => observer.disconnect()
+  }, [])
   const [quote, setQuote] = useState<{ section_id: string; text: string } | null>(null)
   const dragCleanup = useRef<(() => void) | null>(null)
   useEffect(() => () => dragCleanup.current?.(), [])
@@ -97,7 +107,7 @@ function Agent({ selected, children, onNavigate, ...props }: Props) {
           window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop)
         }} />}
       <div className={`${!open || mobile === 'document' ? 'hidden' : 'flex'} ${open ? '@min-[720px]/document-workspace:flex' : ''} min-h-0 w-full min-w-0 flex-col @min-[720px]/document-workspace:w-[min(var(--chat-width),55%)] @min-[720px]/document-workspace:shrink-0`}>
-        <DocumentConversation {...props} open={open} onOpenChange={value => { setOpen(value); if (!value) setMobile('document') }} restoreFocus={restoreFocus} intent={intent} onNavigate={navigate} />
+        <DocumentConversation {...props} open={open} visible={wide || mobile === 'chat'} onOpenChange={value => { setOpen(value); if (!value) setMobile('document') }} restoreFocus={restoreFocus} intent={intent} onNavigate={navigate} />
       </div>
     </div>
     <Dialog open={menu} onOpenChange={setMenu}>

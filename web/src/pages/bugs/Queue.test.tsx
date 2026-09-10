@@ -85,6 +85,7 @@ describe('the queue as a URL', () => {
   for (const [status, message] of [[404, 'Ticket demo-999 was not found.'], [403, 'Project demo is outside this token.']] as const) {
     it(`a linked bug the server answers ${status} for leaves the queue usable and is dropped from the URL`, async () => {
       vi.mocked(api).mockImplementation(async (_token, path) => {
+        if (path.endsWith('/session')) return { room: 'demo', token: 'session' } as never
         if (path.startsWith('/bugs?')) return {items: [bugs['demo-1']!, bugs['demo-2']!], total: 2, limit: 50, offset: 0} as never
         if (path === '/bugs/demo-2') return bugs['demo-2'] as never
         throw failWith(status, message)

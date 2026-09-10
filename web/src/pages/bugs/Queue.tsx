@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
+import { useCallback, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { api } from '@/lib/api'
 import { bugPath, listBugs, type Bug, type BugPage } from '@/lib/bugs'
@@ -23,23 +24,21 @@ export function Queue({ token, project, lang, onAuthError, canWrite, canReview, 
   const [report, setReport] = useState(false)
   const [version, setVersion] = useState(0)
   const refresh = useCallback(() => setVersion(v => v + 1), [])
-  useEffect(() => {
-    if (!project) return
-    const controller = new AbortController()
-    let active = true
-    const message = (e: unknown) => e instanceof Error ? e.message : String(e)
-    const load = async () => {
-      const [list, detail] = await Promise.allSettled([listBugs(token, project, view, severity, search, offset, controller.signal, {state, assignee, research_status: researchStatus}), selected ? api<Bug>(token, bugPath(selected), { signal: controller.signal }) : Promise.resolve(null)])
-      if (!active) return
-      if (list.status === 'fulfilled') { setPage(list.value); setError('') } else if (isAuthError(list.reason)) onAuthError(); else setError(message(list.reason))
+  useLiveRefresh({
+    token, project, scope: JSON.stringify([view, severity, search, state, assignee, researchStatus, offset, selected, version]),
+    topics: ['tickets', 'agent'], enabled: !!project, onError: cause => { if (isAuthError(cause)) onAuthError(); else setError(cause instanceof Error ? cause.message : String(cause)) },
+    load: async signal => {
+      const message = (e: unknown) => e instanceof Error ? e.message : String(e)
+      const [list, detail] = await Promise.allSettled([listBugs(token, project, view, severity, search, offset, signal, {state, assignee, research_status: researchStatus}), selected ? api<Bug>(token, bugPath(selected), { signal: signal }) : Promise.resolve(null)])
+      if (signal.aborted) return
+      if (list.status === 'fulfilled') { setPage(list.value); setError('') } else if (!isAuthError(list.reason)) setError(message(list.reason))
       if (detail.status === 'fulfilled') {
         if (detail.value && detail.value.ticket.project !== project) { setBug(null); setNotice(t.linkedElsewhere); update({ bug: '' }, true) } else setBug(detail.value)
-      } else if (isAuthError(detail.reason)) onAuthError(); else { setBug(null); setNotice(message(detail.reason)); update({ bug: '' }, true) }
-    }
-    void load()
-    const timer = setInterval(() => void load(), 5000)
-    return () => { active = false; controller.abort(); clearInterval(timer) }
-  }, [token, project, view, severity, search, state, assignee, researchStatus, offset, selected, version, onAuthError, update, t.linkedElsewhere])
+      } else if (!isAuthError(detail.reason)) { setBug(null); setNotice(message(detail.reason)); update({ bug: '' }, true) }
+      if (list.status === 'rejected') throw list.reason
+      if (detail.status === 'rejected' && isAuthError(detail.reason)) throw detail.reason
+    },
+  })
   if (!project) return <p className="text-muted-foreground">{t.projectNeeded}</p>
   return <div className="space-y-4">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm text-muted-foreground">{t.description}</p><p className="text-xs text-muted-foreground">{t.automatic}</p></div>{canWrite && <Button onClick={() => setReport(true)}>{t.report}</Button>}</div>

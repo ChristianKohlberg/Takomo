@@ -227,24 +227,147 @@ impl Store {
                 "The shared update exceeds the frame limit.",
             ));
         }
-        self.with_tx(|tx| {
+        let retained = self.with_tx(|tx| {
    let object=super::crdt::resolve(tx,id)?;
    if object.kind!=super::crdt::CollabKind::Check {return Err(ApiError::validation("validation.collab_state","This is not a check definition."));}
    super::helpers::ensure_project_writable(tx,&object.project)?;
    let doc=load(tx,id)?;
    let update=Update::decode_v1(blob).map_err(|e|ApiError::validation("validation.collab_state",e.to_string()))?;
-   doc.transact_mut().apply_update(update).map_err(|e|ApiError::validation("validation.collab_state",e.to_string()))?;
+   let retained=super::crdt::apply_retained(&doc,update).map_err(|e|ApiError::validation("validation.collab_state",e))?;
    let data=read_snapshot(&doc)?;
    let fields=data.get("definition").ok_or_else(||ApiError::validation("validation.collab_state","A check needs its definition."))?;
    let text=|field:&str|->ApiResult<&str> { fields.get(field).and_then(Value::as_str).ok_or_else(||ApiError::validation("validation.collab_state","Check fields must be shared text.")) };
    let (title,body,precondition)=(text("title")?,text("body")?,text("precondition")?);
    if title.len()>65536 || body.len()>262144 || precondition.len()>262144 {return Err(ApiError::validation("validation.collab_state","Check text exceeds its size limit."));}
+   if !retained {return Ok(false);}
    tx.execute("UPDATE checks SET title=?2,body=?3,precondition=?4,updated_at=?5,version=version+1 WHERE id=?1 AND (title!=?2 OR body!=?3 OR precondition!=?4)",params![id,title,body,precondition,crate::ids::now_ms()])?;
    // Keep causal updates even when their dependencies have not arrived yet.
    tx.execute("INSERT INTO crdt_updates(object_id,object_kind,blob,bytes,created_by,created_at) VALUES(?1,'check',?2,?3,?4,?5)",params![id,blob,blob.len() as i64,actor,crate::ids::now_ms()])?;
-   save(tx,id,&doc,actor)?; Ok(())
+   save(tx,id,&doc,actor)?; Ok(true)
   })?;
-        let _ = self.check_updates.send((id.into(), blob.to_vec()));
+        if retained {
+            let _ = self.check_updates.send((id.into(), blob.to_vec()));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn check_replays_are_quiet_and_out_of_order_edits_remain_durable() {
+        let store = Store::open(":memory:").unwrap();
+        store.create_project("tp", "Test", None, "test").unwrap();
+        let id = "check-fixture";
+        store.with_check_tx(id,"test",|tx| {
+            tx.execute("INSERT INTO checks(id,project,title,created_by,created_at,updated_at) VALUES(?1,'tp','Title','test',1,1)",[id])?;
+            Ok(())
+        }).unwrap();
+        let doc = store.with_conn(|conn| load(conn, id)).unwrap();
+        let full = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let mut relays = store.check_updates.subscribe();
+        let mut live = store.live_changes.subscribe();
+        let seq = || {
+            store
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT max(seq) FROM crdt_updates WHERE object_id=?1",
+                        [id],
+                        |r| r.get::<_, i64>(0),
+                    )?)
+                })
+                .unwrap()
+        };
+        let before = seq();
+        store.apply_check_update(id, &full, "test").unwrap();
+        store.apply_check_update(id, &[0, 0], "test").unwrap();
+        assert_eq!(seq(), before);
+        assert!(relays.try_recv().is_err());
+        assert!(live.try_recv().is_err());
+        let fields = match root(&doc).get(&doc.transact(), "definition").unwrap() {
+            Out::YMap(map) => map,
+            _ => panic!("definition map"),
+        };
+        let body = match fields.get(&doc.transact(), "body").unwrap() {
+            Out::YText(text) => text,
+            _ => panic!("body text"),
+        };
+        let first = {
+            let mut tx = doc.transact_mut();
+            body.insert(&mut tx, 0, "a");
+            tx.encode_update_v1()
+        };
+        let second = {
+            let mut tx = doc.transact_mut();
+            body.insert(&mut tx, 1, "b");
+            tx.encode_update_v1()
+        };
+        store.apply_check_update(id, &second, "test").unwrap();
+        relays.try_recv().unwrap();
+        assert!(store
+            .with_conn(|conn| Ok(load(conn, id)?.transact().has_missing_updates()))
+            .unwrap());
+        store.apply_check_update(id, &first, "test").unwrap();
+        relays.try_recv().unwrap();
+        assert_eq!(
+            store
+                .with_conn(|conn| Ok(snapshot(conn, id)?["definition"]["body"].clone()))
+                .unwrap(),
+            json!("ab")
+        );
+        let deleted = {
+            let mut tx = doc.transact_mut();
+            body.remove_range(&mut tx, 0, 2);
+            tx.encode_update_v1()
+        };
+        store.apply_check_update(id, &deleted, "test").unwrap();
+        relays.try_recv().unwrap();
+        let after = seq();
+        let full = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        store.apply_check_update(id, &full, "test").unwrap();
+        assert_eq!(seq(), after);
+        assert!(relays.try_recv().is_err());
+        assert_eq!(
+            store
+                .with_conn(|conn| read_snapshot(&load(conn, id)?))
+                .unwrap()["definition"]["body"],
+            json!("")
+        );
+        let future_insert = {
+            let mut tx = doc.transact_mut();
+            body.insert(&mut tx, 0, "z");
+            tx.encode_update_v1()
+        };
+        let future_delete = {
+            let mut tx = doc.transact_mut();
+            body.remove_range(&mut tx, 0, 1);
+            tx.encode_update_v1()
+        };
+        store
+            .apply_check_update(id, &future_delete, "test")
+            .unwrap();
+        relays.try_recv().unwrap();
+        assert!(store
+            .with_conn(|conn| Ok(load(conn, id)?.transact().has_missing_updates()))
+            .unwrap());
+        store
+            .apply_check_update(id, &future_insert, "test")
+            .unwrap();
+        relays.try_recv().unwrap();
+        assert!(!store
+            .with_conn(|conn| Ok(load(conn, id)?.transact().has_missing_updates()))
+            .unwrap());
+        assert_eq!(
+            store
+                .with_conn(|conn| read_snapshot(&load(conn, id)?))
+                .unwrap()["definition"]["body"],
+            json!("")
+        );
     }
 }

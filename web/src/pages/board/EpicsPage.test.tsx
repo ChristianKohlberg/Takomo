@@ -2,10 +2,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { App } from './App'
-import { getTicket, getEvents, getWorkflow, listTickets, hasEvents, type Ticket } from '@/lib/board'
+import { getTicket, getWorkflow, listTickets, type Ticket } from '@/lib/board'
 import { fetchRoadmap, type Roadmap } from '@/lib/roadmap'
 import type { NavRailProps } from '@/components/NavRail'
 import type { ReactNode } from 'react'
+
+const live = vi.hoisted(() => ({ listeners: new Set<(event?: { type: 'refresh'; topics?: ('tickets' | 'projects')[] }) => Promise<unknown>>() }))
+vi.mock('@/hooks/useProjectUpdates', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/hooks/useProjectUpdates')>()
+  const React = await import('react')
+  return { ...actual, useProjectUpdates: (_token: string, _project: string, callback: (event?: { type: 'refresh'; topics?: ('tickets' | 'projects')[] }) => Promise<unknown>) => {
+    const latest = React.useRef(callback); latest.current = callback
+    React.useEffect(() => { const listener = (event?: { type: 'refresh'; topics?: ('tickets' | 'projects')[] }) => latest.current(event); live.listeners.add(listener); return () => { live.listeners.delete(listener) } }, [])
+    return true
+  } }
+})
+async function poll() {
+  await act(async () => { await Promise.all([...live.listeners].map(listener => listener({ type: 'refresh' }))) })
+}
 
 const toast = vi.hoisted(() => vi.fn())
 vi.mock('@/components/Toaster', () => ({ useToast: () => ({ toast }) }))
@@ -102,11 +116,6 @@ describe('Epics page', () => {
   })
 
   it('preserves search through a failed background refresh and retry', async () => {
-    let poll!: () => void
-    const interval = window.setInterval.bind(window)
-    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => { if (delay === 4000) { poll = callback as () => void; return 1 as unknown as ReturnType<typeof window.setInterval> } return interval(callback, delay) as unknown as ReturnType<typeof window.setInterval> })
-    vi.mocked(getEvents).mockResolvedValue({ cursor: 2, events: [{}] } as never)
-    vi.mocked(hasEvents).mockReturnValue(true)
     vi.mocked(fetchRoadmap).mockResolvedValueOnce(roadmap('First epic')).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(roadmap('First epic'))
     mount()
     await screen.findByText('First epic')
@@ -121,11 +130,6 @@ describe('Epics page', () => {
 
 
   it.each(['workflow', 'tickets'] as const)('preserves filters after a background %s read fails', async (resource) => {
-    let poll!: () => void
-    const interval = window.setInterval.bind(window)
-    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => { if (delay === 4000) { poll = callback as () => void; return 1 as unknown as ReturnType<typeof window.setInterval> } return interval(callback, delay) as unknown as ReturnType<typeof window.setInterval> })
-    vi.mocked(getEvents).mockResolvedValue({ cursor: 2, events: [{}] } as never)
-    vi.mocked(hasEvents).mockReturnValue(true)
     vi.mocked(fetchRoadmap).mockResolvedValue(roadmap('First epic'))
     mount()
     await screen.findByText('First epic')

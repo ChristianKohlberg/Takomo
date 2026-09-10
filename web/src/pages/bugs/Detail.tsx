@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import type { Ticket } from '@/lib/board'
@@ -48,11 +49,22 @@ export function Detail({ bug, token, lang, canWrite, canReview, canConfigure, re
   const requestIds = useRef(new Map<string, string>())
   const configPath = `/projects/${encodeURIComponent(bug.ticket.project)}/bug-research-config`
   const fail = useCallback((e: unknown) => { if (isAuthError(e)) onAuthError(); else setError(e instanceof Error ? e.message : String(e)) }, [onAuthError])
-  const load = useCallback(async () => {
-    const [settings, history] = await Promise.all([api<ResearchConfig>(token, configPath), api<{jobs: BugJob[]}>(token, `${bugPath(bug.ticket.id)}/research`)])
-    setConfig(settings); setJobs(history.jobs)
-  }, [token, configPath, bug.ticket.id])
-  useEffect(() => { let active = true; const run = () => { if (active) void load().catch(e => { if (active) fail(e) }) }; run(); const timer = setInterval(run, 5000); return () => { active = false; clearInterval(timer) } }, [load, fail])
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const history = await api<{jobs: BugJob[]}>(token, `${bugPath(bug.ticket.id)}/research`, { signal })
+    if (!signal?.aborted) setJobs(history.jobs)
+  }, [token, bug.ticket.id])
+  const settings = useLiveRefresh({
+    token, project: bug.ticket.project, scope: configPath, topics: ['projects'], onError: fail,
+    load: async signal => {
+      const value = await api<ResearchConfig>(token, configPath, { signal })
+      if (!signal.aborted) setConfig(value)
+    },
+  })
+  useLiveRefresh({
+    token, project: bug.ticket.project, scope: bug.ticket.id, topics: ['agent', 'tickets'],
+    activeMs: jobs.some(job => job.status === 'queued' || job.status === 'running') ? 5000 : false,
+    load, onError: fail,
+  })
   const mutate = async (path: string, body: unknown, method = 'POST', requestKey?: string) => {
     if (busy) return
     setBusy(true); setError('')
@@ -65,7 +77,7 @@ export function Detail({ bug, token, lang, canWrite, canReview, canConfigure, re
       await api(token, path, { method, ...json(payload) })
       if (method === 'PATCH') setReviewDirty(false)
       if (requestKey) requestIds.current.delete(requestKey)
-      await load(); refresh()
+      await load(); if (path === configPath) settings.refresh(); refresh()
     } catch (e) { fail(e) } finally { setBusy(false) }
   }
   const activeJob = jobs.find(job => job.status === 'queued' || job.status === 'running')
