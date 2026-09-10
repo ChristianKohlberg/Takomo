@@ -279,7 +279,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         store.create_project("aa", "A", None, "test").unwrap();
         store.create_project("bb", "B", None, "test").unwrap();
-        store.with_tx(|tx| { tx.execute_batch(" 
+        store.with_tx(|tx| { tx.execute_batch("
             INSERT INTO mindmaps(id,project,title,created_by,created_at,updated_at) VALUES('m','aa','Map','test',1,1);
             INSERT INTO document_agent_settings(mindmap,pinned_section_ids) VALUES('m','[]');
             INSERT INTO checks(id,project,title,created_by,created_at,updated_at) VALUES('ck','aa','Check','test',1,1);
