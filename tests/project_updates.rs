@@ -96,3 +96,69 @@ async fn idle_maintenance_does_not_invalidate_project_lists() {
         "Six idle seconds caused {refreshes} document refresh batches"
     );
 }
+
+#[tokio::test]
+async fn project_socket_filters_topics_and_other_projects_but_resyncs_on_connect() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (status, _) = app
+        .post(
+            &app.admin,
+            "/v1/projects",
+            json!({"id":"other","name":"Other"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Mint before subscribing; first use still updates token usage after subscription.
+    let reader = app.mint("reader:scope", &["read"], Some(&["tp"]));
+    let (_, session) = app
+        .post(&app.worker, "/v1/projects/tp/session", json!({}))
+        .await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/sync/project:tp?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    let initial = socket.next().await.unwrap().unwrap();
+    assert!(
+        matches!(initial,Message::Text(text) if serde_json::from_str::<serde_json::Value>(&text).unwrap()==json!({"type":"refresh"}))
+    );
+    assert_eq!(app.get(&reader, "/v1/projects").await.0, StatusCode::OK);
+    let (status, _) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"other","title":"Unrelated"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(700), socket.next())
+            .await
+            .is_err(),
+        "Unrelated document or token usage invalidated this project"
+    );
+    let (status, _) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Relevant"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let msg = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = msg else {
+        panic!("expected refresh")
+    };
+    let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(payload["type"], "refresh");
+    let topics = payload["topics"].as_array().expect("specific topics");
+    assert!(topics.contains(&json!("document")));
+    assert!(!topics.contains(&json!("inbox")));
+    assert!(!topics.contains(&json!("projects")));
+}

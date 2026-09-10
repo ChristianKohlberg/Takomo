@@ -137,6 +137,9 @@ export interface PlanLabels {
 }
 
 export interface PlanProps {
+  traceState?: Record<string, import('@/hooks/useSectionTrace').SectionTraceState>
+  onHistoryOpen?: (section: string, open: boolean) => void
+  onHistoryRetry?: (section: string) => void
   token?: string
   userId?: string
   serverSync?: ServerSync
@@ -184,6 +187,7 @@ export default function Plan(props: PlanProps) {
 }
 
 function ConnectedPlan({
+  traceState, onHistoryOpen, onHistoryRetry,
   token,
   project = '',
   userId,
@@ -446,12 +450,10 @@ function ConnectedPlan({
   }, [focusSection, rows, onSelect, setSelected, activeMatch?.sectionId])
 
   const onToggleHistory = useCallback((key: string) => {
-    setOpenHistory((current) => {
-      const next = new Set(current)
-      if (!next.delete(key)) next.add(key)
-      return next
-    })
-  }, [])
+    const open = !openHistory.has(key)
+    onHistoryOpen?.(key, open)
+    setOpenHistory(current => { const next = new Set(current); if (open) next.add(key); else next.delete(key); return next })
+  }, [openHistory, onHistoryOpen])
 
   const onToggleProposals = useCallback((key: string) => {
     setOpenProposals((current) => {
@@ -891,6 +893,9 @@ function ConnectedPlan({
                   standing={standings[row.key] ?? 'unseen'}
                   entries={trace.get(row.key) ?? []}
                   historyOpen={openHistory.has(row.key)}
+                  historyLoading={traceState?.[row.key]?.loading}
+                  historyError={traceState?.[row.key]?.error}
+                  onHistoryRetry={() => onHistoryRetry?.(row.key)}
                   onToggleHistory={() => onToggleHistory(row.key)}
                   onReview={() => onReview(row.key)}
                   onShowOnMap={() => onShowOnMap(row.key)}

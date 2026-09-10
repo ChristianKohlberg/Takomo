@@ -115,6 +115,9 @@ export const STR = defineStrings({
     showOnMap: 'Show it on the map',
     history: 'History',
     hideHistory: 'Hide history',
+    historyLoading: 'Loading history…',
+    historyError: 'Could not load history.',
+    historyRetry: 'Retry',
     historyEmpty: 'Nothing recorded for this section yet.',
     historyMore: '{n} older entries',
 
@@ -259,6 +262,9 @@ export const STR = defineStrings({
     showOnMap: 'Auf der Map zeigen',
     history: 'Verlauf',
     hideHistory: 'Verlauf ausblenden',
+    historyLoading: 'Verlauf wird geladen…',
+    historyError: 'Verlauf konnte nicht geladen werden.',
+    historyRetry: 'Erneut versuchen',
     historyEmpty: 'Für diesen Abschnitt ist noch nichts festgehalten.',
     historyMore: '{n} ältere Einträge',
 
