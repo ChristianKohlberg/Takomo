@@ -38,6 +38,7 @@ Use `--once` to claim at most one immediately available job and exit after its r
 | `TAKOMO_AGENT_STATE_DIR` | `~/.takomo-agent` |
 | `TAKOMO_AGENT_SERVICE_ID` | Random stable ID saved in the state directory |
 | `TAKOMO_CODEX_BIN` | `codex` on PATH |
+| `TAKOMO_GITHUB_IMPORTS` | Unset; `1` also claims the GitHub extraction queue (see [below](#github-extraction-from-project-setup)) |
 
 The service's persisted ID and Codex state belong together. Run only one service process against a state directory. Changing the identity/home does not migrate existing conversations. A system supervisor can start this command, provide the environment, and restart it after a crash; no inbound worker port is needed.
 

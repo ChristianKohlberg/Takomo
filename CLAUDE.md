@@ -570,4 +570,6 @@ Deeper docs: `docs/development.md` (dev loop), `spec/openapi.yaml`, `spec/workfl
 (claiming an epic reserves its subtree; no-TTL claims judged by movement),
 `docs/initiatives.md`, `docs/mindmaps.md`, `docs/promotions.md`, `docs/document-search.md`,
 `docs/hosting.md`, `docs/hosted-mcp-clients.md` (wiring claude.ai / ChatGPT / Gemini),
-`docs/bugs.md` (the `/bugs` page and explicitly requested Codex research over pinned Git objects).
+`docs/bugs.md` (the `/bugs` page and explicitly requested Codex research over pinned Git objects),
+`docs/github-extraction.md` (project wizard, GitHub App setup, the bounded extraction queue) and
+`docs/codebase-spec-import.md` (the local CLI/preflight path and `POST /v1/mindmaps/{id}/codebase-import`).

@@ -117,6 +117,7 @@ Config: [`litestream.yml`](../litestream.yml).
 | `TAKOMO_DB` | DB path (alternative to `--db`). |
 | `TAKOMO_PUBLIC_URL` | The public origin this server is reached at, e.g. `https://takomo.example.com`. **Two consumers, different strictness** (see below). Absent = OAuth off; local clients carrying a bearer token are unaffected either way. See [hosted-mcp-clients.md](hosted-mcp-clients.md). |
 | `LITESTREAM_*` | Off-box backup (see above); absent = backups off. |
+| `TAKOMO_GITHUB_APP_ID`, `TAKOMO_GITHUB_APP_SLUG`, `TAKOMO_GITHUB_PRIVATE_KEY_FILE` | The deployment-owned GitHub App behind Settings → GitHub and project repository extraction. All three or none; absent = the GitHub integration is off and the page says so. See [github-extraction.md](github-extraction.md). |
 
 ### `TAKOMO_PUBLIC_URL` has two readers
 

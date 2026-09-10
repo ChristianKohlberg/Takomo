@@ -159,7 +159,8 @@ Bearer tokens (`tk_...`), scoped (`read`/`write`/`human`/`autoland`/`admin`), ha
 
 ## Docs
 
-- [services/agent/README.md](services/agent/README.md) — connect a standalone Codex service for read-only section conversations and explicit bug research.
+- [services/agent/README.md](services/agent/README.md) — connect a standalone Codex service for read-only section conversations, explicit bug research, and GitHub-backed specification extraction.
+- [docs/github-extraction.md](docs/github-extraction.md) — creating a project from the nav rail, connecting a deployment-owned GitHub App, and queuing one bounded extraction that drafts an empty specification for review in the Document and Map.
 - [docs/bugs.md](docs/bugs.md) — the `/bugs` page, triage, and explicitly requested codebase research (CLI, MCP, REST).
 
 - [docs/ask-a-human.md](docs/ask-a-human.md) — the ask-a-human board: raising questions, the follow-up thread, expertise routing, and email/Slack notifications.

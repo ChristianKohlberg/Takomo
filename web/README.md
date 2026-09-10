@@ -590,7 +590,7 @@ diagrams, while each open diagram can be adjusted independently.
 `/settings?scope=<project>&section=general` opens the selected project's settings.
 The settings sidebar replaces the workspace rail. Project pages are `general`,
 `writing`, `documents`, and `workflow`; instance administration uses `people`,
-`access` (API tokens), `projects`, `library`, `search`, and `data`. The current
+`access` (API tokens), `projects`, `library`, `github`, `search`, and `data`. The current
 credential is under `overview`. URLs drive selection and browser history; older
 `?project=<id>` links still open that project, and `?section=search` still works.
 Unsaved editor changes block navigation with Stay / Discard, and warn on reload.
