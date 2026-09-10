@@ -1,3 +1,4 @@
+import { ProjectUpdatesContext, type ProjectUpdate } from '@/hooks/useProjectUpdates'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmbeddingStatusProvider, STATUS_POLL_IDLE_MS, STATUS_POLL_OPEN_MS } from '@/hooks/useEmbeddingStatus'
@@ -215,4 +216,23 @@ describe('document embedding status', () => {
     expect(screen.getByRole('status').textContent).toBe('Embeddings current')
   })
 
+})
+
+it('refreshes lexical completion from a search event without healthy idle polling', async () => {
+  vi.useFakeTimers()
+  let listener: ((event?: ProjectUpdate) => Promise<unknown>) | undefined
+  const fetch = vi.fn(async () => reply({ ...current, configured: false, projection: 'pending' }))
+  vi.stubGlobal('fetch', fetch)
+  const shared = { project: 'demo', connected: true, subscribe: (callback: (event?: ProjectUpdate) => Promise<unknown>) => { listener = callback; return () => { listener = undefined } } }
+  render(<ProjectUpdatesContext value={shared}><Fixture /></ProjectUpdatesContext>)
+  await tick()
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await tick(60000)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  fetch.mockImplementation(async () => reply({ ...current, configured: false }))
+  await act(async () => listener?.({ type: 'refresh', topics: ['search'] }))
+  await tick(1000)
+  expect(fetch).toHaveBeenCalledTimes(2)
+  await tick(60000)
+  expect(fetch).toHaveBeenCalledTimes(2)
 })

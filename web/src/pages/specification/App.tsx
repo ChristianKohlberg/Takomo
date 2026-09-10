@@ -301,7 +301,7 @@ function SpecificationWorkspace({
       ...(affectsProjectTopic(event, 'projects') ? [refreshProjects()] : []),
     ])
     await Promise.allSettled([...listeners.current].map(callback => callback(event)))
-  })
+  }, onError)
   useEffect(() => { setUpdatesConnected(liveConnected) }, [liveConnected])
   const changeQuery = useCallback(
     (changes: Record<string, string | null>) => {

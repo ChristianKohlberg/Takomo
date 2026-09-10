@@ -2,10 +2,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { App } from './App'
-import { getTicket, getEvents, getWorkflow, listTickets, hasEvents, type Ticket } from '@/lib/board'
+import { getTicket, getWorkflow, listTickets, type Ticket } from '@/lib/board'
+import { listQuestions } from '@/lib/questions'
 import { fetchRoadmap, type Roadmap } from '@/lib/roadmap'
 import type { NavRailProps } from '@/components/NavRail'
 import type { ReactNode } from 'react'
+
+const live = vi.hoisted(() => ({ listeners: new Set<(event?: { type: 'refresh'; topics?: ('tickets' | 'projects' | 'inbox')[] }) => Promise<unknown>>() }))
+vi.mock('@/hooks/useProjectUpdates', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/hooks/useProjectUpdates')>()
+  const React = await import('react')
+  return { ...actual, useProjectUpdates: (_token: string, _project: string, callback: (event?: { type: 'refresh'; topics?: ('tickets' | 'projects' | 'inbox')[] }) => Promise<unknown>) => {
+    const latest = React.useRef(callback); latest.current = callback
+    React.useEffect(() => { const listener = (event?: { type: 'refresh'; topics?: ('tickets' | 'projects' | 'inbox')[] }) => latest.current(event); live.listeners.add(listener); return () => { live.listeners.delete(listener) } }, [])
+    return true
+  } }
+})
+async function poll() {
+  await act(async () => { await Promise.all([...live.listeners].map(listener => listener({ type: 'refresh' }))) })
+}
 
 const toast = vi.hoisted(() => vi.fn())
 vi.mock('@/components/Toaster', () => ({ useToast: () => ({ toast }) }))
@@ -22,7 +37,7 @@ vi.mock('@/lib/board', () => ({
 vi.mock('@/lib/users', () => ({ listUsers: vi.fn(async () => ({ items: [] })) }))
 vi.mock('@/lib/questions', () => ({ listQuestions: vi.fn(async () => []), askQuestion: vi.fn(), answerQuestion: vi.fn() }))
 vi.mock('@/lib/roadmap', async (importOriginal) => ({ ...await importOriginal<typeof import('@/lib/roadmap')>(), fetchRoadmap: vi.fn() }))
-vi.mock('@/components/AppShell', () => ({ AppShell: ({ rail, children }: { rail: NavRailProps; children: ReactNode }) => <><span data-testid="current">{rail.current}</span><button onClick={() => rail.onProject?.('second')}>Switch project</button>{children}</> }))
+vi.mock('@/components/AppShell', () => ({ AppShell: ({ rail, children }: { rail: NavRailProps; children: ReactNode }) => <><span data-testid="current">{rail.current}</span><span data-testid="inbox-count">{rail.badges?.inbox}</span><button onClick={() => rail.onProject?.('second')}>Switch project</button>{children}</> }))
 vi.mock('@/components/board/AskDrawer', () => ({ AskDrawer: () => null }))
 vi.mock('@/components/board/InboxDrawer', () => ({ InboxDrawer: () => null }))
 vi.mock('@/components/board/DetailPanel', () => ({ DetailPanel: ({ ticket, onClose }: { ticket: Ticket | null; onClose: () => void }) => ticket ? <div role="dialog" aria-label="Epic detail">{ticket.title}<button onClick={onClose}>Close detail</button></div> : null }))
@@ -102,11 +117,6 @@ describe('Epics page', () => {
   })
 
   it('preserves search through a failed background refresh and retry', async () => {
-    let poll!: () => void
-    const interval = window.setInterval.bind(window)
-    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => { if (delay === 4000) { poll = callback as () => void; return 1 as unknown as ReturnType<typeof window.setInterval> } return interval(callback, delay) as unknown as ReturnType<typeof window.setInterval> })
-    vi.mocked(getEvents).mockResolvedValue({ cursor: 2, events: [{}] } as never)
-    vi.mocked(hasEvents).mockReturnValue(true)
     vi.mocked(fetchRoadmap).mockResolvedValueOnce(roadmap('First epic')).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(roadmap('First epic'))
     mount()
     await screen.findByText('First epic')
@@ -121,11 +131,6 @@ describe('Epics page', () => {
 
 
   it.each(['workflow', 'tickets'] as const)('preserves filters after a background %s read fails', async (resource) => {
-    let poll!: () => void
-    const interval = window.setInterval.bind(window)
-    vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => { if (delay === 4000) { poll = callback as () => void; return 1 as unknown as ReturnType<typeof window.setInterval> } return interval(callback, delay) as unknown as ReturnType<typeof window.setInterval> })
-    vi.mocked(getEvents).mockResolvedValue({ cursor: 2, events: [{}] } as never)
-    vi.mocked(hasEvents).mockReturnValue(true)
     vi.mocked(fetchRoadmap).mockResolvedValue(roadmap('First epic'))
     mount()
     await screen.findByText('First epic')
@@ -152,4 +157,23 @@ it('opens a shared ticket in its URL project and removes its link on close', asy
   fireEvent.click(screen.getByRole('button', { name: 'Close detail' }))
   expect(window.location.hash).toBe('')
   expect(window.location.search).toBe('?project=second')
+})
+
+it('refreshes board questions independently from ticket and workflow updates', async () => {
+  vi.mocked(fetchRoadmap).mockResolvedValue(roadmap('First epic'))
+  mount()
+  await screen.findByText('First epic')
+  await waitFor(() => expect(listQuestions).toHaveBeenCalledTimes(1))
+  const workflowReads = vi.mocked(getWorkflow).mock.calls.length
+  const ticketReads = vi.mocked(listTickets).mock.calls.length
+  await act(async () => { await Promise.all([...live.listeners].map(listener => listener({ type: 'refresh', topics: ['tickets'] }))) })
+  await waitFor(() => expect(listTickets).toHaveBeenCalledTimes(ticketReads + 1), { timeout: 2000 })
+  expect(listQuestions).toHaveBeenCalledTimes(1)
+  expect(getWorkflow).toHaveBeenCalledTimes(workflowReads)
+  vi.mocked(listQuestions).mockResolvedValueOnce([{ id: 'question', ticket: 'first-epic', awaiting: 'human', mode: 'blocking' }] as never)
+  await act(async () => { await Promise.all([...live.listeners].map(listener => listener({ type: 'refresh', topics: ['inbox'] }))) })
+  await waitFor(() => expect(screen.getByTestId('inbox-count').textContent).toBe('1'), { timeout: 2000 })
+  expect(listQuestions).toHaveBeenCalledTimes(2)
+  expect(listTickets).toHaveBeenCalledTimes(ticketReads + 1)
+  expect(getWorkflow).toHaveBeenCalledTimes(workflowReads)
 })

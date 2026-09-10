@@ -240,3 +240,152 @@ async fn awareness_echo_keeps_a_single_peer_alive_without_persisting_presence() 
     tokio::time::sleep(Duration::from_millis(2200)).await;
     assert_eq!(count(), before);
 }
+
+#[tokio::test]
+async fn writable_reconnect_replays_do_not_append_crdt_rows() {
+    use futures::SinkExt;
+    use yrs::encoding::write::Write;
+    let app = TestApp::spawn_without_sweeper().await;
+    let (_, map) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Reconnect"}),
+        )
+        .await;
+    let id = map["mindmap"]["id"].as_str().unwrap();
+    let (_, session) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{id}/session"),
+            json!({}),
+        )
+        .await;
+    let url = format!(
+        "{}/v1/sync/{id}?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    );
+    let stored = app.open_store().load_collab_updates(id).unwrap();
+    let full = yrs::merge_updates_v1(&stored).unwrap();
+    let mut frame = vec![0, 1]; // Sync step 2: replay the client's already-synced state.
+    frame.write_var(full.len() as u64);
+    frame.extend(full);
+    let seq = || {
+        rusqlite::Connection::open(app.db_path())
+            .unwrap()
+            .query_row(
+                "SELECT coalesce(max(seq),0) FROM crdt_updates WHERE object_id=?1",
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let before = seq();
+    for sequence in 1..=3u8 {
+        let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        socket
+            .send(Message::Binary(frame.clone().into()))
+            .await
+            .unwrap();
+        socket
+            .send(Message::Binary(vec![4, sequence].into()))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let message = socket
+                    .next()
+                    .await
+                    .expect("socket open")
+                    .expect("valid frame");
+                if let Message::Binary(bytes) = message {
+                    if bytes.as_ref() == [4, sequence, 1] {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("durability barrier confirms preceding replay handled");
+        assert_eq!(
+            seq(),
+            before,
+            "reconnecting must not persist a duplicate update"
+        );
+        socket.close(None).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn lexical_projection_completion_emits_search_only_without_embeddings() {
+    let app = TestApp::spawn_without_sweeper().await;
+    let (_, map) = app
+        .post(
+            &app.worker,
+            "/v1/mindmaps",
+            json!({"project":"tp","title":"Index"}),
+        )
+        .await;
+    let id = map["mindmap"]["id"].as_str().unwrap();
+    assert_eq!(
+        app.get(&app.worker, &format!("/v1/mindmaps/{id}/search/status"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, session) = app
+        .post(&app.worker, "/v1/projects/tp/session", json!({}))
+        .await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!(
+        "{}/v1/sync/project:tp?ticket={}",
+        app.base.replace("http://", "ws://"),
+        session["token"].as_str().unwrap()
+    ))
+    .await
+    .unwrap();
+    socket.next().await.unwrap().unwrap();
+    let (status, result) = app
+        .post(
+            &app.worker,
+            &format!("/v1/mindmaps/{id}/nodes"),
+            json!({"nodes":[{"text":"Fresh section"}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+    let dirty = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(dirty,Message::Text(text) if text.contains("search")),
+        "dirty status must notify"
+    );
+    let (status, result) = app
+        .get(&app.worker, &format!("/v1/mindmaps/{id}/search/status"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["configured"], false);
+    assert_eq!(result["projection"], "current");
+    let completed = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = completed else {
+        panic!("refresh frame")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+        json!({"type":"refresh","topics":["search"]})
+    );
+    app.get(&app.worker, &format!("/v1/mindmaps/{id}/search/status"))
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), socket.next())
+            .await
+            .is_err(),
+        "clean status reads stay quiet"
+    );
+}

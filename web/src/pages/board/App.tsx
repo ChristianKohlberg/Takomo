@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 // /board — one route, three audiences.
 //
 //   #a=tka_…  an outside expert answering ONE question (AnswerGrantPage)
@@ -38,10 +39,8 @@ import { fetchRoadmap, laneTitles, type Roadmap } from '@/lib/roadmap'
 import { listUsers } from '@/lib/users'
 import { cn } from '@/lib/utils'
 import {
-  getEvents,
   getTicket,
   getWorkflow,
-  hasEvents,
   listTickets,
   type Ticket,
   type Workflow,
@@ -54,7 +53,6 @@ import { Picker } from '@/components/Picker'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
 const LS_LANG = 'takomo.lang'
-const POLL_MS = 4000
 
 export function App({ surface = 'board' }: { surface?: 'board' | 'epics' }) {
   const [lang, setLang] = useState<Locale>(() => detectLocale(localStorage.getItem(LS_LANG)))
@@ -153,7 +151,6 @@ function Board({
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [tickets, setTickets] = useState<Ticket[]>([])
-  const [cursor, setCursor] = useState<number | string>(0)
   const [selectedId, setSelectedId] = useState<string | null>(deepTicket ?? null)
 
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -297,8 +294,7 @@ function Board({
     setDetail(null)
     setSelectedId(deepTicket ?? null)
     setCreatingEpic(false)
-    load().catch(handleErr)
-  }, [token, effectiveProject, load, handleErr, deepTicket])
+  }, [token, effectiveProject, deepTicket])
 
   // Who a question raised here can be addressed to. A failed read leaves the list
   // empty, which hides the control rather than offering names the server refuses.
@@ -320,37 +316,32 @@ function Board({
     }
   }, [token, effectiveProject])
 
-  // Live updates by polling the event log. `EventSource` cannot set an
-  // Authorization header, which is why this is a poll and not the SSE stream.
-  useEffect(() => {
-    if (!token || !effectiveProject) return
-    const id = window.setInterval(() => {
-      getEvents(token, cursor)
-        .then((page) => {
-          if (page.cursor != null) setCursor(page.cursor)
-          setConn('live')
-          if (hasEvents(page)) {
-            void load().catch(handleErr)
-            setEpoch((n) => n + 1)
-          }
-        })
-        // A failed poll is not an error to shout about, but the board must stop
-        // claiming to be live — silently stale is the failure worth surfacing.
-        //
-        // An AUTH failure is a different thing entirely and used to land here
-        // too: a revoked or expired token read as "reconnecting" forever, so the
-        // viewer sat looking at stale tickets that would never update, never
-        // told to re-authenticate. A dead credential is not a flaky network.
-        .catch((e) => {
-          if (isAuthError(e)) {
-            handleErr(e)
-            return
-          }
-          setConn('reconnecting')
-        })
-    }, POLL_MS)
-    return () => window.clearInterval(id)
-  }, [token, effectiveProject, cursor, load, handleErr])
+  const loadedTicketsScope = useRef('')
+  const refreshFailures = useRef(new Set<string>())
+  useLiveRefresh({
+    token, project: effectiveProject, scope: 'workflow', topics: ['projects'], enabled: !!effectiveProject, onError: error => { refreshFailures.current.add('workflow'); setLoadError(true); handleErr(error) },
+    load: async signal => {
+      if (!effectiveProject) return
+      const value = await getWorkflow(token, effectiveProject)
+      if (!signal.aborted) { setWorkflow(value); refreshFailures.current.delete('workflow'); setLoadError(refreshFailures.current.size > 0) }
+    },
+  })
+  const updates = useLiveRefresh({
+    token, project: effectiveProject, scope: 'tickets', topics: ['tickets', 'projects'],
+    enabled: !!effectiveProject,
+    onError: error => { refreshFailures.current.add('tickets'); setLoadError(true); setConn('reconnecting'); handleErr(error) },
+    load: async signal => {
+      const value = await listTickets(token, effectiveProject)
+      if (signal.aborted) return
+      setTickets(value)
+      refreshFailures.current.delete('tickets')
+      setLoadError(refreshFailures.current.size > 0)
+      const scope = `${token}:${effectiveProject}`
+      if (loadedTicketsScope.current === scope) setEpoch(n => n + 1)
+      loadedTicketsScope.current = scope
+    },
+  })
+  useEffect(() => { setConn(updates.connected ? 'live' : 'reconnecting') }, [updates.connected])
 
   // The roadmap, fetched only while the epics view is open: it runs a query per
   // epic, so a reader on the board should not pay for it. A failed read is
@@ -394,13 +385,15 @@ function Board({
     // `tickets` is the signal that something changed — the poll replaces it.
   }, [token, effectiveProject, selectedId, tickets])
 
-  // Open questions per ticket — what the detail drawer's callout counts.
-  useEffect(() => {
-    if (!token || !effectiveProject) return
-    listQuestions(token, { project: effectiveProject, status: 'open' })
-      .then(setQuestions)
-      .catch(() => setQuestions([]))
-  }, [token, effectiveProject, tickets])
+  // Questions have their own live topic: ticket edits do not invalidate the inbox.
+  useLiveRefresh({
+    token, project: effectiveProject, scope: 'questions', topics: ['inbox'], enabled: !!effectiveProject,
+    onError: error => { setQuestions([]); if (isAuthError(error)) handleErr(error) },
+    load: async signal => {
+      const value = await listQuestions(token, { project: effectiveProject, status: 'open' })
+      if (!signal.aborted) setQuestions(value)
+    },
+  })
 
   const questionsByTicket = useMemo(() => {
     const m = new Map<string, { count: number; blocking: number; advisory: number; conv: number }>()

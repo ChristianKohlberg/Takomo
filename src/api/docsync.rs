@@ -200,14 +200,12 @@ pub struct Room {
 }
 
 impl Room {
-    /// Apply an update to the replica and remember it for the next flush.
-    fn apply(&self, update: &[u8]) -> Result<(), String> {
+    /// Apply an update and report whether it needs durable retention. An update
+    /// waiting for missing dependencies must be retained even without an event.
+    fn apply(&self, update: &[u8]) -> Result<bool, String> {
         let update = Update::decode_v1(update).map_err(|e| e.to_string())?;
         let doc = self.doc.lock().expect("room doc mutex");
-        let mut txn = doc.transact_mut();
-        txn.apply_update(update).map_err(|e| e.to_string())?;
-        drop(txn);
-        Ok(())
+        crate::store::crdt::apply_retained(&doc, update)
     }
 
     fn state_vector(&self) -> Vec<u8> {
@@ -1438,9 +1436,13 @@ fn handle_frame(room: &Room, session: &CollabSession, me: u64, bytes: &[u8]) -> 
                     {
                         return None;
                     }
-                    if let Err(e) = room.apply(update) {
-                        eprintln!("{}: rejecting update: {e}", room.id);
-                        return None;
+                    match room.apply(update) {
+                        Ok(true) => {}
+                        Ok(false) => return None,
+                        Err(e) => {
+                            eprintln!("{}: rejecting update: {e}", room.id);
+                            return None;
+                        }
                     }
                     room.pending
                         .lock()
@@ -1638,5 +1640,132 @@ mod mutation_update_tests {
             2,
             "capture all transactions in an operation"
         );
+    }
+    fn receive(room: &Room, update: &[u8]) {
+        let session = CollabSession {
+            id: "fixture".into(),
+            kind: CollabKind::Mindmap,
+            object: room.id.clone(),
+            project: "tp".into(),
+            actor: "test".into(),
+            user: None,
+            display: "Test".into(),
+            can_write: true,
+            expires_at: i64::MAX,
+            revoked_at: None,
+        };
+        handle_frame(room, &session, 42, &sync_message(SYNC_STEP2, update));
+    }
+
+    fn replay_pending(room: &Room) -> String {
+        let restored = Doc::new();
+        for bytes in room.pending.lock().unwrap().iter() {
+            restored
+                .transact_mut()
+                .apply_update(Update::decode_v1(bytes).unwrap())
+                .unwrap();
+        }
+        let text = restored
+            .get_or_insert_text("text")
+            .get_string(&restored.transact());
+        text
+    }
+
+    #[test]
+    fn reconnect_replays_are_quiet_but_new_deletions_persist_and_relay() {
+        let room = room();
+        let mut relays = room.tx.subscribe();
+        receive(&room, &[0, 0]);
+        assert!(room.pending.lock().unwrap().is_empty());
+        assert!(relays.try_recv().is_err());
+        let source = Doc::new();
+        let text = source.get_or_insert_text("text");
+        let inserted = {
+            let mut tx = source.transact_mut();
+            text.insert(&mut tx, 0, "abc");
+            tx.encode_update_v1()
+        };
+        receive(&room, &inserted);
+        relays.try_recv().unwrap();
+        receive(&room, &inserted);
+        assert_eq!(room.pending.lock().unwrap().len(), 1);
+        assert!(relays.try_recv().is_err());
+        let deleted = {
+            let mut tx = source.transact_mut();
+            text.remove_range(&mut tx, 0, 3);
+            tx.encode_update_v1()
+        };
+        receive(&room, &deleted);
+        relays.try_recv().unwrap();
+        assert_eq!(room.pending.lock().unwrap().len(), 2);
+        let full = source
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        receive(&room, &full);
+        receive(&room, &deleted);
+        assert_eq!(
+            room.pending.lock().unwrap().len(),
+            2,
+            "historical deletions are not new writes"
+        );
+        assert!(relays.try_recv().is_err());
+        assert_eq!(replay_pending(&room), "");
+    }
+
+    #[test]
+    fn missing_predecessors_remain_durable_and_relayed_until_recovery() {
+        let room = room();
+        let mut relays = room.tx.subscribe();
+        let source = Doc::new();
+        let text = source.get_or_insert_text("text");
+        let first = {
+            let mut tx = source.transact_mut();
+            text.insert(&mut tx, 0, "a");
+            tx.encode_update_v1()
+        };
+        let second = {
+            let mut tx = source.transact_mut();
+            text.insert(&mut tx, 1, "b");
+            tx.encode_update_v1()
+        };
+        receive(&room, &second);
+        receive(&room, &second); // Conservative retention while any dependency is missing.
+        assert_eq!(room.pending.lock().unwrap().len(), 2);
+        relays.try_recv().unwrap();
+        relays.try_recv().unwrap();
+        assert!(room.doc.lock().unwrap().transact().has_missing_updates());
+        receive(&room, &first);
+        relays.try_recv().unwrap();
+        assert!(!room.doc.lock().unwrap().transact().has_missing_updates());
+        assert_eq!(replay_pending(&room), "ab");
+        receive(&room, &second);
+        assert_eq!(room.pending.lock().unwrap().len(), 3);
+        assert!(relays.try_recv().is_err());
+    }
+
+    #[test]
+    fn missing_delete_targets_remain_durable_and_relayed_until_recovery() {
+        let room = room();
+        let mut relays = room.tx.subscribe();
+        let source = Doc::new();
+        let text = source.get_or_insert_text("text");
+        let inserted = {
+            let mut tx = source.transact_mut();
+            text.insert(&mut tx, 0, "abc");
+            tx.encode_update_v1()
+        };
+        let deleted = {
+            let mut tx = source.transact_mut();
+            text.remove_range(&mut tx, 0, 3);
+            tx.encode_update_v1()
+        };
+        receive(&room, &deleted);
+        assert!(room.doc.lock().unwrap().transact().has_missing_updates());
+        relays.try_recv().unwrap();
+        receive(&room, &inserted);
+        relays.try_recv().unwrap();
+        assert_eq!(room.pending.lock().unwrap().len(), 2);
+        assert!(!room.doc.lock().unwrap().transact().has_missing_updates());
+        assert_eq!(replay_pending(&room), "");
     }
 }

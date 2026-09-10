@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import type { Locale } from '@/lib/i18n'
@@ -28,23 +29,18 @@ function Panel({ token, project, ticket, lang, canWrite, onChanged, onError }: P
     documentSections(token, project, controller.signal).then(nodes => { if (!controller.signal.aborted) setSections(nodes) }).catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t.error) })
     return () => controller.abort()
   }, [token, project, refresh, t.error])
-  useEffect(() => {
-    if (busy) return
-    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined
-    async function load() {
-      try {
-        const result = await getTicketDocumentLinks(token, ticket, controller.signal)
-        if (controller.signal.aborted) return
-        setData(result)
-        timer = setTimeout(load, ['queued', 'running'].includes(result.classification?.status ?? '') ? 1500 : 6000)
-      } catch (cause) {
-        if (controller.signal.aborted) return
-        setError(cause instanceof Error ? cause.message : t.error)
-        if ((cause as ApiErrorShape)?.auth) callbacks.current.onError?.(cause)
-      }
-    }
-    void load(); return () => { controller.abort(); clearTimeout(timer) }
-  }, [token, ticket, busy, refresh, t.error])
+  useLiveRefresh({
+    token, project, scope: `${ticket}:${refresh}`, topics: ['tickets', 'agent', 'document'], paused: busy,
+    activeMs: ['queued', 'running'].includes(data?.classification?.status ?? '') ? 1500 : false,
+    onError: cause => {
+      setError(cause instanceof Error ? cause.message : t.error)
+      if ((cause as ApiErrorShape)?.auth) callbacks.current.onError?.(cause)
+    },
+    load: async signal => {
+      const result = await getTicketDocumentLinks(token, ticket, signal)
+      if (!signal.aborted) setData(result)
+    },
+  })
   async function mutate(operation: (signal: AbortSignal) => Promise<unknown>) {
     if (write.current || !canWrite) return
     const controller = new AbortController(); write.current = controller; setBusy(true); setError('')

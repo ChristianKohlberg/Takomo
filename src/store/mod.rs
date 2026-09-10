@@ -275,7 +275,7 @@ impl Store {
         if notify && conn.total_changes() != before {
             self.changes.send_modify(|v| *v = v.wrapping_add(1));
         }
-        if !updates.is_empty() {
+        if notify && !updates.is_empty() {
             let _ = self.live_changes.send(updates);
         }
         Ok(out)

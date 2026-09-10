@@ -137,6 +137,6 @@ export function hasEvents(page: EventPage | undefined): boolean {
  * Events since a cursor. `since` is required — the server says so rather than
  * guessing — and the response's `cursor` is the next `since`.
  */
-export function getEvents(token: string, since: number | string): Promise<EventPage> {
-  return api<EventPage>(token, `/events?since=${encodeURIComponent(String(since))}&limit=200`)
+export function getEvents(token: string, since: number | string, project?: string): Promise<EventPage> {
+  return api<EventPage>(token, `/events?since=${encodeURIComponent(String(since))}&limit=200${project ? `&project=${encodeURIComponent(project)}` : ''}`)
 }

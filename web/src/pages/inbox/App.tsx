@@ -1,3 +1,4 @@
+import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 // /inbox — where an agent's question reaches a person.
 //
 // A blocking question parks its ticket and releases the agent's lease; answering
@@ -62,7 +63,6 @@ import { STR } from './strings'
 
 const LS_LANG = 'takomo.lang'
 const LS_COLLAPSED = 'takomo.inbox.collapsed'
-const POLL_MS = 5000
 
 /** The folded-away epics, from the last visit. A corrupt value is not fatal. */
 function loadCollapsed(): Set<string> {
@@ -182,10 +182,6 @@ export function App() {
     }
   }, [token, handleErr])
 
-  useEffect(() => {
-    if (!token) return
-    fetchAll().catch(handleErr)
-  }, [token, fetchAll, handleErr])
 
   // Tickets are per-project, so a filter carried across a project switch would
   // only ever show an empty inbox — the list is refetched and the filter cleared.
@@ -200,24 +196,15 @@ export function App() {
     }
   }, [token, project])
 
-  // Poll, but never while an undo window is open: a refetch mid-countdown is
-  // exactly the case the queue's re-apply exists for, and not fighting it is
-  // cheaper than relying on it.
-  useEffect(() => {
-    if (!token || queue.pending.length) return
-    // A transient poll failure is genuinely not worth a toast — the next tick
-    // fixes it. An AUTH failure is, and swallowing it meant a revoked token left
-    // the inbox looking perfectly normal while showing questions that would
-    // never refresh, and accepting answers that would fail on submit.
-    const id = window.setInterval(
-      () =>
-        void fetchAll().catch((e) => {
-          if (isAuthError(e)) handleErr(e)
-        }),
-      POLL_MS,
-    )
-    return () => window.clearInterval(id)
-  }, [token, queue.pending.length, fetchAll, handleErr])
+  // Preserve pending answers through live invalidations and undo windows.
+  useLiveRefresh({
+    token, project, scope: me.actor, topics: ['inbox'], paused: queue.pending.length > 0,
+    load: async signal => {
+      const list = await listQuestions(token, { project })
+      if (!signal.aborted) setQuestions(applyRef.current(list, me.actor))
+    },
+    onError: handleErr,
+  })
 
   // The ticket tree, for the subtree filter and the epic grouping. Rebuilt only
   // when the ticket list is refetched, not on every keystroke in the filter bar.

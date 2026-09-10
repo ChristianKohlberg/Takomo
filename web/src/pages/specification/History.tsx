@@ -12,7 +12,7 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@/components/ui/sheet'
-import { useProjectUpdates } from '@/hooks/useProjectUpdates'
+import { affectsProjectTopic, useProjectUpdates } from '@/hooks/useProjectUpdates'
 import {
   checkpoint,
   groupVersions,
@@ -171,7 +171,7 @@ export default function History() {
     }
   }, [refresh])
   // Reuse the workspace's project socket. No extra polling or collaboration room.
-  useProjectUpdates(token, project, refresh)
+  useProjectUpdates(token, project, async event => { if (affectsProjectTopic(event, 'history', 'document')) await refresh() })
   useEffect(() => {
     if (saveState === 'saved') void refresh()
   }, [saveState, refresh])

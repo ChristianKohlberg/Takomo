@@ -13,16 +13,17 @@ pub struct Change {
 fn rule(table: &str) -> Option<(&'static str, &'static str)> {
     Some(match table {
         "idempotency" | "comment_idempotency" | "crdt_sessions" | "oauth_clients"
-        | "oauth_codes" | "oauth_refresh" | "oauth_issued" | "search_dirty_maps"
+        | "oauth_codes" | "oauth_refresh" | "oauth_issued"
         | "search_nodes" | "search_chunks" | "ticket_document_pending"
-        | "specification_history_heads" => return None,
+        | "specification_history_heads" | "query_embedding_cache" | "query_cache_generation" => return None,
         t if t.starts_with("search_fts") => return None,
         "tokens" | "users" => ("''", ""),
         "user_projects" | "shares" => ("@.project", ""),
         "answer_grants" => ("@.project", "inbox"),
         "projects" | "workflow_library" => ("''", "projects"),
         // Readiness can depend on a blocker in another project.
-        "tickets" | "deps" | "workflow_states" => ("''", "tickets"),
+        "tickets" | "deps" => ("''", "tickets"),
+        "workflow_states" => ("''", "projects,tickets"),
         "questions" => ("@.project", "inbox"),
         "question_messages" => ("(SELECT project FROM questions WHERE id=@.question)", "inbox"),
         "mindmaps" => ("@.project", "document,trace,tickets,agent,history,search"),
@@ -39,13 +40,14 @@ fn rule(table: &str) -> Option<(&'static str, &'static str)> {
         "agent_jobs" | "agent_messages" | "document_thread_profiles" => ("(SELECT project FROM agent_conversations WHERE id=@.conversation_id)", "agent,tickets"),
         "document_agent_jobs" | "document_workspace_jobs" | "document_thread_migrations" | "lane_organizer_jobs" | "bug_research_jobs" | "agent_steering" | "ticket_document_jobs" => ("(SELECT c.project FROM agent_conversations c JOIN agent_jobs j ON j.conversation_id=c.id WHERE j.id=@.job)", "agent,tickets"),
         "ticket_document_links" | "ticket_document_state" | "bug_triage" | "bug_research_requests" | "comments" => ("(SELECT project FROM tickets WHERE id=@.ticket)", "tickets"),
-        "ticket_document_settings" | "bug_research_config" | "work_lanes" | "work_handoffs" | "schedules" | "promotions" => ("@.project", "tickets,agent"),
+        "ticket_document_settings" | "work_lanes" | "work_handoffs" | "schedules" | "promotions" => ("@.project", "tickets,agent"),
         "work_lane_tickets" => ("(SELECT project FROM work_lanes WHERE id=@.lane)", "tickets"),
+        "bug_research_config" => ("@.project", "projects,tickets,agent"),
         "project_writing_instructions" => ("@.project", "projects"),
         "events" => ("@.project", "history"),
         "tags" | "initiatives" | "initiative_entries" | "documents" => ("@.project", ""),
         "embedding_settings" => ("''", "search"),
-        "embedding_jobs" | "search_failures" | "embedding_sync_history" => ("(SELECT project FROM mindmaps WHERE id=@.map_id)", "search"),
+        "search_dirty_maps" | "embedding_jobs" | "search_failures" | "embedding_sync_history" => ("(SELECT project FROM mindmaps WHERE id=@.map_id)", "search"),
         _ => ("''", ""),
     })
 }
@@ -86,6 +88,7 @@ fn cascade_owner(table: &str) -> bool {
             | "bug_research_requests"
             | "comments"
             | "work_lane_tickets"
+            | "search_dirty_maps"
             | "embedding_jobs"
             | "search_failures"
             | "embedding_sync_history"
@@ -337,5 +340,95 @@ mod tests {
                 "{table}: {batch:?}"
             );
         }
+    }
+    #[test]
+    fn query_cache_bookkeeping_stays_silent_but_settings_remain_live() {
+        let store = Store::open(":memory:").unwrap();
+        store.create_project("tp", "Test", None, "test").unwrap();
+        let legacy = store.changes.subscribe();
+        let mut live = store.live_changes.subscribe();
+        let generation = store.query_cache_generation().unwrap();
+        store
+            .cache_query_vector("fixture", generation, &[1.0, 0.0], 10000, 1, 1)
+            .unwrap();
+        assert!(store
+            .cached_query_vector("fixture", generation, 2, 2)
+            .unwrap()
+            .is_some());
+        // Eviction and expiry, not only insertion and cache-hit usage touches.
+        store
+            .cache_query_vector("replacement", generation, &[0.0, 1.0], 20000, 3, 1)
+            .unwrap();
+        store
+            .cache_query_vector("expired", generation, &[0.0, 1.0], 30000, 20001, 1)
+            .unwrap();
+        assert!(!legacy.has_changed().unwrap());
+        assert!(live.try_recv().is_err());
+        // Explicit inventory exclusions also apply to cache writes via with_tx.
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE query_cache_generation SET generation=generation+1 WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(live.try_recv().is_err());
+        let (config, _) = store.embedding_config().unwrap();
+        store
+            .save_embedding_config(config, Some("fixture-key".into()))
+            .unwrap();
+        let batch = live.try_recv().expect("real settings changes still notify");
+        assert!(batch.iter().any(|c| c.topic == "search"));
+        assert!(batch.iter().all(|c| !c.topic.is_empty()));
+        store.with_tx(|tx| {tx.execute("INSERT INTO bug_research_config(project,repository,revision,enabled) VALUES('tp','fixture','main',1)",[])?;Ok(())}).unwrap();
+        let batch = live.try_recv().unwrap();
+        assert!(batch
+            .iter()
+            .any(|c| c.project == "tp" && c.topic == "projects"));
+        assert!(batch.iter().all(|c| c.project == "tp"));
+    }
+    #[test]
+    fn silent_transactions_drain_even_conservative_future_table_notifications() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "CREATE TABLE future_cache(id INTEGER PRIMARY KEY,value TEXT)",
+                [],
+            )
+            .unwrap();
+        let store = Store::open(&path).unwrap();
+        let mut live = store.live_changes.subscribe();
+        store
+            .cache_transaction(|tx| {
+                tx.execute("INSERT INTO future_cache VALUES(1,'cached')", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(live.try_recv().is_err());
+        store.with_tx(|_| Ok(())).unwrap();
+        assert!(
+            live.try_recv().is_err(),
+            "suppressed journal entries must not leak to a later transaction"
+        );
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE future_cache SET value='real unknown mutation' WHERE id=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            live.try_recv()
+                .unwrap()
+                .iter()
+                .any(|c| c.project.is_empty() && c.topic.is_empty()),
+            "ordinary unknown content still gets conservative recovery"
+        );
     }
 }
