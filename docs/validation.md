@@ -6,9 +6,9 @@ shared navigation, permissions, storage or collaboration.
 
 | Mode | When | Required evidence |
 | --- | --- | --- |
-| Iterate | Copy, styling, or an isolated feature in a preview/disabled for users | Focused behavior tests, affected typecheck/lint, browser smoke for visual or interaction changes. No no-mistakes by default. |
-| Integrate | A larger feature ready for shared main | One scoped review and required CI on the candidate. Run no-mistakes once at this milestone, not after every tweak. |
-| Release / high risk | Before user exposure; auth, permissions, migrations, persistence, recovery, shared infrastructure or compatibility changes | Full no-mistakes plus a full CI run, relevant deployment/user-journey checks and a rollback plan. |
+| Iterate | Copy, styling, or an isolated feature in a preview/disabled for users | Focused behavior tests, affected typecheck/lint, browser smoke for visual or interaction changes. |
+| Integrate | A larger feature ready for shared main | One scoped review and required CI on the candidate. |
+| Release / high risk | Before user exposure; auth, permissions, migrations, persistence, recovery, shared infrastructure or compatibility changes | Scoped review, a full CI run, relevant deployment/user-journey checks and a rollback plan. |
 
 Small low-risk changes may be merged with proportionate local checks and green
 CI without a full local gate. Do not skip a behavior test because the feature is
@@ -27,9 +27,6 @@ integration coverage and an OpenAPI update.
   Record unrelated cleanup or speculative improvements as follow-up work.
 - Review each fix and related behavior. Start another broad review only when a
   fix introduces a concrete new risk or materially broadens the change.
-- Run an explicitly requested no-mistakes pipeline normally. Do not bypass an
-  active pipeline or its ownership rules. This policy chooses when to start one;
-  it does not change the installed tool's global configuration.
 
 ## CI lanes
 
@@ -73,8 +70,8 @@ outside this blueprint, change it there as well. Updating this file alone is not
 proof that production has switched; do not merge this rollout until that boundary
 is confirmed. See [Render's deploy controls](https://render.com/docs/deploys).
 
-1. The release owner chooses a candidate commit and runs full no-mistakes for
-   the release/high-risk work. Ensure the integrated candidate has a full CI run:
+1. The release owner chooses a candidate commit, reviews the release/high-risk
+   changes, and ensures the integrated candidate has a full CI run:
    `gh workflow run ci.yml --ref <candidate-branch-or-tag>` (or Actions → CI → Run workflow).
 2. Verify the full run's SHA equals the intended deployment SHA and every job
    passes, including Docker and release tests. A previous nightly run on a
