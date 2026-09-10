@@ -82,9 +82,9 @@ the real HTTP surface over `reqwest`. Only `src/workflow.rs` and `src/seed.rs` c
 units — anything touching the HTTP surface belongs in `tests/`.
 
 **Choose checks by impact and exposure**, following [docs/validation.md](docs/validation.md).
-Small, low-risk tasks use focused checks without no-mistakes by default. Larger
-features run it once at integration; releases and high-risk work use the full
-pipeline. Do not repeat the full suite or browser evidence after every tweak.
+Use focused checks for small, low-risk tasks, scoped review and required CI for
+integration, and full CI plus relevant deployment checks for releases and
+high-risk work. Do not repeat the full suite or browser evidence after every tweak.
 A changed HTTP route still needs a behavioral integration test and its
 `spec/openapi.yaml` update.
 
