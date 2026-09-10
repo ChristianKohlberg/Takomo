@@ -20,11 +20,19 @@ def stop(_signum, _frame):
     STOPPING = True
 
 
-def spawn(name, command, environment, directory):
+def service_command(name, command):
     account = pwd.getpwnam(name)
+    # Render mounts runtime secret files for supplementary group 1000.
+    # Grant that group only to the app, never to either renderer. Do not
+    # inherit the supervisor's other groups or change mounted file ownership.
+    groups = "--groups=1000" if name == "takomo" else "--clear-groups"
+    return ["setpriv", "--no-new-privs", f"--reuid={account.pw_uid}",
+            f"--regid={account.pw_gid}", groups, "--", *command]
+
+
+def spawn(name, command, environment, directory):
     child = subprocess.Popen(
-        ["setpriv", "--no-new-privs", f"--reuid={account.pw_uid}",
-         f"--regid={account.pw_gid}", "--clear-groups", "--", *command],
+        service_command(name, command),
         env=environment, cwd=directory, start_new_session=True, umask=0o077,
     )
     CHILDREN.append((name, child))
@@ -196,10 +204,8 @@ def main():
     server = bool(arguments and arguments[0] == "serve")
     bundled = server and not app_environment.get("TAKOMO_KROKI_URL", "").strip()
     if not server:
-        account = pwd.getpwnam("takomo")
-        os.execvpe("setpriv", ["setpriv", "--no-new-privs", f"--reuid={account.pw_uid}",
-                   f"--regid={account.pw_gid}", "--clear-groups", "--",
-                   "/usr/local/bin/docker-entrypoint.sh", *arguments], app_environment)
+        os.execvpe("setpriv", service_command("takomo", [
+            "/usr/local/bin/docker-entrypoint.sh", *arguments]), app_environment)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, stop)
     if bundled:
