@@ -14,6 +14,8 @@ The design record, including what was deliberately deferred, is
 agent should follow is the `takomo-checklist` skill
 (`clients/claude-skill/takomo-checklist/`).
 
+For the terminology decision, see [Specification, verification, and evidence](specification-verification.md).
+
 ## The shape
 
 ```
