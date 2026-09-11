@@ -117,6 +117,9 @@ impl AppState {
 pub fn build_router(state: Arc<AppState>) -> Router {
     let authed = Router::new()
         .route("/v1/whoami", get(crate::api::tokens::whoami))
+        .route("/v1/integrations/codex", get(crate::api::codex_connection::list))
+        .route("/v1/integrations/codex/{id}", post(crate::api::codex_connection::command))
+        .route("/v1/agent-services/codex/poll", post(crate::api::codex_connection::poll))
         .route(
             "/v1/tokens",
             get(crate::api::tokens::list).post(crate::api::tokens::create),

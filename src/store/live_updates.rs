@@ -12,7 +12,7 @@ pub struct Change {
 
 fn rule(table: &str) -> Option<(&'static str, &'static str)> {
     Some(match table {
-        "idempotency" | "comment_idempotency" | "crdt_sessions" | "oauth_clients"
+        "codex_connections" | "idempotency" | "comment_idempotency" | "crdt_sessions" | "oauth_clients"
         | "oauth_codes" | "oauth_refresh" | "oauth_issued"
         | "search_nodes" | "search_chunks" | "ticket_document_pending"
         | "specification_history_heads" | "query_embedding_cache" | "query_cache_generation" => return None,

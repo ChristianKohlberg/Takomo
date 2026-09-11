@@ -40,7 +40,7 @@ export function SettingsLayout({ lang, onLang, project, projects, onProject, sec
           </select>
         </label>
         <nav aria-label={de ? 'Projekteinstellungen' : 'Project settings'}><div className="settings-caption">{de ? 'Projekt' : 'Project settings'}</div>{nav(projectSections)}</nav>
-        <nav aria-label={de ? 'Instanzverwaltung' : 'Instance administration'}><div className="settings-caption">{de ? 'Instanzverwaltung' : 'Instance administration'}</div>{nav(['people', 'access', 'projects', 'library', 'github', 'search', 'data'])}</nav>
+        <nav aria-label={de ? 'Instanzverwaltung' : 'Instance administration'}><div className="settings-caption">{de ? 'Instanzverwaltung' : 'Instance administration'}</div>{nav(['people', 'access', 'projects', 'library', 'github', 'codex', 'search', 'data'])}</nav>
         <nav className="mt-auto border-t pt-4" aria-label={de ? 'Weitere Bereiche' : 'Other areas'}>
           <Link className="settings-link" to={project ? `/legacy?scope=${encodeURIComponent(project)}` : '/legacy'} aria-current={legacy ? 'page' : undefined} onClick={() => setOpen(false)}>Legacy</Link>
           {nav(['overview'])}

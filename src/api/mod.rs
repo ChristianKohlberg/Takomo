@@ -5,6 +5,7 @@ pub mod agent_chat;
 pub mod bugs;
 pub mod checklist;
 pub mod claims;
+pub mod codex_connection;
 pub mod diagrams;
 pub mod docprops;
 pub mod docs;

@@ -1,3 +1,4 @@
+import { AccountClient, CodexConnection } from './codex-connection.mjs';
 import { executeGithubImport } from './github-import.mjs';
 import { CLASSIFICATION_KIND } from './ticket-document-classification.mjs';
 import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
@@ -119,15 +120,23 @@ export async function main() {
   const repositories = JSON.parse(env.TAKOMO_AGENT_REPOSITORIES || '{}');
   if (!repositories || Array.isArray(repositories) || typeof repositories !== 'object') throw new Error('TAKOMO_AGENT_REPOSITORIES must be a JSON object mapping repository keys to absolute paths.');
   const api = apiClient(url.href, env.TAKOMO_AGENT_TOKEN, signal);
+  const connection = env.TAKOMO_CODEX_CONNECTIONS === '1' ? new CodexConnection({ api, serviceId, createClient: () => new AccountClient({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home }) }) : null;
+  const stopConnection = () => connection?.close();
+  signal.addEventListener('abort', stopConnection, { once: true });
   let backoff = 500;
   console.log(`Agent service ${serviceId} starting for ${url.origin}.`);
   try {
     while (!signal.aborted) {
       try {
+        if (connection && await connection.tick()) {
+          if (process.argv.includes('--once')) return;
+          await sleep(2000, undefined, { signal }); continue;
+        }
         if (env.TAKOMO_GITHUB_IMPORTS === '1') {
           const { job: importing } = await api('/v1/codebase-import-jobs/claim', { service_id: serviceId });
           if (importing) {
-            await executeGithubImport(importing, { api, serviceId, state, signal });
+            await connection?.busy(true);
+            try { await executeGithubImport(importing, { api, serviceId, state, signal }); } finally { await connection?.busy(false); }
             if (process.argv.includes('--once')) return;
             continue;
           }
@@ -135,10 +144,11 @@ export async function main() {
         const { job } = await api('/v1/agent-jobs/claim', { service_id: serviceId, supported_kinds: supportedKinds, wait_seconds: process.argv.includes('--once') ? 0 : 25 });
         if (job) {
           console.log(`Running job ${job.id}.`);
-          await executeJob(job, {
+          await connection?.busy(true);
+          try { await executeJob(job, {
             api, serviceId, signal,
             createCodex: claimed => new Codex({ executable: env.TAKOMO_CODEX_BIN || 'codex', cwd, home, repositories, kind: claimed.kind }),
-          });
+          }); } finally { await connection?.busy(false); }
         }
         if (process.argv.includes('--once')) return;
         backoff = 500;
@@ -151,7 +161,7 @@ export async function main() {
         backoff = Math.min(backoff * 2, 10_000);
       }
     }
-  } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+  } finally { signal.removeEventListener('abort', stopConnection); connection?.close(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch(error => {
