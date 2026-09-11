@@ -3145,7 +3145,7 @@ paths:
   /tickets/{id}/transition:
     post:
       tags: [workflow]
-      summary: Move a ticket to another state (the only way state changes)
+      summary: Move a ticket through its workflow
       description: |
         Validated against the project workflow: transition must exist from the
         current state, all `requires` must hold (active claim held by caller,
@@ -3203,6 +3203,98 @@ paths:
               schema: { $ref: "#/components/schemas/TransitionError" }
         "403":
           description: Transition requires a scope this token lacks (e.g. human)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransitionError" }
+
+  /tickets/{id}/start:
+    post:
+      tags: [workflow]
+      summary: Claim if needed and transition atomically
+      description: Uses the same transaction as hosted MCP takomo_start. The caller supplies a workflow target. A failed transition leaves no new claim or events. An existing active claim held by the caller is reused without extending its expiry. Explicit fences override automatic resolution.
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [to]
+              properties:
+                to: { type: string, description: Target state id resolved from the project workflow }
+                fence: { type: integer, description: Explicit fencing token; otherwise resolved for the active claim holder }
+                ttl_seconds: { type: integer, minimum: 1, maximum: 3600, description: Lease lifetime when acquiring a new claim }
+      responses:
+        "200":
+          description: Transitioned; includes lease with fence when the caller holds the resulting claim
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Ticket" }
+                  - type: object
+                    properties:
+                      lease:
+                        type: object
+                        required: [holder, fence, expires_at]
+                        properties:
+                          holder: { type: string }
+                          fence: { type: integer }
+                          expires_at: { type: [string, "null"], format: date-time }
+                          since: { type: [string, "null"], format: date-time }
+        "400":
+          description: Invalid or unknown request field
+        "401":
+          description: Missing or invalid bearer token
+        "403":
+          description: Missing write scope, project access, or workflow scope
+        "404":
+          description: Ticket not found
+        "409":
+          description: Workflow, claim, fencing, guard, or project archive conflict; the entire operation rolls back
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransitionError" }
+
+  /tickets/{id}/block:
+    post:
+      tags: [workflow]
+      summary: Record a blocker comment and transition atomically
+      description: Uses the same transaction as hosted MCP takomo_block. The caller supplies a workflow target. A failed transition leaves no comment or events. The caller must satisfy all workflow, fencing, scope, and project archive guards.
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [to]
+              properties:
+                to: { type: string, description: Target state id resolved from the project workflow }
+                fence: { type: integer, description: Explicit fencing token; otherwise resolved for the active claim holder }
+                comment: { type: string, minLength: 1, maxLength: 65536 }
+      responses:
+        "200":
+          description: Transitioned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Ticket" }
+        "400":
+          description: Invalid or unknown request field
+        "401":
+          description: Missing or invalid bearer token
+        "403":
+          description: Missing write scope, project access, or workflow scope
+        "404":
+          description: Ticket not found
+        "409":
+          description: Workflow, claim, fencing, guard, or project archive conflict; the entire operation rolls back
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TransitionError" }
@@ -4190,7 +4282,12 @@ paths:
         with `claude mcp add --transport http https://<host>/mcp` instead of
         running the Node stdio wrapper in `clients/mcp`. This is NOT part of the
         frozen `/v1` REST surface — it lives at the root path and speaks
-        JSON-RPC 2.0 over the MCP Streamable HTTP transport (spec 2025-06-18).
+        JSON-RPC 2.0 over the MCP Streamable HTTP transport. Supports the
+        2026-07-28 protocol and preserves 2025-06-18 and 2025-11-25 clients.
+        The transport accepts bodies up to 8 MiB, allowing the supported
+        5 MiB attachment plus base64 encoding and JSON overhead. Larger bodies
+        receive HTTP 413; attachment limits within that envelope are enforced
+        by the Store and return actionable tool errors.
 
         Mode: stateless, `application/json` responses. Every POST is a
         self-contained JSON-RPC message (`initialize`, `tools/list`,

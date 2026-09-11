@@ -48,7 +48,7 @@ futures-core = "0.3"
 # Official Rust MCP SDK. Hosts the streamable-HTTP MCP server transport in-process
 # so agents can `claude mcp add --transport http .../mcp` instead of running the
 # Node stdio wrapper. Tool input schemas use rmcp's re-exported `schemars`.
-rmcp = { version = "2.2", features = ["server", "macros", "transport-streamable-http-server"] }
+rmcp = { version = "3.3", features = ["server", "macros", "transport-streamable-http-server"] }
 # Outbound notifications for the "ask a human" board. Both are OFF unless the
 # operator configures TAKOMO_NOTIFY (see src/notify.rs), keeping the default
 # deploy secret-free. reqwest drives the Slack/generic-webhook transports;
@@ -60,6 +60,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 quick-xml = { version = "0.38", default-features = false }
 
 [dev-dependencies]
+# Spawn the actual stdio client in the opt-in MCP integration suite.
+tokio = { version = "1", features = ["process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 futures = "0.3"
 tempfile = "3"

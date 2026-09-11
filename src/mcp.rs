@@ -63,8 +63,12 @@ pub fn mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // is meant to be reachable at whatever public host fronts it, so the Host
     // allow-list is disabled. TLS + the token are the guard.
     let config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
+        .with_legacy_session_mode(false)
         .with_json_response(true)
+        // A supported 5 MiB attachment is ~6.7 MiB after base64 encoding.
+        // Leave room for its JSON envelope and the Store's actionable size
+        // refusal; rmcp's default transport cap would reject valid uploads.
+        .with_max_request_body_bytes(8 * 1024 * 1024)
         .disable_allowed_hosts();
     let service = StreamableHttpService::new(
         move || Ok(TakomoMcp::new(factory_state.clone())),
@@ -4411,12 +4415,12 @@ impl ServerHandler for TakomoMcp {
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
         let name = request.name.as_ref();
         if self.tool_router.has_route(name) && !READ_TOOLS.contains(&name) {
             let auth = require_auth(&context)?;
             if let Err(err) = debit_write_budget(&self.state, &auth) {
-                return respond(Err(err));
+                return respond(Err(err)).map(Into::into);
             }
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -4435,6 +4439,11 @@ impl ServerHandler for TakomoMcp {
             tools: (*self.tools).clone(),
             meta: None,
             next_cursor: None,
+            // Required by the 2026-07-28 discovery contract. Do not let a host
+            // reuse authenticated discovery across credentials or deployments.
+            ttl_ms: Some(0),
+            cache_scope: Some(rmcp::model::CacheScope::Private),
+            ..Default::default()
         })
     }
 

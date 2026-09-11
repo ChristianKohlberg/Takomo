@@ -431,6 +431,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/v1/tickets/{id}",
             get(crate::api::tickets::get_one).merge(patch(crate::api::tickets::patch_one)),
         )
+        .route("/v1/tickets/{id}/start", post(crate::api::transition::start))
+        .route("/v1/tickets/{id}/block", post(crate::api::transition::block))
         .route(
             "/v1/tickets/{id}/transition",
             post(crate::api::transition::transition),

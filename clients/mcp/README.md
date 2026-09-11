@@ -14,6 +14,11 @@ not change or embed the server in any way.
 - Covers **both loops**: the work loop (claim, transition, comment, done) and the
   verification loop (checks, cases, verdicts, environments, worklist, gate).
 - Wraps each tracker verb as one MCP tool returning compact JSON.
+- `start` and `block` use the server's atomic REST operations, backed by the
+  same Store transactions as hosted MCP. A refused transition leaves no new
+  claim or blocker comment. This requires a Takomo server with
+  `/v1/tickets/{id}/start` and `/v1/tickets/{id}/block`; upgrade the server before
+  the client. There is no fallback to partially applying the operation.
 - **Tracks claim fences in memory** for the life of the process, keyed by ticket id, so
   `start` / `transition` / `done` / `release` include the fencing token automatically. Pass
   an explicit `fence` argument to override.
@@ -84,7 +89,7 @@ The bug tools (`takomo_bugs`, `takomo_bug`, `takomo_bug_update`, `takomo_bug_res
 
 ## Install & build
 
-Requires Node.js >= 18.
+Requires Node.js >= 20 (TypeScript MCP SDK v2).
 
 ```bash
 cd clients/mcp
@@ -172,3 +177,19 @@ Lane tools let organizing agents create lanes, retain preparation context, assoc
 existing tickets, and draft immutable handoffs. `takomo_lane_handoff` never executes
 work; an authorized person dispatches the draft separately. Read returned review
 findings using `takomo_lane_handoffs`. See [lanes and review handoffs](../../docs/lanes.md).
+
+## Isolated client tests (also required in CI)
+
+From the repository root:
+
+```sh
+(cd clients/mcp && npm ci && npm run build)
+cargo test --release --test mcp_clients -- --ignored
+```
+
+The Rust harness starts temporary stores and real HTTP servers, then runs the
+existing stdio lifecycle/verification suite and shared hosted/stdio regression
+scenarios. It supplies scoped test credentials without an external deployment.
+The tests cover rejected transitions, rollback, competing claim holders, fence
+reuse, and SDK protocol compatibility. They are explicitly ignored by ordinary
+`cargo test` so Rust-only builds do not require Node; the MCP CI job runs them.
