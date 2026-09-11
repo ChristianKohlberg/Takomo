@@ -293,6 +293,7 @@ jobs:
         run: python3 scripts/test-bundled-container.py takomo-ci
 
   mcp:
+    needs: web
     name: MCP build and client integration tests
     runs-on: ubuntu-latest
     defaults:
@@ -320,6 +321,12 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
       - name: Hosted and stdio MCP client integration tests
         working-directory: .
-        run: cargo test --release --test mcp_clients -- --ignored
+        run: cargo test --release --locked --test mcp_clients -- --ignored
