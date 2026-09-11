@@ -12,13 +12,13 @@
 //   TAKOMO_TOKEN  bearer token (required)
 
 import { randomUUID } from "node:crypto";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
 import { TakomoClient, StoreError, TransportError } from "./client.js";
 import { rememberLease, resolveFence, forgetLease, getLease } from "./fences.js";
-import { getWorkflow, isClaimable, categoryOf, targetsInCategory } from "./workflow.js";
+import { getWorkflow, categoryOf, targetsInCategory } from "./workflow.js";
 
 const DEFAULT_URL = "https://your-takomo-host.onrender.com/v1";
 const baseUrl = process.env.TAKOMO_URL || DEFAULT_URL;
@@ -441,15 +441,7 @@ server.registerTool(
     const ticket = await getTicket(a.id);
     const wf = await getWorkflow(client, ticket.project);
 
-    let fence = resolveFence(a.id, a.fence);
-    // Claim if we do not already hold a lease and the current state is claimable.
-    // `ttl_seconds` only applies on that path — a lease we already hold is
-    // extended by heartbeating it, not by starting again.
-    if (fence === undefined && isClaimable(wf, ticket.state)) {
-      const lease = await claimTicket(a.id, a.ttl_seconds);
-      fence = lease?.fence;
-    }
-
+    const fence = resolveFence(a.id, a.fence);
     let target = a.to as string | undefined;
     if (!target) {
       if (categoryOf(wf, ticket.state) === "in_progress") {
@@ -469,7 +461,14 @@ server.registerTool(
       target = cands[0];
     }
 
-    const res = await transition(a.id, target, fence);
+    const res = await client.request<any>({
+      method: "POST",
+      path: `/tickets/${encodeURIComponent(a.id)}/start`,
+      body: { to: target, fence, ttl_seconds: a.ttl_seconds },
+    });
+    if (res?.lease) {
+      rememberLease(a.id, { fence: res.lease.fence, holder: res.lease.holder, expiresAt: res.lease.expires_at });
+    }
     return ok({ ok: true, transitioned_to: target, ticket: res });
   })
 );
@@ -513,22 +512,34 @@ server.registerTool(
     title: "Block ticket",
     description:
       "Move a ticket to the workflow's blocked state (e.g. blocked / needs-decision). " +
-      "Optionally record a comment explaining the blocker first.",
+      "Optionally record a blocker comment atomically with the transition.",
     inputSchema: {
       id: z.string().describe("Ticket id."),
-      comment: z.string().optional().describe("Optional note explaining the blocker (added as a comment first)."),
+      comment: z.string().optional().describe("Optional blocker note, committed atomically with the transition."),
       fence: z.number().int().optional().describe("Override the remembered fencing token."),
     },
   },
   tool(async (a) => {
-    if (a.comment) {
-      await client.request({
-        method: "POST",
-        path: `/tickets/${encodeURIComponent(a.id)}/comments`,
-        body: { body: a.comment },
+    const ticket = await getTicket(a.id);
+    const wf = await getWorkflow(client, ticket.project);
+    const targets = targetsInCategory(wf, ticket.state, "blocked");
+    if (targets.length === 0) {
+      return fail({
+        ok: false,
+        status: 409,
+        code: "transition.no_target",
+        message: `No legal transition to a 'blocked' state from '${ticket.state}' in workflow '${wf.name}'.`,
+        current_state: ticket.state,
+        allowed_transitions: wf.transitions.filter((t) => t.from === ticket.state)
+          .map((t) => ({ to: t.to, ...(t.requires ? { requires: t.requires } : {}) })),
       });
     }
-    return advanceToCategory(a.id, "blocked", a.fence);
+    const res = await client.request({
+      method: "POST",
+      path: `/tickets/${encodeURIComponent(a.id)}/block`,
+      body: { to: targets[0], comment: a.comment, fence: resolveFence(a.id, a.fence) },
+    });
+    return ok({ ok: true, transitioned_to: targets[0], ticket: res });
   })
 );
 
@@ -1168,7 +1179,7 @@ server.registerTool(
           z.object({
             key: z.string().describe("Stable identity derived from the assignment, e.g. entities=2."),
             label: z.string().optional().describe("Human-readable name."),
-            assignment: z.record(z.any()).optional().describe("The parameter assignment this case stands for."),
+            assignment: z.record(z.string(), z.any()).optional().describe("The parameter assignment this case stands for."),
             seeded: z.boolean().optional().describe("True when the fixture data already exists."),
           })
         )
@@ -1475,9 +1486,12 @@ server.registerTool("takomo_lane_handoffs", {description: 'Read returned results
 // ---- boot -------------------------------------------------------------------
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  process.stderr.write(`takomo-mcp connected (store: ${baseUrl})\n`);
+  // The v2 entry negotiates both legacy initialization and the current
+  // per-request protocol. One server instance is pinned to this connection.
+  serveStdio(() => server, {
+    onerror: (err) => process.stderr.write(`takomo-mcp: ${err.message}\n`),
+  });
+  process.stderr.write(`takomo-mcp ready (store: ${baseUrl})\n`);
 }
 
 main().catch((err) => {

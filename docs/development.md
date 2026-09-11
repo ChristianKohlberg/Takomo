@@ -14,7 +14,8 @@ cargo test --locked                                # fast integration suite (spa
 cargo clippy --all-targets -- -D warnings          # lint, warnings-as-errors
 cargo fmt                                           # format (rustfmt.toml); CI runs --check
 shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh    # shell lint
-(cd clients/mcp && npm ci && npm run build)         # MCP typecheck
+(cd clients/mcp && npm ci && npm run build)         # MCP build (Node >= 20)
+cargo test --release --test mcp_clients -- --ignored # isolated hosted/stdio client tests
 ```
 
 Generated `web/dist/` assets are ignored by Git. Run the build script once on a
@@ -71,7 +72,7 @@ token.
 - Every new/changed HTTP route ships with an integration test and an `spec/openapi.yaml` update.
 - The spec must stay a *valid* OpenAPI 3.1 document, not merely parseable YAML. CI runs `redocly lint` against [`spec/redocly.yaml`](../spec/redocly.yaml). Two traps, both invisible to a human reader: a comma inside an unquoted description in a flow mapping silently truncates the sentence and turns its tail into a junk key, and `nullable: true` is 3.0 syntax that 3.1 tooling ignores (write `type: [string, "null"]`).
 - Errors are part of the contract: reject with a stable `code`, a `message` written for an LLM reader, and (for transitions) `allowed_transitions` + a `remedy`. Never fail silently.
-- Keep the CLI shellcheck-clean and the MCP typecheck green.
+- Keep the CLI shellcheck-clean and the MCP build and client integration tests green.
 
 The Vite `/v1` proxy forwards WebSocket upgrades as well as HTTP requests, so
 specification collaboration and project updates work against `TAKOMO_DEV_API`

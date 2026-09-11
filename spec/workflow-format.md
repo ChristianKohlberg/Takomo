@@ -1,6 +1,6 @@
 # Workflow definition format
 
-A workflow is the per-project state machine. It is data, not code: a YAML (or JSON) document validated on upload (`PUT /v1/projects/{p}/workflow`) and enforced by the server on every `POST /tickets/{id}/transition`. There is no other way to change a ticket's state.
+A workflow is the per-project state machine. It is data, not code: a YAML (or JSON) document validated on upload (`PUT /v1/projects/{p}/workflow`) and enforced by the server on every state transition. `POST /tickets/{id}/transition` performs a move directly; `/start` combines a claim with a move, and `/block` combines a comment with a move. These compound endpoints use the same workflow engine and roll back all side effects if the move fails.
 
 ## Format
 

@@ -293,7 +293,7 @@ jobs:
         run: python3 scripts/test-bundled-container.py takomo-ci
 
   mcp:
-    name: MCP typecheck
+    name: MCP build and client integration tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -313,3 +313,13 @@ jobs:
 
       - name: Build (tsc typecheck)
         run: npm run build
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Hosted and stdio MCP client integration tests
+        working-directory: .
+        run: cargo test --release --test mcp_clients -- --ignored

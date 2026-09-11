@@ -3953,3 +3953,27 @@ async fn bug_research_mcp_is_explicit_deduplicated_and_preserves_ticket_workflow
     assert_eq!(triaged["triage"], "confirmed");
     assert_eq!(triaged["ticket"]["state"], state);
 }
+
+/// Updating the SDK must preserve clients on the November 2025 protocol.
+/// The June 2025 handshake is covered above; the real SDK clients cover 2026.
+#[tokio::test]
+async fn hosted_mcp_supports_november_2025_clients() {
+    let app = TestApp::spawn().await;
+    let response = app
+        .request(Method::POST, "/mcp")
+        .bearer_auth(&app.worker)
+        .header("Accept", "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .json(
+            &json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+                "protocolVersion":"2025-11-25", "capabilities":{},
+                "clientInfo":{"name":"legacy-client", "version":"1"}
+            }}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["result"]["protocolVersion"], "2025-11-25", "{body}");
+}
