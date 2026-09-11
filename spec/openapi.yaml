@@ -12702,6 +12702,7 @@ x-error-codes:
   project.document_appearance: "Invalid document appearance: template must be balanced or strong, overrides may only name the documented typography fields, and each override must be a finite number inside its documented range (heading_weight in steps of 100). Optional numbering accepts h1/h2 booleans and size from 50 to 150 percent. Omit a field or send null to inherit it from the template."
   project.writing_instructions: "Invalid project writing instructions: use at most 20 templates with unique 1–80 character ASCII ids, nonblank names up to 80 characters, and nonblank instructions up to 4000 characters. default_id must name an included template or be null."
   validation.document_chat: "The document action or explicit section context is invalid; source snapshots cannot be supplied by callers."
+  validation.agent_usage: "Worker telemetry has unknown fields, invalid identifiers or phases, or token counts outside the nonnegative safe-integer range. Correct the telemetry payload before retrying delivery; do not rerun inference."
   validation.agent_chat: "The request is malformed or exceeds a documented size bound."
   conflict.agent_job: "The conversation is busy or full, an idempotency key conflicts, or the job attempt is stale or owned by another service/token."
   notfound.agent_job: "No agent job has this id."
