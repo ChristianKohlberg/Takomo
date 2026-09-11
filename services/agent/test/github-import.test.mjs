@@ -59,3 +59,17 @@ test('hydrate retrieves only selected blobs, verifies hashes and supports exclud
   await assert.rejects(hydrateGithubSource(source, directory, 'secret', new AbortController().signal, async () => new Response(JSON.stringify({ encoding: 'base64', content: Buffer.from('tampered').toString('base64') }))), /did not match/);
  } finally { await rm(directory, { recursive: true, force: true }); }
 });
+test('failed extraction retains observed usage and session identifiers', async () => {
+ const state = await mkdtemp(join(tmpdir(), 'github-usage-')); let result;
+ try {
+  const usage = { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0, total_tokens: 12 };
+  await executeGithubImport(job, { state, serviceId: 'worker', signal: new AbortController().signal,
+   api: async (path, body) => { if (path.endsWith('/source-token')) return { token: 'secret' }; if (path.endsWith('/result')) result = body; return {}; },
+   prepare: async () => {}, generate: async ({ onProgress }) => { onProgress({ usage, thread_id: 'thread-one', turn_id: 'turn-one', model: 'test-model' }); throw new Error('Provider interrupted'); },
+  });
+  assert.deepEqual(result.telemetry.usage, usage);
+  assert.equal(result.telemetry.thread_id, 'thread-one');
+  assert.equal(result.telemetry.model, 'test-model');
+  assert.equal(result.error, 'Provider interrupted');
+ } finally { await rm(state, { recursive: true, force: true }); }
+});

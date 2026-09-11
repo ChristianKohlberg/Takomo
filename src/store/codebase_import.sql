@@ -1,3 +1,10 @@
+CREATE TABLE IF NOT EXISTS agent_run_usage (
+ job TEXT PRIMARY KEY,
+ telemetry TEXT NOT NULL,
+ updated_at INTEGER NOT NULL,
+ started_at INTEGER,
+ finished_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS github_connections (
  installation INTEGER PRIMARY KEY,
  account TEXT NOT NULL,
@@ -29,3 +36,8 @@ CREATE TABLE IF NOT EXISTS codebase_import_jobs (
  UNIQUE(project, request_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_codebase_import ON codebase_import_jobs(project) WHERE status IN ('queued','running');
+
+CREATE TRIGGER IF NOT EXISTS extraction_usage_cleanup BEFORE DELETE ON codebase_import_jobs BEGIN DELETE FROM agent_run_usage WHERE job=OLD.id; END;
+CREATE TRIGGER IF NOT EXISTS agent_usage_cleanup BEFORE DELETE ON agent_jobs BEGIN DELETE FROM agent_run_usage WHERE job=OLD.id; END;
+CREATE TRIGGER IF NOT EXISTS extraction_usage_finished AFTER UPDATE OF status ON codebase_import_jobs WHEN NEW.status IN ('completed','failed') AND OLD.status != NEW.status BEGIN UPDATE agent_run_usage SET finished_at=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE job=NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS agent_usage_started AFTER UPDATE OF status ON agent_jobs WHEN NEW.status='running' AND OLD.status='queued' BEGIN INSERT INTO agent_run_usage(job,telemetry,updated_at,started_at) VALUES(NEW.id,'{}',CAST(unixepoch('subsec')*1000 AS INTEGER),CAST(unixepoch('subsec')*1000 AS INTEGER)) ON CONFLICT(job) DO UPDATE SET started_at=excluded.started_at; END;

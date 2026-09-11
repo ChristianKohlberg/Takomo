@@ -97,6 +97,7 @@ pub struct Claim {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attempt {
+    telemetry: Option<Value>,
     service_id: String,
     attempt_id: String,
 }
@@ -127,6 +128,15 @@ pub async fn heartbeat(
     let job = state
         .store
         .codebase_lease(&ctx, &id, &req.service_id, &req.attempt_id, true)?;
+    if job["status"] == "running" {
+        state.store.codebase_telemetry(
+            &ctx,
+            &id,
+            &req.service_id,
+            &req.attempt_id,
+            req.telemetry.as_ref(),
+        )?;
+    }
     Ok(Json(json!({"status":job["status"]})))
 }
 pub async fn source_token(
@@ -162,6 +172,7 @@ pub async fn source_token(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultInput {
+    telemetry: Option<Value>,
     service_id: String,
     attempt_id: String,
     draft: Option<Value>,
@@ -180,6 +191,13 @@ pub async fn result(
     if job["status"] == "completed" {
         return Ok(Json(job["result"].clone()));
     }
+    state.store.codebase_telemetry(
+        &ctx,
+        &id,
+        &req.service_id,
+        &req.attempt_id,
+        req.telemetry.as_ref(),
+    )?;
     if let Some(error) = req.error {
         if req.draft.is_some() || error.len() > 2000 {
             return Err(invalid());

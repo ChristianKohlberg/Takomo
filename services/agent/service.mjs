@@ -40,7 +40,7 @@ export async function executeJob(job, { api, serviceId, createCodex, signal, hea
     heartbeatChain = heartbeatChain.then(async () => {
       if (lost) throw new Error('Agent job lease was lost.');
       let control;
-      try { control = await api(`${prefix}/heartbeat`, { ...identity, ...session, ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}) }); }
+      try { control = await api(`${prefix}/heartbeat`, { ...identity, ...session, telemetry: codex?.telemetry?.(), ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}) }); }
       catch (error) { lost = true; codex?.close(); throw error; }
       try {
         if (job.kind === 'bug_research' && control?.cancel_requested) {
@@ -68,7 +68,7 @@ export async function executeJob(job, { api, serviceId, createCodex, signal, hea
       await heartbeat();
     }) };
   } catch (error) {
-    result = { ...session, status: 'failed', ...(cancelled ? { cancelled: true } : {}), ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}), error: error.message.slice(0, 2000) };
+    result = { ...session, telemetry: codex?.telemetry?.(), status: 'failed', ...(cancelled ? { cancelled: true } : {}), ...(codex?.document ? { evidence: { ...codex.document.progress(), ...(session.evidence ?? {}) } } : {}), ...(codex?.repository ? { repository_revision: codex.repository.revision, evidence: codex.repository.progress() } : {}), error: error.message.slice(0, 2000) };
   } finally { codex?.close(); }
   try {
     if (lost || signal.aborted) return;

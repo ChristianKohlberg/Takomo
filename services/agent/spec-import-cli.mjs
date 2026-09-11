@@ -8,7 +8,7 @@ import { Codex } from './codex.mjs';
 import { preflightImport, developmentLimits } from './spec-import-preflight.mjs';
 import { IMPORT_KIND, importJob } from './spec-import.mjs';
 
-export async function generateImport({ repository, scope, revision = 'HEAD', limits = developmentLimits, maxSections = 6, output, stateDir, prompt = 'Describe the implemented behavior.', signal }, createCodex) {
+export async function generateImport({ repository, scope, revision = 'HEAD', limits = developmentLimits, maxSections = 6, output, stateDir, prompt = 'Describe the implemented behavior.', signal, onProgress = () => {} }, createCodex) {
   if (!output) throw new Error('Choose --out for the recoverable draft artifact.');
   if (!Number.isInteger(maxSections) || maxSections < 1 || maxSections > 12) throw new Error('Choose 1–12 sections.');
   if (typeof prompt !== 'string' || prompt.length > 4000) throw new Error('Keep the request under 4000 characters.');
@@ -28,6 +28,7 @@ export async function generateImport({ repository, scope, revision = 'HEAD', lim
   const artifact = { schema_version: 1, status: 'running', request_id: randomUUID(), manifest: preview, max_sections: maxSections };
   const save = async () => { await file.truncate(0); await file.write(`${JSON.stringify(artifact, null, 2)}\n`, 0, 'utf8'); await file.sync(); };
   let codex;
+  let progressTimer;
   let interrupted = false;
   const stop = () => { interrupted = true; codex?.close(); };
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
@@ -37,7 +38,10 @@ export async function generateImport({ repository, scope, revision = 'HEAD', lim
     await save();
     if (interrupted) throw new Error('Import interrupted before inference.');
     codex = createCodex ? createCodex(job) : new Codex({ executable: process.env.TAKOMO_CODEX_BIN || 'codex', cwd, home, repositories: { import: resolve(repository) }, kind: IMPORT_KIND, timeoutMs: 180_000 });
-    const result = await codex.run(job, async session => { artifact.session = { ...artifact.session, ...session }; await save(); });
+    progressTimer = setInterval(() => { artifact.telemetry = codex.telemetry?.(); onProgress({ ...artifact.session, ...artifact.telemetry }); }, 1000);
+    const result = await codex.run(job, async session => { artifact.session = { ...artifact.session, ...session }; onProgress({ ...artifact.session, ...codex.telemetry?.() }); await save(); });
+    artifact.telemetry = result.telemetry;
+    onProgress({ ...artifact.session, ...artifact.telemetry });
     artifact.status = 'ready';
     artifact.request = { request_id: artifact.request_id, revision: result.repository_revision, scope: preview.scope, draft: result.draft };
     artifact.evidence = result.evidence;
@@ -45,11 +49,12 @@ export async function generateImport({ repository, scope, revision = 'HEAD', lim
     await save();
     return artifact;
   } catch (error) {
+    artifact.telemetry = codex?.telemetry?.(); onProgress({ ...artifact.session, ...artifact.telemetry });
     artifact.status = 'failed'; artifact.error = error.message;
     await save();
     throw error;
   } finally {
-    codex?.close(); await file.close();
+    clearInterval(progressTimer); codex?.close(); await file.close();
     process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop);
     signal?.removeEventListener('abort', stop);
   }

@@ -204,3 +204,91 @@ async fn existing_preview_connections_gain_management_metadata_without_losing_pr
         456
     );
 }
+
+#[tokio::test]
+async fn extraction_is_visible_in_shared_queue_with_scoped_durable_usage() {
+    let app = TestApp::spawn().await;
+    let (_, id) = fixture(&app).await;
+    let runner = app.mint("agent:runner", &["agent:run"], Some(&["tp"]));
+    let outsider = app.mint("human:other", &["read"], Some(&["other"]));
+    let job = claim(&app, &runner).await;
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":130});
+    let heartbeat = json!({"service_id":"worker","attempt_id":job["attempt_id"],"telemetry":{"usage":usage,"phase":"drafting","thread_id":"thread-one","turn_id":"turn-one"}});
+    let path = format!("/v1/codebase-import-jobs/{id}/heartbeat");
+    assert_eq!(
+        app.post(&runner, &path, heartbeat.clone()).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.post(&runner, &path, heartbeat.clone()).await.0,
+        StatusCode::OK
+    );
+    let (_, list) = app
+        .get(&app.human, "/v1/agent-jobs?project=tp&status=running")
+        .await;
+    assert_eq!(list["counts"]["running"], 1);
+    assert_eq!(list["items"][0]["kind"], "codebase_import");
+    assert_eq!(list["items"][0]["telemetry"]["usage"], usage);
+    let detail = format!("/v1/agent-jobs/{id}");
+    assert_eq!(app.get(&outsider, &detail).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(app.get(&outsider, "/v1/agent-jobs").await.1["total"], 0);
+    let mut stale = heartbeat.clone();
+    stale["attempt_id"] = json!("stale");
+    assert_eq!(
+        app.post(&runner, &path, stale).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut invalid = heartbeat.clone();
+    invalid["telemetry"]["usage"]["total_tokens"] = json!(-1);
+    assert_eq!(
+        app.post(&runner, &path, invalid).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut result = heartbeat;
+    result["error"] = json!("Interrupted test run");
+    assert_eq!(
+        app.post(
+            &runner,
+            &format!("/v1/codebase-import-jobs/{id}/result"),
+            result
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, saved) = app.get(&app.human, &detail).await;
+    assert_eq!(saved["job"]["status"], "failed");
+    assert_eq!(saved["job"]["telemetry"]["usage"], usage);
+    assert!(saved["job"]["finished_at"].as_i64().is_some());
+    assert_eq!(
+        app.get(&app.human, "/v1/agent-jobs?status=running").await.1["total"],
+        0
+    );
+}
+
+#[tokio::test]
+async fn unified_queue_limits_and_counts_both_sources_and_preserves_legacy_unknown_usage() {
+    let app = TestApp::spawn().await;
+    let (map, id) = fixture(&app).await;
+    let db = rusqlite::Connection::open(app.db_path()).unwrap();
+    db.execute("INSERT INTO agent_conversations(id,mindmap,node,project,created_at) VALUES('mixed-conversation',?1,'section','tp',1)",[map]).unwrap();
+    db.execute("INSERT INTO agent_jobs(id,conversation_id,requested_by,request_id,prompt,snapshot,source_revision,status,created_at) VALUES('aj-old','mixed-conversation','human','req','prompt','snapshot','rev','completed',1)",[]).unwrap();
+    let (_, list) = app
+        .get(&app.human, "/v1/agent-jobs?project=tp&limit=1")
+        .await;
+    assert_eq!(list["total"], 2);
+    assert_eq!(list["counts"]["completed"], 1);
+    assert_eq!(list["counts"]["queued"], 1);
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(list["items"][0]["id"], id);
+    assert!(list["items"][0]["telemetry"].is_null());
+    for field in ["prompt", "snapshot", "response"] {
+        assert!(list["items"][0].get(field).is_none());
+    }
+    let (_, filtered) = app
+        .get(&app.human, "/v1/agent-jobs?project=tp&status=completed")
+        .await;
+    assert_eq!(filtered["total"], 1);
+    assert_eq!(filtered["items"][0]["id"], "aj-old");
+    assert!(filtered["items"][0]["telemetry"].is_null());
+}

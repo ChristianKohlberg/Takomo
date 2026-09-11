@@ -10,6 +10,21 @@ fn conflict() -> ApiError {
     ApiError::conflict("conflict.codebase_import","The extraction changed or its lease expired. Refresh its status; do not automatically start another model run.")
 }
 impl Store {
+    pub fn codebase_telemetry(
+        &self,
+        ctx: &AuthCtx,
+        id: &str,
+        service: &str,
+        attempt: &str,
+        telemetry: Option<&Value>,
+    ) -> ApiResult<()> {
+        self.with_tx(|conn| {
+        let project:String=conn.query_row("SELECT project FROM codebase_import_jobs WHERE id=?1 AND service_id=?2 AND attempt_id=?3 AND status='running' AND lease_expires_at>?4 AND deadline>?4",params![id,service,attempt,now_ms()],|r|r.get(0)).optional()?.ok_or_else(conflict)?;
+        ctx.require_project(&project)?;
+        ensure_project_writable(conn,&project)?;
+        super::agent_usage::save(conn, id, telemetry)
+        })
+    }
     pub fn codebase_project_writable(&self, project: &str) -> ApiResult<()> {
         ensure_project_writable(&self.conn.lock().unwrap(), project)
     }
@@ -35,12 +50,12 @@ impl Store {
         Ok(())
     }
     pub fn github_disconnect(&self, id: u64) -> ApiResult<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
+        self.with_tx(|tx| {
         tx.execute("UPDATE codebase_import_jobs SET status='failed',error='GitHub connection removed. Reconnect before explicitly starting a new extraction.' WHERE status IN ('queued','running') AND json_extract(source,'$.installation')=?1",[id])?;
         tx.execute("DELETE FROM github_connections WHERE installation=?1", [id])?;
-        tx.commit()?;
+
         Ok(())
+            })
     }
     pub fn project_repository(&self, project: &str) -> ApiResult<Option<Value>> {
         let conn = self.conn.lock().unwrap();
@@ -92,10 +107,9 @@ impl Store {
         request: &str,
         source: &Value,
     ) -> ApiResult<Value> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        ensure_project_writable(&tx, project)?;
-        expire(&tx)?;
+        self.with_tx(|tx| {
+        ensure_project_writable(tx, project)?;
+        expire(tx)?;
         let old=tx.query_row("SELECT id,mindmap,actor FROM codebase_import_jobs WHERE project=?1 AND request_id=?2",params![project,request],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
         if let Some((id, oldmap, actor)) = old {
             if oldmap != map || actor != ctx.actor {
@@ -109,13 +123,13 @@ impl Store {
         }
         let id = format!("ci-{}", ticket_suffix(20));
         tx.execute("INSERT INTO codebase_import_jobs(id,project,mindmap,actor,request_id,status,source,created_at) VALUES(?1,?2,?3,?4,?5,'queued',?6,?7)",params![id,project,map,ctx.actor,request,source.to_string(),now_ms()])?;
-        tx.commit()?;
+
         Ok(json!({"id":id}))
+            })
     }
     pub fn claim_codebase_import(&self, ctx: &AuthCtx, service: &str) -> ApiResult<Value> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        expire(&tx)?;
+        self.with_tx(|tx| {
+        expire(tx)?;
         let allowed = ctx
             .projects
             .as_ref()
@@ -136,16 +150,18 @@ impl Store {
             if !ctx.can_project(&project) {
                 continue;
             }
-            ensure_project_writable(&tx, &project)?;
+            ensure_project_writable(tx, &project)?;
             let attempt = ticket_suffix(32);
             tx.execute("UPDATE codebase_import_jobs SET status='running',service_id=?2,attempt_id=?3,lease_expires_at=?4,deadline=?5 WHERE id=?1",params![id,service,attempt,now_ms()+60_000,now_ms()+300_000])?;
-            tx.commit()?;
+            tx.execute("INSERT INTO agent_run_usage(job,telemetry,updated_at,started_at) VALUES(?1,'{}',?2,?2)",params![id,now_ms()])?;
+
             return Ok(
                 json!({"job":{"id":id,"project":project,"mindmap":map,"source":serde_json::from_str::<Value>(&source).unwrap_or(Value::Null),"attempt_id":attempt}}),
             );
         }
-        tx.commit()?;
+
         Ok(json!({"job":null}))
+            })
     }
     pub fn codebase_lease(
         &self,
@@ -180,14 +196,24 @@ impl Store {
         result: Option<&Value>,
         error: Option<&str>,
     ) -> ApiResult<()> {
-        let n=self.conn.lock().unwrap().execute("UPDATE codebase_import_jobs SET status=?3,result=?4,error=?5 WHERE id=?1 AND attempt_id=?2 AND status='running'",params![id,attempt,if result.is_some(){"completed"}else{"failed"},result.map(Value::to_string),error])?;
+        self.with_tx(|tx| {
+        let n=tx.execute("UPDATE codebase_import_jobs SET status=?3,result=?4,error=?5 WHERE id=?1 AND attempt_id=?2 AND status='running'",params![id,attempt,if result.is_some(){"completed"}else{"failed"},result.map(Value::to_string),error])?;
         if n == 0 {
             return Err(conflict());
         }
+
         Ok(())
+            })
     }
 }
 fn expire(conn: &rusqlite::Connection) -> ApiResult<()> {
     conn.execute("UPDATE codebase_import_jobs SET status='failed',error='Extraction interrupted or project archived. Review the document before explicitly starting another run.' WHERE (status='running' AND (lease_expires_at<=?1 OR deadline<=?1)) OR (status IN ('queued','running') AND project IN (SELECT id FROM projects WHERE archived_at IS NOT NULL))",[now_ms()])?;
     Ok(())
+}
+
+pub(super) fn inspect(conn: &rusqlite::Connection, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
+    let raw:String=conn.query_row("SELECT json_object('id',id,'project',project,'kind','codebase_import','conversation_id','','conversation_service_id',NULL,'mindmap',mindmap,'node','','section_title','Repository extraction','status',status,'requested_by',actor,'created_at',created_at,'finished_at',NULL,'lease_expires_at',lease_expires_at,'deadline',deadline,'service_id',service_id,'attempt_id',attempt_id,'thread_id',NULL,'turn_id',NULL,'error',error,'source_revision',json_extract(source,'$.revision'),'source',json(source),'prompt','Recover implemented behavior from the selected repository scope.','snapshot',source,'response',result) FROM codebase_import_jobs WHERE id=?1",[id],|r|r.get(0)).optional()?.ok_or_else(||ApiError::not_found("agent_job",id))?;
+    let value: Value = serde_json::from_str(&raw).map_err(|e| ApiError::internal(e.to_string()))?;
+    ctx.require_project(value["project"].as_str().unwrap())?;
+    Ok(value)
 }

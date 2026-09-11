@@ -602,3 +602,24 @@ async fn archive_freezes_agent_writes_and_map_deletion_removes_conversation() {
         assert_eq!(count, 0, "{table} should cascade with its document");
     }
 }
+
+#[tokio::test]
+async fn conversation_usage_survives_delivery_retry_without_double_counting() {
+    let app = TestApp::spawn().await;
+    let (_, _, path) = fixture(&app).await;
+    send(&app, &path, "usage", "Review").await;
+    let token = runner(&app);
+    let job = claim(&app, &token, "usage-worker").await;
+    let id = job["id"].as_str().unwrap();
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":130});
+    let body = json!({"service_id":"usage-worker","attempt_id":job["attempt_id"],"status":"completed","thread_id":"usage-thread","turn_id":"usage-turn","message":"Review complete","telemetry":{"usage":usage}});
+    for _ in 0..2 {
+        let (status, value) = app
+            .post(&token, &format!("/v1/agent-jobs/{id}/result"), body.clone())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+    }
+    let (_, detail) = app.get(&app.human, &format!("/v1/agent-jobs/{id}")).await;
+    assert_eq!(detail["job"]["telemetry"]["usage"], usage);
+    assert!(detail["job"]["started_at"].as_i64().is_some());
+}

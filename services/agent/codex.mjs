@@ -1,3 +1,4 @@
+import { Usage } from './usage.mjs';
 import { IMPORT_KIND, importRestrictionsFor, importInstructions, importSchema, importJob, importInput, parseImportResult } from './spec-import.mjs';
 import { CLASSIFICATION_KIND, classificationInstructions, classificationSchema, classificationSnapshot, classificationInput, parseClassificationProposal, classificationSummary } from './ticket-document-classification.mjs';
 import { WORKSPACE_KIND, workspaceInstructions, openDocumentWorkspace, documentTools, migrationTranscript } from './document-workspace.mjs';
@@ -119,12 +120,17 @@ export class Codex {
     if (!active || p?.threadId !== active.threadId) return;
     // The server may notify before acknowledging turn/start.
     if (active.turnId && p.turnId && p.turnId !== active.turnId) return;
+    if (event.method === 'thread/tokenUsage/updated') {
+      if (active.turnId) this.usage.update(p.tokenUsage);
+      else (active.pendingUsage ??= []).push(p);
+    }
     if (event.method === 'item/completed' && p.item?.type === 'agentMessage') {
       active.messages.set(p.item.id, p.item);
     }
     if (event.method === 'turn/completed') {
       if (active.turnId && p.turn.id !== active.turnId) return;
       active.turnId = p.turn.id;
+      this.flushUsage();
       if (p.turn.status !== 'completed') {
         active.reject(new Error(p.turn.error?.message || `Codex turn ${p.turn.status}.`));
       } else {
@@ -138,9 +144,15 @@ export class Codex {
         const limit = active.organizer ? PROPOSAL_BYTES : 64_000;
         if (Buffer.byteLength(message, 'utf8') > limit) active.reject(new Error(`Codex response exceeded the ${limit.toLocaleString('en-US')}-byte message limit.`));
         else if (!message) active.reject(new Error('Codex completed without a user-facing response.'));
-        else active.resolve({ thread_id: active.threadId, turn_id: active.turnId, message });
+        else active.resolve({ thread_id: active.threadId, turn_id: active.turnId, message, telemetry: this.telemetry() });
       }
     }
+  }
+  flushUsage() {
+    for (const p of this.active?.pendingUsage ?? []) {
+      if (p.turnId === this.active.turnId) this.usage.update(p.tokenUsage);
+    }
+    if (this.active) this.active.pendingUsage = [];
   }
   fail(error) {
     this.failure ??= error;
@@ -152,6 +164,8 @@ export class Codex {
     this.active?.reject(this.failure);
   }
   async run(job, onSession = async () => {}) {
+    this.usage = new Usage();
+    this.telemetry = () => ({ ...(this.model ? { model: this.model } : {}), ...(this.usage.value ? { usage: this.usage.value } : {}) });
     const importing = job.kind === IMPORT_KIND;
     const importLimits = importing ? importJob(job) : undefined;
     const research = job.kind === RESEARCH_KIND;
@@ -197,6 +211,7 @@ export class Codex {
     const resume = job.thread_id && !migration;
     const response = await this.request(resume ? 'thread/resume' : 'thread/start',
       resume ? { ...params, threadId: job.thread_id } : params);
+    this.model = response.model;
     const threadId = response.thread.id;
     if (migration && threadId === job.thread_id) throw new Error('Document migration must create a new tool thread.');
     if (migration) migration.new_thread_id = threadId;
@@ -216,6 +231,7 @@ export class Codex {
         ...(importing ? { outputSchema: importSchema } : organizer ? { outputSchema: organizerSchema } : classification ? { outputSchema: classificationSchema } : {}),
       });
       this.active.turnId = turn.id;
+      this.flushUsage();
       await onSession({ thread_id: threadId, turn_id: turn.id });
       const result = await completed;
       if (importing) {

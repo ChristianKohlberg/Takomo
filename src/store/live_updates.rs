@@ -36,6 +36,8 @@ fn rule(table: &str) -> Option<(&'static str, &'static str)> {
         "case_verdicts" | "case_environments" => ("(SELECT c.project FROM checks c JOIN cases x ON x.check_id=c.id WHERE x.id=@.case_id)", "checks,document"),
         "test_run_cases" | "test_run_results" => ("(SELECT project FROM test_runs WHERE id=@.run_id)", "checks,document"),
         "release_paths" | "release_orphan_globs" => ("(SELECT project FROM releases WHERE id=@.release)", "checks"),
+        "codebase_import_jobs" => ("@.project", "agent"),
+        "agent_run_usage" => ("COALESCE((SELECT project FROM codebase_import_jobs WHERE id=@.job),(SELECT c.project FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE j.id=@.job))", "agent"),
         "agent_conversations" | "lane_organizer_conversations" => ("@.project", "agent,tickets"),
         "agent_jobs" | "agent_messages" | "document_thread_profiles" => ("(SELECT project FROM agent_conversations WHERE id=@.conversation_id)", "agent,tickets"),
         "document_agent_jobs" | "document_workspace_jobs" | "document_thread_migrations" | "lane_organizer_jobs" | "bug_research_jobs" | "agent_steering" | "ticket_document_jobs" => ("(SELECT c.project FROM agent_conversations c JOIN agent_jobs j ON j.conversation_id=c.id WHERE j.id=@.job)", "agent,tickets"),
@@ -72,6 +74,8 @@ fn cascade_owner(table: &str) -> bool {
             | "test_run_results"
             | "release_paths"
             | "release_orphan_globs"
+            | "agent_run_usage"
+            | "codebase_import_jobs"
             | "agent_jobs"
             | "agent_messages"
             | "document_thread_profiles"

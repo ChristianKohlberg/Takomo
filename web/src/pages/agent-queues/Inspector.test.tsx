@@ -142,3 +142,18 @@ describe('Agent queue inspector', () => {
     expect(await screen.findByText('Waiting for the conversation worker to claim this request.')).toBeTruthy()
   })
 })
+
+it('shows extraction scope, usage and both review links in the shared queue', async () => {
+  const extraction: AgentJob = { ...job, id: 'ci-one', kind: 'codebase_import', source: { full_name: 'owner/repo', revision: 'abc', scope: { include: ['src/checkout'], exclude: [] } }, telemetry: { updated_at: 1, usage: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 30, reasoning_output_tokens: 10, total_tokens: 130 } } }
+  vi.mocked(listAgentJobs).mockResolvedValue(list([extraction]))
+  vi.mocked(getAgentJob).mockResolvedValue(detail(extraction))
+  render(<Inspector token="reader" project="demo" lang="en" onAuthError={vi.fn()} />)
+  fireEvent.click(await screen.findByRole('button', { name: /Repository extraction/ }))
+  const pane = await screen.findByRole('region', { name: 'Request details' })
+  expect(await within(pane).findByText('src/checkout')).toBeTruthy()
+  expect(within(pane).getByRole('link', { name: 'Open document' }).getAttribute('href')).toBe('/projects/demo/specification?view=document')
+  expect(within(pane).getByRole('link', { name: 'Open mindmap' })).toBeTruthy()
+  const usage = within(pane).getByRole('region', { name: 'Token usage' })
+  expect(within(usage).getByText('130')).toBeTruthy()
+  expect(within(usage).getByText('Cached input (included)')).toBeTruthy()
+})

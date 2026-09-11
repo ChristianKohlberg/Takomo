@@ -62,3 +62,15 @@ test('effective configuration rejects inherited MCP, plugins, and enabled tools'
   assert.throws(() => validateConfig({ ...restrictions, web_search: 'live' }));
   assert.throws(() => validateConfig({ ...restrictions, features: { ...restrictions.features, code_mode_host: true } }), /disable code_mode_host/);
 });
+
+test('app-server usage reaches completed and failed deliveries without foreign events or duplicates', async () => {
+  for (const prompt of ['USAGE', 'USAGE FAIL']) {
+    let result;
+    await executeJob({ ...job, prompt, thread_id: 'thread-existing' }, {
+      serviceId: 'worker', signal: new AbortController().signal, createCodex,
+      api: async (path, body) => { if (path.endsWith('/result')) result = body; return {}; },
+    });
+    assert.equal(result.telemetry.usage.total_tokens,60);
+    assert.equal(result.status, prompt.includes('FAIL') ? 'failed' : 'completed');
+  }
+});
