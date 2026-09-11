@@ -609,3 +609,261 @@ async fn deleting_a_ticket_removes_queued_and_running_classification_conversatio
         );
     }
 }
+
+async fn scheduling(f: &Fixture, value: &str) -> Value {
+    let response = f
+        .app
+        .client
+        .put(f.app.url("/v1/projects/tp/document-classification-config"))
+        .bearer_auth(&f.app.admin)
+        .json(&json!({"mode":"suggest","scheduling":value}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn manual_cancels_automatic_backlog_but_allows_explicit_backfill() {
+    let f = fixture().await;
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 1);
+    let response = scheduling(&f, "manual").await;
+    assert_eq!(response["cancelled"], 1);
+    let (_, jobs) = f.app.get(&f.app.human, "/v1/agent-jobs?project=tp").await;
+    assert_eq!(jobs["counts"]["queued"], 0);
+    assert_eq!(jobs["counts"]["cancelled"], 1);
+    let (_, filtered) = f
+        .app
+        .get(&f.app.human, "/v1/agent-jobs?project=tp&status=cancelled")
+        .await;
+    assert_eq!(filtered["total"], 1);
+    let id = filtered["items"][0]["id"].as_str().unwrap();
+    let (_, detail) = f
+        .app
+        .get(&f.app.human, &format!("/v1/agent-jobs/{id}"))
+        .await;
+    assert_eq!(detail["job"]["status"], "cancelled");
+    assert_eq!(links(&f).await["classification"]["status"], "cancelled");
+    let (status, _) = f
+        .app
+        .post(
+            &f.app.worker,
+            "/v1/tickets",
+            json!({"project":"tp","type":"task","title":"Manual new ticket"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 0);
+    let (status, body) = f
+        .app
+        .post(
+            &f.app.human,
+            "/v1/projects/tp/document-classification",
+            json!({"request_id":"explicit-backfill"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scheduled"], 2);
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 2);
+    let (_, jobs) = f.app.get(&f.app.human, "/v1/agent-jobs?project=tp").await;
+    assert_eq!(jobs["counts"]["queued"], 2);
+    assert!(jobs["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| j["status"] == "queued")
+        .all(|j| j["requested_by"] != "system:document-classifier"));
+    assert_eq!(scheduling(&f, "manual").await["cancelled"], 0);
+    assert_eq!(scheduling(&f, "off").await["cancelled"], 2);
+}
+
+#[tokio::test]
+async fn off_blocks_requests_while_running_work_can_finish_and_reenable_does_not_backfill() {
+    let f = fixture().await;
+    enqueue(&f, "running").await;
+    let job = claim(&f).await;
+    assert_eq!(scheduling(&f, "off").await["cancelled"], 0);
+    for path in [
+        format!("/v1/tickets/{}/document-classification", f.ticket),
+        "/v1/projects/tp/document-classification".into(),
+    ] {
+        let (status, body) = f
+            .app
+            .post(&f.app.human, &path, json!({"request_id":"disabled"}))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+    let (status, body) = finish(&f, &job, result(&job, &f.section)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(links(&f).await["links"].as_array().unwrap().len(), 1);
+    f.app
+        .post(
+            &f.app.worker,
+            "/v1/tickets",
+            json!({"project":"tp","type":"task","title":"Created while off"}),
+        )
+        .await;
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 0);
+    scheduling(&f, "automatic").await;
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 0);
+    f.app
+        .post(
+            &f.app.worker,
+            "/v1/tickets",
+            json!({"project":"tp","type":"task","title":"Created while automatic"}),
+        )
+        .await;
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn scheduling_requires_admin_and_legacy_policy_updates_preserve_it() {
+    let f = fixture().await;
+    scheduling(&f, "manual").await;
+    mode(&f, "auto_apply_clear").await;
+    let (_, cfg) = f
+        .app
+        .get(
+            &f.app.human,
+            "/v1/projects/tp/document-classification-config",
+        )
+        .await;
+    assert_eq!(cfg["scheduling"], "manual");
+    for (token, value, expected) in [
+        (&f.app.human, "off", StatusCode::FORBIDDEN),
+        (&f.app.admin, "invalid", StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let response = f
+            .app
+            .client
+            .put(f.app.url("/v1/projects/tp/document-classification-config"))
+            .bearer_auth(token)
+            .json(&json!({"mode":"suggest","scheduling":value}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+}
+
+#[tokio::test]
+async fn legacy_database_upgrade_preserves_queue_and_defaults_and_reopens_cleanly() {
+    let f = fixture().await;
+    mode(&f, "auto_apply_clear").await;
+    {
+        let c = rusqlite::Connection::open(f.app.db_path()).unwrap();
+        c.execute_batch("DROP TRIGGER ticket_document_created; DROP TRIGGER ticket_document_edited; ALTER TABLE ticket_document_settings DROP COLUMN scheduling; ALTER TABLE ticket_document_pending DROP COLUMN requested_by; ALTER TABLE ticket_document_jobs DROP COLUMN cancelled;").unwrap();
+    }
+    let store = f.app.open_store();
+    assert_eq!(store.sweep_ticket_classification().unwrap(), 1);
+    drop(store);
+    drop(f.app.open_store());
+    let (_, cfg) = f
+        .app
+        .get(
+            &f.app.human,
+            "/v1/projects/tp/document-classification-config",
+        )
+        .await;
+    assert_eq!(cfg["mode"], "auto_apply_clear");
+    assert_eq!(cfg["scheduling"], "automatic");
+}
+
+#[tokio::test]
+async fn scheduling_changes_are_project_scoped_and_do_not_cancel_other_projects() {
+    let f = fixture().await;
+    enqueue(&f, "keep-other-project").await;
+    f.app
+        .post(
+            &f.app.admin,
+            "/v1/projects",
+            json!({"id":"beta","name":"Other"}),
+        )
+        .await;
+    let restricted = f.app.mint(
+        "human:beta-admin",
+        &["read", "write", "human", "admin"],
+        Some(&["beta"]),
+    );
+    let (status, _) = f
+        .app
+        .put(
+            &restricted,
+            "/v1/projects/tp/document-classification-config",
+            json!({"mode":"suggest","scheduling":"off"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = f
+        .app
+        .put(
+            &restricted,
+            "/v1/projects/beta/document-classification-config",
+            json!({"mode":"suggest","scheduling":"off"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cancelled"], 0);
+    let (_, jobs) = f.app.get(&f.app.human, "/v1/agent-jobs?project=tp").await;
+    assert_eq!(jobs["counts"]["queued"], 1);
+    scheduling(&f, "manual").await;
+    let (status, _) = f
+        .app
+        .patch(
+            &f.app.worker,
+            &format!("/v1/tickets/{}", f.ticket),
+            json!({"title":"Edited while manual"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn pending_manual_request_does_not_follow_a_ticket_into_another_project() {
+    let f = fixture().await;
+    scheduling(&f, "manual").await;
+    let (status, _) = f
+        .app
+        .post(
+            &f.app.human,
+            "/v1/projects/tp/document-classification",
+            json!({"request_id":"manual-source"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    f.app
+        .post(
+            &f.app.admin,
+            "/v1/projects",
+            json!({"id":"beta","name":"Other"}),
+        )
+        .await;
+    f.app
+        .put(
+            &f.app.admin,
+            "/v1/projects/beta/document-classification-config",
+            json!({"mode":"suggest","scheduling":"manual"}),
+        )
+        .await;
+    let (status, body) = f
+        .app
+        .post(
+            &f.app.admin,
+            "/v1/tickets/move",
+            json!({"tickets":[f.ticket],"to_project":"beta"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let c = rusqlite::Connection::open(f.app.db_path()).unwrap();
+    let pending: i64 = c
+        .query_row(
+            "SELECT count(*) FROM ticket_document_pending WHERE ticket=?1",
+            [&f.ticket],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert_eq!(f.app.open_store().sweep_ticket_classification().unwrap(), 0);
+}

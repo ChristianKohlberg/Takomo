@@ -232,12 +232,13 @@ fn view(c: &Connection, ticket: &str, doc: Option<&Value>) -> ApiResult<Value> {
         )
         .optional()?;
     type JobStatus = (String, String, Option<String>, Option<String>, bool);
-    let job:Option<JobStatus>=c.query_row("SELECT j.id,j.status,j.error,d.proposal,d.stale FROM ticket_document_jobs d JOIN agent_jobs j ON j.id=d.job WHERE d.ticket=?1 AND j.conversation_id IN (SELECT id FROM agent_conversations WHERE project=?2) ORDER BY j.rowid DESC LIMIT 1",params![ticket,t.project],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    let job:Option<JobStatus>=c.query_row("SELECT j.id,CASE WHEN d.cancelled=1 THEN 'cancelled' ELSE j.status END,j.error,d.proposal,d.stale FROM ticket_document_jobs d JOIN agent_jobs j ON j.id=d.job WHERE d.ticket=?1 AND j.conversation_id IN (SELECT id FROM agent_conversations WHERE project=?2) ORDER BY j.rowid DESC LIMIT 1",params![ticket,t.project],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
     let pending: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM ticket_document_pending WHERE ticket=?1)",
         [ticket],
         |r| r.get(0),
     )?;
+    let pending = pending && (scheduling(c, &t.project)? == "automatic" || (scheduling(c, &t.project)? == "manual" && c.query_row("SELECT EXISTS(SELECT 1 FROM ticket_document_pending WHERE ticket=?1 AND requested_by IS NOT NULL)", [ticket], |r| r.get::<_,bool>(0))?));
     let valid_link = doc
         .map(|d| accepted(c, ticket, &t.project, d))
         .transpose()?
@@ -358,7 +359,7 @@ fn enqueue(
     }
     let docrev = sha256_hex(doc.to_string().as_bytes());
     if request.is_none() {
-        let same:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM ticket_document_jobs WHERE ticket=?1 AND ticket_revision=?2 AND document_revision=?3)",params![ticket,rev,docrev],|r|r.get(0))?;
+        let same:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM ticket_document_jobs d WHERE d.ticket=?1 AND d.ticket_revision=?2 AND d.document_revision=?3 AND d.cancelled=0)",params![ticket,rev,docrev],|r|r.get(0))?;
         if same {
             return Ok(None);
         }
@@ -398,6 +399,21 @@ fn enqueue(
     )?;
     Ok(Some(jid))
 }
+fn scheduling(c: &Connection, project: &str) -> ApiResult<String> {
+    Ok(c.query_row(
+        "SELECT scheduling FROM ticket_document_settings WHERE project=?1",
+        [project],
+        |r| r.get(0),
+    )
+    .optional()?
+    .unwrap_or_else(|| "automatic".into()))
+}
+fn require_classification(c: &Connection, project: &str) -> ApiResult<()> {
+    if scheduling(c, project)? == "off" {
+        return Err(conflict("Document classification is off for this project. Enable Manual or Automatic in project settings first"));
+    }
+    Ok(())
+}
 impl Store {
     pub fn ticket_document_view(
         &self,
@@ -428,7 +444,7 @@ impl Store {
                     |r| r.get(0),
                 )
                 .optional()?;
-            Ok(json!({"mode":mode.unwrap_or_else(||"suggest".into())}))
+            Ok(json!({"mode":mode.unwrap_or_else(||"suggest".into()), "scheduling":scheduling(c,project)?}))
         })
     }
     pub fn set_ticket_document_config(
@@ -436,13 +452,30 @@ impl Store {
         ctx: &AuthCtx,
         project: &str,
         mode: &str,
+        requested_scheduling: Option<&str>,
     ) -> ApiResult<Value> {
         ctx.require_scope("admin")?;
         ctx.require_project(project)?;
         if !["suggest", "auto_apply_clear"].contains(&mode) {
             return Err(invalid("mode must be suggest or auto_apply_clear"));
         }
-        self.with_tx(|c|{ensure_project_writable(c,project)?;c.execute("INSERT INTO ticket_document_settings(project,mode) VALUES(?1,?2) ON CONFLICT(project) DO UPDATE SET mode=excluded.mode",params![project,mode])?;emit_event(c,None,Some(project),&ctx.actor,"project.document_classification_configured",json!({"mode":mode}),now_ms())?;Ok(json!({"mode":mode}))})
+        if requested_scheduling.is_some_and(|v| !matches!(v, "off" | "manual" | "automatic")) {
+            return Err(invalid("scheduling must be off, manual or automatic"));
+        }
+        self.with_tx(|c| {
+            ensure_project_writable(c, project)?;
+            let scheduling = requested_scheduling.map(String::from).unwrap_or(scheduling(c, project)?);
+            c.execute("INSERT INTO ticket_document_settings(project,mode,scheduling) VALUES(?1,?2,?3) ON CONFLICT(project) DO UPDATE SET mode=excluded.mode,scheduling=excluded.scheduling",params![project,mode,scheduling])?;
+            let mut cancelled = 0;
+            if scheduling != "automatic" {
+                c.execute("DELETE FROM ticket_document_pending WHERE ticket IN (SELECT id FROM tickets WHERE project=?1) AND (?2='off' OR requested_by IS NULL)", params![project,scheduling])?;
+                c.execute("UPDATE ticket_document_jobs SET cancelled=1 WHERE job IN (SELECT id FROM agent_jobs WHERE status='queued' AND conversation_id IN (SELECT id FROM agent_conversations WHERE project=?1) AND (?2='off' OR requested_by='system:document-classifier'))",params![project,scheduling])?;
+                cancelled = c.execute("UPDATE agent_jobs SET status='failed',finished_at=?2,error='Cancelled by project classification setting' WHERE status='queued' AND conversation_id IN (SELECT id FROM agent_conversations WHERE project=?1) AND id IN (SELECT job FROM ticket_document_jobs WHERE cancelled=1)",params![project,now_ms()])?;
+            }
+            let result=json!({"mode":mode,"scheduling":scheduling,"cancelled":cancelled});
+            emit_event(c,None,Some(project),&ctx.actor,"project.document_classification_configured",result.clone(),now_ms())?;
+            Ok(result)
+        })
     }
     pub fn request_ticket_classification(
         &self,
@@ -454,6 +487,7 @@ impl Store {
         self.with_tx(|c| {
             let t = get_ticket_required(c, ticket)?;
             human(ctx, &t.project)?;
+            require_classification(c, &t.project)?;
             let job = enqueue(c, ticket, &ctx.actor, Some(request), live)?;
             c.execute(
                 "DELETE FROM ticket_document_pending WHERE ticket=?1",
@@ -470,13 +504,17 @@ impl Store {
     ) -> ApiResult<Value> {
         human(ctx, project)?;
         super::agent_chat::bounded(request, 120, "request_id")?;
-        self.with_tx(|c|{ensure_project_writable(c,project)?;let linked=filtered_tickets(c,Some(project),None,None)?;let queued=c.execute("INSERT OR IGNORE INTO ticket_document_pending(ticket) SELECT t.id FROM tickets t JOIN workflow_states ws ON ws.project=t.project AND ws.state=t.state WHERE t.project=?1 AND t.archived_at IS NULL AND ws.terminal=0 AND t.id NOT IN (SELECT value FROM json_each(?2))",params![project,serde_json::to_string(&linked).unwrap()])?;Ok(json!({"scheduled":queued}))})
+        self.with_tx(|c|{ensure_project_writable(c,project)?;require_classification(c,project)?;let linked=filtered_tickets(c,Some(project),None,None)?;let queued=c.execute("INSERT INTO ticket_document_pending(ticket,requested_by) SELECT t.id,?3 FROM tickets t JOIN workflow_states ws ON ws.project=t.project AND ws.state=t.state WHERE t.project=?1 AND t.archived_at IS NULL AND ws.terminal=0 AND t.id NOT IN (SELECT value FROM json_each(?2)) ON CONFLICT(ticket) DO UPDATE SET requested_by=excluded.requested_by",params![project,serde_json::to_string(&linked).unwrap(),ctx.actor])?;Ok(json!({"scheduled":queued}))})
     }
     pub fn sweep_ticket_classification(&self) -> ApiResult<usize> {
         self.with_tx(|c|{
-  let mut s=c.prepare("SELECT p.ticket FROM ticket_document_pending p JOIN tickets t ON t.id=p.ticket JOIN projects pr ON pr.id=t.project WHERE pr.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM ticket_document_jobs d JOIN agent_jobs j ON j.id=d.job WHERE d.ticket=p.ticket AND j.status='running') ORDER BY p.rowid LIMIT 20")?;
-  let ids=s.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;let mut n=0;
-  for id in ids {if enqueue(c,&id,"system:document-classifier",None,None)?.is_some(){n+=1;}c.execute("DELETE FROM ticket_document_pending WHERE ticket=?1",[id])?;}Ok(n)
+  let mut s=c.prepare("SELECT p.ticket,t.project,p.requested_by FROM ticket_document_pending p JOIN tickets t ON t.id=p.ticket JOIN projects pr ON pr.id=t.project WHERE pr.archived_at IS NULL AND NOT EXISTS(SELECT 1 FROM ticket_document_jobs d JOIN agent_jobs j ON j.id=d.job WHERE d.ticket=p.ticket AND j.status='running') ORDER BY p.rowid LIMIT 20")?;
+  let ids=s.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<Result<Vec<_>,_>>()?;let mut n=0;
+  for (id,project,actor) in ids {
+    let policy=scheduling(c,&project)?;
+    if policy!="off" && (policy=="automatic" || actor.is_some()) && enqueue(c,&id,actor.as_deref().unwrap_or("system:document-classifier"),None,None)?.is_some(){n+=1;}
+    c.execute("DELETE FROM ticket_document_pending WHERE ticket=?1",[id])?;
+  }Ok(n)
  })
     }
     pub fn add_ticket_document_link(

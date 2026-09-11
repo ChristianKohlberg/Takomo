@@ -340,6 +340,15 @@ pub(super) fn inspect_summary(conn: &Connection, ctx: &AuthCtx, id: &str) -> Api
             |r| r.get(0),
         )
         .optional()?;
+    if classification.is_some()
+        && conn.query_row(
+            "SELECT cancelled FROM ticket_document_jobs WHERE job=?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
+        value["status"] = json!("cancelled");
+    }
     value["kind"] = json!(if classification.is_some() {
         "ticket_document_classify"
     } else if workspace {
@@ -496,7 +505,7 @@ impl Store {
             let allowed = ctx.allowed_projects_vec().map(|p| serde_json::to_string(&p).unwrap());
             let scope = " FROM agent_jobs j JOIN agent_conversations c ON c.id=j.conversation_id WHERE (?1 IS NULL OR
                 c.project=?1) AND (?2 IS NULL OR c.project IN (SELECT value FROM json_each(?2)))";
-            let projected_status="CASE WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id AND b.cancelled=1) THEN 'cancelled' ELSE j.status END";
+            let projected_status="CASE WHEN EXISTS(SELECT 1 FROM bug_research_jobs b WHERE b.job=j.id AND b.cancelled=1) OR EXISTS(SELECT 1 FROM ticket_document_jobs d WHERE d.job=j.id AND d.cancelled=1) THEN 'cancelled' ELSE j.status END";
             let mut counts = json!({"queued":0,"running":0,"completed":0,"failed":0,"cancelled":0});
             let mut stmt = conn.prepare(&format!("SELECT {projected_status},COUNT(*){scope} GROUP BY {projected_status}"))?;
             for row in stmt.query_map(params![project, allowed], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
