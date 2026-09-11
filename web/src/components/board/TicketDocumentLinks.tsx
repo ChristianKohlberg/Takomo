@@ -83,7 +83,7 @@ function Panel({ token, project, ticket, lang, canWrite, onChanged, onError }: P
       {accepted.length ? <div className="space-y-2" aria-label={t.accepted}>{accepted.map(linkView)}</div> : <p className="text-sm text-muted-foreground">{t.none}</p>}
       {suggestions.length > 0 && <div className="space-y-2"><h4 className="text-sm font-medium">{t.suggestions}</h4>{suggestions.map(linkView)}</div>}
       {data.classification && <div role="status" className="text-xs text-muted-foreground">
-        {data.classification.status === 'no_match' || data.classification.status === 'unavailable' ? <p>{t.noMatch}</p> : <p>{({ linked: t.linked, queued: t.queued, running: t.running, completed: t.completed, failed: t.failed, stale: t.stale } as Record<string, string>)[data.classification.status] ?? data.classification.status}</p>}
+        {data.classification.status === 'no_match' || data.classification.status === 'unavailable' ? <p>{t.noMatch}</p> : <p>{({ linked: t.linked, queued: t.queued, running: t.running, completed: t.completed, failed: t.failed, cancelled: t.cancelled, stale: t.stale } as Record<string, string>)[data.classification.status] ?? data.classification.status}</p>}
         {data.classification.no_match_reason && <p>{data.classification.no_match_reason}</p>}{data.classification.error && <p>{data.classification.error}</p>}{data.classification.ambiguity && <p>{typeof data.classification.ambiguity === 'string' ? data.classification.ambiguity : t.ambiguity}</p>}
       </div>}
       {canWrite ? <>

@@ -168,6 +168,7 @@ pub async fn config(
 #[serde(deny_unknown_fields)]
 pub struct Config {
     mode: String,
+    scheduling: Option<String>,
 }
 pub async fn set_config(
     State(state): State<Arc<AppState>>,
@@ -175,9 +176,12 @@ pub async fn set_config(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<Config>,
 ) -> ApiResult<Json<Value>> {
-    let value = state
-        .store
-        .set_ticket_document_config(&ctx, &id, &body.mode)?;
+    let value = state.store.set_ticket_document_config(
+        &ctx,
+        &id,
+        &body.mode,
+        body.scheduling.as_deref(),
+    )?;
     state.wake();
     Ok(Json(value))
 }

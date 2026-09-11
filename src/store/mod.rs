@@ -193,6 +193,22 @@ impl Store {
         migrate(&conn)?;
         // Install cross-table triggers only after legacy table rebuilds finish.
         conn.execute_batch(include_str!("ticket_document.sql"))?;
+        if !has_column(&conn, "ticket_document_settings", "scheduling")? {
+            conn.execute("ALTER TABLE ticket_document_settings ADD COLUMN scheduling TEXT NOT NULL DEFAULT 'automatic'", [])?;
+        }
+        if !has_column(&conn, "ticket_document_pending", "requested_by")? {
+            conn.execute(
+                "ALTER TABLE ticket_document_pending ADD COLUMN requested_by TEXT",
+                [],
+            )?;
+        }
+        if !has_column(&conn, "ticket_document_jobs", "cancelled")? {
+            conn.execute(
+                "ALTER TABLE ticket_document_jobs ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        conn.execute_batch(include_str!("ticket_document_scheduling.sql"))?;
         checkcollab::seed_existing(&conn)?;
         // After the schema and the additive migrations, because it writes into
         // `crdt_updates` and reads the `nodes` column both of those provide.

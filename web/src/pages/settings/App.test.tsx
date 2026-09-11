@@ -20,7 +20,7 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
     : url === '/v1/projects' ? [{ id: 'takomo', name: 'Takomo', style_guide: style }, { id: 'second', name: 'Second project' }].filter(p => !deleted.includes(`/v1/projects/${p.id}`))
     : url.includes('/users') ? { items: [], total: 0 }
     : url.endsWith('/writing-instructions') ? { templates: [], default_id: null }
-    : url.endsWith('/document-classification-policy') ? { mode: 'suggest' }
+    : url.endsWith('/document-classification-config') ? { mode: 'suggest', scheduling: 'automatic' }
     : url.includes('/integrations/github/installations/') ? { items: [{ id: 2, full_name: 'example/Takomo', private: false }], total: 1 }
     : url.endsWith('/repository') ? { repository: url.includes('/takomo/') ? { installation: 1, repository: 2, full_name: 'example/Takomo', scope: { include: ['src'], exclude: [] } } : null }
     : url.endsWith('/integrations/codex') ? { items: [] }
@@ -32,6 +32,13 @@ function open(path: string) {
   const router = createMemoryRouter([{ path: '/settings', element: <App /> }, { path: '/legacy', element: <App legacy /> }], { initialEntries: [path] })
   render(<ToastProvider><RouterProvider router={router} /></ToastProvider>)
   return router
+}
+async function loadedStyleGuide() {
+  const editor = await screen.findByLabelText('Style guide') as HTMLTextAreaElement
+  // The editor mounts before the project settings effect fills its value.
+  // Enter a draft only after hydration, as a user editing the saved text would.
+  await waitFor(() => { expect(editor.value).toBe('Original style'); expect(editor.readOnly).toBe(false) })
+  return editor
 }
 beforeEach(() => {
   localStorage.clear(); localStorage.setItem('takomo.token', 'test-only'); localStorage.setItem('takomo.lang', 'en')
@@ -79,7 +86,7 @@ describe('Settings navigation and save boundaries', () => {
   })
   it('keeps drafts on Stay and discards only after confirmation', async () => {
     const router = open('/settings?scope=takomo&section=writing')
-    fireEvent.change(await screen.findByLabelText('Style guide'), { target: { value: 'Unsaved draft' } })
+    fireEvent.change(await loadedStyleGuide(), { target: { value: 'Unsaved draft' } })
     fireEvent.click(screen.getByRole('link', { name: 'People' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stay here' }))
     expect((screen.getByLabelText('Style guide') as HTMLTextAreaElement).value).toBe('Unsaved draft')
@@ -91,7 +98,7 @@ describe('Settings navigation and save boundaries', () => {
   })
   it('saves only changed conventions and preserves rejected drafts', async () => {
     open('/settings?scope=takomo&section=writing')
-    fireEvent.change(await screen.findByLabelText('Style guide'), { target: { value: 'New style' } })
+    fireEvent.change(await loadedStyleGuide(), { target: { value: 'New style' } })
     failSave = true
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await screen.findByText('Save refused')
@@ -209,7 +216,7 @@ describe('Settings navigation and save boundaries', () => {
   })
   it('discards the conventions draft when only the query order changes', async () => {
     const router = open('/settings?scope=takomo&section=writing')
-    fireEvent.change(await screen.findByLabelText('Style guide'), { target: { value: 'Unsaved draft' } })
+    fireEvent.change(await loadedStyleGuide(), { target: { value: 'Unsaved draft' } })
     fireEvent.click(screen.getByRole('link', { name: 'Writing instructions' }))
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard and continue' }))
     await waitFor(() => expect(router.state.location.search).toBe('?section=writing&scope=takomo'))
@@ -220,7 +227,7 @@ describe('Settings navigation and save boundaries', () => {
   })
   it('keeps the remembered project when a blank choice is cancelled over a draft', async () => {
     const router = open('/settings?scope=takomo&section=writing')
-    fireEvent.change(await screen.findByLabelText('Style guide'), { target: { value: 'Unsaved draft' } })
+    fireEvent.change(await loadedStyleGuide(), { target: { value: 'Unsaved draft' } })
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: '' } })
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stay here' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())

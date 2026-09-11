@@ -10,6 +10,7 @@ export interface TicketDocumentLinks {
   classification: { status: string; job_id?: string | null; error?: string | null; no_match_reason?: string | null; ambiguity?: string | boolean | null } | null
 }
 export interface ReferencePage { items: DocumentReference[]; total: number; limit: number; offset?: number }
+export type ClassificationScheduling = 'off' | 'manual' | 'automatic'
 export type ClassificationPolicy = 'suggest' | 'auto_apply_clear'
 const base = (ticket: string) => `/tickets/${encodeURIComponent(ticket)}`
 const json = { 'Content-Type': 'application/json' }
@@ -18,8 +19,8 @@ export const addTicketDocumentLink = (token: string, ticket: string, section_id:
 export const changeTicketDocumentLink = (token: string, ticket: string, link: string, change: { state: 'accepted' | 'removed'; primary?: boolean }, signal?: AbortSignal) => api(token, `${base(ticket)}/document-links/${encodeURIComponent(link)}`, { method: 'PATCH', headers: json, body: JSON.stringify(change), signal })
 export const classifyTicketDocument = (token: string, ticket: string, request_id: string, signal?: AbortSignal) => api(token, `${base(ticket)}/document-classification`, { method: 'POST', headers: json, body: JSON.stringify({ request_id }), signal })
 export const getProjectDocumentLinks = (token: string, project: string, signal?: AbortSignal, section?: string, offset = 0) => api<ReferencePage>(token, `/projects/${encodeURIComponent(project)}/document-links?limit=500&offset=${offset}${section ? `&section_id=${encodeURIComponent(section)}` : ''}`, { signal })
-export const getClassificationPolicy = (token: string, project: string, signal?: AbortSignal) => api<{ mode: ClassificationPolicy }>(token, `/projects/${encodeURIComponent(project)}/document-classification-config`, { signal })
-export const saveClassificationPolicy = (token: string, project: string, mode: ClassificationPolicy, signal?: AbortSignal) => api(token, `/projects/${encodeURIComponent(project)}/document-classification-config`, { method: 'PUT', headers: json, body: JSON.stringify({ mode }), signal })
+export const getClassificationPolicy = (token: string, project: string, signal?: AbortSignal) => api<{ mode: ClassificationPolicy; scheduling?: ClassificationScheduling }>(token, `/projects/${encodeURIComponent(project)}/document-classification-config`, { signal })
+export const saveClassificationPolicy = (token: string, project: string, mode: ClassificationPolicy, signal?: AbortSignal, scheduling?: ClassificationScheduling) => api<{ cancelled?: number }>(token, `/projects/${encodeURIComponent(project)}/document-classification-config`, { method: 'PUT', headers: json, body: JSON.stringify({ mode, ...(scheduling ? { scheduling } : {}) }), signal })
 export async function documentSections(token: string, project: string, signal?: AbortSignal) {
   const maps = await api<{ items: { id: string }[] }>(token, `/mindmaps?project=${encodeURIComponent(project)}&limit=1`, { signal })
   if (!maps.items[0]) return []

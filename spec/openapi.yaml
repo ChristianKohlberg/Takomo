@@ -11166,6 +11166,15 @@ components:
       required: [mode]
       properties:
         mode: { type: string, enum: [suggest, auto_apply_clear], default: suggest }
+        scheduling:
+          type: string
+          enum: [off, manual, automatic]
+          description: Defaults to automatic. Omission on PUT preserves the current setting. Manual cancels queued automatic classifications; off cancels all queued classifications and rejects explicit requests. Running jobs finish. Enabling automatic does not backfill existing tickets.
+        cancelled:
+          type: integer
+          minimum: 0
+          readOnly: true
+          description: Number of queued jobs cancelled by this settings change.
     TicketDocumentLink:
       type: object
       required: [id, ticket, mindmap, section_id, title, section_version, relation, provenance, state, primary, missing, stale]
@@ -11200,7 +11209,7 @@ components:
         classification:
           type: [object, 'null']
           properties:
-            status: { type: string, enum: [queued, running, completed, failed, no_match, stale, unavailable, linked] }
+            status: { type: string, enum: [queued, running, completed, failed, cancelled, no_match, stale, unavailable, linked] }
             job_id: { type: [string, 'null'] }
             error: { type: [string, 'null'] }
             no_match_reason: { type: [string, 'null'] }
