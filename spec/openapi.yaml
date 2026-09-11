@@ -9077,6 +9077,72 @@ paths:
             schema:
               $ref: '#/components/schemas/CodebaseImportResult'
 
+  /integrations/codex:
+    get:
+      operationId: listCodexConnections
+      summary: List administrator-managed Codex worker connections
+      description: Requires human and admin scopes with unrestricted project access. Credentials stay on the worker.
+      tags: [Codex connections]
+      responses:
+        "200":
+          description: Connection metadata or list. Device codes are temporary; account credentials are never returned.
+          content:
+            application/json:
+              schema: {type: object}
+        "403":
+          description: Insufficient scope or a restricted administrator.
+        "422":
+          description: Invalid command or report.
+
+  /integrations/codex/{id}:
+    post:
+      operationId: commandCodexConnection
+      summary: Queue an idle-worker login, refresh, cancellation or logout
+      description: Requires human and admin scopes with unrestricted project access. Credentials stay on the worker.
+      tags: [Codex connections]
+      parameters:
+      - in: path
+        name: id
+        required: true
+        schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CodexConnectionCommand"}
+      responses:
+        "200":
+          description: Connection metadata or list. Device codes are temporary; account credentials are never returned.
+          content:
+            application/json:
+              schema: {type: object}
+        "403":
+          description: Insufficient scope or a restricted administrator.
+        "422":
+          description: Invalid command or report.
+
+  /agent-services/codex/poll:
+    post:
+      operationId: pollCodexConnection
+      summary: Register a worker and exchange credential-free authentication control messages
+      description: Requires agent:run. The worker identity is bound to the calling token and its existing project restrictions.
+      tags: [Codex connections]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CodexConnectionPoll"}
+      responses:
+        "200":
+          description: Connection metadata or list. Device codes are temporary; account credentials are never returned.
+          content:
+            application/json:
+              schema: {type: object}
+        "403":
+          description: Insufficient scope or a restricted administrator.
+        "422":
+          description: Invalid command or report.
+
 components:
   securitySchemes:
     bearer:
@@ -9140,6 +9206,56 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    CodexConnectionCommand:
+      type: object
+      additionalProperties: false
+      required: [action, request_id]
+      properties:
+        action: {type: string, enum: [login, refresh, logout, cancel]}
+        request_id: {type: string, minLength: 1, maxLength: 120}
+    CodexConnectionPoll:
+      type: object
+      additionalProperties: false
+      required: [service_id]
+      properties:
+        service_id: {type: string, minLength: 1, maxLength: 120}
+        command_id: {type: [string, 'null'], maxLength: 120}
+        busy: {type: boolean, default: false}
+        report:
+          type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status: {type: string, enum: [unknown, connected, disconnected, login_pending, error]}
+            error: {type: [string, 'null'], maxLength: 500}
+            account:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [auth_mode]
+              properties:
+                email: {type: [string, 'null'], maxLength: 254}
+                plan: {type: [string, 'null'], maxLength: 80}
+                auth_mode: {type: string, enum: [chatgpt, apiKey, other]}
+            device:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [verification_url, user_code]
+              properties:
+                verification_url: {type: string, const: 'https://auth.openai.com/codex/device'}
+                user_code: {type: string, pattern: '^[A-Za-z0-9-]{1,32}$'}
+            limits:
+              type: [object, 'null']
+              additionalProperties: false
+              properties:
+                primary: {$ref: '#/components/schemas/CodexQuotaWindow'}
+                secondary: {$ref: '#/components/schemas/CodexQuotaWindow'}
+    CodexQuotaWindow:
+      type: [object, 'null']
+      additionalProperties: false
+      required: [used_percent]
+      properties:
+        used_percent: {type: integer, minimum: 0, maximum: 100}
+        resets_at: {type: [integer, 'null'], minimum: 0, maximum: 9007199254740991}
     GithubInstallation:
       type: object
       additionalProperties: false
@@ -12703,6 +12819,9 @@ x-error-codes:
   project.writing_instructions: "Invalid project writing instructions: use at most 20 templates with unique 1–80 character ASCII ids, nonblank names up to 80 characters, and nonblank instructions up to 4000 characters. default_id must name an included template or be null."
   validation.document_chat: "The document action or explicit section context is invalid; source snapshots cannot be supplied by callers."
   validation.agent_usage: "Worker telemetry has unknown fields, invalid identifiers or phases, or token counts outside the nonnegative safe-integer range. Correct the telemetry payload before retrying delivery; do not rerun inference."
+  validation.codex_connection: "Invalid connection action or report. Correct the bounded metadata fields before retrying; never include provider credentials."
+  conflict.codex_connection: "Another connection action is pending. Wait or cancel that action before starting another."
+  notfound.codex_connection: "The requested worker connection does not exist. Refresh the worker list."
   validation.agent_chat: "The request is malformed or exceeds a documented size bound."
   conflict.agent_job: "The conversation is busy or full, an idempotency key conflicts, or the job attempt is stale or owned by another service/token."
   notfound.agent_job: "No agent job has this id."

@@ -10,6 +10,7 @@ pub mod bugs;
 mod checkcollab;
 mod checklist;
 mod claims;
+pub mod codex_connection;
 pub mod crdt;
 mod docs;
 mod document_appearance;
@@ -178,6 +179,7 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         conn.execute_batch(include_str!("agent_chat.sql"))?;
         conn.execute_batch(include_str!("codebase_import.sql"))?;
+        conn.execute_batch(include_str!("codex_connection.sql"))?;
         if !has_column(&conn, "github_connections", "management_url")? {
             conn.execute(
                 "ALTER TABLE github_connections ADD COLUMN management_url TEXT NOT NULL DEFAULT ''",
@@ -243,6 +245,14 @@ impl Store {
         f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
     ) -> ApiResult<T> {
         self.transaction(true, f)
+    }
+
+    /// Account control is polled by administrators; persist it without waking project lists.
+    pub(crate) fn account_transaction<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction) -> ApiResult<T>,
+    ) -> ApiResult<T> {
+        self.transaction(false, f)
     }
 
     /// Rebuildable query-cache bookkeeping does not invalidate application lists.

@@ -391,3 +391,13 @@ existing jobs. GitHub credentials are supplied per attempt by the server as a
 short-lived, repository-restricted read token; do not put the App private key in
 the worker environment. See [GitHub setup and extraction](../../docs/github-extraction.md)
 for server configuration, access management, limits and the small test fixture.
+
+## Manage Codex login from Takomo
+
+After deploying the server with Codex connection support, enable
+`TAKOMO_CODEX_CONNECTIONS=1` and restart this worker while idle. Unrestricted
+administrators can then use Settings → AI connections to sign in via a device
+code, refresh the account and quota, cancel login, or sign out. Credentials remain
+in this worker's dedicated Codex home. The worker pauses claims while disconnected
+or signing in and only executes connection changes between jobs. See
+[Codex connections](../../docs/codex-connections.md) for rollout and rollback.

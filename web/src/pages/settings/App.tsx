@@ -21,6 +21,7 @@ import {
   type User,
 } from '@/lib/users'
 import { NewProjectWizard } from '@/components/settings/NewProjectWizard'
+import { CodexSettings } from '@/components/settings/CodexSettings'
 import { GithubSettings } from '@/components/settings/GithubSettings'
 import { ProjectRepository } from '@/components/settings/ProjectRepository'
 import { NewTokenDialog } from '@/components/settings/NewTokenDialog'
@@ -423,6 +424,7 @@ function SettingsApp({ legacy, lang, setLang }: { legacy: boolean; lang: Locale;
             </Section>
           ) : (
             <>
+              <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="codex"><CodexSettings key={token} token={token} locale={lang} allowed={!!who?.scopes.includes('admin') && !!who?.scopes.includes('human') && !scopedToProjects} /></SettingsPanel>
               <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="github"><GithubSettings token={token} locale={lang} allowed={!!who?.scopes.includes('admin') && !!who?.scopes.includes('human') && !scopedToProjects} /></SettingsPanel>
               <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="search"><EmbeddingSettings key={token} token={token} locale={lang} allowed={!scopedToProjects} /></SettingsPanel>
               <SettingsPanel current={isProjectSection(section) ? 'project' : section} value="overview">

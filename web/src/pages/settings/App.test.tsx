@@ -23,6 +23,7 @@ const fetcher = vi.fn(async (url: string, opts?: RequestInit) => {
     : url.endsWith('/document-classification-policy') ? { mode: 'suggest' }
     : url.includes('/integrations/github/installations/') ? { items: [{ id: 2, full_name: 'example/Takomo', private: false }], total: 1 }
     : url.endsWith('/repository') ? { repository: url.includes('/takomo/') ? { installation: 1, repository: 2, full_name: 'example/Takomo', scope: { include: ['src'], exclude: [] } } : null }
+    : url.endsWith('/integrations/codex') ? { items: [] }
     : url.endsWith('/integrations/github') ? { configured: false, app_slug: null, connections: [] }
     : url.endsWith('/codebase-imports') ? { items: [] } : []
   return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
@@ -38,6 +39,12 @@ beforeEach(() => {
   fetcher.mockClear(); vi.stubGlobal('fetch', fetcher)
 })
 describe('Settings navigation and save boundaries', () => {
+  it('opens AI connection management from instance settings', async () => {
+    open('/settings?scope=takomo&section=codex')
+    expect(await screen.findByRole('heading', { name: 'AI connections · Codex' })).toBeTruthy()
+    expect(await screen.findByText(/No worker registered yet/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'AI connections' }).getAttribute('aria-current')).toBe('page')
+  })
   it('opens old project links and moves secondary workspaces out of Settings', async () => {
     open('/settings?project=takomo')
     await screen.findByText('Project name')
