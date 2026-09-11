@@ -59,7 +59,8 @@ export async function executeGithubImport(job, { api, serviceId, state, signal, 
   const controller = new AbortController();
   const combined = AbortSignal.any([signal, controller.signal]);
   let heartbeatChain = Promise.resolve();
-  const timer = setInterval(() => { heartbeatChain = heartbeatChain.then(() => api(`${prefix}/heartbeat`, identity)).catch(() => { controller.abort(); }); }, 15_000);
+  let telemetry = { phase: 'preparing_source' };
+  const timer = setInterval(() => { heartbeatChain = heartbeatChain.then(() => api(`${prefix}/heartbeat`, { ...identity, telemetry })).catch(() => { controller.abort(); }); }, 15_000);
   let directory;
   try {
     const { token } = await api(`${prefix}/source-token`, identity);
@@ -67,11 +68,13 @@ export async function executeGithubImport(job, { api, serviceId, state, signal, 
     await prepare(job.source, directory, token, combined);
     if (combined.aborted) return;
     // The generic CLI owns the bounded App Server turn and recoverable artifact.
-    const artifact = await generate({ repository: directory, revision: job.source.revision, scope: job.source.scope, limits: job.source.limits, maxSections: job.source.max_sections, output: join(state, `${job.id}.json`), stateDir: state, signal: combined });
+    telemetry.phase = 'drafting';
+    const artifact = await generate({ onProgress: update => { const { thread_id, turn_id, usage, model } = update; telemetry = { ...telemetry, ...(thread_id ? { thread_id } : {}), ...(turn_id ? { turn_id } : {}), ...(usage ? { usage } : {}), ...(model ? { model } : {}) }; }, repository: directory, revision: job.source.revision, scope: job.source.scope, limits: job.source.limits, maxSections: job.source.max_sections, output: join(state, `${job.id}.json`), stateDir: state, signal: combined });
     if (combined.aborted) return;
-    await deliver({ ...identity, draft: artifact.request.draft });
+    telemetry = { ...telemetry, ...artifact.telemetry, phase: 'publishing' };
+    await deliver({ ...identity, telemetry, draft: artifact.request.draft });
   } catch (error) {
-    if (!combined.aborted) await deliver({ ...identity, error: error.message.slice(0, 2000) });
+    if (!combined.aborted) await deliver({ ...identity, telemetry, error: error.message.slice(0, 2000) });
   } finally { clearInterval(timer); await heartbeatChain; if (directory) await rm(directory, { recursive: true, force: true }); }
   async function deliver(body) {
     for (let attempt = 0; attempt < 3; attempt++) {

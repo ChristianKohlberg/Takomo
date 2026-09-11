@@ -48,6 +48,8 @@ pub struct Claim {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Heartbeat {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<Value>,
     pub repository_revision: Option<String>,
     pub evidence: Option<Value>,
     pub service_id: String,
@@ -58,6 +60,8 @@ pub struct Heartbeat {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResultInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal: Option<Value>,
     pub cancelled: Option<bool>,
@@ -499,12 +503,17 @@ impl Store {
                 let (status, count) = row?;
                 counts[status] = json!(count);
             }
+            let extraction_scope = " FROM codebase_import_jobs WHERE (?1 IS NULL OR project=?1) AND (?2 IS NULL OR project IN (SELECT value FROM json_each(?2)))";
+            let mut extraction_counts = conn.prepare(&format!("SELECT status,count(*){extraction_scope} GROUP BY status"))?;
+            for row in extraction_counts.query_map(params![project,allowed], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))? {
+                let (key,n)=row?; counts[&key]=json!(counts[&key].as_i64().unwrap_or(0)+n);
+            }
             let total = match status {
                 Some(status) => counts[status].as_i64().unwrap_or(0),
                 None => counts.as_object().unwrap().values().map(|v| v.as_i64().unwrap()).sum(),
             };
             let mut stmt = conn.prepare(&format!(
-                "SELECT {INSPECT_COLUMNS}{scope} AND (?3 IS NULL OR ({projected_status})=?3) ORDER BY j.created_at DESC,j.rowid DESC LIMIT ?4"
+                "SELECT {INSPECT_COLUMNS}{scope} AND (?3 IS NULL OR ({projected_status})=?3) ORDER BY j.created_at DESC,j.id DESC LIMIT ?4"
             ))?;
             let mut items = stmt.query_map(params![project, allowed, status, limit], inspect_row)?.collect::<Result<Vec<_>, _>>()?;
             for item in &mut items {
@@ -512,6 +521,15 @@ impl Store {
                     *item = inspect_summary(conn, ctx, item["id"].as_str().unwrap())?;
                 }
             }
+            let mut extraction_ids=conn.prepare(&format!("SELECT id{extraction_scope} AND (?3 IS NULL OR status=?3) ORDER BY created_at DESC,id DESC LIMIT ?4"))?;
+            for id in extraction_ids.query_map(params![project,allowed,status,limit], |r| r.get::<_,String>(0))? {
+                let mut item=super::codebase_import::inspect(conn,ctx,&id?)?;
+                for field in ["prompt","snapshot","response"] { item.as_object_mut().unwrap().remove(field); }
+                items.push(item);
+            }
+            items.sort_by(|a,b| b["created_at"].as_i64().cmp(&a["created_at"].as_i64()).then_with(|| b["id"].as_str().cmp(&a["id"].as_str())));
+            items.truncate(limit as usize);
+            for item in &mut items { super::agent_usage::attach(conn,item)?; }
             let mut result = crate::api::paged(
                 items,
                 total,
@@ -524,7 +542,13 @@ impl Store {
     }
     pub fn inspect_agent_job(&self, ctx: &AuthCtx, id: &str) -> ApiResult<Value> {
         self.with_conn(|conn| {
-            let value = inspect_one(conn, ctx, id)?;
+            if id.starts_with("ci-") {
+                let mut value=super::codebase_import::inspect(conn,ctx,id)?;
+                super::agent_usage::attach(conn,&mut value)?;
+                return Ok(json!({"job":value,"messages":[]}));
+            }
+            let mut value = inspect_one(conn, ctx, id)?;
+            super::agent_usage::attach(conn,&mut value)?;
             let mut stmt = conn.prepare("SELECT id,job_id,role,body,created_at FROM agent_messages WHERE conversation_id=?1 ORDER BY rowid LIMIT 200")?;
             let messages = stmt
                 .query_map([value["conversation_id"].as_str().unwrap()], |r| {
@@ -695,6 +719,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
             super::document_chat::record_migration(tx,id,req.evidence.as_ref(),req.thread_id.as_deref())?;
             session(tx, &job, id, req.thread_id.as_deref(), req.turn_id.as_deref())?;
             save_evidence(tx, id, req.repository_revision.as_deref(), req.evidence.as_ref())?;
+            super::agent_usage::save(tx,id,req.telemetry.as_ref())?;
             let lease = (now_ms() + LEASE_SECONDS * 1000).min(job.deadline.unwrap());
             tx.execute("UPDATE agent_jobs SET lease_expires_at=?2 WHERE id=?1", params![id, lease])?;
             Ok(json!({"lease_expires_at":lease,"cancel_requested":false,"steering":steering(tx,id)?}))
@@ -768,6 +793,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
             if cancelled && req.cancelled == Some(true) && req.status == "failed" {
                 ensure_project_writable(tx, &job.project)?;
                 save_evidence(tx, jid, req.repository_revision.as_deref(), req.evidence.as_ref())?;
+            super::agent_usage::save(tx,jid,req.telemetry.as_ref())?;
                 tx.execute("UPDATE agent_jobs SET result_json=?2 WHERE id=?1", params![jid, canonical])?;
                 return Ok(json!({"ok":true,"status":"cancelled"}));
             }
@@ -777,6 +803,7 @@ value["repository_ref"]=serde_json::from_str(&reference).unwrap_or(Value::Null);
                 return Err(conflict("Only explicitly cancelled jobs can report cancelled evidence."));
             }
             save_evidence(tx, jid, req.repository_revision.as_deref(), req.evidence.as_ref())?;
+            super::agent_usage::save(tx,jid,req.telemetry.as_ref())?;
             let bug: Option<String> = tx.query_row("SELECT ticket FROM bug_research_jobs WHERE job=?1", [jid], |r| r.get(0)).optional()?;
             if let Some(ticket) = &bug {
                 let t = super::helpers::get_ticket_required(tx, ticket)?;

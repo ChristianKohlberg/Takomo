@@ -4,6 +4,7 @@
 //! added behind the same methods later.
 
 pub mod agent_chat;
+pub mod agent_usage;
 mod answer_grants;
 pub mod bugs;
 mod checkcollab;

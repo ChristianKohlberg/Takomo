@@ -2,10 +2,14 @@ import { defineStrings } from '@/lib/i18n'
 
 export const STR = defineStrings({
   en: {
+    sourceSnapshot: 'Source selection and limits', extractionReady: 'Draft ready. Review the generated sections and source references in Document or Mindmap.', extraction: 'Repository extraction', repository: 'Repository', scope: 'Selected source', started: 'Started at', openMindmap: 'Open mindmap',
+    model: 'Model', tokens: 'Token usage', inputTokens: 'Input', cachedTokens: 'Cached input (included)', outputTokens: 'Output', reasoningTokens: 'Reasoning (included)', totalTokens: 'Total',
+    noUsage: 'Not recorded. Older workers and runs may not report usage.', usageHint: 'Observed usage for this run. Cached and reasoning tokens are subsets; no monetary cost is inferred. Interrupted runs may be partial.',
+    preparing: 'Preparing selected source', drafting: 'Reading code and drafting', publishing: 'Publishing draft for review',
     documentClassification: 'Ticket document matching', openTicket: 'Open ticket',
     documentDiscussion: 'Document discussion', openDocument: 'Open document',
     organizeLanes: 'Organize pending work', openLanes: 'Open lanes', laneSnapshot: 'Work and lane snapshot',
-    cancelled: 'Cancelled', openBug: 'Open bug ticket', bugSnapshot: 'Bug report snapshot', title: 'Agent queue', openSection: 'Open section', description: 'Inspect agent requests and their Codex replies.',
+    cancelled: 'Cancelled', openBug: 'Open bug ticket', bugSnapshot: 'Bug report snapshot', title: 'Agent queue', openSection: 'Open section', description: 'Inspect all worker runs, including repository extractions, their status and token usage.',
     refresh: 'Refresh', automatic: 'Automatic updates', loading: 'Loading…',
     all: 'All statuses', queued: 'Queued', running: 'Running', completed: 'Completed', failed: 'Failed',
     empty: 'No requests match this view.', recent: 'Recent requests', status: 'Status', section: 'Section',
@@ -25,10 +29,14 @@ export const STR = defineStrings({
     timestampHint: 'Times are shown in your local time zone.',
   },
   de: {
+    sourceSnapshot: 'Quellbereich und Grenzen', extractionReady: 'Entwurf bereit. Prüfe die erzeugten Abschnitte und Quellen im Dokument oder in der Mindmap.', extraction: 'Repository-Extraktion', repository: 'Repository', scope: 'Ausgewählter Quellbereich', started: 'Gestartet am', openMindmap: 'Mindmap öffnen',
+    model: 'Modell', tokens: 'Tokenverbrauch', inputTokens: 'Eingabe', cachedTokens: 'Cache-Eingabe (enthalten)', outputTokens: 'Ausgabe', reasoningTokens: 'Reasoning (enthalten)', totalTokens: 'Gesamt',
+    noUsage: 'Nicht gespeichert. Ältere Worker und Läufe melden möglicherweise keinen Verbrauch.', usageHint: 'Beobachteter Verbrauch dieses Laufs. Cache und Reasoning sind Teilmengen; Geldkosten werden nicht abgeleitet. Abgebrochene Läufe können unvollständig sein.',
+    preparing: 'Quellbereich wird vorbereitet', drafting: 'Code wird gelesen und Entwurf erstellt', publishing: 'Entwurf wird zur Prüfung veröffentlicht',
     documentClassification: 'Ticket-Dokumentzuordnung', openTicket: 'Ticket öffnen',
     documentDiscussion: 'Dokumentgespräch', openDocument: 'Dokument öffnen',
     organizeLanes: 'Offene Arbeit organisieren', openLanes: 'Lanes öffnen', laneSnapshot: 'Arbeit und Lanes zum Anfragezeitpunkt',
-    cancelled: 'Abgebrochen', openBug: 'Fehlerticket öffnen', bugSnapshot: 'Fehlermeldung zum Anfragezeitpunkt', title: 'Agenten-Queue', openSection: 'Abschnitt öffnen', description: 'Agentenanfragen und ihre Codex-Antworten prüfen.',
+    cancelled: 'Abgebrochen', openBug: 'Fehlerticket öffnen', bugSnapshot: 'Fehlermeldung zum Anfragezeitpunkt', title: 'Agenten-Queue', openSection: 'Abschnitt öffnen', description: 'Alle Worker-Läufe inklusive Repository-Extraktionen, Status und Tokenverbrauch prüfen.',
     refresh: 'Aktualisieren', automatic: 'Automatisch aktualisieren', loading: 'Lädt…',
     all: 'Alle Status', queued: 'Wartend', running: 'Läuft', completed: 'Abgeschlossen', failed: 'Fehlgeschlagen',
     empty: 'Keine Anfragen passen zu dieser Ansicht.', recent: 'Letzte Anfragen', status: 'Status', section: 'Abschnitt',

@@ -147,3 +147,35 @@ shortcut does not save a connection or authorize extraction; launch remains an
 explicit choice. GitHub-backed tests require the fixture to exist on the selected
 repository's default branch. Live installation access and model quality remain
 separate rollout checks.
+
+## Unified run visibility and usage
+
+The Agent queue includes repository extractions alongside document discussions,
+section reviews, research and other worker jobs. Project/status filters and counts
+cover both execution queues. Extraction settings link to the same run inspector;
+Document and Mindmap remain the review surfaces. The inspector shows the pinned
+repository scope, status, phase while running, worker, timestamps and error.
+
+New workers capture `thread/tokenUsage/updated` from Codex App Server. The inspector
+shows observed input, cached input, output, reasoning and total tokens for the run,
+plus the resolved model when reported. It excludes prior conversation totals and
+ignores repeated notifications. Cached input and reasoning are subsets, not extra
+tokens to add to total. Usage may be partial after interruption or missed events;
+this is operational telemetry, not a billing ledger. No monetary cost is inferred.
+Old runs remain visible with “Not recorded”; they are not rerun to obtain metrics.
+
+Telemetry is saved on authorized heartbeats and results, survives server restart,
+and is never added again on delivery retries. A stale attempt cannot update it.
+The shared read endpoints retain project authorization and a global 100-row limit.
+
+Rollout: deploy the server/frontend first, then update the local worker files
+(including `usage.mjs`) and restart its service while idle. Older workers remain
+compatible with the new server. A new worker must not be used against the old
+server, which rejects unknown telemetry fields. No Codex CLI upgrade is required
+for the tested 0.153.4 schema. Start one small, explicitly authorized extraction to
+verify new usage reporting; historical runs cannot be backfilled from this data.
+
+Rollback: stop/update the worker back to its previous version before rolling back
+the server. The additive telemetry table can remain in the database; keep the
+usual database backup. Execution policies and the GitHub permission model are
+unchanged. No preview server or tunnel is needed for the automated tests.

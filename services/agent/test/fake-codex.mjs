@@ -32,6 +32,15 @@ createInterface({ input: process.stdin }).on('line', line => {
     if (text.includes('TOOL')) return send({ id: 1000, method: 'item/commandExecution/requestApproval', params: { threadId } });
     reply({ turn: { id: 'turn-1' } });
     if (text.includes('HANG')) return;
+    if (text.includes('USAGE')) {
+      const b = n => ({ inputTokens: n, cachedInputTokens: 0, outputTokens: n, reasoningOutputTokens: 0, totalTokens: n * 2 });
+      const event = (thread, turn, n, last) => ({ method: 'thread/tokenUsage/updated', params: { threadId: thread, turnId: turn, tokenUsage: { total: b(n), last: b(last) } } });
+      send(event('unrelated-thread', 'turn-1', 999, 999));
+      send(event(threadId, 'other-turn', 999, 999));
+      send(event(threadId, 'turn-1', 110, 10));
+      send(event(threadId, 'turn-1', 110, 10));
+      send(event(threadId, 'turn-1', 130, 20));
+    }
     send({ method: 'item/completed', params: { threadId: 'unrelated-thread', turnId: 'turn-1', item: { id: 'bad', type: 'agentMessage', text: 'WRONG' } } });
     send({ method: 'item/completed', params: { threadId, turnId: 'turn-1', item: { id: 'commentary', type: 'agentMessage', phase: 'commentary', text: 'Working...' } } });
     const item = { id: 'final', type: 'agentMessage', phase: 'final_answer', text: text.includes('DOCUMENT_PROTOCOL') ? JSON.stringify({ thread: threadParams, turn: request.params }) : `Which deadline applies? (${threadId})` };

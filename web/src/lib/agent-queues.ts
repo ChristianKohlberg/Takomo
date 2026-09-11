@@ -6,7 +6,10 @@ export interface AgentJob {
   id: string
   conversation_id: string
   project: string
-  kind?: 'section_chat' | 'document_chat' | 'document_workspace' | 'ticket_document_classify' | 'bug_research' | 'lane_organize'
+  kind?: 'codebase_import' | 'section_chat' | 'document_chat' | 'document_workspace' | 'ticket_document_classify' | 'bug_research' | 'lane_organize'
+  telemetry?: { usage?: { input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_output_tokens: number; total_tokens: number }; phase?: string; thread_id?: string; turn_id?: string; model?: string; updated_at: number } | null
+  source?: { full_name: string; scope: { include: string[]; exclude: string[] }; revision: string }
+  started_at?: number | null
   ticket_id?: string
   repository_revision?: string | null
   mindmap: string | null
