@@ -42,7 +42,10 @@ describe('Settings navigation and save boundaries', () => {
     open('/settings?project=takomo')
     await screen.findByText('Project name')
     expect(screen.getByText('Project ID')).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /Agent queue/ })).toBeNull()
+    for (const navigation of screen.getAllByRole('navigation')) {
+      expect(within(navigation).queryByRole('link', { name: /Agent queue/ })).toBeNull()
+    }
+    expect(screen.getByRole('link', { name: 'All runs and token usage in the Agent queue' }).getAttribute('href')).toBe('/agent-queues')
     expect(screen.getByRole('link', { name: 'Legacy' }).getAttribute('href')).toBe('/legacy?scope=takomo')
     expect(screen.getByRole('link', { name: 'General' }).getAttribute('aria-current')).toBe('page')
   })
