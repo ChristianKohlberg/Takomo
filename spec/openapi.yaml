@@ -296,7 +296,7 @@ paths:
       summary: Render a diagram through the private Kroki service
       description: |
         Requires read scope and access to the named project, including cached results.
-        Supports Mermaid, PlantUML (including Salt wireframes), and D2. Rendering is
+        Supports Mermaid, PlantUML (including Salt wireframes), D2, and DBML. Rendering is
         disabled unless the operator sets TAKOMO_KROKI_URL. Source is not persisted.
         Successful SVG previews are cached in bounded server memory by source,
         engine, and TAKOMO_KROKI_VERSION. Clients must display SVG as an isolated
@@ -314,7 +314,7 @@ paths:
               required: [project, engine, source]
               properties:
                 project: { type: string }
-                engine: { type: string, enum: [mermaid, plantuml, d2] }
+                engine: { type: string, enum: [mermaid, plantuml, d2, dbml] }
                 source:
                   type: string
                   description: Nonblank diagram source, at most 50000 UTF-8 bytes.
@@ -12911,7 +12911,7 @@ x-error-codes:
   diagram.unavailable: "the configured renderer failed, redirected, or returned an invalid SVG; retry after checking service health."
   validation.diagram: "provide project, engine and source strings with no unknown fields."
   validation.diagram_assets: "D2 external image or icon assets are unsupported; use a self-contained diagram."
-  validation.diagram_engine: "the engine must be mermaid, plantuml or d2."
+  validation.diagram_engine: "the engine must be mermaid, plantuml, d2 or dbml."
   validation.diagram_output: "the generated SVG exceeds 2 MiB; simplify the diagram."
   validation.diagram_source: "source must contain text and be at most 50,000 bytes; D2 imports and all at-signs are unsupported."
   validation.diagram_syntax: "the renderer rejected the source; check the diagram language and syntax."

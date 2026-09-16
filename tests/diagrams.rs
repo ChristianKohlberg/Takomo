@@ -23,8 +23,13 @@ async fn mock(
     source: String,
 ) -> impl IntoResponse {
     calls.fetch_add(1, Ordering::SeqCst);
-    assert!(matches!(engine.as_str(), "mermaid" | "plantuml" | "d2"));
+    assert!(matches!(
+        engine.as_str(),
+        "mermaid" | "plantuml" | "d2" | "dbml"
+    ));
     let (status, body) = match source.as_str() {
+        "dbml-graphviz" => (StatusCode::OK, format!("<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"\n \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">{SVG}")),
+        "dbml-entity" => (StatusCode::OK, "<!DOCTYPE svg [<!ENTITY secret SYSTEM 'file:///etc/passwd'>]><svg>&secret;</svg>".into()),
         "slow" => {
             tokio::time::sleep(std::time::Duration::from_secs(11)).await;
             (StatusCode::OK, SVG.into())
@@ -121,14 +126,14 @@ fn body(engine: &str, source: &str) -> Value {
 #[tokio::test]
 async fn diagrams_authorize_before_cache_and_render_all_engines() {
     let app = App::new(true).await;
-    for engine in ["mermaid", "plantuml", "d2"] {
+    for engine in ["mermaid", "plantuml", "d2", "dbml"] {
         for _ in 0..2 {
             let r = app.render(&app.reader, body(engine, "hello")).await;
             assert_eq!(r.status(), StatusCode::OK);
             assert_eq!(r.json::<Value>().await.unwrap()["svg"], SVG);
         }
     }
-    assert_eq!(app.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(app.calls.load(Ordering::SeqCst), 4);
     for (token, status) in [
         ("", StatusCode::UNAUTHORIZED),
         (app.other.as_str(), StatusCode::FORBIDDEN),
@@ -139,7 +144,7 @@ async fn diagrams_authorize_before_cache_and_render_all_engines() {
             status
         );
     }
-    assert_eq!(app.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(app.calls.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]
@@ -251,4 +256,22 @@ async fn diagrams_evict_oldest_successful_previews() {
         StatusCode::OK
     );
     assert_eq!(app.calls.load(Ordering::SeqCst), 130);
+}
+
+#[tokio::test]
+async fn dbml_accepts_graphviz_declaration_but_rejects_custom_dtds() {
+    let app = App::new(true).await;
+    let response = app.render(&app.reader, body("dbml", "dbml-graphviz")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.json::<Value>().await.unwrap()["svg"], SVG);
+    let response = app.render(&app.reader, body("dbml", "dbml-entity")).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    for token in ["", app.other.as_str(), app.writer.as_str()] {
+        let response = app.render(token, body("dbml", "dbml-graphviz")).await;
+        assert!(matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+    }
+    assert_eq!(app.calls.load(Ordering::SeqCst), 2);
 }

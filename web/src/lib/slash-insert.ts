@@ -79,7 +79,7 @@ export function closeSlashMenu(editor: Editor) {
   editor.view.dispatch(editor.state.tr.setMeta(slashKey, { close: true }))
 }
 
-export type InsertKind = 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'orderedList' | 'quote' | 'code' | 'table' | 'mermaid' | 'plantuml' | 'd2' | 'wireframe'
+export type InsertKind = 'heading1' | 'heading2' | 'heading3' | 'bulletList' | 'orderedList' | 'quote' | 'code' | 'table' | 'mermaid' | 'plantuml' | 'd2' | 'wireframe' | 'dbml'
 
 /** A stale menu may never replace somebody else's text. */
 export function insertSlashBlock(editor: Editor, match: SlashMatch, kind: InsertKind, rows = 3, cols = 3): boolean {
@@ -98,6 +98,7 @@ export function insertSlashBlock(editor: Editor, match: SlashMatch, kind: Insert
     case 'code': return chain.setCodeBlock().run()
     case 'mermaid': return chain.setCodeBlock({ language: 'mermaid' }).run()
     case 'plantuml': return chain.setCodeBlock({ language: 'plantuml' }).insertContent('@startuml\nAlice -> Bob: Hello\n@enduml').run()
+    case 'dbml': return chain.setCodeBlock({ language: 'dbml' }).insertContent('// Users and their posts\nTable users {\n  id integer [primary key]\n  name varchar\n}\n\nTable posts {\n  id integer [primary key]\n  user_id integer [ref: > users.id]\n  title varchar\n}').run()
     case 'd2': return chain.setCodeBlock({ language: 'd2' }).insertContent('User -> Takomo: Request\nTakomo -> Worker: Process').run()
     case 'wireframe': return chain.setCodeBlock({ language: 'plantuml' }).insertContent('@startsalt\n{\n  Settings\n  Server | "https://takomo.example"\n  [Connect]\n}\n@endsalt').run()
     case 'table': return chain.insertTable({ rows, cols, withHeaderRow: true }).run()

@@ -9,7 +9,7 @@ const svg = (text = '') => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 afterEach(() => { render.mockReset() })
 
 describe('Kroki rendering', () => {
-  it.each(['mermaid', 'plantuml', 'd2'] as const)('renders %s with project credentials and isolates SVG', async (engine) => {
+  it.each(['mermaid', 'plantuml', 'd2', 'dbml'] as const)('renders %s with project credentials and isolates SVG', async (engine) => {
     render.mockResolvedValue({ svg: svg('<script>alert(1)</script>') })
     const host = document.createElement('div')
     const cancel = mountDiagram(host, 'source', engine, access)

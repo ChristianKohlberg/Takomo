@@ -47,6 +47,10 @@ describe('Mermaid code block view', () => {
     expect(root.querySelector('pre')?.hidden).toBe(false)
     expect(editor.isEditable).toBe(false)
     buttons.find(button => button.textContent === 'View')!.click()
+    buttons.find(button => button.textContent === 'Collapse')!.click()
+    expect(root.querySelector('pre')?.hidden).toBe(true)
+    expect(root.querySelector('.mermaid-preview')?.hasAttribute('hidden')).toBe(true)
+    buttons.find(button => button.textContent === 'Show diagram')!.click()
     expect(editor.getJSON()).toEqual(before)
     expect(updates).not.toHaveBeenCalled()
     editor.destroy()
@@ -67,7 +71,7 @@ describe('Mermaid code block view', () => {
     editor.destroy()
   })
 
-  it.each(['plantuml', 'puml', 'salt', 'd2'])('renders %s for readers without changing source or granting editing', (language) => {
+  it.each(['plantuml', 'puml', 'salt', 'd2', 'dbml'])('renders %s for readers without changing source or granting editing', (language) => {
     localStorage.clear()
     const access = { token: 'reader', project: 'actual-project' }
     const editor = new Editor({
@@ -76,7 +80,7 @@ describe('Mermaid code block view', () => {
       content: { type: 'doc', content: [{ type: 'codeBlock', attrs: { language }, content: [{ type: 'text', text: 'source' }] }] },
     })
     const before = editor.getJSON()
-    expect(mount).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'source', language === 'd2' ? 'd2' : 'plantuml', access)
+    expect(mount).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'source', language === 'd2' || language === 'dbml' ? language : 'plantuml', access)
     Array.from(editor.view.dom.querySelectorAll('button')).find(button => button.textContent === 'Code')!.click()
     expect(editor.isEditable).toBe(false)
     expect(editor.getJSON()).toEqual(before)

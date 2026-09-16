@@ -2,8 +2,8 @@ import { defineStrings, detectLocale } from './i18n'
 import { mountDiagram, type DiagramEngine, type DiagramAccess } from './diagram'
 
 const strings = defineStrings({
-  en: { diagram: 'View', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Diagram', canvas: 'Adapt canvas to theme' },
-  de: { diagram: 'Ansicht', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Diagramm', canvas: 'Diagramm an Farbschema anpassen' },
+  en: { diagram: 'View', code: 'Code', size: 'Diagram size', compact: 'Compact', comfortable: 'Comfortable', original: 'Original', expand: 'Expand diagram', close: 'Close', fit: 'Fit', zoomIn: 'Zoom in', zoomOut: 'Zoom out', title: 'Diagram', canvas: 'Adapt canvas to theme', collapse: 'Collapse', reveal: 'Show diagram', lines: 'lines', empty: 'Empty diagram' },
+  de: { diagram: 'Ansicht', code: 'Code', size: 'Diagrammgröße', compact: 'Kompakt', comfortable: 'Komfortabel', original: 'Original', expand: 'Diagramm vergrößern', close: 'Schließen', fit: 'Einpassen', zoomIn: 'Vergrößern', zoomOut: 'Verkleinern', title: 'Diagramm', canvas: 'Diagramm an Farbschema anpassen', collapse: 'Einklappen', reveal: 'Diagramm anzeigen', lines: 'Zeilen', empty: 'Leeres Diagramm' },
 })
 type View = 'diagram' | 'code'
 type Size = 'compact' | 'comfortable' | 'original'
@@ -28,6 +28,9 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
     }
   } catch { /* Ignore malformed or unavailable browser storage. */ }
   if (startInCode) view = 'code'
+  const collapseKey = () => root.dataset.id ? `takomo.diagram.collapsed.${access?.project ?? ''}.${root.dataset.id}` : null
+  const initialKey = collapseKey()
+  let collapsed = !startInCode && !!initialKey && read(initialKey) === 'true'
   const controls = document.createElement('div')
   controls.className = 'diagram-controls'
   controls.contentEditable = 'false'
@@ -46,19 +49,46 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
   const persist = () => {
     try { localStorage.setItem(preferenceKey, JSON.stringify({ view, size, adaptCanvas })) } catch { /* Controls still work without storage. */ }
   }
+  const header = document.createElement('div')
+  header.className = 'diagram-header'
+  const description = document.createElement('div')
+  description.className = 'diagram-description'
+  const title = document.createElement('strong')
+  title.textContent = engine === 'dbml' ? 'DBML' : engine === 'plantuml' ? 'PlantUML' : engine === 'd2' ? 'D2' : 'Mermaid'
+  const summary = document.createElement('span')
+  description.append(title, summary)
+  const toggle = button(t.collapse, () => {
+    collapsed = !collapsed
+    const key = collapseKey()
+    if (key) {
+      try { localStorage.setItem(key, String(collapsed)) } catch { /* Reader controls work without storage. */ }
+    }
+    paint()
+  })
+  header.append(description, toggle)
   let cancel: (() => void) | undefined
   let closeOverlay: (() => void) | undefined
   let renderingSource: string | undefined
   const paint = () => {
-    pre.hidden = view !== 'code'
-    preview.hidden = view !== 'diagram'
+    pre.hidden = collapsed || view !== 'code'
+    preview.hidden = collapsed || view !== 'diagram'
+    toolbar.hidden = collapsed
+    toggle.textContent = collapsed ? t.reveal : t.collapse
+    toggle.setAttribute('aria-expanded', String(!collapsed))
+    const lines = source.trim().split('\n')
+    const comment = engine === 'mermaid' ? /^\s*%%\s*(.+)/ : engine === 'plantuml' ? /^\s*'\s*(.+)/ : engine === 'd2' ? /^\s*#\s*(.+)/ : /^\s*\/\/\s*(.+)/
+    const first = lines.find(line => line.trim() && !line.trim().startsWith('@start')) ?? ''
+    summary.textContent = first.match(comment)?.[1]?.trim().slice(0, 240) || (source.trim() ? `${lines.length} ${t.lines}` : t.empty)
+    if (collapsed || view !== 'diagram') {
+      cancel?.(); cancel = undefined; renderingSource = undefined
+    }
     sizeSelect.hidden = expand.hidden = view !== 'diagram'
     diagramButton.setAttribute('aria-pressed', String(view === 'diagram'))
     codeButton.setAttribute('aria-pressed', String(view === 'code'))
     root.dataset.mermaidSize = size
     root.dataset.adaptCanvas = String(adaptCanvas)
     canvasToggle.setAttribute('aria-pressed', String(adaptCanvas))
-    if (view === 'diagram' && renderingSource !== source) {
+    if (!collapsed && view === 'diagram' && renderingSource !== source) {
       cancel?.()
       renderingSource = source
       cancel = mountDiagram(preview, source, engine, access)
@@ -66,6 +96,7 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
   }
   const show = (next: View, remember = true) => {
     view = next
+    collapsed = false
     paint()
     if (remember) persist()
   }
@@ -135,7 +166,7 @@ export function createDiagramControls(root: HTMLElement, pre: HTMLElement, sourc
   })
   const canvasToggle = button(t.canvas, () => { adaptCanvas = !adaptCanvas; paint(); persist() })
   toolbar.append(sizeSelect, expand, diagramButton, codeButton, canvasToggle)
-  controls.append(toolbar, preview)
+  controls.append(header, toolbar, preview)
   root.classList.add('mermaid-block')
   root.prepend(controls)
   paint()

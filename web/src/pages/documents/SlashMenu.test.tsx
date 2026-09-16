@@ -167,6 +167,7 @@ describe('slash insertion in a collaborative section', () => {
     ['plantuml', 'plantuml', '@startuml'],
     ['wireframe', 'plantuml', '@startsalt'],
     ['d2', 'd2', 'User -> Takomo'],
+    ['dbml', 'dbml', 'Table users'],
   ])('inserts a usable %s template', (command, language, source) => {
     const { editor } = mount()
     type(editor, `/${command}`); key(editor, 'Enter')

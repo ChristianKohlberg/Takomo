@@ -72,10 +72,10 @@ impl DiagramRenderer {
     pub async fn render(&self, engine: &str, source: &str) -> ApiResult<String> {
         // Keep validation here as well as in the HTTP handler: URL path selection
         // must never become an arbitrary endpoint when another caller is added.
-        if !matches!(engine, "mermaid" | "plantuml" | "d2") {
+        if !matches!(engine, "mermaid" | "plantuml" | "d2" | "dbml") {
             return Err(ApiError::validation(
                 "validation.diagram_engine",
-                "Choose mermaid, plantuml or d2.",
+                "Choose mermaid, plantuml, d2 or dbml.",
             ));
         }
         if source.trim().is_empty() || source.len() > MAX_SOURCE_BYTES {
@@ -154,6 +154,16 @@ impl DiagramRenderer {
             bytes.extend_from_slice(&chunk);
         }
         let svg = String::from_utf8(bytes).map_err(|_| upstream_error())?;
+        // Graphviz (used by DBML) emits this fixed SVG declaration. Remove only
+        // that declaration; arbitrary DTDs and internal entities remain rejected.
+        let svg = if engine == "dbml" {
+            svg.replace(
+                "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"\n \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">",
+                "",
+            )
+        } else {
+            svg
+        };
         validate_svg(&svg, engine)?;
         let mut cache = self.cache.lock().unwrap();
         // Concurrent renders of identical source may both finish; retain one entry.

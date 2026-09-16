@@ -2,7 +2,7 @@ import { createContext } from 'react'
 import { api } from './api'
 import { defineStrings, detectLocale } from './i18n'
 
-export type DiagramEngine = 'mermaid' | 'plantuml' | 'd2'
+export type DiagramEngine = 'mermaid' | 'plantuml' | 'd2' | 'dbml'
 export interface DiagramAccess { token: string; project: string }
 export const DiagramContext = createContext<DiagramAccess | null>(null)
 export function diagramEngine(language: unknown): DiagramEngine | null {
@@ -10,6 +10,7 @@ export function diagramEngine(language: unknown): DiagramEngine | null {
     case 'mermaid': return 'mermaid'
     case 'plantuml': case 'puml': case 'salt': return 'plantuml'
     case 'd2': return 'd2'
+    case 'dbml': return 'dbml'
     default: return null
   }
 }

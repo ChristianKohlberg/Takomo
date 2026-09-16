@@ -553,13 +553,13 @@ use the same build script. The final server binary still embeds all assets and
 does not need Node or a separate frontend server at runtime.
 
 Diagram code blocks support `mermaid`, `plantuml` (`puml` and `salt` aliases),
-and `d2`, including proposals and fenced Markdown previews. All engines render
+`d2`, and `dbml`, including proposals and fenced Markdown previews. All engines render
 through the authenticated `POST /v1/diagrams/render` endpoint and private Kroki
 service. The request includes the source object's project; the service must be
 configured by the operator (see `docs/hosting.md`). No browser Mermaid runtime
 or public rendering service is used.
 
-Use `/mermaid`, `/plantuml`, `/d2`, or `/wireframe` in a document to insert a
+Use `/mermaid`, `/plantuml`, `/d2`, `/dbml`, or `/wireframe` in a document to insert a
 block. Wireframe inserts a PlantUML Salt template. Fenced code also works: type
 three backticks followed by the language and press Enter. Empty writer blocks
 open Code immediately. Existing diagrams default to View, with a View / Code
@@ -603,3 +603,9 @@ OS requests dark mode. This is scoped to settings and its dialogs.
 shown as “More pages” in settings. It remains available to signed-in non-admins.
 Agent queue, Bugs, Epics, Initiatives, Schedules, and Environments keep their
 existing routes and permissions; outgoing links carry `project=<project>`.
+
+Diagram headers support Collapse / Show diagram without changing document content.
+A leading source comment supplies the short summary (see `docs/diagrams.md`);
+otherwise the header shows the source line count. Collapsed blocks cancel renders,
+keep receiving collaborative edits, and render the latest source when revealed.
+Collapse preferences are stored per project/block ID in the reader's browser.

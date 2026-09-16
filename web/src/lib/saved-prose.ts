@@ -6,7 +6,7 @@ export function savedBlocks(value: unknown): SavedBlock[] | null {
 export function savedText(value: unknown, titles: ReadonlyMap<string, string> = new Map(), missing = 'Missing section', diagramLabel?: string): string {
   const blocks = savedBlocks(value)
   if (!blocks) return ''
-  return blocks.map(node => diagramLabel && node.tag === 'codeBlock' && ['mermaid', 'plantuml', 'puml', 'salt', 'd2'].includes(String(node.attributes?.language)) ? diagramLabel : node.tag === 'sectionReference' ? titles.get(String(node.attributes?.sectionId)) || savedText(node.children, titles, missing, diagramLabel) || missing : node.text ? node.text.map(run => typeof run.insert === 'string' ? run.insert : '').join('') : savedText(node.children, titles, missing, diagramLabel)).join(blocks.some(node => node.tag && !['sectionReference', 'hardBreak'].includes(node.tag)) ? '\n' : '')
+  return blocks.map(node => diagramLabel && node.tag === 'codeBlock' && ['mermaid', 'plantuml', 'puml', 'salt', 'd2', 'dbml'].includes(String(node.attributes?.language)) ? diagramLabel : node.tag === 'sectionReference' ? titles.get(String(node.attributes?.sectionId)) || savedText(node.children, titles, missing, diagramLabel) || missing : node.text ? node.text.map(run => typeof run.insert === 'string' ? run.insert : '').join('') : savedText(node.children, titles, missing, diagramLabel)).join(blocks.some(node => node.tag && !['sectionReference', 'hardBreak'].includes(node.tag)) ? '\n' : '')
 }
 /** Object-key ordering is not a document edit; arrays retain their order. */
 export function canonical(value: unknown): string {

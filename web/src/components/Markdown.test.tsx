@@ -17,11 +17,11 @@ describe('<Markdown>', () => {
     unmount()
   })
 
-  it.each(['plantuml', 'puml', 'salt', 'd2'])('renders %s fences using the object project', (language) => {
+  it.each(['plantuml', 'puml', 'salt', 'd2', 'dbml'])('renders %s fences using the object project', (language) => {
     localStorage.clear()
     const access = { token: 'reader', project: 'object-project' }
     const { unmount } = render(<Markdown text={'```' + language + '\nsource\n```'} diagramAccess={access} />)
-    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'source', language === 'd2' ? 'd2' : 'plantuml', access)
+    expect(preview).toHaveBeenLastCalledWith(expect.any(HTMLElement), 'source', language === 'd2' || language === 'dbml' ? language : 'plantuml', access)
     unmount()
   })
 
