@@ -48,6 +48,7 @@ export interface PickerOption {
 
 export interface PickerProps extends Omit<ComponentProps<typeof SelectTrigger>, 'onChange'> {
   value: string
+  textOnly?: boolean
   onValueChange: (value: string) => void
   options: readonly PickerOption[]
   /** Shown when `value` matches no option. */
@@ -59,6 +60,7 @@ export function Picker({
   onValueChange,
   options,
   placeholder,
+  textOnly = false,
   className,
   disabled,
   ...rest
@@ -82,11 +84,11 @@ export function Picker({
         // `w-full` is not the primitive's default and is wanted at nearly every
         // call site here: these sit in filter bars and dialog fields that size
         // the control, where a native select stretched and this does not.
-        className={cn('w-full', className)}
+        className={cn('w-full', textOnly && '[&>svg]:hidden', className)}
       >
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className={textOnly ? '[&_svg]:hidden' : undefined}>
         {options.map((o) => (
           <SelectItem key={o.value === '' ? EMPTY : o.value} value={o.value === '' ? EMPTY : o.value}>
             {o.label}

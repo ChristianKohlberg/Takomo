@@ -37,6 +37,8 @@ export interface OpenQuestions {
 
 export interface DetailPanelLabels {
   state: string
+  fromSchedule?: string
+  updatedAt?: string
   claimedBy: string
   labels: string
   tagsHdr: string
@@ -175,6 +177,19 @@ export function DetailPanel({
               </span>
             )}
           </div>
+
+          {t.schedule && labels.fromSchedule && (
+            <Section title={labels.fromSchedule}>
+              <a href="/schedules" className="text-primary break-all underline">{t.schedule}</a>
+            </Section>
+          )}
+          {t.updated_at && labels.updatedAt && (
+            <Section title={labels.updatedAt}>
+              <time dateTime={t.updated_at} className="text-muted-foreground text-[12.5px]">
+                {new Date(t.updated_at).toLocaleString()}
+              </time>
+            </Section>
+          )}
 
           {!!t.labels?.length && (
             <Section title={labels.labels}>
