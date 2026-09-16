@@ -47,7 +47,6 @@ import {
 } from '@/lib/board'
 import { answerQuestion, askQuestion, listQuestions, type Question } from '@/lib/questions'
 import { STR } from './strings'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Hint } from '@/components/Hint'
 import { Picker } from '@/components/Picker'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -97,7 +96,7 @@ export function App({ surface = 'board' }: { surface?: 'board' | 'epics' }) {
           validUntil: t.validUntil,
           expired: t.shareExpired,
           showMore: t.showMore,
-          blocked: t.blockedN,
+          blocked: t.cardBlocked,
           empty: t.shareEmpty,
           fromSchedule: t.fromSchedule,
           notFulfilled: t.notFulfilled,
@@ -408,6 +407,11 @@ function Board({
     return m
   }, [questions])
 
+  const needsAnswer = useMemo(
+    () => new Set(questions.filter((q) => q.awaiting !== 'agent').map((q) => q.ticket)),
+    [questions],
+  )
+
   const index = useMemo(() => indexById(tickets), [tickets])
 
   // Filters compose: a ticket must satisfy every active one. `inSubtree` is what
@@ -528,6 +532,7 @@ function Board({
     <AppShell
       lang={lang}
       onLang={(l) => { setLang(l); localStorage.setItem(LS_LANG, l) }}
+      contentClassName="board-surface bg-background text-foreground"
       rail={{
         onNavigate: navigate,
         current: surface,
@@ -612,6 +617,7 @@ function Board({
         </button></PopoverTrigger>
         <PopoverContent align="end" onOpenAutoFocus={event => { event.preventDefault(); document.getElementById('board-filter-heading')?.focus() }} className="max-h-[70dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto"><h2 id="board-filter-heading" tabIndex={-1} className="font-semibold">{t.filters}</h2><div className="grid grid-cols-1 gap-3 md:grid-cols-2 [&_input]:max-w-full">
         <Typeahead
+          textOnly
           id="tickfilter"
           options={tickets.map((x) => ({ id: x.id, title: x.title }))}
           value={ticketFilter}
@@ -629,6 +635,7 @@ function Board({
         {/* The SAME control as the ticket filter, mounted again — see
             components/Typeahead.tsx. Two mount points, one implementation. */}
         <Picker
+          textOnly
           id="tagkindsel"
           aria-label={t.tagsHdr}
           value={tagKind}
@@ -638,13 +645,14 @@ function Board({
             // an empty board with no visible reason.
             setTagFilter('')
           }}
-          className="bg-muted text-foreground border-border cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
+          className="bg-muted text-foreground border-border w-full md:w-auto cursor-pointer rounded-lg border px-2.5 py-1.5 text-[13px] font-[650]"
           options={[
             { value: '', label: t.allTags },
             ...tagKinds.map((k) => ({ value: k, label: k })),
           ]}
         />
         <Typeahead
+          textOnly
           id="tagvalfilter"
           options={tagValues.map((tag) => ({ id: tag }))}
           value={tagFilter}
@@ -660,6 +668,7 @@ function Board({
           }}
         />
         <Typeahead
+          textOnly
           id="epicfilter"
           options={epics}
           value={epicFilter}
@@ -675,6 +684,7 @@ function Board({
           }}
         />
         <Typeahead
+          textOnly
           id="labelfilter"
           options={allLabels.map((l) => ({ id: l }))}
           value={labelFilter}
@@ -690,32 +700,38 @@ function Board({
           }}
         />
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-          <Checkbox
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
             checked={groupByEpic}
-            onCheckedChange={(e) => { setGroupByEpic(e === true); if (e === true) setGroupByDocument(false) }}
+            onChange={(e) => { setGroupByEpic(e.target.checked); if (e.target.checked) setGroupByDocument(false) }}
           />
           {t.groupEpic}
         </label>
-        <label className="text-muted-foreground flex items-center gap-2 text-xs"><Checkbox checked={groupByDocument} onCheckedChange={value => { setGroupByDocument(value === true); if (value === true) setGroupByEpic(false) }} />{docLabels.group}</label>
-        <label className="text-muted-foreground flex items-center gap-2 text-xs"><Checkbox checked={unlinkedOnly} onCheckedChange={value => setUnlinkedOnly(value === true)} />{docLabels.without}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-primary" checked={groupByDocument} onChange={event => { setGroupByDocument(event.target.checked); if (event.target.checked) setGroupByEpic(false) }} />{docLabels.group}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-xs"><input type="checkbox" className="size-4 accent-primary" checked={unlinkedOnly} onChange={event => setUnlinkedOnly(event.target.checked)} />{docLabels.without}</label>
         <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-          <Checkbox
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
             checked={showArchived}
-            onCheckedChange={(e) => setShowArchived(e === true)}
+            onChange={(e) => setShowArchived(e.target.checked)}
           />
           {t.archived}
         </label>
         {me.expertise.length > 0 && (
           <label className="text-muted-foreground flex cursor-pointer items-center gap-1.5 py-2 text-[12px] font-[650]">
-            <Checkbox
+            <input
+              type="checkbox"
+              className="size-4 accent-primary"
               checked={mineOnly}
-              onCheckedChange={(e) => setMineOnly(e === true)}
+              onChange={(e) => setMineOnly(e.target.checked)}
             />
             {t.mine}
           </label>
         )}
-        <label className="text-muted-foreground flex items-center gap-2 text-sm"><Checkbox checked={hideEmpty} onCheckedChange={value => setHideEmpty(value === true)} />{t.hideEmpty}</label>
-        <label className="text-muted-foreground flex items-center gap-2 text-sm"><Checkbox checked={compact} onCheckedChange={value => setCompact(value === true)} />{t.compact}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={hideEmpty} onChange={event => setHideEmpty(event.target.checked)} />{t.hideEmpty}</label>
+        <label className="text-muted-foreground flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 accent-primary" checked={compact} onChange={event => setCompact(event.target.checked)} />{t.compact}</label>
         {activeFilterCount > 0 && <Button variant="outline" size="sm" onClick={clearFilters}>{t.clearFilters} ({activeFilterCount})</Button>}
         </div></PopoverContent></Popover>
         <Button variant="outline" size="sm" onClick={() => setInboxOpen(true)}>
@@ -733,12 +749,14 @@ function Board({
             role="status"
             aria-label={conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
             className={cn(
-              'size-2 rounded-full',
-              conn === 'live' && 'bg-ok',
-              conn === 'reconnecting' && 'bg-crit',
-              (conn === 'idle' || conn === 'loading') && 'bg-muted-foreground',
+              'text-[12px]',
+              conn === 'live' && 'text-ok',
+              conn === 'reconnecting' && 'text-crit',
+              (conn === 'idle' || conn === 'loading') && 'text-muted-foreground',
             )}
-          />
+          >
+            {conn === 'live' ? t.live : conn === 'reconnecting' ? t.reconnecting : t.loading}
+          </span>
         </Hint>
         {/* Project configuration lives in /settings now, not in a dialog here.
             A board is for looking at tickets; the page you go to in order to
@@ -747,11 +765,10 @@ function Board({
         {me.scopes.includes('admin') && <Hint text={t.settings}>
           <Button
             variant="outline"
-            size="icon"
-            aria-label={t.settings}
+            size="sm"
             onClick={() => navigate(`/settings?project=${encodeURIComponent(effectiveProject)}`)}
           >
-            ⚙
+            {t.settings}
           </Button>
         </Hint>}
         <Hint text={t.refresh}>
@@ -797,8 +814,8 @@ function Board({
         </div>
       )}
 
-      {view === 'board' && <div className="hidden items-center justify-end gap-1 px-3 py-1 md:flex" aria-label={t.boardScroll}><Button variant="ghost" size="sm" aria-label={t.previousColumns} onClick={() => boardRef.current?.scrollBy({ left: -300, behavior: 'smooth' })}>←</Button><Button variant="ghost" size="sm" aria-label={t.nextColumns} onClick={() => boardRef.current?.scrollBy({ left: 300, behavior: 'smooth' })}>→</Button></div>}
-      <main ref={boardRef} className="min-h-0 flex-1 overflow-auto p-3">
+      {view === 'board' && <div className="hidden items-center justify-end gap-1 px-3 py-1 md:flex" aria-label={t.boardScroll}><Button variant="ghost" size="sm" aria-label={t.previousColumns} onClick={() => boardRef.current?.scrollBy({ left: -300, behavior: 'smooth' })}>{t.previousColumns}</Button><Button variant="ghost" size="sm" aria-label={t.nextColumns} onClick={() => boardRef.current?.scrollBy({ left: 300, behavior: 'smooth' })}>{t.nextColumns}</Button></div>}
+      <main ref={boardRef} className="min-h-0 flex-1 overflow-auto p-4 md:p-5">
         {/* Filtered to nothing: the board used to render its normal columns all
             reading 0, with no statement that a filter caused it and no way to
             undo them together. */}
@@ -851,7 +868,8 @@ function Board({
                       state={s}
                       tickets={ts.filter((x) => x.state === s)}
                       selectedId={selectedId}
-                      labels={{ showMore: t.showMore, blocked: t.blockedN, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled }}
+                      needsAnswer={needsAnswer}
+                labels={{ showMore: t.showMore, blocked: t.cardBlocked, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled, needsAnswer: t.cardNeedsAnswer }}
                       isDone={workflow?.states?.find((w) => w.id === s)?.terminal}
                       onOpen={openTicket}
               onNavigate={navigate}
@@ -875,7 +893,8 @@ function Board({
                 state={state}
                 tickets={ts}
                 selectedId={selectedId}
-                labels={{ showMore: t.showMore, blocked: t.blockedN, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled }}
+                needsAnswer={needsAnswer}
+                labels={{ showMore: t.showMore, blocked: t.cardBlocked, fromSchedule: t.fromSchedule, notFulfilled: t.notFulfilled, needsAnswer: t.cardNeedsAnswer }}
                 isDone={workflow?.states?.find((w) => w.id === state)?.terminal}
                 onOpen={openTicket}
               onNavigate={navigate}
@@ -917,6 +936,8 @@ function Board({
           state: t.state,
           claimedBy: t.claimedBy,
           labels: t.labels,
+          fromSchedule: t.fromSchedule,
+          updatedAt: t.updatedAt,
           tagsHdr: t.tagsHdr,
           description: t.description,
           noDescription: t.noDescription,

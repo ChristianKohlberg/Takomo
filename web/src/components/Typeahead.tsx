@@ -24,6 +24,7 @@ export interface TypeaheadOption {
 export interface TypeaheadProps {
   /** DOM id of the mount — the several filters are told apart by it. */
   id: string
+  textOnly?: boolean
   options: TypeaheadOption[]
   value: string
   onChange: (id: string) => void
@@ -41,7 +42,7 @@ export interface TypeaheadProps {
 
 const MAX_SHOWN = 12
 
-export function Typeahead({ id: mountId, options, value, onChange, labels }: TypeaheadProps) {
+export function Typeahead({ id: mountId, options, value, onChange, labels, textOnly = false }: TypeaheadProps) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
@@ -121,6 +122,7 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
         className={cn(
           'bg-muted border-border focus:border-ring w-full sm:w-55 rounded-lg border px-2.5 py-1.5 text-base md:text-[13px] outline-none',
           value && 'text-primary font-[650]',
+          value && textOnly && 'pr-20',
         )}
       />
 
@@ -132,7 +134,7 @@ export function Typeahead({ id: mountId, options, value, onChange, labels }: Typ
             aria-label={labels.clear}
             onClick={() => take('')}
           >
-            ×
+            {textOnly ? labels.clear : '×'}
           </button>
         </Hint>
       )}

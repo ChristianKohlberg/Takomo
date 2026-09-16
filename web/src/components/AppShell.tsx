@@ -16,9 +16,11 @@ import { listQuestions } from '@/lib/questions'
 import { loadToken } from '@/lib/session'
 import { useLiveRefresh } from '@/hooks/useLiveRefresh'
 import type { Locale } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { NavRail, type NavRailProps } from './NavRail'
 
 export interface AppShellProps {
+  contentClassName?: string
   hideRail?: boolean
   lang?: Locale
   onLang?: (lang: Locale) => void
@@ -28,7 +30,7 @@ export interface AppShellProps {
   children: ReactNode
 }
 
-export function AppShell({ rail, children, lang, onLang, hideRail = false }: AppShellProps) {
+export function AppShell({ rail, children, lang, onLang, hideRail = false, contentClassName }: AppShellProps) {
   const token = loadToken()
   const project = rail.project ?? ''
   const explicitCount = rail.badges?.inbox
@@ -49,7 +51,7 @@ export function AppShell({ rail, children, lang, onLang, hideRail = false }: App
       <div style={{ display: hideRail ? 'none' : 'contents' }}>
         <NavRail {...navigation} lang={lang} onLang={onLang} navigationInHeader />
       </div>
-      <div className="flex min-w-0 grow flex-col overflow-hidden">{children}</div>
+      <div className={cn("flex min-w-0 grow flex-col overflow-hidden", contentClassName)}>{children}</div>
     </div>
     </DiagramContext>
   )

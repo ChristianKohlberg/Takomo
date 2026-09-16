@@ -8,7 +8,8 @@
    This file was four copies before — one per page, drifting. It is now imported
    once per entry and is the only place a color is defined. Components style
    themselves with `var(--*)` in their own *.module.css; nothing hardcodes a hex. */
-:root {
+:root,
+:root .board-surface {
   --bg: #eef1f4; --panel: #ffffff; --col-bg: #f7fafc; --text: #14202a;
   /* Mindmaps have a quieter canvas than the surrounding app shell. */
   --mindmap-canvas: #fafafa; --mindmap-node-border: #cfd9e2;
@@ -53,4 +54,10 @@ body {
   font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+}
+
+/* The Board is a white workspace, including when the OS uses dark mode. */
+:root .board-surface {
+  --bg: #ffffff;
+  color-scheme: light;
 }

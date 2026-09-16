@@ -16,7 +16,8 @@ export interface ColumnProps {
   state: string
   tickets: Ticket[]
   selectedId?: string | null
-  labels: { showMore: string; blocked: string; fromSchedule: string; notFulfilled: string }
+  needsAnswer?: ReadonlySet<string>
+  labels: { showMore: string; blocked: string; fromSchedule: string; notFulfilled: string; needsAnswer?: string }
   /** Terminal state: its cards never carry a not-fulfilled flag. */
   isDone?: boolean
   onOpen: (id: string) => void
@@ -30,6 +31,7 @@ export function Column({
   state,
   tickets,
   selectedId,
+  needsAnswer,
   labels,
   isDone,
   onOpen,
@@ -40,12 +42,12 @@ export function Column({
   const hidden = tickets.length - shown.length
 
   return (
-    <section className="bg-muted/40 flex min-h-0 w-full shrink-0 flex-col rounded-[10px] md:w-72">
-      <header className="bg-muted text-muted-foreground sticky top-0 z-1 flex items-baseline gap-2 px-3 py-2 text-[11.5px] font-[750] tracking-[0.05em]">
+    <section className="flex min-h-0 w-full shrink-0 flex-col md:w-72">
+      <header className="bg-background sticky top-0 z-1 text-foreground border-border mb-3 flex items-baseline justify-between gap-2 border-b px-1 pb-3 pt-1 text-[12px] font-[650] tracking-[0.04em] uppercase">
         <span>{stateLabel ?? state.replaceAll('_', ' ')}</span>
-        <span className="font-semibold tabular-nums">{tickets.length}</span>
+        <span className="text-muted-foreground font-normal tabular-nums">{tickets.length}</span>
       </header>
-      <div className="flex min-h-0 flex-col gap-2 overflow-y-auto px-2 pb-2">
+      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-1 pb-2">
         {shown.map((t) => (
           <TicketCard
             key={t.id}
@@ -53,6 +55,7 @@ export function Column({
             ticket={t}
             selected={t.id === selectedId}
             blockedLabel={labels.blocked}
+            needsAnswerLabel={needsAnswer?.has(t.id) ? labels.needsAnswer : undefined}
             scheduleLabels={{ fromSchedule: labels.fromSchedule, notFulfilled: labels.notFulfilled }}
             isDone={isDone}
             onOpen={onOpen}
