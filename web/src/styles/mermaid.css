@@ -22,3 +22,10 @@
 /* Image-only adaptation preserves shared source and works across diagram engines. */
 .dark [data-adapt-canvas=true] img { filter: invert(0.9) hue-rotate(180deg); }
 @media (prefers-color-scheme: dark) { :root:not(.light) [data-adapt-canvas=true] img { filter: invert(0.9) hue-rotate(180deg); } }
+
+.diagram-header { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: var(--col-bg); color: var(--text); font: 13px var(--sans, sans-serif); }
+.diagram-description { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+.diagram-description span { color: var(--muted); font-size: 12px; white-space: normal; }
+.diagram-header button { flex: none; min-height: 32px; max-width: 50%; padding: 4px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--text); cursor: pointer; }
+.diagram-header button:hover { background: var(--hover); color: var(--accent-ink); }
+.diagram-header button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

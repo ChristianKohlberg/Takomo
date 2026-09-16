@@ -128,9 +128,10 @@ def main():
         ("plantuml", "@startsalt\n{ Codex integration | [Connect worker] }\n@endsalt"),
         ("mermaid", "flowchart LR\nTakomo --> Kroki"),
         ("d2", "takomo -> kroki: render"),
+        ("dbml", "// Users and posts\nTable users {\n id integer [pk]\n}\nTable posts {\n user_id integer [ref: > users.id]\n}"),
     ):
         assert_render(base, reader, engine, source)
-    print("ok - default image health and authenticated Salt/Mermaid/D2 rendering", flush=True)
+    print("ok - default image health and authenticated Salt/Mermaid/D2/DBML rendering", flush=True)
 
     # Renderer users must not inherit operator secrets or read the database.
     docker("exec", name, "python3", "-c", """

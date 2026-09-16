@@ -9,7 +9,7 @@ const svg = (text = '') => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 afterEach(() => { render.mockReset() })
 
 describe('Kroki rendering', () => {
-  it.each(['mermaid', 'plantuml', 'd2'] as const)('renders %s with project credentials and isolates SVG', async (engine) => {
+  it.each(['mermaid', 'plantuml', 'd2', 'dbml'] as const)('renders %s with project credentials and isolates SVG', async (engine) => {
     render.mockResolvedValue({ svg: svg('<script>alert(1)</script>') })
     const host = document.createElement('div')
     const cancel = mountDiagram(host, 'source', engine, access)
@@ -107,4 +107,21 @@ it('keeps SVG isolated while allowing long foreign-object labels to paint fully'
   expect(parsed.querySelector('div')?.getAttribute('style')).toContain('overflow:visible')
   expect(host.querySelector('foreignObject')).toBeNull()
   stop()
+})
+
+it('fits DBML labels to their Graphviz table cells without changing edge labels or other engines', async () => {
+  const diagram = svg('<g class="node"><polygon points="0,0 200,0 200,60 0,60"/><text x="10" y="35" font-size="30" text-anchor="start">id</text><text x="110" y="35" font-size="30" text-anchor="start">integer</text></g><g class="edge"><text x="190" y="35" font-size="30">1</text></g>')
+  render.mockResolvedValue({ svg: diagram })
+  for (const engine of ['dbml', 'mermaid'] as const) {
+    const host = document.createElement('div')
+    const stop = mountDiagram(host, 'source', engine, access)
+    await tick()
+    const result = new DOMParser().parseFromString(decodeURIComponent(host.querySelector('img')!.src.split(',')[1]!), 'image/svg+xml')
+    const labels = result.querySelectorAll('g.node text')
+    expect(labels[0]!.getAttribute('textLength')).toBe(engine === 'dbml' ? '100' : null)
+    expect(labels[1]!.getAttribute('textLength')).toBe(engine === 'dbml' ? '80' : null)
+    expect(result.querySelector('g.edge text')!.hasAttribute('textLength')).toBe(false)
+    expect(result.querySelector('g.edge text')!.getAttribute('x')).toBe(engine === 'dbml' ? '218' : '190')
+    stop()
+  }
 })

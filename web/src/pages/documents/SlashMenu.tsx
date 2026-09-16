@@ -16,6 +16,7 @@ const choices: { kind: InsertKind; label: keyof typeof STR.en; search: string; i
   { kind: 'table', label: 'tableInsert', search: 'table tabelle rows columns zeilen spalten', icon: '▦' },
   { kind: 'wireframe', label: 'slashWireframe', search: 'wireframe salt layout ui sketch skizze', icon: '▣' },
   { kind: 'plantuml', label: 'slashPlantuml', search: 'plantuml puml diagram diagramm sequence', icon: '◇' },
+  { kind: 'dbml', label: 'slashDbml', search: 'dbml database schema er erd entity relationship datenbank', icon: '◇' },
   { kind: 'd2', label: 'slashD2', search: 'd2 diagram diagramm architecture', icon: '◇' },
   { kind: 'mermaid', label: 'slashMermaid', search: 'mermaid diagram diagramm flowchart', icon: '◇' },
 ]

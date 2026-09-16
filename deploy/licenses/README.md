@@ -16,6 +16,10 @@ images pinned there. The image carries these notices in
   from Kroki. See the above Kroki tag's Dockerfile for the native build provenance.
 - D2 0.7.1: MPL 2.0, source at https://github.com/terrastruct/d2/tree/v0.7.1
   and source archive https://github.com/terrastruct/d2/archive/refs/tags/v0.7.1.tar.gz .
+- DBML renderer 1.0.31: ISC (declared in its package metadata), source at
+  https://github.com/softwaretechnik-berlin/dbml-renderer and published source
+  https://registry.npmjs.org/@softwaretechnik/dbml-renderer/-/dbml-renderer-1.0.31.tgz .
+  The executable is copied unchanged from the pinned Kroki image.
 - Node: binary from the official `node:24-trixie-slim` build stage; its complete
   upstream license file is copied alongside these notices. Source and release
   archives: https://nodejs.org/dist/ .

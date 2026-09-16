@@ -217,7 +217,7 @@ def main():
                                           "127.0.0.1,localhost,::1")))
         app_environment["NO_PROXY"] = exclusions
         app_environment["no_proxy"] = exclusions
-        app_environment.setdefault("TAKOMO_KROKI_VERSION", "0.32.1-bundled-v1")
+        app_environment.setdefault("TAKOMO_KROKI_VERSION", "0.32.1-bundled-v2")
         # Explicit allowlist: no inherited database paths, cloud credentials,
         # proxy variables, Java options or user-provided renderer relaxations.
         common = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}

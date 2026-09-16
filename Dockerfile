@@ -79,6 +79,10 @@ COPY --from=kroki /usr/local/kroki/kroki-server.jar /opt/kroki/kroki-server.jar
 # Debian trixie supplies a newer compatible glibc than upstream Ubuntu 24.04.
 COPY --from=kroki /usr/bin/plantuml /usr/bin/lib*.so /opt/plantuml/
 COPY --from=kroki /usr/bin/d2 /usr/bin/d2
+COPY --from=kroki /usr/bin/dbml /usr/bin/dbml
+# Exercise the pinned DBML executable against the final Debian runtime.
+RUN printf 'Table users {\n  id integer [pk]\n}\n' | dbml > /tmp/dbml-smoke.svg \
+    && test -s /tmp/dbml-smoke.svg && rm /tmp/dbml-smoke.svg
 COPY --from=kroki /etc/kroki/logback.xml /etc/kroki/logback.xml
 RUN /opt/plantuml/plantuml -version && d2 --version && node --version
 COPY deploy/licenses /usr/local/share/doc/takomo-renderers

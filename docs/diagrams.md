@@ -1,6 +1,6 @@
 # Diagrams and wireframes
 
-Document code blocks support **Mermaid**, **PlantUML**, and **D2** through a private
+Document code blocks support **Mermaid**, **PlantUML**, **D2**, and **DBML** through a private
 [Kroki](https://kroki.io/) rendering service. **Wireframe** inserts a PlantUML Salt
 template. These blocks use the same Code / View controls, sizing and expanded
 preview; they are not separate document formats.
@@ -19,7 +19,7 @@ need the external service configuration below.
 
 ## Default: one Docker container
 
-The standard image bundles Kroki 0.32.1, PlantUML/Salt, D2 and the Mermaid
+The standard image bundles Kroki 0.32.1, PlantUML/Salt, D2, DBML and the Mermaid
 companion. Run Takomo normally: one image, port 8080 and `/var/data` volume. No
 renderer URL or Compose stack is required. See [hosting](hosting.md#docker-runtime).
 
@@ -62,7 +62,7 @@ docker compose -f deploy/kroki.compose.yaml up -d
 ```
 
 The configuration pins Kroki and its Mermaid companion to immutable images.
-PlantUML and D2 are included in the main image. Only the gateway is exposed, on
+PlantUML, D2 and DBML are included in the main image. Only the gateway is exposed, on
 `127.0.0.1:18080`; the companion is on an internal Docker network. No Takomo token
 or database is mounted into either container.
 
@@ -124,7 +124,7 @@ for the meaning of those settings.
 ## Limits, caching and upgrades
 
 Takomo requires a normal bearer token with read access to the request's project.
-The allowlist is Mermaid, PlantUML and D2; a request cannot choose an upstream URL
+The allowlist is Mermaid, PlantUML, D2 and DBML; a request cannot choose an upstream URL
 or enable another engine. Rendering is a POST and follows the existing per-token
 REST request budget, even though it does not mutate document content.
 
@@ -144,3 +144,38 @@ If rendering fails, check Takomo's configuration, gateway connectivity and
 `docker compose -f deploy/kroki.compose.yaml logs --tail 100`. Syntax errors are
 corrected in Code; unavailable or busy services can be retried in View. Avoid
 putting private document source in shared logs or public rendering services.
+
+## Database diagrams and collapsing
+
+Insert a database diagram with `/dbml`, or use a fenced `dbml` code block.
+Paste DBML source into Code and switch to View for the rendered ER diagram.
+The bundled image includes the pinned DBML renderer; external Kroki deployments
+must provide the `dbml` executable (included in the pinned standard Kroki image).
+The source remains collaborative text, including in agent proposals.
+
+Every diagram has Collapse / Show diagram controls. Its language and a short
+summary remain visible while collapsed. The first nonempty source line can be a
+summary comment: `//` for DBML, `%%` for Mermaid, `#` for D2, or `'` for PlantUML
+(optionally after `@startuml` / `@startsalt`). Without a comment, the header shows
+the source line count. Summaries display as plain text, limited to 240 characters.
+
+```dbml
+// Users and their posts
+Table users {
+  id integer [primary key]
+  name varchar
+}
+Table posts {
+  id integer [primary key]
+  user_id integer [ref: > users.id]
+  title varchar
+}
+```
+
+Collapsing hides both source and preview and cancels pending rendering. Source
+changes still synchronize, and revealing the block renders the latest source.
+The choice is remembered in this browser per project and stable document block ID;
+it does not change shared content or undo history. Markdown previews without a
+stable block ID retain the choice only while mounted. Moving the editor selection
+into the source reveals Code so typing never happens in a hidden block. Expand
+diagram still opens the larger viewer with zoom controls.

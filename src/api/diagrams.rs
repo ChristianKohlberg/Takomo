@@ -35,10 +35,13 @@ pub async fn render(
     if state.store.get_project(&request.project)?.is_none() {
         return Err(ApiError::not_found("project", &request.project));
     }
-    if !matches!(request.engine.as_str(), "mermaid" | "plantuml" | "d2") {
+    if !matches!(
+        request.engine.as_str(),
+        "mermaid" | "plantuml" | "d2" | "dbml"
+    ) {
         return Err(ApiError::validation(
             "validation.diagram_engine",
-            "Choose mermaid, plantuml or d2.",
+            "Choose mermaid, plantuml, d2 or dbml.",
         ));
     }
     if request.source.trim().is_empty() || request.source.len() > MAX_SOURCE_BYTES {
