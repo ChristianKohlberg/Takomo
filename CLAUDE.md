@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides additional product/build guidance. Use [AGENTS.md](AGENTS.md) for
+the current verification policy and [docs/testing.md](docs/testing.md) for CI and coverage.
 
 Takomo is a **self-hosted task store that AI agent fleets, orchestrators, and humans all talk to
 over HTTP** — one authority for work instead of a todo list trapped in a single checkout. Single
@@ -110,7 +111,7 @@ cargo test --locked && cargo clippy --all-targets -- -D warnings && cargo fmt --
 git worktree remove /tmp/verify && rm -rf /tmp/verify-target
 ```
 
-That is the debug profile, the same one ordinary PR and main CI runs — measured locally on this
+That is the debug profile used for PR unit tests (pushes to main trigger no CI). Measured locally on this
 repo, a cold `cargo test --locked` took 83 s against 313 s for `cargo test --release --locked`, and
 the two run the same 569 tests. Release or high-risk work (see `docs/validation.md`) adds
 `cargo test --release --locked` in the same worktree, because that is the profile the full CI lane

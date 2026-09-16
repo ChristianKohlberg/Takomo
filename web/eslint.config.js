@@ -26,7 +26,7 @@ import tseslint from 'typescript-eslint'
 import reactHooks from 'eslint-plugin-react-hooks'
 
 export default [
-  { ignores: ['dist/**', 'dist-lib/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'dist-lib/**', 'coverage/**', 'node_modules/**'] },
   js.configs.recommended,
   {
     // Build scripts run in node, not the browser.

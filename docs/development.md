@@ -5,8 +5,9 @@ Takomo is a Rust + axum server (single binary), a `bash` CLI, and a TypeScript M
 ## Build, test, lint
 
 Choose proportionate local checks using [Validation by impact and exposure](validation.md).
-CI runs a fast lane on ordinary PRs/main pushes and full release/packaging checks
-nightly, manually before release, and for packaging changes ([workflow](../.github/workflows/ci.yml)).
+Full verification runs nightly at 02:23 UTC and manually ([workflow](../.github/workflows/ci.yml)).
+PRs run [lightweight checks](../.github/workflows/pr.yml); pushes/merges do not trigger CI.
+See [Testing and coverage](testing.md) for selection, measurements and limitations.
 
 ```sh
 ./scripts/build.sh                                 # Node 22 frontend, then Rust binary

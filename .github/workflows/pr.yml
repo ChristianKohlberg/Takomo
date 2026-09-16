@@ -1,0 +1,73 @@
+name: PR checks
+on:
+  pull_request:
+    paths-ignore: ['**/*.md', '.lavish/**']
+permissions:
+  contents: read
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    needs: web
+    name: Rust static checks and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # Native Cargo filters, not a claim of dependency-aware delta testing.
+      - run: cargo test --locked --lib --bins
+  web:
+    name: Frontend static checks and affected tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run lint
+      - name: Tests affected since the PR base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo 'Vitest selects tests through imports; no affected tests means no test evidence.'
+          npm run test:changed -- "$PR_BASE"
+      - run: npm run build
+      - run: npm run size
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 1
+  contracts:
+    name: Shell, skill copies, API contract, MCP types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: shellcheck -x clients/cli/takomo clients/cli/install.sh scripts/*.sh
+      - run: diff -u clients/claude-skill/takomo/SKILL.md plugins/takomo/skills/takomo/SKILL.md
+      - run: npx --yes @redocly/cli@2.40.0 lint spec/openapi.yaml --config spec/redocly.yaml
+      - run: npm ci && npm run build
+        working-directory: clients/mcp

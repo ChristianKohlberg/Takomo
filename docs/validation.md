@@ -30,36 +30,13 @@ integration coverage and an OpenAPI update.
 
 ## CI lanes
 
-[CI](../.github/workflows/ci.yml) runs on PRs and pushes to main. Ordinary changes
-run the complete Rust test suite in the debug profile, Clippy, format, frontend
-checks/tests/build/size, agent-service tests, MCP typecheck and cheap consistency,
-shell and dependency checks. Rust consumes the actual frontend artifact: even a
-frontend-only change is checked against the server that embeds it.
-
-Full mode runs at **02:23 UTC nightly**, on manual `workflow_dispatch`, and when
-packaging/release inputs change. It adds the release binary build, uses the full
-release-profile Rust test suite, and builds/smokes the Docker image. All other
-checks still run. The classifier is [scripts/ci-full-required.sh](../scripts/ci-full-required.sh):
-Docker/deployment configuration, Cargo inputs, embedded workflows, build scripts,
-CI workflows, server entry/asset serving, frontend package/lock and Vite config
-changes select full mode. Missing history also selects full mode. Deletions and
-renames of those files must retain that coverage. Keep this list updated when
-adding build inputs.
-
-Docker is skipped on ordinary fast runs; it is not silently considered tested.
-Existing Rust/frontend check names are retained. If the scope job itself fails,
-the Rust check fails rather than being skipped: a skipped required check counts
-as satisfied on GitHub, so skipping would let a PR merge with no Rust tests run.
-A full run is identified by successful **Build (release)** and **Test (release)**
-steps and the successful **Docker image (builds · serves every page)** job, not
-just a green fast CI badge.
-Nightly runs use default-branch HEAD. Manual runs use the selected branch/tag
-commit; record the run's actual SHA because the branch can advance.
-
-No broad browser suite is invented here: existing automated behavior coverage
-stays in CI; relevant live browser/user-journey checks remain part of release
-validation. The first hosted runs should establish the new median and p90; a
-five-minute feedback target is a goal, not a guaranteed runtime.
+[PR checks](../.github/workflows/pr.yml) run static checks, Rust unit tests and
+native Vitest affected tests. Pushes/merges to main trigger no verification workflow.
+[Full verification](../.github/workflows/ci.yml) runs at **02:23 UTC nightly** and
+on manual dispatch, including release tests, Docker, MCP and coverage artifacts.
+See [Testing and coverage](testing.md) for commands and measurement limitations.
+Nightly runs use default-branch HEAD; manual runs use the selected ref. Record the
+actual tested SHA, and run full verification before release/high-risk exposure.
 
 ## Release and deployment
 
