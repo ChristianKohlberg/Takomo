@@ -23,9 +23,45 @@ function labels() {
   try { locale = localStorage.getItem('takomo.lang') } catch { /* Browser locale is the fallback. */ }
   return strings[detectLocale(locale)]
 }
-function imageFromSvg(svg: string): HTMLImageElement {
+function imageFromSvg(svg: string, engine: DiagramEngine): HTMLImageElement {
   const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement
   if (root.localName !== 'svg' || root.namespaceURI !== 'http://www.w3.org/2000/svg') throw new Error(labels().error)
+  if (engine === 'dbml') {
+    // DBML's bundled Graphviz measures Helvetica differently from browser
+    // fallback fonts. Preserve its table geometry by giving each label the
+    // width of its allocated cell span, including split bold/plain runs.
+    const tables: { left: number; right: number; top: number; bottom: number }[] = []
+    for (const node of root.querySelectorAll('g.node')) {
+      let bounds: { left: number; right: number; top: number; bottom: number } | null = null
+      for (const child of node.children) {
+        if (child.localName === 'polygon') {
+          const points = (child.getAttribute('points') ?? '').trim().split(/\s+/).map(point => point.split(',').map(Number))
+          bounds = points.length >= 4 && points.every(point => point.length === 2 && point.every(Number.isFinite))
+            ? { left: Math.min(...points.map(point => point[0]!)), right: Math.max(...points.map(point => point[0]!)), top: Math.min(...points.map(point => point[1]!)), bottom: Math.max(...points.map(point => point[1]!)) } : null
+        } else if (child.localName === 'text' && bounds && child.getAttribute('text-anchor') === 'start') {
+          const x = Number(child.getAttribute('x'))
+          const y = Number(child.getAttribute('y'))
+          const font = Number(child.getAttribute('font-size'))
+          const next = child.nextElementSibling
+          const nextX = next?.localName === 'text' && Math.abs(Number(next.getAttribute('y')) - y) <= 2 ? Number(next.getAttribute('x')) : Infinity
+          const width = Math.min(nextX, bounds.right - font / 3) - x
+          if (Number.isFinite(width) && width > 0 && font > 0 && y >= bounds.top && y <= bounds.bottom) {
+            child.setAttribute('textLength', String(width))
+            child.setAttribute('lengthAdjust', 'spacingAndGlyphs')
+          }
+        }
+      }
+      if (bounds) tables.push(bounds)
+    }
+    // Keep relationship cardinalities outside table borders as well. Graphviz
+    // can place the head/tail labels over the first or last column name.
+    for (const label of root.querySelectorAll('g.edge text')) {
+      const x = Number(label.getAttribute('x')), y = Number(label.getAttribute('y'))
+      const font = Number(label.getAttribute('font-size'))
+      const table = tables.find(box => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom)
+      if (table && font > 0) label.setAttribute('x', String(x - table.left < table.right - x ? table.left - font * 0.6 : table.right + font * 0.6))
+    }
+  }
   // SVG is an isolated image document, never markup in the application's DOM.
   const image = document.createElement('img')
   image.alt = labels().title
@@ -105,7 +141,7 @@ export function mountDiagram(host: HTMLElement, source: string, engine: DiagramE
   const render = () => {
     setStatus(t.loading)
     void renderSvg(access, source, engine, controller.signal).then(({ svg }) => {
-      if (!cancelled) host.replaceChildren(imageFromSvg(svg))
+      if (!cancelled) host.replaceChildren(imageFromSvg(svg, engine))
     }).catch((error: unknown) => {
       if (cancelled) return
       setStatus(`${t.error} ${error instanceof Error ? error.message : ''}`)
